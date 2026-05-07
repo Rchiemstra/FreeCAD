@@ -134,6 +134,12 @@ jobs:
         pixi-version: v0.59.0
         cache: false
 
+    - name: Install xvfb (Linux GUI / snapshot tests)
+      if: runner.os == 'Linux' && !inputs.skipBuild
+      run: |
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xvfb
+
     - name: Restore Compiler Cache
       id: cache-restore
       if: "!inputs.skipBuild"
@@ -183,7 +189,7 @@ jobs:
       uses: ./.github/workflows/actions/runPythonTests
       with:
         testDescription: "GUI tests on build dir"
-        testCommand: pixi run xvfb-run ${{ env.builddir }}/bin/FreeCAD -t 0
+        testCommand: pixi run /bin/bash .github/scripts/xvfb_run.sh -a -s "-screen 0 1024x768x24" -- ${{ env.builddir }}/bin/FreeCAD -t 0
         logFile: ${{ env.logdir }}TestGUIBuild.log
         reportFile: ${{env.reportdir}}${{ env.reportfilename }}
 
@@ -194,8 +200,8 @@ jobs:
       with:
         testDescription: "Coin node snapshot visual tests on build dir"
         testCommand: |
-          FC_VISUAL_OUT_DIR="/tmp/FreeCADTesting/CoinNodeSnapshots" \
-          pixi run xvfb-run -a -s "-screen 0 1024x768x24" \
+          pixi run env FC_VISUAL_OUT_DIR="/tmp/FreeCADTesting/CoinNodeSnapshots" \
+            /bin/bash .github/scripts/xvfb_run.sh -a -s "-screen 0 1024x768x24" -- \
             "${{ env.builddir }}/bin/FreeCAD" -t TestCoinNodeSnapshots
         logFile: ${{ env.logdir }}TestCoinNodeSnapshotsBuild.log
         reportFile: ${{env.reportdir}}${{ env.reportfilename }}
@@ -243,7 +249,7 @@ jobs:
       uses: ./.github/workflows/actions/runPythonTests
       with:
         testDescription: "GUI tests on install"
-        testCommand: pixi run xvfb-run FreeCAD -t 0
+        testCommand: pixi run /bin/bash .github/scripts/xvfb_run.sh -a -s "-screen 0 1024x768x24" -- FreeCAD -t 0
         logFile: ${{ env.logdir }}TestGUIInstall.log
         reportFile: ${{env.reportdir}}${{ env.reportfilename }}
 
