@@ -1,0 +1,52 @@
+' FreeCAD <-> Gazebo via MCP — sequence: human in Simulation Workbench
+' Part of freecad_gazebo_mcp_*.puml set
+
+@startuml sequence_human_in_workbench
+title Human-driven flow — user clicks Play in the Simulation Workbench
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+actor       User
+participant "FreeCAD GUI"           as GUI
+participant "Simulation\nWorkbench" as WB
+participant "RobotCAD"              as RC
+database    "Repo"                  as Repo
+participant "gz-sim -s\n(headless)" as Sim
+
+== Switch workspace (Fusion-style) ==
+User -> GUI : switch to\nSimulation Workbench
+GUI --> User : toolbars + panels swap
+
+== Load scenario ==
+User -> WB  : pick world + robot +\ninitial pose, click "Start"
+WB   -> RC  : ensure URDF/SDF\nis up to date
+RC   -> Repo: write generated/ if stale
+WB   -> Sim : start, load world, spawn robot
+Sim  --> WB : ready
+
+== Run with live feedback in FreeCAD ==
+User -> WB  : click ▶ Play
+WB   -> Sim : unpause
+loop every tick (~30 Hz)
+  Sim --> WB : pose, joint state, sensors
+  WB  -> GUI : update Placement on FreeCAD\nobjects (animate the model)
+  WB  -> WB  : render camera frame in\nQt panel, append to plots
+end
+
+== Pause & inspect ==
+User -> WB  : click ⏸ Pause
+WB   -> Sim : pause
+User -> GUI : orbit / measure /\ntweak parameter
+note right of GUI
+  Same FreeCAD doc, same 3D view.
+  No Gazebo window ever appears.
+end note
+
+== Save the run ==
+User -> WB  : click "Save run"
+WB   -> Sim : stop record
+WB   -> Repo: write sim_runs/<timestamp>/
+WB   --> User: run saved, listed in Run Library
+
+@enduml

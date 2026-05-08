@@ -1,0 +1,54 @@
+' FreeCAD <-> Gazebo via MCP — MCP tool surface (classes)
+' Part of freecad_gazebo_mcp_*.puml set
+
+@startuml mcp_tool_surface
+title MCP tool surface (initial scope)
+
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+
+class "FreeCAD MCP" as F <<server>> {
+  + list_projects() : path[]
+  + open_document(path)
+  + get_object_tree(doc) : tree
+  + set_parameter(doc, name, value)
+  + compute_inertia(link, density) : tensor
+  + add_joint(parent, child, type, axis, limits)
+  + export_urdf(robot_name, out_dir) : path
+  + export_sdf_world(world_name, out_dir) : path
+  + screenshot(view, path)
+  + git_commit(message)
+}
+
+class "Gazebo MCP" as G <<server>> {
+  + load_world(sdf_path)
+  + spawn_model(desc, name, pose) : entity_id
+  + set_model_state(name, pose, twist)
+  + get_model_state(name) : state
+  + step_sim(seconds)
+  + pause() / resume() / reset()
+  + list_sensors(model) : sensor[]
+  + get_sensor_data(sensor_name) : data
+  + apply_wrench(link, force, torque)
+  + record(start|stop, path)
+}
+
+class "Repo (Git)" as R <<filesystem>> {
+  + robots/*.FCStd
+  + worlds/*.FCStd
+  + generated/
+  + sim_runs/
+  + project.yaml
+}
+
+F --> R : reads / writes\nFCStd + generated
+G --> R : loads from generated\nwrites to sim_runs
+
+note bottom of F
+  Start small: list, open,
+  set_parameter, export_urdf,
+  screenshot. Add the rest
+  as scenarios demand.
+end note
+
+@enduml

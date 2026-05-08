@@ -1,0 +1,65 @@
+' FreeCAD <-> Gazebo via MCP — deployment (Docker)
+' Part of freecad_gazebo_mcp_*.puml set
+
+@startuml deployment_docker
+title Deployment View — single-host Docker setup
+
+skinparam shadowing false
+
+node "Host machine\n(Linux / WSL2)" as host {
+
+  node "RobotCAD Docker container" as docker {
+
+    node "FreeCAD GUI process\n(the only window the human sees)" as fc_proc {
+      component "FreeCAD 1.x"                  as fc
+      component "freecad-mcp addon\n(RPC on :5000)" as fcaddon
+      component "RobotCAD workbench"           as rcwb
+      component "Simulation Workbench\n(controls, viewer,\nlive state bridge)" as cwb
+    }
+
+    node "FreeCAD MCP server process\n(uvx freecad-mcp)" as fc_mcp_proc {
+      component "MCP server" as fcmcp
+    }
+
+    node "Gazebo backend (headless)" as gz_proc {
+      component "ROS 2"               as ros
+      component "gz-sim -s\n(no GUI)" as gz
+      component "gazebo-mcp server"   as gzmcp
+    }
+  }
+
+  folder "Mounted volume:\n~/projects/myrobot" as vol {
+    file "robots/*.FCStd"
+    file "worlds/*.FCStd"
+    file "generated/"
+    file "tests/  (scenarios + assertions)"
+    file "sim_runs/  (results, logs)"
+  }
+
+  node "Claude Desktop /\nClaude Code" as client
+}
+
+client --> fcmcp  : MCP stdio
+client --> gzmcp  : MCP stdio
+fcmcp  --> fcaddon: XML-RPC\nlocalhost:5000
+fcmcp  --> vol    : git, list, screenshots
+fcaddon--> rcwb   : trigger export
+rcwb   --> vol    : write generated/
+gz     --> vol    : load generated/, write sim_runs/
+docker --> vol    : bind mount
+
+note right of fc_mcp_proc
+  Separate process from FreeCAD.
+  Started by the MCP client (uvx)
+  on demand. Talks to FreeCAD
+  via the addon's RPC port.
+end note
+
+note right of docker
+  One container keeps versions
+  pinned and avoids ROS2 install pain.
+  GUI forwarded via X11 / Wayland
+  or VNC for the FreeCAD window.
+end note
+
+@enduml

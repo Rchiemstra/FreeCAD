@@ -1,0 +1,52 @@
+' FreeCAD <-> Gazebo via MCP — sequence: LLM iteration loop
+' Part of freecad_gazebo_mcp_*.puml set
+
+@startuml sequence_iteration_loop
+title Typical iteration loop — "Lengthen the arm 5 cm and test reach"
+
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+
+actor       User
+participant "LLM\n(Claude)"   as LLM
+participant "FreeCAD MCP"     as FC
+participant "FreeCAD GUI"     as GUI
+participant "RobotCAD"        as RC
+database    "Repo"            as Repo
+participant "Gazebo MCP"      as GZ
+participant "gz-sim"          as Sim
+
+User -> LLM : "Make the arm 5cm longer\nand check if it reaches the shelf"
+
+== 1. Modify design ==
+LLM -> FC  : set_parameter(\n  doc="arm_v3",\n  name="arm_length",\n  value=0.55)
+FC  -> GUI : update parametric model
+GUI --> FC : ok
+FC  --> LLM: updated
+
+== 2. Export URDF ==
+LLM -> FC  : export_urdf("arm_v3")
+FC  -> RC  : run RobotCAD export
+RC  -> Repo: write generated/arm_v3/
+RC  --> FC : urdf path
+FC  --> LLM: urdf path + commit hash
+
+== 3. Boot Gazebo ==
+LLM -> GZ  : load_world("kitchen.sdf")
+GZ  -> Sim : launch (headless)
+Sim --> GZ : ready
+GZ  --> LLM: ok
+
+== 4. Spawn & simulate ==
+LLM -> GZ  : spawn_model(urdf, pose)
+GZ  -> Sim : spawn entity
+Sim --> GZ : entity_id
+LLM -> GZ  : step_sim(10s) +\nset target end-effector pose
+GZ  -> Sim : run controllers
+Sim --> GZ : joint states, sensor frames
+GZ  --> LLM: telemetry + camera frame
+
+== 5. Report back ==
+LLM -> User : "Yes — it reaches with 3 cm clearance.\nHere's a screenshot."
+
+@enduml

@@ -1,0 +1,113 @@
+' FreeCAD <-> Gazebo via MCP — component architecture
+' Part of freecad_gazebo_mcp_*.puml set
+
+@startuml component_architecture
+title FreeCAD as Main UI — Test Robots in Simulated Environments
+caption gz-sim runs headless as a backend; tests live in the repo
+
+skinparam componentStyle rectangle
+skinparam linetype ortho
+skinparam shadowing false
+left to right direction
+
+actor "Human User\n(only sees FreeCAD)" as user
+actor "LLM Client\n(Claude Desktop / Code)" as llm
+
+package "FreeCAD GUI Process — the only UI the human sees" #LightBlue {
+
+  component "FreeCAD GUI\n(3D view + Python API)" as fc_gui
+
+  package "Modeling Workbenches" as mod_wbs #White {
+    component "Part / Part Design /\nAssembly"  as part_wb
+    component "RobotCAD Workbench\n(URDF/SDF export)" as robotcad
+  }
+
+  package "Simulation Workbench (Fusion-style)" as sim_wb #LightGoldenRodYellow {
+    component "Test Runner\n(load tests/, run all,\npass/fail report)" as test_runner
+    component "Sim Controls\n(Play / Pause / Step /\nReset / Reload)" as sim_ctrl
+    component "Scenario Picker\n(world + robot + pose)" as scen
+    component "Live State Bridge\n(gz-transport subscriber,\n30 Hz Placement updates)" as live_bridge
+    component "Camera Viewer\n(Qt panel)"   as cam_panel
+    component "Sensor Plots\n(joints, IMU, contacts)" as plots
+    component "Run Library\n(past sim_runs)" as runlib
+  }
+
+  component "FreeCAD MCP Addon\n(RPC server,\nlocalhost port)" as fc_addon
+}
+
+package "FreeCAD MCP Server Process\n(uvx, standalone)" #LightGreen {
+  component "FreeCAD MCP Server" as fc_mcp
+  component "Git / FS helpers"   as fc_fs
+}
+
+package "Gazebo Backend (headless, no GUI)" #LightGray {
+  component "Gazebo MCP Server\n(kvgork/gazebo-mcp)" as gz_mcp
+  component "ROS 2 + ros_gz bridge"  as ros2
+  component "gz-sim -s (server only,\nno Gazebo window)" as gz_sim
+}
+
+database "Project Repo (Git)" as repo {
+  folder "robots/  *.FCStd"              as fcstd
+  folder "worlds/  *.FCStd"              as worldsrc
+  folder "generated/  URDF, SDF, meshes" as generated
+  folder "tests/  scenarios + assertions" as tests
+  folder "sim_runs/  logs, sensor data"  as runs
+  file   "project.yaml"                  as manifest
+}
+
+' Human path — ONLY through FreeCAD
+user --> fc_gui : interact
+
+' LLM path — through MCP servers
+user --> llm    : prompts (optional)
+llm  --> fc_mcp : MCP
+llm  --> gz_mcp : MCP
+
+' Inside FreeCAD: workbenches and animation
+sim_wb -[hidden]- mod_wbs
+fc_gui <-- live_bridge : updates Placement\n@ 30 Hz
+sim_ctrl   --> gz_mcp  : start / pause / step
+scen       --> gz_mcp  : load world, spawn
+test_runner --> tests  : read scenarios\n+ assertions
+test_runner --> gz_mcp : run each scenario
+test_runner --> runs   : write pass/fail report
+live_bridge<-- gz_sim  : pose / joint state\n(gz transport)
+cam_panel  <-- gz_sim  : image stream
+plots      <-- gz_sim  : sensor topics
+runlib     --> runs    : browse
+
+' MCP server <-> FreeCAD addon
+fc_mcp <--> fc_addon : XML-RPC localhost
+fc_mcp --> fc_fs     : uses
+fc_fs  --> repo      : git, listing,\nscreenshots
+
+' Addon drives FreeCAD + RobotCAD
+fc_addon --> fc_gui   : Python API
+fc_addon --> robotcad : trigger export
+robotcad --> generated: write URDF/SDF/meshes
+fc_gui   --> fcstd    : read / write
+fc_gui   --> worldsrc : read / write
+
+' Backend internals
+gz_mcp <--> ros2
+ros2   <--> gz_sim
+gz_sim  --> generated : load
+gz_sim  --> runs      : record
+
+note right of sim_wb
+  This is the Fusion-360 trick:
+  switch workbench → switch
+  toolbars and panels.
+  Same document, same window.
+  Modeling ↔ Simulation
+  is one click.
+end note
+
+note bottom of gz_sim
+  Headless: no Gazebo GUI.
+  The human never sees a
+  Gazebo window — FreeCAD's
+  3D view IS the viewer.
+end note
+
+@enduml
