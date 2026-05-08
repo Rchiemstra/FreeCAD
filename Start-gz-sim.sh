@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GZ_SIM_SRC="$ROOT/src/3rdParty/gz-sim"
 GZ_BUILD_VOLUME="${GZ_BUILD_VOLUME:-gz-sim-linux-build}"
 GZ_IMAGE="${GZ_IMAGE:-ubuntu:noble}"
+GZ_SIM_CONTAINER_NAME="${GZ_SIM_CONTAINER_NAME:-gz-sim-sever}"
 GZ_ARGS=("$@")
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -20,12 +21,49 @@ fi
 
 docker volume create "$GZ_BUILD_VOLUME" >/dev/null
 
+if docker container inspect "$GZ_SIM_CONTAINER_NAME" >/dev/null 2>&1; then
+    status="$(docker inspect -f '{{.State.Status}}' "$GZ_SIM_CONTAINER_NAME" 2>/dev/null || true)"
+    if [[ "$status" == "running" ]]; then
+        echo "Docker container '$GZ_SIM_CONTAINER_NAME' is already running. Nothing to do."
+        exit 0
+    fi
+    echo "Removing stopped container '$GZ_SIM_CONTAINER_NAME'..."
+    docker rm "$GZ_SIM_CONTAINER_NAME"
+fi
+
 echo "Building gz-sim in Docker (Ubuntu Noble + OSRF packages)."
 echo "Source: $GZ_SIM_SRC"
 echo "Build volume: $GZ_BUILD_VOLUME"
+echo "Container name: $GZ_SIM_CONTAINER_NAME"
+echo "Press Ctrl+C to stop the container."
 echo
 
-docker run --rm -i \
+gz_sim_stop_container() {
+    if docker container inspect "$GZ_SIM_CONTAINER_NAME" >/dev/null 2>&1; then
+        local status
+        status="$(docker inspect -f '{{.State.Status}}' "$GZ_SIM_CONTAINER_NAME" 2>/dev/null || true)"
+        if [[ "$status" == "running" ]]; then
+            echo ""
+            echo "Stopping container '$GZ_SIM_CONTAINER_NAME'..."
+            docker stop -t 10 "$GZ_SIM_CONTAINER_NAME" 2>/dev/null || true
+        fi
+    fi
+}
+
+gz_sim_on_signal() {
+    if [[ "${GZ_SIM_RUN_ACTIVE:-0}" == "1" ]]; then
+        gz_sim_stop_container
+    fi
+    trap - INT TERM
+    exit 130
+}
+
+GZ_SIM_RUN_ACTIVE=1
+trap gz_sim_on_signal INT TERM
+
+set +e
+docker run --rm -i --init \
+    --name "$GZ_SIM_CONTAINER_NAME" \
     --workdir /gz-sim \
     --mount "type=bind,source=$GZ_SIM_SRC,target=/gz-sim" \
     --mount "type=volume,source=$GZ_BUILD_VOLUME,target=/gz-sim-build" \
@@ -95,3 +133,10 @@ Xvfb :99 -screen 0 1280x1024x24 -noreset 2>/dev/null &
 sleep 1
 gz sim "$@"
 EOS
+rc=$?
+set -e
+
+GZ_SIM_RUN_ACTIVE=0
+trap - INT TERM
+
+exit "$rc"
