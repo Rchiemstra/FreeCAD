@@ -34,14 +34,20 @@ if not errorlevel 1 (
 
 where pixi >nul 2>nul
 if not errorlevel 1 (
-    echo FreeCAD.exe was not found. Trying: pixi run freecad-release
+    echo FreeCAD.exe was not found.
+    echo Refreshing CMake files ^(configure-release^), then building/installing and starting via freecad-release...
+    pixi run configure-release
+    if errorlevel 1 (
+        echo configure-release failed.
+        pause
+        exit /b 1
+    )
     pixi run freecad-release %FREECAD_ARGS%
     goto :done
 )
 
 echo FreeCAD.exe was not found.
-echo Install FreeCAD, or build this checkout and run:
-echo   pixi run freecad-release
+echo Install FreeCAD, or build this checkout with pixi ^(configure-release then freecad-release^).
 pause
 exit /b 1
 
