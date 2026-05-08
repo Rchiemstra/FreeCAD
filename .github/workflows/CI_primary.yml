@@ -21,24 +21,15 @@
 # *                                                                         *
 # ***************************************************************************
 
-# This is the primary CI workflow for FreeCAD.
-# It runs the always-required jobs (Prepare, Ubuntu, Lint) on every PR
-# event except label additions. Label-gated jobs (macOS and Windows
-# builds) are in CI_approved.yml with a separate concurrency group so
-# that adding a label does not cancel an in-progress Linux build or
-# lint run.
+# This is the primary CI workflow for FreeCAD (Prepare, Ubuntu, Lint).
+# Label-gated jobs (macOS and Windows builds) live in CI_approved.yml.
+#
+# Automatic triggers are disabled; run CI manually from the Actions tab.
 
 name: FreeCAD CI primary
 
 on:
   workflow_dispatch: ~
-  push:
-    branches:
-      - main
-      - releases/**
-  pull_request:
-    types: [opened, synchronize, reopened]
-  merge_group: ~
 
 
 concurrency:

@@ -22,29 +22,16 @@
 # *                                                                         *
 # ***************************************************************************
 
-# This workflow runs label-gated CI jobs (macOS and Windows builds).
-# It lives in a separate workflow from CI_primary.yml so that adding a
-# label does not cancel the in-progress Linux build and lint run.
+# Label-gated CI jobs (macOS and Windows builds), separate from
+# CI_primary.yml so label events do not cancel the Linux build and lint run.
+# A Gate job skips redundant runs when appropriate.
 #
-# Instead of using cancel-in-progress, a Gate job decides whether to
-# proceed or bail out:
-#   - On code changes (synchronize, opened, reopened, push): cancel any
-#     older in-progress runs for the same branch, then proceed.
-#   - On label additions: check whether macOS/Windows builds already ran
-#     (or are running) for the same HEAD SHA.  If so, bail out so we do
-#     not restart builds that are already covered.
+# Automatic triggers are disabled; run CI manually from the Actions tab.
 
 name: FreeCAD CI approved
 
 on:
   workflow_dispatch: ~
-  push:
-    branches:
-      - main
-      - releases/**
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  merge_group: ~
 
 permissions:
   contents: read
