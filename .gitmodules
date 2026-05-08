@@ -19,3 +19,11 @@
 	path = src/3rdParty/ros2
 	url = https://github.com/Rchiemstra/ros2.git
 	branch = rolling
+[submodule "tools/mcp/gazebo-mcp"]
+	path = tools/mcp/gazebo-mcp
+	url = https://github.com/Rchiemstra/gazebo-mcp
+	branch = main
+[submodule "tools/mcp/freecad-mcp"]
+	path = tools/mcp/freecad-mcp
+	url = https://github.com/Rchiemstra/freecad-mcp
+	branch = main
