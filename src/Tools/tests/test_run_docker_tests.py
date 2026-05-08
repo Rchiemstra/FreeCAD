@@ -389,6 +389,16 @@ class TestKeepLogLine(unittest.TestCase):
         self.assert_drops("Filling splits of Gmsh mesh\n")
         self.assert_drops("ProcGmsh binary not found.\n")
 
+    def test_fem_gmsh_missing_binary_messages_dropped(self) -> None:
+        self.assert_drops(
+            "Gmsh binary not found. Please install Gmsh or set path to binary "
+            "in FEM's Gmsh preferences page.\n"
+        )
+        self.assert_drops(
+            "Unexpected error when creating mesh: Gmsh binary not found. "
+            "Please install Gmsh or set path to binary in FEM's Gmsh preferences page.\n"
+        )
+
     def test_techdraw_drawview_verbose_dropped(self) -> None:
         self.assert_drops("DrawViewDetail test: view created\n")
         self.assert_drops("testing DrawViewDetail\n")

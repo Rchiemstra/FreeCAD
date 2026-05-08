@@ -97,7 +97,7 @@ class TestSolverMystran(unittest.TestCase):
         fcc_print("")
         from femexamples.ccx_cantilever_faceload import setup
 
-        setup(self.document, "mystran")
+        setup(self.document, "mystran", test_mode=True)
         self.input_file_writing_test(get_namefromdef("test_"))
 
     # ********************************************************************************************
@@ -105,7 +105,7 @@ class TestSolverMystran(unittest.TestCase):
         fcc_print("")
         from femexamples.ccx_cantilever_nodeload import setup
 
-        setup(self.document, "mystran")
+        setup(self.document, "mystran", test_mode=True)
         self.input_file_writing_test(get_namefromdef("test_"))
 
     # ********************************************************************************************

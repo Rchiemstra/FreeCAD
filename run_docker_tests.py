@@ -642,6 +642,14 @@ def keep_log_line(line: str) -> bool:  # noqa: C901  (complexity is inherent to 
     if re.match(r"^(?:Comparing\b|Filling splits of Gmsh\b|ProcGmsh\b)", line):
         return False
 
+    # FEM: missing external Gmsh binary (CI or minimal installs); examples/tests use fallback meshes.
+    if re.match(
+        r"^(?:Unexpected error when creating mesh: )?"
+        r"(?:Gmsh binary not found\.|Configured Gmsh binary '\$[^']+' not found\.)",
+        line,
+    ):
+        return False
+
     # Garbled terminal fragment lines: lowercase fragment + apostrophe (e.g. "rial' for 375-16_Tap").
     if re.match(r"^[a-z][a-z]+'\s+for\s+\d", line):
         return False
