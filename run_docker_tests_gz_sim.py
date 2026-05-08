@@ -328,11 +328,17 @@ _TEST_SUITE_REGEX: dict[str, str] = {
 }
 
 
-def container_script(build_type: str, test_suite: str = "ALL") -> str:
+def container_script(build_type: str, test_suite: str = "ALL",
+                     test_numbers: list[int] | None = None) -> str:
     ctest_filter = ""
     if test_suite in _TEST_SUITE_REGEX:
         ctest_filter = f' -R "{_TEST_SUITE_REGEX[test_suite]}"'
+    if test_numbers:
+        # -I ,,,N1,N2,N3 runs only tests with those global CTest numbers
+        ctest_filter += " -I ,,," + ",".join(str(n) for n in test_numbers)
     suite_label = f" ({test_suite})" if test_suite != "ALL" else ""
+    if test_numbers:
+        suite_label += f" [#{','.join(str(n) for n in test_numbers)}]"
     return f"""set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -429,8 +435,9 @@ run_required "Build gz-sim" cmake --build {CONTAINER_BUILD} -- -j$(nproc)
 
 run_required "Install gz-sim" cmake --install {CONTAINER_BUILD}
 
-run_required "Fix line endings in shell scripts" bash -c '
+run_required "Fix line endings in shell scripts and CSV files" bash -c '
     find {CONTAINER_SRC}/src/cmd -name "*.sh" -print0 | xargs -0 -r sed -i "s/\\r//"
+    find {CONTAINER_SRC}/test/worlds -name "*.csv" -print0 | xargs -0 -r sed -i "s/\\r//; s/^\\xef\\xbb\\xbf//"
 '
 
 run_required "Deploy test plugins" bash -c '
@@ -511,7 +518,7 @@ def docker_command(args: argparse.Namespace, gz_sim_src: Path, seed: str) -> lis
         args.image,
         "bash",
         "-lc",
-        container_script(args.build_type, args.test_suite),
+        container_script(args.build_type, args.test_suite, args.tests or None),
     ]
 
 
@@ -628,6 +635,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "UNIT runs tests matching '^UNIT_', "
             "INTEGRATION runs tests matching '^INTEGRATION_', "
             "ALL runs the full suite (default)."
+        ),
+    )
+    parser.add_argument(
+        "tests",
+        nargs="*",
+        type=int,
+        metavar="TEST_NUMBER",
+        help=(
+            "Optional list of CTest test numbers to run (e.g. 129 131 135). "
+            "Runs only the specified tests. Can be combined with --test-suite."
         ),
     )
     return parser.parse_args(argv)
