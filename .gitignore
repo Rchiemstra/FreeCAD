@@ -72,4 +72,11 @@ tsupdate_stdout.log
 *.egg-info
 .pixi
 
+# Python virtual environments and cache
+.venv/
+venv/
+__pycache__/
+*.pyo
+.pytest_cache/
+
 !./docs/
