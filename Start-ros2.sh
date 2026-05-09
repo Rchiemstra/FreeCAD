@@ -152,8 +152,18 @@ rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
 rm -f  /ros2-workspace/build/rmw_implementation/CMakeCache.txt
 rm -rf /ros2-workspace/build/rmw_implementation/CMakeFiles
-for CONNEXT_PKG in rti_connext_dds_cmake_module rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module; do
-    STUB="/ros2-workspace/install/$CONNEXT_PKG/share/$CONNEXT_PKG"
+for SKIP_PKG in \
+        rti_connext_dds_cmake_module rmw_connextdds rmw_connextdds_common \
+        rmw_connextddsmicro connext_cmake_module \
+        qt_gui_cpp qt_gui_core \
+        rqt rqt_gui rqt_gui_cpp rqt_gui_py \
+        rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \
+        rqt_image_view rqt_msg rqt_plot rqt_py_common rqt_py_console \
+        rqt_reconfigure rqt_service_caller rqt_shell rqt_srv \
+        rqt_tf_tree rqt_topic \
+        rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \
+        rviz_visual_testing_framework; do
+    STUB="/ros2-workspace/install/$SKIP_PKG/share/$SKIP_PKG"
     mkdir -p "$STUB"
     touch "$STUB/package.sh"
 done
@@ -171,7 +181,8 @@ colcon build \
         rviz_visual_testing_framework \
         rqt rqt_gui rqt_gui_cpp rqt_gui_py \
         rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \
-        rqt_image_view rqt_msg rqt_plot rqt_reconfigure rqt_service_caller \
+        rqt_image_view rqt_msg rqt_plot rqt_py_common rqt_py_console \
+        rqt_reconfigure rqt_service_caller \
         rqt_shell rqt_srv rqt_tf_tree rqt_topic \
     --event-handlers console_cohesion+
 
