@@ -356,6 +356,9 @@ export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export ROS_DISTRO=rolling
+# Disable the rmw_connextdds conditional group dependency in rmw_implementation
+# (see ros-infrastructure/catkin_pkg#369); we skip all connext packages.
+export DISABLE_GROUPS_WORKAROUND=1
 
 overall_status=0
 

@@ -75,6 +75,8 @@ export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export ROS_DISTRO=rolling
+# Disable the rmw_connextdds conditional group dependency in rmw_implementation
+export DISABLE_GROUPS_WORKAROUND=1
 
 echo "========== Setting up ROS 2 apt repository =========="
 apt-get update -qq
