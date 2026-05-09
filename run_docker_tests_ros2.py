@@ -479,6 +479,11 @@ run_required "Bootstrap rpyutils from source" bash -c '
     python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"
     rm -f  {CONTAINER_WS}/build/rosidl_generator_py/CMakeCache.txt
     rm -rf {CONTAINER_WS}/build/rosidl_generator_py/CMakeFiles
+    # Wipe rmw_implementation cmake cache too — its old cache references connext packages
+    # that are skipped. DISABLE_GROUPS_WORKAROUND=1 prevents new cmake from requiring them,
+    # but stale cache entries cause colcon to fail before cmake even runs.
+    rm -f  {CONTAINER_WS}/build/rmw_implementation/CMakeCache.txt
+    rm -rf {CONTAINER_WS}/build/rmw_implementation/CMakeFiles
 '
 
 run_required "Build ROS 2{packages_label}" bash -c '

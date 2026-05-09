@@ -150,6 +150,8 @@ RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
 python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"
 rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
+rm -f  /ros2-workspace/build/rmw_implementation/CMakeCache.txt
+rm -rf /ros2-workspace/build/rmw_implementation/CMakeFiles
 
 echo "========== Building ROS 2 =========="
 colcon build \
