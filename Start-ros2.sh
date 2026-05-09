@@ -168,7 +168,8 @@ colcon build \
     --build-base /ros2-workspace/build \
     --install-base /ros2-workspace/install \
     --symlink-install \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    --parallel-workers 2 \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_PARALLEL_LEVEL=4 \
     --packages-skip rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module rti_connext_dds_cmake_module \
         qt_gui_cpp qt_gui_core \
         rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \

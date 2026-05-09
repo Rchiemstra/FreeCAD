@@ -503,7 +503,8 @@ run_required "Build ROS 2{packages_label}" bash -c '
         --build-base {CONTAINER_WS}/build \\
         --install-base {CONTAINER_WS}/install \\
         --symlink-install \\
-        --cmake-args -DCMAKE_BUILD_TYPE={build_type} \\
+        --parallel-workers 2 \\
+        --cmake-args -DCMAKE_BUILD_TYPE={build_type} -DCMAKE_BUILD_PARALLEL_LEVEL=4 \\
         --packages-skip rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module rti_connext_dds_cmake_module \\
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
@@ -522,6 +523,7 @@ run_test "ROS 2 colcon test suite{packages_label}" bash -c '
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
         --install-base {CONTAINER_WS}/install \\
+        --parallel-workers 2 \\
         --packages-skip rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module rti_connext_dds_cmake_module \\
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
