@@ -446,29 +446,19 @@ run_required "Install rosdep dependencies" bash -c '
             libogre-1.12-dev"
 '
 
-# rpyutils has no noble system package (rosdep skips it) and the PyPI
-# version lacks add_dll_directories_from_env.  Build the ROS 2 source
-# version first so colcon can add it to PYTHONPATH before building
-# rosidl_generator_py, which imports rpyutils at cmake build time.
-run_required "Bootstrap rpyutils from source" bash -c '
-    colcon build \\
-        --base-paths {CONTAINER_WS} \\
-        --build-base {CONTAINER_WS}/build \\
-        --install-base {CONTAINER_WS}/install \\
-        --symlink-install \\
-        --packages-select rpyutils \\
-        --event-handlers console_cohesion+
-'
-
+# rpyutils has no noble system package (rosdep skips it) and colcon's install
+# space PYTHONPATH doesn't propagate into cmake custom-command subprocesses.
+# Directly prepend the rpyutils source tree so the import works at cmake
+# build time without any install step.
 run_required "Build ROS 2{packages_label}" bash -c '
-    source {CONTAINER_WS}/install/setup.bash
+    export PYTHONPATH={CONTAINER_WS}/src/ros2/rpyutils:$PYTHONPATH
     colcon build \\
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
         --install-base {CONTAINER_WS}/install \\
         --symlink-install \\
         --cmake-args -DCMAKE_BUILD_TYPE={build_type} \\
-        --packages-skip rpyutils rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \\
+        --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \\
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
             rviz_visual_testing_framework \\
@@ -485,7 +475,7 @@ run_test "ROS 2 colcon test suite{packages_label}" bash -c '
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
         --install-base {CONTAINER_WS}/install \\
-        --packages-skip rpyutils rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \\
+        --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \\
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
             rviz_visual_testing_framework \\

@@ -123,26 +123,17 @@ rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
         qt_gui_cpp qt_gui_core \
         libogre-1.12-dev"
 
-# rpyutils has no noble system package; build from source first so it is
-# in the install space before rosidl_generator_py's cmake tries to import it.
-echo "========== Bootstrap rpyutils from source =========="
-colcon build \
-    --base-paths /ros2-workspace \
-    --build-base /ros2-workspace/build \
-    --install-base /ros2-workspace/install \
-    --symlink-install \
-    --packages-select rpyutils \
-    --event-handlers console_cohesion+
-
+# rpyutils: no noble system package; add source to PYTHONPATH so cmake
+# build-time generators can import it without a separate install step.
 echo "========== Building ROS 2 =========="
-source /ros2-workspace/install/setup.bash
+export PYTHONPATH=/ros2-workspace/src/ros2/rpyutils:$PYTHONPATH
 colcon build \
     --base-paths /ros2-workspace \
     --build-base /ros2-workspace/build \
     --install-base /ros2-workspace/install \
     --symlink-install \
     --cmake-args -DCMAKE_BUILD_TYPE=Release \
-    --packages-skip rpyutils rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \
+    --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \
         qt_gui_cpp qt_gui_core \
         rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \
         rviz_visual_testing_framework \
