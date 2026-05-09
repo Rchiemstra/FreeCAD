@@ -407,7 +407,7 @@ run_required "Set up ROS 2 apt repository" bash -c '
 
 run_required "Install build dependencies" bash -c '
     apt-get install -y -qq --no-install-recommends \\
-        cmake ninja-build gcc g++ git python3-pip \\
+        cmake make ninja-build gcc g++ git python3-pip \\
         python3-colcon-common-extensions \\
         python3-rosdep python3-vcstool \\
         libasio-dev libtinyxml2-dev libssl-dev
@@ -424,11 +424,26 @@ run_required "Import ROS 2 source tree" bash -c '
 '
 
 run_required "Install rosdep dependencies" bash -c '
+    # Disable recommended/suggested packages to avoid pulling in systemd, Qt5,
+    # X11 and other GUI stacks that are not needed for a headless build/test and
+    # whose post-install scripts can kill the running bash process inside Docker.
+    printf "APT::Install-Recommends \\"false\\";\\nAPT::Install-Suggests \\"false\\";\\n" \
+        > /etc/apt/apt.conf.d/99-no-recommends
     rosdep init 2>/dev/null || true
     rosdep update --rosdistro rolling
     rosdep install --from-paths {CONTAINER_WS}/src --ignore-src -y \\
         --rosdistro rolling \\
-        --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers rpyutils rviz2"
+        --skip-keys "fastcdr urdfdom_headers rpyutils \\
+            rti-connext-dds-6.0.1 rti-connext-dds-7.7.0 \\
+            connext_cmake_module rti_connext_dds_cmake_module \\
+            rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
+            rviz_visual_testing_framework \\
+            rqt rqt_gui rqt_gui_cpp rqt_gui_py \\
+            rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \\
+            rqt_image_view rqt_msg rqt_plot rqt_reconfigure rqt_service_caller \\
+            rqt_shell rqt_srv rqt_tf_tree rqt_topic \\
+            qt_gui_cpp qt_gui_core \\
+            libogre-1.12-dev"
 '
 
 run_required "Build ROS 2{packages_label}" bash -c '
@@ -437,7 +452,8 @@ run_required "Build ROS 2{packages_label}" bash -c '
         --build-base {CONTAINER_WS}/build \\
         --install-base {CONTAINER_WS}/install \\
         --symlink-install \\
-        --cmake-args -DCMAKE_BUILD_TYPE={build_type}{packages_select} \\
+        --cmake-args -DCMAKE_BUILD_TYPE={build_type} \\
+        --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module{packages_select} \\
         --event-handlers console_cohesion+
 '
 
@@ -446,7 +462,8 @@ run_test "ROS 2 colcon test suite{packages_label}" bash -c '
     colcon test \\
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
-        --install-base {CONTAINER_WS}/install{packages_select} \\
+        --install-base {CONTAINER_WS}/install \\
+        --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module{packages_select} \\
         --event-handlers console_cohesion+
     colcon test-result \\
         --base-paths {CONTAINER_WS} \\
@@ -479,7 +496,7 @@ def docker_command(args: argparse.Namespace, ros2_src: Path, seed: str) -> list[
         f"type=volume,source={WS_VOLUME},target={CONTAINER_WS}",
         args.image,
         "bash",
-        "-lc",
+        "-c",
         container_script(args.build_type, args.packages or None),
     ]
 
