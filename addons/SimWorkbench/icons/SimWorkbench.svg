@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SimWorkbench icon: simple robot arm glyph (monochrome, FreeCAD-compatible)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Base -->
+  <rect x="22" y="52" width="20" height="8" rx="2" fill="#444"/>
+  <!-- Arm segment 1 -->
+  <rect x="29" y="28" width="6" height="26" rx="3" fill="#666"/>
+  <!-- Arm segment 2 (angled) -->
+  <g transform="rotate(-30 32 28)">
+    <rect x="29" y="10" width="6" height="20" rx="3" fill="#888"/>
+  </g>
+  <!-- End effector -->
+  <circle cx="32" cy="10" r="5" fill="#aaa"/>
+  <!-- Joint circles -->
+  <circle cx="32" cy="28" r="4" fill="#e06c00"/>
+  <circle cx="32" cy="52" r="4" fill="#e06c00"/>
+</svg>
