@@ -427,7 +427,7 @@ run_required "Install rosdep dependencies" bash -c '
     rosdep init 2>/dev/null || true
     rosdep update --rosdistro rolling
     rosdep install --from-paths {CONTAINER_WS}/src --ignore-src -y \\
-        --rosdistro rolling --continue-on-error \\
+        --rosdistro rolling \\
         --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers rpyutils rviz2"
 '
 

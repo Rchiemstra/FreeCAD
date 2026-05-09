@@ -107,7 +107,7 @@ echo "========== Installing rosdep dependencies =========="
 rosdep init 2>/dev/null || true
 rosdep update --rosdistro rolling
 rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
-    --rosdistro rolling --continue-on-error \
+    --rosdistro rolling \
     --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers rpyutils rviz2"
 
 echo "========== Building ROS 2 =========="
