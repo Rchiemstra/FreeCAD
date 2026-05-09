@@ -111,7 +111,7 @@ rosdep init 2>/dev/null || true
 rosdep update --rosdistro rolling
 rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
     --rosdistro rolling \
-    --skip-keys "fastcdr urdfdom_headers \
+    --skip-keys "fastcdr urdfdom_headers rpyutils \
         rti-connext-dds-6.0.1 rti-connext-dds-7.7.0 \
         connext_cmake_module rti_connext_dds_cmake_module \
         rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \
@@ -122,6 +122,9 @@ rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
         rqt_shell rqt_srv rqt_tf_tree rqt_topic \
         qt_gui_cpp qt_gui_core \
         libogre-1.12-dev"
+# rpyutils is skipped by rosdep (no noble system package) but needed at
+# cmake build time by rosidl_generator_py.  Install from PyPI first.
+pip3 install --quiet rpyutils
 
 echo "========== Building ROS 2 =========="
 colcon build \
