@@ -447,7 +447,7 @@ run_required "Install rosdep dependencies" bash -c '
     # rpyutils is skipped by rosdep (no noble system package) but needed at
     # cmake build time by rosidl_generator_py.  Install from PyPI first so it
     # is in sys.path before colcon runs.
-    pip3 install --quiet rpyutils
+    pip3 install --quiet --break-system-packages rpyutils
 '
 
 run_required "Build ROS 2{packages_label}" bash -c '

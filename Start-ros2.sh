@@ -124,7 +124,7 @@ rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
         libogre-1.12-dev"
 # rpyutils is skipped by rosdep (no noble system package) but needed at
 # cmake build time by rosidl_generator_py.  Install from PyPI first.
-pip3 install --quiet rpyutils
+pip3 install --quiet --break-system-packages rpyutils
 
 echo "========== Building ROS 2 =========="
 colcon build \
