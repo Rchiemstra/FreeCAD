@@ -453,9 +453,16 @@ run_required "Install rosdep dependencies" bash -c '
 # unconditionally in sys.path for every python3 process, including cmake
 # custom-command subprocesses that ignore PYTHONPATH overrides from the shell.
 run_required "Bootstrap rpyutils from source" bash -c '
-    [ -d {CONTAINER_WS}/src/ros2/rpyutils/.git ] || \\
-        git clone -b rolling https://github.com/ros2/rpyutils.git \\
-                  {CONTAINER_WS}/src/ros2/rpyutils
+    set -e
+    RPYUTILS_DIR="{CONTAINER_WS}/src/ros2/rpyutils"
+    # Check for package.xml (colcon needs it); .git alone means a partial/broken clone.
+    if [ ! -f "$RPYUTILS_DIR/package.xml" ]; then
+        echo "rpyutils: incomplete or missing — wiping and re-cloning..."
+        rm -rf "$RPYUTILS_DIR"
+        git clone -b rolling https://github.com/ros2/rpyutils.git "$RPYUTILS_DIR"
+    else
+        echo "rpyutils: already cloned."
+    fi
     colcon build \\
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
@@ -463,7 +470,7 @@ run_required "Bootstrap rpyutils from source" bash -c '
         --symlink-install \\
         --packages-select rpyutils \\
         --event-handlers console_cohesion+
-    RPYUTILS_SRC="{CONTAINER_WS}/src/ros2/rpyutils/rpyutils"
+    RPYUTILS_SRC="$RPYUTILS_DIR/rpyutils"
     RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
     [ -d "$RPYUTILS_DST" ] || cp -r "$RPYUTILS_SRC" "$RPYUTILS_DST"
     python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"

@@ -127,10 +127,15 @@ rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
 # cmake-constructed PYTHONPATH that omits the colcon install space, so we
 # must make rpyutils importable via Python's unconditional system path.
 echo "========== Bootstrap rpyutils =========="
-# rpyutils was not cloned during vcs import (sentinel prevents re-import).
-[ -d /ros2-workspace/src/ros2/rpyutils/.git ] || \
-    git clone -b rolling https://github.com/ros2/rpyutils.git \
-              /ros2-workspace/src/ros2/rpyutils
+# Check for package.xml (colcon needs it); .git alone means a partial/broken clone.
+RPYUTILS_DIR="/ros2-workspace/src/ros2/rpyutils"
+if [ ! -f "$RPYUTILS_DIR/package.xml" ]; then
+    echo "rpyutils: incomplete or missing — wiping and re-cloning..."
+    rm -rf "$RPYUTILS_DIR"
+    git clone -b rolling https://github.com/ros2/rpyutils.git "$RPYUTILS_DIR"
+else
+    echo "rpyutils: already cloned."
+fi
 colcon build \
     --base-paths /ros2-workspace \
     --build-base /ros2-workspace/build \
@@ -139,7 +144,7 @@ colcon build \
     --packages-select rpyutils \
     --event-handlers console_cohesion+
 RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
-[ -d "$RPYUTILS_DST" ] || cp -r /ros2-workspace/src/ros2/rpyutils/rpyutils "$RPYUTILS_DST"
+[ -d "$RPYUTILS_DST" ] || cp -r "$RPYUTILS_DIR/rpyutils" "$RPYUTILS_DST"
 python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"
 rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
