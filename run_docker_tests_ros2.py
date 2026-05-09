@@ -446,14 +446,16 @@ run_required "Install rosdep dependencies" bash -c '
             libogre-1.12-dev"
 '
 
-# rpyutils has no noble system package (rosdep skips it) and has no setup.py
-# or pyproject.toml so pip install -e fails.  cmake custom commands are
-# invoked by make with a cmake-constructed PYTHONPATH that omits the colcon
-# install space — exporting PYTHONPATH in the parent shell does NOT help.
-# Fix: copy the rpyutils Python package directly into /usr/lib/python3/dist-
-# packages/ which is unconditionally in sys.path for every python3 process,
-# including cmake custom-command subprocesses.
+# rpyutils has no noble system package (rosdep skips it) and was not cloned
+# during the initial vcs import (the src/.repos-imported sentinel prevents
+# re-import on subsequent runs).  Fix by cloning it explicitly, then copying
+# the Python package into /usr/lib/python3/dist-packages/ — that path is
+# unconditionally in sys.path for every python3 process, including cmake
+# custom-command subprocesses that ignore PYTHONPATH overrides from the shell.
 run_required "Bootstrap rpyutils from source" bash -c '
+    [ -d {CONTAINER_WS}/src/ros2/rpyutils/.git ] || \\
+        git clone -b rolling https://github.com/ros2/rpyutils.git \\
+                  {CONTAINER_WS}/src/ros2/rpyutils
     colcon build \\
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
