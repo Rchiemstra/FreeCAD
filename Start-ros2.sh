@@ -111,7 +111,7 @@ rosdep init 2>/dev/null || true
 rosdep update --rosdistro rolling
 rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
     --rosdistro rolling \
-    --skip-keys "fastcdr urdfdom_headers rpyutils \
+    --skip-keys "fastcdr urdfdom_headers \
         rti-connext-dds-6.0.1 rti-connext-dds-7.7.0 \
         connext_cmake_module rti_connext_dds_cmake_module \
         rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \
@@ -131,6 +131,13 @@ colcon build \
     --symlink-install \
     --cmake-args -DCMAKE_BUILD_TYPE=Release \
     --packages-skip rmw_connextdds connext_cmake_module rti_connext_dds_cmake_module \
+        qt_gui_cpp qt_gui_core \
+        rviz2 rviz_rendering rviz_default_plugins rviz_ogre_vendor \
+        rviz_visual_testing_framework \
+        rqt rqt_gui rqt_gui_cpp rqt_gui_py \
+        rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \
+        rqt_image_view rqt_msg rqt_plot rqt_reconfigure rqt_service_caller \
+        rqt_shell rqt_srv rqt_tf_tree rqt_topic \
     --event-handlers console_cohesion+
 
 echo "========== Starting ROS 2 =========="
