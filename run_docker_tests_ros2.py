@@ -479,11 +479,19 @@ run_required "Bootstrap rpyutils from source" bash -c '
     python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"
     rm -f  {CONTAINER_WS}/build/rosidl_generator_py/CMakeCache.txt
     rm -rf {CONTAINER_WS}/build/rosidl_generator_py/CMakeFiles
-    # Wipe rmw_implementation cmake cache too — its old cache references connext packages
-    # that are skipped. DISABLE_GROUPS_WORKAROUND=1 prevents new cmake from requiring them,
-    # but stale cache entries cause colcon to fail before cmake even runs.
     rm -f  {CONTAINER_WS}/build/rmw_implementation/CMakeCache.txt
     rm -rf {CONTAINER_WS}/build/rmw_implementation/CMakeFiles
+    # Create minimal stub package.sh files for skipped connext packages.
+    # colcon checks for these files before running cmake for any package that
+    # declares a build_depend on them.  Stubs satisfy the existence check so
+    # cmake (configured with DISABLE_GROUPS_WORKAROUND=1) can run and skip
+    # the actual connext find_package calls.
+    for CONNEXT_PKG in rti_connext_dds_cmake_module rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module; do
+        STUB="{CONTAINER_WS}/install/$CONNEXT_PKG/share/$CONNEXT_PKG"
+        mkdir -p "$STUB"
+        touch "$STUB/package.sh"
+        echo "Stub created: $STUB/package.sh"
+    done
 '
 
 run_required "Build ROS 2{packages_label}" bash -c '

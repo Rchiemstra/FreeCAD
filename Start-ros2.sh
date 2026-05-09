@@ -152,6 +152,11 @@ rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
 rm -f  /ros2-workspace/build/rmw_implementation/CMakeCache.txt
 rm -rf /ros2-workspace/build/rmw_implementation/CMakeFiles
+for CONNEXT_PKG in rti_connext_dds_cmake_module rmw_connextdds rmw_connextdds_common rmw_connextddsmicro connext_cmake_module; do
+    STUB="/ros2-workspace/install/$CONNEXT_PKG/share/$CONNEXT_PKG"
+    mkdir -p "$STUB"
+    touch "$STUB/package.sh"
+done
 
 echo "========== Building ROS 2 =========="
 colcon build \
