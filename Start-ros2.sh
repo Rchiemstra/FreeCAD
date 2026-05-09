@@ -123,10 +123,9 @@ rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
         qt_gui_cpp qt_gui_core \
         libogre-1.12-dev"
 
-# rpyutils has no noble system package.  The cmake build directory for
-# rosidl_generator_py may be cached with an old PYTHONPATH that omits it,
-# so: (1) build rpyutils first to put it in the install space, then (2) wipe
-# the cmake cache for rosidl_generator_py so cmake regenerates build.make.
+# rpyutils has no noble system package.  cmake custom commands use a
+# cmake-constructed PYTHONPATH that omits the colcon install space, so we
+# must make rpyutils importable via Python's unconditional system path.
 echo "========== Bootstrap rpyutils =========="
 colcon build \
     --base-paths /ros2-workspace \
@@ -135,6 +134,9 @@ colcon build \
     --symlink-install \
     --packages-select rpyutils \
     --event-handlers console_cohesion+
+pip3 install --quiet --no-deps --break-system-packages \
+    -e /ros2-workspace/src/ros2/rpyutils
+python3 -c "from rpyutils import add_dll_directories_from_env; print('rpyutils OK')"
 rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
 

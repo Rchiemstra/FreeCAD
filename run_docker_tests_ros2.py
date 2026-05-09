@@ -446,13 +446,13 @@ run_required "Install rosdep dependencies" bash -c '
             libogre-1.12-dev"
 '
 
-# rpyutils has no noble system package (rosdep skips it).  The cmake build
-# directory for rosidl_generator_py may be cached from a run when rpyutils
-# was not yet in the install space — cmake bakes PYTHONPATH into the generated
-# build.make at configure time, so we must:
-#  1. Build rpyutils from source first (puts it in the install space)
-#  2. Wipe the stale cmake cache for rosidl_generator_py so cmake regenerates
-#     build.make with the correct PYTHONPATH that includes rpyutils.
+# rpyutils has no noble system package (rosdep skips it).
+# cmake custom commands are invoked by make with a cmake-constructed PYTHONPATH
+# that does NOT include the colcon install space.  The only reliable fix is to
+# make rpyutils importable via Python's unconditional system path by doing an
+# editable pip install from the checked-out source tree.  We also do a colcon
+# bootstrap first so cmake find_package(rpyutils) succeeds, then wipe the
+# rosidl_generator_py cmake cache so it reconfigures with rpyutils visible.
 run_required "Bootstrap rpyutils from source" bash -c '
     colcon build \\
         --base-paths {CONTAINER_WS} \\
@@ -461,8 +461,14 @@ run_required "Bootstrap rpyutils from source" bash -c '
         --symlink-install \\
         --packages-select rpyutils \\
         --event-handlers console_cohesion+
-    # Wipe cmake cache for rosidl_generator_py so it reconfigures with
-    # rpyutils now visible in the install space.
+    # Editable pip install puts rpyutils into the system Python path so that
+    # cmake custom command subprocesses can always import it, regardless of
+    # what PYTHONPATH colcon passes to make.
+    pip3 install --quiet --no-deps --break-system-packages \\
+        -e {CONTAINER_WS}/src/ros2/rpyutils
+    python3 -c "from rpyutils import add_dll_directories_from_env; print('"'"'rpyutils OK'"'"')"
+    # Wipe cmake cache so rosidl_generator_py reconfigures and picks up
+    # rpyutils from both the install space and the system path.
     rm -f  {CONTAINER_WS}/build/rosidl_generator_py/CMakeCache.txt
     rm -rf {CONTAINER_WS}/build/rosidl_generator_py/CMakeFiles
 '
