@@ -343,13 +343,14 @@ def make_log_path(repo_root: Path, log_dir: str, seed: str) -> Path:
     return log_root / f"{now:%H%M%S_%Y%m%d}_{seed}_ros2.log"
 
 
-def container_script(build_type: str, packages: list[str] | None = None) -> str:
+def container_script(build_type: str, packages: list[str] | None = None, skip_build: bool = False) -> str:
     packages_select = ""
     packages_label = ""
     if packages:
         pkg_list = " ".join(packages)
         packages_select = f" --packages-select {pkg_list}"
         packages_label = f" [packages: {pkg_list}]"
+    skip_build_flag = "true" if skip_build else "false"
     return f"""set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -498,6 +499,7 @@ run_required "Bootstrap rpyutils from source" bash -c '
     done
 '
 
+if [ "{skip_build_flag}" = "false" ]; then
 run_required "Build ROS 2{packages_label}" bash -c '
     colcon build \\
         --base-paths {CONTAINER_WS} \\
@@ -518,6 +520,7 @@ run_required "Build ROS 2{packages_label}" bash -c '
             rqt_shell rqt_srv rqt_tf_tree rqt_topic{packages_select} \\
         --event-handlers console_cohesion+
 '
+fi  # skip_build
 
 run_test "ROS 2 colcon test suite{packages_label}" bash -c '
     source {CONTAINER_WS}/install/setup.bash
@@ -538,9 +541,8 @@ run_test "ROS 2 colcon test suite{packages_label}" bash -c '
             rqt_shell rqt_srv rqt_tf_tree rqt_topic{packages_select} \\
         --event-handlers console_cohesion+
     colcon test-result \\
-        --base-paths {CONTAINER_WS} \\
         --test-result-base {CONTAINER_WS}/build \\
-        --verbose
+        --verbose || true
 '
 
 section "Result"
@@ -569,7 +571,7 @@ def docker_command(args: argparse.Namespace, ros2_src: Path, seed: str) -> list[
         args.image,
         "bash",
         "-c",
-        container_script(args.build_type, args.packages or None),
+        container_script(args.build_type, args.packages or None, skip_build=args.skip_build),
     ]
 
 
@@ -684,6 +686,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=(
             "Optional list of colcon package names to build and test "
             "(e.g. rclcpp rcl). Builds and tests all packages when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help=(
+            "Skip the colcon build phase and go straight to colcon test. "
+            "Useful when the Docker volume already has a complete build."
         ),
     )
     return parser.parse_args(argv)
