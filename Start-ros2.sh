@@ -138,13 +138,7 @@ if [ ! -f "$RPYUTILS_DIR/package.xml" ]; then
 else
     echo "rpyutils: already cloned."
 fi
-colcon build \
-    --base-paths /ros2-workspace \
-    --build-base /ros2-workspace/build \
-    --install-base /ros2-workspace/install \
-    --symlink-install \
-    --packages-select rpyutils \
-    --event-handlers console_cohesion+
+# Copy Python module to dist-packages so cmake configure can import it.
 RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
 [ -d "$RPYUTILS_DST" ] || cp -r "$RPYUTILS_DIR/rpyutils" "$RPYUTILS_DST"
 python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"

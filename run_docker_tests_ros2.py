@@ -466,13 +466,8 @@ run_required "Bootstrap rpyutils from source" bash -c '
     else
         echo "rpyutils: already cloned."
     fi
-    colcon build \\
-        --base-paths {CONTAINER_WS} \\
-        --build-base {CONTAINER_WS}/build \\
-        --install-base {CONTAINER_WS}/install \\
-        --symlink-install \\
-        --packages-select rpyutils \\
-        --event-handlers console_cohesion+
+    # Copy the Python module to dist-packages so rosidl_generator_py can import
+    # it during cmake configure time (before the main colcon build installs it).
     RPYUTILS_SRC="$RPYUTILS_DIR/rpyutils"
     RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
     [ -d "$RPYUTILS_DST" ] || cp -r "$RPYUTILS_SRC" "$RPYUTILS_DST"
