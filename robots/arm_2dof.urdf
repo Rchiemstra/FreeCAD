@@ -1,0 +1,161 @@
+<?xml version="1.0"?>
+<!--
+  arm_2dof.urdf — 2-degree-of-freedom planar arm
+  Phase 1 placeholder URDF for testing the FreeCAD/Gazebo/MCP pipeline.
+
+  This file is hand-crafted as a Phase 1 prototype to validate the
+  FreeCAD→URDF→Gazebo pipeline before RobotCAD/CROSS is set up.
+  Once RobotCAD is available, the canonical URDF will be generated
+  from robots/arm_2dof.FCStd and placed in generated/arm_2dof/.
+
+  Robot description:
+    - Base link  (fixed to world)
+    - Link 1     (upper arm, 0.4 m long, rotation about Z)
+    - Link 2     (forearm,   0.3 m long, rotation about Z)
+    - End effector point
+
+  Units: SI (metres, kg, radians, seconds)
+  Frame: +Z up, +X forward, REP-103 conventions
+
+  Known friction points (Phase 1):
+    1. FreeCAD uses mm internally; RobotCAD must convert to metres on export.
+    2. Joint axes in FreeCAD are body-fixed; URDF expects world-frame axis
+       vectors — verify each joint axis after export.
+    3. Inertia tensors need density assignment in FreeCAD before RobotCAD
+       can compute them. This file uses approximate values.
+    4. Collision geometry is visual mesh here; use V-HACD or primitives
+       for real simulation.
+-->
+<robot name="arm_2dof">
+
+  <!-- ───────── Materials ───────── -->
+  <material name="gray_metal">
+    <color rgba="0.6 0.6 0.6 1.0"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.1 0.1 1.0"/>
+  </material>
+
+  <!-- ───────── Base link ───────── -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.08" length="0.10"/>
+      </geometry>
+      <material name="dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.08" length="0.10"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- Approximate: solid aluminium cylinder, density ~2700 kg/m³ -->
+      <mass value="1.0"/>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <inertia ixx="0.005" ixy="0" ixz="0"
+               iyy="0.005" iyz="0"
+               izz="0.008"/>
+    </inertial>
+  </link>
+
+  <!-- ───────── Joint 1: shoulder (revolute about Z) ───────── -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.10" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5708" upper="1.5708"
+           effort="50.0" velocity="1.0"/>
+    <dynamics damping="0.5" friction="0.1"/>
+  </joint>
+
+  <!-- ───────── Link 1: upper arm ───────── -->
+  <link name="link1">
+    <visual>
+      <origin xyz="0.2 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.04" length="0.40"/>
+      </geometry>
+      <material name="gray_metal"/>
+    </visual>
+    <collision>
+      <origin xyz="0.2 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.04" length="0.40"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- Approximate: hollow aluminium tube, ~0.8 kg -->
+      <mass value="0.8"/>
+      <origin xyz="0.2 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0" ixz="0"
+               iyy="0.011" iyz="0"
+               izz="0.011"/>
+    </inertial>
+  </link>
+
+  <!-- ───────── Joint 2: elbow (revolute about Z) ───────── -->
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0.4 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.094" upper="2.094"
+           effort="30.0" velocity="1.5"/>
+    <dynamics damping="0.3" friction="0.05"/>
+  </joint>
+
+  <!-- ───────── Link 2: forearm ───────── -->
+  <link name="link2">
+    <visual>
+      <origin xyz="0.15 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.30"/>
+      </geometry>
+      <material name="gray_metal"/>
+    </visual>
+    <collision>
+      <origin xyz="0.15 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.30"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <!-- Approximate: hollow aluminium tube, ~0.4 kg -->
+      <mass value="0.4"/>
+      <origin xyz="0.15 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0004" ixy="0" ixz="0"
+               iyy="0.003" iyz="0"
+               izz="0.003"/>
+    </inertial>
+  </link>
+
+  <!-- ───────── End effector ───────── -->
+  <joint name="joint_ee" type="fixed">
+    <parent link="link2"/>
+    <child link="end_effector"/>
+    <origin xyz="0.30 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="end_effector">
+    <visual>
+      <geometry>
+        <sphere radius="0.025"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.0000125" ixy="0" ixz="0"
+               iyy="0.0000125" iyz="0"
+               izz="0.0000125"/>
+    </inertial>
+  </link>
+
+</robot>

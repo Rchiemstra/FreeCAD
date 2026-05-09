@@ -162,30 +162,78 @@ Goal: manually complete the full design-export-simulate path and capture every f
 
 Tasks:
 
-- [ ] Pick one toy robot, such as a 2-DOF arm or simple rover.
-- [ ] Model the robot in FreeCAD using RobotCAD/CROSS conventions.
-- [ ] Define links, joints, limits, visuals, collisions, sensors, controllers, and inertias.
-- [ ] Establish the unit and frame convention: FreeCAD mm, generated sim meters, +Z up, REP-103 naming where applicable.
-- [ ] Assign materials and densities before inertia export.
-- [ ] Generate simplified collision geometry instead of using visual meshes directly.
-- [ ] Export the robot through RobotCAD/CROSS to URDF/SDF and ROS 2 package artifacts.
-- [ ] Create or select one simple world.
-- [ ] Load the exported robot into headless Gazebo.
-- [ ] Run a short simulation and inspect pose, joint, sensor, contact, and RTF output.
-- [ ] Record issues with units, coordinate frames, joint axes, mesh paths, materials, inertias, collisions, controllers, launch files, and Gazebo physics settings.
-- [ ] Decide which manual steps must become automation in Phase 2.
+- [x] Pick one toy robot: **2-DOF planar arm** (`arm_2dof`). Simple enough to verify joint frames, inertias, and basic simulation without controller complexity.
+- [ ] Model the robot in FreeCAD using RobotCAD/CROSS conventions. **BLOCKER**: RobotCAD/CROSS not yet installed. A hand-crafted URDF placeholder exists at `robots/arm_2dof.urdf` to unblock Gazebo testing.
+- [ ] Define links, joints, limits, visuals, collisions, sensors, controllers, and inertias. **Partially done in placeholder URDF** (2 revolute joints, cylinder visual/collision geometry, approximate inertias). Full definition pending RobotCAD.
+- [x] Establish the unit and frame convention: FreeCAD mm (internal), generated sim metres, +Z up, REP-103 naming. Documented in `robots/arm_2dof.urdf` header.
+- [ ] Assign materials and densities before inertia export. **Pending**: requires FreeCAD + RobotCAD. Placeholder uses approximate cylinder inertia values.
+- [ ] Generate simplified collision geometry. **Partial**: placeholder URDF uses primitive cylinders (correct for simple arm). RobotCAD path will need V-HACD for mesh-based collision.
+- [ ] Export the robot through RobotCAD/CROSS to URDF/SDF and ROS 2 package artifacts. **BLOCKER**: RobotCAD not installed.
+- [x] Create or select one simple world: `worlds/empty_world.sdf` — ground plane + sun + Bullet physics at 1 ms step.
+- [ ] Load the exported robot into headless Gazebo. **DEFERRED**: depends on Gazebo Docker being live and robot URDF validated.
+- [ ] Run a short simulation and inspect pose, joint, sensor, contact, and RTF output. **DEFERRED**: depends on above.
+- [x] Record issues with units, coordinate frames, etc. — see Phase 1 Friction List below.
+- [x] Decide which manual steps must become automation in Phase 2. — see Phase 1 Friction List below.
 
 Deliverables:
 
-- [ ] Toy robot `.FCStd`.
-- [ ] Generated URDF/SDF, meshes, and ROS 2 package output.
-- [ ] One manually executed scenario.
-- [ ] Friction list that becomes the real implementation spec.
+- [x] Toy robot URDF placeholder: `robots/arm_2dof.urdf` (hand-crafted; to be replaced by RobotCAD export from `robots/arm_2dof.FCStd`).
+- [x] One simple world: `worlds/empty_world.sdf`.
+- [ ] `.FCStd` source file (pending FreeCAD + RobotCAD).
+- [ ] Generated URDF/SDF from RobotCAD (pending RobotCAD installation).
+- [ ] One manually executed scenario (pending Gazebo live run).
+- [x] Friction list — see below.
 
 Definition of done:
 
 - A robot designed in FreeCAD runs in headless Gazebo.
 - The manual process is documented well enough to repeat.
+
+### Phase 1 Friction List
+
+These friction points were identified from analysis of the pipeline (to be validated once the full stack runs):
+
+| # | Area | Issue | Phase 2 Automation Target |
+|---|---|---|---|
+| 1 | Units | FreeCAD uses mm internally; URDF/SDF must be in metres. RobotCAD handles conversion but it must be verified on each export. | `export_urdf` output unit check |
+| 2 | Joint frames | FreeCAD body-fixed joint axes must be expressed as world-frame unit vectors in URDF. Easy to get wrong on non-axis-aligned joints. | Post-export joint axis validation |
+| 3 | Inertia accuracy | FreeCAD only computes correct inertia tensors if material density is assigned per body. Missing density → zero/garbage inertia → unstable sim. | `compute_inertia` check + materials library |
+| 4 | Collision meshes | Exported visual STL meshes are typically too high-poly for physics. Need primitive or V-HACD approximation. | Collision simplification step in export pipeline |
+| 5 | Mesh paths | RobotCAD generates relative mesh paths; must be relocatable within the repo layout. Absolute paths break portability. | Path normalization in `export_urdf` |
+| 6 | ROS 2 package | RobotCAD generates a full ROS 2 package with launchers. The launcher paths assume a specific workspace layout. | `export_urdf` to normalize package paths |
+| 7 | Gazebo lifecycle | `gz sim -s` running in Docker; startup takes 2–5 s after container start. MCP spawn calls before startup → connection error. | Startup health check + retry in handoff helper |
+| 8 | Port conflicts | If Gazebo container is restarted without full teardown, gz-transport ports may conflict. | Robust restart path (Phase 6) |
+| 9 | URDF → SDF | Gazebo can accept URDF, but SDF is preferred for Gazebo-specific features (sensors, plugins). Check which format gazebo-mcp expects. | `spawn_model` to accept both URDF and SDF |
+
+### Phase 1 Gazebo Validation Commands (once Gazebo Docker is running)
+
+```bash
+# From WSL, after Start-gz-sim.bat has built and started the container:
+
+# Validate URDF (requires check_urdf from urdfdom):
+check_urdf /mnt/c/Users/Rchie/Music/FreeCAD/robots/arm_2dof.urdf
+
+# Load world headlessly:
+gz sim -s /mnt/c/Users/Rchie/Music/FreeCAD/worlds/empty_world.sdf &
+
+# Spawn the arm:
+gz model --spawn-file /mnt/c/Users/Rchie/Music/FreeCAD/robots/arm_2dof.urdf \
+         --model-name arm_2dof
+
+# Check pose:
+gz model --model-name arm_2dof -p
+```
+
+```python
+# Via gazebo-mcp (MCP client):
+# Load world:
+gazebo_spawn_world(sdf_path="worlds/empty_world.sdf")
+# Spawn arm:
+gazebo_spawn_model(model_name="arm_2dof", urdf_path="robots/arm_2dof.urdf",
+                   pose={"position": {"x": 0, "y": 0, "z": 0}})
+# Get state:
+gazebo_get_model_state(model_name="arm_2dof")
+```
 
 ## Phase 2: Automated Bridge
 
