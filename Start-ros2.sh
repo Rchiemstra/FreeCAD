@@ -74,6 +74,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
+export ROS_DISTRO=rolling
 
 echo "========== Setting up ROS 2 apt repository =========="
 apt-get update -qq
@@ -106,7 +107,8 @@ echo "========== Installing rosdep dependencies =========="
 rosdep init 2>/dev/null || true
 rosdep update --rosdistro rolling
 rosdep install --from-paths /ros2-workspace/src --ignore-src -y \
-    --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers"
+    --rosdistro rolling --continue-on-error \
+    --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers rpyutils rviz2"
 
 echo "========== Building ROS 2 =========="
 colcon build \
