@@ -27,3 +27,7 @@
 	path = tools/mcp/freecad-mcp
 	url = https://github.com/Rchiemstra/freecad-mcp
 	branch = main
+[submodule "tools/mcp/ros-mcp-server"]
+	path = tools/mcp/ros-mcp-server
+	url = https://github.com/Rchiemstra/ros-mcp-server.git
+	branch = main
