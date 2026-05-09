@@ -1,0 +1,132 @@
+# project.schema.yaml — JSON Schema (YAML syntax) for project.yaml
+# Validate with: python -c "import jsonschema, yaml; ..."
+# or: npx ajv-cli validate -s config/schemas/project.schema.yaml -d project.yaml
+#
+# Schema version: 1.0 (Phase 2)
+#
+# This schema formally documents the project.yaml structure.
+# project.yaml is the entry point for the FreeCAD/Gazebo/MCP test rig.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: FreeCAD-Gazebo-MCP Project Manifest
+description: >
+  Robot simulation project manifest used by the bridge module to locate
+  robots, worlds, generated artifacts, and MCP server configuration.
+type: object
+required:
+  - name
+  - version
+  - paths
+  - mcp
+
+properties:
+  name:
+    type: string
+    description: Project identifier (kebab-case recommended)
+    pattern: "^[a-z][a-z0-9-]*$"
+    example: freecad-gazebo-mcp
+
+  version:
+    type: string
+    description: Project version (semver or simple string)
+    example: "0.1"
+
+  environment:
+    type: object
+    description: Pinned versions of key tools for reproducibility
+    properties:
+      freecad_version:    { type: string }
+      freecad_mcp_version: { type: string }
+      gazebo_mcp_version: { type: string }
+      ros_mcp_version:    { type: string }
+      ros_distro:         { type: string }
+    additionalProperties: { type: string }
+
+  paths:
+    type: object
+    description: >
+      Paths relative to the project root directory. All directories must exist
+      (gitkeep files create them). generated/ and sim_runs/ are gitignored.
+    required:
+      - robots
+      - worlds
+      - generated
+      - tests
+      - sim_runs
+      - config
+    properties:
+      robots:
+        type: string
+        description: Source robot FreeCAD files (.FCStd) and hand-crafted URDFs
+        default: "robots/"
+      worlds:
+        type: string
+        description: Source world SDF files
+        default: "worlds/"
+      generated:
+        type: string
+        description: Generated URDF/SDF/mesh artifacts (gitignored, rebuilt from source)
+        default: "generated/"
+      tests:
+        type: string
+        description: Scenarios and assertion definitions
+        default: "tests/"
+      sim_runs:
+        type: string
+        description: Simulation run output (gitignored)
+        default: "sim_runs/"
+      config:
+        type: string
+        description: Configuration files (schemas, materials, controller params)
+        default: "config/"
+    additionalProperties: false
+
+  mcp:
+    type: object
+    description: MCP server configuration for all three servers in the stack
+    required:
+      - freecad
+      - gazebo
+      - ros
+    properties:
+      freecad:
+        $ref: "#/definitions/MCPEndpoint"
+        description: FreeCAD MCP server (freecad-mcp, connects via XML-RPC)
+      gazebo:
+        $ref: "#/definitions/MCPEndpoint"
+        description: Gazebo MCP server (gazebo-mcp, requires ROS2 in WSL2/Docker)
+      ros:
+        $ref: "#/definitions/MCPEndpoint"
+        description: ROS MCP server (ros-mcp-server, requires rosbridge WebSocket)
+    additionalProperties: false
+
+definitions:
+  MCPEndpoint:
+    type: object
+    required:
+      - server_package
+      - server_version
+    properties:
+      server_package:
+        type: string
+        description: PyPI package name for the MCP server
+      server_version:
+        type: string
+        description: Installed version (semver)
+      transport:
+        type: string
+        enum: [xmlrpc, stdio, websocket]
+        description: Wire transport used by the MCP server
+      host:
+        type: string
+        description: Hostname for non-stdio transports (default: localhost)
+      port:
+        type: integer
+        minimum: 1
+        maximum: 65535
+        description: Port for non-stdio transports
+      requires_ros2:
+        type: boolean
+        description: Whether this server requires a live ROS2 environment
+        default: false
+    additionalProperties: false

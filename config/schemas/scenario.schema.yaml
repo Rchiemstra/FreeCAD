@@ -1,0 +1,193 @@
+# scenario.schema.yaml — JSON Schema (YAML syntax) for test scenario files
+# Scenario files live in tests/scenarios/<name>.yaml
+#
+# Schema version: 1.0 (Phase 2)
+#
+# A scenario defines:
+#   - which robot and world to use
+#   - initial conditions (pose, joint configuration)
+#   - goal definition
+#   - simulation duration
+#   - assertions that determine pass/fail
+#   - telemetry to record in sim_runs/
+#
+# The bridge.handoff module uses scenario files to drive automated runs.
+# The MCP agent layer uses them as the primary unit of work.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: Simulation Scenario
+description: >
+  A scenario describes a single robot simulation test to run in headless Gazebo.
+  The handoff pipeline uses scenario.yaml to reproduce the exact simulation setup
+  and evaluate pass/fail assertions.
+type: object
+required:
+  - name
+  - robot
+  - world
+
+properties:
+  name:
+    type: string
+    description: Unique scenario identifier (kebab-case, matches filename without .yaml)
+    pattern: "^[a-z][a-z0-9_-]*$"
+    example: reach_top_shelf
+
+  description:
+    type: string
+    description: Human-readable description of what this scenario tests
+    example: "2-DOF arm reaches a target at shelf height (1.8 m)"
+
+  robot:
+    type: string
+    description: Robot name — must match a file in robots/ or generated/
+    example: arm_2dof
+
+  world:
+    type: string
+    description: World name — must match a .sdf file in worlds/
+    example: empty
+
+  initial_pose:
+    $ref: "#/definitions/Pose2D"
+    description: Starting base pose of the robot in the world
+
+  initial_joints:
+    type: object
+    description: Initial joint positions (name → radians or metres)
+    additionalProperties:
+      type: number
+    example:
+      joint1: 0.0
+      joint2: 0.785
+
+  goal:
+    $ref: "#/definitions/Goal"
+    description: Success condition for this scenario
+
+  duration:
+    type: number
+    minimum: 0.1
+    description: Maximum simulation time in seconds before declaring timeout
+    example: 15.0
+
+  assertions:
+    type: array
+    description: >
+      List of pass/fail checks applied after the scenario runs.
+      All assertions must pass for the scenario to be marked PASS.
+    items:
+      $ref: "#/definitions/Assertion"
+    minItems: 1
+
+  record:
+    $ref: "#/definitions/RecordSpec"
+    description: Telemetry to capture in sim_runs/<run_id>/
+
+additionalProperties: false
+
+definitions:
+
+  Pose2D:
+    type: object
+    description: 2D ground-plane pose (robot base)
+    properties:
+      x:   { type: number, description: "X position (metres)" }
+      y:   { type: number, description: "Y position (metres)" }
+      z:   { type: number, description: "Z height (metres)" }
+      yaw: { type: number, description: "Yaw angle (radians)" }
+    additionalProperties: false
+
+  Position3D:
+    type: object
+    description: 3D point in world frame (metres)
+    required: [x, y, z]
+    properties:
+      x: { type: number }
+      y: { type: number }
+      z: { type: number }
+    additionalProperties: false
+
+  Goal:
+    type: object
+    required: [type, target]
+    description: Defines what the robot must achieve for the scenario to succeed
+    properties:
+      type:
+        type: string
+        enum:
+          - ee_pose       # End-effector reaches a 3D point
+          - joint_config  # Joints reach a target configuration
+          - nav_goal      # Base reaches a 2D goal (mobile robots)
+          - custom        # Custom assertion logic (defined in tests/assertions/)
+        description: Goal type determines how target is interpreted
+      target:
+        description: >
+          Goal target. Shape depends on type:
+          - ee_pose: Position3D
+          - joint_config: object mapping joint names to values
+          - nav_goal: Pose2D
+          - custom: arbitrary object
+      tolerance:
+        type: number
+        minimum: 0
+        description: >
+          Acceptable error at goal (metres for positions, radians for angles).
+          Default: 0.05 m / 0.05 rad
+        default: 0.05
+    additionalProperties: false
+
+  Assertion:
+    type: object
+    required: [type]
+    description: A single pass/fail check
+    properties:
+      type:
+        type: string
+        description: Assertion kind
+        enum:
+          - reach_target_within    # Goal reached before N seconds
+          - no_self_collision      # No self-collision throughout the run
+          - no_ground_penetration  # Robot doesn't clip through the ground
+          - max_joint_torque_below # Peak joint torque below threshold
+          - sim_time_under         # Scenario completes before timeout
+          - rtf_above              # Real-time factor stays above threshold
+          - custom                 # Custom Python assertion in tests/assertions/
+      seconds:
+        type: number
+        minimum: 0
+        description: Time limit (used with reach_target_within, sim_time_under)
+      value:
+        type: number
+        description: Threshold value (used with max_joint_torque_below, rtf_above)
+      module:
+        type: string
+        description: Python module path for custom assertions
+    additionalProperties: true   # Allow type-specific extra keys
+
+  RecordSpec:
+    type: object
+    description: Controls what telemetry is saved to sim_runs/<run_id>/
+    properties:
+      joint_states:
+        type: boolean
+        description: Record joint positions, velocities, efforts
+        default: true
+      end_effector_pose:
+        type: boolean
+        description: Record end-effector pose over time
+        default: false
+      contacts:
+        type: boolean
+        description: Record contact force events
+        default: false
+      rtf:
+        type: boolean
+        description: Record real-time factor
+        default: true
+      screenshot_interval:
+        type: number
+        minimum: 0
+        description: Capture a screenshot every N simulation seconds (0 = disabled)
+        default: 0
+    additionalProperties: false
