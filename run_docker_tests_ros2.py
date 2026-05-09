@@ -446,12 +446,28 @@ run_required "Install rosdep dependencies" bash -c '
             libogre-1.12-dev"
 '
 
-# rpyutils has no noble system package (rosdep skips it) and colcon's install
-# space PYTHONPATH doesn't propagate into cmake custom-command subprocesses.
-# Directly prepend the rpyutils source tree so the import works at cmake
-# build time without any install step.
+# rpyutils has no noble system package (rosdep skips it).  The cmake build
+# directory for rosidl_generator_py may be cached from a run when rpyutils
+# was not yet in the install space — cmake bakes PYTHONPATH into the generated
+# build.make at configure time, so we must:
+#  1. Build rpyutils from source first (puts it in the install space)
+#  2. Wipe the stale cmake cache for rosidl_generator_py so cmake regenerates
+#     build.make with the correct PYTHONPATH that includes rpyutils.
+run_required "Bootstrap rpyutils from source" bash -c '
+    colcon build \\
+        --base-paths {CONTAINER_WS} \\
+        --build-base {CONTAINER_WS}/build \\
+        --install-base {CONTAINER_WS}/install \\
+        --symlink-install \\
+        --packages-select rpyutils \\
+        --event-handlers console_cohesion+
+    # Wipe cmake cache for rosidl_generator_py so it reconfigures with
+    # rpyutils now visible in the install space.
+    rm -f  {CONTAINER_WS}/build/rosidl_generator_py/CMakeCache.txt
+    rm -rf {CONTAINER_WS}/build/rosidl_generator_py/CMakeFiles
+'
+
 run_required "Build ROS 2{packages_label}" bash -c '
-    export PYTHONPATH={CONTAINER_WS}/src/ros2/rpyutils:$PYTHONPATH
     colcon build \\
         --base-paths {CONTAINER_WS} \\
         --build-base {CONTAINER_WS}/build \\
