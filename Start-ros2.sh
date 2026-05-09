@@ -134,9 +134,12 @@ colcon build \
     --symlink-install \
     --packages-select rpyutils \
     --event-handlers console_cohesion+
-pip3 install --quiet --no-deps --break-system-packages \
-    -e /ros2-workspace/src/ros2/rpyutils
-python3 -c "from rpyutils import add_dll_directories_from_env; print('rpyutils OK')"
+# rpyutils has no setup.py/pyproject.toml so pip install -e fails.
+# Copy the package directly to /usr/lib/python3/dist-packages/ which is
+# unconditionally in sys.path for every python3 process.
+RPYUTILS_DST="/usr/lib/python3/dist-packages/rpyutils"
+[ -d "$RPYUTILS_DST" ] || cp -r /ros2-workspace/src/ros2/rpyutils/rpyutils "$RPYUTILS_DST"
+python3 -c "from rpyutils import add_dll_directories_from_env" && echo "rpyutils OK"
 rm -f  /ros2-workspace/build/rosidl_generator_py/CMakeCache.txt
 rm -rf /ros2-workspace/build/rosidl_generator_py/CMakeFiles
 
