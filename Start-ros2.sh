@@ -174,6 +174,7 @@ colcon build \
         qt_gui_cpp qt_gui_core \
         rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \
         rviz_rendering_tests rviz_visual_testing_framework \
+        gz_cmake_vendor gz_math_vendor gz_utils_vendor \
         rqt rqt_gui rqt_gui_cpp rqt_gui_py \
         rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \
         rqt_image_view rqt_msg rqt_plot rqt_py_common rqt_py_console \

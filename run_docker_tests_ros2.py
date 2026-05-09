@@ -489,7 +489,8 @@ run_required "Bootstrap rpyutils from source" bash -c '
             rqt_reconfigure rqt_service_caller rqt_shell rqt_srv \
             rqt_tf_tree rqt_topic \
             rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \
-            rviz_rendering_tests rviz_visual_testing_framework; do
+            rviz_rendering_tests rviz_visual_testing_framework \
+            gz_cmake_vendor gz_math_vendor gz_utils_vendor; do
         STUB="{CONTAINER_WS}/install/$SKIP_PKG/share/$SKIP_PKG"
         mkdir -p "$STUB"
         touch "$STUB/package.sh"
@@ -509,6 +510,7 @@ run_required "Build ROS 2{packages_label}" bash -c '
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
             rviz_rendering_tests rviz_visual_testing_framework \\
+            gz_cmake_vendor gz_math_vendor gz_utils_vendor \\
             rqt rqt_gui rqt_gui_cpp rqt_gui_py \\
             rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \\
             rqt_image_view rqt_msg rqt_plot rqt_py_common rqt_py_console \\
@@ -528,6 +530,7 @@ run_test "ROS 2 colcon test suite{packages_label}" bash -c '
             qt_gui_cpp qt_gui_core \\
             rviz2 rviz_common rviz_rendering rviz_default_plugins rviz_ogre_vendor \\
             rviz_rendering_tests rviz_visual_testing_framework \\
+            gz_cmake_vendor gz_math_vendor gz_utils_vendor \\
             rqt rqt_gui rqt_gui_cpp rqt_gui_py \\
             rqt_action rqt_bag rqt_bag_plugins rqt_console rqt_graph \\
             rqt_image_view rqt_msg rqt_plot rqt_py_common rqt_py_console \\
