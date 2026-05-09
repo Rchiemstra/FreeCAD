@@ -1,0 +1,40 @@
+# project.yaml — Robot simulation project manifest
+# This file is the entry point for the FreeCAD/Gazebo/MCP robot test rig.
+# See docs/freecad_gazebo_mcp_plan.md for architecture details.
+
+name: freecad-gazebo-mcp
+version: "0.1"
+
+environment:
+  freecad_version: "1.2.0-dev"
+  freecad_mcp_version: "0.1.17"
+  gazebo_mcp_version: "0.2.0"
+  ros_mcp_version: "3.0.1"
+  ros_distro: rolling
+  # Gazebo release determined by src/3rdParty/gz-sim submodule
+
+# Paths relative to project root
+paths:
+  robots: robots/
+  worlds: worlds/
+  generated: generated/       # gitignored — rebuilt from source
+  tests: tests/
+  sim_runs: sim_runs/         # gitignored — test run outputs
+  config: config/
+
+# MCP server configuration
+mcp:
+  freecad:
+    transport: xmlrpc
+    host: localhost
+    port: 9875
+    server_package: freecad-mcp
+    server_version: "0.1.17"
+  gazebo:
+    server_package: gazebo-mcp
+    server_version: "0.2.0"
+    requires_ros2: true
+  ros:
+    server_package: ros-mcp
+    server_version: "3.0.1"
+    rosbridge_port: 9090

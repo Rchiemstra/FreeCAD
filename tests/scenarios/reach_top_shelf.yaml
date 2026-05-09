@@ -1,0 +1,45 @@
+# reach_top_shelf.yaml — Example Phase 1 scenario (draft)
+# Robot: 2-DOF arm (to be modeled in FreeCAD using RobotCAD/CROSS)
+# World: kitchen_v1 (to be created)
+#
+# This scenario validates that the arm can reach a point 1.8 m high.
+# It is the first target for Phase 1 manual end-to-end verification.
+
+name: reach_top_shelf
+description: "2-DOF arm reaches a target at shelf height (1.8 m)"
+
+robot: arm_2dof          # FCStd source: robots/arm_2dof.FCStd
+world: empty             # empty world until kitchen_v1 is ready
+
+initial_pose:
+  x: 0.0
+  y: 0.0
+  z: 0.0
+  yaw: 0.0
+
+goal:
+  type: ee_pose
+  target:
+    x: 0.6
+    y: 0.0
+    z: 1.8
+  tolerance: 0.05         # metres
+
+duration: 15.0            # maximum simulation seconds
+
+assertions:
+  - type: reach_target_within
+    seconds: 10
+  - type: no_self_collision
+  - type: max_joint_torque_below
+    value: 25.0           # N·m
+  - type: sim_time_under
+    seconds: 15.0
+
+# Telemetry to record in sim_runs/<run_id>/
+record:
+  joint_states: true
+  end_effector_pose: true
+  contacts: true
+  rtf: true
+  screenshot_interval: 1.0   # seconds

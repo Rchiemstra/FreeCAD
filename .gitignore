@@ -2,6 +2,7 @@
 .*
 !*.gitattributes
 !*.gitignore
+!*.gitkeep
 !/.clang-format
 !/.clang-tidy
 !/.git-blame-ignore-revs
@@ -78,5 +79,7 @@ venv/
 __pycache__/
 *.pyo
 .pytest_cache/
-
-!./docs/
+
+# Robot simulation project directories (derivative artifacts)
+/generated/
+/sim_runs/

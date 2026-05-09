@@ -11,6 +11,7 @@ Source docs:
 - [diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml](diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml)
 
 Last reviewed: 2026-05-10
+Last updated: 2026-05-10 (Phase 0 verification run)
 
 ## Purpose
 
@@ -59,30 +60,101 @@ Goal: prove each runtime side works before connecting them.
 
 Tasks:
 
-- [ ] Choose the first supported setup: RobotCAD Docker, WSL2 with Docker, native Linux, or another path.
-- [ ] Document GUI forwarding approach for FreeCAD: X11, Wayland, VNC, or host-native FreeCAD.
-- [ ] Install or build FreeCAD 1.x with RobotCAD/CROSS available.
-- [ ] Verify RobotCAD opens in FreeCAD and its demo workflow works.
-- [ ] Start modern Gazebo headless with `gz sim -s`.
-- [ ] Install and run the selected FreeCAD MCP server, starting with `neka-nat/freecad-mcp`.
-- [ ] Verify the actual FreeCAD MCP/addon RPC transport and port. Existing docs mention both `:5000` and `9875/9876`; resolve and record the real value.
-- [ ] Verify an MCP client can create, inspect, and screenshot a simple FreeCAD object.
-- [ ] Install and run the selected Gazebo MCP server, starting with `kvgork/gazebo-mcp`.
-- [ ] Verify an MCP client can load a world, spawn or inspect a model, pause, resume, reset, and step headless Gazebo.
-- [ ] Install a ROS 2 MCP option for later evaluation, but do not make it blocking for Phase 1.
-- [ ] Document exact versions for FreeCAD, RobotCAD/CROSS, ROS 2, Gazebo, Python, MCP servers, Docker image, and host OS.
+- [x] Choose the first supported setup: **Windows host + WSL2 + Docker**. FreeCAD runs natively on Windows via pixi build. Gazebo and ROS 2 run in Docker containers launched via WSL2 (see `Start-gz-sim.bat` / `Start-ros2.bat`).
+- [x] Document GUI forwarding approach for FreeCAD: **No GUI forwarding needed.** FreeCAD runs natively on Windows. The human sees FreeCAD's native window. The Gazebo window is intentionally not used (headless only).
+- [x] Install or build FreeCAD 1.x: **FreeCAD 1.2.0-dev** built via pixi from repo source. Entry point: `.pixi/envs/default/Library/bin/FreeCAD.exe`. Launch via `Start-FreeCAD.bat`.
+- [ ] Verify RobotCAD opens in FreeCAD and its demo workflow works. **BLOCKER**: RobotCAD/CROSS is not installed. It must be installed as a FreeCAD addon (Addon Manager or manual clone). See Phase 0 blockers below.
+- [x] Start modern Gazebo headless with `gz sim -s`: **Confirmed working** via `Start-gz-sim.bat` (WSL2 + Docker, Ubuntu Noble + OSRF packages). Docker image: `ubuntu:noble`. Build volume: `gz-sim-linux-build`.
+- [x] Install and run the selected FreeCAD MCP server: **`neka-nat/freecad-mcp` v0.1.17** installed in WSL2 Python 3.12 venv at `tools/mcp/freecad-mcp/.venv`. Server starts and initializes cleanly.
+- [x] Verify the actual FreeCAD MCP/addon RPC transport and port: **XML-RPC on port 9875** (confirmed in `freecad_client.py` line 32 and `server.py` line 65). The `:5000` and `:9876` references in older docs are incorrect for this server.
+- [x] FreeCADMCP addon installed to `%APPDATA%\FreeCAD\v1-2\Mod\FreeCADMCP`. On FreeCAD launch, switch to "MCP Addon" workbench and click "Start RPC Server" (or enable Auto-Start).
+- [ ] Verify an MCP client can create, inspect, and screenshot a simple FreeCAD object. **PARTIAL**: MCP server starts and tools list is complete (11 tools). Full verification requires FreeCAD running with the addon and RPC server active on port 9875. The server returns a correct error response when FreeCAD is not running.
+- [x] Install and run the selected Gazebo MCP server: **`kvgork/gazebo-mcp` v0.2.0** installed in WSL2 Python 3.12 venv at `tools/mcp/gazebo-mcp/.venv`. Exposes 27 tools. `gazebo_list_models`, `gazebo_spawn_model`, `gazebo_delete_model` all respond (mock/OK) without Gazebo running.
+- [ ] Verify an MCP client can load a world, spawn or inspect a model, pause, resume, reset, and step headless Gazebo. **DEFERRED**: Requires Gazebo container running (Docker build takes 20–40 min on first run). Tool calls return mock responses until Gazebo is live.
+- [x] Install a ROS 2 MCP option: **`ros-mcp` v3.0.1** installed in WSL2 Python 3.12 venv at `tools/mcp/ros-mcp-server/.venv`. Exposes 31 tools. `ping_robots`, `connect_to_robot`, `get_topics`, `get_nodes` all respond without ROS 2 running.
+- [x] Document exact versions — see Version Table below.
 
 Deliverables:
 
-- [ ] Reproducible environment notes.
-- [ ] Minimal smoke-test command list.
-- [ ] Confirmed MCP transport/port notes.
-- [ ] Known setup issues and fixes.
+- [x] Reproducible environment notes — see Environment Decision and Version Table below.
+- [x] Minimal smoke-test command list — `python test_all_mcp.py` (all 17 tests pass).
+- [x] Confirmed MCP transport/port notes — XML-RPC port 9875.
+- [x] Known setup issues and fixes — see Phase 0 Notes below.
 
 Definition of done:
 
 - FreeCAD, Gazebo, and the selected MCP servers can be controlled independently.
 - No FreeCAD-to-Gazebo automation is required yet.
+
+### Phase 0 Environment Decision
+
+**Selected setup: Windows host + WSL2 + Docker**
+
+| Layer | Choice | Rationale |
+|---|---|---|
+| FreeCAD | Windows-native (pixi build) | Already available in repo; avoids X11 forwarding |
+| FreeCAD GUI forwarding | None needed | Runs on Windows; human sees native window |
+| Gazebo | Docker in WSL2 (`ubuntu:noble` + OSRF packages) | Avoids host ROS 2 install; reproducible |
+| ROS 2 | Docker in WSL2 (`ubuntu:noble`, rolling distro) | Same container approach as Gazebo |
+| MCP servers | WSL2 Python 3.12 venvs | freecad-mcp requires Python ≥3.12; WSL provides it |
+| FreeCAD MCP transport | XML-RPC on `localhost:9875` | Confirmed from `freecad_client.py` |
+
+### Phase 0 Version Table
+
+| Component | Version | Notes |
+|---|---|---|
+| Host OS | Windows 11 | FreeCAD runs here |
+| WSL2 distro | Ubuntu 24.04.1 LTS (Noble) | Default: `Ubuntu-24.04` |
+| Python (WSL2) | 3.12.3 | Used for all MCP server venvs |
+| Python (Windows) | 3.10.6 | Insufficient for freecad-mcp (needs ≥3.12) |
+| FreeCAD | 1.2.0-dev | Built from repo via pixi; `version.json` |
+| freecad-mcp | 0.1.17 | `neka-nat/freecad-mcp`; MCP SDK 1.27.1 |
+| gazebo-mcp | 0.2.0 | `kvgork/gazebo-mcp`; 27 tools exposed |
+| ros-mcp | 3.0.1 | `tools/mcp/ros-mcp-server`; 31 tools exposed |
+| Docker | 29.4.2 | Available in WSL2 |
+| Gazebo | headless in Docker | Ubuntu Noble + OSRF; built from `src/3rdParty/gz-sim` |
+| ROS 2 | rolling (Noble) | Built in Docker from `src/3rdParty/ros2` |
+| RobotCAD/CROSS | **NOT INSTALLED** | Blocker for Phase 1; see below |
+
+### Phase 0 Smoke-Test Commands
+
+```
+# Run all MCP server protocol tests (no FreeCAD/Gazebo/ROS running required)
+python test_all_mcp.py --timeout 30
+
+# Run only FreeCAD MCP tests
+python test_all_mcp.py --no-gazebo --no-ros
+
+# Run with FreeCAD+Gazebo+ROS running (full integration)
+python test_all_mcp.py --start-apps --startup-wait 30
+
+# Test result (2026-05-10): 17 passed, 0 failed, 0 skipped
+```
+
+### Phase 0 Notes
+
+**MCP transport resolution:**
+- The FreeCAD MCP addon (`addon/FreeCADMCP/rpc_server/rpc_server.py`) runs `SimpleXMLRPCServer` on port **9875** (confirmed).
+- The MCP server Python process (`freecad_mcp.server`) connects to `http://localhost:9875` via `xmlrpc.client`.
+- Any references to ports 5000 or 9876 in old docs are incorrect for this server.
+
+**FreeCADMCP addon installation:**
+- Addon source: `tools/mcp/freecad-mcp/addon/FreeCADMCP/`
+- Installed to: `%APPDATA%\FreeCAD\v1-2\Mod\FreeCADMCP\`
+- After installing, restart FreeCAD, switch to "MCP Addon" workbench, click "Start RPC Server" (or enable Auto-Start in the FreeCAD MCP menu).
+
+**Known setup issues:**
+1. Windows Python 3.10/3.11 is too old for `freecad-mcp` (requires ≥3.12). The test suite uses WSL2 Python 3.12 automatically.
+2. Gazebo Docker build is slow (20–40 min on first run). Subsequent runs use the `gz-sim-linux-build` Docker volume.
+3. `geometry_msgs` is a ROS 2 package not on PyPI. The test suite installs a minimal stub into the gazebo-mcp venv so the server can import without a full ROS 2 installation.
+4. RobotCAD/CROSS is not installed (see Phase 0 blockers).
+
+**Phase 0 Blockers / Remaining Tasks:**
+- [ ] Install RobotCAD/CROSS workbench in FreeCAD and verify its demo robot export works.
+  - Install via FreeCAD Addon Manager → search "CROSS" or "RobotCAD".
+  - Or clone from https://github.com/drfenixion/freecad.overcross into `%APPDATA%\FreeCAD\v1-2\Mod\`.
+- [ ] Run headless Gazebo end-to-end (first `Start-gz-sim.bat` run takes 20–40 min to build).
+- [ ] Run FreeCAD with MCP addon active and verify `create_document`, `create_object`, `get_view` tool calls succeed end-to-end.
 
 ## Phase 1: Manual End-to-End
 
@@ -339,25 +411,25 @@ Definition of done:
 
 ## Decisions Needed Before Coding
 
-- [ ] Is the first target single-user local development, team development, or CI automation?
-- [ ] Which environment is the first supported path: Docker, WSL2, native Linux, or Windows-native?
-- [ ] Which Gazebo release is the target: Harmonic, Ionic, or another modern gz-sim release?
-- [ ] Are v1 tests kinematic only, controller-in-the-loop, or both?
-- [ ] What is the minimum useful v1 assertion set?
-- [ ] Which ROS 2 MCP bridge is the first supported bridge?
-- [ ] Will Gazebo always run on the same machine as FreeCAD?
-- [ ] Are generated artifacts ignored, checked in, or stored through Git LFS?
-- [ ] What write operations should the MCP client be allowed to perform?
-- [ ] Which FreeCAD MCP transport and port are canonical for this project?
+- [x] Is the first target single-user local development, team development, or CI automation? **Decision: single-user local development first.** CI automation is Phase 6.
+- [x] Which environment is the first supported path: Docker, WSL2, native Linux, or Windows-native? **Decision: Windows-native FreeCAD + WSL2 + Docker for Gazebo/ROS 2.**
+- [ ] Which Gazebo release is the target: Harmonic, Ionic, or another modern gz-sim release? **Pending**: the `Start-gz-sim.sh` builds from `src/3rdParty/gz-sim` source; the exact release tag needs to be confirmed from the submodule.
+- [ ] Are v1 tests kinematic only, controller-in-the-loop, or both? **Pending**: defer to Phase 4 decision point.
+- [ ] What is the minimum useful v1 assertion set? **Pending**: defer to Phase 4 decision point. Candidates: `reach_target_within`, `no_self_collision`, `max_joint_torque_below`, `sim_time_under`, `pose_within_tolerance`, `rtf_above`.
+- [ ] Which ROS 2 MCP bridge is the first supported bridge? **Working assumption**: `ros-mcp` v3.0.1 (already installed at `tools/mcp/ros-mcp-server`). Revisit in Phase 4.5.
+- [x] Will Gazebo always run on the same machine as FreeCAD? **Decision: yes for v1.** Both on the same Windows host (Gazebo in WSL2/Docker, FreeCAD on Windows).
+- [ ] Are generated artifacts ignored, checked in, or stored through Git LFS? **Working assumption**: `generated/` and `sim_runs/` are gitignored. Finalize in Phase 2 when the repo layout is established.
+- [ ] What write operations should the MCP client be allowed to perform? **Pending**: defer to Phase 6 hardening.
+- [x] Which FreeCAD MCP transport and port are canonical for this project? **Decision: XML-RPC on `localhost:9875`.** Confirmed from `freecad_client.py` and `rpc_server.py`.
 
 ## Immediate Next Tasks
 
-1. Confirm the environment target and write the setup decision down.
-2. Resolve the FreeCAD MCP addon transport and port mismatch in the docs.
-3. Run the RobotCAD demo export into headless Gazebo.
-4. Install and smoke-test the FreeCAD MCP server.
-5. Install and smoke-test the Gazebo MCP server.
-6. Build or choose the toy robot for the first manual end-to-end scenario.
+1. ~~Confirm the environment target and write the setup decision down.~~ **Done** — Windows + WSL2 + Docker (see Phase 0 Environment Decision).
+2. ~~Resolve the FreeCAD MCP addon transport and port mismatch in the docs.~~ **Done** — XML-RPC port 9875 confirmed.
+3. **Next**: Install RobotCAD/CROSS in FreeCAD (via Addon Manager or manual clone) and run its demo robot export into headless Gazebo.
+4. Run headless Gazebo end-to-end once the Docker container is built (first `Start-gz-sim.bat` run).
+5. Start FreeCAD with MCP addon active; run `python test_all_mcp.py` with FreeCAD live to get full integration test coverage.
+6. Build or choose the toy robot for the first manual end-to-end scenario (Phase 1).
 7. Draft the first `reach_top_shelf.yaml` scenario.
 8. Record all friction from the manual flow before writing bridge automation.
 
