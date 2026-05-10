@@ -1,2 +1,5 @@
 # Linux/Docker entrypoints — CRLF breaks shebang when invoked via bash -lc <path>.
 e2e/*.sh text eol=lf
+Start-gz-sim.sh text eol=lf
+Start-ros2.sh text eol=lf
+scripts/cursor_mcp.sh text eol=lf

@@ -11,7 +11,7 @@ Source docs:
 - [diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml](diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml)
 
 Last reviewed: 2026-05-10
-Last updated: 2026-05-10 (Docker E2E compose)
+Last updated: 2026-05-11 (Gazebo status/screenshot FreeCAD panel task)
 
 ## Purpose
 
@@ -358,6 +358,7 @@ Tasks:
 - [x] Add Sim Controls panel (`panels/sim_controls.py`) — play, pause, step, reset, sim time, RTF readout, connection status indicator.
 - [x] Add Scenario Picker panel (`panels/scenario_picker.py`) — robot/world/scenario selection with combo boxes.
 - [ ] Add Camera Viewer panel — deferred: requires live ROS 2 image topic; blocked by Gazebo Docker.
+- [ ] Add Gazebo Status/Screenshot panel — custom FreeCAD panel that shows Gazebo status plus refreshed screenshot snapshots from the headless simulation; **not** an embedded live Gazebo GUI viewport.
 - [x] Add Sensor Plots panel (`panels/sensor_plots.py`) — joint position/velocity/effort table, RTF display.
 - [x] Add Run Library panel (`panels/run_library.py`) — browses sim_runs/, shows pass/fail status.
 - [ ] Add Project Browser panel — deferred to Phase 4 (overlaps with Test Runner UI).
@@ -372,6 +373,7 @@ Deliverables:
 - [x] Basic controls and viewer panels (Sim Controls, Scenario Picker, Sensor Plots, Run Library, MCP Log).
 - [x] Shared Gazebo transport library (`transport.py`).
 - [ ] Camera Viewer — deferred.
+- [ ] Gazebo Status/Screenshot panel — status readout plus snapshot image refresh; no embedded Gazebo viewport.
 - [ ] Project Browser — deferred.
 - [x] Addon install helper (`install_addon.py`).
 
@@ -386,6 +388,7 @@ Definition of done:
 - **Design decision**: Transport uses a QTimer (10 Hz) rather than a background thread. This avoids threading bugs in FreeCAD's Qt event loop. 10 Hz is sufficient for visual feedback; bump to 30 Hz if needed.
 - **Design decision**: FreeCAD Placements are updated directly (not via a FreeCAD feature/document recompute). This is the fastest path for live animation; it does not create an undo history entry.
 - **Design decision**: State-to-placement scale = 1000 (Gazebo metres → FreeCAD mm). Configurable via `StateBridge(scale=...)`.
+- **Design decision**: A Gazebo Status/Screenshot panel may show periodic screenshots or rendered camera snapshots from Gazebo, but Gazebo remains headless and the panel is not a real embedded Gazebo GUI.
 - **Blocker**: Live end-to-end test (play + watch robot move) blocked by Gazebo Docker not running. Run `Start-gz-sim.bat` to build and start.
 - **Blocker**: Camera Viewer blocked by live ROS 2 image topics not available. Deferred.
 - **Installation**: Run `python addons/SimWorkbench/install_addon.py` to install into FreeCAD's Mod directory, then restart FreeCAD.

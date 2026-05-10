@@ -3,9 +3,10 @@ setlocal
 REM SPDX-License-Identifier: LGPL-2.1-or-later
 REM
 REM Start the full local stack in one step:
-REM   - FreeCAD (this window returns once the app is launched)
-REM   - Gazebo gz-sim helper (new console via WSL/Docker — see Start-gz-sim.bat)
-REM   - ROS 2 helper (new console via WSL/Docker — see Start-ros2.bat)
+REM   - FreeCAD
+REM   - Gazebo gz-sim helper via WSL/Docker
+REM   - ROS 2 helper via WSL/Docker
+REM   - FreeCAD, Gazebo, and ROS MCP server processes
 REM
 REM Usage:
 REM   Start-All.bat          Start FreeCAD + both helpers.
@@ -18,24 +19,14 @@ cd /d "%ROOT%" || exit /b 1
 
 if /i "%~1"=="e2e" goto :e2e
 
-echo [%DATE% %TIME%] Starting FreeCAD + Gazebo + ROS 2 helpers...
-echo Repo: %ROOT%
-echo.
+if not exist "%ROOT%\.log" mkdir "%ROOT%\.log" >nul 2>nul
+set "START_ALL_STATUS_FILE=%ROOT%\.log\start-all-console.txt"
+del "%START_ALL_STATUS_FILE%" >nul 2>nul
 
-call Start-FreeCAD.bat
-if errorlevel 1 (
-    echo Start-FreeCAD.bat failed.
-    exit /b 1
-)
-
-REM Each helper blocks on Docker; run in separate consoles so they start together.
-start "Gazebo gz-sim (WSL/Docker)" cmd /k cd /d "%ROOT%" ^& call Start-gz-sim.bat
-start "ROS 2 (WSL/Docker)" cmd /k cd /d "%ROOT%" ^& call Start-ros2.bat
-
-echo.
-echo FreeCAD launch was requested. Two extra windows are running Start-gz-sim and Start-ros2.
-echo Close those windows or press Ctrl+C inside them to stop the Docker sessions.
-exit /b 0
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\start_all.ps1" -StatusFile "%START_ALL_STATUS_FILE%" %*
+set "EXITCODE=%ERRORLEVEL%"
+if exist "%START_ALL_STATUS_FILE%" type "%START_ALL_STATUS_FILE%"
+exit /b %EXITCODE%
 
 :e2e
 where docker >nul 2>nul
