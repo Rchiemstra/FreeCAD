@@ -659,6 +659,20 @@ def test_freecad_mcp(suite: Suite, timeout: float, verbose: bool,
             })
             _assert_tool_ok(suite, resp, "create_object Part::Box")
 
+            resp = client.call_tool("get_object", {
+                "doc_name": "MCPTest",
+                "obj_name": "TestBox",
+            })
+            _assert_tool_ok(suite, resp, "get_object TestBox")
+
+            resp = client.call_tool("get_view", {
+                "view_name": "Isometric",
+                "width": 320,
+                "height": 240,
+                "focus_object": "TestBox",
+            })
+            _assert_tool_ok(suite, resp, "get_view Isometric (screenshot)")
+
             resp = client.call_tool("execute_code", {
                 "code": "import FreeCAD; print(FreeCAD.Version())"
             })
