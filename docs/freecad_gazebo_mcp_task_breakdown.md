@@ -11,7 +11,7 @@ Source docs:
 - [diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml](diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml)
 
 Last reviewed: 2026-05-10
-Last updated: 2026-05-10 (Phase 0 verification run)
+Last updated: 2026-05-11 (Phase 5 complete)
 
 ## Purpose
 
@@ -404,25 +404,42 @@ Goal: support agent-driven design changes and repeated simulation checks.
 
 Tasks:
 
-- [ ] Add a stable `set_parameter(doc, name, value)` flow for controlled FreeCAD edits.
-- [ ] Add bounded edit policies for dimensions, materials, controller settings, and scenario inputs.
-- [ ] Add a loop that changes a parameter, recomputes, exports, runs a scenario, and reports results.
-- [ ] Capture screenshots, plots, selected sensor summaries, and result diffs for LLM review.
-- [ ] Add parameter sweep support for numeric design variables.
-- [ ] Add failure summarization that points back to the relevant scenario assertion and metric.
-- [ ] Decide when design changes should be automatically committed.
-- [ ] Avoid sim-state-to-CAD edits in v1; keep design-to-sim as the stable direction.
+- [x] Add a stable `set_parameter(doc, name, value)` flow for controlled FreeCAD edits (`iteration/parameter.py`).
+- [x] Add bounded edit policies for dimensions, materials, controller settings, and scenario inputs (`iteration/policy.py`).
+- [x] Add a loop that changes a parameter, recomputes, exports, runs a scenario, and reports results (`iteration/loop.py`).
+- [x] Add failure summarization that points back to the relevant scenario assertion and metric (`iteration/report.summarize_failure()`).
+- [x] Add parameter sweep support for numeric design variables (`iteration/sweep.py`, `SweepRunner.linspace/arange/sweep()`).
+- [x] Add result comparison and diff report for LLM review (`iteration/report.compare_results()`, `diff_results()`).
+- [ ] Capture screenshots, plots, selected sensor summaries — deferred to Phase 6 (requires live Gazebo).
+- [ ] Decide when design changes should be automatically committed — deferred to Phase 6 hardening decision.
+- [x] Avoid sim-state-to-CAD edits in v1; keep design-to-sim as the stable direction — enforced by Policy (one-directional).
 
 Deliverables:
 
-- [ ] Parameter iteration flow.
-- [ ] Sensor and result summaries.
-- [ ] Optional parameter sweep runner.
-- [ ] Result comparison report.
+- [x] Parameter iteration flow (`iteration/loop.py` — `IterationLoop.run_once()` / `sweep()`).
+- [x] Bounded edit policy (`iteration/policy.py` — `Policy`, `ParameterRule`, `DEFAULT_ARM_2DOF_POLICY`).
+- [x] Parameter get/set (`iteration/parameter.py` — `get_parameter()`, `set_parameter()` via XML-RPC code gen).
+- [x] Optional parameter sweep runner (`iteration/sweep.py` — `SweepRunner`, `linspace()`, `arange()`).
+- [x] Result comparison report (`iteration/report.py` — `compare_results()`, `diff_results()`, `summarize_failure()`).
+- [x] Offline tests: `tests/test_iteration.py` — 55 tests, all pass.
+- [ ] Sensor and result summaries with screenshots — deferred (needs live Gazebo).
 
 Definition of done:
 
 - An LLM can make a bounded design change, rerun a failing scenario, and report whether the change improved the result.
+- **Met**: Full offline pipeline works end-to-end with mock bridge. Live runs blocked by Gazebo Docker.
+
+### Phase 5 Notes
+
+- **Design decision**: `set_parameter` generates Python code strings and sends them via XML-RPC `execute_code`. Supports two modes: (a) spreadsheet alias lookup (scan all Spreadsheet::Sheet objects) and (b) dot notation `"Object.Property"` for direct property access.
+- **Design decision**: `Policy.check_all(dict)` + `Policy.clamp_all(dict)` / `Policy.snap_all(dict)` are the primary dict-based interfaces. Single-param `check/clamp/snap(name, value)` are also public.
+- **Design decision**: `IterationLoop._export_urdf()` failure is non-fatal; loop continues with existing URDF on disk. This allows offline testing without RobotCAD/CROSS installed.
+- **Design decision**: `IterationLoop._set_params()` returns an error string (not raises); `run_once()` wraps all failure modes in `IterationResult.error` — no exception propagates to the LLM caller.
+- **DEFAULT_ARM_2DOF_POLICY**: 4 rules (link1_length 0.1–0.8 m, link2_length 0.1–0.6 m, link1_mass 0.1–5.0 kg, link2_mass 0.1–3.0 kg), step=0.05 m / 0.1 kg.
+- **pytest.ini updated**: Added `testpaths = tests` to prevent pytest from walking into submodules (tools/mcp/gazebo-mcp/scripts etc.) and collecting foreign test files.
+- **Test count**: 151 passed, 6 skipped (live) across all test files.
+- **Commit**: `phase 5: iteration loops, parameter policies, sweep runner`
+
 
 ## Phase 6: Hardening
 
