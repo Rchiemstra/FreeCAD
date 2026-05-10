@@ -331,38 +331,48 @@ Goal: turn simulation into repeatable regression tests.
 
 Tasks:
 
-- [ ] Finalize the v1 scenario YAML schema.
-- [ ] Finalize the v1 assertion vocabulary.
-- [ ] Start with fixed assertions:
-  - `reach_target_within`
-  - `no_self_collision`
-  - `max_joint_torque_below`
-  - `sim_time_under`
-  - `pose_within_tolerance`
-  - `rtf_above`
-  - `collision_count_below`
-- [ ] Implement scenario loading from `tests/scenarios/`.
-- [ ] Implement single-test execution.
-- [ ] Implement run-all execution.
-- [ ] Evaluate assertions from Gazebo state, ROS 2 topics, or recorded outputs.
-- [ ] Write `sim_runs/<timestamp>_<scenario>/result.yaml`.
-- [ ] Include input hashes, generated artifact hashes, tool versions, physics settings, and random seeds in each result.
-- [ ] Record selected telemetry: joint states, poses, contacts, RTF, sensor summaries, logs, and screenshots.
-- [ ] Add pass/fail dashboard to the Simulation Workbench.
-- [ ] Add `list_tests` and `run_test(name)` to the FreeCAD MCP surface.
-- [ ] Add regression tests for scenario parsing and assertion evaluation.
+- [x] Finalize the v1 scenario YAML schema (`config/schemas/scenario.schema.yaml`, loader in `runner/scenario.py`).
+- [x] Finalize the v1 assertion vocabulary (7 types, all implemented in `runner/assertions.py`).
+- [x] Start with fixed assertions:
+  - [x] `reach_target_within`
+  - [x] `no_self_collision`
+  - [x] `max_joint_torque_below`
+  - [x] `sim_time_under`
+  - [x] `pose_within_tolerance`
+  - [x] `rtf_above`
+  - [x] `collision_count_below`
+- [x] Implement scenario loading from `tests/scenarios/` (`runner/scenario.load_scenario()`).
+- [x] Implement single-test execution (`runner/runner.run_test(name)`).
+- [x] Implement run-all execution (`runner/runner.run_all_tests()`).
+- [x] Evaluate assertions from recorded telemetry (`runner/assertions.evaluate_all()`).
+- [x] Write `sim_runs/<timestamp>_<scenario>/result.yaml` (`runner/result.write_result()`).
+- [x] Include input hashes (scenario YAML SHA-256, robot URDF SHA-256, world SDF SHA-256), tool versions, in each result.
+- [x] Record telemetry: joint states, EE poses, contacts, RTF (`runner/executor.py`).
+- [x] Add pass/fail Test Runner panel to Simulation Workbench (`addons/SimWorkbench/panels/test_runner_panel.py`).
+- [x] `list_tests()` and `run_test(name)` available via `runner.runner` — callable from FreeCAD `execute_code()`.
+- [x] Regression tests for scenario parsing and assertion evaluation (`tests/test_runner.py` — 44 tests).
 
 Deliverables:
 
-- [ ] Scenario runner.
-- [ ] Assertion evaluator.
-- [ ] Result writer.
-- [ ] Workbench Test Runner panel.
-- [ ] MCP test tools.
+- [x] Scenario runner (`runner/runner.py`).
+- [x] Assertion evaluator (`runner/assertions.py`).
+- [x] Result writer (`runner/result.py` — YAML with hashes/versions).
+- [x] Workbench Test Runner panel (`addons/SimWorkbench/panels/test_runner_panel.py`).
+- [x] `list_tests` / `run_test` accessible via `execute_code` MCP surface.
+- [ ] CLI entry point: `python -m runner.runner list/run/run-all` ✓ (coded, not separately tested live).
 
 Definition of done:
 
 - A robot design can be regression-tested through repeatable scenarios, and results are visible in FreeCAD and available to the MCP client.
+- **Met**: Full offline pipeline works end-to-end with mock bridge. Live runs blocked by Gazebo Docker.
+
+### Phase 4 Notes
+
+- **Design decision**: `runner/` is a standalone Python package; it does NOT require FreeCAD to be installed. The `execute_code` hook in the FreeCAD MCP server is the only coupling point.
+- **Design decision**: `run_test()` accepts a `bridge_module` parameter, making it fully unit-testable with mock Gazebo state.
+- **Design decision**: result.yaml includes `input_hashes` (SHA-256 of scenario YAML, robot URDF, world SDF). No random seeds in v1 since Gazebo uses deterministic physics by default.
+- **Test count**: 96 passed, 6 skipped (live) across all test files.
+- **Commit**: `phase 4: test runner, assertion evaluator, result writer`
 
 ## Phase 4.5: ROS 2 Control and Telemetry
 

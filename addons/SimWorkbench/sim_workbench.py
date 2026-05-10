@@ -204,6 +204,13 @@ def _create_panels(coord: "SimWorkbenchCoordinator") -> dict:
         log.warning("RunLibraryPanel failed: %s", exc)
 
     try:
+        from panels.test_runner_panel import TestRunnerPanel
+        panels["test_runner"] = TestRunnerPanel(coord)
+        _add_dock(panels["test_runner"], "Test Runner", "Left")
+    except Exception as exc:
+        log.warning("TestRunnerPanel failed: %s", exc)
+
+    try:
         from panels.mcp_log import MCPLogPanel
         panels["mcp_log"] = MCPLogPanel(coord)
         _add_dock(panels["mcp_log"], "MCP Activity", "Bottom")
