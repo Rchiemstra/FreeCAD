@@ -1,0 +1,11 @@
+# requirements-dev.txt
+# Development and test dependencies (not required at runtime).
+# Install with: pip install -r requirements-dev.txt
+#
+# Must include -r requirements-bridge.txt first, or install both:
+#   pip install -r requirements-bridge.txt -r requirements-dev.txt
+
+-r requirements-bridge.txt
+
+pytest~=8.4.1
+pytest-mock~=3.14.1

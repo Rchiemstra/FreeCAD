@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Offline pytest suite (bridge / runner / iteration / SimWorkbench logic).
+# Does not install FreeCAD or Gazebo — live tests stay skipped (same as host CI).
+#
+# Build from repo root:
+#   docker build -f docker/Dockerfile.test -t freecad-gazebo-mcp-pytest .
+# Run:
+#   docker run --rm freecad-gazebo-mcp-pytest
+
+FROM python:3.12-slim-bookworm
+
+WORKDIR /workspace
+
+COPY requirements-bridge.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+COPY . .
+
+CMD ["python", "-m", "pytest", "tests", "-q", "--tb=short"]

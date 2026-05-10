@@ -1,0 +1,13 @@
+# Offline pytest in Docker (no FreeCAD / Gazebo in container).
+#
+# From repo root:
+#   docker compose -f docker/compose.pytest.yml build
+#   docker compose -f docker/compose.pytest.yml run --rm pytest
+#
+services:
+  pytest:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    image: freecad-gazebo-mcp-pytest:latest
+    command: ["python", "-m", "pytest", "tests", "-q", "--tb=short"]

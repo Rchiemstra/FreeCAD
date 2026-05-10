@@ -1,0 +1,20 @@
+# Keep pytest image builds fast — exclude heavy or irrelevant trees.
+.git
+**/.git
+.pixi
+**/node_modules
+src/3rdParty/gz-sim
+src/3rdParty/ros2
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+build
+**/CMakeFiles
+sim_runs/
+generated/
+tools/mcp/

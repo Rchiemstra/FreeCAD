@@ -133,6 +133,10 @@ python test_all_mcp.py --no-gazebo --no-ros
 # Run with FreeCAD+Gazebo+ROS running (full integration)
 python test_all_mcp.py --start-apps --startup-wait 30
 
+# Offline pytest in Docker (Linux image — same skips as host; no FreeCAD/Gazebo inside)
+docker compose -f docker/compose.pytest.yml build
+docker compose -f docker/compose.pytest.yml run --rm pytest
+
 # Recorded run (2026-05-10): python test_all_mcp.py --timeout 30
 #   Total: 17 passed, 0 failed, 0 skipped (FreeCAD XML-RPC not running — expected WARN then graceful list_documents).
 #   When FreeCAD is running with the MCP addon RPC server on port 9875, the same command additionally exercises
@@ -145,7 +149,7 @@ python test_all_mcp.py --start-apps --startup-wait 30
 
 - **`scripts/install_robotcad_cross.ps1`** clones/updates `drfenixion/freecad.overcross` into `%APPDATA%\FreeCAD\v1-2\Mod\freecad.overcross` (enable the workbench in FreeCAD after install).
 - **`test_all_mcp.py`** now calls **`get_object`** and **`get_view`** after **`create_object`** when XML-RPC on **9875** is reachable (automates create / inspect / screenshot).
-- **Offline pytest:** `python -m pytest tests -q` — recorded **151 passed, 6 skipped** (2026-05-10).
+- **Offline pytest:** `python -m pytest tests -q` — recorded **151 passed, 6 skipped** (2026-05-10). Same suite runs in **`docker compose -f docker/compose.pytest.yml run --rm pytest`** (Python **3.12-bookworm** image; context excludes `tools/mcp`, `src/3rdParty/*` via `.dockerignore`).
 - **Still manual / environment-dependent:** RobotCAD demo in GUI; full Gazebo MCP lifecycle vs live `gz sim` after Docker build.
 
 **MCP transport resolution:**

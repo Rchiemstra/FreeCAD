@@ -1,0 +1,11 @@
+# requirements-bridge.txt
+# Pinned runtime dependencies for bridge/, runner/, and iteration/ packages.
+# Install with: pip install -r requirements-bridge.txt
+#
+# These are the only external PyPI packages required on the Windows host.
+# FreeCAD and Gazebo themselves are not installed via pip.
+#
+# Version constraints follow the principle of "minimum upper bound":
+# exact versions tested are listed; allow patch upgrades with ~=.
+
+PyYAML~=6.0.3          # YAML loading for project.yaml, scenario YAMLs, result.yaml
