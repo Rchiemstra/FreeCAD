@@ -399,8 +399,14 @@ class TestGazeboBridgeLive:
 
     @pytest.fixture(autouse=True)
     def require_gazebo(self):
-        """Skip if gazebo-mcp MCP server can't start in WSL."""
-        import subprocess, time
+        """Skip unless RUN_GAZEBO_LIVE=1 and gazebo-mcp-server starts."""
+        import os
+        import subprocess
+        import time
+
+        if os.environ.get("RUN_GAZEBO_LIVE", "").strip().lower() not in ("1", "yes", "true"):
+            pytest.skip("Live Gazebo MCP tests skipped (set RUN_GAZEBO_LIVE=1)")
+
         from bridge.gazebo_bridge import _GAZEBO_SERVER_CMD
         try:
             proc = subprocess.Popen(
@@ -411,7 +417,7 @@ class TestGazeboBridgeLive:
             time.sleep(1.5)
             if proc.poll() is not None:
                 proc.kill()
-                pytest.skip("gazebo-mcp server process failed to start in WSL")
+                pytest.skip("gazebo-mcp-server process failed to start")
             proc.terminate()
             proc.wait(timeout=5)
         except Exception as exc:

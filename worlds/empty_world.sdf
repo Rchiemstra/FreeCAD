@@ -8,8 +8,8 @@
     - Directional sunlight
     - Physics: Bullet (default), step 1 ms, max RTF 1.0
 
-  To load the arm_2dof robot into this world, from WSL:
-    gz model -f robots/arm_2dof.urdf -m arm_2dof
+  Spawn URDF at runtime via gz service /world/empty_world/create (Harmonic).
+  Exact CLI text is in docs/freecad_gazebo_mcp_task_breakdown.md (Phase 1 commands).
 
   Or via gazebo-mcp Python client:
     gazebo_spawn_model(model_name="arm_2dof", urdf_path="robots/arm_2dof.urdf")

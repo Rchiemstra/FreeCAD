@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Minimal scenario for Docker E2E — avoids joint / reach assertions that need full telemetry.
+
+name: e2e_smoke
+description: "Headless smoke — simulation clock advances and no assertions require joint streams"
+
+robot: arm_2dof
+world: empty
+
+initial_pose:
+  x: 0.0
+  y: 0.0
+  z: 0.15
+  yaw: 0.0
+
+goal:
+  type: none
+
+duration: 6.0
+
+assertions:
+  - type: sim_time_under
+    seconds: 120.0
+  - type: no_self_collision
+  - type: collision_count_below
+    value: 500
+  - type: rtf_above
+    value: 0.01
+
+record:
+  joint_states: false
+  end_effector_pose: true
+  contacts: false
+  rtf: true
+  screenshot_interval: 0

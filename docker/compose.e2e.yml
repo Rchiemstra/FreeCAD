@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Full unattended E2E (see docs/freecad_gazebo_mcp_task_breakdown.md § Docker E2E).
+#
+#   docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+#
+# Requirements: Linux engine (Docker Desktop Linux containers); first build pulls ROS/Gazebo/FreeCAD (~several GB).
+
+services:
+  e2e:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.e2e
+    image: freecad-gazebo-mcp-e2e:latest
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    environment:
+      SIM_RUNS_DIR: /workspace/sim_runs
+      E2E_BRIDGE_MODULE: gz_cli
+      MCP_VENV: /opt/mcp-venv
+      GZ_SIM_WORLD_NAME: empty_world
+    command: ["/bin/bash", "-lc", "/workspace/e2e/run_e2e.sh"]

@@ -149,6 +149,69 @@ The execution loop orchestrated by the LLM unfolds autonomously through several 
 4. **Operational Execution:** Through ros2-mcp, the agent activates the SLAM and Nav2 controllers, transmitting a series of action goals to force the simulated robot to navigate the environment.40  
 5. **Telemetry Extraction:** Concurrently, the agent utilizes both gazebo-mcp (extracting ground-truth physics state) and ros2-mcp (extracting robot-perceived telemetry) to subscribe to critical sensor streams, continuously logging IMU acceleration, wheel odometry, and contact sensor impacts into structured datasets.29
 
+### **Dockerized No-Human E2E Validation Plan**
+
+The practical acceptance target for this project is a fully unattended end-to-end test. A fresh checkout should be able to run one Docker command, build the test environment, export a FreeCAD robot through RobotCAD/CROSS, start headless Gazebo, spawn the robot, execute scenarios, evaluate assertions, write results, and exit with a non-zero status on any failure. No human should need to open FreeCAD, click a workbench button, or start Gazebo manually.
+
+The recommended first implementation is a single Linux Docker image rather than several networked services. Keeping FreeCAD, RobotCAD/CROSS, ROS2, Gazebo, and the MCP servers in one container avoids early failures from ROS discovery, host path mapping, and container-to-container transport configuration. Once the one-container flow is reliable, it can be split into separate services if CI scale or process isolation demands it.
+
+The target command is:
+
+```powershell
+docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+```
+
+**Repository implementation (2026-05-10):** see `docker/compose.e2e.yml`, `docker/Dockerfile.e2e`, and `e2e/run_e2e.sh` in this project; live status, blockers, and exact commands recorded in [freecad_gazebo_mcp_task_breakdown.md](freecad_gazebo_mcp_task_breakdown.md) § *Docker E2E*.
+
+The Docker image should contain:
+
+| Component | E2E Responsibility |
+| :---- | :---- |
+| FreeCAD / `freecadcmd` | Open `.FCStd` source files and run export scripts without user interaction. |
+| RobotCAD/CROSS | Convert FreeCAD robot assemblies into URDF/SDF, meshes, ROS2 package files, launch files, and controller configuration. |
+| Xvfb | Provide a virtual display when FreeCAD or RobotCAD imports GUI/Qt modules even though no human sees a window. |
+| Gazebo `gz sim -s` | Run the physics backend in server-only mode. |
+| ROS2 | Provide controller, topic, service, and action infrastructure for controller-in-the-loop tests. |
+| MCP servers | Verify the same tool surfaces used by LLM agents, not only direct Python helper calls. |
+| Project test runner | Load scenarios, evaluate assertions, and write `sim_runs/<timestamp>_<scenario>/result.yaml`. |
+
+The container entrypoint should execute the following stages:
+
+1. **Environment smoke test:** print and record versions for FreeCAD, Python, RobotCAD/CROSS, ROS2, Gazebo, Docker image digest, and MCP servers.
+2. **RobotCAD install check:** verify the RobotCAD/CROSS module exists in FreeCAD's Mod path and can be imported under `freecadcmd` or `xvfb-run -a freecadcmd`.
+3. **Headless export:** open `robots/<robot>.FCStd`, invoke RobotCAD/CROSS export, and write generated artifacts under `generated/<robot>/`.
+4. **Artifact validation:** check URDF/SDF syntax, relative mesh paths, link and joint presence, inertial data, material/density metadata, and collision geometry.
+5. **Gazebo startup:** launch `gz sim -s worlds/<world>.sdf` in the background and poll until `gazebo-mcp` can report simulation status.
+6. **Spawn and lifecycle smoke test:** spawn the exported robot, query model state, pause, resume, step, reset, and delete or reload the model.
+7. **Scenario execution:** run `python -m runner.runner run-all` against live Gazebo and fail if any scenario status is not `pass`.
+8. **MCP path verification:** execute at least one complete MCP-mediated flow: FreeCAD export, Gazebo spawn, simulation step, telemetry read, and result retrieval.
+9. **Result collection:** write logs, result YAML files, telemetry summaries, and environment metadata under `sim_runs/e2e_<timestamp>/`.
+
+The only known technical uncertainty is whether RobotCAD/CROSS exports cleanly under pure `freecadcmd`. If it imports GUI-only FreeCAD modules, the E2E flow should still remain no-human by running FreeCAD under Xvfb:
+
+```bash
+xvfb-run -a freecadcmd e2e/export_robotcad.py arm_2dof
+```
+
+If `freecadcmd` is insufficient, the fallback is still automated:
+
+```bash
+xvfb-run -a FreeCAD --console e2e/export_robotcad.py arm_2dof
+```
+
+The E2E suite is considered complete only when it proves all of the following from a clean Docker build:
+
+- RobotCAD/CROSS installs automatically.
+- FreeCAD opens the source `.FCStd` file without human clicks.
+- RobotCAD/CROSS exports URDF/SDF and related artifacts.
+- Gazebo runs headless.
+- The exported robot spawns successfully.
+- Scenario assertions run against live simulation data.
+- `sim_runs/.../result.yaml` contains hashes, versions, assertion outcomes, and telemetry summaries.
+- The container exits `0` only when the full live pipeline passes.
+
+Until this command passes, the project should distinguish between "offline unit/integration tests pass" and "full E2E is verified." Offline tests validate the Python bridge, runner, schemas, and mocked MCP/tool behavior; the Docker E2E test validates the real FreeCAD-to-RobotCAD-to-Gazebo pipeline.
+
 ### **Advanced Quantitative Evaluation Metrics**
 
 To rigorously evaluate the operational performance of the generated mechanical model and its software stack, the AI agent relies on quantitative metrics rather than subjective visual observation. By leveraging the vast data arrays collected during the simulation runs, the system calculates several vital Key Performance Indicators (KPIs).43

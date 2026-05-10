@@ -1,0 +1,2 @@
+# Linux/Docker entrypoints — CRLF breaks shebang when invoked via bash -lc <path>.
+e2e/*.sh text eol=lf

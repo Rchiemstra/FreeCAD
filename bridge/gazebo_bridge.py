@@ -61,16 +61,34 @@ def _get_wsl_path(windows_path: Path) -> Optional[str]:
 
 
 def _build_gazebo_server_cmd() -> List[str]:
-    """Build the WSL command to start the gazebo-mcp server."""
-    wsl_path = _get_wsl_path(_GAZEBO_MCP)
-    if wsl_path:
-        return ["wsl", "--", "bash", "-c",
-                f"cd '{wsl_path}' && .venv/bin/gazebo-mcp"]
-    # Fallback: use the Windows path with forward slashes (may fail if path has spaces)
-    fallback = str(_GAZEBO_MCP).replace("\\", "/")
-    logger.warning("wslpath conversion failed; using fallback path: %s", fallback)
-    return ["wsl", "--", "bash", "-c",
-            f"cd '{fallback}' && .venv/bin/gazebo-mcp"]
+    """Start gazebo-mcp-server (stdio MCP)."""
+    manual = os.environ.get("GAZEBO_MCP_CMD", "").strip()
+    if manual:
+        return manual.split()
+
+    venv_server = _GAZEBO_MCP / ".venv" / "bin" / "gazebo-mcp-server"
+
+    if sys.platform == "win32":
+        wsl_path = _get_wsl_path(_GAZEBO_MCP)
+        if wsl_path:
+            return [
+                "wsl", "--", "bash", "-c",
+                f"cd '{wsl_path}' && .venv/bin/gazebo-mcp-server",
+            ]
+        fallback = str(_GAZEBO_MCP).replace("\\", "/")
+        logger.warning("wslpath conversion failed; using fallback path: %s", fallback)
+        return [
+            "wsl", "--", "bash", "-c",
+            f"cd '{fallback}' && .venv/bin/gazebo-mcp-server",
+        ]
+
+    # Linux / macOS — local venv entry-point with package cwd for relative assets
+    if venv_server.is_file():
+        return [
+            "bash", "-lc",
+            f"cd '{_GAZEBO_MCP}' && exec '{venv_server}'",
+        ]
+    return ["bash", "-lc", f"cd '{_GAZEBO_MCP}' && exec gazebo-mcp-server"]
 
 
 # Built once at module import time (wslpath call is fast)
@@ -288,7 +306,7 @@ def wait_for_ready(
     for attempt in range(retries):
         try:
             with GazeboSession(timeout=timeout) as gz:
-                raw = gz("get_simulation_status", {})
+                raw = gz("gazebo_get_simulation_status", {})
                 ok, data, msg = _parse_tool_result(raw)
                 if ok:
                     return GazeboResult(ok=True, data=data, messages=[msg])

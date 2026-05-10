@@ -17,4 +17,3 @@ build
 **/CMakeFiles
 sim_runs/
 generated/
-tools/mcp/

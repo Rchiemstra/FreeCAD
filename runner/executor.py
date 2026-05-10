@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -166,20 +167,31 @@ class ScenarioExecutor:
 
     def _urdf_path(self) -> str:
         """Resolve the URDF path for the scenario's robot."""
+        from pathlib import Path
+
+        robot = self._scenario.robot
         try:
             from bridge.project import load_project
+
             cfg = load_project()
-            from pathlib import Path
-            p = Path(cfg.root) / "robots" / f"{self._scenario.robot}.urdf"
-            return str(p)
+            gen = cfg.paths.generated / robot / f"{robot}.urdf"
+            if gen.is_file():
+                return str(gen)
+            return str(cfg.paths.robots / f"{robot}.urdf")
         except Exception:
-            return f"robots/{self._scenario.robot}.urdf"
+            gen = Path("generated") / robot / f"{robot}.urdf"
+            if gen.is_file():
+                return str(gen)
+            return f"robots/{robot}.urdf"
 
     @staticmethod
     def _load_bridge():
-        try:
-            from bridge import gazebo_bridge
-            return gazebo_bridge
-        except Exception as exc:
-            log.debug("Cannot load bridge.gazebo_bridge: %s", exc)
-            return None
+        env = os.environ.get("E2E_BRIDGE_MODULE", "").strip().lower()
+        if env in ("gz_cli", "1", "yes", "true"):
+            try:
+                from bridge import gz_cli_bridge
+                return gz_cli_bridge
+            except Exception as exc:
+                log.debug("Cannot load bridge.gz_cli_bridge: %s", exc)
+                return None
+        return None

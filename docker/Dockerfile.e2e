@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.6
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Single-image E2E stack (FreeCAD daily + RobotCAD, ROS 2 Jazzy, Gazebo Harmonic, MCP venv).
+# Runtime bind-mounts the repo to /workspace (see docker/compose.e2e.yml).
+
+FROM ros:jazzy-ros-base-noble
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV MCP_VENV=/opt/mcp-venv
+ENV E2E_BRIDGE_MODULE=gz_cli
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        wget \
+        software-properties-common \
+        git \
+        xvfb \
+        x11-utils \
+        python3-venv \
+        python3-pip \
+        liburdfdom-tools \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Gazebo Harmonic (binary install — avoids multi-hour gz-sim source builds).
+RUN wget -q https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+        > /etc/apt/sources.list.d/gazebo-stable.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gz-harmonic \
+    && rm -rf /var/lib/apt/lists/*
+
+# FreeCAD daily PPA (RobotCAD targets modern FreeCAD builds).
+RUN add-apt-repository -y ppa:freecad-maintainers/freecad-daily \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends freecad-daily \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /root/.local/share/FreeCAD/Mod \
+    && git clone --depth 1 https://github.com/drfenixion/freecad.robotcad.git /opt/robotcad \
+    && ln -sf /opt/robotcad /root/.local/share/FreeCAD/Mod/RobotCAD
+
+RUN python3 -m venv /opt/mcp-venv \
+    && /opt/mcp-venv/bin/pip install -U pip setuptools wheel \
+    && /opt/mcp-venv/bin/pip install "mcp[cli]>=1.12" pydantic pyyaml validators
+
+WORKDIR /workspace
+
+# Entry path is always supplied by compose → bind-mounted repo script.
+CMD ["/bin/bash", "-lc", "/workspace/e2e/run_e2e.sh"]

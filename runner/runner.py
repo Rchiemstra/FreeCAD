@@ -15,6 +15,7 @@ They can also be exposed by the Workbench Test Runner panel.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -203,6 +204,11 @@ if TYPE_CHECKING:
     from runner.result import RunResult
 
 
+def _sim_runs_dir_cli() -> Optional[Path]:
+    raw = os.environ.get("SIM_RUNS_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
 def _cli_main(argv: list[str]) -> int:
     import argparse
     parser = argparse.ArgumentParser(description="FreeCAD/Gazebo Test Runner")
@@ -229,14 +235,21 @@ def _cli_main(argv: list[str]) -> int:
         return 0
 
     if args.cmd == "run":
-        result = run_test(args.name, scenarios_dir=args.dir)
+        result = run_test(
+            args.name,
+            scenarios_dir=args.dir,
+            sim_runs_dir=_sim_runs_dir_cli(),
+        )
         print(result.summary())
         for ar in result.assertion_results:
             print(f"  {ar}")
         return 0 if result.status == "pass" else 1
 
     if args.cmd == "run-all":
-        results = run_all_tests(scenarios_dir=args.dir)
+        results = run_all_tests(
+            scenarios_dir=args.dir,
+            sim_runs_dir=_sim_runs_dir_cli(),
+        )
         for r in results:
             print(r.summary())
         failed = sum(1 for r in results if r.status != "pass")

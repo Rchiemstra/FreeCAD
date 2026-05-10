@@ -11,7 +11,7 @@ Source docs:
 - [diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml](diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml)
 
 Last reviewed: 2026-05-10
-Last updated: 2026-05-10 (Phase 0 completion pass)
+Last updated: 2026-05-10 (Docker E2E compose)
 
 ## Purpose
 
@@ -53,6 +53,49 @@ The core product is a robot test rig, not MCP plumbing by itself.
 | Phase 5: Iteration Loops | LLM can change design parameters and rerun tests | Reliable export cache and test runner |
 | Phase 6: Hardening | The system is reproducible, permissioned, typed, and robust | Earlier phases complete |
 | Phase 7: Scale-Out Validation | Randomized environments, metrics dashboards, and CI test suites | Hardened test runner |
+| **Docker E2E** | One compose command runs export smoke, MCP servers, gz sim, scenarios → `sim_runs/` | Linux Docker engine; see section below |
+
+## Docker E2E (no-human acceptance)
+
+Implements § *Dockerized No-Human E2E Validation Plan* in [FreeCAD Model Simulation Pipeline Integration.md](FreeCAD%20Model%20Simulation%20Pipeline%20Integration.md).
+
+### Target command (Linux Docker engine)
+
+```powershell
+docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+```
+
+### What is implemented
+
+| Stage | Implementation |
+| --- | --- |
+| Base image | `docker/Dockerfile.e2e` — `ros:jazzy-ros-base-noble` + **Gazebo Harmonic** (OSRF apt) + **freecad-daily** PPA + **RobotCAD** clone at `/root/.local/share/FreeCAD/Mod/RobotCAD` → `/opt/robotcad` |
+| MCP venv | `/opt/mcp-venv` core deps; **runtime** `pip install -e` on bind-mounted `tools/mcp/{gazebo-mcp,freecad-mcp,ros-mcp-server}` |
+| Driver script | `e2e/run_e2e.sh` — versions, `${FREECAD_CMD}` RobotCAD import (`e2e/check_robotcad_freecad.py`), `e2e/stage_export.sh`, `check_urdf`, Xvfb, background **`gz sim -s worlds/empty_world.sdf`**, **`e2e/mcp_smoke.py`**, **`python -m runner.runner run-all --dir tests/scenarios_e2e`** |
+| Runner ↔ Gazebo | **`bridge/gz_cli_bridge`** via **`E2E_BRIDGE_MODULE=gz_cli`** — spawn uses **`gz service -s /world/<world>/create`** with **`gz.msgs.EntityFactory`** / **`sdf_filename`** (URDF path); world defaults to **`GZ_SIM_WORLD_NAME=empty_world`**. MCP **`gazebo_spawn_model`** still does not forward **`model_xml`** today. |
+| MCP smoke | **`e2e/mcp_smoke.py`** — reuses **`test_all_mcp.MCPClientStdio`** against all three servers |
+| Scenario | **`tests/scenarios_e2e/e2e_smoke.yaml`** — lightweight assertions (no joint torque / reach goals) |
+
+### Engineering choices / findings
+
+- **Single container** first — matches the integration doc and avoids cross-container ROS DDS setup for v1.
+- **`bridge/gazebo_bridge.py`**: native Linux uses local `.venv/bin/gazebo-mcp-server` with package `cwd`; Windows keeps **WSL** launch; fixed MCP tool name **`gazebo_get_simulation_status`** in `wait_for_ready`.
+- **`runner/executor.py`**: live bridge loads **`gz_cli_bridge`** only when **`E2E_BRIDGE_MODULE`** is enabled; default **`None`** preserves mock-injected unit tests. **`_urdf_path`** prefers **`generated/<robot>/<robot>.urdf`** when staged/exported, otherwise **`robots/<robot>.urdf`**.
+- **`SIM_RUNS_DIR`** env wired through **`runner.runner` CLI** for `run` / `run-all`.
+- **Export honesty**: without **`robots/arm_2dof.FCStd`**, staging copies the checked-in URDF after RobotCAD **import** succeeds — full mesh-export-through-RobotCAD remains blocked until an FCStd is committed.
+- **Shell scripts for Linux**: **`e2e/*.sh`** checked in as **LF** (`.gitattributes`); **CRLF** breaks shebang execution when Compose runs `bash -lc /workspace/e2e/run_e2e.sh`.
+- **ROS environment**: **`set -u`** before **`source /opt/ros/jazzy/setup.bash`** trips on unset `AMENT_*` variables — bracket the source with **`set +u`** / **`set -u`**.
+- **URDF spawn on gz-sim 8**: **`gz model --spawn-file`** is not available; use **`gz service -s /world/<world>/create`** with **`gz.msgs.EntityFactory`** and **`sdf_filename`** (Harmonic tutorial). Pre-delete uses **`/world/<world>/remove`**; “entity not found” on first run is benign.
+
+### Blockers / next steps
+
+- [ ] Add **`robots/arm_2dof.FCStd`** with `Cross::*` entities so `e2e/export_robotcad_fcstd.py` runs a real exporter path.
+- [ ] Optionally extend **gazebo-mcp** `spawn_model_wrapper` to pass **`model_xml`** through to `model_management.spawn_model`.
+- **Agent validation**: `python -m pytest tests` → **151 passed**, **6 skipped** (2026-05-10). **`docker compose -f docker/compose.e2e.yml up --abort-on-container-exit --exit-code-from e2e`** exercised end-to-end on **Docker Desktop Linux engine** after fixing CRLF shebangs (`e2e/*.sh` **LF** via `.gitattributes`), **`set +u` around `/opt/ros/jazzy/setup.bash`**, replacing **`ros2 --version`**, and URDF spawn via **`gz service … /world/empty_world/create`** (not **`gz model --spawn-file`**, absent on gz CLI 8.x).
+
+### `.dockerignore` note
+
+`tools/mcp/` is **included** in the Docker build context again so **both** `docker/Dockerfile.e2e` and **`docker/compose.pytest.yml`** see MCP submodules (pytest image context grows).
 
 ## Phase 0: Environment
 
@@ -137,6 +180,9 @@ python test_all_mcp.py --start-apps --startup-wait 30
 docker compose -f docker/compose.pytest.yml build
 docker compose -f docker/compose.pytest.yml run --rm pytest
 
+# Full Docker E2E (Linux engine — ROS + Gazebo + FreeCAD daily; first build is large)
+docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+
 # Recorded run (2026-05-10): python test_all_mcp.py --timeout 30
 #   Total: 17 passed, 0 failed, 0 skipped (FreeCAD XML-RPC not running — expected WARN then graceful list_documents).
 #   When FreeCAD is running with the MCP addon RPC server on port 9875, the same command additionally exercises
@@ -149,7 +195,7 @@ docker compose -f docker/compose.pytest.yml run --rm pytest
 
 - **`scripts/install_robotcad_cross.ps1`** clones/updates `drfenixion/freecad.overcross` into `%APPDATA%\FreeCAD\v1-2\Mod\freecad.overcross` (enable the workbench in FreeCAD after install).
 - **`test_all_mcp.py`** now calls **`get_object`** and **`get_view`** after **`create_object`** when XML-RPC on **9875** is reachable (automates create / inspect / screenshot).
-- **Offline pytest:** `python -m pytest tests -q` — recorded **151 passed, 6 skipped** (2026-05-10). Same suite runs in **`docker compose -f docker/compose.pytest.yml run --rm pytest`** (Python **3.12-bookworm** image; context excludes `tools/mcp`, `src/3rdParty/*` via `.dockerignore`).
+- **Offline pytest:** `python -m pytest tests -q` — recorded **151 passed, 6 skipped** (2026-05-10). Same suite runs in **`docker compose -f docker/compose.pytest.yml run --rm pytest`** (Python **3.12-bookworm** image; `.dockerignore` skips `src/3rdParty/*` and caches; **`tools/mcp/` stays in context** so images can `pip install -e` the MCP packages).
 - **Still manual / environment-dependent:** RobotCAD demo in GUI; full Gazebo MCP lifecycle vs live `gz sim` after Docker build.
 
 **MCP transport resolution:**
@@ -235,12 +281,13 @@ check_urdf /mnt/c/Users/Rchie/Music/FreeCAD/robots/arm_2dof.urdf
 # Load world headlessly:
 gz sim -s /mnt/c/Users/Rchie/Music/FreeCAD/worlds/empty_world.sdf &
 
-# Spawn the arm:
-gz model --spawn-file /mnt/c/Users/Rchie/Music/FreeCAD/robots/arm_2dof.urdf \
-         --model-name arm_2dof
+# Spawn the arm (Harmonic / gz-sim 8 — use the world's create service, not ``gz model --spawn-file``):
+gz service -s /world/empty_world/create \
+  --reqtype gz.msgs.EntityFactory --reptype gz.msgs.Boolean --timeout 15000 \
+  --req 'name: "arm_2dof", sdf_filename: "/mnt/c/Users/Rchie/Music/FreeCAD/robots/arm_2dof.urdf"'
 
 # Check pose:
-gz model --model-name arm_2dof -p
+gz model -m arm_2dof -p
 ```
 
 ```python
