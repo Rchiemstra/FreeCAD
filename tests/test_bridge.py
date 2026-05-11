@@ -263,14 +263,14 @@ class TestValidateSDF:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestFreeCADBridgeOffline:
-    def test_export_sdf_world_stages_file(self, tmp_path, sdf_path, project):
+    def test_export_sdf_world_stages_file(self, sdf_path, project):
         """export_sdf_world should copy the world SDF to the generated dir."""
         from bridge.freecad_bridge import export_sdf_world
-        out_dir = tmp_path / "generated" / "empty_world"
-        result  = export_sdf_world(
-            world_name = "empty_world",
-            out_dir    = out_dir,
-            source_dir = project.paths.worlds,
+        out_dir = project.paths.generated / "pytest_empty_world"
+        result = export_sdf_world(
+            world_name="empty_world",
+            out_dir=out_dir,
+            source_dir=project.paths.worlds,
         )
         assert result.ok, f"export_sdf_world failed: {result.messages}"
         assert result.path is not None
@@ -279,12 +279,12 @@ class TestFreeCADBridgeOffline:
         from bridge.validate import validate_sdf
         assert validate_sdf(result.path).ok
 
-    def test_export_sdf_world_missing_source(self, tmp_path):
+    def test_export_sdf_world_missing_source(self, project):
         from bridge.freecad_bridge import export_sdf_world
         r = export_sdf_world(
-            world_name = "nonexistent_world",
-            out_dir    = tmp_path / "generated" / "nonexistent",
-            source_dir = tmp_path,  # empty dir
+            world_name="nonexistent_world",
+            out_dir=project.paths.generated / "pytest_nonexistent",
+            source_dir=project.paths.tests,
         )
         assert not r.ok
         assert any("not found" in m.lower() for m in r.messages)
@@ -302,12 +302,12 @@ class TestFreeCADBridgeOffline:
                 for m in result.messages
             )
 
-    def test_export_urdf_fails_cleanly_when_freecad_not_running(self, tmp_path):
+    def test_export_urdf_fails_cleanly_when_freecad_not_running(self, project):
         from bridge.freecad_bridge import export_urdf
         result = export_urdf(
-            robot_name = "arm_2dof",
-            out_dir    = tmp_path / "generated" / "arm_2dof",
-            timeout    = 2.0,
+            robot_name="arm_2dof",
+            out_dir=project.paths.generated / "pytest_arm_export",
+            timeout=2.0,
         )
         # Should fail cleanly, not raise
         assert not result.ok
@@ -364,6 +364,27 @@ class TestHandoffOffline:
         assert step is not None and not step.ok
 
 
+class TestGazeboMcpServerCmd:
+    """Offline: how we locate ``gazebo-mcp-server`` (Docker ``MCP_VENV`` vs submodule .venv)."""
+
+    def test_mcp_venv_selects_shared_server(self, tmp_path, monkeypatch):
+        import stat
+
+        monkeypatch.delenv("GAZEBO_MCP_CMD", raising=False)
+        v = tmp_path / "rv"
+        bin_dir = v / "bin"
+        bin_dir.mkdir(parents=True)
+        exe = bin_dir / "gazebo-mcp-server"
+        exe.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        exe.chmod(stat.S_IRWXU)
+        monkeypatch.setenv("MCP_VENV", str(v))
+
+        from bridge.gazebo_bridge import gazebo_mcp_server_cmd
+
+        cmd = gazebo_mcp_server_cmd()
+        assert str(exe) in " ".join(cmd)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Live integration tests (skipped unless marks passed)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -407,10 +428,10 @@ class TestGazeboBridgeLive:
         if os.environ.get("RUN_GAZEBO_LIVE", "").strip().lower() not in ("1", "yes", "true"):
             pytest.skip("Live Gazebo MCP tests skipped (set RUN_GAZEBO_LIVE=1)")
 
-        from bridge.gazebo_bridge import _GAZEBO_SERVER_CMD
+        from bridge.gazebo_bridge import gazebo_mcp_server_cmd
         try:
             proc = subprocess.Popen(
-                _GAZEBO_SERVER_CMD,
+                gazebo_mcp_server_cmd(),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=False,
             )

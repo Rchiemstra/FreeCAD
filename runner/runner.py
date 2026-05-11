@@ -189,7 +189,22 @@ def _dummy_scenario(name: str) -> "Scenario":
 def _try_write(result: "RunResult", sim_runs_dir: Optional[Path | str]) -> None:
     from runner.result import write_result
     try:
-        write_result(result, Path(sim_runs_dir) if sim_runs_dir else None)
+        path = write_result(result, Path(sim_runs_dir) if sim_runs_dir else None)
+        try:
+            from bridge.structured_log import append_event
+
+            append_event(
+                {
+                    "event": "scenario_run_result",
+                    "component": "runner.runner",
+                    "scenario": result.scenario.name,
+                    "status": result.status,
+                    "artifact_path": str(path),
+                },
+                log_path=path.parent / "logs" / "structured.jsonl",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         log.warning("[Runner] Could not write result.yaml: %s", exc)
 

@@ -1,6 +1,12 @@
 # project.yaml — Robot simulation project manifest
 # This file is the entry point for the FreeCAD/Gazebo/MCP robot test rig.
 # See docs/freecad_gazebo_mcp_plan.md for architecture details.
+#
+# Docker CI / E2E runtime pins (ROS distro, base images, Gazebo family, env vars):
+#   config/runtime_manifest.yaml
+# Bridge MCP write policy (allowed write roots, tool classification):
+#   config/mcp_permissions.yaml
+# Structured JSONL (MCP / E2E / runner): BRIDGE_STRUCTLOG_PATH or <E2E_RUN_DIR>/logs/structured.jsonl
 
 name: freecad-gazebo-mcp
 version: "0.1"

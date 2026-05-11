@@ -15,6 +15,8 @@ Design notes:
     check success without parsing exception messages.
   - BLOCKER (Phase 1): RobotCAD/CROSS must be installed in FreeCAD for
     export_urdf() to succeed. check_robotcad() reports the installation status.
+  - Output directories for export_urdf / export_sdf_world must lie under sim_runs/
+    or generated/ (``bridge.mcp_write_policy``).
 """
 
 from __future__ import annotations
@@ -25,6 +27,11 @@ import xmlrpc.client
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
+
+from bridge.mcp_write_policy import (
+    MCPFilesystemWriteDenied,
+    ensure_allowed_write_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +260,11 @@ def export_urdf(
             ],
         )
 
+    try:
+        ensure_allowed_write_path(out_dir)
+    except MCPFilesystemWriteDenied as exc:
+        return ExportResult(ok=False, messages=[str(exc)])
+
     # Resolve the FCStd path for FreeCAD (must be Windows-native path if FreeCAD runs on Windows)
     doc_arg = str(fcstd_path) if fcstd_path else robot_name
     snippet = _EXPORT_URDF_SNIPPET_TEMPLATE.format(
@@ -320,6 +332,11 @@ def export_sdf_world(
     vr = validate_sdf(source_sdf)
     if not vr.ok:
         return ExportResult(ok=False, messages=vr.errors + vr.warnings)
+
+    try:
+        ensure_allowed_write_path(out_dir)
+    except MCPFilesystemWriteDenied as exc:
+        return ExportResult(ok=False, messages=[str(exc)])
 
     # Stage: copy to out_dir
     out_dir = Path(out_dir)

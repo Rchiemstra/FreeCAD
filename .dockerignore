@@ -17,3 +17,13 @@ build
 **/CMakeFiles
 sim_runs/
 generated/
+# Colcon / local ROS build artifacts inside MCP submodules (break Docker context on some hosts)
+tools/mcp/gazebo-mcp/install
+tools/mcp/gazebo-mcp/build
+tools/mcp/gazebo-mcp/log
+tools/mcp/freecad-mcp/install
+tools/mcp/freecad-mcp/build
+tools/mcp/freecad-mcp/log
+tools/mcp/ros-mcp-server/install
+tools/mcp/ros-mcp-server/build
+tools/mcp/ros-mcp-server/log

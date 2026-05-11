@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<!--
+  e2e_world.sdf — Same as empty_world.sdf plus:
+    - gz-sim-sensors-system (ogre2) for camera rendering in headless+Xvfb
+    - One static overhead camera model (sensor name: e2e_camera)
+
+  Used by docker/compose.e2e.yml via e2e/run_e2e.sh (GZ_SIM_WORLD_NAME stays empty_world).
+  E2E starts Gazebo with **gz sim -r -s** so the camera publishes while the sim runs.
+
+  Phase 1 / local smoke can keep using worlds/empty_world.sdf.
+-->
+<sdf version="1.9">
+  <world name="empty_world">
+
+    <physics name="1ms" type="bullet">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system"
+            name="gz::sim::systems::Contact"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>100</mu>
+                <mu2>50</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Fixed RGB camera for bridge / SimWorkbench screenshot E2E -->
+    <model name="e2e_static_camera">
+      <static>true</static>
+      <pose>3 0 1.5 0 0.4 0</pose>
+      <link name="camera_link">
+        <sensor name="e2e_camera" type="camera">
+          <camera>
+            <horizontal_fov>1.047</horizontal_fov>
+            <image>
+              <width>320</width>
+              <height>240</height>
+              <format>R8G8B8</format>
+            </image>
+            <clip>
+              <near>0.1</near>
+              <far>80</far>
+            </clip>
+          </camera>
+          <always_on>1</always_on>
+          <update_rate>15</update_rate>
+          <visualize>false</visualize>
+        </sensor>
+      </link>
+    </model>
+
+  </world>
+</sdf>

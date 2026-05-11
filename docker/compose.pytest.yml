@@ -1,4 +1,5 @@
 # Offline pytest in Docker (no FreeCAD / Gazebo in container).
+# Image / Python pin: config/runtime_manifest.yaml
 #
 # From repo root:
 #   docker compose -f docker/compose.pytest.yml build

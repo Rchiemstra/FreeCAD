@@ -1,4 +1,5 @@
 # requirements-bridge.txt
+# Bridge PyPI pins also summarized under canonical_ci.bridge_python in config/runtime_manifest.yaml
 # Pinned runtime dependencies for bridge/, runner/, and iteration/ packages.
 # Install with: pip install -r requirements-bridge.txt
 #

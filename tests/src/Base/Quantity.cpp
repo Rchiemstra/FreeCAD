@@ -3,12 +3,23 @@
 #include <Base/Quantity.h>
 #include "Base/UnitsApi.h"
 #include <QLocale>
+#include <algorithm>
+#include <string>
 
 using Base::ParserError;
 using Base::Quantity;
 using Base::Unit;
 using Base::UnitsMismatchError;
 
+namespace
+{
+// getUserString / getSafeUserString follow the OS numeric locale on some platforms (e.g. Windows).
+static std::string normalizeDecimalSeparator(std::string s)
+{
+    std::replace(s.begin(), s.end(), ',', '.');
+    return s;
+}
+}  // namespace
 
 TEST(BaseQuantity, TestValid)
 {
@@ -227,7 +238,7 @@ TEST_F(BaseQuantityLoc, psi_parse_user_str)
     auto format = qParsed.getFormat();
     format.setPrecision(2);
     qParsed.setFormat(format);
-    EXPECT_EQ(qParsed.getUserString(), "6894.76 Pa");
+    EXPECT_EQ(normalizeDecimalSeparator(qParsed.getUserString()), "6894.76 Pa");
 }
 
 TEST_F(BaseQuantityLoc, psi_parse_safe_user_str)
@@ -237,7 +248,7 @@ TEST_F(BaseQuantityLoc, psi_parse_safe_user_str)
     auto format = qParsed.getFormat();
     format.setPrecision(2);
     qParsed.setFormat(format);
-    EXPECT_EQ(qParsed.getSafeUserString(), "6894.76 Pa");
+    EXPECT_EQ(normalizeDecimalSeparator(qParsed.getSafeUserString()), "6894.76 Pa");
 }
 
 TEST_F(BaseQuantityLoc, psi_parse_unit_type)

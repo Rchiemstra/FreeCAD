@@ -600,7 +600,12 @@ TEST_F(ApplicationDirectoriesTest, migrateConfigSkipsBrokenSymlink)
     fs::path oldPath = tempDir() / "symlink_src";
     fs::path newPath = tempDir() / "symlink_dst";
     writeFile(oldPath / "good.txt", "ok");
-    fs::create_symlink(oldPath / "nonexistent_target", oldPath / "bad_link");
+    try {
+        fs::create_symlink(oldPath / "nonexistent_target", oldPath / "bad_link");
+    }
+    catch (const fs::filesystem_error&) {
+        GTEST_SKIP() << "Symlink creation not permitted (e.g. Windows without Developer Mode)";
+    }
 
     auto result = App::ApplicationDirectories::migrateConfig(oldPath, newPath);
 
@@ -615,7 +620,12 @@ TEST_F(ApplicationDirectoriesTest, migrateConfigCopiesValidSymlink)
     fs::path oldPath = tempDir() / "valid_link_src";
     fs::path newPath = tempDir() / "valid_link_dst";
     writeFile(oldPath / "target.txt", "content");
-    fs::create_symlink(oldPath / "target.txt", oldPath / "good_link");
+    try {
+        fs::create_symlink(oldPath / "target.txt", oldPath / "good_link");
+    }
+    catch (const fs::filesystem_error&) {
+        GTEST_SKIP() << "Symlink creation not permitted (e.g. Windows without Developer Mode)";
+    }
 
     auto result = App::ApplicationDirectories::migrateConfig(oldPath, newPath);
 
@@ -632,7 +642,12 @@ TEST_F(ApplicationDirectoriesTest, migrateAllPathsReturnsSkippedPaths)
     fs::path base = tempDir() / "fail_count";
     fs::create_directories(base);
     writeFile(base / "good.txt", "ok");
-    fs::create_symlink(base / "no_such_file", base / "broken");
+    try {
+        fs::create_symlink(base / "no_such_file", base / "broken");
+    }
+    catch (const fs::filesystem_error&) {
+        GTEST_SKIP() << "Symlink creation not permitted (e.g. Windows without Developer Mode)";
+    }
 
     std::vector<fs::path> inputs {base};
     auto result = appDirs->migrateAllPaths(inputs);

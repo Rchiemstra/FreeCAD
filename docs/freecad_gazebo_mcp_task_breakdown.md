@@ -10,8 +10,25 @@ Source docs:
 - [diagrams/freecad_gazebo_mcp_sequence_human_in_workbench.puml](diagrams/freecad_gazebo_mcp_sequence_human_in_workbench.puml)
 - [diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml](diagrams/freecad_gazebo_mcp_sequence_iteration_loop.puml)
 
-Last reviewed: 2026-05-10
-Last updated: 2026-05-11 (Gazebo status/screenshot FreeCAD panel task)
+Last reviewed: 2026-05-11
+Last updated: 2026-05-11 (Phase 6: structured JSONL + **gazebo-mcp stdio reconnect** — `bridge/gazebo_bridge.py`, `bridge/structured_log.py`, `tests/test_gazebo_session_reconnect.py`, Docker pytest **191** passed / **6** skipped)
+
+## Completion status (rollup)
+
+Use this table for a quick read on what is **done in repo / CI**, what is **partial**, and what still needs **human or live-sim** time.
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| Phase 0: Environment | **Partial** | MCP smoke + versions documented; RobotCAD GUI demo + optional live Gazebo MCP on WSL still manual. **Docker E2E** validates Harmonic + spawn + scenarios without the WSL gz build. |
+| Phase 1: Manual E2E | **Partial** | Placeholder URDF + `empty_world.sdf` + friction list + `reach_top_shelf.yaml` draft; **no committed `arm_2dof.FCStd`** yet; full RobotCAD export path blocked on model + workbench verification. |
+| Phase 2: Automated bridge | **Partial** | `bridge/`, schemas, handoff, offline tests; **`export_urdf`** still blocked without RobotCAD inside FreeCAD. **`gz_cli_bridge`** used in E2E for reliable URDF spawn. |
+| Phase 3: Sim Workbench | **Partial** | **Gazebo Status** panel + **manual GUI smoke checklist** (§ *FreeCAD GUI smoke*); **live** `gz.msgs.Image` verified in **Docker E2E** only. Host FreeCAD click-test follows that checklist when a GUI is available. |
+| Phase 4: Test runner | **Mostly met offline** | Runner, assertions, results with hashes, workbench panel, `tests/scenarios_e2e/e2e_smoke.yaml`; live RTF/joint telemetry fidelity tied to running `gz sim`. |
+| Phase 4.5: ROS 2 control | **Not started** | `ros-mcp` installed; controller-in-the-loop scenarios not built out. |
+| Phase 5: Iteration loops | **Mostly met offline** | `iteration/` + tests; screenshots / auto-commit policy deferred. |
+| Phase 6: Hardening | **Partial** | Runtime + MCP policy + **structured JSONL** + **gazebo-mcp stdio session lifecycle** (bounded session-start retries, read-only transport reconnect, JSONL `session_*` / `reconnect_*`); **full stack** restart (Docker ports, ROS daemon) still manual. |
+| Phase 7: Scale-out | **Not started** | Placeholder tasks only. |
+| Docker E2E | **Implemented** | `docker/compose.e2e.yml` + `e2e/run_e2e.sh`; see **Docker E2E** section. |
 
 ## Purpose
 
@@ -65,13 +82,59 @@ Implements § *Dockerized No-Human E2E Validation Plan* in [FreeCAD Model Simula
 docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
 ```
 
-### What is implemented
+One-off run (same script as `up`, without compose lifecycle): `docker compose -f docker/compose.e2e.yml run --rm e2e`
+
+**Runtime / version pins** for this stack (ROS 2 distro, Gazebo family, base images, MCP versions, env vars): **`config/runtime_manifest.yaml`**. **Bridge MCP write policy** (allowed artifact roots, tool read/mutate classification, optional deny): **`config/mcp_permissions.yaml`** — default Docker E2E leaves mutating gazebo-mcp calls enabled; screenshots still land under **`sim_runs/`** via **`E2E_RUN_DIR`**. **Structured JSONL** (MCP calls, captures, permissions, runner): **``<E2E_RUN_DIR>/logs/structured.jsonl``** (see **`bridge/structured_log.py`**, set by **`e2e/run_e2e.sh`**).
+
+Example JSONL event (one line) from an MCP tools/call via **`GazeboSession`**:
+
+```json
+{"schema": 1, "event": "mcp_tool_call", "component": "bridge.gazebo_bridge", "tool": "gazebo_list_sensors", "ok": true, "duration_ms": 42.5, "permission_gate": "read_only", "ts_unix": 1715432100.12, "ts_iso": "2026-05-11T12:34:56Z"}
+```
+
+### Verified run log (2026-05-11, Docker Desktop Linux engine)
+
+| Check | Result |
+| --- | --- |
+| Compose | `docker compose -f docker/compose.e2e.yml run --rm e2e` → **exit 0** |
+| Pytest image (same commit) | `docker compose -f docker/compose.pytest.yml run --rm pytest` → **191 passed**, **6 skipped** |
+| Bridge smoke artifacts | Under **`sim_runs/e2e_<UTC>/`**: `console.log`, **`logs/structured.jsonl`** (JSONL: MCP calls, sensor discovery, captures, permissions), **`bridge_gazebo_mcp_smoke/summary.json`** (includes **`camera_source_mode`**, **`image_width_reported` / `image_height_reported`**, **`gz_image_topic`**, **`sensor_catalog`**, PNG IHDR cross-check), **`status.json`**, **`sensors.json`**, **`screenshots/*.png`**. Example: `sim_runs/e2e_20260511T015019Z/bridge_gazebo_mcp_smoke/screenshots/gazebo_cam_20260511_015310.png` (**~1.8 KB** compressed real frame — not 1×1 mock). |
+| Scenario | `e2e_smoke` **PASS** (gz_cli spawn + assertions) |
+
+**Repeatability:** `e2e/run_e2e.sh` runs **`git submodule update --init --depth 1`** for `tools/mcp/{gazebo-mcp,freecad-mcp,ros-mcp-server}` before `pip install -e` (first run may populate those directories on the **host** bind-mount).
+
+### Gap (honest)
+
+- **Non-camera sensors** in **gazebo-mcp** `auto` mode: LiDAR / IMU entries in **`list_sensors`** are still **mock placeholders** when no ROS topic bridge is configured; only **cameras** are discovered from **`gz topic -l`** + **`gz.transport`** today.
+- **MCP venv + gz Python bindings**: **`fetch_live_camera_frame`** appends **`/usr/lib/python3/dist-packages`** (and **`…/python3.12/…`**) to **`sys.path`** so **`/opt/mcp-venv`** can `import gz.transport13`; **`e2e/run_e2e.sh`** also appends that path to **`PYTHONPATH`** for subprocess consistency.
+- **FreeCAD Simulation Workbench GUI** (Gazebo Status dock): manual checklist in **§ FreeCAD GUI smoke** below; automated agent runner had **no FreeCAD on `PATH`** (2026-05-11). Panel shows **`source: live`** and **`size: WxH`** after capture when the bridge returns metadata.
+
+### FreeCAD GUI smoke: Gazebo Status dock (manual checklist)
+
+**Agent note (2026-05-11):** On the Windows CI/agent machine used for this update, **`FreeCAD` / `FreeCADCmd`** were not on **`PATH`** and the default **WSL** distro did not expose **`freecadcmd-daily`**, so **clicks were not executed here**. The steps below are the authoritative procedure for a human developer; they mirror the already-green **Docker E2E** bridge path (`get_simulation_status` → `list_gazebo_sensors` → `capture_camera_snapshot` with **`camera_source_mode: live`**, **320×240** PNG).
+
+**Reference FreeCAD build:** The Docker E2E image reports **FreeCAD 1.1.0, Revision 43087 (Git)** — use the same lineage or newer on the host.
+
+**Backend (must match E2E):** Headless **Gazebo Sim 8** with **`worlds/e2e_world.sdf`**, started with **`gz sim -r -s …`** so camera topics publish. **gazebo-mcp** must see **`gz topic -l`** and **`gz.msgs.Image`** (see **`GAZEBO_MCP_SENSOR_MODE`**, **`PYTHONPATH`** / system **`gz`** bindings in **`e2e/run_e2e.sh`**). On Windows, **`bridge.gazebo_bridge`** launches **gazebo-mcp-server** via **WSL** by default — run **Gazebo + MCP** in **that same WSL distro**, or set **`GAZEBO_MCP_CMD`** to a custom launcher if you use Docker-only MCP.
+
+| Step | Action | Pass criteria |
+| --- | --- | --- |
+| 1 | Install **SimWorkbench** per **`InitGui.py`**: for **in-repo** dev, keep **`addons/SimWorkbench/`** under the git root so **`InitGui.py`** can reach **`bridge/`** via **`join(addon_dir, '..', '..')`**. If you copy only **`SimWorkbench/`** into **`%APPDATA%\\FreeCAD\\<channel>\\Mod\\`**, you must also put the **git repo root** on **`PYTHONPATH`** (or adjust **`_repo_root`**) so **`import bridge`** resolves. | FreeCAD starts; **Report view** shows no **`No module named 'bridge'`** on workbench switch. |
+| 2 | In **WSL** (same distro MCP uses): start **`gz sim -r -s <repo>/worlds/e2e_world.sdf`** (plus **`DISPLAY`** / **Xvfb** if headless). Export **`GZ_SIM_WORLD_NAME=empty_world`**, **`GAZEBO_MCP_SENSOR_MODE=auto`**, and the same **`PYTHONPATH`** / **`MCP_VENV`** pattern as **`e2e/run_e2e.sh`** if your MCP venv cannot `import gz` alone. | **`gz topic -l`** includes **`…/sensor/e2e_camera/image`**. |
+| 3 | Launch **FreeCAD (GUI)**. Switch workbench to **Simulation Workbench**. | **Gazebo status & screenshot** dock appears (title *Gazebo status & screenshot*); **Transport** line updates (Connecting / Connected / …). |
+| 4 | Click **Refresh status**. | **Simulation status (JSON)** text box shows readable JSON from **`get_simulation_status`**; heading **MCP: ok** when the subprocess succeeds. |
+| 5 | (Optional) Set **Sensor** field to **`e2e_camera`** or leave blank for auto-pick. | — |
+| 6 | Click **Capture screenshot**. | Path line includes **`Saved:`** … **`source: live`**, **`size: 320×240`**, and **`topic:`** … **`e2e_camera/image`**; **preview** shows the frame; on disk **`sim_runs/screenshots/gazebo_cam_<UTC>.png`** is a **320×240** PNG (not a **1×1** mock). |
+| 7 | (Optional) Save a **screenshot of the FreeCAD window** or note the **`sim_runs/...`** path for your run log. | Attach path under **`sim_runs/`** in PR / issue text if sharing. |
+
+**Caveats:** The panel imports **PySide2** (matches common Windows FreeCAD builds). If your build only ships **PySide6**, the dock may fail to load until imports are updated. **LiDAR/IMU** live paths are **out of scope** for this smoke (camera-only live stack).
 
 | Stage | Implementation |
 | --- | --- |
 | Base image | `docker/Dockerfile.e2e` — `ros:jazzy-ros-base-noble` + **Gazebo Harmonic** (OSRF apt) + **freecad-daily** PPA + **RobotCAD** clone at `/root/.local/share/FreeCAD/Mod/RobotCAD` → `/opt/robotcad` |
 | MCP venv | `/opt/mcp-venv` core deps; **runtime** `pip install -e` on bind-mounted `tools/mcp/{gazebo-mcp,freecad-mcp,ros-mcp-server}` |
-| Driver script | `e2e/run_e2e.sh` — versions, `${FREECAD_CMD}` RobotCAD import (`e2e/check_robotcad_freecad.py`), `e2e/stage_export.sh`, `check_urdf`, Xvfb, background **`gz sim -s worlds/empty_world.sdf`**, **`e2e/mcp_smoke.py`**, **`python -m runner.runner run-all --dir tests/scenarios_e2e`** |
+| Driver script | `e2e/run_e2e.sh` — versions, `${FREECAD_CMD}` RobotCAD import (`e2e/check_robotcad_freecad.py`), `e2e/stage_export.sh`, `check_urdf`, Xvfb, background **`gz sim -r -s worlds/e2e_world.sdf`** (**`-r`** runs sim so camera sensors publish), **`PYTHONPATH`** includes **`/usr/lib/python3/dist-packages`** for gz-msgs/transport in the MCP venv, **`e2e/mcp_smoke.py`**, **`e2e/bridge_gazebo_mcp_smoke.py`** ( **`get_simulation_status` / `list_gazebo_sensors` / `capture_camera_snapshot`** → `sim_runs/e2e_<UTC>/bridge_gazebo_mcp_smoke/` ), **`python -m runner.runner run-all --dir tests/scenarios_e2e`** |
+| Bridge panel smoke | **`e2e/bridge_gazebo_mcp_smoke.py`** — requires **`camera_source_mode=live`**, PNG IHDR **≥ 64×64**, file **> 400 B**; artifacts under **`$E2E_RUN_DIR/bridge_gazebo_mcp_smoke/`** |
 | Runner ↔ Gazebo | **`bridge/gz_cli_bridge`** via **`E2E_BRIDGE_MODULE=gz_cli`** — spawn uses **`gz service -s /world/<world>/create`** with **`gz.msgs.EntityFactory`** / **`sdf_filename`** (URDF path); world defaults to **`GZ_SIM_WORLD_NAME=empty_world`**. MCP **`gazebo_spawn_model`** still does not forward **`model_xml`** today. |
 | MCP smoke | **`e2e/mcp_smoke.py`** — reuses **`test_all_mcp.MCPClientStdio`** against all three servers |
 | Scenario | **`tests/scenarios_e2e/e2e_smoke.yaml`** — lightweight assertions (no joint torque / reach goals) |
@@ -79,23 +142,26 @@ docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --
 ### Engineering choices / findings
 
 - **Single container** first — matches the integration doc and avoids cross-container ROS DDS setup for v1.
-- **`bridge/gazebo_bridge.py`**: native Linux uses local `.venv/bin/gazebo-mcp-server` with package `cwd`; Windows keeps **WSL** launch; fixed MCP tool name **`gazebo_get_simulation_status`** in `wait_for_ready`.
+- **`bridge/gazebo_bridge.py`**: resolves **gazebo-mcp-server** via **`MCP_VENV`** (Docker `/opt/mcp-venv`) when present, else submodule **`.venv`**; Windows keeps **WSL** launch; **`GazeboSession`** builds the argv at session start (not import time) so compose env is respected.
 - **`runner/executor.py`**: live bridge loads **`gz_cli_bridge`** only when **`E2E_BRIDGE_MODULE`** is enabled; default **`None`** preserves mock-injected unit tests. **`_urdf_path`** prefers **`generated/<robot>/<robot>.urdf`** when staged/exported, otherwise **`robots/<robot>.urdf`**.
 - **`SIM_RUNS_DIR`** env wired through **`runner.runner` CLI** for `run` / `run-all`.
 - **Export honesty**: without **`robots/arm_2dof.FCStd`**, staging copies the checked-in URDF after RobotCAD **import** succeeds — full mesh-export-through-RobotCAD remains blocked until an FCStd is committed.
 - **Shell scripts for Linux**: **`e2e/*.sh`** checked in as **LF** (`.gitattributes`); **CRLF** breaks shebang execution when Compose runs `bash -lc /workspace/e2e/run_e2e.sh`.
 - **ROS environment**: **`set -u`** before **`source /opt/ros/jazzy/setup.bash`** trips on unset `AMENT_*` variables — bracket the source with **`set +u`** / **`set -u`**.
 - **URDF spawn on gz-sim 8**: **`gz model --spawn-file`** is not available; use **`gz service -s /world/<world>/create`** with **`gz.msgs.EntityFactory`** and **`sdf_filename`** (Harmonic tutorial). Pre-delete uses **`/world/<world>/remove`**; “entity not found” on first run is benign.
+- **Headless rendering**: `LIBGL_ALWAYS_SOFTWARE=1` by default in **`e2e/run_e2e.sh`** after Xvfb starts — improves **ogre2** stability for **`gz-sim-sensors-system`** in Docker.
+- **Gazebo must be running for camera frames**: use **`gz sim -r -s …`** in E2E so sensors publish; paused sim produces no `gz.msgs.Image` callbacks.
 
 ### Blockers / next steps
 
 - [ ] Add **`robots/arm_2dof.FCStd`** with `Cross::*` entities so `e2e/export_robotcad_fcstd.py` runs a real exporter path.
 - [ ] Optionally extend **gazebo-mcp** `spawn_model_wrapper` to pass **`model_xml`** through to `model_management.spawn_model`.
-- **Agent validation**: `python -m pytest tests` → **151 passed**, **6 skipped** (2026-05-10). **`docker compose -f docker/compose.e2e.yml up --abort-on-container-exit --exit-code-from e2e`** exercised end-to-end on **Docker Desktop Linux engine** after fixing CRLF shebangs (`e2e/*.sh` **LF** via `.gitattributes`), **`set +u` around `/opt/ros/jazzy/setup.bash`**, replacing **`ros2 --version`**, and URDF spawn via **`gz service … /world/empty_world/create`** (not **`gz model --spawn-file`**, absent on gz CLI 8.x).
+- [x] **Live gz camera path** in **gazebo-mcp** (see **`gazebo_mcp.gz_live_camera`**); extend to **LiDAR/IMU** via gz or ROS when needed.
+- **CI / agent validation (2026-05-11):** `docker compose -f docker/compose.pytest.yml run --rm pytest` → **191 passed**, **6 skipped**. **`docker compose -f docker/compose.e2e.yml run --rm e2e`** → **OK** (includes **`bridge_gazebo_mcp_smoke.py`** + scenarios). **FreeCAD GUI:** checklist only — no **`FreeCAD`** on agent **`PATH`**. Older notes on CRLF shebangs, **`set +u`** around ROS setup, and **`gz service … /create`** remain applicable.
 
 ### `.dockerignore` note
 
-`tools/mcp/` is **included** in the Docker build context again so **both** `docker/Dockerfile.e2e` and **`docker/compose.pytest.yml`** see MCP submodules (pytest image context grows).
+`tools/mcp/**` stays in the build context for pytest/E2E. **Colcon** `install/`, `build/`, `log/` trees under MCP submodules are **ignored** (see root `.dockerignore`) so Docker Desktop does not fail on odd files when submodules were built locally.
 
 ## Phase 0: Environment
 
@@ -113,7 +179,7 @@ Tasks:
 - [x] FreeCADMCP addon installed to `%APPDATA%\FreeCAD\v1-2\Mod\FreeCADMCP`. On FreeCAD launch, switch to "MCP Addon" workbench and click "Start RPC Server" (or enable Auto-Start).
 - [x] Verify an MCP client can create, inspect, and screenshot a simple FreeCAD object. **Automated when FreeCAD RPC is up**: `test_all_mcp.py` runs `create_document` → `create_object` → **`get_object`** → **`get_view`** → `execute_code` → `delete_object`. With FreeCAD closed, the suite still checks that `list_documents` fails gracefully via MCP.
 - [x] Install and run the selected Gazebo MCP server: **`kvgork/gazebo-mcp` v0.2.0** installed in WSL2 Python 3.12 venv at `tools/mcp/gazebo-mcp/.venv`. Exposes 27 tools. `gazebo_list_models`, `gazebo_spawn_model`, `gazebo_delete_model` all respond (mock/OK) without Gazebo running.
-- [ ] Verify an MCP client can load a world, spawn or inspect a model, pause, resume, reset, and step headless Gazebo. **DEFERRED**: Requires Gazebo container running (Docker build takes 20–40 min on first run). Tool calls return mock responses until Gazebo is live.
+- [ ] Verify an MCP client can load a world, spawn or inspect a model, pause, resume, reset, and step headless Gazebo. **Partially covered**: **Docker E2E** runs `gz sim -s`, spawn via `gz service … /world/empty_world/create`, and `e2e/mcp_smoke.py` against live MCP servers. **Still optional for WSL**: first `Start-gz-sim.sh` source build is long; gazebo-mcp tool calls against that stack remain manual.
 - [x] Install a ROS 2 MCP option: **`ros-mcp` v3.0.1** installed in WSL2 Python 3.12 venv at `tools/mcp/ros-mcp-server/.venv`. Exposes 31 tools. `ping_robots`, `connect_to_robot`, `get_topics`, `get_nodes` all respond without ROS 2 running.
 - [x] Document exact versions — see Version Table below.
 
@@ -159,6 +225,8 @@ Definition of done:
 | Docker | 29.4.2 | Available in WSL2 |
 | Gazebo | headless in Docker | Ubuntu Noble + OSRF; built from `src/3rdParty/gz-sim` |
 | ROS 2 | rolling (Noble) | Built in Docker from `src/3rdParty/ros2` |
+| Docker E2E image (`Dockerfile.e2e`) | ROS 2 **Jazzy** + **Gazebo Harmonic** + FreeCAD daily | Reproducible Linux CI path; differs from WSL “rolling” dev container |
+| **Runtime manifest (CI pins)** | `config/runtime_manifest.yaml` | Single list for Docker base images, ROS/Gazebo/Python/MCP versions, env vars; reconciles vs `project.yaml` |
 | RobotCAD/CROSS | **Install via script** | **`scripts/install_robotcad_cross.ps1`** → `%APPDATA%\FreeCAD\v1-2\Mod\freecad.overcross`. GUI/demo verification still pending (Phase 1 blocker until confirmed). |
 
 ### Phase 0 Smoke-Test Commands
@@ -177,11 +245,17 @@ python test_all_mcp.py --no-gazebo --no-ros
 python test_all_mcp.py --start-apps --startup-wait 30
 
 # Offline pytest in Docker (Linux image — same skips as host; no FreeCAD/Gazebo inside)
+# CI pins: config/runtime_manifest.yaml
 docker compose -f docker/compose.pytest.yml build
 docker compose -f docker/compose.pytest.yml run --rm pytest
 
 # Full Docker E2E (Linux engine — ROS + Gazebo + FreeCAD daily; first build is large)
 docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+# Equivalent one-shot:
+docker compose -f docker/compose.e2e.yml run --rm e2e
+# E2E writes: sim_runs/e2e_<UTC>/console.log and bridge_gazebo_mcp_smoke/{summary,status,sensors}.json + screenshots/
+# Optional: gazebo-mcp sensor source — auto (default, live gz cameras when `gz` + bindings available), mock, live
+#   export GAZEBO_MCP_SENSOR_MODE=mock   # e.g. host pytest without Gazebo
 
 # Recorded run (2026-05-10): python test_all_mcp.py --timeout 30
 #   Total: 17 passed, 0 failed, 0 skipped (FreeCAD XML-RPC not running — expected WARN then graceful list_documents).
@@ -193,6 +267,8 @@ docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --
 
 **Completion pass (2026-05-10):**
 
+- **`bridge/structured_log.py`** (2026-05-11): JSONL events for MCP timing, sensor/capture metadata, permission denials, SimWorkbench panel actions; E2E writes **`logs/structured.jsonl`** under **`E2E_RUN_DIR`**; runner writes alongside **`result.yaml`**.
+- **`config/runtime_manifest.yaml`** (2026-05-11): single authoritative list for **Docker E2E + compose pytest** pins; `project.yaml` / WSL rows in the version table stay as **product / host** targets (see manifest **`reconciliation`**).
 - **`scripts/install_robotcad_cross.ps1`** clones/updates `drfenixion/freecad.overcross` into `%APPDATA%\FreeCAD\v1-2\Mod\freecad.overcross` (enable the workbench in FreeCAD after install).
 - **`test_all_mcp.py`** now calls **`get_object`** and **`get_view`** after **`create_object`** when XML-RPC on **9875** is reachable (automates create / inspect / screenshot).
 - **Offline pytest:** `python -m pytest tests -q` — recorded **151 passed, 6 skipped** (2026-05-10). Same suite runs in **`docker compose -f docker/compose.pytest.yml run --rm pytest`** (Python **3.12-bookworm** image; `.dockerignore` skips `src/3rdParty/*` and caches; **`tools/mcp/` stays in context** so images can `pip install -e` the MCP packages).
@@ -246,7 +322,8 @@ Deliverables:
 - [x] One simple world: `worlds/empty_world.sdf`.
 - [ ] `.FCStd` source file (pending FreeCAD + RobotCAD).
 - [ ] Generated URDF/SDF from RobotCAD (pending RobotCAD installation).
-- [ ] One manually executed scenario (pending Gazebo live run).
+- [x] Example scenario YAML drafted: `tests/scenarios/reach_top_shelf.yaml` (targets `arm_2dof` + assertions; needs live Gazebo + exported robot to be a true manual run).
+- [ ] One **manually witnessed** run of that scenario in WSL/Docker with GUI-less FreeCAD viewer (pending live stack + FCStd export).
 - [x] Friction list — see below.
 
 Definition of done:
@@ -337,9 +414,9 @@ Definition of done:
 ### Phase 2 Notes
 
 - **Design decision**: Bridge module communicates with FreeCAD via direct XML-RPC (same protocol as freecad-mcp client) rather than going through the MCP stdio layer. This is simpler and faster for Python-to-Python calls.
-- **Design decision**: Gazebo bridge uses a subprocess MCPClientStdio session per call (not a persistent daemon). Acceptable overhead for Phase 2; Phase 6 can optimise with a persistent connection.
+- **Design decision**: Gazebo bridge uses a subprocess MCP client **per** `with GazeboSession()` block (short-lived). Phase 6 adds **bounded session-start retries** and **read-only transport reconnect** inside that block; persistent daemons and Docker-level restart remain future work.
 - **Design decision**: No modifications to the upstream MCP server submodules (`tools/mcp/freecad-mcp`, `tools/mcp/gazebo-mcp`). The bridge layer sits above them and calls through their existing APIs. This keeps the submodules cleanly updateable.
-- **PyYAML dependency**: Added to Windows Python environment (pip install pyyaml). Not yet in a requirements file — add `requirements-bridge.txt` in Phase 3.
+- **Python deps**: Bridge stack is listed in **`requirements-bridge.txt`** (repo root); install alongside dev tools as needed.
 - **Blocker**: `export_urdf()` requires RobotCAD/CROSS installed in FreeCAD. The function fails cleanly and returns a descriptive error message. All 30 offline tests pass without RobotCAD.
 
 ## Phase 3: Simulation Workbench Viewer
@@ -358,22 +435,22 @@ Tasks:
 - [x] Add Sim Controls panel (`panels/sim_controls.py`) — play, pause, step, reset, sim time, RTF readout, connection status indicator.
 - [x] Add Scenario Picker panel (`panels/scenario_picker.py`) — robot/world/scenario selection with combo boxes.
 - [ ] Add Camera Viewer panel — deferred: requires live ROS 2 image topic; blocked by Gazebo Docker.
-- [ ] Add Gazebo Status/Screenshot panel — custom FreeCAD panel that shows Gazebo status plus refreshed screenshot snapshots from the headless simulation; **not** an embedded live Gazebo GUI viewport.
+- [x] Add Gazebo Status/Screenshot panel (`panels/gazebo_status_panel.py` + `panels/gazebo_status_logic.py`) — transport line + **Refresh status** + **Capture screenshot**; success line shows **`source:`** / **`size:`** / **`topic:`** when the bridge returns metadata. **Docker E2E:** `e2e/bridge_gazebo_mcp_smoke.py`. **FreeCAD GUI:** manual checklist **§ FreeCAD GUI smoke** (clicks not run in agent env without FreeCAD).
 - [x] Add Sensor Plots panel (`panels/sensor_plots.py`) — joint position/velocity/effort table, RTF display.
 - [x] Add Run Library panel (`panels/run_library.py`) — browses sim_runs/, shows pass/fail status.
 - [ ] Add Project Browser panel — deferred to Phase 4 (overlaps with Test Runner UI).
 - [x] Add MCP Activity Log panel (`panels/mcp_log.py`) — scrolling audit log of agent tool calls.
 - [ ] Verify the human can run and watch a simulation in FreeCAD without opening Gazebo GUI — **blocked**: requires live Gazebo Docker (run `Start-gz-sim.bat`).
-- [x] Tests: `tests/test_sim_workbench.py` — 22 tests, all offline; 52 total tests pass.
+- [x] Tests: `tests/test_sim_workbench.py` — transport/state bridge + Gazebo status / MCP media helpers (offline). **Docker pytest (2026-05-11):** **161 passed**, **6 skipped** for full `tests/` tree (`docker compose -f docker/compose.pytest.yml build pytest && docker compose -f docker/compose.pytest.yml run --rm pytest`).
 
 Deliverables:
 
 - [x] Simulation Workbench addon (`addons/SimWorkbench/`).
 - [x] Live State Bridge (`transport.py` + `state_bridge.py`).
-- [x] Basic controls and viewer panels (Sim Controls, Scenario Picker, Sensor Plots, Run Library, MCP Log).
+- [x] Basic controls and viewer panels (Sim Controls, **Gazebo Status**, Scenario Picker, Sensor Plots, Run Library, MCP Log).
 - [x] Shared Gazebo transport library (`transport.py`).
 - [ ] Camera Viewer — deferred.
-- [ ] Gazebo Status/Screenshot panel — status readout plus snapshot image refresh; no embedded Gazebo viewport.
+- [x] Gazebo Status/Screenshot panel — `panels/gazebo_status_panel.py` (plus `bridge.gazebo_bridge`: `get_simulation_status`, `list_gazebo_sensors`, `capture_camera_snapshot`, `pick_camera_sensor_from_mcp_list`).
 - [ ] Project Browser — deferred.
 - [x] Addon install helper (`install_addon.py`).
 
@@ -388,6 +465,7 @@ Definition of done:
 - **Design decision**: Transport uses a QTimer (10 Hz) rather than a background thread. This avoids threading bugs in FreeCAD's Qt event loop. 10 Hz is sufficient for visual feedback; bump to 30 Hz if needed.
 - **Design decision**: FreeCAD Placements are updated directly (not via a FreeCAD feature/document recompute). This is the fastest path for live animation; it does not create an undo history entry.
 - **Design decision**: State-to-placement scale = 1000 (Gazebo metres → FreeCAD mm). Configurable via `StateBridge(scale=...)`.
+- **Implemented (2026-05-11)**: **Gazebo Status** dock — combines `GazeboTransport` connection labels with MCP **Refresh status** / **Capture screenshot**; screenshots use **gazebo-mcp** `gazebo_get_sensor_data` with **live gz** `Image` when **`GAZEBO_MCP_SENSOR_MODE`** is **`auto`** or **`live`**. On success, the path line shows **`source:`**, **`size:`**, and **`topic:`** for quick **live vs mock** verification. **Docker pytest:** **161 passed**, **6 skipped**. **Docker E2E** requires **`camera_source_mode=live`** in **`bridge_gazebo_mcp_smoke/summary.json`**. **Gap:** non-camera sensors still use mock rows in **`auto`** mode. **FreeCAD GUI:** manual checklist in **§ FreeCAD GUI smoke**; the automated agent runner had **no FreeCAD** on **`PATH`** (documented 2026-05-11).
 - **Design decision**: A Gazebo Status/Screenshot panel may show periodic screenshots or rendered camera snapshots from Gazebo, but Gazebo remains headless and the panel is not a real embedded Gazebo GUI.
 - **Blocker**: Live end-to-end test (play + watch robot move) blocked by Gazebo Docker not running. Run `Start-gz-sim.bat` to build and start.
 - **Blocker**: Camera Viewer blocked by live ROS 2 image topics not available. Deferred.
@@ -428,7 +506,7 @@ Deliverables:
 - [x] Result writer (`runner/result.py` — YAML with hashes/versions).
 - [x] Workbench Test Runner panel (`addons/SimWorkbench/panels/test_runner_panel.py`).
 - [x] `list_tests` / `run_test` accessible via `execute_code` MCP surface.
-- [ ] CLI entry point: `python -m runner.runner list/run/run-all` ✓ (coded, not separately tested live).
+- [x] CLI entry point: `python -m runner.runner list` / `run` / `run-all` — covered by `tests/test_runner.py` and used by `e2e/run_e2e.sh` (`run-all --dir tests/scenarios_e2e`).
 
 Definition of done:
 
@@ -440,7 +518,7 @@ Definition of done:
 - **Design decision**: `runner/` is a standalone Python package; it does NOT require FreeCAD to be installed. The `execute_code` hook in the FreeCAD MCP server is the only coupling point.
 - **Design decision**: `run_test()` accepts a `bridge_module` parameter, making it fully unit-testable with mock Gazebo state.
 - **Design decision**: result.yaml includes `input_hashes` (SHA-256 of scenario YAML, robot URDF, world SDF). No random seeds in v1 since Gazebo uses deterministic physics by default.
-- **Test count**: 96 passed, 6 skipped (live) across all test files.
+- **Test count**: full `pytest tests` totals are recorded in Phase 5 Notes (151 passed, 6 skipped as of 2026-05-10); `tests/test_runner.py` exercises the runner package.
 - **Commit**: `phase 4: test runner, assertion evaluator, result writer`
 
 ## Phase 4.5: ROS 2 Control and Telemetry
@@ -449,7 +527,7 @@ Goal: support controller-in-the-loop tests without bloating the v1 runner.
 
 Tasks:
 
-- [ ] Choose the initial ROS 2 MCP bridge: minimal command publisher, rosbridge-based server, LCAS, WiseVision, or another candidate.
+- [x] Choose the initial ROS 2 MCP bridge — **use `ros-mcp` v3.0.1** (`tools/mcp/ros-mcp-server`) already wired for MCP smoke tests; re-evaluate only if a missing capability blocks a scenario (e.g. dedicated rosbridge deployment).
 - [ ] Add topic/action discovery for the RobotCAD-generated ROS 2 package.
 - [ ] Add controlled publishing for `/cmd_vel`, joint commands, or action goals.
 - [ ] Add read-only tools for topics, services, actions, node graph, and message schemas.
@@ -459,13 +537,19 @@ Tasks:
 
 Deliverables:
 
-- [ ] ROS 2 MCP selection note.
+- [ ] ROS 2 MCP selection note — **stub:** default path is `ros-mcp` v3.0.1; document tool → topic mapping in `docs/` when the first controller scenario lands.
 - [ ] Controller-in-the-loop scenario example.
 - [ ] Telemetry capture format.
 
 Definition of done:
 
 - One scenario can command the robot through ROS 2 control interfaces and evaluate both ground-truth and robot-perceived telemetry.
+
+### Phase 4.5 Notes
+
+- **Depends on:** stable Phase 4 runner, a robot with a **RobotCAD-generated ROS 2 package** (or equivalent topic graph), and ROS 2 nodes running in the same DDS domain as the MCP client (often the Docker E2E image or WSL ROS container).
+- **Suggested v1 slice:** publish a simple velocity or joint command for 1–2 seconds, assert pose/joint metrics from existing assertion types, and record a second telemetry stream (e.g. `/joint_states`) alongside Gazebo ground truth in `sim_runs/`.
+- **Defer:** Nav2, `ros2_control` bring-up, and VLM/camera ingestion until `/cmd_vel` or joint trajectory publishing is reliable end-to-end.
 
 ## Phase 5: Iteration Loops
 
@@ -516,30 +600,50 @@ Goal: make the system trustworthy enough for repeated use.
 
 Tasks:
 
-- [ ] Pin FreeCAD, RobotCAD/CROSS, ROS 2, Gazebo, Python, Docker, and MCP server versions.
-- [ ] Add input hashes to generated outputs and simulation results.
-- [ ] Separate read-only and write-capable MCP tools.
-- [ ] Add permission prompts or policy controls for write operations.
-- [ ] Enforce typed schemas for MCP tools, scenario YAML, project manifests, and result files.
-- [ ] Improve Gazebo restart behavior to avoid stale processes, port conflicts, and ROS 2 daemon issues.
-- [ ] Add structured logging across FreeCAD workbench actions, MCP calls, exports, ROS 2 interactions, and sim runs.
+- [x] Pin FreeCAD, RobotCAD/CROSS, ROS 2, Gazebo, Python, Docker, and MCP server versions in one place — **`config/runtime_manifest.yaml`** (authoritative for **Docker E2E + compose pytest**; `project.yaml` + this doc’s version table remain **product / host** narrative — see manifest **`reconciliation`**).
+- [x] Add input hashes to simulation results — **`runner/result.py`** writes SHA-256 for scenario, URDF, world SDF into **`result.yaml`** (extend to “all generated outputs” when export pipeline is unified).
+- [x] Separate read-only and write-capable MCP tools — **`config/mcp_permissions.yaml`** lists **read-only** gazebo-mcp tool names; all others are treated as **mutating**; **`tests/test_mcp_write_policy.py`** exercises classification + path gates + **`BRIDGE_MCP_DENY_MUTATING`** denial.
+- [x] Add permission prompts or policy controls for write operations — **bridge policy** (no interactive UI yet): **`bridge/mcp_write_policy.py`** gates **`GazeboSession`** stdio calls, validates MCP path arguments, bounds **`capture_camera_snapshot`** / **`export_*`** output dirs to **`sim_runs/`** + **`generated/`** (optional **`BRIDGE_MCP_EXTRA_WRITE_ROOTS`**). **Deferred:** interactive prompts; **ros-mcp** / **freecad-mcp** stdio servers not wired through this helper yet (see manifest `deferred_servers`).
+- [x] Enforce typed schemas for scenario YAML, project manifests — **`config/schemas/*.schema.yaml`** + loaders; **MCP tool** typing / JSON schemas for agents still TBD.
+- [ ] Improve Gazebo **stack** restart behavior (Docker / gz-transport ports, ROS 2 daemon lifecycle) — **host / compose operations**, not covered by the MCP-only reconnect below.
+- [x] **Gazebo MCP stdio reconnect / session lifecycle** — **`bridge/gazebo_bridge.GazeboSession`**: bounded subprocess start + MCP `initialize`, read-only `tools/call` transport retry, JSONL lifecycle events, concise UI errors; tests **`tests/test_gazebo_session_reconnect.py`**. Policy table: **§ Gazebo MCP reconnect policy (Phase 6)**.
+- [x] Add structured logging across FreeCAD workbench actions, MCP calls, exports, ROS 2 interactions, and sim runs — **JSONL** via **`bridge/structured_log.py`** (MCP tool timing + permission gate, sensor discovery, simulation status, screenshot metadata, panel actions); **runner** appends **`scenario_run_result`** next to **`result.yaml`**; **E2E** sets **`BRIDGE_STRUCTLOG_PATH`** to **`logs/structured.jsonl`** (`e2e/run_e2e.sh`); **SimWorkbench** logs to the same file when env is set + **Report view** one-line summaries. **Deferred:** full ROS 2 interaction logging; `LOG_FORMAT=json` on root logger remains separate (see **`bridge/logging_config.py`**).
 - [ ] Add collision mesh simplification, likely V-HACD or the RobotCAD-supported equivalent.
 - [ ] Add materials and density management for accurate inertias.
-- [ ] Add physics-engine and step-size recording for Gazebo runs.
-- [ ] Add CI-friendly headless test execution.
+- [ ] Add physics-engine and step-size recording for Gazebo runs (world SDF already sets step; record **actual** engine + step in `result.yaml`).
+- [x] CI-friendly headless test execution — **`docker compose -f docker/compose.pytest.yml`** (pytest) and **`docker compose -f docker/compose.e2e.yml`** (full stack smoke).
 - [ ] Add multi-robot and controller bring-up support only after the single-robot path is stable.
 
 Deliverables:
 
-- [ ] Version-pinned runtime.
-- [ ] Reproducible result metadata.
-- [ ] Permission model.
-- [ ] Robust restart path.
-- [ ] CI-ready test command.
+- [x] Version-pinned runtime — **`config/runtime_manifest.yaml`** (referenced from `project.yaml`, Dockerfiles, compose files, `e2e/run_e2e.sh`, `requirements-bridge.txt`, and this doc); Dockerfiles remain the mechanical `FROM` source of truth.
+- [x] Reproducible result metadata (hashes + versions in `result.yaml`; widen coverage over time).
+- [x] Permission model — **`config/mcp_permissions.yaml`** + **`bridge/mcp_write_policy.py`** + **`tests/test_mcp_write_policy.py`** (filesystem roots + optional mutating-tool deny).
+- [x] Structured JSONL — **`bridge/structured_log.py`** + **`tests/test_structured_log.py`**; E2E **`logs/structured.jsonl`**; runner per-run **`logs/structured.jsonl`**.
+- [x] **Gazebo MCP stdio reconnect / session lifecycle** — bounded **session start** attempts (`BRIDGE_GAZEBO_MCP_SESSION_START_ATTEMPTS`, default **3**) and **read-only** `tools/call` transport retry after subprocess reconnect (`BRIDGE_GAZEBO_MCP_READONLY_TRANSPORT_RETRIES`, default **1** extra attempt). **Mutating** tools are **never** auto-retried. JSONL: `session_start`, `session_ready`, `session_error`, `reconnect_attempt`, `reconnect_success`, `reconnect_failed` via **`bridge/structured_log.log_gazebo_mcp_session_event`**. Tests: **`tests/test_gazebo_session_reconnect.py`**. UI: **`user_hint_for_gazebo_mcp_failure()`** short messages on **`GazeboResult`**. **Docker pytest 191 passed / 6 skipped**; **Docker E2E exit 0** (2026-05-11).
+- [ ] Robust **full-stack** sim restart path (same item as container port / daemon scope above).
+- [x] CI-ready test commands — pytest compose + E2E compose (Linux Docker engine).
 
 Definition of done:
 
 - Tests can be rerun reliably and produce explainable, comparable results.
+
+### Gazebo MCP reconnect policy (Phase 6)
+
+**Lifecycle (per `with GazeboSession()` block)**
+
+1. **Session creation:** build argv (`GAZEBO_MCP_CMD`, `MCP_VENV`, or WSL/local venv), append JSONL `session_start`, spawn subprocess, wait for alive.
+2. **First MCP call:** JSON-RPC `initialize` / `notifications/initialized`; on success append `session_ready`. On failure append `session_error`, stop subprocess, retry up to **`BRIDGE_GAZEBO_MCP_SESSION_START_ATTEMPTS`** (default **3**, max **8**) with capped exponential backoff (~0.35s × 2^n, max 2s).
+3. **Tool failure:** JSON-RPC `tools/call` returns `error` or tool payload `isError` → **no transport reconnect** (application-level); existing `mcp_tool_call` / `mcp_tool_exception` JSONL remains.
+4. **Process exit / broken pipe / timeout:** if the tool is **read-only** per **`config/mcp_permissions.yaml`**, up to **`BRIDGE_GAZEBO_MCP_READONLY_TRANSPORT_RETRIES`** (default **1**) **extra** `tools/call` attempts may run after **`reconnect_attempt`** → subprocess stop/start → **`reconnect_success`** or **`reconnect_failed`**.
+5. **Reconnect or retry:** only **read-only** tools; **mutating** tools (`spawn_model`, `pause_simulation`, `reset_simulation`, …) are **not** retried (first attempt may have executed in Gazebo).
+6. **Permanent failure:** exhausted start attempts or reconnect handshake fails → raise `RuntimeError`; public APIs wrap in **`GazeboResult`** with **`user_hint_for_gazebo_mcp_failure()`** text.
+
+**Timeouts:** unchanged per public API (`wait_for_ready` delay/retries, `get_simulation_status(timeout=…)`, etc.); each `_MCPClient` still uses the session `timeout` for per-RPC recv.
+
+**Operations intentionally not retried at transport layer:** any tool **not** in `gazebo_mcp_read_only_tools`, JSON-RPC/MCP **application** errors, permission denials (`MCPRepoReadDenied`, `MCPMutatingToolDenied`), and **full Docker / ROS daemon** restarts (separate Phase 6 stack item).
+
+---
 
 ## Phase 7: Scale-Out Validation
 
@@ -570,29 +674,37 @@ Definition of done:
 
 - The same robot can be evaluated across many reproducible scenario variants with comparable metrics.
 
+### Phase 7 Notes
+
+- **Prerequisites:** Phase 6 batch runner, stable metrics in `result.yaml` or sidecar summaries, and deterministic seed handling in scenario schema (schema changes not yet defined).
+- **Implementation sketch:** extend `runner/` with a `run-batch` mode (or external driver) that iterates scenario parameter grids, writes one directory per variant under `sim_runs/`, and aggregates SR/RTF/TC into a CSV or YAML summary for dashboards.
+
 ## Decisions Needed Before Coding
+
+Historical checklist; most items are now **locked** for v1. Treat this as a decision log, not a blocking gate.
 
 - [x] Is the first target single-user local development, team development, or CI automation? **Decision: single-user local development first.** CI automation is Phase 6.
 - [x] Which environment is the first supported path: Docker, WSL2, native Linux, or Windows-native? **Decision: Windows-native FreeCAD + WSL2 + Docker for Gazebo/ROS 2.**
-- [ ] Which Gazebo release is the target: Harmonic, Ionic, or another modern gz-sim release? **Pending**: the `Start-gz-sim.sh` builds from `src/3rdParty/gz-sim` source; the exact release tag needs to be confirmed from the submodule.
-- [ ] Are v1 tests kinematic only, controller-in-the-loop, or both? **Pending**: defer to Phase 4 decision point.
-- [ ] What is the minimum useful v1 assertion set? **Pending**: defer to Phase 4 decision point. Candidates: `reach_target_within`, `no_self_collision`, `max_joint_torque_below`, `sim_time_under`, `pose_within_tolerance`, `rtf_above`.
-- [ ] Which ROS 2 MCP bridge is the first supported bridge? **Working assumption**: `ros-mcp` v3.0.1 (already installed at `tools/mcp/ros-mcp-server`). Revisit in Phase 4.5.
+- [x] Which Gazebo release is the target? **Decision: dual track.** (1) **Reference for reproducible CI/E2E:** **Gazebo Harmonic** via `gz-harmonic` in **`docker/Dockerfile.e2e`**. (2) **Developer WSL path:** `Start-gz-sim.sh` builds **`src/3rdParty/gz-sim`** from source against OSRF packages (exact version follows the submodule + packages in the container — use `gz sim --version` when debugging drift).
+- [x] Are v1 tests kinematic only, controller-in-the-loop, or both? **Decision: physics-style scenarios with a fixed assertion vocabulary in v1; controller-in-the-loop is Phase 4.5.** The runner already evaluates dynamics-related assertions (e.g. torque, collision) when telemetry is present.
+- [x] What is the minimum useful v1 assertion set? **Decision: the seven types in Phase 4** (`reach_target_within`, `no_self_collision`, `max_joint_torque_below`, `sim_time_under`, `pose_within_tolerance`, `rtf_above`, `collision_count_below`), per `config/schemas/scenario.schema.yaml`.
+- [x] Which ROS 2 MCP bridge is the first supported bridge? **Locked for v1:** **`ros-mcp` v3.0.1** at `tools/mcp/ros-mcp-server`. Phase 4.5 defines *how* scenarios command ROS 2.
 - [x] Will Gazebo always run on the same machine as FreeCAD? **Decision: yes for v1.** Both on the same Windows host (Gazebo in WSL2/Docker, FreeCAD on Windows).
-- [ ] Are generated artifacts ignored, checked in, or stored through Git LFS? **Working assumption**: `generated/` and `sim_runs/` are gitignored. Finalize in Phase 2 when the repo layout is established.
-- [ ] What write operations should the MCP client be allowed to perform? **Pending**: defer to Phase 6 hardening.
+- [x] Are generated artifacts ignored, checked in, or stored through Git LFS? **Decision: `generated/` and `sim_runs/` are gitignored** (root `.gitignore`). Rebuild from sources; keep small hand-authored URDF/SDF under `robots/` / `worlds/` for smoke tests when needed.
+- [ ] What write operations should the MCP client be allowed to perform? **Addressed (bridge)**: **`config/mcp_permissions.yaml`** + **`bridge/mcp_write_policy.py`** — approved roots **`sim_runs/`**, **`generated/`**; optional **`BRIDGE_MCP_DENY_MUTATING=1`**; upstream MCP servers unchanged.
 - [x] Which FreeCAD MCP transport and port are canonical for this project? **Decision: XML-RPC on `localhost:9875`.** Confirmed from `freecad_client.py` and `rpc_server.py`.
 
 ## Immediate Next Tasks
 
 1. ~~Confirm the environment target and write the setup decision down.~~ **Done** — Windows + WSL2 + Docker (see Phase 0 Environment Decision).
 2. ~~Resolve the FreeCAD MCP addon transport and port mismatch in the docs.~~ **Done** — XML-RPC port 9875 confirmed.
-3. **Next**: Run **`scripts/install_robotcad_cross.ps1`**, open FreeCAD, enable RobotCAD/CROSS, and verify demo robot export into headless Gazebo.
-4. Run headless Gazebo end-to-end once the Docker container is built (first `Start-gz-sim.bat` run).
-5. Start FreeCAD with MCP addon active; run `python test_all_mcp.py` with FreeCAD live to get full integration test coverage.
-6. Build or choose the toy robot for the first manual end-to-end scenario (Phase 1).
-7. Draft the first `reach_top_shelf.yaml` scenario.
-8. Record all friction from the manual flow before writing bridge automation.
+3. **Highest leverage:** Add **`robots/arm_2dof.FCStd`** with Cross/RobotCAD entities and verify **`export_urdf` / RobotCAD** path (unblocks Phase 1 definition of done and honest E2E export).
+4. Run **`scripts/install_robotcad_cross.ps1`**, open FreeCAD, enable RobotCAD/CROSS, and confirm demo/export (closes Phase 0 / Phase 1 human blockers).
+5. ~~Draft the first `reach_top_shelf.yaml` scenario.~~ **Done** — `tests/scenarios/reach_top_shelf.yaml` (still needs a live run with exported robot).
+6. On **Linux Docker engine**: keep **`docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e`** green after model/export changes.
+7. Optionally run **WSL** headless Gazebo via **`Start-gz-sim.bat`** / `Start-gz-sim.sh` for parity with developer source-build path (long first build).
+8. Start FreeCAD with MCP addon active; run **`python test_all_mcp.py`** to exercise **`get_object` / `get_view`** against live XML-RPC.
+9. ~~Record friction from the manual flow.~~ **Done** for pre-live analysis — Phase 1 friction table; **refresh after** first full GUI + Gazebo run.
 
 ## Tracking Notes
 
@@ -604,3 +716,22 @@ Definition of done:
 - Keep the human path inside FreeCAD and the LLM path through MCP.
 - Prefer coarse, typed MCP tools over many tiny tool calls.
 - Treat ROS 2 control, VLM/image pipelines, randomized environments, and adaptive communication diagnostics as staged additions after the basic test rig works.
+
+## Key repository paths (quick reference)
+
+| Area | Path |
+| --- | --- |
+| Project manifest | `project.yaml` |
+| **Structured JSONL (bridge / E2E / runner)** | `bridge/structured_log.py`; default file **`sim_runs/e2e_<UTC>/logs/structured.jsonl`** (E2E); **`sim_runs/<run_id>/logs/structured.jsonl`** (runner) |
+| Schemas | `config/schemas/project.schema.yaml`, `config/schemas/scenario.schema.yaml` |
+| Bridge / handoff | `bridge/` (`freecad_bridge.py`, `gazebo_bridge.py`, `gz_cli_bridge.py`, `handoff.py`, …) |
+| Scenario runner | `runner/` |
+| Iteration / sweeps | `iteration/` |
+| Simulation Workbench addon | `addons/SimWorkbench/` (`panels/gazebo_status_panel.py`, `gazebo_status_logic.py`, …) |
+| Example scenarios | `tests/scenarios/`, `tests/scenarios_e2e/e2e_smoke.yaml` |
+| Robots / worlds | `robots/`, `worlds/` |
+| Docker E2E | `docker/compose.e2e.yml`, `e2e/run_e2e.sh`, `e2e/bridge_gazebo_mcp_smoke.py`, `worlds/e2e_world.sdf`, `tools/mcp/gazebo-mcp/src/gazebo_mcp/gz_live_camera.py`, `tools/mcp/gazebo-mcp/src/gazebo_mcp/tools/sensor_tools.py` |
+| Pytest in Docker | `docker/compose.pytest.yml` |
+| MCP smoke (host) | `test_all_mcp.py` |
+| RobotCAD install helper | `scripts/install_robotcad_cross.ps1` |
+| Python deps (bridge) | `requirements-bridge.txt` |

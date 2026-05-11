@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # Full unattended E2E (see docs/freecad_gazebo_mcp_task_breakdown.md § Docker E2E).
+# Environment defaults align with config/runtime_manifest.yaml.
 #
 #   docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
 #

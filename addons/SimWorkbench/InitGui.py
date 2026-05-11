@@ -18,6 +18,7 @@ Architecture:
           ├── state_bridge.py  StateBridge (Gazebo poses → FreeCAD placements)
           └── panels/        Qt dock widgets
                 ├── sim_controls.py     Play / Pause / Step / Reset / RTF
+                ├── gazebo_status_panel.py  Gazebo MCP status + camera snapshot
                 ├── scenario_picker.py  Robot / World / Scenario selection
                 ├── sensor_plots.py     Joint states and RTF chart
                 ├── run_library.py      Browse sim_runs/
@@ -48,6 +49,7 @@ class SimWorkbench(Workbench):
       - Live 3D View:      Gazebo poses reflected into FreeCAD model placements
       - Sensor Plots:      joint states, IMU, contacts in a live chart panel
       - Run Library:       browse previous sim_runs/
+      - Gazebo Status:     MCP status text + optional camera screenshot
       - MCP Activity Log:  audit trail of LLM agent tool calls
     """
 

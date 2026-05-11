@@ -2,6 +2,7 @@
 #
 # Offline pytest suite (bridge / runner / iteration / SimWorkbench logic).
 # Does not install FreeCAD or Gazebo — live tests stay skipped (same as host CI).
+# Python image pin: config/runtime_manifest.yaml
 #
 # Build from repo root:
 #   docker build -f docker/Dockerfile.test -t freecad-gazebo-mcp-pytest .

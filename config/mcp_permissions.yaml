@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Bridge-side MCP write / mutation policy (FreeCAD repo SimWorkbench + handoff).
+# Enforced in Python (see bridge/mcp_write_policy.py), not inside upstream MCP servers.
+#
+# Environment overrides:
+#   BRIDGE_MCP_DENY_MUTATING=1  — block mutating gazebo-mcp stdio tool calls from bridge.GazeboSession
+#   BRIDGE_MCP_EXTRA_WRITE_ROOTS — extra absolute dirs (use ';' on Windows, '|' also accepted)
+
+schema_version: 1
+
+description: >
+  Classifies gazebo-mcp tool names, bounds local filesystem writes from bridge code
+  to sim_runs/ and generated/, and optionally denies simulator-mutating MCP calls for tests / locked-down agents.
+
+# When true (or BRIDGE_MCP_DENY_MUTATING=1), GazeboSession refuses tools not listed under gazebo_mcp_read_only_tools.
+deny_mutating_mcp_tools: false
+
+# Directory names relative to repository root; resolved to absolute paths at load time.
+allowed_write_roots:
+  - sim_runs
+  - generated
+
+# URDF/SDF/model files read by bridge.gazebo_bridge.spawn_model must stay inside the repo tree.
+enforce_repo_bounded_model_reads: true
+
+# gazebo-mcp registrations (mcp/server/adapters/*.py). Anything not listed here is treated as MUTATING.
+gazebo_mcp_read_only_tools:
+  - gazebo_list_models
+  - gazebo_get_model_state
+  - gazebo_list_sensors
+  - gazebo_get_sensor_data
+  - gazebo_load_world
+  - gazebo_get_world_properties
+  - gazebo_get_simulation_time
+  - gazebo_get_simulation_status
+  - gazebo_list_worlds
+  - gazebo_list_topics
+  - gazebo_get_topic_info
+  - gazebo_get_transform
+  - gazebo_get_joint_states
+  # Short / legacy names used by bridge.gazebo_bridge._call_gazebo_tool and older clients
+  - list_sensors
+  - get_sensor_data
+  - get_model_state
+  - get_simulation_status
+
+# MCP tools whose arguments may reference filesystem paths — validated on every bridge-invoked call.
+gazebo_mcp_path_args:
+  write_under_allowed_roots:
+    gazebo_save_world:
+      - output_path
+  read_under_repo_only:
+    gazebo_load_world:
+      - world_file_path
+    gazebo_spawn_model:
+      - model_file
+
+# FreeCAD XML-RPC bridge operations (not MCP stdio) — documentation / future hooks
+freecad_rpc:
+  read_only:
+    - check_robotcad
+    - compute_inertia_check
+  mutating:
+    - export_urdf
+    - export_sdf_world
+
+# ros-mcp-server, freecad-mcp stdio tools: not invoked from bridge/ today — policy deferred (treat as mutating if wired later).
+deferred_servers:
+  - ros-mcp-server
+  - freecad-mcp

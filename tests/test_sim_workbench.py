@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import sys
 import os
+import json
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -19,6 +20,9 @@ import pytest
 # ---------------------------------------------------------------------------
 ADDON_DIR = os.path.join(os.path.dirname(__file__), "..", "addons", "SimWorkbench")
 sys.path.insert(0, os.path.abspath(ADDON_DIR))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 
 # ===========================================================================
@@ -315,6 +319,91 @@ class TestStateBridgeOffline:
 
 
 # ===========================================================================
+# Gazebo status panel helpers (no Qt / FreeCAD)
+# ===========================================================================
+
+
+class TestGazeboStatusLogic:
+    def test_format_simulation_status_empty(self):
+        from panels.gazebo_status_logic import format_simulation_status_detail
+
+        out = format_simulation_status_detail(None)
+        assert "no status" in out.lower()
+
+    def test_format_simulation_status_json(self):
+        from panels.gazebo_status_logic import format_simulation_status_detail
+
+        text = format_simulation_status_detail({"paused": False, "n": 3})
+        assert '"n"' in text
+        assert "3" in text
+
+    def test_combined_heading(self):
+        from panels.gazebo_status_logic import combined_status_heading
+
+        h = combined_status_heading("Connected", True, "ok")
+        assert "Transport: Connected" in h
+        assert "MCP: ok" in h
+
+        h2 = combined_status_heading("Error", False, "boom")
+        assert "boom" in h2
+
+
+class TestGazeboBridgeMediaHelpers:
+    def test_pick_camera_sensor_prefers_camera_in_name(self):
+        from bridge.gazebo_bridge import pick_camera_sensor_from_mcp_list
+
+        data = {"sensors": [{"name": "lidar_top"}, {"name": "wrist_rgb_camera"}]}
+        assert pick_camera_sensor_from_mcp_list(data) == "wrist_rgb_camera"
+
+    def test_pick_camera_sensor_fallback_first(self):
+        from bridge.gazebo_bridge import pick_camera_sensor_from_mcp_list
+
+        data = {"items": [{"name": "joint_a"}, {"name": "joint_b"}]}
+        assert pick_camera_sensor_from_mcp_list(data) == "joint_a"
+
+    def test_pick_camera_empty(self):
+        from bridge.gazebo_bridge import pick_camera_sensor_from_mcp_list
+
+        assert pick_camera_sensor_from_mcp_list({}) is None
+        assert pick_camera_sensor_from_mcp_list(None) is None
+
+    def test_parse_mcp_tool_response_media_image(self):
+        import base64
+
+        from bridge.gazebo_bridge import _parse_mcp_tool_response_media
+
+        blob = b"\x89PNG\r\n\x1a\n\x00"
+        raw = {"content": [{"type": "image", "data": base64.b64encode(blob).decode("ascii")}]}
+        ok, _data, img, _msg = _parse_mcp_tool_response_media(raw)
+        assert ok is True
+        assert img == blob
+
+    def test_parse_mcp_tool_response_media_json_image_key(self):
+        import base64
+
+        from bridge.gazebo_bridge import _parse_mcp_tool_response_media
+
+        blob = b"fakejpeg"
+        b64 = base64.b64encode(blob).decode("ascii")
+        text = '{"success": true, "image_base64": "%s"}' % b64
+        raw = {"content": [{"type": "text", "text": text}]}
+        ok, _d, img, _m = _parse_mcp_tool_response_media(raw)
+        assert ok is True
+    def test_parse_mcp_tool_response_media_nested_data_image(self):
+        import base64
+
+        from bridge.gazebo_bridge import _parse_mcp_tool_response_media
+
+        blob = b"\x00\x01mock"
+        b64 = base64.b64encode(blob).decode("ascii")
+        text = json.dumps({"success": True, "data": {"sensor_name": "cam", "image_base64": b64}})
+        raw = {"content": [{"type": "text", "text": text}]}
+        ok, _d, img, _m = _parse_mcp_tool_response_media(raw)
+        assert ok is True
+        assert img == blob
+
+
+# ===========================================================================
 # Installation helper tests
 # ===========================================================================
 
@@ -344,5 +433,7 @@ class TestInstallAddon:
         assert (dst / "state_bridge.py").exists()
         assert (dst / "sim_workbench.py").exists()
         assert (dst / "panels" / "sim_controls.py").exists()
+        assert (dst / "panels" / "gazebo_status_panel.py").exists()
+        assert (dst / "panels" / "gazebo_status_logic.py").exists()
 
         mod.find_freecad_mod_dir = original

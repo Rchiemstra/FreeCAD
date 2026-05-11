@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Single human- and machine-readable list of runtime versions and CI pins.
+# Authoritative for: Docker E2E + compose pytest (see docker/ paths below).
+# project.yaml remains the robot *project* manifest; its environment.* versions
+# are product-level targets and may differ from Docker (see reconciliation).
+
+schema_version: 1
+title: FreeCAD–Gazebo–MCP runtime manifest
+
+canonical_ci:
+  description: >
+    Linux Docker stack exercised by docker/compose.e2e.yml and docker/compose.pytest.yml.
+    Image tags in Dockerfiles are the mechanical source of truth; this block duplicates them for discovery.
+
+  docker:
+    e2e:
+      compose_file: docker/compose.e2e.yml
+      dockerfile: docker/Dockerfile.e2e
+      image_name: freecad-gazebo-mcp-e2e:latest
+      base_image: ros:jazzy-ros-base-noble
+    pytest:
+      compose_file: docker/compose.pytest.yml
+      dockerfile: docker/Dockerfile.test
+      image_name: freecad-gazebo-mcp-pytest:latest
+      base_image: python:3.12-slim-bookworm
+
+  os:
+    e2e_base: Ubuntu 24.04 (noble), from ros:jazzy-ros-base-noble
+
+  python:
+    e2e_system: "3.12 (Noble default python3)"
+    pytest_image: "3.12 (slim-bookworm)"
+    freecad_mcp_requires: ">=3.12"
+    gazebo_mcp_requires: ">=3.10"
+
+  ros2:
+    distro: jazzy
+    setup_path: /opt/ros/jazzy/setup.bash
+
+  gazebo:
+    family: harmonic
+    apt_metapackage: gz-harmonic
+    sim_major: 8
+    notes: >
+      Binary install from OSRF apt (see Dockerfile.e2e). gz CLI reports major 8.
+      Transport stack (gz-transport, gz-msgs) versions follow Harmonic packaging.
+
+  freecad:
+    e2e_package: freecad-daily
+    ppa: ppa:freecad-maintainers/freecad-daily
+    project_yaml_target_version: "1.2.0-dev"
+    notes: >
+      E2E uses the PPA binary; exact Git rev floats. project.yaml freecad_version is the design target.
+
+  robotcad:
+    e2e_install: git clone drfenixion/freecad.robotcad → /opt/robotcad, Mod symlink
+
+  mcp_venv:
+    path: /opt/mcp-venv
+    preinstalled_pip: "mcp[cli]>=1.12 pydantic pyyaml validators"
+
+  gazebo_mcp:
+    source_path: tools/mcp/gazebo-mcp
+    package_version: "0.2.0"
+    pyproject: tools/mcp/gazebo-mcp/pyproject.toml
+
+  freecad_mcp:
+    source_path: tools/mcp/freecad-mcp
+    package_version: "0.1.17"
+    pyproject: tools/mcp/freecad-mcp/pyproject.toml
+
+  ros_mcp:
+    source_path: tools/mcp/ros-mcp-server
+    package_version: "3.0.1"
+    pyproject: tools/mcp/ros-mcp-server/pyproject.toml
+
+  bridge_python:
+    requirements_file: requirements-bridge.txt
+    dev_requirements_file: requirements-dev.txt
+
+mcp_write_permissions:
+  policy_file: config/mcp_permissions.yaml
+  enforcement: bridge/mcp_write_policy.py
+
+structured_logging:
+  module: bridge/structured_log.py
+  default_e2e_file: "<E2E_RUN_DIR>/logs/structured.jsonl"
+
+environment_variables:
+  GAZEBO_MCP_SENSOR_MODE:
+    default: auto
+    description: >
+      gazebo-mcp sensor_tools: auto (live gz Image when gz + bindings available, else mock rows),
+      mock (always synthetic camera), live (require gz camera topics; E2E smoke asserts live path).
+  GZ_SIM_WORLD_NAME:
+    default_in_compose: empty_world
+    description: World name passed to bridge / MCP helpers when not inferred from running sim.
+  MCP_VENV:
+    default_in_e2e: /opt/mcp-venv
+    description: Python venv for MCP server processes in E2E container.
+  E2E_BRIDGE_MODULE:
+    default: gz_cli
+    description: Selects bridge implementation for E2E (SimWorkbench parity tests).
+  PYTHONPATH_e2e:
+    description: >
+      Repo root plus /usr/lib/python3/dist-packages so MCP venv can import system gz.* bindings
+      (see e2e/run_e2e.sh).
+  SIM_RUNS_DIR:
+    description: Where e2e/run_e2e.sh writes per-run logs (default under repo sim_runs/).
+  BRIDGE_MCP_DENY_MUTATING:
+    default: "unset (mutating gazebo-mcp tools allowed from bridge.GazeboSession)"
+    description: >
+      Set to 1 to deny any gazebo-mcp stdio tool not listed as read-only in config/mcp_permissions.yaml
+      (used by tests / locked-down agents). Docker E2E leaves unset.
+  BRIDGE_MCP_EXTRA_WRITE_ROOTS:
+    description: >
+      Optional semicolon-separated absolute directories allowed for bridge writes in addition to
+      sim_runs/ and generated/ (e.g. extra temp roots in custom automation).
+  BRIDGE_STRUCTLOG_PATH:
+    description: >
+      Optional absolute path to append-only JSONL (one JSON object per line) for bridge MCP,
+      sensor/capture, permission, and SimWorkbench panel events. E2E sets this to
+      <E2E_RUN_DIR>/logs/structured.jsonl by default (see e2e/run_e2e.sh).
+  BRIDGE_GAZEBO_MCP_SESSION_START_ATTEMPTS:
+    default: "3"
+    description: >
+      Max attempts to spawn gazebo-mcp stdio subprocess and complete MCP initialize per
+      GazeboSession.__enter__ (clamped 1–8). Emits session_start / session_ready / session_error JSONL.
+  BRIDGE_GAZEBO_MCP_READONLY_TRANSPORT_RETRIES:
+    default: "1"
+    description: >
+      Extra read-only tools/call attempts after a transport-level failure (TimeoutError,
+      broken pipe, etc.) following one subprocess reconnect; 0 disables. Mutating tools never retry.
+  SIMWORKBENCH_STRUCTLOG_PATH:
+    description: >
+      Same as BRIDGE_STRUCTLOG_PATH for host FreeCAD sessions (overrides E2E_RUN_DIR resolution).
+
+reconciliation:
+  project_yaml:
+    path: project.yaml
+    note: >
+      environment.ros_distro is rolling (product / host-WSL narrative in docs).
+      Docker E2E pins Jazzy — intentional; see Phase 0 version table in docs.
+  intentional_duplicates:
+    - FROM lines in docker/Dockerfile.e2e and docker/Dockerfile.test (build-time pins).
+    - MCP package versions in project.yaml / this file / each pyproject.toml (same values; update together).
+    - Phase 0 version table in docs/freecad_gazebo_mcp_task_breakdown.md (narrative + WSL host rows).

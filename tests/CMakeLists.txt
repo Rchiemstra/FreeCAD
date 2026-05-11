@@ -102,9 +102,6 @@ set(TestExecutables
     Zipios_tests_run
 )
 
-# NOTE: The following tests don't yet run on Windows because they can't find the *.pyd files needed by each FreeCAD
-# module.
-
 if(BUILD_GUI)
     list (APPEND TestExecutables Gui_tests_run)
 endif()
@@ -158,12 +155,18 @@ if(WIN32)
     elseif(EXISTS "${CMAKE_PREFIX_PATH}/bin")
         list(APPEND _test_env_mod "PATH=path_list_prepend:${CMAKE_PREFIX_PATH}/bin")
     endif()
-    file(GLOB _mod_dirs LIST_DIRECTORIES true "${CMAKE_BINARY_DIR}/Mod/*")
-    foreach(_mod_dir ${_mod_dirs})
-        if(IS_DIRECTORY "${_mod_dir}")
-            list(APPEND _test_env_mod "PATH=path_list_prepend:${_mod_dir}")
+    # Module .pyd files live under ${CMAKE_BINARY_DIR}/Mod/<name>/, but that tree is created during the
+    # build, so a configure-time GLOB on the binary dir is empty. Derive directory names from src/Mod
+    # instead (same layout as the built Mod tree).
+    file(GLOB _mod_src_dirs LIST_DIRECTORIES true "${CMAKE_SOURCE_DIR}/src/Mod/*")
+    foreach(_mod_src_dir ${_mod_src_dirs})
+        if(IS_DIRECTORY "${_mod_src_dir}")
+            get_filename_component(_mod_name "${_mod_src_dir}" NAME)
+            list(APPEND _test_env_mod "PATH=path_list_prepend:${CMAKE_BINARY_DIR}/Mod/${_mod_name}")
         endif()
     endforeach()
+    # Stable numeric formatting in unit tests (e.g. Base quantity user strings) regardless of OS locale.
+    list(APPEND _test_env_mod "LC_ALL=set:C")
 endif()
 
 if ( NOT FREECAD_USE_EXTERNAL_GTEST )

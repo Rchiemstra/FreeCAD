@@ -104,6 +104,12 @@ class SimWorkbenchCoordinator:
                 controls.update_connection_status(status)
             except Exception:
                 pass
+        gz_status = self._panels.get("gazebo_status")
+        if gz_status is not None:
+            try:
+                gz_status.update_transport_status(status)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Simulation lifecycle controls
@@ -181,6 +187,13 @@ def _create_panels(coord: "SimWorkbenchCoordinator") -> dict:
         _add_dock(panels["sim_controls"], "Sim Controls", "Right")
     except Exception as exc:
         log.warning("SimControlsPanel failed: %s", exc)
+
+    try:
+        from panels.gazebo_status_panel import GazeboStatusPanel
+        panels["gazebo_status"] = GazeboStatusPanel(coord)
+        _add_dock(panels["gazebo_status"], "Gazebo Status", "Right")
+    except Exception as exc:
+        log.warning("GazeboStatusPanel failed: %s", exc)
 
     try:
         from panels.scenario_picker import ScenarioPickerPanel

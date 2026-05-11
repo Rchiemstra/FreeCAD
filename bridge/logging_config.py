@@ -19,7 +19,10 @@ Log format (stdout, INFO by default):
 
 All logged fields are plain strings, no JSON encoding required.  If you need
 machine-readable logs, set ``LOG_FORMAT=json`` in the environment to get
-newline-delimited JSON (one object per line).
+newline-delimited JSON on the root logger.
+
+For **bridge / E2E / runner** JSONL events (MCP tool timing, captures, permissions),
+see ``bridge/structured_log.py`` and ``BRIDGE_STRUCTLOG_PATH`` / ``E2E_RUN_DIR``.
 """
 from __future__ import annotations
 

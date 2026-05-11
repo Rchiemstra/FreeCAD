@@ -3,6 +3,7 @@
 #
 # Single-image E2E stack (FreeCAD daily + RobotCAD, ROS 2 Jazzy, Gazebo Harmonic, MCP venv).
 # Runtime bind-mounts the repo to /workspace (see docker/compose.e2e.yml).
+# Pinned versions / env vars: config/runtime_manifest.yaml
 
 FROM ros:jazzy-ros-base-noble
 
