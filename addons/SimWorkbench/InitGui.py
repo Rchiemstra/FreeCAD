@@ -90,4 +90,10 @@ class SimWorkbench(Workbench):
 
 Gui.addWorkbench(SimWorkbench())
 
+try:
+    from read_mode_toolbar import install_read_mode_toolbar
+    install_read_mode_toolbar(_addon_dir)
+except Exception as exc:
+    FreeCAD.Console.PrintWarning(f"[SimWorkbench] Failed to install read/write mode button: {exc}\n")
+
 FreeCAD.Console.PrintMessage("[SimWorkbench] Simulation Workbench loaded.\n")

@@ -315,6 +315,33 @@ class TestStateBridgeOffline:
 
 
 # ===========================================================================
+# Panel import fallback tests
+# ===========================================================================
+
+def test_test_runner_panel_imports_without_qt_signal(monkeypatch):
+    """test_runner_panel.py must not fail with NameError when Qt is unavailable."""
+    import builtins
+    import importlib.util
+
+    real_import = builtins.__import__
+
+    def blocked_pyside_import(name, *args, **kwargs):
+        if name.startswith("PySide"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_pyside_import)
+
+    panel_path = os.path.join(ADDON_DIR, "panels", "test_runner_panel.py")
+    spec = importlib.util.spec_from_file_location("test_runner_panel_no_qt", panel_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._QT is False
+    assert hasattr(mod._RunWorker, "finished")
+
+
+# ===========================================================================
 # Installation helper tests
 # ===========================================================================
 

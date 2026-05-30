@@ -25,18 +25,49 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sim_workbench import SimWorkbenchCoordinator
 
+
+class _NoSignal:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def connect(self, *_args, **_kwargs):
+        pass
+
+    def emit(self, *_args, **_kwargs):
+        pass
+
+
 try:
-    from PySide2.QtWidgets import (
+    from PySide6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
         QPushButton, QLabel, QFrame, QTextEdit,
     )
-    from PySide2.QtCore import Qt, QThread, Signal, QObject
-    from PySide2.QtGui import QFont, QColor
+    from PySide6.QtCore import Qt, QThread, Signal, QObject
+    from PySide6.QtGui import QFont, QColor
     _QT = True
 except ImportError:
-    _QT = False
-    QWidget = object      # type: ignore
-    QThread = object      # type: ignore
+    try:
+        from PySide2.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+            QPushButton, QLabel, QFrame, QTextEdit,
+        )
+        from PySide2.QtCore import Qt, QThread, Signal, QObject
+        from PySide2.QtGui import QFont, QColor
+        _QT = True
+    except ImportError:
+        try:
+            from PySide.QtGui import (
+                QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+                QPushButton, QLabel, QFrame, QTextEdit, QFont, QColor,
+            )
+            from PySide.QtCore import Qt, QThread, Signal, QObject
+            _QT = True
+        except ImportError:
+            _QT = False
+            QWidget = object      # type: ignore
+            QThread = object      # type: ignore
+            QObject = object      # type: ignore
+            Signal = _NoSignal    # type: ignore
 
 
 class _RunWorker(QObject if _QT else object):  # type: ignore
