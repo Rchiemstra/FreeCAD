@@ -1,8 +1,6 @@
 # CI — robot simulation rig
 
-GitHub Actions: [`.github/workflows/robot-sim-ci.yml`](../.github/workflows/robot-sim-ci.yml)
-
-Local mirror:
+Local CI scripts (no GitHub Actions on this branch):
 
 ```bash
 bash scripts/ci/run_local.sh              # offline + lifecycle + Docker E2E
@@ -34,7 +32,7 @@ CI sets `CI=true` and **forbids** `RUN_GAZEBO_LIVE=1` (`tests/conftest.py`).
 
 - Pytest uses `-v --tb=short` and explicit `-m "not gazebo …"`.
 - Each script prints a banner (`═══ CI: … ═══`) before/after.
-- E2E failures upload `sim_runs/e2e_*/console.log` as a workflow artifact.
+- E2E failures write logs under `sim_runs/e2e_*/console.log`.
 
 ## Requirements
 

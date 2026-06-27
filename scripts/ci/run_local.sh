@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# Local CI mirror of .github/workflows/robot-sim-ci.yml
+# Local CI gate runner (offline pytest, lifecycle smoke, Docker E2E)
 #
 # Usage:
 #   bash scripts/ci/run_local.sh              # all gates
