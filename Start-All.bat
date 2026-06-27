@@ -17,6 +17,18 @@ set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 cd /d "%ROOT%" || exit /b 1
 
+set "PIXI_ENV=%ROOT%\.pixi\envs\default"
+set "PIXI_LIBRARY=%PIXI_ENV%\Library"
+if exist "%PIXI_LIBRARY%\bin" set "PATH=%PIXI_LIBRARY%\bin;%PATH%"
+if exist "%PIXI_LIBRARY%\lib\qt6\bin" set "PATH=%PIXI_LIBRARY%\lib\qt6\bin;%PATH%"
+if exist "%PIXI_LIBRARY%\mingw-w64\bin" set "PATH=%PIXI_LIBRARY%\mingw-w64\bin;%PATH%"
+if exist "%PIXI_LIBRARY%\usr\bin" set "PATH=%PIXI_LIBRARY%\usr\bin;%PATH%"
+if exist "%PIXI_ENV%\DLLs" set "PATH=%PIXI_ENV%\DLLs;%PATH%"
+if exist "%PIXI_ENV%" set "PATH=%PIXI_ENV%;%PATH%"
+if exist "%PIXI_LIBRARY%\lib\qt6\plugins" set "QT_PLUGIN_PATH=%PIXI_LIBRARY%\lib\qt6\plugins"
+if exist "%PIXI_LIBRARY%\lib\qt6\plugins\platforms" set "QT_QPA_PLATFORM_PLUGIN_PATH=%PIXI_LIBRARY%\lib\qt6\plugins\platforms"
+if exist "%PIXI_LIBRARY%\lib\qt6\qml" set "QML2_IMPORT_PATH=%PIXI_LIBRARY%\lib\qt6\qml"
+
 if /i "%~1"=="e2e" goto :e2e
 
 if not exist "%ROOT%\.log" mkdir "%ROOT%\.log" >nul 2>nul

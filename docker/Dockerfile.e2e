@@ -4,7 +4,16 @@
 # Single-image E2E stack (FreeCAD daily + RobotCAD, ROS 2 Jazzy, Gazebo Harmonic, MCP venv).
 # Runtime bind-mounts the repo to /workspace (see docker/compose.e2e.yml).
 
-FROM ros:jazzy-ros-base-noble
+# Digest pin — see config/runtime-versions.lock.yaml and docs/docker-e2e-reproducibility.md
+FROM ros:jazzy-ros-base-noble@sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
+
+# Pin RobotCAD/OVERCROSS clone (see config/runtime-versions.lock.yaml).
+ARG ROBOTCAD_GIT_REF=c3ac92843892b2b19eedfb7d536da81458e819b3
+# Apt pins (must match docker_e2e.apt_versions in the lock file).
+ARG FREECAD_DAILY_APT_VERSION=1.1~pre1~202508270404~ubuntu24.04.1
+ARG GZ_HARMONIC_APT_VERSION=1.0.0-1~noble
+ARG GZ_SIM8_CLI_APT_VERSION=8.12.0-1~noble
+ARG E2E_BASE_IMAGE_REF=ros:jazzy-ros-base-noble@sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
@@ -36,22 +45,33 @@ RUN wget -q https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
         > /etc/apt/sources.list.d/gazebo-stable.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gz-harmonic \
+    && apt-get install -y --no-install-recommends "gz-harmonic=${GZ_HARMONIC_APT_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 # FreeCAD daily PPA (RobotCAD targets modern FreeCAD builds).
 RUN add-apt-repository -y ppa:freecad-maintainers/freecad-daily \
     && apt-get update \
-    && apt-get install -y --no-install-recommends freecad-daily \
+    && apt-get install -y --no-install-recommends "freecad-daily=${FREECAD_DAILY_APT_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /root/.local/share/FreeCAD/Mod \
-    && git clone --depth 1 https://github.com/drfenixion/freecad.robotcad.git /opt/robotcad \
-    && ln -sf /opt/robotcad /root/.local/share/FreeCAD/Mod/RobotCAD
+# Builtin reproducibility stamps (read by e2e/record_runtime_versions.py).
+RUN printf '%s\n' "${E2E_BASE_IMAGE_REF}" > /etc/e2e-base-image.ref \
+    && dpkg-query -W -f='${Package}=${Version}\n' \
+         freecad-daily gz-harmonic gz-sim8-cli libgz-sim8 \
+         > /etc/e2e-apt-versions.builtin
 
+RUN mkdir -p /root/.local/share/FreeCAD/Mod \
+    && git init /opt/robotcad \
+    && git -C /opt/robotcad remote add origin https://github.com/drfenixion/freecad.robotcad.git \
+    && git -C /opt/robotcad fetch --depth 1 origin "${ROBOTCAD_GIT_REF}" \
+    && git -C /opt/robotcad checkout FETCH_HEAD \
+    && ln -sf /opt/robotcad /root/.local/share/FreeCAD/Mod/RobotCAD \
+    && ln -sf /opt/robotcad /root/.local/share/FreeCAD/Mod/freecad.overcross
+
+COPY requirements-bridge.txt requirements-mcp-e2e.txt /opt/pip-reqs/
 RUN python3 -m venv /opt/mcp-venv \
     && /opt/mcp-venv/bin/pip install -U pip setuptools wheel \
-    && /opt/mcp-venv/bin/pip install "mcp[cli]>=1.12" pydantic pyyaml validators
+    && /opt/mcp-venv/bin/pip install -r /opt/pip-reqs/requirements-mcp-e2e.txt
 
 WORKDIR /workspace
 

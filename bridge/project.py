@@ -112,6 +112,13 @@ def load_project(path: Optional[Path] = None) -> ProjectConfig:
     if not isinstance(data, dict):
         raise ValueError(f"project.yaml must be a YAML mapping, got {type(data)}")
 
+    from bridge.schema_validate import SchemaValidationError, validate_instance
+
+    try:
+        validate_instance(data, "project", instance_label=str(yaml_path))
+    except SchemaValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
     # ── Paths ──────────────────────────────────────────────────────────────────
     raw_paths = data.get("paths", {})
     paths = PathLayout(

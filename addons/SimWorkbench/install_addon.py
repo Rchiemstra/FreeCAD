@@ -43,6 +43,7 @@ def find_freecad_mod_dir() -> Path:
 
 def install() -> None:
     src = Path(__file__).parent.resolve()
+    repo_root = src.parent.parent.resolve()
     mod_dir = find_freecad_mod_dir()
     dst = mod_dir / "SimWorkbench"
 
@@ -52,6 +53,7 @@ def install() -> None:
 
     print(f"Copying {src} → {dst} …")
     shutil.copytree(src, dst)
+    (dst / "repo_root.txt").write_text(str(repo_root), encoding="utf-8")
     print("Done. Restart FreeCAD and switch to 'Simulation Workbench'.")
 
 

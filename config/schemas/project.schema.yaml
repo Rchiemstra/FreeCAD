@@ -119,12 +119,17 @@ definitions:
         description: Wire transport used by the MCP server
       host:
         type: string
-        description: Hostname for non-stdio transports (default: localhost)
+        description: "Hostname for non-stdio transports (default localhost)"
       port:
         type: integer
         minimum: 1
         maximum: 65535
         description: Port for non-stdio transports
+      rosbridge_port:
+        type: integer
+        minimum: 1
+        maximum: 65535
+        description: rosbridge WebSocket port (ros-mcp-server)
       requires_ros2:
         type: boolean
         description: Whether this server requires a live ROS2 environment

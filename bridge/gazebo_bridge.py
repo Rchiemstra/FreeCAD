@@ -54,10 +54,49 @@ def _get_wsl_path(windows_path: Path) -> Optional[str]:
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            path = result.stdout.strip()
+            # Prefer /mnt/<drive>/... over docker-desktop bind-mount hashes (stable in docker -v).
+            if path and "docker-desktop-bind-mounts" not in path:
+                return path
+    except Exception:
+        pass
+    try:
+        resolved = windows_path.resolve()
+        drive = resolved.drive.rstrip(":").lower()
+        if drive:
+            rest = str(resolved)[len(resolved.drive) :].replace("\\", "/")
+            return f"/mnt/{drive}{rest}"
     except Exception:
         pass
     return None
+
+
+def _docker_container_running(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "wsl", "--", "bash", "-lc",
+                f"docker inspect -f '{{{{.State.Running}}}}' {name} 2>/dev/null",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def _use_docker_mcp() -> bool:
+    """Run gazebo-mcp inside ROS Docker on the ros_gz_bridge network namespace."""
+    flag = os.environ.get("GAZEBO_MCP_DOCKER", "").strip().lower()
+    if flag in ("0", "false", "no"):
+        return False
+    if flag in ("1", "true", "yes"):
+        return True
+    bridge = os.environ.get("ROS_GZ_BRIDGE_CONTAINER", "ros-gz-bridge")
+    live = os.environ.get("RUN_GAZEBO_LIVE", "").strip().lower() in ("1", "yes", "true")
+    return live and _docker_container_running(bridge)
 
 
 def _build_gazebo_server_cmd() -> List[str]:
@@ -66,33 +105,58 @@ def _build_gazebo_server_cmd() -> List[str]:
     if manual:
         return manual.split()
 
-    venv_server = _GAZEBO_MCP / ".venv" / "bin" / "gazebo-mcp-server"
+    def _wsl_venv_shell(wsl_repo_path: str) -> str:
+        from bridge.gazebo_lifecycle import resolve_world_name
+
+        world = resolve_world_name()
+        return (
+            f"cd '{wsl_repo_path}' && "
+            f"export GAZEBO_WORLD_NAME={world} && "
+            f"if [ -f /opt/ros/humble/setup.bash ]; then "
+            f"source /opt/ros/humble/setup.bash; fi && "
+            f"exec .venv/bin/python3 -m gazebo_mcp.server"
+        )
+
+    def _wsl_docker_shell(wsl_repo_path: str, bridge_container: str) -> str:
+        from bridge.gazebo_lifecycle import resolve_world_name
+
+        world = resolve_world_name()
+        gz_timeout = os.environ.get("GAZEBO_TIMEOUT", "60")
+        return (
+            f"docker run -i --rm --network container:{bridge_container} "
+            f"-v '{wsl_repo_path}:/ws' -e PYTHONPATH=/ws/src:/ws "
+            f"-e GAZEBO_WORLD_NAME={world} -e GAZEBO_TIMEOUT={gz_timeout} "
+            f"osrf/ros:humble-desktop "
+            f"bash -lc 'set -e; source /opt/ros/humble/setup.bash; "
+            f"apt-get update -qq && apt-get install -y -qq python3-pip ros-humble-ros-gz-interfaces >/dev/null; "
+            f"pip install -q mcp pydantic pydantic-settings pyyaml 2>/dev/null || true; "
+            f"exec python3 -m gazebo_mcp.server'"
+        )
 
     if sys.platform == "win32":
-        wsl_path = _get_wsl_path(_GAZEBO_MCP)
-        if wsl_path:
-            return [
-                "wsl", "--", "bash", "-c",
-                f"cd '{wsl_path}' && .venv/bin/gazebo-mcp-server",
-            ]
-        fallback = str(_GAZEBO_MCP).replace("\\", "/")
-        logger.warning("wslpath conversion failed; using fallback path: %s", fallback)
-        return [
-            "wsl", "--", "bash", "-c",
-            f"cd '{fallback}' && .venv/bin/gazebo-mcp-server",
-        ]
+        wsl_path = _get_wsl_path(_GAZEBO_MCP) or str(_GAZEBO_MCP).replace("\\", "/")
+        if _use_docker_mcp():
+            bridge = os.environ.get("ROS_GZ_BRIDGE_CONTAINER", "ros-gz-bridge")
+            return ["wsl", "--", "bash", "-c", _wsl_docker_shell(wsl_path, bridge)]
+        return ["wsl", "--", "bash", "-c", _wsl_venv_shell(wsl_path)]
 
-    # Linux / macOS — local venv entry-point with package cwd for relative assets
-    if venv_server.is_file():
+    # Linux / macOS
+    venv_python = _GAZEBO_MCP / ".venv" / "bin" / "python3"
+    if venv_python.is_file():
         return [
             "bash", "-lc",
-            f"cd '{_GAZEBO_MCP}' && exec '{venv_server}'",
+            f"cd '{_GAZEBO_MCP}' && exec '{venv_python}' -m gazebo_mcp.server",
         ]
-    return ["bash", "-lc", f"cd '{_GAZEBO_MCP}' && exec gazebo-mcp-server"]
+    return ["bash", "-lc", f"cd '{_GAZEBO_MCP}' && exec python3 -m gazebo_mcp.server"]
 
 
-# Built once at module import time (wslpath call is fast)
-_GAZEBO_SERVER_CMD = _build_gazebo_server_cmd()
+def get_gazebo_server_cmd() -> List[str]:
+    """Resolve MCP server launch command (may depend on live Docker sidecars)."""
+    return _build_gazebo_server_cmd()
+
+
+# Back-compat for tests that import the constant name.
+_GAZEBO_SERVER_CMD = get_gazebo_server_cmd()
 
 
 # ── Result type ────────────────────────────────────────────────────────────────
@@ -230,12 +294,13 @@ class GazeboSession:
         self._client: Optional[_MCPClient] = None
 
     def __enter__(self):
-        self._client = _MCPClient(_GAZEBO_SERVER_CMD, timeout=self._timeout)
+        cmd = get_gazebo_server_cmd()
+        self._client = _MCPClient(cmd, timeout=self._timeout)
         self._client.start()
         if not self._client.is_alive():
             raise RuntimeError(
                 "gazebo-mcp server process failed to start. "
-                f"Command: {' '.join(_GAZEBO_SERVER_CMD)}"
+                f"Command: {' '.join(cmd)}"
             )
         if not self._client.initialize():
             self._client.stop()
@@ -252,6 +317,43 @@ class GazeboSession:
 
 
 # ── Helper: parse tool result content ─────────────────────────────────────────
+
+def _unwrap_data(result: "GazeboResult | Dict[str, Any]") -> Dict[str, Any]:
+    """Return a plain dict from GazeboResult or pass through dict-like data."""
+    if isinstance(result, GazeboResult):
+        if not result.ok:
+            raise RuntimeError("; ".join(result.messages) or "Gazebo bridge call failed")
+        return result.data or {}
+    if isinstance(result, dict):
+        return result
+    return {}
+
+
+def _model_names_from_list_data(data: Optional[Dict[str, Any]]) -> List[str]:
+    """Extract model names from gazebo_list_models response data."""
+    if not data:
+        return []
+    models = data.get("models")
+    if isinstance(models, list):
+        return [str(m.get("name", "")) for m in models if m.get("name")]
+    return []
+
+
+def _status_payload(envelope: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the inner simulation status dict from a gazebo-mcp tool envelope."""
+    if not envelope:
+        return None
+    payload = envelope.get("data")
+    return payload if isinstance(payload, dict) else None
+
+
+def _gazebo_connected(envelope: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """True/False when status reports connection; None if field absent."""
+    payload = _status_payload(envelope)
+    if payload is None or "gazebo_connected" not in payload:
+        return None
+    return bool(payload.get("gazebo_connected"))
+
 
 def _parse_tool_result(raw: Dict[str, Any]) -> tuple[bool, Optional[Dict], str]:
     """
@@ -308,9 +410,17 @@ def wait_for_ready(
             with GazeboSession(timeout=timeout) as gz:
                 raw = gz("gazebo_get_simulation_status", {})
                 ok, data, msg = _parse_tool_result(raw)
-                if ok:
+                connected = _gazebo_connected(data)
+                if ok and connected is not False:
                     return GazeboResult(ok=True, data=data, messages=[msg])
-                last_msgs = [f"Attempt {attempt + 1}/{retries}: {msg}"]
+                if ok and connected is False:
+                    note = (_status_payload(data) or {}).get("note", "Gazebo not connected")
+                    last_msgs = [
+                        f"Attempt {attempt + 1}/{retries}: MCP up but {note}. "
+                        "Run scripts/ensure_ros_gz_bridge.sh after Start-gz-sim.bat."
+                    ]
+                else:
+                    last_msgs = [f"Attempt {attempt + 1}/{retries}: {msg}"]
         except Exception as exc:
             last_msgs = [f"Attempt {attempt + 1}/{retries}: {exc}"]
             logger.debug("wait_for_ready attempt %d failed: %s", attempt + 1, exc)
@@ -321,8 +431,9 @@ def wait_for_ready(
     return GazeboResult(
         ok=False,
         messages=last_msgs + [
-            "Gazebo not ready after all retries. "
-            "Run Start-gz-sim.bat and wait for the container to start."
+            "GAZEBO_NOT_RUNNING: Gazebo not ready after all retries. "
+            "Run Start-gz-sim.bat and wait 2–5 s for the container to start. "
+            "Live pytest: set RUN_GAZEBO_LIVE=1."
         ],
     )
 
@@ -350,22 +461,57 @@ def spawn_model(
     Returns:
         GazeboResult with ok=True on success.
     """
+    from bridge.permissions import PermissionDenied, WriteOperation, assert_write_allowed
+
+    try:
+        assert_write_allowed(WriteOperation.GAZEBO_SPAWN)
+    except PermissionDenied as exc:
+        return GazeboResult(ok=False, messages=[str(exc)])
+
     if urdf_path is None and sdf_content is None:
         return GazeboResult(
             ok=False,
             messages=["spawn_model: provide urdf_path or sdf_content"],
         )
 
-    args: Dict[str, Any] = {"model_name": model_name}
-
+    path: Optional[Path] = None
     if urdf_path is not None:
-        # Read and pass the content — gazebo-mcp's spawn_model takes XML content
         path = Path(urdf_path)
         if not path.exists():
             return GazeboResult(ok=False, messages=[f"URDF/SDF file not found: {path}"])
-        args["model_xml"] = path.read_text(encoding="utf-8")
+        from bridge.urdf_for_gazebo import prepare_urdf_for_gazebo
+
+        raw_xml = path.read_text(encoding="utf-8")
+        xml_content = prepare_urdf_for_gazebo(raw_xml, path)
     else:
-        args["model_xml"] = sdf_content
+        xml_content = sdf_content or ""
+
+    from bridge.gazebo_gz_docker import spawn_prepared_xml, use_gz_docker_spawn
+
+    if use_gz_docker_spawn() and urdf_path is not None:
+        return spawn_prepared_xml(
+            model_name,
+            xml_content,
+            host_urdf_path=path,
+            pose=pose,
+            timeout=timeout,
+        )
+
+    # Unpause physics before spawn (headless gz sim starts paused without -r on some builds).
+    resume = resume_simulation(timeout=min(timeout, 15.0))
+    if not resume.ok:
+        logger.warning("resume_simulation before spawn: %s", resume.messages)
+
+    args: Dict[str, Any] = {
+        "entity_name": model_name,
+        "sdf_xml": xml_content,
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "roll": 0.0,
+        "pitch": 0.0,
+        "yaw": 0.0,
+    }
 
     if pose:
         pos = pose.get("position", {})
@@ -379,8 +525,19 @@ def spawn_model(
 
     try:
         with GazeboSession(timeout=timeout) as gz:
-            raw = gz("spawn_model", args)
+            raw = gz("gazebo_spawn_sdf", args)
             ok, data, msg = _parse_tool_result(raw)
+            if ok:
+                from bridge.run_context import record_event, record_path
+
+                if urdf_path is not None:
+                    record_path("spawn_urdf", urdf_path)
+                record_event(
+                    "gazebo",
+                    "spawn_model",
+                    model=model_name,
+                    via="gazebo_mcp",
+                )
             return GazeboResult(ok=ok, data=data, messages=[msg])
     except Exception as exc:
         return GazeboResult(ok=False, messages=[str(exc)])
@@ -401,18 +558,53 @@ def get_model_state(
     """
     try:
         with GazeboSession(timeout=timeout) as gz:
-            raw = gz("get_model_state", {"model_name": model_name})
+            raw = gz("gazebo_get_model_state", {"model_name": model_name})
             ok, data, msg = _parse_tool_result(raw)
             return GazeboResult(ok=ok, data=data, messages=[msg])
     except Exception as exc:
         return GazeboResult(ok=False, messages=[str(exc)])
 
 
-def pause_simulation(timeout: float = 10.0) -> GazeboResult:
-    """Pause Gazebo physics."""
+def get_simulation_status(timeout: float = 15.0) -> GazeboResult:
+    """Return overall Gazebo simulation status from gazebo-mcp."""
     try:
         with GazeboSession(timeout=timeout) as gz:
-            raw = gz("pause_simulation", {})
+            raw = gz("gazebo_get_simulation_status", {})
+            ok, data, msg = _parse_tool_result(raw)
+            return GazeboResult(ok=ok, data=data, messages=[msg])
+    except Exception as exc:
+        return GazeboResult(ok=False, messages=[str(exc)])
+
+
+def list_models(timeout: float = 15.0) -> List[str]:
+    """
+    Return model names in the running simulation.
+
+    Raises RuntimeError when the MCP call fails. Returns [] when the world is empty.
+    """
+    try:
+        with GazeboSession(timeout=timeout) as gz:
+            raw = gz("gazebo_list_models", {"response_format": "concise"})
+            ok, data, msg = _parse_tool_result(raw)
+            if not ok:
+                raise RuntimeError(msg)
+            return _model_names_from_list_data(data)
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def pause_simulation(timeout: float = 10.0) -> GazeboResult:
+    """Pause Gazebo physics."""
+    from bridge.permissions import PermissionDenied, WriteOperation, assert_write_allowed
+
+    try:
+        assert_write_allowed(WriteOperation.GAZEBO_SIM_CONTROL)
+    except PermissionDenied as exc:
+        return GazeboResult(ok=False, messages=[str(exc)])
+
+    try:
+        with GazeboSession(timeout=timeout) as gz:
+            raw = gz("gazebo_pause_simulation", {})
             ok, data, msg = _parse_tool_result(raw)
             return GazeboResult(ok=ok, data=data, messages=[msg])
     except Exception as exc:
@@ -421,9 +613,16 @@ def pause_simulation(timeout: float = 10.0) -> GazeboResult:
 
 def resume_simulation(timeout: float = 10.0) -> GazeboResult:
     """Resume Gazebo physics."""
+    from bridge.permissions import PermissionDenied, WriteOperation, assert_write_allowed
+
+    try:
+        assert_write_allowed(WriteOperation.GAZEBO_SIM_CONTROL)
+    except PermissionDenied as exc:
+        return GazeboResult(ok=False, messages=[str(exc)])
+
     try:
         with GazeboSession(timeout=timeout) as gz:
-            raw = gz("unpause_simulation", {})
+            raw = gz("gazebo_unpause_simulation", {})
             ok, data, msg = _parse_tool_result(raw)
             return GazeboResult(ok=ok, data=data, messages=[msg])
     except Exception as exc:
@@ -432,9 +631,16 @@ def resume_simulation(timeout: float = 10.0) -> GazeboResult:
 
 def reset_simulation(timeout: float = 15.0) -> GazeboResult:
     """Reset Gazebo to its initial state."""
+    from bridge.permissions import PermissionDenied, WriteOperation, assert_write_allowed
+
+    try:
+        assert_write_allowed(WriteOperation.GAZEBO_SIM_CONTROL)
+    except PermissionDenied as exc:
+        return GazeboResult(ok=False, messages=[str(exc)])
+
     try:
         with GazeboSession(timeout=timeout) as gz:
-            raw = gz("reset_simulation", {})
+            raw = gz("gazebo_reset_simulation", {})
             ok, data, msg = _parse_tool_result(raw)
             return GazeboResult(ok=ok, data=data, messages=[msg])
     except Exception as exc:

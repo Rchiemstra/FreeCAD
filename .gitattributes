@@ -1,5 +1,25 @@
 # Linux/Docker entrypoints — CRLF breaks shebang when invoked via bash -lc <path>.
 e2e/*.sh text eol=lf
+e2e/*.py text eol=lf
+e2e/setup_gazebo_assets.sh text eol=lf
+e2e/resolve_staged_urdf.sh text eol=lf
+e2e/robotcad_export_paths.sh text eol=lf
+e2e/assert_robotcad_export.sh text eol=lf
+e2e/stage_export_placeholder_fallback.sh text eol=lf
+e2e/run_e2e_placeholder_fallback.sh text eol=lf
+e2e/run_gazebo_scenarios.sh text eol=lf
+e2e/export_robotcad_cmd.sh text eol=lf
+e2e/fetch_robot_source.sh text eol=lf
+e2e/verify_robot_source.py text eol=lf
+e2e/record_runtime_versions.py text eol=lf
+scripts/gazebo_lifecycle_common.sh text eol=lf
+scripts/stop_gz_stack.sh text eol=lf
+scripts/smoke_gz_lifecycle.sh text eol=lf
+scripts/run_gz_sim_fast.sh text eol=lf
+scripts/ensure_ros_gz_bridge.sh text eol=lf
+scripts/ensure_gz_sim_headless.sh text eol=lf
+scripts/ci/*.sh text eol=lf
+Start-gz-sim.sh text eol=lf
 Start-gz-sim.sh text eol=lf
 Start-ros2.sh text eol=lf
 scripts/cursor_mcp.sh text eol=lf

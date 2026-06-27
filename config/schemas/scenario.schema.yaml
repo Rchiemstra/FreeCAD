@@ -110,16 +110,17 @@ definitions:
 
   Goal:
     type: object
-    required: [type, target]
+    required: [type]
     description: Defines what the robot must achieve for the scenario to succeed
     properties:
       type:
         type: string
         enum:
-          - ee_pose       # End-effector reaches a 3D point
-          - joint_config  # Joints reach a target configuration
-          - nav_goal      # Base reaches a 2D goal (mobile robots)
-          - custom        # Custom assertion logic (defined in tests/assertions/)
+          - ee_pose
+          - joint_config
+          - nav_goal
+          - none
+          - custom
         description: Goal type determines how target is interpreted
       target:
         description: >
@@ -146,13 +147,15 @@ definitions:
         type: string
         description: Assertion kind
         enum:
-          - reach_target_within    # Goal reached before N seconds
-          - no_self_collision      # No self-collision throughout the run
-          - no_ground_penetration  # Robot doesn't clip through the ground
-          - max_joint_torque_below # Peak joint torque below threshold
-          - sim_time_under         # Scenario completes before timeout
-          - rtf_above              # Real-time factor stays above threshold
-          - custom                 # Custom Python assertion in tests/assertions/
+          - reach_target_within
+          - no_self_collision
+          - no_ground_penetration
+          - max_joint_torque_below
+          - sim_time_under
+          - pose_within_tolerance
+          - collision_count_below
+          - rtf_above
+          - custom
       seconds:
         type: number
         minimum: 0

@@ -10,4 +10,18 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.test
     image: freecad-gazebo-mcp-pytest:latest
-    command: ["python", "-m", "pytest", "tests", "-q", "--tb=short"]
+    environment:
+      CI: "true"
+      RUN_GAZEBO_LIVE: "0"
+    command:
+      [
+        "python",
+        "-m",
+        "pytest",
+        "tests",
+        "-v",
+        "--tb=short",
+        "--strict-markers",
+        "-m",
+        "not gazebo and not freecad and not needs_freecad",
+      ]

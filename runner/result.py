@@ -46,6 +46,7 @@ class RunResult:
     error_message:     str                     = ""         # set on error
     run_id:            str                     = ""         # timestamp_scenarioname
     run_dir:           Optional[Path]          = None       # sim_runs/<run_id>/
+    metadata:          dict                    = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.run_id:
@@ -82,11 +83,32 @@ def write_result(
     if sim_runs_dir is None:
         sim_runs_dir = _find_sim_runs_dir()
 
-    run_dir = sim_runs_dir / run_result.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    from bridge.run_context import current_run
+
+    ctx = current_run()
+    if ctx is not None and ctx.run_id == run_result.run_id:
+        run_dir = ctx.run_dir
+    else:
+        run_dir = Path(sim_runs_dir) / run_result.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
     run_result.run_dir = run_dir
 
+    from bridge.permissions import PermissionDenied, WriteOperation, assert_write_allowed
+    from bridge.schema_validate import SchemaValidationError, validate_instance
+
+    try:
+        assert_write_allowed(
+            WriteOperation.RUNNER_WRITE_RESULT,
+            target=run_dir,
+        )
+    except PermissionDenied as exc:
+        raise OSError(str(exc)) from exc
+
     result_data = _build_result_dict(run_result)
+    try:
+        validate_instance(result_data, "result", instance_label=str(run_dir / "result.yaml"))
+    except SchemaValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
     result_path = run_dir / "result.yaml"
     _write_yaml(result_data, result_path)
@@ -121,10 +143,19 @@ def _build_result_dict(r: "RunResult") -> dict:
 
     versions = _collect_versions()
 
-    input_hashes = {}
+    input_hashes: dict = {}
     if r.scenario.source_hash:
         input_hashes["scenario_yaml"] = r.scenario.source_hash
     input_hashes.update(_hash_robot_world(r.scenario))
+    meta = dict(r.metadata) if r.metadata else {}
+    if not meta:
+        from bridge.run_context import metadata_for_result
+
+        meta = metadata_for_result()
+    for key, digest in (meta.get("file_hashes") or {}).items():
+        input_hashes.setdefault(key, digest)
+    for key, digest in (meta.get("source_hashes") or {}).items():
+        input_hashes.setdefault(key, digest)
 
     telem_summary: dict = {}
     if r.telemetry is not None:
@@ -137,7 +168,7 @@ def _build_result_dict(r: "RunResult") -> dict:
             "contact_events":   len(t.contacts),
         }
 
-    return {
+    out: dict = {
         "run_id":           r.run_id,
         "status":           r.status,
         "error":            r.error_message or None,
@@ -150,6 +181,9 @@ def _build_result_dict(r: "RunResult") -> dict:
         "telemetry_summary":telem_summary,
         "assertions":       assertions,
     }
+    if meta:
+        out["metadata"] = meta
+    return out
 
 
 def _build_telemetry_dict(t: "Telemetry") -> dict:
@@ -195,19 +229,42 @@ def _collect_versions() -> dict:
     return versions
 
 
+def _hash_file(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _hash_robot_world(scenario: "Scenario") -> dict:
-    """Compute SHA-256 of the robot URDF and world SDF if they exist."""
+    """Compute SHA-256 of robot URDF and world SDF (robots/, worlds/, generated/)."""
     hashes: dict = {}
     try:
         from bridge.project import load_project
         cfg = load_project()
-        root = Path(cfg.root)
-        urdf = root / "robots" / f"{scenario.robot}.urdf"
-        sdf  = root / "worlds" / f"{scenario.world}.sdf"
-        if urdf.exists():
-            hashes["robot_urdf"] = hashlib.sha256(urdf.read_bytes()).hexdigest()
-        if sdf.exists():
-            hashes["world_sdf"]  = hashlib.sha256(sdf.read_bytes()).hexdigest()
+        root = Path(cfg.paths.root)
+        fcstd = root / "robots" / f"{scenario.robot}.FCStd"
+        if fcstd.is_file():
+            digest = _hash_file(fcstd)
+            if digest:
+                hashes["fcstd"] = digest
+
+        candidates = [
+            ("robot_urdf", root / "robots" / f"{scenario.robot}.urdf"),
+            ("world_sdf", root / "worlds" / f"{scenario.world}.sdf"),
+            (
+                "export_urdf",
+                root / "generated" / scenario.robot / f"{scenario.robot}_description"
+                / f"{scenario.robot}_description" / "urdf" / f"{scenario.robot}.urdf",
+            ),
+            ("world_staged", root / "generated" / scenario.world / f"{scenario.world}.sdf"),
+        ]
+        for key, path in candidates:
+            digest = _hash_file(path)
+            if digest:
+                hashes[key] = digest
     except Exception:
         pass
     return hashes

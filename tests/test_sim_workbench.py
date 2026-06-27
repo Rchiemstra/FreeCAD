@@ -315,6 +315,81 @@ class TestStateBridgeOffline:
 
 
 # ===========================================================================
+# Gazebo status panel formatting (no Qt / Gazebo)
+# ===========================================================================
+
+class TestGazeboStatusFormat:
+    def setup_method(self):
+        from gazebo_status_format import (
+            format_mcp_services,
+            format_simulation_status,
+            screenshot_unavailable_message,
+        )
+        self.format_sim = format_simulation_status
+        self.format_mcp = format_mcp_services
+        self.shot_msg = screenshot_unavailable_message()
+
+    def test_format_simulation_connected(self):
+        text = self.format_sim(
+            {
+                "gazebo_connected": True,
+                "paused": False,
+                "simulation_time": 1.5,
+            },
+            transport_connected=True,
+            model_names=["arm_2dof"],
+        )
+        assert "Transport: connected" in text
+        assert "Gazebo: connected" in text
+        assert "arm_2dof" in text
+
+    def test_format_simulation_mock_note(self):
+        text = self.format_sim(
+            {"gazebo_connected": False, "note": "Gazebo not running"},
+            transport_connected=False,
+        )
+        assert "disconnected" in text
+        assert "Gazebo not running" in text
+
+    def test_screenshot_placeholder_mentions_camera(self):
+        assert "camera" in self.shot_msg.lower()
+
+    def test_format_mcp_services(self):
+        from bridge.mcp_status import ServiceStatus
+
+        text = self.format_mcp([
+            ServiceStatus("FreeCAD XML-RPC", True, "localhost:9875"),
+            ServiceStatus("gazebo-mcp", False, "timeout"),
+        ])
+        assert "online" in text
+        assert "offline" in text
+
+
+class TestTransportGazeboResultUnwrap:
+    def test_poll_unwraps_gazebo_result(self):
+        from transport import GazeboTransport
+
+        class FakeResult:
+            ok = True
+            data = {"pose": {"position": {"x": 2.0, "y": 0.0, "z": 0.0}}}
+
+        class MockBridge:
+            @staticmethod
+            def list_models():
+                return ["arm"]
+
+            @staticmethod
+            def get_model_state(name):
+                return FakeResult()
+
+        t = GazeboTransport(bridge_module=MockBridge(), model_names=["arm"])
+        t._running = True
+        states = t.poll()
+        assert len(states) == 1
+        assert states[0].pose.x == pytest.approx(2.0)
+
+
+# ===========================================================================
 # Panel import fallback tests
 # ===========================================================================
 
@@ -347,6 +422,61 @@ def test_test_runner_panel_imports_without_qt_signal(monkeypatch):
 
 class TestInstallAddon:
     """install_addon.py logic — filesystem test (no FreeCAD needed)."""
+
+    def test_initgui_loads_with_separate_globals_and_locals(self, monkeypatch, tmp_path):
+        """FreeCAD can execute InitGui.py without __file__ and with separate namespaces."""
+        import types
+        from pathlib import Path
+
+        class Console:
+            @staticmethod
+            def PrintWarning(_msg):
+                pass
+
+            @staticmethod
+            def PrintMessage(_msg):
+                pass
+
+        fake_user_dir = tmp_path / "FreeCAD" / "v1-2"
+        fake_addon_dir = fake_user_dir / "Mod" / "SimWorkbench"
+        fake_addon_dir.mkdir(parents=True)
+        (fake_addon_dir / "icons").mkdir()
+        (fake_addon_dir / "repo_root.txt").write_text(
+            str(Path(__file__).parent.parent.resolve()),
+            encoding="utf-8",
+        )
+
+        freecad = types.SimpleNamespace(
+            Console=Console,
+            getUserAppDataDir=lambda: str(fake_user_dir) + os.sep,
+        )
+
+        class GuiModule:
+            workbench = None
+
+            @classmethod
+            def addWorkbench(cls, wb):
+                cls.workbench = wb
+
+        class Workbench:
+            def appendToolbar(self, *_args):
+                pass
+
+            def appendMenu(self, *_args):
+                pass
+
+        monkeypatch.setitem(sys.modules, "FreeCAD", freecad)
+        monkeypatch.setitem(sys.modules, "FreeCADGui", GuiModule)
+
+        init_path = Path(ADDON_DIR) / "InitGui.py"
+        code = init_path.read_text(encoding="utf-8")
+        globals_ns = {"Workbench": Workbench, "__builtins__": __builtins__}
+        locals_ns = {}
+
+        exec(compile(code, str(init_path), "exec"), globals_ns, locals_ns)
+
+        assert GuiModule.workbench is not None
+        assert GuiModule.workbench.MenuText == "Simulation Workbench"
 
     def test_install_copies_files(self, tmp_path):
         """install() should copy all addon files to the destination."""

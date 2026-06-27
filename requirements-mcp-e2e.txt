@@ -1,0 +1,12 @@
+# requirements-mcp-e2e.txt
+# Pinned MCP venv deps for docker/Dockerfile.e2e (/opt/mcp-venv).
+# Keep in sync with config/runtime-versions.lock.yaml → pypi.mcp / pydantic / validators.
+#
+# Install (inside E2E image build):
+#   pip install -r requirements-bridge.txt -r requirements-mcp-e2e.txt
+
+-r requirements-bridge.txt
+
+mcp[cli]==1.27.1
+pydantic==2.11.7
+validators==0.34.0

@@ -166,7 +166,7 @@ class TestScenarioLoading:
     def test_missing_name_fails_validation(self, tmp_path):
         content = SCENARIO_YAML.replace("name: test_move\n", "")
         p = _make_scenario_file(tmp_path, content=content, name="no_name")
-        with pytest.raises(ScenarioLoadError, match="name is required"):
+        with pytest.raises(ScenarioLoadError, match="name"):
             load_scenario(p)
 
     def test_unknown_assertion_type_fails_validation(self, tmp_path):
@@ -180,7 +180,7 @@ class TestScenarioLoading:
               - type: fly_to_moon
         """)
         p = _make_scenario_file(tmp_path, content=content, name="bad_assertion")
-        with pytest.raises(ScenarioLoadError, match="unknown type"):
+        with pytest.raises(ScenarioLoadError, match="is not one of"):
             load_scenario(p)
 
     def test_list_scenario_files(self, tmp_path):

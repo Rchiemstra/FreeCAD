@@ -169,6 +169,59 @@ function Set-FreeCadMcpSettings {
     }
 }
 
+function Install-SimWorkbenchAddon {
+    $installer = Join-Path $Root "addons\SimWorkbench\install_addon.py"
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        Write-Log "SimWorkbench installer not found: $installer"
+        return
+    }
+
+    $pythonCandidates = @(
+        (Join-Path $Root ".pixi\envs\default\python.exe"),
+        "python"
+    )
+    $python = $null
+    foreach ($candidate in $pythonCandidates) {
+        if ($candidate -eq "python") {
+            $cmd = Get-Command "python" -ErrorAction SilentlyContinue
+            if ($cmd) {
+                $python = $cmd.Source
+                break
+            }
+        } elseif (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $python = $candidate
+            break
+        }
+    }
+
+    if (-not $python) {
+        Write-Log "SimWorkbench install skipped: python was not found"
+        Write-StatusLine "SimWorkbench install skipped - python was not found"
+        return
+    }
+
+    $outLog = Join-Path $LogDir "start-all-$Stamp-simworkbench-install.out.log"
+    $errLog = Join-Path $LogDir "start-all-$Stamp-simworkbench-install.err.log"
+    Write-Log "Installing SimWorkbench addon with $python"
+    $env:PYTHONIOENCODING = "utf-8"
+    $process = Start-Process `
+        -FilePath $python `
+        -ArgumentList @($installer) `
+        -WorkingDirectory $Root `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $outLog `
+        -RedirectStandardError $errLog `
+        -PassThru
+    $process.WaitForExit()
+    if ($process.ExitCode -eq 0) {
+        Write-Log "SimWorkbench addon installed"
+        Write-StatusLine "SimWorkbench addon installed"
+    } else {
+        Write-Log "SimWorkbench install failed with exit code $($process.ExitCode); see $outLog / $errLog"
+        Write-StatusLine "SimWorkbench install failed - FreeCAD will still start"
+    }
+}
+
 function Invoke-WslBash {
     param([string]$Command)
     $script:WslCommandId += 1
@@ -331,6 +384,7 @@ if ($RemainingArgs.Count -gt 0) {
 }
 
 Set-FreeCadMcpSettings
+Install-SimWorkbenchAddon
 
 $freeCadBefore = @(
     Get-Process -Name "FreeCAD" -ErrorAction SilentlyContinue |

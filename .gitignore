@@ -84,3 +84,6 @@ __pycache__/
 # Robot simulation project directories (derivative artifacts)
 /generated/
 /sim_runs/
+
+# FreeCAD backups (canonical source is arm_2dof.FCStd)
+robots/*.FCBak

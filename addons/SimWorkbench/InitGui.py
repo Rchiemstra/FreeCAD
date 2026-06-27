@@ -27,13 +27,61 @@ Architecture:
 import sys
 import os
 
+globals()["sys"] = sys
+globals()["os"] = os
+
+try:
+    import FreeCAD
+    import FreeCADGui as Gui
+    globals()["FreeCAD"] = FreeCAD
+    globals()["Gui"] = Gui
+except Exception:
+    pass
+
+
+def _resolve_addon_dir():
+    """Return this addon directory even when FreeCAD does not define __file__."""
+    if "__file__" in globals():
+        return os.path.dirname(os.path.abspath(globals()["__file__"]))
+
+    try:
+        user_app_data = FreeCAD.getUserAppDataDir()
+    except Exception:
+        user_app_data = os.environ.get("APPDATA", "")
+
+    candidates = [
+        os.path.join(user_app_data, "Mod", "SimWorkbench"),
+        os.path.join(user_app_data, "v1-2", "Mod", "SimWorkbench"),
+        os.path.join(os.environ.get("APPDATA", ""), "FreeCAD", "v1-2", "Mod", "SimWorkbench"),
+        os.path.join(os.environ.get("APPDATA", ""), "FreeCAD", "Mod", "SimWorkbench"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return os.getcwd()
+
+
+def _read_installed_repo_root(addon_dir):
+    marker = os.path.join(addon_dir, "repo_root.txt")
+    try:
+        with open(marker, "r", encoding="utf-8") as fh:
+            repo_root = fh.read().strip()
+        if repo_root and os.path.isdir(repo_root):
+            return os.path.abspath(repo_root)
+    except OSError:
+        pass
+    return None
+
+
 # Make the addon directory importable as a package root
-_addon_dir = os.path.dirname(os.path.abspath(__file__))
+_addon_dir = _resolve_addon_dir()
+globals()["_addon_dir"] = _addon_dir
 if _addon_dir not in sys.path:
     sys.path.insert(0, _addon_dir)
 
 # Also ensure the repo root is on the path so bridge/ is importable
-_repo_root = os.path.abspath(os.path.join(_addon_dir, "..", ".."))
+_repo_root = _read_installed_repo_root(_addon_dir) or os.path.abspath(os.path.join(_addon_dir, "..", ".."))
+globals()["_repo_root"] = _repo_root
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 

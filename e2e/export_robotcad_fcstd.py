@@ -1,14 +1,22 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """
-FreeCADCmd batch export via RobotCAD — requires a document containing Cross::* robots.
+FreeCADCmd batch export via RobotCAD — requires a document containing Cross::Robot.
 
 Usage::
+
     FreeCADCmd export_robotcad_fcstd.py <path_to.FCStd> <output_dir>
+
+Delegates to ``scripts/robotcad_headless.py`` (same path as Windows batch export).
 """
 from __future__ import annotations
 
-import os
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from robotcad_headless import export_fcstd_to_urdf  # noqa: E402
 
 
 def main() -> int:
@@ -16,39 +24,25 @@ def main() -> int:
         print("Usage: export_robotcad_fcstd.py <doc.FCStd> <out_dir>")
         return 2
 
-    fcstd = sys.argv[1]
-    out_dir = sys.argv[2]
+    fcstd = Path(sys.argv[1]).resolve()
+    out_dir = Path(sys.argv[2]).resolve()
 
-    import FreeCAD
+    if not fcstd.is_file():
+        print(f"FCStd not found: {fcstd}")
+        return 2
 
     try:
-        from freecad import robotcad as CROSS  # type: ignore
-    except ImportError:
-        import robotcad as CROSS  # type: ignore
-
-    if hasattr(FreeCAD, "Gui") and FreeCAD.GuiUp:
-        FreeCAD.Gui.activateWorkbench("CrossWorkbench")
-
-    doc = FreeCAD.openDocument(fcstd)
-    robot_objs = [o for o in doc.Objects if getattr(o, "TypeId", "").startswith("Cross::")]
-    if not robot_objs:
-        print("No Cross:: robot objects in document")
+        robot_name = "arm_2dof" if fcstd.stem == "arm_2dof" else fcstd.stem
+        urdf_path, _robot = export_fcstd_to_urdf(fcstd, out_dir, robot_name=robot_name)
+    except Exception as exc:
+        print(f"Export failed: {exc}", file=sys.stderr)
         return 1
 
-    os.makedirs(out_dir, exist_ok=True)
-    robot = robot_objs[0]
-
-    export_fn = getattr(CROSS, "export_urdf", None)
-    if export_fn is None:
-        gen = getattr(CROSS, "export", None)
-        if callable(gen):
-            export_fn = gen
-    if export_fn is None:
-        print("RobotCAD API has no export_urdf/export — upgrade RobotCAD or extend script")
+    if not urdf_path.is_file():
+        print(f"URDF missing after export: {urdf_path}", file=sys.stderr)
         return 1
 
-    path = export_fn(robot, out_dir)
-    print("Exported:", path)
+    print("Exported:", urdf_path)
     return 0
 
 

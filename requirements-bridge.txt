@@ -1,11 +1,14 @@
 # requirements-bridge.txt
 # Pinned runtime dependencies for bridge/, runner/, and iteration/ packages.
-# Install with: pip install -r requirements-bridge.txt
 #
-# These are the only external PyPI packages required on the Windows host.
-# FreeCAD and Gazebo themselves are not installed via pip.
+# Install (host / Docker pytest image):
+#   pip install -r requirements-bridge.txt
+#   pip install -r requirements-dev.txt   # adds pytest for tests/
 #
-# Version constraints follow the principle of "minimum upper bound":
-# exact versions tested are listed; allow patch upgrades with ~=.
+# Docker E2E MCP venv also installs requirements-mcp-e2e.txt (see Dockerfile.e2e).
+# Canonical pins: config/runtime-versions.lock.yaml
+#
+# FreeCAD, Gazebo, and ROS are not installed via pip.
 
-PyYAML~=6.0.3          # YAML loading for project.yaml, scenario YAMLs, result.yaml
+PyYAML==6.0.3          # project.yaml, scenario YAMLs, result.yaml, runtime lock
+jsonschema==4.23.0     # config/schemas/*.schema.yaml validation

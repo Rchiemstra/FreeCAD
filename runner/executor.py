@@ -76,10 +76,19 @@ class ScenarioExecutor:
 
         # --- Step 1: spawn model ---
         try:
+            urdf = self._urdf_path()
+            from bridge.run_context import record_lifecycle, record_path
+
+            record_lifecycle(
+                "executor_spawn_start",
+                robot=scenario.robot,
+                world=scenario.world,
+            )
+            record_path("spawn_urdf", urdf)
             log.info("[Executor] Spawning %s in world %s", scenario.robot, scenario.world)
             bridge.spawn_model(
-                model_name =scenario.robot,
-                urdf_path  =self._urdf_path(),
+                model_name=scenario.robot,
+                urdf_path=urdf,
                 initial_pose=vars(scenario.initial_pose),
             )
         except Exception as exc:
@@ -172,16 +181,27 @@ class ScenarioExecutor:
         robot = self._scenario.robot
         try:
             from bridge.project import load_project
+            from bridge.freecad_bridge import expected_exported_urdf_path
 
             cfg = load_project()
-            gen = cfg.paths.generated / robot / f"{robot}.urdf"
-            if gen.is_file():
-                return str(gen)
+            gen_dir = cfg.paths.generated / robot
+            nested = expected_exported_urdf_path(robot, gen_dir)
+            flat = gen_dir / f"{robot}.urdf"
+            if nested.is_file():
+                return str(nested)
+            if flat.is_file():
+                return str(flat)
             return str(cfg.paths.robots / f"{robot}.urdf")
         except Exception:
-            gen = Path("generated") / robot / f"{robot}.urdf"
-            if gen.is_file():
-                return str(gen)
+            from bridge.freecad_bridge import expected_exported_urdf_path
+
+            gen_dir = Path("generated") / robot
+            nested = expected_exported_urdf_path(robot, gen_dir)
+            flat = gen_dir / f"{robot}.urdf"
+            if nested.is_file():
+                return str(nested)
+            if flat.is_file():
+                return str(flat)
             return f"robots/{robot}.urdf"
 
     @staticmethod

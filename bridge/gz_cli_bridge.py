@@ -43,6 +43,41 @@ def _run_gz(args: List[str], timeout: float = 30.0) -> subprocess.CompletedProce
     )
 
 
+def _world_name() -> str:
+    from bridge.gazebo_lifecycle import resolve_world_name
+
+    return resolve_world_name()
+
+
+def _container_pkg_root() -> str:
+    return os.environ.get(
+        "GAZEBO_URDF_CONTAINER_PKG_ROOT", "/models/arm_2dof_description"
+    ).strip() or "/models/arm_2dof_description"
+
+
+def _resolve_spawn_urdf(urdf_path: Path) -> Path:
+    """Return a URDF path suitable for ``sdf_filename`` (prepared + container paths)."""
+    from bridge.urdf_for_gazebo import prepare_urdf_for_gazebo, robotcad_description_root
+
+    raw = urdf_path.read_text(encoding="utf-8")
+    prepared = prepare_urdf_for_gazebo(
+        raw, urdf_path, container_pkg_root=_container_pkg_root()
+    )
+    root = robotcad_description_root(urdf_path)
+    if root is not None and prepared.strip() == raw.strip():
+        rel = urdf_path.resolve().relative_to(root.resolve())
+        mounted = Path(_container_pkg_root()) / rel
+        if mounted.is_file():
+            return mounted
+
+    if prepared.strip() != raw.strip() or root is None:
+        tmp = Path(f"/tmp/spawn_{urdf_path.stem}.urdf")
+        tmp.write_text(prepared, encoding="utf-8")
+        return tmp
+
+    return urdf_path.resolve()
+
+
 def spawn_model(
     model_name: str,
     urdf_path: str | Path,
@@ -59,7 +94,10 @@ def spawn_model(
     if not path.is_file():
         raise FileNotFoundError(f"Robot file not found: {path}")
 
-    world = os.environ.get("GZ_SIM_WORLD_NAME", "empty_world").strip() or "empty_world"
+    resume_simulation()
+
+    spawn_path = _resolve_spawn_urdf(path)
+    world = _world_name()
     initial_pose = initial_pose or {}
     x = float(initial_pose.get("x", 0.0))
     y = float(initial_pose.get("y", 0.0))
@@ -68,7 +106,7 @@ def spawn_model(
     qz = math.sin(yaw / 2.0)
     qw = math.cos(yaw / 2.0)
 
-    sdf_path = path.as_posix()
+    sdf_path = spawn_path.as_posix()
 
     # Best-effort cleanup — ``gz model --remove`` is absent on modern gz CLI.
     rm = _run_gz(
@@ -120,6 +158,10 @@ def spawn_model(
         raise RuntimeError(f"gz service spawn failed for {model_name} in world {world}: {out[:800]}")
 
     log.info("[gz_cli_bridge] Spawn OK via /world/%s/create (%s)", world, model_name)
+    from bridge.run_context import record_event, record_path
+
+    record_path("spawn_urdf", spawn_path)
+    record_event("gazebo", "spawn_model", model=model_name, via="gz_cli", world=world)
     _SIM_T0 = time.monotonic()
 
 
@@ -150,8 +192,27 @@ def get_model_state(model_name: str) -> Dict[str, Any]:
 
 
 def resume_simulation() -> None:
-    """Physics usually starts unpaused after spawn; nothing required for E2E smoke."""
-    return
+    """Unpause the world via gz service (headless sim may start paused)."""
+    world = _world_name()
+    proc = _run_gz(
+        [
+            "service",
+            "-s",
+            f"/world/{world}/control",
+            "--reqtype",
+            "gz.msgs.WorldControl",
+            "--reptype",
+            "gz.msgs.Boolean",
+            "--timeout",
+            "8000",
+            "--req",
+            "pause: false",
+        ],
+        timeout=15.0,
+    )
+    out = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0 or "data: true" not in out:
+        log.warning("[gz_cli_bridge] unpause: %s", out[:300])
 
 
 def pause_simulation() -> None:

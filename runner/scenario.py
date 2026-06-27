@@ -86,11 +86,13 @@ class Scenario:
         known_assertion_types = {
             "reach_target_within",
             "no_self_collision",
+            "no_ground_penetration",
             "max_joint_torque_below",
             "sim_time_under",
             "pose_within_tolerance",
             "rtf_above",
             "collision_count_below",
+            "custom",
         }
         for i, a in enumerate(self.assertions):
             if a.type not in known_assertion_types:
@@ -140,6 +142,13 @@ def load_scenario(path: str | Path) -> Scenario:
 
     if not isinstance(data, dict):
         raise ScenarioLoadError(f"Scenario YAML must be a mapping, got {type(data).__name__}")
+
+    from bridge.schema_validate import SchemaValidationError, validate_instance
+
+    try:
+        validate_instance(data, "scenario", instance_label=str(p))
+    except SchemaValidationError as exc:
+        raise ScenarioLoadError(str(exc)) from exc
 
     scenario = _parse_scenario(data)
     scenario.source_path = p

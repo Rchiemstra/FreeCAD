@@ -20,4 +20,23 @@ services:
       E2E_BRIDGE_MODULE: gz_cli
       MCP_VENV: /opt/mcp-venv
       GZ_SIM_WORLD_NAME: empty_world
+      GZ_SIM_RESOURCE_PATH: /models
+      GAZEBO_URDF_CONTAINER_PKG_ROOT: /models/arm_2dof_description
+      E2E_WORLD_SDF: /workspace/worlds/empty_world.sdf
+      E2E_VERSION_STRICT: "1"
     command: ["/bin/bash", "-lc", "/workspace/e2e/run_e2e.sh"]
+
+  # Optional: placeholder URDF only (not RobotCAD export proof). Profile: fallback
+  e2e-placeholder-fallback:
+    image: freecad-gazebo-mcp-e2e:latest
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    environment:
+      SIM_RUNS_DIR: /workspace/sim_runs
+      E2E_BRIDGE_MODULE: gz_cli
+      GZ_SIM_WORLD_NAME: empty_world
+      E2E_WORLD_SDF: /workspace/worlds/empty_world.sdf
+    command: ["/bin/bash", "-lc", "/workspace/e2e/run_e2e_placeholder_fallback.sh"]
+    profiles:
+      - fallback

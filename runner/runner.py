@@ -77,65 +77,71 @@ def run_test(
     from runner.executor import ScenarioExecutor
     from runner.assertions import evaluate_all
     from runner.result import RunResult, write_result
+    from bridge.run_context import begin_run, finalize_run, metadata_for_result
 
     d = Path(scenarios_dir) if scenarios_dir else _default_scenarios_dir()
     yaml_path = d / f"{name}.yaml"
+    runs_root = Path(sim_runs_dir) if sim_runs_dir else None
+    run_ctx = begin_run(name, runs_root)
 
-    # --- Load scenario ---
+    def _finish(result: RunResult) -> RunResult:
+        result.run_id = run_ctx.run_id
+        result.metadata = metadata_for_result()
+        _try_write(result, runs_root)
+        return result
+
     try:
-        scenario = load_scenario(yaml_path)
-    except ScenarioLoadError as exc:
-        result = RunResult(
-            scenario      =_dummy_scenario(name),
-            status        ="error",
-            error_message =str(exc),
+        # --- Load scenario ---
+        try:
+            scenario = load_scenario(yaml_path)
+        except ScenarioLoadError as exc:
+            result = RunResult(
+                scenario=_dummy_scenario(name),
+                status="error",
+                error_message=str(exc),
+            )
+            return _finish(result)
+
+        # --- Execute ---
+        executor = ScenarioExecutor(
+            scenario=scenario,
+            bridge_module=bridge_module,
+            poll_interval=poll_interval,
         )
-        _try_write(result, sim_runs_dir)
-        return result
+        try:
+            telemetry, exec_status = executor.run()
+        except Exception as exc:
+            result = RunResult(
+                scenario=scenario,
+                status="error",
+                error_message=f"Execution error: {exc}",
+            )
+            return _finish(result)
 
-    # --- Execute ---
-    executor = ScenarioExecutor(
-        scenario       =scenario,
-        bridge_module  =bridge_module,
-        poll_interval  =poll_interval,
-    )
-    try:
-        telemetry, exec_status = executor.run()
-    except Exception as exc:
-        result = RunResult(
-            scenario      =scenario,
-            status        ="error",
-            error_message =f"Execution error: {exc}",
+        if exec_status != "ok":
+            result = RunResult(
+                scenario=scenario,
+                status="error",
+                error_message=exec_status,
+            )
+            return _finish(result)
+
+        # --- Evaluate assertions ---
+        assertion_results = evaluate_all(
+            scenario.assertions, telemetry, scenario.goal
         )
-        _try_write(result, sim_runs_dir)
-        return result
 
-    if exec_status != "ok":
+        passed = all(r.passed for r in assertion_results)
         result = RunResult(
-            scenario      =scenario,
-            status        ="error",
-            error_message =exec_status,
+            scenario=scenario,
+            assertion_results=assertion_results,
+            telemetry=telemetry,
+            status="pass" if passed else "fail",
         )
-        _try_write(result, sim_runs_dir)
-        return result
-
-    # --- Evaluate assertions ---
-    assertion_results = evaluate_all(scenario.assertions, telemetry, scenario.goal)
-
-    # --- Build result ---
-    passed = all(r.passed for r in assertion_results)
-    result = RunResult(
-        scenario          =scenario,
-        assertion_results =assertion_results,
-        telemetry         =telemetry,
-        status            ="pass" if passed else "fail",
-    )
-
-    # --- Write result ---
-    _try_write(result, sim_runs_dir)
-
-    log.info("[Runner] %s", result.summary())
-    return result
+        log.info("[Runner] %s", result.summary())
+        return _finish(result)
+    finally:
+        finalize_run()
 
 
 def run_all_tests(
@@ -260,4 +266,7 @@ def _cli_main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    from bridge.logging_config import configure_logging
+
+    configure_logging()
     sys.exit(_cli_main(sys.argv[1:]))

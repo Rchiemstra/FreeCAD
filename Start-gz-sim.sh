@@ -3,11 +3,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/gazebo_lifecycle_common.sh
+source "${ROOT}/scripts/gazebo_lifecycle_common.sh"
+gz_export_live_env
+
 GZ_SIM_SRC="$ROOT/src/3rdParty/gz-sim"
 GZ_BUILD_VOLUME="${GZ_BUILD_VOLUME:-gz-sim-linux-build}"
 GZ_IMAGE="${GZ_IMAGE:-ubuntu:noble}"
 GZ_SIM_CONTAINER_NAME="${GZ_SIM_CONTAINER_NAME:-gz-sim-sever}"
+WORLD_SDF_HOST="$(gz_world_sdf_host)"
+# Default: project empty_world.sdf (world name empty_world) — matches E2E + ros_gz bridge.
+if [[ $# -eq 0 ]]; then
+    if [[ -f "$WORLD_SDF_HOST" ]]; then
+        set -- -s -r /worlds/empty_world.sdf
+    else
+        echo "WARN: $WORLD_SDF_HOST missing; falling back to OSRF empty.sdf (world name empty)." >&2
+        export GZ_SIM_WORLD_NAME="${GZ_SIM_WORLD_NAME:-empty}"
+        export GAZEBO_WORLD_NAME="${GAZEBO_WORLD_NAME:-empty}"
+        set -- -s -r /usr/share/gz/gz-sim/worlds/empty.sdf
+    fi
+fi
 GZ_ARGS=("$@")
+GENERATED_PKG="$ROOT/generated/arm_2dof/arm_2dof_description/arm_2dof_description"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "Docker was not found on PATH (install Docker in WSL or enable Docker Desktop WSL integration)." >&2
@@ -62,11 +79,25 @@ GZ_SIM_RUN_ACTIVE=1
 trap gz_sim_on_signal INT TERM
 
 set +e
+MOUNT_GENERATED=()
+if [[ -d "$GENERATED_PKG" ]]; then
+    MOUNT_GENERATED=(--mount "type=bind,source=$GENERATED_PKG,target=/models/arm_2dof_description,readonly")
+    echo "Mounting RobotCAD package: $GENERATED_PKG -> /models/arm_2dof_description"
+fi
+MOUNT_WORLDS=()
+if [[ -d "$ROOT/worlds" ]]; then
+    MOUNT_WORLDS=(--mount "type=bind,source=$ROOT/worlds,target=/worlds,readonly")
+    echo "Mounting worlds/: $ROOT/worlds -> /worlds (use empty_world.sdf)"
+fi
+echo "Live stack world name: ${GZ_SIM_WORLD_NAME} (set GZ_SIM_WORLD_NAME / GAZEBO_WORLD_NAME to override)"
+
 docker run --rm -i --init \
     --name "$GZ_SIM_CONTAINER_NAME" \
     --workdir /gz-sim \
     --mount "type=bind,source=$GZ_SIM_SRC,target=/gz-sim" \
     --mount "type=volume,source=$GZ_BUILD_VOLUME,target=/gz-sim-build" \
+    "${MOUNT_WORLDS[@]}" \
+    "${MOUNT_GENERATED[@]}" \
     "$GZ_IMAGE" \
     bash -s -- "${GZ_ARGS[@]}" <<'EOS'
 set -euo pipefail
@@ -124,6 +155,7 @@ echo "========== Installing gz-sim =========="
 cmake --install /gz-sim-build
 
 echo "========== Starting gz-sim =========="
+export GZ_SIM_RESOURCE_PATH="/models:${GZ_SIM_RESOURCE_PATH:-}"
 export DISPLAY=:99
 export XDG_RUNTIME_DIR=/tmp/xdg-runtime-root
 mkdir -p "$XDG_RUNTIME_DIR"

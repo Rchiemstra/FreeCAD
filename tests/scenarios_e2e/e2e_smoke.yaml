@@ -5,7 +5,7 @@ name: e2e_smoke
 description: "Headless smoke — simulation clock advances and no assertions require joint streams"
 
 robot: arm_2dof
-world: empty
+world: empty_world
 
 initial_pose:
   x: 0.0

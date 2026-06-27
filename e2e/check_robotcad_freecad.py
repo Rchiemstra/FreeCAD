@@ -13,16 +13,13 @@ def main() -> int:
         return 1
 
     try:
-        from freecad import robotcad as rc  # type: ignore
-    except ImportError:
-        try:
-            import robotcad as rc  # type: ignore
-        except ImportError as exc:
-            print("RobotCAD/CROSS import failed:", exc)
-            return 1
+        import freecad.cross as cross  # noqa: F401
+    except ImportError as exc:
+        print("RobotCAD/CROSS (freecad.cross) import failed:", exc)
+        return 1
 
-    ver = getattr(rc, "__version__", "unknown")
-    print(f"RobotCAD import OK (version={ver})")
+    ver = getattr(cross, "__version__", "unknown")
+    print(f"RobotCAD/CROSS import OK (freecad.cross version={ver})")
     return 0
 
 

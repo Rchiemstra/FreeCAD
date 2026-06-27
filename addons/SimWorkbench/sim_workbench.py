@@ -217,6 +217,13 @@ def _create_panels(coord: "SimWorkbenchCoordinator") -> dict:
     except Exception as exc:
         log.warning("MCPLogPanel failed: %s", exc)
 
+    try:
+        from panels.gazebo_status import GazeboStatusPanel
+        panels["gazebo_status"] = GazeboStatusPanel(coord)
+        _add_dock(panels["gazebo_status"], "Gazebo Status", "Right")
+    except Exception as exc:
+        log.warning("GazeboStatusPanel failed: %s", exc)
+
     return panels
 
 

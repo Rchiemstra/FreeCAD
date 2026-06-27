@@ -1,0 +1,65 @@
+# Canonical runtime pins for bridge, runner, Docker E2E, and CI.
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Update this file when intentionally bumping toolchain versions, then re-run:
+#   docker compose -f docker/compose.e2e.yml up --build --abort-on-container-exit --exit-code-from e2e
+#
+# Recorded observed versions from a passing E2E run are mirrored in each sim_runs/e2e_*/versions.yaml.
+
+schema_version: 1
+updated: "2026-05-29"
+
+robot_source:
+  # Primary path (git-tracked). Docker E2E and strict export require this file.
+  fcstd_path: robots/arm_2dof.FCStd
+  fcstd_sha256: "4619df8cdf0084266aebcec7a0e93556147dc9b8e26948545bad1a8472f9e075"
+  fcstd_bytes: 73883
+  # Optional CI fallback when the FCStd is not in the checkout (must match fcstd_sha256):
+  # export ROBOTS_ARM_2DOF_FCSTD_URL=https://.../arm_2dof.FCStd
+  ci_artifact_url: ""
+
+docker_e2e:
+  compose_file: docker/compose.e2e.yml
+  image: freecad-gazebo-mcp-e2e:latest
+  base_image: ros:jazzy-ros-base-noble
+  # Pin digest in docker/Dockerfile.e2e — update via docs/docker-e2e-reproducibility.md
+  base_image_digest: sha256:eac11a5285beeb1e1884e71f7091c610e08452e823bfb3f43afaa334375325f6
+  ros_distro: jazzy
+  # CLI semver (informational); strict check uses apt_versions below.
+  gazebo_apt_package: gz-harmonic
+  gazebo_sim_version: "8.12.0"
+  freecad_apt_package: freecad-daily
+  freecad_version: "1.1.0"
+  python: "3.12.3"
+  # Exact dpkg versions (strict E2E). Sync ARG defaults in docker/Dockerfile.e2e.
+  apt_versions:
+    freecad-daily: "1.1~pre1~202508270404~ubuntu24.04.1"
+    gz-harmonic: "1.0.0-1~noble"
+    gz-sim8-cli: "8.12.0-1~noble"
+    libgz-sim8: "8.12.0-1~noble"
+  robotcad:
+    repo: https://github.com/drfenixion/freecad.robotcad.git
+    commit: c3ac92843892b2b19eedfb7d536da81458e819b3
+    cross_version: "1.0.1"
+
+mcp_servers:
+  freecad_mcp: "0.1.17"
+  gazebo_mcp: "0.2.0"
+  ros_mcp: "3.0.1"
+
+pypi:
+  # requirements-bridge.txt / requirements-dev.txt
+  pyyaml: "6.0.3"
+  # requirements-mcp-e2e.txt (Docker MCP venv only)
+  mcp: "1.27.1"
+  pydantic: "2.11.7"
+  validators: "0.34.0"
+  # requirements-dev.txt
+  pytest: "8.4.1"
+  pytest_mock: "3.14.1"
+
+generated_artifacts:
+  policy: gitignore
+  paths:
+    - generated/
+    - sim_runs/

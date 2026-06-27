@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Placeholder URDF smoke only — run via e2e/run_e2e_placeholder_fallback.sh (compose profile fallback).
+
+name: e2e_placeholder_fallback
+description: "Spawn robots/arm_2dof.urdf copy — not RobotCAD mesh export proof"
+
+robot: arm_2dof
+world: empty_world
+
+initial_pose:
+  x: 0.0
+  y: 0.0
+  z: 0.15
+  yaw: 0.0
+
+goal:
+  type: none
+
+duration: 4.0
+
+assertions:
+  - type: sim_time_under
+    seconds: 60.0
+  - type: rtf_above
+    value: 0.01
+
+record:
+  joint_states: false
+  end_effector_pose: true
+  contacts: false
+  rtf: true
+  screenshot_interval: 0

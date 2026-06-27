@@ -82,6 +82,9 @@ class _RunWorker(QObject if _QT else object):  # type: ignore
 
     def run(self):
         try:
+            from bridge.logging_config import configure_logging
+
+            configure_logging()
             from runner.runner import run_test
             result = run_test(self._name)
         except Exception as exc:

@@ -216,6 +216,12 @@ class GazeboTransport:
         for name in names:
             try:
                 raw = bridge.get_model_state(name)
+                if hasattr(raw, "ok"):
+                    if not raw.ok:
+                        raise RuntimeError(
+                            "; ".join(getattr(raw, "messages", [])) or "get_model_state failed"
+                        )
+                    raw = getattr(raw, "data", None) or {}
                 states.append(self._parse_model_state(name, raw))
             except Exception as exc:
                 log.debug("Could not get state for %r: %s", name, exc)

@@ -18,6 +18,13 @@ Quick start:
 
 from bridge.project import load_project, ProjectConfig
 from bridge.validate import validate_urdf, validate_sdf
+from bridge.permissions import (
+    PermissionDenied,
+    WriteOperation,
+    assert_write_allowed,
+    effective_write_policy,
+    list_write_capabilities,
+)
 from bridge import freecad_bridge, gazebo_bridge, handoff
 
 __all__ = [
@@ -25,6 +32,11 @@ __all__ = [
     "ProjectConfig",
     "validate_urdf",
     "validate_sdf",
+    "PermissionDenied",
+    "WriteOperation",
+    "assert_write_allowed",
+    "effective_write_policy",
+    "list_write_capabilities",
     "freecad_bridge",
     "gazebo_bridge",
     "handoff",

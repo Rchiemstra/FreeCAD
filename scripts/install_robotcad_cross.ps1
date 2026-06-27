@@ -69,6 +69,60 @@ finally {
     Pop-Location
 }
 
+# Python deps for URDF import/export (FreeCAD AdditionalPythonPackages, matches embedded py311)
+$pyPkgs = Join-Path $env:USERPROFILE ".local\share\FreeCAD\AdditionalPythonPackages\py311"
+New-Item -ItemType Directory -Force -Path $pyPkgs | Out-Null
+
+$pipPython = $null
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$pixiPy = Join-Path $repoRoot ".pixi\envs\default\python.exe"
+if (Test-Path -LiteralPath $pixiPy) {
+    $pipPython = $pixiPy
+}
+elseif (Get-Command python -ErrorAction SilentlyContinue) {
+    $pipPython = (Get-Command python).Source
+}
+
+if ($pipPython) {
+    Write-Host "Installing RobotCAD Python deps into $pyPkgs ..."
+    $deps = @(
+        "urdf-parser-py",
+        "xacro",
+        "xmltodict",
+        "pycollada",
+        "lxml"
+    )
+    & $pipPython -m pip install @deps --target $pyPkgs --disable-pip-version-check -q
+    Write-Host "[OK] Python dependencies installed for FreeCAD py311"
+}
+else {
+    Write-Host "[WARN] No Python found for pip; install deps manually into $pyPkgs"
+}
+
+# OVERCROSS still resolves MOD_PATH as Mod/freecad.robotcad — junction for pixi FreeCAD.
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$pixiDataMod = Join-Path $repoRoot ".pixi\envs\default\Library\data\Mod"
+$robotcadLink = Join-Path $pixiDataMod "freecad.robotcad"
+if ((Test-Path -LiteralPath $pixiDataMod) -and -not (Test-Path -LiteralPath $robotcadLink)) {
+    New-Item -ItemType Directory -Force -Path $pixiDataMod | Out-Null
+    cmd /c mklink /J "$robotcadLink" "$target" | Out-Null
+    Write-Host "[OK] Junction: $robotcadLink -> $target"
+}
+
+Push-Location $target
+try {
+    if (Test-Path -LiteralPath ".gitmodules") {
+        Write-Host "Initializing git submodules (ros2_controllers, sdformat, ...)..."
+        git submodule update --init --depth 1 2>&1 | Out-Host
+    }
+}
+finally {
+    Pop-Location
+}
+
 Write-Host ""
 Write-Host "[OK] RobotCAD/CROSS addon path: $target"
-Write-Host "Next: restart FreeCAD, enable the workbench, then run the workbench demo / export smoke test."
+Write-Host "Verify (FreeCADCmd): .\.pixi\envs\default\Library\bin\FreeCADCmd.exe scripts\verify_robotcad_cross.py"
+Write-Host "Build FCStd (GUI + RPC :9875): python scripts\build_arm_2dof_fcstd_rpc.py"
+Write-Host "Export URDF (GUI + RPC :9875): python scripts\export_arm_2dof_rpc.py"
+Write-Host "Next: restart FreeCAD, enable the CROSS workbench, then open robots\arm_2dof.FCStd"

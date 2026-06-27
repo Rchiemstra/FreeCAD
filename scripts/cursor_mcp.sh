@@ -15,6 +15,15 @@ ensure_venv() {
     local entrypoint="$2"
 
     cd "$package_dir"
+    if [[ -d ".venv" ]]; then
+        for generated in ".venv/bin/pip" ".venv/bin/$entrypoint"; do
+            if [[ -x "$generated" ]] && ! head -1 "$generated" | grep -q "$package_dir/.venv/bin/python"; then
+                rm -rf ".venv"
+                break
+            fi
+        done
+    fi
+
     if [[ ! -x ".venv/bin/$entrypoint" ]]; then
         if [[ ! -x ".venv/bin/python3" ]]; then
             python3 -m venv .venv 2>/dev/null || python3 -m venv --without-pip .venv
