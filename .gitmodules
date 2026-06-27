@@ -10,3 +10,6 @@
 [submodule "src/Mod/AddonManager"]
 	path = src/Mod/AddonManager
 	url = https://github.com/FreeCAD/AddonManager.git
+[submodule "tools/mcp/freecad-mcp"]
+	path = tools/mcp/freecad-mcp
+	url = https://github.com/Rchiemstra/freecad-mcp.git
