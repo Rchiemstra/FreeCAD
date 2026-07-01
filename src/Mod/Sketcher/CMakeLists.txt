@@ -17,6 +17,7 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchFillet.py
     SketcherTests/TestSketcherSolver.py
     SketcherTests/TestSketchExpression.py
+    SketcherTests/TestSketchDeltaPosition.py
     SketcherTests/TestSketchValidateCoincidents.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.FCStd

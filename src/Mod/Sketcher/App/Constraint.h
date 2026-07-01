@@ -264,6 +264,11 @@ public:
     bool getIsTextHeight() const;
     void setIsTextHeight(bool val);
 
+    bool isDeltaPositionConstraint() const;
+    std::string getDeltaPositionId() const;
+    std::string getDeltaPositionAxis() const;
+    void setDeltaPositionMetadata(const std::string& id, const std::string& axis);
+
 #ifdef SKETCHER_CONSTRAINT_USE_LEGACY_ELEMENTS
     // Deprecated, use getElement/setElement instead
     int First {GeoEnum::GeoUndef};

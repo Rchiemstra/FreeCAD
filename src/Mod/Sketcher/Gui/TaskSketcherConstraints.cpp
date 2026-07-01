@@ -29,6 +29,7 @@
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QStyledItemDelegate>
 #include <QWidgetAction>
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -51,6 +53,7 @@
 #include <Gui/ViewProvider.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 
+#include "EditDeltaPositionDialog.h"
 #include "EditDatumDialog.h"
 #include "EditTextDialog.h"
 #include "TaskSketcherConstraints.h"
@@ -109,12 +112,68 @@ public:
     ~ConstraintItem() override
     {}
 
+    std::pair<int, int> deltaPositionPair() const
+    {
+        if (ConstraintNbr < 0 || ConstraintNbr >= sketch->Constraints.getSize()) {
+            return {-1, -1};
+        }
+
+        return sketch->getDeltaPositionConstraintPair(ConstraintNbr);
+    }
+
+    bool isDeltaPositionConstraint() const
+    {
+        auto pair = deltaPositionPair();
+        return pair.first >= 0 && pair.second >= 0;
+    }
+
+    bool isDeltaPositionVisibleChild() const
+    {
+        auto pair = deltaPositionPair();
+        return pair.first == ConstraintNbr && pair.second >= 0;
+    }
+
+    bool isDeltaPositionHiddenChild() const
+    {
+        auto pair = deltaPositionPair();
+        return pair.second == ConstraintNbr && pair.first >= 0;
+    }
+
+    std::vector<int> constraintNumbers() const
+    {
+        auto pair = deltaPositionPair();
+        if (pair.first >= 0 && pair.second >= 0) {
+            return {pair.first, pair.second};
+        }
+
+        return {ConstraintNbr};
+    }
+
+    bool hasExpression() const
+    {
+        for (int constraintNbr : constraintNumbers()) {
+            App::ObjectIdentifier path = sketch->Constraints.createPath(constraintNbr);
+            App::PropertyExpressionEngine::ExpressionInfo exprInfo = sketch->getExpression(path);
+            if (exprInfo.expression) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     QString getName() const
     {
         const Sketcher::Constraint* constraint = sketch->Constraints[ConstraintNbr];
 
         if (!constraint->Name.empty()) {
             return QString::fromStdString(constraint->Name);
+        }
+
+        if (isDeltaPositionVisibleChild()) {
+            return QStringLiteral("%1-%2")
+                .arg(ConstraintNbr + 1)
+                .arg(QCoreApplication::translate("SketcherGui::ConstraintView", "Delta Position"));
         }
 
         QString type;
@@ -222,46 +281,60 @@ public:
         else if (role == Qt::DisplayRole) {
             QString name = getName();
 
-            switch (constraint->Type) {
-                case Sketcher::Horizontal:
-                case Sketcher::Vertical:
-                case Sketcher::Coincident:
-                case Sketcher::PointOnObject:
-                case Sketcher::Parallel:
-                case Sketcher::Perpendicular:
-                case Sketcher::Tangent:
-                case Sketcher::Equal:
-                case Sketcher::Symmetric:
-                case Sketcher::Block:
-                    break;
-                case Sketcher::Distance:
-                case Sketcher::DistanceX:
-                case Sketcher::DistanceY:
-                case Sketcher::Radius:
-                case Sketcher::Weight:
-                case Sketcher::Diameter:
-                case Sketcher::Angle:
-                    name = QStringLiteral("%1 (%2)").arg(
-                        name,
-                        QString::fromStdString(constraint->getPresentationValue().getUserString()));
-                    break;
-                case Sketcher::SnellsLaw: {
-                    double v = constraint->getPresentationValue().getValue();
-                    double n1 = 1.0;
-                    double n2 = 1.0;
-                    if (fabs(v) >= 1) {
-                        n2 = v;
+            if (isDeltaPositionVisibleChild()) {
+                auto pair = deltaPositionPair();
+                const Sketcher::Constraint* xConstraint = sketch->Constraints[pair.first];
+                const Sketcher::Constraint* yConstraint = sketch->Constraints[pair.second];
+                name = QStringLiteral("%1 (%2, %3)")
+                           .arg(name,
+                                QString::fromStdString(
+                                    xConstraint->getPresentationValue().getUserString()),
+                                QString::fromStdString(
+                                    yConstraint->getPresentationValue().getUserString()));
+            }
+            else {
+                switch (constraint->Type) {
+                    case Sketcher::Horizontal:
+                    case Sketcher::Vertical:
+                    case Sketcher::Coincident:
+                    case Sketcher::PointOnObject:
+                    case Sketcher::Parallel:
+                    case Sketcher::Perpendicular:
+                    case Sketcher::Tangent:
+                    case Sketcher::Equal:
+                    case Sketcher::Symmetric:
+                    case Sketcher::Block:
+                        break;
+                    case Sketcher::Distance:
+                    case Sketcher::DistanceX:
+                    case Sketcher::DistanceY:
+                    case Sketcher::Radius:
+                    case Sketcher::Weight:
+                    case Sketcher::Diameter:
+                    case Sketcher::Angle:
+                        name = QStringLiteral("%1 (%2)").arg(
+                            name,
+                            QString::fromStdString(
+                                constraint->getPresentationValue().getUserString()));
+                        break;
+                    case Sketcher::SnellsLaw: {
+                        double v = constraint->getPresentationValue().getValue();
+                        double n1 = 1.0;
+                        double n2 = 1.0;
+                        if (fabs(v) >= 1) {
+                            n2 = v;
+                        }
+                        else {
+                            n1 = 1 / v;
+                        }
+                        name = QStringLiteral("%1 (%2/%3)").arg(name).arg(n2).arg(n1);
+                        break;
                     }
-                    else {
-                        n1 = 1 / v;
-                    }
-                    name = QStringLiteral("%1 (%2/%3)").arg(name).arg(n2).arg(n1);
-                    break;
+                    case Sketcher::InternalAlignment:
+                        break;
+                    default:
+                        break;
                 }
-                case Sketcher::InternalAlignment:
-                    break;
-                default:
-                    break;
             }
 
             ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
@@ -300,6 +373,7 @@ public:
         else if (role == Qt::DecorationRole) {
             static QIcon hdist(Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance"));
             static QIcon vdist(Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance"));
+            static QIcon delta(Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition"));
             static QIcon horiz(Gui::BitmapFactory().iconFromTheme("Constraint_Horizontal"));
             static QIcon vert(Gui::BitmapFactory().iconFromTheme("Constraint_Vertical"));
             // static QIcon lock ( Gui::BitmapFactory().iconFromTheme("Constraint_Lock") );
@@ -338,6 +412,8 @@ public:
                 Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance_Driven"));
             static QIcon vdist_driven(
                 Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance_Driven"));
+            static QIcon delta_driven(
+                Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition_Driven"));
             static QIcon dist_driven(
                 Gui::BitmapFactory().iconFromTheme("Constraint_Length_Driven"));
             static QIcon radi_driven(
@@ -369,6 +445,10 @@ public:
                     return driven;
                 }
             };
+
+            if (isDeltaPositionVisibleChild()) {
+                return selicon(constraint, delta, delta_driven);
+            }
 
             switch (constraint->Type) {
                 case Sketcher::Horizontal:
@@ -429,13 +509,39 @@ public:
             }
         }
         else if (role == Qt::ToolTipRole) {
+            if (isDeltaPositionVisibleChild()) {
+                auto pair = deltaPositionPair();
+                QStringList expressions;
+
+                auto appendExpression = [this, &expressions](int constraintNbr,
+                                                              const QString& label) {
+                    App::ObjectIdentifier path = sketch->Constraints.createPath(constraintNbr);
+                    App::PropertyExpressionEngine::ExpressionInfo exprInfo =
+                        sketch->getExpression(path);
+                    if (exprInfo.expression) {
+                        expressions << QStringLiteral("%1: %2").arg(
+                            label,
+                            QString::fromStdString(exprInfo.expression->toString()));
+                    }
+                };
+
+                appendExpression(pair.first, QStringLiteral("Delta X"));
+                appendExpression(pair.second, QStringLiteral("Delta Y"));
+
+                if (!expressions.isEmpty()) {
+                    return expressions.join(QLatin1Char('\n'));
+                }
+
+                return QVariant();
+            }
+
             App::ObjectIdentifier path = sketch->Constraints.createPath(ConstraintNbr);
             App::PropertyExpressionEngine::ExpressionInfo expr_info = sketch->getExpression(path);
 
-            if (expr_info.expression)
+            if (expr_info.expression) {
                 return QString::fromStdString(expr_info.expression->toString());
-            else
-                return QVariant();
+            }
+            return QVariant();
         }
         else
             return QListWidgetItem::data(role);
@@ -450,6 +556,10 @@ public:
     bool isEnforceable() const
     {
         assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
+
+        if (isDeltaPositionVisibleChild()) {
+            return true;
+        }
 
         const Sketcher::Constraint* constraint = sketch->Constraints[ConstraintNbr];
 
@@ -498,7 +608,13 @@ public:
     {
         assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
 
-        return sketch->Constraints[ConstraintNbr]->isDriving;
+        for (int constraintNbr : constraintNumbers()) {
+            if (!sketch->Constraints[constraintNbr]->isDriving) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     bool isInVirtualSpace() const
@@ -512,7 +628,13 @@ public:
     {
         assert(ConstraintNbr >= 0 && ConstraintNbr < sketch->Constraints.getSize());
 
-        return sketch->Constraints[ConstraintNbr]->isActive;
+        for (int constraintNbr : constraintNumbers()) {
+            if (!sketch->Constraints[constraintNbr]->isActive) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     void updateVirtualSpaceStatus()
@@ -565,12 +687,9 @@ protected:
         if (!item || item->sketch->Constraints.getSize() <= item->ConstraintNbr)
             return;
 
-        App::ObjectIdentifier path = item->sketch->Constraints.createPath(item->ConstraintNbr);
-        App::PropertyExpressionEngine::ExpressionInfo expr_info = item->sketch->getExpression(path);
-
         // in case the constraint property is invalidated it returns a null pointer
         const Sketcher::Constraint* constraint = item->sketch->Constraints[item->ConstraintNbr];
-        if (constraint && constraint->isDriving && expr_info.expression) {
+        if (constraint && constraint->isDriving && item->hasExpression()) {
             // Paint pixmap
             int s = 2 * options.rect.height() / 4;
             int margin = s;
@@ -622,9 +741,11 @@ void ConstraintView::contextMenuEvent(QContextMenuEvent* event)
         std::vector<std::string> constraintSubNames;
         for (auto&& it : items) {
             auto ci = static_cast<ConstraintItem*>(it);
-            std::string constraint_name =
-                Sketcher::PropertyConstraintList::getConstraintName(ci->ConstraintNbr);
-            constraintSubNames.emplace_back(constraint_name.c_str());
+            for (int constraintNbr : ci->constraintNumbers()) {
+                std::string constraint_name =
+                    Sketcher::PropertyConstraintList::getConstraintName(constraintNbr);
+                constraintSubNames.emplace_back(constraint_name.c_str());
+            }
         }
 
         if (!constraintSubNames.empty())
@@ -1228,7 +1349,9 @@ void TaskSketcherConstraints::changeFilteredVisibility(bool show, ActionTarget t
             if ((it->isInVirtualSpace() == sketchView->getIsShownVirtualSpace() && !show)
                 || (it->isInVirtualSpace() != sketchView->getIsShownVirtualSpace() && show)) {
 
-                constrIds.push_back(it->ConstraintNbr);
+                for (int constraintNbr : it->constraintNumbers()) {
+                    constrIds.push_back(constraintNbr);
+                }
             }
         }
     }
@@ -1274,7 +1397,12 @@ void TaskSketcherConstraints::onListWidgetConstraintsItemActivated(QListWidgetIt
     if (it->isDimensional()) {
         int tid = this->sketchView->getDocument()->openCommand(
                     QT_TRANSLATE_NOOP("Command", "Modify sketch constraints"));
-        EditDatumDialog(tid, this->sketchView, it->ConstraintNbr).exec(false);
+        if (it->isDeltaPositionVisibleChild()) {
+            EditDeltaPositionDialog(tid, this->sketchView, it->ConstraintNbr).exec(false);
+        }
+        else {
+            EditDatumDialog(tid, this->sketchView, it->ConstraintNbr).exec(false);
+        }
     }
     else if (it->constraintType() == Sketcher::Text) {
         auto* editDialog = new EditTextDialog(this->sketchView, it->ConstraintNbr);
@@ -1332,7 +1460,7 @@ void TaskSketcherConstraints::onListWidgetConstraintsItemChanged(QListWidgetItem
         }
     }
 
-    std::vector<int> constraintNum = {it->ConstraintNbr};
+    std::vector<int> constraintNum = it->constraintNumbers();
     doSetVirtualSpace(constraintNum, (item->checkState() == Qt::Checked) == sketchView->getIsShownVirtualSpace());
 
     inEditMode = false;
@@ -1345,8 +1473,12 @@ void TaskSketcherConstraints::updateSelectionFilter()
 
     selectionFilter.clear();
 
-    for (const auto& item : items)
-        selectionFilter.push_back(static_cast<ConstraintItem*>(item)->ConstraintNbr);
+    for (const auto& item : items) {
+        auto* constraintItem = static_cast<ConstraintItem*>(item);
+        for (int constraintNbr : constraintItem->constraintNumbers()) {
+            selectionFilter.push_back(constraintNbr);
+        }
+    }
 }
 
 void TaskSketcherConstraints::updateAssociatedConstraintsFilter()
@@ -1591,9 +1723,12 @@ void TaskSketcherConstraints::onListWidgetConstraintsItemSelectionChanged()
     std::vector<std::string> constraintSubNames;
     QList<QListWidgetItem*> items = ui->listWidgetConstraints->selectedItems();
     for (QList<QListWidgetItem*>::iterator it = items.begin(); it != items.end(); ++it) {
-        std::string constraint_name(Sketcher::PropertyConstraintList::getConstraintName(
-            static_cast<ConstraintItem*>(*it)->ConstraintNbr));
-        constraintSubNames.push_back(constraint_name);
+        auto* constraintItem = static_cast<ConstraintItem*>(*it);
+        for (int constraintNbr : constraintItem->constraintNumbers()) {
+            std::string constraint_name(
+                Sketcher::PropertyConstraintList::getConstraintName(constraintNbr));
+            constraintSubNames.push_back(constraint_name);
+        }
     }
 
     if (!constraintSubNames.empty())
@@ -1618,19 +1753,27 @@ void TaskSketcherConstraints::change3DViewVisibilityToTrackFilter(bool filterEna
     const Sketcher::SketchObject* sketch = sketchView->getSketchObject();
     const std::vector<Sketcher::Constraint*>& vals = sketch->Constraints.getValues();
 
+    std::set<int> visibleIds;
     std::vector<int> constrIdsToSetVisible;
     std::vector<int> constrIdsToSetHidden;
 
     for (std::size_t i = 0; i < vals.size(); ++i) {
         ConstraintItem* it = static_cast<ConstraintItem*>(ui->listWidgetConstraints->item(i));
-        bool visible = !filterEnabled || !isConstraintFiltered(it);
+        if (!filterEnabled || !isConstraintFiltered(it)) {
+            for (int constraintNbr : it->constraintNumbers()) {
+                visibleIds.insert(constraintNbr);
+            }
+        }
+    }
 
+    for (std::size_t i = 0; i < vals.size(); ++i) {
+        bool visible = visibleIds.contains(static_cast<int>(i));
         // If the constraint is filteredout and it was previously shown in 3D view
         if (!visible) {
-            constrIdsToSetHidden.push_back(it->ConstraintNbr);
+            constrIdsToSetHidden.push_back(static_cast<int>(i));
         }
         else if (visible) {
-            constrIdsToSetVisible.push_back(it->ConstraintNbr);
+            constrIdsToSetVisible.push_back(static_cast<int>(i));
         }
     }
     if (!constrIdsToSetVisible.empty()) {
@@ -1723,6 +1866,10 @@ bool TaskSketcherConstraints::isConstraintFiltered(QListWidgetItem* item)
     ConstraintItem* it = static_cast<ConstraintItem*>(item);
     const Sketcher::Constraint* constraint = vals[it->ConstraintNbr];
 
+    if (it->isDeltaPositionHiddenChild()) {
+        return true;
+    }
+
     // Text constraint is hidden from the list widget.
     if (constraint->Type == Sketcher::Text) {
         return true;
@@ -1735,6 +1882,29 @@ bool TaskSketcherConstraints::isConstraintFiltered(QListWidgetItem* item)
     bool visible = true;
 
     if (ui->filterBox->checkState() == Qt::Checked) {
+        if (it->isDeltaPositionVisibleChild()) {
+            auto pair = it->deltaPositionPair();
+            visible = checkFilterBitset(multiFilterStatus, FilterValue::HorizontalDistance)
+                || checkFilterBitset(multiFilterStatus, FilterValue::VerticalDistance);
+
+            visible |= !constraint->Name.empty()
+                && checkFilterBitset(multiFilterStatus, FilterValue::Named);
+
+            if (visible && specialFilterMode == SpecialFilterType::Selected) {
+                visible = std::ranges::find(selectionFilter, pair.first) != selectionFilter.end()
+                    || std::ranges::find(selectionFilter, pair.second) != selectionFilter.end();
+            }
+            else if (visible && specialFilterMode == SpecialFilterType::Associated) {
+                visible =
+                    std::ranges::find(associatedConstraintsFilter, pair.first)
+                        != associatedConstraintsFilter.end()
+                    || std::ranges::find(associatedConstraintsFilter, pair.second)
+                        != associatedConstraintsFilter.end();
+            }
+
+            return !visible;
+        }
+
         // First select only the filtered one.
         switch (constraint->Type) {
             case Sketcher::Horizontal:
@@ -1849,6 +2019,14 @@ void TaskSketcherConstraints::slotConstraintsChanged()
         it->value = QVariant();
         constraintMap[it->ConstraintNbr] = it;
         it->updateVirtualSpaceStatus();
+    }
+    for (const auto& pair : sketch->getDeltaPositionConstraintPairs()) {
+        if (pair.first >= 0 && pair.first < ui->listWidgetConstraints->count()
+            && pair.second >= 0 && pair.second < ui->listWidgetConstraints->count()) {
+            auto* it = static_cast<ConstraintItem*>(ui->listWidgetConstraints->item(pair.first));
+            constraintMap[pair.first] = it;
+            constraintMap[pair.second] = it;
+        }
     }
     ui->listWidgetConstraints->blockSignals(tmpBlock);
 

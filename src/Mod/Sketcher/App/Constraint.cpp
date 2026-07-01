@@ -699,3 +699,58 @@ void Constraint::setIsTextHeight(bool isHeight)
     j["isTextHeight"] = isHeight;
     MetaData = j.dump();
 }
+
+namespace
+{
+// Parse MetaData into a JSON object, returning an empty object on absence or parse error.
+nlohmann::json parseMetaDataObject(const std::string& metaData)
+{
+    if (!metaData.empty()) {
+        try {
+            return nlohmann::json::parse(metaData);
+        }
+        catch (...) {
+            // Fall through to an empty object on malformed metadata.
+        }
+    }
+    return nlohmann::json::object();
+}
+
+// Read a string field of the "deltaPosition" sub-object, or empty if missing.
+std::string getDeltaPositionField(const nlohmann::json& j, const char* field)
+{
+    if (!j.is_object() || !j.contains("deltaPosition") || !j["deltaPosition"].is_object()) {
+        return {};
+    }
+
+    const auto& deltaPosition = j["deltaPosition"];
+    if (deltaPosition.contains(field) && deltaPosition[field].is_string()) {
+        return deltaPosition[field].get<std::string>();
+    }
+
+    return {};
+}
+}  // namespace
+
+bool Constraint::isDeltaPositionConstraint() const
+{
+    const auto j = parseMetaDataObject(MetaData);
+    return !getDeltaPositionField(j, "id").empty() && !getDeltaPositionField(j, "axis").empty();
+}
+
+std::string Constraint::getDeltaPositionId() const
+{
+    return getDeltaPositionField(parseMetaDataObject(MetaData), "id");
+}
+
+std::string Constraint::getDeltaPositionAxis() const
+{
+    return getDeltaPositionField(parseMetaDataObject(MetaData), "axis");
+}
+
+void Constraint::setDeltaPositionMetadata(const std::string& id, const std::string& axis)
+{
+    nlohmann::json j = parseMetaDataObject(MetaData);
+    j["deltaPosition"] = {{"id", id}, {"axis", axis}};
+    MetaData = j.dump();
+}

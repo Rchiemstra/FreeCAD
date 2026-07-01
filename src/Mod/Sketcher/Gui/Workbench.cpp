@@ -492,6 +492,7 @@ inline void SketcherAddWorkbenchConstraints<Gui::MenuItem>(Gui::MenuItem& cons)
          << "Sketcher_ConstrainGroup"
          << "Separator"
          << "Sketcher_Dimension"
+         << "Sketcher_ConstrainDeltaPosition"
          << "Sketcher_ConstrainDistanceX"
          << "Sketcher_ConstrainDistanceY"
          << "Sketcher_ConstrainDistance"
@@ -522,7 +523,8 @@ inline void SketcherAddWorkbenchConstraints<Gui::ToolBarItem>(Gui::ToolBarItem& 
         }
     }
     if (hGrp->GetBool("SeparatedDimensioningTools", false)) {
-        cons << "Sketcher_ConstrainDistanceX"
+        cons << "Sketcher_ConstrainDeltaPosition"
+             << "Sketcher_ConstrainDistanceX"
              << "Sketcher_ConstrainDistanceY"
              << "Sketcher_ConstrainDistance"
              << "Sketcher_CompConstrainRadDia"
