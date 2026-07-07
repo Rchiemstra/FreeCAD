@@ -311,7 +311,7 @@ steps:
         export CCACHE_SLOPPINESS="include_file_ctime,include_file_mtime,pch_defines,time_macros"
         export CCACHE_MAXSIZE=2G
         ccache -z || true
-        cmake --build build/debug -j$(nproc)
+        ci/run_cmake_build_with_log.sh build/debug debug
         echo "== ccache stats after debug build =="
         ccache -s || true
 
@@ -373,7 +373,7 @@ steps:
           -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        cmake --build build/release -j$(nproc)
+        ci/run_cmake_build_with_log.sh build/release release
         echo "== ccache stats after release build =="
         ccache -s || true
 
