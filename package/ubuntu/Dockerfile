@@ -14,10 +14,10 @@
 # Build context is THIS directory (package/ubuntu/), so the COPY path below is
 # relative to it and the context stays tiny (just install-apt-packages.sh). Built
 # and pushed to the local registry by .woodpecker/build-images.yml (kaniko):
-#   image: 192.168.2.23:5000/freecad-ci-deps:24.04
+#   image: 192.168.2.23:8081/freecad-ci-deps:24.04
 # Rebuild when install-apt-packages.sh changes (trigger the build-images workflow
 # manually) or on a weekly cron for an apt security refresh.
-# For a local build: docker build -t 192.168.2.23:5000/freecad-ci-deps:24.04 package/ubuntu/
+# For a local build: docker build -t 192.168.2.23:8081/freecad-ci-deps:24.04 package/ubuntu/
 
 FROM ubuntu:24.04
 

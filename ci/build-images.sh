@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and publish the FreeCAD Woodpecker CI images to the local registry
-# (default 192.168.2.23:5000 -- the same registry the Woodpecker agent pulls from).
+# (default 192.168.2.23:8081 -- the same registry the Woodpecker agent pulls from).
 #
 #   freecad-ci-deps:24.04   -- Ubuntu 24.04 + package/ubuntu/install-apt-packages.sh
 #                              + ccache/ninja/xvfb/clang-format/python3-pip/git.
@@ -25,10 +25,10 @@
 #
 # NOTE: this script is for LOCAL/optional builds. The PRIMARY build path is the
 # .woodpecker/build-images.yml kaniko workflow, which builds on the Woodpecker
-# agent (where 192.168.2.23:5000 resolves). Use this script only if you want to build
-# from your own machine -- which requires your Docker daemon to reach 192.168.2.23:5000
+# agent (where 192.168.2.23:8081 resolves). Use this script only if you want to build
+# from your own machine -- which requires your Docker daemon to reach 192.168.2.23:8081
 # AND to list it under insecure-registries (it is an HTTP registry):
-#   Settings -> Docker Engine -> {"insecure-registries": ["192.168.2.23:5000"]}
+#   Settings -> Docker Engine -> {"insecure-registries": ["192.168.2.23:8081"]}
 #
 # Usage (from the repo root):
 #   ci/build-images.sh            # build + push deps, then mcp
@@ -37,11 +37,11 @@
 #   ci/build-images.sh --no-push  # build locally, don't push
 #
 # Overrides (env):
-#   REGISTRY=192.168.2.23:5000   # registry host:port
+#   REGISTRY=192.168.2.23:8081   # registry host:port
 #   NS=                      # optional namespace segment (default none -> registry/<repo>:tag)
 set -euo pipefail
 
-REGISTRY="${REGISTRY:-192.168.2.23:5000}"
+REGISTRY="${REGISTRY:-192.168.2.23:8081}"
 NS="${NS:-}"            # default: no namespace (image = registry/<repo>:tag)
 PUSH=1
 TARGETS=()
