@@ -30,15 +30,16 @@
 #   build/debug FreeCAD (ABI-correct) inside freecad-ci-mcp:24.04.
 #
 # ---------------------------------------------------------------------------
-# ccache: meltwater/drone-cache with an S3 (object-store) backend.
-#   The Trusted-flag-free property REQUIRES an object-store backend with
-#   credentials supplied as secrets. The filesystem backend would need a host
-#   mount -> Trusted. Required secrets:
-#     cache_aws_access_key_id, cache_aws_secret_access_key,
-#     cache_s3_bucket, cache_s3_region, cache_s3_endpoint
-#   For AWS S3 (not a custom endpoint) set path_style: false and drop the
-#   endpoint secret. restore-ccache and save-ccache are `failure: ignore` --
-#   a cache miss/save error must not red the pipeline.
+# ccache: WITHIN-RUN only (no cross-run persistence, no secrets).
+#   The build steps set CMAKE_*_COMPILER_LAUNCHER=ccache and CCACHE_DIR to a
+#   path on the shared workspace volume. Woodpecker mounts the same workspace
+#   to every step, so the release build reuses the debug build's cache within a
+#   single run. There is no restore/save step, so each run starts cold (the
+#   workspace is re-cloned). To add cross-run persistence later, insert
+#   meltwater/drone-cache restore/save steps with an S3 object-store backend
+#   and creds via `settings:` access_key/secret_key `from_secret` (NOT
+#   `environment` -- the plugin-step schema rejects environment+settings), keyed
+#   on the install-apt-packages.sh hash.
 #
 # ---------------------------------------------------------------------------
 # Submodules: clone-all-submodules fetches ALL submodules recursively. The
@@ -58,8 +59,6 @@
 #   * A step whose `depends_on` target was filtered out by a `when` condition
 #     is itself SKIPPED (this Woodpecker version does NOT support the
 #     `{name: ..., optional: true}` object form in depends_on -- only strings).
-#     ccache save therefore uses TWO steps: save-ccache (after debug-build, all
-#     events) and save-ccache-release (after release-linux, tag/manual only).
 #   * A failed dependency skips its dependents (desired: failures gate
 #     downstream work).
 #
@@ -91,7 +90,8 @@
 #   * core collected > 0 and e2e collected > 0 (markers actually select tests;
 #     a 0 means a module silently failed to collect and would have been a
 #     green lie under exit-code-only gating).
-#   * ccache: restore logs a hit on the second run; first run is cold (ok).
+#   * ccache is within-run only: release build reuses debug's cache in the same
+#     run; each run starts cold (no cross-run persistence yet).
 #   * freecad-ci-deps:24.04 / freecad-ci-mcp:24.04 are pullable by the agent.
 #
 # Known limitation (NOT hardened here -- flag for first runs):
@@ -159,34 +159,6 @@ steps:
         echo "all-submodules-check: OK (every submodule initialized at expected commit)"
 
   # ---------------------------------------------------------------------------
-  # CCACHE restore (best-effort). Runs immediately after clone, in parallel
-  # with the fast checks. Keyed on the apt-deps script so a deps-image bump
-  # busts the cache; shared across branches.
-  # ---------------------------------------------------------------------------
-  - name: restore-ccache
-    image: meltwater/drone-cache
-    depends_on: []
-    failure: ignore
-    environment:
-      AWS_ACCESS_KEY_ID:
-        from_secret: cache_aws_access_key_id
-      AWS_SECRET_ACCESS_KEY:
-        from_secret: cache_aws_secret_access_key
-    settings:
-      restore: true
-      backend: s3
-      bucket:
-        from_secret: cache_s3_bucket
-      region:
-        from_secret: cache_s3_region
-      endpoint:
-        from_secret: cache_s3_endpoint
-      path_style: true
-      mount:
-        - ccache
-      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
-
-  # ---------------------------------------------------------------------------
   # FreeCAD track
   # ---------------------------------------------------------------------------
 
@@ -224,7 +196,7 @@ steps:
 
   - name: freecad-configure-debug
     image: freecad-ci-deps:24.04
-    depends_on: [freecad-lint, restore-ccache]
+    depends_on: [freecad-lint]
     commands:
       - |
         set -e
@@ -303,62 +275,8 @@ steps:
         echo "== ccache stats after release build =="
         ccache -s || true
 
-  # CCACHE save (best-effort). Two steps (the `{name:.., optional:true}` form
-  # is unsupported on this Woodpecker version, so depends_on is strings only):
-  #   * save-ccache        : after debug-build on EVERY event -- PR/push runs
-  #                          warm run N+1 (the common path).
-  #   * save-ccache-release: after release-linux, tag/manual only -- tag runs
-  #                          also persist release's contributions (release
-  #                          rides debug's cache within the run via the shared
-  #                          CCACHE_DIR, then re-saves the union). On tag runs
-  #                          it runs later and overwrites save-ccache's upload.
-  - name: save-ccache
-    image: meltwater/drone-cache
-    depends_on: [freecad-debug-build]
-    failure: ignore
-    environment:
-      AWS_ACCESS_KEY_ID:
-        from_secret: cache_aws_access_key_id
-      AWS_SECRET_ACCESS_KEY:
-        from_secret: cache_aws_secret_access_key
-    settings:
-      rebuild: true
-      backend: s3
-      bucket:
-        from_secret: cache_s3_bucket
-      region:
-        from_secret: cache_s3_region
-      endpoint:
-        from_secret: cache_s3_endpoint
-      path_style: true
-      mount:
-        - ccache
-      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
-
-  - name: save-ccache-release
-    image: meltwater/drone-cache
-    depends_on: [freecad-release-linux]
-    when:
-      - event: [tag, manual]
-    failure: ignore
-    environment:
-      AWS_ACCESS_KEY_ID:
-        from_secret: cache_aws_access_key_id
-      AWS_SECRET_ACCESS_KEY:
-        from_secret: cache_aws_secret_access_key
-    settings:
-      rebuild: true
-      backend: s3
-      bucket:
-        from_secret: cache_s3_bucket
-      region:
-        from_secret: cache_s3_region
-      endpoint:
-        from_secret: cache_s3_endpoint
-      path_style: true
-      mount:
-        - ccache
-      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
+  # ccache is WITHIN-RUN only (no save/restore step) -- see the file header.
+  # The release build reuses the debug build's CCACHE_DIR on the shared workspace.
 
   # ---------------------------------------------------------------------------
   # freecad-mcp track
