@@ -71,3 +71,4 @@ tsupdate_stdout.log
 # pixi environments
 *.egg-info
 .pixi
+tmp/

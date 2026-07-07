@@ -1,0 +1,88 @@
+# CI for the FreeCAD MCP server (tools/mcp/freecad-mcp).
+#
+# Two layers:
+#   unit - mock-based, no FreeCAD required, runs on every PR (fast).
+#   e2e  - live headless FreeCAD inside Docker, runs when the MCP submodule or
+#          the touched FreeCAD core modules (PartDesign/Part/Sketcher/App) change.
+#
+# The MCP server is a git submodule, so we check out with submodules: true.
+
+name: MCP Tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/mcp/freecad-mcp/**"
+      - "src/Mod/PartDesign/App/**"
+      - "src/Mod/Part/App/**"
+      - "src/Mod/Sketcher/App/**"
+      - "src/App/Document.cpp"
+      - ".github/workflows/mcp-tests.yml"
+  push:
+    branches: [ FreeCAD-start ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit (mock, no FreeCAD)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/mcp/freecad-mcp
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest -m unit -ra --tb=short
+
+  e2e:
+    name: E2E (live FreeCAD in Docker)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/mcp/freecad-mcp
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the test image
+        run: docker build -t freecad-mcp-tests .
+
+      - name: Run e2e tests
+        run: docker run --rm freecad-mcp-tests pytest -m e2e -ra --tb=short
+
+      - name: Run core regression tests
+        run: docker run --rm freecad-mcp-tests pytest -m core -ra --tb=short
