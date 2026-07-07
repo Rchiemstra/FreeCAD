@@ -60,8 +60,9 @@
 #   FIRST RUN: build-images.yml runs alongside this workflow on push/tag/manual.
 #       The public-image `ci-images-ready` gate polls `registry:5000` from inside
 #       the Woodpecker job network and blocks the heavy image pulls until both
-#       `:24.04` tags exist. An empty registry therefore waits instead of failing
-#       immediately with "manifest unknown".
+#       current-commit tags exist (PRs wait for the rolling `:24.04` tags, since
+#       PRs do not rebuild images). Heavy image steps also set `pull: true`, so a
+#       stale local Docker cache cannot reuse an older `:24.04` image.
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
 #   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:8081/freecad-ci-mcp:24.04.
 #
@@ -261,17 +262,22 @@ steps:
       - |
         set -e
         registry="http://registry:5000"
+        expected_tag="$CI_COMMIT_SHA"
+        if [ "$CI_PIPELINE_EVENT" = "pull_request" ]; then
+          expected_tag="24.04"
+        fi
         for attempt in $(seq 1 360); do
           deps_tags="$(wget -qO- "$registry/v2/freecad-ci-deps/tags/list" 2>/dev/null || true)"
           mcp_tags="$(wget -qO- "$registry/v2/freecad-ci-mcp/tags/list" 2>/dev/null || true)"
-          if echo "$deps_tags" | grep -q '"24.04"' && echo "$mcp_tags" | grep -q '"24.04"'; then
+          if echo "$deps_tags" | grep -q "\"$expected_tag\"" && echo "$mcp_tags" | grep -q "\"$expected_tag\""; then
             echo "CI images ready in local registry"
+            echo "expected tag: $expected_tag"
             echo "deps: $deps_tags"
             echo "mcp:  $mcp_tags"
             exit 0
           fi
           if [ "$attempt" -eq 1 ] || [ $((attempt % 30)) -eq 0 ]; then
-            echo "waiting for freecad-ci-deps:24.04 and freecad-ci-mcp:24.04 in $registry ($attempt/360)"
+            echo "waiting for freecad-ci-deps:$expected_tag and freecad-ci-mcp:$expected_tag in $registry ($attempt/360)"
           fi
           sleep 10
         done
@@ -282,6 +288,7 @@ steps:
 
   - name: freecad-configure-debug
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-lint, ci-images-ready]
     commands:
       - |
@@ -294,6 +301,7 @@ steps:
 
   - name: freecad-debug-build
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-configure-debug]
     commands:
       - |
@@ -309,6 +317,7 @@ steps:
 
   - name: freecad-unit-tests
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-debug-build]
     commands:
       - |
@@ -328,6 +337,7 @@ steps:
 
   - name: freecad-integration-tests
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-unit-tests]
     commands:
       - |
@@ -336,6 +346,7 @@ steps:
 
   - name: freecad-e2e
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-integration-tests]
     commands:
       - |
@@ -344,6 +355,7 @@ steps:
 
   - name: freecad-release-linux
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
+    pull: true
     depends_on: [freecad-e2e]
     when:
       - event: [tag, manual]
@@ -403,6 +415,7 @@ steps:
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
     image: 127.0.0.1:8081/freecad-ci-mcp:24.04
+    pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
       - |
@@ -420,6 +433,7 @@ steps:
   # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
   - name: freecad-mcp-core-tests
     image: 127.0.0.1:8081/freecad-ci-mcp:24.04
+    pull: true
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: core
@@ -438,6 +452,7 @@ steps:
 
   - name: freecad-mcp-e2e
     image: 127.0.0.1:8081/freecad-ci-mcp:24.04
+    pull: true
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: e2e
