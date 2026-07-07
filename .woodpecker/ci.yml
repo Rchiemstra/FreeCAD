@@ -10,10 +10,12 @@
 # `main` is intentionally NOT triggered.
 #
 # ---------------------------------------------------------------------------
-# CI images (owned by THIS repo, pushed to the LOCAL registry the Woodpecker
-# agent already pulls from -- 192.168.2.23:8081, an insecure HTTP registry -- so the
-# agent pulls with NO auth and no public-package/visibility friction):
-#   192.168.2.23:8081/freecad-ci-deps:24.04
+# CI images (owned by THIS repo, pushed to the LOCAL registry by kaniko as
+# registry:5000/<repo>:<tag>, then pulled by the Woodpecker Docker daemon via
+# the same registry's host-published loopback endpoint, 127.0.0.1:8081. Docker
+# treats 127.0.0.0/8 as an insecure-local registry, avoiding per-daemon LAN-IP
+# insecure-registry config while still keeping pulls auth-free):
+#   127.0.0.1:8081/freecad-ci-deps:24.04
 #       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
 #       (Qt6/OCCT/Coin/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
 #       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
@@ -22,8 +24,8 @@
 #       e2e, release-linux) and as the base for the MCP image. freecad-lint does
 #       NOT use it -- its checks (sync_version + codespell) are pure Python and
 #       run on python:3.12-slim.
-#   192.168.2.23:8081/freecad-ci-mcp:24.04
-#       FROM 192.168.2.23:8081/freecad-ci-deps:24.04 + COPY (pyproject.toml
+#   127.0.0.1:8081/freecad-ci-mcp:24.04
+#       FROM registry:5000/freecad-ci-deps:24.04 during kaniko builds + COPY (pyproject.toml
 #       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
 #       Qt6/OCCT/Coin/libpython3.12 as the deps image -> ABI-compatible with the
 #       build/debug FreeCAD tree, and FreeCADCmd's embedded python3.12 is the SAME
@@ -36,31 +38,33 @@
 #       runtime (only carries deps); the runtime editable install repoints the
 #       finder at the workspace source. Dockerfile: tools/mcp/freecad-mcp/
 #       Dockerfile.ci (build context = the mcp package dir).
-#   HOW IMAGES GET INTO 192.168.2.23:8081:
+#   HOW IMAGES GET INTO 127.0.0.1:8081:
 #     PRIMARY: .woodpecker/build-images.yml -- a separate Woodpecker workflow with
-#       two kaniko steps (deps, then mcp) that build+push on the agent (where
-#       192.168.2.23:8081 resolves), gated to `event: [manual, cron]` so the ~15-min
-#       deps build does NOT run per-PR. Trigger it manually once to populate the
-#       registry, and on a weekly cron for an apt security refresh. Rebuild on
-#       demand when install-apt-packages.sh (deps+mcp) or pyproject.toml (mcp)
-#       changes. kaniko needs no Docker daemon; it pushes to the insecure registry
-#       via `insecure: true` + `insecure-registry: 192.168.2.23:8081`.
+#       two kaniko steps (deps, then mcp) that build+push on the agent through
+#       the Docker-network alias `registry:5000`, gated to `event: [manual, cron]`
+#       so the ~15-min deps build does NOT run per-PR. Trigger it manually once
+#       to populate the registry, and on a weekly cron for an apt security
+#       refresh. Rebuild on demand when install-apt-packages.sh (deps+mcp) or
+#       pyproject.toml (mcp) changes. kaniko needs no Docker daemon; it pushes
+#       to the insecure registry via `insecure: true` + `insecure-registry:
+#       registry:5000`.
 #     OPTIONAL (local, from your own machine): ci/build-images.sh -- same two
 #       Dockerfiles, hash-keyed (rolling :24.04 + immutable :24.04-<hash>). Only
-#       works if your Docker daemon can reach 192.168.2.23:8081 AND lists it under
-#       insecure-registries.
-#   PREREQ on the AGENT: its Docker daemon must list 192.168.2.23:8081 in
-#       insecure-registries (HTTP registry) so the `image:` pulls below succeed.
-#       If you already pull from 192.168.2.23:8081 anywhere, it is set; otherwise add
-#       "192.168.2.23:8081" to the agent's daemon.json insecure-registries and reload.
+#       works if your Docker daemon can reach the registry endpoint in REGISTRY.
+#       From a LAN machine, REGISTRY=192.168.2.23:8081 still needs Docker
+#       insecure-registry config because that endpoint is HTTP.
+#   PREREQ on the AGENT: its Docker daemon must run on the same host that
+#       publishes the registry UI/API on 127.0.0.1:8081. Verify on the agent host
+#       with `curl http://127.0.0.1:8081/v2/`. If the agent is remote, use a TLS
+#       registry or add the LAN IP to that daemon's insecure-registries instead.
 #   FIRST RUN: trigger the build-images workflow manually ONCE to populate
-#       192.168.2.23:8081 BEFORE the first CI run. On that first manual run THIS
+#       127.0.0.1:8081 BEFORE the first CI run. On that first manual run THIS
 #       workflow also runs (manual triggers both), and its image-steps will RED
 #       (the images are not built yet) -- that is expected; the kaniko steps
 #       succeed and push the images. Subsequent push/PR/tag runs then pull the
 #       now-existing images.
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
-#   build/debug FreeCAD (ABI-correct) inside 192.168.2.23:8081/freecad-ci-mcp:24.04.
+#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:8081/freecad-ci-mcp:24.04.
 #
 # ---------------------------------------------------------------------------
 # ccache: WITHIN-RUN only (no cross-run persistence, no secrets).
@@ -125,10 +129,10 @@
 #     green lie under exit-code-only gating).
 #   * ccache is within-run only: release build reuses debug's cache in the same
 #     run; each run starts cold (no cross-run persistence yet).
-#   * 192.168.2.23:8081/freecad-ci-deps:24.04 & 192.168.2.23:8081/freecad-ci-mcp:24.04
-#     are present in 192.168.2.23:8081 (trigger the .woodpecker/build-images.yml
+#   * 127.0.0.1:8081/freecad-ci-deps:24.04 & 127.0.0.1:8081/freecad-ci-mcp:24.04
+#     are present in 127.0.0.1:8081 (trigger the .woodpecker/build-images.yml
 #     workflow manually once; see the CI-images section above) and pullable by
-#     the agent (the agent daemon lists 192.168.2.23:8081 in insecure-registries).
+#     the agent (the agent daemon can reach http://127.0.0.1:8081/v2/).
 #
 # Known limitation (NOT hardened here -- flag for first runs):
 #   freecad-integration-tests (FreeCADCmd -t 0) and freecad-e2e (run_gui_tests.py
@@ -249,7 +253,7 @@ steps:
         echo "freecad-lint: OK (sync_version + codespell)"
 
   - name: freecad-configure-debug
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-lint]
     commands:
       - |
@@ -259,7 +263,7 @@ steps:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
   - name: freecad-debug-build
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-configure-debug]
     commands:
       - |
@@ -274,7 +278,7 @@ steps:
         ccache -s || true
 
   - name: freecad-unit-tests
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-debug-build]
     commands:
       - |
@@ -293,7 +297,7 @@ steps:
         fi
 
   - name: freecad-integration-tests
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-unit-tests]
     commands:
       - |
@@ -301,7 +305,7 @@ steps:
         timeout 1200 build/debug/bin/FreeCADCmd -t 0
 
   - name: freecad-e2e
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-integration-tests]
     commands:
       - |
@@ -309,7 +313,7 @@ steps:
         xvfb-run -a -s "-screen 0 1024x768x24" python3 .github/scripts/run_gui_tests.py build/debug
 
   - name: freecad-release-linux
-    image: 192.168.2.23:8081/freecad-ci-deps:24.04
+    image: 127.0.0.1:8081/freecad-ci-deps:24.04
     depends_on: [freecad-e2e]
     when:
       - event: [tag, manual]
@@ -366,7 +370,7 @@ steps:
   # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
-    image: 192.168.2.23:8081/freecad-ci-mcp:24.04
+    image: 127.0.0.1:8081/freecad-ci-mcp:24.04
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
       - |
@@ -383,7 +387,7 @@ steps:
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
   # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
   - name: freecad-mcp-core-tests
-    image: 192.168.2.23:8081/freecad-ci-mcp:24.04
+    image: 127.0.0.1:8081/freecad-ci-mcp:24.04
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: core
@@ -401,7 +405,7 @@ steps:
         "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
 
   - name: freecad-mcp-e2e
-    image: 192.168.2.23:8081/freecad-ci-mcp:24.04
+    image: 127.0.0.1:8081/freecad-ci-mcp:24.04
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: e2e

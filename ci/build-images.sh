@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and publish the FreeCAD Woodpecker CI images to the local registry
-# (default 192.168.2.23:8081 -- the same registry the Woodpecker agent pulls from).
+# (default 192.168.2.23:8081 -- the registry API published on the LAN).
 #
 #   freecad-ci-deps:24.04   -- Ubuntu 24.04 + package/ubuntu/install-apt-packages.sh
 #                              + ccache/ninja/xvfb/clang-format/python3-pip/git.
@@ -25,7 +25,7 @@
 #
 # NOTE: this script is for LOCAL/optional builds. The PRIMARY build path is the
 # .woodpecker/build-images.yml kaniko workflow, which builds on the Woodpecker
-# agent (where 192.168.2.23:8081 resolves). Use this script only if you want to build
+# agent (where registry:5000 resolves). Use this script only if you want to build
 # from your own machine -- which requires your Docker daemon to reach 192.168.2.23:8081
 # AND to list it under insecure-registries (it is an HTTP registry):
 #   Settings -> Docker Engine -> {"insecure-registries": ["192.168.2.23:8081"]}
@@ -83,11 +83,13 @@ build_deps() {
 build_mcp() {
   local pf="tools/mcp/freecad-mcp/pyproject.toml"
   local h; h="$(short_hash "$pf")"
+  local deps_image; deps_image="$(image_name freecad-ci-deps):24.04"
   local rolling; rolling="$(image_name freecad-ci-mcp):24.04"
   local pinned;  pinned="$(image_name freecad-ci-mcp):24.04-${h}"
   echo "==> freecad-ci-mcp  (key=${h}  pyproject=${pf})"
   # FROM the (just-built/pushed) deps rolling tag, so ABI tracks the same base.
   docker build -f tools/mcp/freecad-mcp/Dockerfile.ci \
+    --build-arg FREECAD_CI_DEPS_IMAGE="$deps_image" \
     -t "$rolling" -t "$pinned" \
     tools/mcp/freecad-mcp/
   if [ "$PUSH" -eq 1 ]; then
