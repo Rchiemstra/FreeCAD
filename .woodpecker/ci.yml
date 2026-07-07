@@ -41,13 +41,13 @@
 #   HOW IMAGES GET INTO 127.0.0.1:8081:
 #     PRIMARY: .woodpecker/build-images.yml -- a separate Woodpecker workflow with
 #       two kaniko steps (deps, then mcp) that build+push on the agent through
-#       the Docker-network alias `registry:5000`, gated to `event: [manual, cron]`
-#       so the ~15-min deps build does NOT run per-PR. Trigger it manually once
-#       to populate the registry, and on a weekly cron for an apt security
-#       refresh. Rebuild on demand when install-apt-packages.sh (deps+mcp) or
-#       pyproject.toml (mcp) changes. kaniko needs no Docker daemon; it pushes
-#       to the insecure registry via `insecure: true` + `insecure-registry:
-#       registry:5000`.
+#       the Docker-network alias `registry:5000`, gated to push/tag/manual/cron
+#       but NOT pull_request, so the ~15-min deps build does NOT run per-PR. This
+#       workflow auto-populates an empty registry on FreeCAD-start pushes, and
+#       can also run on a weekly cron for an apt security refresh. Rebuild on
+#       demand when install-apt-packages.sh (deps+mcp) or pyproject.toml (mcp)
+#       changes. kaniko needs no Docker daemon; it pushes to the insecure
+#       registry via `insecure: true` + `insecure-registry: registry:5000`.
 #     OPTIONAL (local, from your own machine): ci/build-images.sh -- same two
 #       Dockerfiles, hash-keyed (rolling :24.04 + immutable :24.04-<hash>). Only
 #       works if your Docker daemon can reach the registry endpoint in REGISTRY.
@@ -57,12 +57,11 @@
 #       publishes the registry UI/API on 127.0.0.1:8081. Verify on the agent host
 #       with `curl http://127.0.0.1:8081/v2/`. If the agent is remote, use a TLS
 #       registry or add the LAN IP to that daemon's insecure-registries instead.
-#   FIRST RUN: trigger the build-images workflow manually ONCE to populate
-#       127.0.0.1:8081 BEFORE the first CI run. On that first manual run THIS
-#       workflow also runs (manual triggers both), and its image-steps will RED
-#       (the images are not built yet) -- that is expected; the kaniko steps
-#       succeed and push the images. Subsequent push/PR/tag runs then pull the
-#       now-existing images.
+#   FIRST RUN: build-images.yml runs alongside this workflow on push/tag/manual.
+#       The public-image `ci-images-ready` gate polls `registry:5000` from inside
+#       the Woodpecker job network and blocks the heavy image pulls until both
+#       `:24.04` tags exist. An empty registry therefore waits instead of failing
+#       immediately with "manifest unknown".
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
 #   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:8081/freecad-ci-mcp:24.04.
 #
@@ -130,9 +129,10 @@
 #   * ccache is within-run only: release build reuses debug's cache in the same
 #     run; each run starts cold (no cross-run persistence yet).
 #   * 127.0.0.1:8081/freecad-ci-deps:24.04 & 127.0.0.1:8081/freecad-ci-mcp:24.04
-#     are present in 127.0.0.1:8081 (trigger the .woodpecker/build-images.yml
-#     workflow manually once; see the CI-images section above) and pullable by
-#     the agent (the agent daemon can reach http://127.0.0.1:8081/v2/).
+#     are present in 127.0.0.1:8081 (the .woodpecker/build-images.yml workflow
+#     populates them on push/tag/manual/cron; see the CI-images section above)
+#     and pullable by the agent (the agent daemon can reach
+#     http://127.0.0.1:8081/v2/).
 #
 # Known limitation (NOT hardened here -- flag for first runs):
 #   freecad-integration-tests (FreeCADCmd -t 0) and freecad-e2e (run_gui_tests.py
@@ -252,9 +252,37 @@ steps:
           --report-file /tmp/report/freecad-lint-report.md
         echo "freecad-lint: OK (sync_version + codespell)"
 
+  # Public-image gate: avoid pulling the heavy private CI images before the
+  # image-builder workflow has populated an empty local registry.
+  - name: ci-images-ready
+    image: alpine:3.20
+    depends_on: []
+    commands:
+      - |
+        set -e
+        registry="http://registry:5000"
+        for attempt in $(seq 1 360); do
+          deps_tags="$(wget -qO- "$registry/v2/freecad-ci-deps/tags/list" 2>/dev/null || true)"
+          mcp_tags="$(wget -qO- "$registry/v2/freecad-ci-mcp/tags/list" 2>/dev/null || true)"
+          if echo "$deps_tags" | grep -q '"24.04"' && echo "$mcp_tags" | grep -q '"24.04"'; then
+            echo "CI images ready in local registry"
+            echo "deps: $deps_tags"
+            echo "mcp:  $mcp_tags"
+            exit 0
+          fi
+          if [ "$attempt" -eq 1 ] || [ $((attempt % 30)) -eq 0 ]; then
+            echo "waiting for freecad-ci-deps:24.04 and freecad-ci-mcp:24.04 in $registry ($attempt/360)"
+          fi
+          sleep 10
+        done
+        echo "CI images were not published within 60 minutes"
+        echo "deps tags: ${deps_tags:-<none>}"
+        echo "mcp tags:  ${mcp_tags:-<none>}"
+        exit 1
+
   - name: freecad-configure-debug
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
-    depends_on: [freecad-lint]
+    depends_on: [freecad-lint, ci-images-ready]
     commands:
       - |
         set -e
