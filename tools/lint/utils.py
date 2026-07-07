@@ -47,12 +47,18 @@ def emit_problem_matchers(log_path: str, matcher_filename: str, remove_owner: st
     Emit GitHub Actions problem matcher commands using the given matcher file.
 
     This function will:
-      1. Check if the log file exists.
-      2. Use the RUNNER_WORKSPACE environment variable to construct the matcher path.
-      3. Print the add-matcher command, then the log content, then the remove-matcher command.
+      1. Use the RUNNER_WORKSPACE environment variable to construct the matcher path.
+      2. If the log file exists, print the add-matcher command, then the log
+         content, then the remove-matcher command.
+
+    Problem matchers are a GitHub Actions feature and RUNNER_WORKSPACE is only set
+    on GitHub-hosted runners. On other CI systems (e.g. Woodpecker) it is unset,
+    so return early and emit nothing rather than crashing on os.path.join(None).
     """
+    runner_workspace = os.getenv("RUNNER_WORKSPACE")
+    if runner_workspace is None:
+        return
     if os.path.isfile(log_path):
-        runner_workspace = os.getenv("RUNNER_WORKSPACE")
         matcher_path = os.path.join(
             runner_workspace, "FreeCAD", ".github", "problemMatcher", matcher_filename
         )
