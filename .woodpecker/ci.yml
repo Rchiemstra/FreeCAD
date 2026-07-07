@@ -67,16 +67,13 @@
 #   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:8081/freecad-ci-mcp:24.04.
 #
 # ---------------------------------------------------------------------------
-# ccache: WITHIN-RUN only (no cross-run persistence, no secrets).
+# ccache: persistent Docker named volume (no secrets).
 #   The build steps set CMAKE_*_COMPILER_LAUNCHER=ccache and CCACHE_DIR to a
-#   path on the shared workspace volume. Woodpecker mounts the same workspace
-#   to every step, so the release build reuses the debug build's cache within a
-#   single run. There is no restore/save step, so each run starts cold (the
-#   workspace is re-cloned). To add cross-run persistence later, insert
-#   meltwater/drone-cache restore/save steps with an S3 object-store backend
-#   and creds via `settings:` access_key/secret_key `from_secret` (NOT
-#   `environment` -- the plugin-step schema rejects environment+settings), keyed
-#   on the install-apt-packages.sh hash.
+#   named Docker volume (`freecad-ci-ccache:/woodpecker-cache/ccache`). Woodpecker
+#   mounts the same workspace to every step, so the release build reuses the
+#   debug build's cache within a single run, and the named volume also survives
+#   pipeline timeout/retry. The repo must be trusted for volumes. If Woodpecker
+#   3.14 shows separate trust toggles, enable Trusted Volumes.
 #
 # ---------------------------------------------------------------------------
 # Submodules: clone-all-submodules fetches ALL submodules recursively. The
@@ -127,8 +124,8 @@
 #   * core collected > 0 and e2e collected > 0 (markers actually select tests;
 #     a 0 means a module silently failed to collect and would have been a
 #     green lie under exit-code-only gating).
-#   * ccache is within-run only: release build reuses debug's cache in the same
-#     run; each run starts cold (no cross-run persistence yet).
+#   * ccache is persistent: release reuses debug's cache in the same run, and
+#     later runs reuse the Docker named volume if Trusted Volumes is enabled.
 #   * 127.0.0.1:8081/freecad-ci-deps:24.04 & 127.0.0.1:8081/freecad-ci-mcp:24.04
 #     are present in 127.0.0.1:8081 (the .woodpecker/build-images.yml workflow
 #     populates them on push/tag/manual/cron; see the CI-images section above)
@@ -157,6 +154,15 @@ when:
 
 labels:
   backend: docker
+
+variables:
+  - &freecad_ccache_env
+    CCACHE_DIR: /woodpecker-cache/ccache
+    CCACHE_COMPILERCHECK: content
+    CCACHE_SLOPPINESS: include_file_ctime,include_file_mtime,pch_defines,time_macros
+    CCACHE_MAXSIZE: 8G
+  - &freecad_ccache_volume
+    - freecad-ci-ccache:/woodpecker-cache/ccache
 
 clone:
   - name: clone-all-submodules
@@ -290,9 +296,13 @@ steps:
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
     pull: true
     depends_on: [freecad-lint, ci-images-ready]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
     commands:
       - |
         set -e
+        mkdir -p "$CCACHE_DIR"
+        ccache -M "$CCACHE_MAXSIZE" || true
         cmake --preset debug -G Ninja \
           -DCMAKE_C_COMPILER=/usr/bin/gcc \
           -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
@@ -303,13 +313,14 @@ steps:
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
     pull: true
     depends_on: [freecad-configure-debug]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
     commands:
       - |
         set -e
-        export CCACHE_DIR="$CI_WORKSPACE/ccache"
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_SLOPPINESS="include_file_ctime,include_file_mtime,pch_defines,time_macros"
-        export CCACHE_MAXSIZE=2G
+        mkdir -p "$CCACHE_DIR"
+        export CCACHE_BASEDIR="$CI_WORKSPACE"
+        ccache -M "$CCACHE_MAXSIZE" || true
         ccache -z || true
         ci/run_cmake_build_with_log.sh build/debug debug
         echo "== ccache stats after debug build =="
@@ -357,15 +368,16 @@ steps:
     image: 127.0.0.1:8081/freecad-ci-deps:24.04
     pull: true
     depends_on: [freecad-e2e]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
     when:
       - event: [tag, manual]
     commands:
       - |
         set -e
-        export CCACHE_DIR="$CI_WORKSPACE/ccache"
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_SLOPPINESS="include_file_ctime,include_file_mtime,pch_defines,time_macros"
-        export CCACHE_MAXSIZE=2G
+        mkdir -p "$CCACHE_DIR"
+        export CCACHE_BASEDIR="$CI_WORKSPACE"
+        ccache -M "$CCACHE_MAXSIZE" || true
         echo "== ccache stats before release build =="
         ccache -s || true
         cmake --preset release -G Ninja \
@@ -377,8 +389,7 @@ steps:
         echo "== ccache stats after release build =="
         ccache -s || true
 
-  # ccache is WITHIN-RUN only (no save/restore step) -- see the file header.
-  # The release build reuses the debug build's CCACHE_DIR on the shared workspace.
+  # ccache is a persistent Docker named volume -- see the file header.
 
   # ---------------------------------------------------------------------------
   # freecad-mcp track
