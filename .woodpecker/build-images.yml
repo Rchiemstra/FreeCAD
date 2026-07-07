@@ -35,8 +35,10 @@
 # PREREQ on the AGENT (for ci.yml's pulls, not for this workflow's kaniko push):
 #   the agent Docker daemon must run on the same host that publishes the registry
 #   API at http://127.0.0.1:8081/v2/. kaniko pushes insecure via its own
-#   `insecure: true` + `insecure-registry` settings below, so THIS workflow does
-#   not depend on Docker daemon insecure-registry config.
+#   `insecure: true` + `insecure-registry` settings below. The MCP image also
+#   sets `insecure-pull: true` because its Dockerfile pulls the deps base image
+#   from registry:5000 over HTTP. THIS workflow does not depend on Docker daemon
+#   insecure-registry config.
 #
 # Optional local build (from your own machine): ci/build-images.sh (same two
 # Dockerfiles, hash-keyed tags). From a LAN machine, REGISTRY=192.168.2.23:8081
@@ -107,4 +109,5 @@ steps:
       dockerfile: Dockerfile.ci
       context: tools/mcp/freecad-mcp/
       insecure: true
+      insecure-pull: true
       insecure-registry: registry:5000
