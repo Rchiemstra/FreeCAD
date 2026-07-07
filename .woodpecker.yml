@@ -10,22 +10,34 @@
 # `main` is intentionally NOT triggered.
 #
 # ---------------------------------------------------------------------------
-# External pre-built images (NOT owned by this file -- prerequisites):
-#   freecad-ci-deps:24.04
+# CI images (owned by THIS repo, published as PUBLIC images on ghcr.io so the
+# Woodpecker agent pulls them with NO auth, robust regardless of pull policy):
+#   ghcr.io/rchiemstra/freecad-ci-deps:24.04
 #       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
-#       + ccache + Ninja + xvfb + clang-format + python3.12. Used by every
-#       FreeCAD-track step and as the base for the MCP image. MUST be rebuilt
-#       whenever install-apt-packages.sh changes (key the build on a hash of
-#       that file + the base image tag) and on a weekly schedule for security
-#       updates; then pushed to the registry the agent pulls from.
-#   freecad-ci-mcp:24.04
+#       (Qt6/OCCT/Coin/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
+#       + clang-format + python3-pip + git. Built by ci/docker/freecad-ci-deps.
+#       Dockerfile. Used by every FreeCAD-track BUILD/test step (configure,
+#       debug-build, unit, integration, e2e, release-linux) and as the base for
+#       the MCP image. freecad-lint does NOT use it -- its checks (sync_version
+#       + codespell) are pure Python and run on python:3.12-slim.
+#   ghcr.io/rchiemstra/freecad-ci-mcp:24.04
 #       FROM freecad-ci-deps:24.04 + COPY (pyproject.toml README.md src addon
-#       tests) + `pip install -e ".[dev]"`. Baking the full [dev] install (not
-#       a frozen pytest list) means test deps track pyproject.toml and
-#       hatchling is present, so the runtime `pip install --no-build-isolation
+#       tests) + `pip install -e ".[dev]"`. Same apt Qt6/OCCT/Coin/libpython3.12
+#       as the deps image -> ABI-compatible with the build/debug FreeCAD tree,
+#       and FreeCADCmd's embedded python3.12 is the SAME interpreter whose
+#       site-packages receive the editable install (the interpreter-identity
+#       assumption freecad-mcp-load-preflight verifies). Baking the full [dev]
+#       install (not a frozen pytest list) means test deps track pyproject.toml
+#       and hatchling is present, so the runtime `pip install --no-build-isolation
 #       --no-deps -e .` is network-restricted-safe. The baked /tmp/mcp copy is
-#       dead weight at runtime (only carries deps); the runtime editable
-#       install repoints the finder at the workspace source.
+#       dead weight at runtime (only carries deps); the runtime editable install
+#       repoints the finder at the workspace source. Built by ci/docker/
+#       freecad-ci-mcp.Dockerfile.
+#   Build/publish BOTH with ci/docker/build-images.sh (hash-keyed: rolling
+#   :24.04 + immutable :24.04-<hash>). Rebuild when install-apt-packages.sh
+#   changes (deps + mcp), when pyproject.toml changes (mcp), and on a weekly
+#   security refresh of the apt base (deps + mcp). Requires a one-time
+#   `docker login ghcr.io` with a PAT that has write:packages.
 #   conda-forge image is RETIRED -- core/e2e run against THIS branch's
 #   build/debug FreeCAD (ABI-correct) inside freecad-ci-mcp:24.04.
 #
@@ -92,7 +104,9 @@
 #     green lie under exit-code-only gating).
 #   * ccache is within-run only: release build reuses debug's cache in the same
 #     run; each run starts cold (no cross-run persistence yet).
-#   * freecad-ci-deps:24.04 / freecad-ci-mcp:24.04 are pullable by the agent.
+#   * ghcr.io/rchiemstra/freecad-ci-deps:24.04 & freecad-ci-mcp:24.04 are
+#     published (run ci/docker/build-images.sh once; see header above) and
+#     pullable by the agent.
 #
 # Known limitation (NOT hardened here -- flag for first runs):
 #   freecad-integration-tests (FreeCADCmd -t 0) and freecad-e2e (run_gui_tests.py
@@ -162,40 +176,58 @@ steps:
   # FreeCAD track
   # ---------------------------------------------------------------------------
 
-  # Fast first check: diff-scoped clang-format (C++) + py_compile (Python) on
-  # changed files only -- never lints the whole tree, so it cannot false-red on
-  # pre-existing code. Best-effort base detection: prefers the PR target branch
-  # ref, falls back to HEAD~1 (clone depth is 50), skips cleanly if no history.
+  # Fast first check: pure-Python lints that need NO FreeCAD build env, so this
+  # runs on a tiny python:3.12-slim image (not the heavy deps image) -- it can
+  # pass/fail in seconds while the deps image is still pulling. Two checks:
+  #   1. sync_version -- whole-repo version consistency (stdlib only).
+  #   2. codespell    -- on CHANGED files only (via tools/lint/codespell.py),
+  #                      so it never false-reds on pre-existing spelling in
+  #                      untouched files. Best-effort base detection: the PR
+  #                      target branch (CI_COMMIT_TARGET_BRANCH), else HEAD~1
+  #                      (clone depth is 50); skips cleanly if no base.
   - name: freecad-lint
-    image: freecad-ci-deps:24.04
+    image: python:3.12-slim
     depends_on: [all-submodules-check]
     commands:
       - git config --global --add safe.directory '*' 2>/dev/null || true
       - |
         set -e
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+        mkdir -p /tmp/logs /tmp/report
+        # 1) version consistency (stdlib, whole-repo, no file list needed)
+        python3 src/Tools/sync_version.py --check
+        # 2) codespell on changed files only
         base=""
-        if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then base="HEAD~1"; fi
-        if [ -n "$CI_COMMIT_TARGET" ] && git rev-parse --verify "origin/$CI_COMMIT_TARGET" >/dev/null 2>&1; then
-          base="origin/$CI_COMMIT_TARGET"
+        if [ -n "$CI_COMMIT_TARGET_BRANCH" ]; then
+          git fetch origin "$CI_COMMIT_TARGET_BRANCH" --depth=50 >/dev/null 2>&1 || true
+          if git rev-parse --verify "origin/$CI_COMMIT_TARGET_BRANCH" >/dev/null 2>&1; then
+            base="origin/$CI_COMMIT_TARGET_BRANCH"
+          fi
         fi
-        if [ -z "$base" ]; then echo "no diff base available (shallow clone); skipping lint"; exit 0; fi
-        cpp=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.cpp' '*.cxx' '*.cc' '*.c' '*.h' '*.hpp' '*.hxx' 2>/dev/null || true)
-        py=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.py' 2>/dev/null || true)
-        if [ -n "$cpp" ]; then
-          echo "== clang-format (changed C++) =="
-          echo "$cpp" | xargs -r clang-format --dry-run --Werror || { echo "clang-format found issues"; exit 1; }
-        else
-          echo "no C++ changes to lint"
+        if [ -z "$base" ] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+          base="HEAD~1"
         fi
-        if [ -n "$py" ]; then
-          echo "== py_compile (changed Python) =="
-          echo "$py" | xargs -r python3 -m py_compile || { echo "python syntax error in changed files"; exit 1; }
-        else
-          echo "no Python changes to lint"
+        if [ -z "$base" ]; then
+          echo "no diff base available (shallow clone / tag); codespell skipped"
+          exit 0
         fi
+        changed=$(git diff --name-only --diff-filter=d "$base"...HEAD 2>/dev/null || true)
+        if [ -z "$changed" ]; then
+          echo "no changed files to codespell"
+          exit 0
+        fi
+        echo "== codespell on $(echo "$changed" | wc -l) changed file(s) =="
+        # shellcheck disable=SC2086  # intentional word-splitting into --files
+        python3 tools/lint/codespell.py \
+          --files $changed \
+          --ignore-words .github/codespellignore \
+          --skip "./.git*,*.po,*.ts,*.svg,./src/3rdParty,./src/Base/swig*,./src/Mod/Robot/App/kdl_cp,./src/Mod/Import/App/SCL*,./src/Doc/FreeCAD.uml,./build/" \
+          --log-dir /tmp/logs \
+          --report-file /tmp/report/freecad-lint-report.md
+        echo "freecad-lint: OK (sync_version + codespell)"
 
   - name: freecad-configure-debug
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-lint]
     commands:
       - |
@@ -205,7 +237,7 @@ steps:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
   - name: freecad-debug-build
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-configure-debug]
     commands:
       - |
@@ -220,7 +252,7 @@ steps:
         ccache -s || true
 
   - name: freecad-unit-tests
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-debug-build]
     commands:
       - |
@@ -239,7 +271,7 @@ steps:
         fi
 
   - name: freecad-integration-tests
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-unit-tests]
     commands:
       - |
@@ -247,7 +279,7 @@ steps:
         timeout 1200 build/debug/bin/FreeCADCmd -t 0
 
   - name: freecad-e2e
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-integration-tests]
     commands:
       - |
@@ -255,7 +287,7 @@ steps:
         xvfb-run -a -s "-screen 0 1024x768x24" python3 .github/scripts/run_gui_tests.py build/debug
 
   - name: freecad-release-linux
-    image: freecad-ci-deps:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-deps:24.04
     depends_on: [freecad-e2e]
     when:
       - event: [tag, manual]
@@ -312,7 +344,7 @@ steps:
   # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
-    image: freecad-ci-mcp:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-mcp:24.04
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
       - |
@@ -329,7 +361,7 @@ steps:
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
   # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
   - name: freecad-mcp-core-tests
-    image: freecad-ci-mcp:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-mcp:24.04
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: core
@@ -347,7 +379,7 @@ steps:
         "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
 
   - name: freecad-mcp-e2e
-    image: freecad-ci-mcp:24.04
+    image: ghcr.io/rchiemstra/freecad-ci-mcp:24.04
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: e2e
