@@ -24,6 +24,7 @@
 
 #include <Geom_Conic.hxx>
 
+#include <cstring>
 
 #include <Base/GeometryPyCXX.h>
 #include <Base/VectorPy.h>
@@ -228,12 +229,27 @@ void ConicPy::setYAxis(Py::Object arg)
     }
 }
 
-PyObject* ConicPy::getCustomAttributes(const char*) const
+PyObject* ConicPy::getCustomAttributes(const char* attr) const
 {
+    // P8: str(conic) prints "Direction" but the canonical attribute is "Axis".
+    // Expose "Direction" and "Normal" as read aliases for "Axis" so the string
+    // representation and the attribute API agree. Applies to Part.Circle,
+    // Part.Ellipse and the ArcOf* conics.
+    if (attr && (std::strcmp(attr, "Direction") == 0 || std::strcmp(attr, "Normal") == 0)) {
+        Py::Object axis = getAxis();
+        PyObject* ret = axis.ptr();
+        Py_INCREF(ret);  // hand the caller a new reference; the Py::Object temporary will decref
+        return ret;
+    }
     return nullptr;
 }
 
-int ConicPy::setCustomAttributes(const char*, PyObject*)
+int ConicPy::setCustomAttributes(const char* attr, PyObject* value)
 {
+    // P8: "Direction"/"Normal" write aliases for "Axis".
+    if (attr && (std::strcmp(attr, "Direction") == 0 || std::strcmp(attr, "Normal") == 0)) {
+        setAxis(Py::Object(value));  // borrows; raises TypeError/RuntimeError on bad input
+        return 1;
+    }
     return 0;
 }
