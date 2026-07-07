@@ -56,9 +56,10 @@
 #     steps without `depends_on` (or with `depends_on: []`) run immediately in
 #     parallel after clone.
 #   * A step whose `depends_on` target was filtered out by a `when` condition
-#     is itself SKIPPED unless that dependency is marked `optional: true`.
-#     This is why freecad-release-linux (tag/manual only) is an optional dep of
-#     save-ccache.
+#     is itself SKIPPED (this Woodpecker version does NOT support the
+#     `{name: ..., optional: true}` object form in depends_on -- only strings).
+#     ccache save therefore uses TWO steps: save-ccache (after debug-build, all
+#     events) and save-ccache-release (after release-linux, tag/manual only).
 #   * A failed dependency skips its dependents (desired: failures gate
 #     downstream work).
 #
@@ -302,15 +303,43 @@ steps:
         echo "== ccache stats after release build =="
         ccache -s || true
 
-  # CCACHE save (best-effort). Depends on debug-build (always runs) and on
-  # release-linux as OPTIONAL so PR/push runs still save after debug-build
-  # while tag/manual runs save after the release build too.
+  # CCACHE save (best-effort). Two steps (the `{name:.., optional:true}` form
+  # is unsupported on this Woodpecker version, so depends_on is strings only):
+  #   * save-ccache        : after debug-build on EVERY event -- PR/push runs
+  #                          warm run N+1 (the common path).
+  #   * save-ccache-release: after release-linux, tag/manual only -- tag runs
+  #                          also persist release's contributions (release
+  #                          rides debug's cache within the run via the shared
+  #                          CCACHE_DIR, then re-saves the union). On tag runs
+  #                          it runs later and overwrites save-ccache's upload.
   - name: save-ccache
     image: meltwater/drone-cache
-    depends_on:
-      - freecad-debug-build
-      - name: freecad-release-linux
-        optional: true
+    depends_on: [freecad-debug-build]
+    failure: ignore
+    environment:
+      AWS_ACCESS_KEY_ID:
+        from_secret: cache_aws_access_key_id
+      AWS_SECRET_ACCESS_KEY:
+        from_secret: cache_aws_secret_access_key
+    settings:
+      rebuild: true
+      backend: s3
+      bucket:
+        from_secret: cache_s3_bucket
+      region:
+        from_secret: cache_s3_region
+      endpoint:
+        from_secret: cache_s3_endpoint
+      path_style: true
+      mount:
+        - ccache
+      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
+
+  - name: save-ccache-release
+    image: meltwater/drone-cache
+    depends_on: [freecad-release-linux]
+    when:
+      - event: [tag, manual]
     failure: ignore
     environment:
       AWS_ACCESS_KEY_ID:
