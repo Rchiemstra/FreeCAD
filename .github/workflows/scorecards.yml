@@ -4,15 +4,17 @@
 
 name: Scorecard supply-chain security
 on:
+  workflow_dispatch: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
   # For Branch-Protection check. Only the default branch is supported. See
   # https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection
-  branch_protection_rule:
+  # branch_protection_rule:
   # To guarantee Maintained check is occasionally updated. See
   # https://github.com/ossf/scorecard/blob/main/docs/checks.md#maintained
-  schedule:
-    - cron: '20 7 * * 2'
-  push:
-    branches: ["main"]
+  # schedule:
+  #   - cron: '20 7 * * 2'
+  # push:
+  #   branches: ["main"]
 
 # Declare default permissions as read only.
 permissions: read-all

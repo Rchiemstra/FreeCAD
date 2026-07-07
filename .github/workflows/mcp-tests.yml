@@ -10,16 +10,17 @@
 name: MCP Tests
 
 on:
-  pull_request:
-    paths:
-      - "tools/mcp/freecad-mcp/**"
-      - "src/Mod/PartDesign/App/**"
-      - "src/Mod/Part/App/**"
-      - "src/Mod/Sketcher/App/**"
-      - "src/App/Document.cpp"
-      - ".github/workflows/mcp-tests.yml"
-  push:
-    branches: [ FreeCAD-start ]
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # pull_request:
+  #   paths:
+  #     - "tools/mcp/freecad-mcp/**"
+  #     - "src/Mod/PartDesign/App/**"
+  #     - "src/Mod/Part/App/**"
+  #     - "src/Mod/Sketcher/App/**"
+  #     - "src/App/Document.cpp"
+  #     - ".github/workflows/mcp-tests.yml"
+  # push:
+  #   branches: [ FreeCAD-start ]
   workflow_dispatch:
 
 permissions:
