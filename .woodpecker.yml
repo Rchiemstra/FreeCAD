@@ -1,0 +1,418 @@
+# =============================================================================
+# FreeCAD Woodpecker CI (Linux) -- FreeCAD-start branch
+# =============================================================================
+# Triggers (top-level `when` below):
+#   * manual, tag                        (any branch; tags ignore branch filter)
+#   * push to FreeCAD-start              (branch filter excludes main)
+#   * pull_request targeting FreeCAD-start (Woodpecker `branch` matches the PR
+#                                          target branch, so this also excludes
+#                                          PRs into main)
+# `main` is intentionally NOT triggered.
+#
+# ---------------------------------------------------------------------------
+# External pre-built images (NOT owned by this file -- prerequisites):
+#   freecad-ci-deps:24.04
+#       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
+#       + ccache + Ninja + xvfb + clang-format + python3.12. Used by every
+#       FreeCAD-track step and as the base for the MCP image. MUST be rebuilt
+#       whenever install-apt-packages.sh changes (key the build on a hash of
+#       that file + the base image tag) and on a weekly schedule for security
+#       updates; then pushed to the registry the agent pulls from.
+#   freecad-ci-mcp:24.04
+#       FROM freecad-ci-deps:24.04 + COPY (pyproject.toml README.md src addon
+#       tests) + `pip install -e ".[dev]"`. Baking the full [dev] install (not
+#       a frozen pytest list) means test deps track pyproject.toml and
+#       hatchling is present, so the runtime `pip install --no-build-isolation
+#       --no-deps -e .` is network-restricted-safe. The baked /tmp/mcp copy is
+#       dead weight at runtime (only carries deps); the runtime editable
+#       install repoints the finder at the workspace source.
+#   conda-forge image is RETIRED -- core/e2e run against THIS branch's
+#   build/debug FreeCAD (ABI-correct) inside freecad-ci-mcp:24.04.
+#
+# ---------------------------------------------------------------------------
+# ccache: meltwater/drone-cache with an S3 (object-store) backend.
+#   The Trusted-flag-free property REQUIRES an object-store backend with
+#   credentials supplied as secrets. The filesystem backend would need a host
+#   mount -> Trusted. Required secrets:
+#     cache_aws_access_key_id, cache_aws_secret_access_key,
+#     cache_s3_bucket, cache_s3_region, cache_s3_endpoint
+#   For AWS S3 (not a custom endpoint) set path_style: false and drop the
+#   endpoint secret. restore-ccache and save-ccache are `failure: ignore` --
+#   a cache miss/save error must not red the pipeline.
+#
+# ---------------------------------------------------------------------------
+# Submodules: clone-all-submodules fetches ALL submodules recursively. The
+# all-submodules-check gate then verifies every submodule is initialized, at
+# the expected commit, and non-empty, and hard-fails on any of the 5 required
+# submodules (OndselSolver, tests/lib, GSL, AddonManager, freecad-mcp).
+# Submodule GitHub Actions are NOT triggered by this pipeline: Woodpecker
+# clones submodules read-only and neither pushes to nor dispatches events into
+# the submodule repos. Keep the submodules' own GH Actions off on the
+# FreeCAD-start line of work.
+#
+# ---------------------------------------------------------------------------
+# DAG / skip-propagation reminders:
+#   * Setting `depends_on` on ANY step flips the whole workflow to DAG mode;
+#     steps without `depends_on` (or with `depends_on: []`) run immediately in
+#     parallel after clone.
+#   * A step whose `depends_on` target was filtered out by a `when` condition
+#     is itself SKIPPED unless that dependency is marked `optional: true`.
+#     This is why freecad-release-linux (tag/manual only) is an optional dep of
+#     save-ccache.
+#   * A failed dependency skips its dependents (desired: failures gate
+#     downstream work).
+#
+# ---------------------------------------------------------------------------
+# MCP core/e2e verdict (the green-but-lying defence):
+#   core/e2e run pytest via FreeCADCmd using ci/run_freecad_tests.py, which
+#   writes ci_rc_${MARKER}.txt = 0 only when the JUnit report shows
+#     errors == 0 AND failures == 0 AND skipped == 0 AND collected > 0.
+#   (`failures == 0` is included on top of the errors/skipped/collected triple
+#   as defence-in-depth: if FreeCADCmd swallows pytest's non-zero exit code,
+#   the caller's `rc=$?` short-circuit would miss a plain failure, so the JUnit
+#   verdict must catch it. `skipped == 0` catches `pytest.importorskip` skipping
+#   a whole module when FreeCAD is mis-loaded -- pytest exits 0 there, so
+#   FreeCADCmd's exit code would report green while validating nothing.)
+#   The step's LAST command is `exit "$(cat ci_rc_${MARKER}.txt)"` so the
+#   verdict file -- not FreeCADCmd's untrusted zero exit -- decides status.
+#
+#   core tests carry `xfail(strict=True)` for still-open upstream bugs. Under
+#   this verdict an expected-fail (skipped) OR an unexpected-pass (failure)
+#   makes core RED. core can only go green once each xfail marker is removed
+#   in-branch after confirming the fix. That is intentional: no green while a
+#   known regression is flagged xfail.
+#
+# ---------------------------------------------------------------------------
+# First run -- verify these before trusting a green:
+#   * all-submodules-check passes (5 required submodules non-empty + .git).
+#   * freecad-mcp-load-preflight prints PREFLIGHT_OK (pytest importable under
+#     FreeCADCmd -- the interpreter-identity assumption).
+#   * core collected > 0 and e2e collected > 0 (markers actually select tests;
+#     a 0 means a module silently failed to collect and would have been a
+#     green lie under exit-code-only gating).
+#   * ccache: restore logs a hit on the second run; first run is cold (ok).
+#   * freecad-ci-deps:24.04 / freecad-ci-mcp:24.04 are pullable by the agent.
+#
+# Known limitation (NOT hardened here -- flag for first runs):
+#   freecad-integration-tests (FreeCADCmd -t 0) and freecad-e2e (run_gui_tests.py
+#   driving `FreeCAD -t <mod>`) rely on FreeCAD's `-t` exit code. FreeCADCmd can
+#   swallow sys.exit/exceptions and exit 0 (the same reason the MCP core/e2e
+#   steps use a JUnit-verdict file instead of the exit code). If first runs show
+#   these steps green while the FreeCAD log reports failures, apply the same
+#   verdict-file pattern (parse the TestFramework output / gtest json) -- do NOT
+#   trust a green there until the exit-code propagation is confirmed.
+#
+# Windows is a SEPARATE workflow (its own agent, clone, libpack, msbuild) --
+# see doc/woodpecker-windows-appendix.yml. It is deliberately NOT part of this
+# Linux workflow: a step-level platform filter would just skip on a Linux
+# agent, not route to a Windows one, and it cannot share this workspace.
+# =============================================================================
+
+when:
+  - event: [manual, tag]
+  - event: [push, pull_request]
+    branch: FreeCAD-start
+
+labels:
+  backend: docker
+
+clone:
+  - name: clone-all-submodules
+    image: woodpeckerci/plugin-git
+    settings:
+      recursive: true
+      tags: true
+      depth: 50
+
+steps:
+  # ---------------------------------------------------------------------------
+  # GATE: every submodule initialized, at expected commit, non-empty; the 5
+  # required submodules hard-fail if missing/empty/uninitialized.
+  # ---------------------------------------------------------------------------
+  - name: all-submodules-check
+    image: alpine/git
+    depends_on: []
+    commands:
+      - git config --global --add safe.directory '*'
+      - |
+        set -e
+        echo "== git submodule status =="
+        git submodule status > /tmp/sub_status.txt
+        cat /tmp/sub_status.txt
+        # '-' not initialized, '+' wrong commit, 'U' merge conflict
+        if grep -E '^-|^\+|^U' /tmp/sub_status.txt; then
+          echo "ERROR: a submodule is not initialized / wrong commit / in conflict"
+          exit 1
+        fi
+        required="src/3rdParty/OndselSolver tests/lib src/3rdParty/GSL src/Mod/AddonManager tools/mcp/freecad-mcp"
+        for r in $required; do
+          if [ ! -d "$r" ] || [ -z "$(ls -A "$r" 2>/dev/null)" ]; then
+            echo "ERROR: required submodule $r missing or empty"
+            exit 1
+          fi
+          if [ ! -f "$r/.git" ] && [ ! -d "$r/.git" ]; then
+            echo "ERROR: required submodule $r not initialized (no .git)"
+            exit 1
+          fi
+        done
+        echo "all-submodules-check: OK (every submodule initialized at expected commit)"
+
+  # ---------------------------------------------------------------------------
+  # CCACHE restore (best-effort). Runs immediately after clone, in parallel
+  # with the fast checks. Keyed on the apt-deps script so a deps-image bump
+  # busts the cache; shared across branches.
+  # ---------------------------------------------------------------------------
+  - name: restore-ccache
+    image: meltwater/drone-cache
+    depends_on: []
+    failure: ignore
+    environment:
+      AWS_ACCESS_KEY_ID:
+        from_secret: cache_aws_access_key_id
+      AWS_SECRET_ACCESS_KEY:
+        from_secret: cache_aws_secret_access_key
+    settings:
+      restore: true
+      backend: s3
+      bucket:
+        from_secret: cache_s3_bucket
+      region:
+        from_secret: cache_s3_region
+      endpoint:
+        from_secret: cache_s3_endpoint
+      path_style: true
+      mount:
+        - ccache
+      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
+
+  # ---------------------------------------------------------------------------
+  # FreeCAD track
+  # ---------------------------------------------------------------------------
+
+  # Fast first check: diff-scoped clang-format (C++) + py_compile (Python) on
+  # changed files only -- never lints the whole tree, so it cannot false-red on
+  # pre-existing code. Best-effort base detection: prefers the PR target branch
+  # ref, falls back to HEAD~1 (clone depth is 50), skips cleanly if no history.
+  - name: freecad-lint
+    image: freecad-ci-deps:24.04
+    depends_on: [all-submodules-check]
+    commands:
+      - git config --global --add safe.directory '*' 2>/dev/null || true
+      - |
+        set -e
+        base=""
+        if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then base="HEAD~1"; fi
+        if [ -n "$CI_COMMIT_TARGET" ] && git rev-parse --verify "origin/$CI_COMMIT_TARGET" >/dev/null 2>&1; then
+          base="origin/$CI_COMMIT_TARGET"
+        fi
+        if [ -z "$base" ]; then echo "no diff base available (shallow clone); skipping lint"; exit 0; fi
+        cpp=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.cpp' '*.cxx' '*.cc' '*.c' '*.h' '*.hpp' '*.hxx' 2>/dev/null || true)
+        py=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.py' 2>/dev/null || true)
+        if [ -n "$cpp" ]; then
+          echo "== clang-format (changed C++) =="
+          echo "$cpp" | xargs -r clang-format --dry-run --Werror || { echo "clang-format found issues"; exit 1; }
+        else
+          echo "no C++ changes to lint"
+        fi
+        if [ -n "$py" ]; then
+          echo "== py_compile (changed Python) =="
+          echo "$py" | xargs -r python3 -m py_compile || { echo "python syntax error in changed files"; exit 1; }
+        else
+          echo "no Python changes to lint"
+        fi
+
+  - name: freecad-configure-debug
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-lint, restore-ccache]
+    commands:
+      - |
+        set -e
+        cmake --preset debug -G Ninja \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+  - name: freecad-debug-build
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-configure-debug]
+    commands:
+      - |
+        set -e
+        export CCACHE_DIR="$CI_WORKSPACE/ccache"
+        export CCACHE_COMPILERCHECK=content
+        export CCACHE_SLOPPINESS="include_file_ctime,include_file_mtime,pch_defines,time_macros"
+        export CCACHE_MAXSIZE=2G
+        ccache -z || true
+        cmake --build build/debug -j$(nproc)
+        echo "== ccache stats after debug build =="
+        ccache -s || true
+
+  - name: freecad-unit-tests
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-debug-build]
+    commands:
+      - |
+        set -e
+        mkdir -p /tmp/gtest
+        rc=0
+        for t in build/debug/tests/*_tests_run; do
+          [ -x "$t" ] || continue
+          name=$(basename "$t")
+          echo "== C++ gtest: $name =="
+          "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1 || rc=1
+        done
+        if [ "$rc" -ne 0 ]; then
+          echo "one or more C++ gtest binaries failed; logs in /tmp/gtest/*.log"
+          exit 1
+        fi
+
+  - name: freecad-integration-tests
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-unit-tests]
+    commands:
+      - |
+        set -e
+        timeout 1200 build/debug/bin/FreeCADCmd -t 0
+
+  - name: freecad-e2e
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-integration-tests]
+    commands:
+      - |
+        set -e
+        xvfb-run -a -s "-screen 0 1024x768x24" python3 .github/scripts/run_gui_tests.py build/debug
+
+  - name: freecad-release-linux
+    image: freecad-ci-deps:24.04
+    depends_on: [freecad-e2e]
+    when:
+      - event: [tag, manual]
+    commands:
+      - |
+        set -e
+        export CCACHE_DIR="$CI_WORKSPACE/ccache"
+        export CCACHE_COMPILERCHECK=content
+        export CCACHE_SLOPPINESS="include_file_ctime,include_file_mtime,pch_defines,time_macros"
+        export CCACHE_MAXSIZE=2G
+        echo "== ccache stats before release build =="
+        ccache -s || true
+        cmake --preset release -G Ninja \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        cmake --build build/release -j$(nproc)
+        echo "== ccache stats after release build =="
+        ccache -s || true
+
+  # CCACHE save (best-effort). Depends on debug-build (always runs) and on
+  # release-linux as OPTIONAL so PR/push runs still save after debug-build
+  # while tag/manual runs save after the release build too.
+  - name: save-ccache
+    image: meltwater/drone-cache
+    depends_on:
+      - freecad-debug-build
+      - name: freecad-release-linux
+        optional: true
+    failure: ignore
+    environment:
+      AWS_ACCESS_KEY_ID:
+        from_secret: cache_aws_access_key_id
+      AWS_SECRET_ACCESS_KEY:
+        from_secret: cache_aws_secret_access_key
+    settings:
+      rebuild: true
+      backend: s3
+      bucket:
+        from_secret: cache_s3_bucket
+      region:
+        from_secret: cache_s3_region
+      endpoint:
+        from_secret: cache_s3_endpoint
+      path_style: true
+      mount:
+        - ccache
+      cache_key: 'freecad-ccache-{{ checksum "package/ubuntu/install-apt-packages.sh" }}'
+
+  # ---------------------------------------------------------------------------
+  # freecad-mcp track
+  # ---------------------------------------------------------------------------
+
+  # Fast first check: Python syntax smoke for the MCP package (no install).
+  - name: freecad-mcp-lint
+    image: python:3.12
+    depends_on: [all-submodules-check]
+    commands:
+      - |
+        set -e
+        cd tools/mcp/freecad-mcp
+        python -m compileall -q src tests
+
+  - name: freecad-mcp-unit-tests
+    image: python:3.12
+    depends_on: [freecad-mcp-lint]
+    commands:
+      - |
+        set -e
+        cd tools/mcp/freecad-mcp
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+        pytest -m unit -ra --tb=short --junitxml=results_unit.xml
+
+  # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
+  # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
+  # FreeCAD, so FreeCADCmd is invoked by ABSOLUTE path from the workspace build
+  # tree ($CI_WORKSPACE/build/debug/bin/FreeCADCmd) -- a relative path would
+  # resolve under tools/mcp/freecad-mcp/ after the `cd`. Verifies the
+  # interpreter-identity assumption (pytest + freecad_mcp importable under
+  # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
+  # code is not trusted to flag an import failure.
+  - name: freecad-mcp-load-preflight
+    image: freecad-ci-mcp:24.04
+    depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
+    commands:
+      - |
+        set -e
+        cd tools/mcp/freecad-mcp
+        pip install --no-build-isolation --no-deps -e .
+        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
+        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        "$FC" ci/preflight_imports.py < /dev/null > /tmp/pf.log 2>&1 || true
+        cat /tmp/pf.log
+        grep -q "PREFLIGHT_OK" /tmp/pf.log || { echo "preflight imports failed (see log above)"; exit 1; }
+
+  # core/e2e: gated push/tag/manual (not PR). Per-marker output files + rm -f so
+  # parallel/sequential runs cannot read a stale or interleaved verdict. The
+  # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
+  - name: freecad-mcp-core-tests
+    image: freecad-ci-mcp:24.04
+    depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
+    environment:
+      MARKER: core
+    when:
+      - event: [push, tag, manual]
+    commands:
+      - |
+        set -e
+        cd tools/mcp/freecad-mcp
+        pip install --no-build-isolation --no-deps -e .
+        rm -f ci_rc_${MARKER}.txt results_${MARKER}.xml
+        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
+        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        set +e
+        "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
+
+  - name: freecad-mcp-e2e
+    image: freecad-ci-mcp:24.04
+    depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
+    environment:
+      MARKER: e2e
+    when:
+      - event: [push, tag, manual]
+    commands:
+      - |
+        set -e
+        cd tools/mcp/freecad-mcp
+        pip install --no-build-isolation --no-deps -e .
+        rm -f ci_rc_${MARKER}.txt results_${MARKER}.xml
+        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
+        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        set +e
+        "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"

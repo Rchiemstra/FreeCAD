@@ -12,6 +12,8 @@
 !/.packit.yaml
 !/.pre-commit-config.yaml
 !/.pylintrc
+!/.woodpecker.yml
+!/.woodpecker/
 !/contrib/.vscode/
 *.clangd
 *.DS_Store
