@@ -15,6 +15,7 @@ echo "deb [signed-by=/usr/share/keyrings/neon-keyring.gpg] http://archive.neon.k
 sudo apt-get update -qq
 
 packages=(
+  build-essential
   ccache
   cmake
   doxygen

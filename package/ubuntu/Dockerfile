@@ -4,8 +4,9 @@
 # runs install-apt-packages.sh (sits next to this Dockerfile), which adds the
 # KDE Neon Qt6/PySide6 apt repo and installs the full FreeCAD build dependency
 # set (Qt6, OCCT, Coin, Python3.12 dev, Boost, VTK, PCL, Eigen, Xerces, etc.)
-# plus ccache, ninja, cmake and xvfb. On top of that it adds clang-format,
-# python3-pip and git which the CI steps need but the apt script does not pull in.
+# plus build-essential, ccache, ninja, cmake and xvfb. On top of that it adds
+# clang-format, python3-pip and git which the CI steps need but the apt script
+# does not pull in.
 #
 # This is the image every FreeCAD-track build/test step runs in, AND the base for
 # freecad-ci-mcp:24.04 (so the MCP live-test image is ABI-compatible with the

@@ -287,6 +287,8 @@ steps:
       - |
         set -e
         cmake --preset debug -G Ninja \
+          -DCMAKE_C_COMPILER=/usr/bin/gcc \
+          -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -355,6 +357,8 @@ steps:
         echo "== ccache stats before release build =="
         ccache -s || true
         cmake --preset release -G Ninja \
+          -DCMAKE_C_COMPILER=/usr/bin/gcc \
+          -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
           -DCMAKE_C_COMPILER_LAUNCHER=ccache \
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         cmake --build build/release -j$(nproc)
