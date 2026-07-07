@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Build and publish the FreeCAD Woodpecker CI images as PUBLIC images on ghcr.io.
+# Build and publish the FreeCAD Woodpecker CI images to the local registry
+# (default registry:5000 -- the same registry the Woodpecker agent pulls from).
 #
 #   freecad-ci-deps:24.04   -- Ubuntu 24.04 + package/ubuntu/install-apt-packages.sh
 #                              + ccache/ninja/xvfb/clang-format/python3-pip/git.
 #   freecad-ci-mcp:24.04    -- FROM freecad-ci-deps:24.04 + pip install -e ".[dev]"
 #                              (the freecad-mcp package + pytest/hatchling/mcp[cli]).
 #
+# Dockerfiles live in their build-context dirs (so the context stays tiny, no
+# .dockerignore needed, and kaniko can build them with the same context):
+#   package/ubuntu/Dockerfile               (context: package/ubuntu/)
+#   tools/mcp/freecad-mcp/Dockerfile.ci     (context: tools/mcp/freecad-mcp/)
+#
 # Each image is tagged twice:
-#   :24.04              -- rolling; what .woodpecker.yml references (always latest).
+#   :24.04              -- rolling; what .woodpecker/ci.yml references (always latest).
 #   :24.04-<hash>       -- immutable; keyed on the file that defines the image
 #                          content (install-apt-packages.sh for deps, pyproject.toml
 #                          for mcp). Use for traceability / rollback.
@@ -16,24 +22,27 @@
 #   * package/ubuntu/install-apt-packages.sh changes  -> rebuild deps (and mcp).
 #   * tools/mcp/freecad-mcp/pyproject.toml changes    -> rebuild mcp.
 #   * a weekly security refresh of the apt base       -> rebuild deps (and mcp).
-# (A scheduled job can call this script on a timer; until then run it by hand.)
 #
-# PREREQUISITE: authenticate to ghcr.io once per shell (needs a GitHub PAT with
-# `write:packages`):
-#   echo "$GHCR_TOKEN" | docker login ghcr.io -u rchiemstra --password-stdin
+# NOTE: this script is for LOCAL/optional builds. The PRIMARY build path is the
+# .woodpecker/build-images.yml kaniko workflow, which builds on the Woodpecker
+# agent (where registry:5000 resolves). Use this script only if you want to build
+# from your own machine -- which requires your Docker daemon to reach registry:5000
+# AND to list it under insecure-registries (it is an HTTP registry):
+#   Settings -> Docker Engine -> {"insecure-registries": ["registry:5000"]}
 #
-# Usage:
-#   ci/docker/build-images.sh            # build + push deps, then mcp
-#   ci/docker/build-images.sh deps       # only deps
-#   ci/docker/build-images.sh mcp        # only mcp (deps must already exist/pushed)
-#   ci/docker/build-images.sh --no-push  # build locally, don't push
+# Usage (from the repo root):
+#   ci/build-images.sh            # build + push deps, then mcp
+#   ci/build-images.sh deps       # only deps
+#   ci/build-images.sh mcp        # only mcp (deps must already exist)
+#   ci/build-images.sh --no-push  # build locally, don't push
 #
 # Overrides (env):
-#   REGISTRY=ghcr.io  NS=rchiemstra   # image namespace
+#   REGISTRY=registry:5000   # registry host:port
+#   NS=                      # optional namespace segment (default none -> registry/<repo>:tag)
 set -euo pipefail
 
-REGISTRY="${REGISTRY:-ghcr.io}"
-NS="${NS:-rchiemstra}"
+REGISTRY="${REGISTRY:-registry:5000}"
+NS="${NS:-}"            # default: no namespace (image = registry/<repo>:tag)
 PUSH=1
 TARGETS=()
 
@@ -46,6 +55,11 @@ for arg in "$@"; do
 done
 if [ "${#TARGETS[@]}" -eq 0 ]; then TARGETS=(deps mcp); fi
 
+# image_name <repo> -> REGISTRY/[NS/]repo
+image_name() {
+  if [ -n "${NS}" ]; then echo "${REGISTRY}/${NS}/$1"; else echo "${REGISTRY}/$1"; fi
+}
+
 short_hash() {  # short_hash <file>
   sha256sum "$1" | awk '{print substr($1,1,12)}'
 }
@@ -53,10 +67,10 @@ short_hash() {  # short_hash <file>
 build_deps() {
   local script="package/ubuntu/install-apt-packages.sh"
   local h; h="$(short_hash "$script")"
-  local rolling="${REGISTRY}/${NS}/freecad-ci-deps:24.04"
-  local pinned="${REGISTRY}/${NS}/freecad-ci-deps:24.04-${h}"
+  local rolling; rolling="$(image_name freecad-ci-deps):24.04"
+  local pinned;  pinned="$(image_name freecad-ci-deps):24.04-${h}"
   echo "==> freecad-ci-deps  (key=${h}  script=${script})"
-  docker build -f ci/docker/freecad-ci-deps.Dockerfile \
+  docker build -f package/ubuntu/Dockerfile \
     -t "$rolling" -t "$pinned" \
     package/ubuntu/
   if [ "$PUSH" -eq 1 ]; then
@@ -69,11 +83,11 @@ build_deps() {
 build_mcp() {
   local pf="tools/mcp/freecad-mcp/pyproject.toml"
   local h; h="$(short_hash "$pf")"
-  local rolling="${REGISTRY}/${NS}/freecad-ci-mcp:24.04"
-  local pinned="${REGISTRY}/${NS}/freecad-ci-mcp:24.04-${h}"
+  local rolling; rolling="$(image_name freecad-ci-mcp):24.04"
+  local pinned;  pinned="$(image_name freecad-ci-mcp):24.04-${h}"
   echo "==> freecad-ci-mcp  (key=${h}  pyproject=${pf})"
   # FROM the (just-built/pushed) deps rolling tag, so ABI tracks the same base.
-  docker build -f ci/docker/freecad-ci-mcp.Dockerfile \
+  docker build -f tools/mcp/freecad-mcp/Dockerfile.ci \
     -t "$rolling" -t "$pinned" \
     tools/mcp/freecad-mcp/
   if [ "$PUSH" -eq 1 ]; then

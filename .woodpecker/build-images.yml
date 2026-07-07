@@ -1,0 +1,103 @@
+# =============================================================================
+# FreeCAD Woodpecker CI -- IMAGE BUILDER workflow
+# =============================================================================
+# Builds and pushes the two CI images to the LOCAL registry (registry:5000,
+# insecure HTTP) that .woodpecker/ci.yml pulls from:
+#   registry:5000/freecad-ci-deps:24.04   <- package/ubuntu/Dockerfile
+#   registry:5000/freecad-ci-mcp:24.04    <- tools/mcp/freecad-mcp/Dockerfile.ci
+#                                             (FROM registry:5000/freecad-ci-deps:24.04)
+#
+# Why a SEPARATE workflow (not steps in ci.yml):
+#   * The deps image build runs `package/ubuntu/install-apt-packages.sh` (~15 min,
+#     apt install of the full FreeCAD build deps). It must NOT run per-PR. Gating
+#     it to manual+cron keeps PR wall-clock low; ci.yml just pulls the result.
+#   * kaniko builds on the Woodpecker agent, where `registry:5000` already
+#     resolves (same network as the girogroen deploy). No Docker daemon needed
+#     (kaniko), no DinD socket, no Trusted flag.
+#
+# Triggers (top-level `when`):
+#   * manual   -- trigger by hand to (re)build the images (first run, or whenever
+#                 install-apt-packages.sh / pyproject.toml / a Dockerfile changes).
+#   * cron     -- schedule a weekly rebuild in the Woodpecker UI for an apt
+#                 security refresh (event: cron). Not configured by this file.
+# It does NOT run on push / pull_request / tag -- those run .woodpecker/ci.yml,
+# which pulls whatever image is currently in registry:5000.
+#
+# NOTE on manual: a manual trigger runs BOTH workflows (this one AND ci.yml). On
+# the FIRST manual run ci.yml's image-steps will RED (images not built yet) --
+# that is expected; the kaniko steps here succeed and populate registry:5000.
+# After that, push/PR/tag runs pull the existing images.
+#
+# PREREQ on the AGENT (for ci.yml's pulls, not for this workflow's kaniko push):
+#   the agent's Docker daemon must list `registry:5000` in insecure-registries.
+#   kaniko pushes insecure via its own `insecure: true` + `insecure-registry`
+#   settings below, so THIS workflow does not depend on the daemon config.
+#
+# Optional local build (from your own machine): ci/build-images.sh (same two
+# Dockerfiles, hash-keyed tags) -- only if your Docker daemon can reach
+# registry:5000 and lists it under insecure-registries.
+# =============================================================================
+
+when:
+  - event: [manual, cron]
+
+labels:
+  backend: docker
+
+# Non-recursive, shallow clone: the deps build only needs package/ubuntu/ and the
+# mcp build only needs tools/mcp/freecad-mcp/ (fetched on demand below). Avoids
+# cloning the large submodules (OndselSolver, tests/lib, GSL, AddonManager).
+clone:
+  - name: clone-shallow
+    image: woodpeckerci/plugin-git
+    settings:
+      recursive: false
+      tags: true
+      depth: 1
+
+steps:
+  # Fetch ONLY the freecad-mcp submodule (the mcp image build context). The deps
+  # image build does not need any submodule.
+  - name: init-mcp-submodule
+    image: alpine/git
+    depends_on: []
+    commands:
+      - git config --global --add safe.directory '*'
+      - git submodule update --init --depth 1 tools/mcp/freecad-mcp
+
+  # Build + push freecad-ci-deps:24.04. Context is package/ubuntu/ (tiny); the
+  # Dockerfile lives there as `Dockerfile`. Runs in parallel with init-mcp-submodule
+  # (deps does not need the submodule).
+  - name: build-deps-image
+    image: woodpeckerci/plugin-kaniko
+    pull: true
+    depends_on: []
+    settings:
+      registry: registry:5000
+      repo: freecad-ci-deps
+      tags:
+        - "24.04"
+        - "${CI_COMMIT_SHA}"
+      dockerfile: Dockerfile
+      context: package/ubuntu/
+      insecure: true
+      insecure-registry: registry:5000
+
+  # Build + push freecad-ci-mcp:24.04. Context is the mcp package dir (tiny); the
+  # Dockerfile lives there as `Dockerfile.ci` and FROMs registry:5000/
+  # freecad-ci-deps:24.04, so it must run AFTER the deps image is pushed AND after
+  # the mcp submodule is fetched.
+  - name: build-mcp-image
+    image: woodpeckerci/plugin-kaniko
+    pull: true
+    depends_on: [init-mcp-submodule, build-deps-image]
+    settings:
+      registry: registry:5000
+      repo: freecad-ci-mcp
+      tags:
+        - "24.04"
+        - "${CI_COMMIT_SHA}"
+      dockerfile: Dockerfile.ci
+      context: tools/mcp/freecad-mcp/
+      insecure: true
+      insecure-registry: registry:5000
