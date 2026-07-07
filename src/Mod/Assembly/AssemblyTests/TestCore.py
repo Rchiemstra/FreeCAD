@@ -22,6 +22,7 @@
 # ***************************************************************************/
 
 import FreeCAD as App
+import Assembly
 import Part
 import unittest
 
@@ -97,6 +98,18 @@ class TestCore(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         self.assertTrue(self.jointgroup, "'{}' failed".format(operation))
 
+    def test_api_create_assembly(self):
+        """Create an assembly through the public Assembly API."""
+        operation = "Create Assembly Object through API"
+        _msg("  Test '{}'".format(operation))
+
+        assembly = Assembly.createAssembly(self.doc, "ApiAssembly", recompute=False)
+
+        self.assertTrue(assembly.isDerivedFrom("Assembly::AssemblyObject"))
+        self.assertEqual(assembly.Type, "Assembly")
+        joint_groups = [obj for obj in assembly.OutList if obj.TypeId == "Assembly::JointGroup"]
+        self.assertEqual(len(joint_groups), 1, "'{}' failed".format(operation))
+
     def test_create_joint(self):
         """Create a joint in an assembly."""
         operation = "Create Joint Object"
@@ -130,6 +143,20 @@ class TestCore(unittest.TestCase):
             groundedjoint.ObjectToGround == box,
             "'{}' failed: ObjectToGround not set correctly.".format(operation),
         )
+
+    def test_api_create_grounded_joint(self):
+        """Create a grounded joint through the public Assembly API."""
+        operation = "Create Grounded Joint through API"
+        _msg("  Test '{}'".format(operation))
+
+        box = self.assembly.newObject("Part::Box", "ApiGroundedBox")
+        groundedjoint = Assembly.createGroundedJoint(
+            self.assembly, box, label="ApiGroundedJoint", recompute=False
+        )
+
+        self.assertTrue(hasattr(groundedjoint, "ObjectToGround"))
+        self.assertEqual(groundedjoint.ObjectToGround, box)
+        self.assertEqual(groundedjoint.Label, "ApiGroundedJoint")
 
     def test_toggle_grounded_joint(self):
         """test grounding and ungrounding a part, added because of github.com/freecad/freecad/issues/28440"""
@@ -217,6 +244,107 @@ class TestCore(unittest.TestCase):
         _msg("  plc '{}'".format(plc))
         _msg("  targetPlc '{}'".format(targetPlc))
         self.assertTrue(plc.isSame(targetPlc, 1e-6), "'{}' failed - Step 4".format(operation))
+
+    def test_api_create_fixed_joint_from_explicit_references(self):
+        """Create a fixed joint from component-rooted API references."""
+        operation = "Create Fixed Joint through API"
+        _msg("  Test '{}'".format(operation))
+
+        box1 = self.assembly.newObject("Part::Box", "ApiFixedBox1")
+        box2 = self.assembly.newObject("Part::Box", "ApiFixedBox2")
+        self.doc.recompute()
+
+        ref1 = Assembly.makeJointReference(box1, "Face6", "Vertex7")
+        ref2 = Assembly.makeJointReference(box2, "Face6", "Vertex7")
+
+        joint = Assembly.createJoint(
+            self.assembly,
+            "Fixed",
+            ref1,
+            ref2,
+            label="ApiFixed",
+            solve=False,
+            presolve=False,
+            recompute=False,
+        )
+
+        self.assertEqual(joint.JointType, "Fixed")
+        self.assertEqual(joint.Label, "ApiFixed")
+        self.assertEqual(joint.Reference1[0], box1)
+        self.assertEqual(list(joint.Reference1[1]), ["Face6", "Vertex7"])
+        self.assertEqual(joint.Reference2[0], box2)
+        self.assertEqual(list(joint.Reference2[1]), ["Face6", "Vertex7"])
+
+    def test_api_create_cylindrical_joint_from_explicit_references(self):
+        """Create a cylindrical joint from component-rooted API references."""
+        operation = "Create Cylindrical Joint through API"
+        _msg("  Test '{}'".format(operation))
+
+        cylinder1 = self.assembly.newObject("Part::Cylinder", "ApiCylinder1")
+        cylinder2 = self.assembly.newObject("Part::Cylinder", "ApiCylinder2")
+        self.doc.recompute()
+
+        ref1 = Assembly.makeJointReference(cylinder1, "Edge1")
+        ref2 = Assembly.makeJointReference(cylinder2, "Edge1")
+
+        joint = Assembly.createJoint(
+            self.assembly,
+            "Cylindrical",
+            ref1,
+            ref2,
+            solve=False,
+            presolve=False,
+            recompute=False,
+        )
+
+        self.assertEqual(joint.JointType, "Cylindrical")
+        self.assertEqual(joint.Reference1[0], cylinder1)
+        self.assertEqual(list(joint.Reference1[1]), ["Edge1", "Edge1"])
+
+    def test_api_invalid_joint_inputs(self):
+        """Reject invalid headless joint creation inputs."""
+        operation = "Reject invalid Joint API inputs"
+        _msg("  Test '{}'".format(operation))
+
+        box1 = self.assembly.newObject("Part::Box", "ApiInvalidBox1")
+        box2 = self.assembly.newObject("Part::Box", "ApiInvalidBox2")
+        ref1 = Assembly.makeJointReference(box1, "Face6", "Vertex7")
+        ref2 = Assembly.makeJointReference(box2, "Face6", "Vertex7")
+
+        with self.assertRaises(Assembly.JointCreationError):
+            Assembly.createJoint(self.assembly, "InvalidType", ref1, ref2, recompute=False)
+
+        with self.assertRaises(Assembly.JointCreationError):
+            Assembly.createJoint(
+                self.assembly, "Fixed", [box1, ["Face6"]], ref2, recompute=False
+            )
+
+        with self.assertRaises(Assembly.JointCreationError):
+            Assembly.makeJointReference(box1, "Face6?")
+
+    def test_api_solve_false_does_not_move_component(self):
+        """Create a joint without forcing a solve."""
+        operation = "Create Joint through API without solve"
+        _msg("  Test '{}'".format(operation))
+
+        fixed_box = self.assembly.newObject("Part::Box", "ApiFixedGround")
+        moving_box = self.assembly.newObject("Part::Box", "ApiMovingNoSolve")
+        initial_placement = App.Placement(App.Vector(40, 50, 60), App.Rotation(15, 25, 35))
+        moving_box.Placement = initial_placement
+        self.doc.recompute()
+
+        Assembly.createGroundedJoint(self.assembly, fixed_box, recompute=False)
+        Assembly.createJoint(
+            self.assembly,
+            "Fixed",
+            Assembly.makeJointReference(fixed_box, "Face6", "Vertex7"),
+            Assembly.makeJointReference(moving_box, "Face6", "Vertex7"),
+            solve=False,
+            presolve=False,
+            recompute=False,
+        )
+
+        self.assertTrue(moving_box.Placement.isSame(initial_placement, 1e-6))
 
     def test_solve_assembly(self):
         """Test solving an assembly."""
