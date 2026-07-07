@@ -1340,8 +1340,15 @@ TopoShape Feature::getTopoShape(
                 if (powner) {
                     *powner = const_cast<App::DocumentObject*>(obj);
                 }
-                if (pmat && options.testFlag(ShapeOption::Transform)) {
-                    *pmat = static_cast<const Part::Feature*>(obj)->Placement.getValue().toMatrix();
+                if (options.testFlag(ShapeOption::Transform)) {
+                    auto mat =
+                        static_cast<const Part::Feature*>(obj)->Placement.getValue().toMatrix();
+                    if (pmat) {
+                        *pmat = mat;
+                    }
+                    else {
+                        ts.transformShape(mat, false, true);
+                    }
                 }
                 return ts;
             }
