@@ -440,6 +440,19 @@ PyObject* SketchObjectPy::addConstraint(PyObject* args)
             this->getSketchObjectPtr()->setUpSketch();
             this->getSketchObjectPtr()->Constraints.touch();  // update solver information
         }
+        // Malformed constraints (e.g. a PointPos omitted for a constraint type/geometry
+        // combination that requires one, such as DistanceX on a non-Line geometry) are
+        // structurally invalid and can never become valid by adding more constraints, unlike
+        // redundant/conflicting/over-constrained sketches. Previously this was silently
+        // accepted here and only surfaced as an opaque "malformed constraints" document error
+        // on the next recompute. Report it immediately, with the offending constraint index.
+        if (this->getSketchObjectPtr()->getLastHasMalformedConstraints()) {
+            std::string msg = "Constraint added but the sketch is now malformed. ";
+            Sketcher::SketchObject::appendMalformedConstraintsMsg(
+                this->getSketchObjectPtr()->getLastMalformedConstraints(), msg);
+            PyErr_SetString(PyExc_ValueError, msg.c_str());
+            return nullptr;
+        }
         return Py::new_reference_to(Py::Long(ret));
     }
     else if (PyObject_TypeCheck(pcObj, &(PyList_Type)) || PyObject_TypeCheck(pcObj, &(PyTuple_Type))) {
