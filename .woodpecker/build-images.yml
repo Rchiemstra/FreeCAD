@@ -82,7 +82,7 @@ steps:
     pull: true
     depends_on: []
     settings:
-      registry: registry-freecad:5000
+      registry: &freecad_registry registry-freecad:5000
       repo: freecad-ci-deps
       tags:
         - "24.04"
@@ -90,7 +90,7 @@ steps:
       dockerfile: Dockerfile
       context: package/ubuntu/
       insecure: true
-      insecure-registry: registry-freecad:5000
+      insecure-registry: *freecad_registry
 
   # Build + push freecad-ci-mcp:24.04. Context is the mcp package dir (tiny); the
   # Dockerfile lives there as `Dockerfile.ci` and FROMs registry-freecad:5000/
@@ -101,7 +101,7 @@ steps:
     pull: true
     depends_on: [init-mcp-submodule, build-deps-image]
     settings:
-      registry: registry-freecad:5000
+      registry: *freecad_registry
       repo: freecad-ci-mcp
       tags:
         - "24.04"
@@ -110,4 +110,4 @@ steps:
       context: tools/mcp/freecad-mcp/
       insecure: true
       insecure-pull: true
-      insecure-registry: registry-freecad:5000
+      insecure-registry: *freecad_registry

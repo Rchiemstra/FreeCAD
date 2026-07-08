@@ -156,6 +156,7 @@ labels:
   backend: docker
 
 variables:
+  - &freecad_registry_internal_url http://registry-freecad:5000
   - &freecad_ccache_env
     CCACHE_DIR: /woodpecker-cache/ccache
     CCACHE_COMPILERCHECK: content
@@ -264,10 +265,12 @@ steps:
   - name: ci-images-ready
     image: alpine:3.20
     depends_on: []
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
       - |
         set -e
-        registry="http://registry-freecad:5000"
+        registry="${FREECAD_CI_REGISTRY:?FREECAD_CI_REGISTRY is required}"
         expected_tag="$CI_COMMIT_SHA"
         if [ "$CI_PIPELINE_EVENT" = "pull_request" ]; then
           expected_tag="24.04"
@@ -293,7 +296,7 @@ steps:
         exit 1
 
   - name: freecad-configure-debug
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
     pull: true
     depends_on: [freecad-lint, ci-images-ready]
     environment: *freecad_ccache_env
@@ -310,7 +313,7 @@ steps:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
   - name: freecad-debug-build
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-configure-debug]
     environment: *freecad_ccache_env
@@ -327,7 +330,7 @@ steps:
         ccache -s || true
 
   - name: freecad-unit-tests
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-debug-build]
     commands:
@@ -347,7 +350,7 @@ steps:
         fi
 
   - name: freecad-integration-tests
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-unit-tests]
     commands:
@@ -356,7 +359,7 @@ steps:
         timeout 1200 build/debug/bin/FreeCADCmd -t 0
 
   - name: freecad-e2e
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-integration-tests]
     commands:
@@ -365,7 +368,7 @@ steps:
         xvfb-run -a -s "-screen 0 1024x768x24" python3 .github/scripts/run_gui_tests.py build/debug
 
   - name: freecad-release-linux
-    image: 127.0.0.1:5001/freecad-ci-deps:24.04
+    image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-e2e]
     environment: *freecad_ccache_env
@@ -425,7 +428,7 @@ steps:
   # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
   # code is not trusted to flag an import failure.
   - name: freecad-mcp-load-preflight
-    image: 127.0.0.1:5001/freecad-ci-mcp:24.04
+    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
@@ -443,7 +446,7 @@ steps:
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
   # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
   - name: freecad-mcp-core-tests
-    image: 127.0.0.1:5001/freecad-ci-mcp:24.04
+    image: *freecad_ci_mcp_image
     pull: true
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
@@ -462,7 +465,7 @@ steps:
         "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
 
   - name: freecad-mcp-e2e
-    image: 127.0.0.1:5001/freecad-ci-mcp:24.04
+    image: *freecad_ci_mcp_image
     pull: true
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
