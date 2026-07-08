@@ -182,7 +182,7 @@ steps:
     image: alpine/git
     depends_on: []
     commands:
-      - sh .woodpecker/scripts/all-submodules-check.sh
+      - sh ci/woodpecker/all-submodules-check.sh
 
   # ---------------------------------------------------------------------------
   # FreeCAD track
@@ -201,7 +201,7 @@ steps:
     image: python:3.12-slim
     depends_on: [all-submodules-check]
     commands:
-      - sh .woodpecker/scripts/freecad-lint.sh
+      - sh ci/woodpecker/freecad-lint.sh
 
   # Public-image gate: avoid pulling the heavy private CI images before the
   # image-builder workflow has populated an empty local registry.
@@ -211,7 +211,7 @@ steps:
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
-      - sh .woodpecker/scripts/ci-images-ready.sh
+      - sh ci/woodpecker/ci-images-ready.sh
 
   - name: freecad-configure-debug
     image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
@@ -220,7 +220,7 @@ steps:
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     commands:
-      - sh .woodpecker/scripts/freecad-configure-debug.sh
+      - sh ci/woodpecker/freecad-configure-debug.sh
 
   - name: freecad-debug-build
     image: *freecad_ci_deps_image
@@ -229,28 +229,28 @@ steps:
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     commands:
-      - sh .woodpecker/scripts/freecad-debug-build.sh
+      - sh ci/woodpecker/freecad-debug-build.sh
 
   - name: freecad-unit-tests
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-debug-build]
     commands:
-      - sh .woodpecker/scripts/freecad-unit-tests.sh
+      - sh ci/woodpecker/freecad-unit-tests.sh
 
   - name: freecad-integration-tests
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-unit-tests]
     commands:
-      - sh .woodpecker/scripts/freecad-integration-tests.sh
+      - sh ci/woodpecker/freecad-integration-tests.sh
 
   - name: freecad-e2e
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-integration-tests]
     commands:
-      - sh .woodpecker/scripts/freecad-e2e.sh
+      - sh ci/woodpecker/freecad-e2e.sh
 
   - name: freecad-release-linux
     image: *freecad_ci_deps_image
@@ -261,7 +261,7 @@ steps:
     when:
       - event: [tag, manual]
     commands:
-      - sh .woodpecker/scripts/freecad-release-linux.sh
+      - sh ci/woodpecker/freecad-release-linux.sh
 
   # ccache is a persistent Docker named volume -- see the file header.
 
@@ -274,13 +274,13 @@ steps:
     image: python:3.12
     depends_on: [all-submodules-check]
     commands:
-      - sh .woodpecker/scripts/freecad-mcp-lint.sh
+      - sh ci/woodpecker/freecad-mcp-lint.sh
 
   - name: freecad-mcp-unit-tests
     image: python:3.12
     depends_on: [freecad-mcp-lint]
     commands:
-      - sh .woodpecker/scripts/freecad-mcp-unit-tests.sh
+      - sh ci/woodpecker/freecad-mcp-unit-tests.sh
 
   # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
   # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
@@ -295,7 +295,7 @@ steps:
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
-      - sh .woodpecker/scripts/freecad-mcp-load-preflight.sh
+      - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
   # core/e2e: gated push/tag/manual (not PR). Per-marker output files + rm -f so
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
@@ -309,7 +309,7 @@ steps:
     when:
       - event: [push, tag, manual]
     commands:
-      - sh .woodpecker/scripts/freecad-mcp-freecad-tests.sh
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
   - name: freecad-mcp-e2e
     image: *freecad_ci_mcp_image
@@ -320,4 +320,4 @@ steps:
     when:
       - event: [push, tag, manual]
     commands:
-      - sh .woodpecker/scripts/freecad-mcp-freecad-tests.sh
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh

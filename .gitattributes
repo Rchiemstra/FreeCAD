@@ -1,1 +1,1 @@
-.woodpecker/scripts/*.sh text eol=lf
+ci/woodpecker/*.sh text eol=lf
