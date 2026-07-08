@@ -41,6 +41,10 @@ class TestToolBitBrowserWidget(PathTestWithAssets):
         # by PathTestWithAssets.
         self.widget = ToolBitBrowserWidget(self.assets)
 
+    def populate_widget(self):
+        self.widget.refresh()
+        self.assertGreater(self.widget._tool_list_widget.count(), 0)
+
     def test_initial_fetch(self):
         # Simulate expose to trigger initial fetch
         self.widget.showEvent(None)
@@ -104,10 +108,9 @@ class TestToolBitBrowserWidget(PathTestWithAssets):
     def test_tool_selected_signal(self):
         mock_slot = MagicMock()
         self.widget.toolSelected.connect(mock_slot)
+        self.populate_widget()
 
         # Select the first item in the list widget
-        if self.widget._tool_list_widget.count() == 0:
-            self.skipTest("Not enough toolbits for selection test.")
         first_item = self.widget._tool_list_widget.item(0)
         self.widget._tool_list_widget.setCurrentItem(first_item)
 
@@ -118,18 +121,19 @@ class TestToolBitBrowserWidget(PathTestWithAssets):
     def test_tool_edit_requested_signal(self):
         mock_slot = MagicMock()
         self.widget.itemDoubleClicked.connect(mock_slot)
+        self.populate_widget()
 
         # Double-click the first item in the list widget
-        if self.widget._tool_list_widget.count() == 0:
-            self.skipTest("Not enough toolbits for double-click test.")
-
         first_item = self.widget._tool_list_widget.item(0)
         # Simulate double-click signal emission from the list widget
         self.widget._tool_list_widget.itemDoubleClicked.emit(first_item)
 
-        # Verify signal was emitted with the correct URI
+        # Verify signal was emitted with the correct toolbit
         expected_uri = first_item.data(ToolBitUriRole)
-        mock_slot.assert_called_once_with(expected_uri)
+        mock_slot.assert_called_once()
+        emitted_toolbit = mock_slot.call_args.args[0]
+        self.assertIsInstance(emitted_toolbit, ToolBit)
+        self.assertEqual(str(emitted_toolbit.get_uri()), expected_uri)
 
 
 if __name__ == "__main__":
