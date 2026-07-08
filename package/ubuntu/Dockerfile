@@ -43,12 +43,24 @@ RUN /tmp/install-apt-packages.sh \
 #   clang-format - C++ formatting check
 #   python3-pip  - MCP editable install + pytest in the MCP child image
 #   git          - changed-files detection in lint/build steps
+#   python3-yaml - PyYAML for FreeCADCmd's embedded python: the apt script only
+#                  installs libyaml-cpp-dev (C++); CAM (Path.Tool serializers),
+#                  Material (cardutils) and FEM yml-mesh tests all `import yaml`
+#                  at runtime. GitHub's ubuntu-24.04 runners ship PyYAML in the
+#                  runner env, which is why upstream CI never hits this.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          clang-format \
          python3-pip \
+         python3-yaml \
          git \
     && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 locale: with no LANG set, CPython's filesystem encoding degrades to
+# 'ascii' inside the container -- BaseTests.FileSystem.testEncoding asserts
+# 'utf-8', and non-ASCII document/file paths would break for real. C.UTF-8 is
+# always available on Ubuntu (no locale-gen needed).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # PEP 668: Ubuntu 24.04's pip is externally-managed; the MCP child image (and any
 # in-step pip) needs --break-system-packages. Make that the default so runtime
