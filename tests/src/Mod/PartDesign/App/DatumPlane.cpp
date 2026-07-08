@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <BRepAdaptor_Surface.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 
 #include <gtest/gtest.h>
@@ -119,7 +120,11 @@ TEST_F(DatumPlaneTest, attachDatumPlaneToPlacedCrossBodyFace)
     attach->MapMode.setValue("FlatFace");
     attach->positionBySupport();
 
-    auto localFaceShape = sourceBox->Shape.getShape().getSubTopoShape(faceName.c_str(), true);
+    auto localSourceShape = sourceBox->Shape.getShape();
+    // Shape.getShape() carries sourceBox->Placement in its TopLoc_Location. Strip it because
+    // sourceGlobalPlacement applies the object placement explicitly below.
+    localSourceShape.setShape(localSourceShape.getShape().Located(TopLoc_Location()), false);
+    auto localFaceShape = localSourceShape.getSubTopoShape(faceName.c_str(), true);
     ASSERT_FALSE(localFaceShape.isNull());
     auto localFace = TopoDS::Face(localFaceShape.getShape());
     ASSERT_FALSE(localFace.IsNull());
