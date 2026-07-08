@@ -82,6 +82,11 @@ class TestSketchDeltaPosition(unittest.TestCase):
         sketch.setExpression("Constraints[{}]".format(delta_x), "10 mm")
         sketch.setExpression("Constraints[{}]".format(delta_y), ".Constraints.Width / 2")
 
+        # setExpression() only schedules the expression; it is evaluated into the
+        # constraint's Value during document recompute (SketchObject::execute()), not
+        # immediately. A bare solve() would otherwise still see the pre-expression
+        # (default 0.0) constraint values.
+        self.Doc.recompute()
         self.assertEqual(0, sketch.solve())
         reference_point = sketch.getPoint(reference, 1)
         target_point = sketch.getPoint(target, 1)
