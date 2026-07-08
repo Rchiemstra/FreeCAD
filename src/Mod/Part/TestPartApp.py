@@ -303,6 +303,74 @@ class PartTestShapeRotate(unittest.TestCase):
         self.assertTrue(box.Placement.isSame(p4, tol))
 
 
+class PartTestShapePlacementAbsorption(unittest.TestCase):
+    """Regression coverage for P4 (doc/mcp-feedback.md): baking a shape to
+    global coordinates and assigning it to a Part::Feature with
+    Placement=identity was reported as "impossible" -- Part::Feature::
+    onChanged() keeps a Shape's TopLoc_Location and the object's Placement
+    property mirrored (by design: it lets editing Placement move a shape
+    without a recompute), and assigning a Shape absorbs its baked location
+    into Placement.
+
+    Empirically confirmed against a real build that this mirroring is NOT
+    the actual trap: it is specifically ``TopoShape.transformed()``/``.move()``
+    (Location-only, does not bake into the raw B-Rep geometry) that gets
+    unwound when Placement is later reset to identity.
+    ``TopoShape.transformGeometry()`` bakes the transform into the geometry
+    itself and survives an identity Placement reset. This was a genuine,
+    costly trap in the originating session (the wrong API was used, costing
+    the whole snapshot-workaround approach) -- it is not dismissed as
+    "working as intended", but the underlying Shape/Placement coupling
+    itself is confirmed consistent and by design.
+    """
+
+    def setUp(self):
+        self.Doc = FreeCAD.newDocument("PartTestShapePlacementAbsorption")
+        self.raw = Part.makeBox(10, 10, 10)
+        self.matrix = Base.Matrix()
+        self.matrix.move(Base.Vector(5, 0, 0))
+
+    def testTransformedDoesNotSurviveIdentityReset(self):
+        """Known trap: .transformed() is a cheap Location-only move, so
+        resetting Placement back to identity silently un-does it."""
+        solid = self.raw.transformed(self.matrix)
+        clean = self.Doc.addObject("Part::Feature", "Clean")
+        clean.Shape = solid
+        bbox_before = clean.Shape.BoundBox
+        self.assertAlmostEqual(bbox_before.XMin, 5.0, places=3)
+        self.assertAlmostEqual(bbox_before.XMax, 15.0, places=3)
+
+        clean.Placement = Base.Placement()
+
+        bbox_after = clean.Shape.BoundBox
+        self.assertFalse(
+            abs(bbox_after.XMin - 5.0) <= 1e-3 and abs(bbox_after.XMax - 15.0) <= 1e-3,
+            "clean.Shape unexpectedly stayed at global coordinates after "
+            "Placement was reset to identity -- if .transformed() now bakes "
+            "geometry, update this test and the P4 status in "
+            "doc/freecad_issues_status_check.md",
+        )
+
+    def testTransformGeometrySurvivesIdentityReset(self):
+        """Working solution: .transformGeometry() bakes the transform into
+        the raw B-Rep geometry, so there is no separate TopLoc_Location left
+        for Placement to absorb, and it survives an identity reset."""
+        solid = self.raw.transformGeometry(self.matrix)
+        clean = self.Doc.addObject("Part::Feature", "Clean")
+        clean.Shape = solid
+        # No absorption at all: Placement is already identity right after assignment.
+        self.assertTrue(clean.Placement.isIdentity())
+
+        clean.Placement = Base.Placement()
+
+        bbox_after = clean.Shape.BoundBox
+        self.assertAlmostEqual(bbox_after.XMin, 5.0, places=3)
+        self.assertAlmostEqual(bbox_after.XMax, 15.0, places=3)
+
+    def tearDown(self):
+        FreeCAD.closeDocument("PartTestShapePlacementAbsorption")
+
+
 class PartTestCircle2D(unittest.TestCase):
     def testValidCircle(self):
         p1 = App.Base.Vector2d(0.01, 0.01)
