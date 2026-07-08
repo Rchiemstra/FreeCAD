@@ -182,29 +182,7 @@ steps:
     image: alpine/git
     depends_on: []
     commands:
-      - git config --global --add safe.directory '*'
-      - |
-        set -e
-        echo "== git submodule status =="
-        git submodule status > /tmp/sub_status.txt
-        cat /tmp/sub_status.txt
-        # '-' not initialized, '+' wrong commit, 'U' merge conflict
-        if grep -E '^-|^\+|^U' /tmp/sub_status.txt; then
-          echo "ERROR: a submodule is not initialized / wrong commit / in conflict"
-          exit 1
-        fi
-        required="src/3rdParty/OndselSolver tests/lib src/3rdParty/GSL src/Mod/AddonManager tools/mcp/freecad-mcp"
-        for r in $required; do
-          if [ ! -d "$r" ] || [ -z "$(ls -A "$r" 2>/dev/null)" ]; then
-            echo "ERROR: required submodule $r missing or empty"
-            exit 1
-          fi
-          if [ ! -f "$r/.git" ] && [ ! -d "$r/.git" ]; then
-            echo "ERROR: required submodule $r not initialized (no .git)"
-            exit 1
-          fi
-        done
-        echo "all-submodules-check: OK (every submodule initialized at expected commit)"
+      - sh .woodpecker/scripts/all-submodules-check.sh
 
   # ---------------------------------------------------------------------------
   # FreeCAD track
@@ -223,42 +201,7 @@ steps:
     image: python:3.12-slim
     depends_on: [all-submodules-check]
     commands:
-      - git config --global --add safe.directory '*' 2>/dev/null || true
-      - |
-        set -e
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
-        mkdir -p /tmp/logs /tmp/report
-        # 1) version consistency (stdlib, whole-repo, no file list needed)
-        python3 src/Tools/sync_version.py --check
-        # 2) codespell on changed files only
-        base=""
-        if [ -n "$CI_COMMIT_TARGET_BRANCH" ]; then
-          git fetch origin "$CI_COMMIT_TARGET_BRANCH" --depth=50 >/dev/null 2>&1 || true
-          if git rev-parse --verify "origin/$CI_COMMIT_TARGET_BRANCH" >/dev/null 2>&1; then
-            base="origin/$CI_COMMIT_TARGET_BRANCH"
-          fi
-        fi
-        if [ -z "$base" ] && git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-          base="HEAD~1"
-        fi
-        if [ -z "$base" ]; then
-          echo "no diff base available (shallow clone / tag); codespell skipped"
-          exit 0
-        fi
-        changed=$(git diff --name-only --diff-filter=d "$base"...HEAD 2>/dev/null || true)
-        if [ -z "$changed" ]; then
-          echo "no changed files to codespell"
-          exit 0
-        fi
-        echo "== codespell on $(echo "$changed" | wc -l) changed file(s) =="
-        # shellcheck disable=SC2086  # intentional word-splitting into --files
-        python3 tools/lint/codespell.py \
-          --files $changed \
-          --ignore-words .github/codespellignore \
-          --skip "./.git*,*.po,*.ts,*.svg,./src/3rdParty,./src/Base/swig*,./src/Mod/Robot/App/kdl_cp,./src/Mod/Import/App/SCL*,./src/Doc/FreeCAD.uml,./build/" \
-          --log-dir /tmp/logs \
-          --report-file /tmp/report/freecad-lint-report.md
-        echo "freecad-lint: OK (sync_version + codespell)"
+      - sh .woodpecker/scripts/freecad-lint.sh
 
   # Public-image gate: avoid pulling the heavy private CI images before the
   # image-builder workflow has populated an empty local registry.
@@ -268,32 +211,7 @@ steps:
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
-      - |
-        set -e
-        registry="${FREECAD_CI_REGISTRY:?FREECAD_CI_REGISTRY is required}"
-        expected_tag="$CI_COMMIT_SHA"
-        if [ "$CI_PIPELINE_EVENT" = "pull_request" ]; then
-          expected_tag="24.04"
-        fi
-        for attempt in $(seq 1 360); do
-          deps_tags="$(wget -qO- "$registry/v2/freecad-ci-deps/tags/list" 2>/dev/null || true)"
-          mcp_tags="$(wget -qO- "$registry/v2/freecad-ci-mcp/tags/list" 2>/dev/null || true)"
-          if echo "$deps_tags" | grep -q "\"$expected_tag\"" && echo "$mcp_tags" | grep -q "\"$expected_tag\""; then
-            echo "CI images ready in local registry"
-            echo "expected tag: $expected_tag"
-            echo "deps: $deps_tags"
-            echo "mcp:  $mcp_tags"
-            exit 0
-          fi
-          if [ "$attempt" -eq 1 ] || [ $((attempt % 30)) -eq 0 ]; then
-            echo "waiting for freecad-ci-deps:$expected_tag and freecad-ci-mcp:$expected_tag in $registry ($attempt/360)"
-          fi
-          sleep 10
-        done
-        echo "CI images were not published within 60 minutes"
-        echo "deps tags: ${deps_tags:-<none>}"
-        echo "mcp tags:  ${mcp_tags:-<none>}"
-        exit 1
+      - sh .woodpecker/scripts/ci-images-ready.sh
 
   - name: freecad-configure-debug
     image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
@@ -302,15 +220,7 @@ steps:
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     commands:
-      - |
-        set -e
-        mkdir -p "$CCACHE_DIR"
-        ccache -M "$CCACHE_MAXSIZE" || true
-        cmake --preset debug -G Ninja \
-          -DCMAKE_C_COMPILER=/usr/bin/gcc \
-          -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - sh .woodpecker/scripts/freecad-configure-debug.sh
 
   - name: freecad-debug-build
     image: *freecad_ci_deps_image
@@ -319,53 +229,28 @@ steps:
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     commands:
-      - |
-        set -e
-        mkdir -p "$CCACHE_DIR"
-        export CCACHE_BASEDIR="$CI_WORKSPACE"
-        ccache -M "$CCACHE_MAXSIZE" || true
-        ccache -z || true
-        ci/run_cmake_build_with_log.sh build/debug debug
-        echo "== ccache stats after debug build =="
-        ccache -s || true
+      - sh .woodpecker/scripts/freecad-debug-build.sh
 
   - name: freecad-unit-tests
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-debug-build]
     commands:
-      - |
-        set -e
-        mkdir -p /tmp/gtest
-        rc=0
-        for t in build/debug/tests/*_tests_run; do
-          [ -x "$t" ] || continue
-          name=$(basename "$t")
-          echo "== C++ gtest: $name =="
-          "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1 || rc=1
-        done
-        if [ "$rc" -ne 0 ]; then
-          echo "one or more C++ gtest binaries failed; logs in /tmp/gtest/*.log"
-          exit 1
-        fi
+      - sh .woodpecker/scripts/freecad-unit-tests.sh
 
   - name: freecad-integration-tests
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-unit-tests]
     commands:
-      - |
-        set -e
-        timeout 1200 build/debug/bin/FreeCADCmd -t 0
+      - sh .woodpecker/scripts/freecad-integration-tests.sh
 
   - name: freecad-e2e
     image: *freecad_ci_deps_image
     pull: true
     depends_on: [freecad-integration-tests]
     commands:
-      - |
-        set -e
-        xvfb-run -a -s "-screen 0 1024x768x24" python3 .github/scripts/run_gui_tests.py build/debug
+      - sh .woodpecker/scripts/freecad-e2e.sh
 
   - name: freecad-release-linux
     image: *freecad_ci_deps_image
@@ -376,21 +261,7 @@ steps:
     when:
       - event: [tag, manual]
     commands:
-      - |
-        set -e
-        mkdir -p "$CCACHE_DIR"
-        export CCACHE_BASEDIR="$CI_WORKSPACE"
-        ccache -M "$CCACHE_MAXSIZE" || true
-        echo "== ccache stats before release build =="
-        ccache -s || true
-        cmake --preset release -G Ninja \
-          -DCMAKE_C_COMPILER=/usr/bin/gcc \
-          -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        ci/run_cmake_build_with_log.sh build/release release
-        echo "== ccache stats after release build =="
-        ccache -s || true
+      - sh .woodpecker/scripts/freecad-release-linux.sh
 
   # ccache is a persistent Docker named volume -- see the file header.
 
@@ -403,21 +274,13 @@ steps:
     image: python:3.12
     depends_on: [all-submodules-check]
     commands:
-      - |
-        set -e
-        cd tools/mcp/freecad-mcp
-        python -m compileall -q src tests
+      - sh .woodpecker/scripts/freecad-mcp-lint.sh
 
   - name: freecad-mcp-unit-tests
     image: python:3.12
     depends_on: [freecad-mcp-lint]
     commands:
-      - |
-        set -e
-        cd tools/mcp/freecad-mcp
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-        pytest -m unit -ra --tb=short --junitxml=results_unit.xml
+      - sh .woodpecker/scripts/freecad-mcp-unit-tests.sh
 
   # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
   # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
@@ -432,15 +295,7 @@ steps:
     pull: true
     depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
     commands:
-      - |
-        set -e
-        cd tools/mcp/freecad-mcp
-        pip install --no-build-isolation --no-deps -e .
-        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
-        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        "$FC" ci/preflight_imports.py < /dev/null > /tmp/pf.log 2>&1 || true
-        cat /tmp/pf.log
-        grep -q "PREFLIGHT_OK" /tmp/pf.log || { echo "preflight imports failed (see log above)"; exit 1; }
+      - sh .woodpecker/scripts/freecad-mcp-load-preflight.sh
 
   # core/e2e: gated push/tag/manual (not PR). Per-marker output files + rm -f so
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
@@ -454,15 +309,7 @@ steps:
     when:
       - event: [push, tag, manual]
     commands:
-      - |
-        set -e
-        cd tools/mcp/freecad-mcp
-        pip install --no-build-isolation --no-deps -e .
-        rm -f ci_rc_${MARKER}.txt results_${MARKER}.xml
-        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
-        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        set +e
-        "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
+      - sh .woodpecker/scripts/freecad-mcp-freecad-tests.sh
 
   - name: freecad-mcp-e2e
     image: *freecad_ci_mcp_image
@@ -473,12 +320,4 @@ steps:
     when:
       - event: [push, tag, manual]
     commands:
-      - |
-        set -e
-        cd tools/mcp/freecad-mcp
-        pip install --no-build-isolation --no-deps -e .
-        rm -f ci_rc_${MARKER}.txt results_${MARKER}.xml
-        FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
-        export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        set +e
-        "$FC" ci/run_freecad_tests.py < /dev/null; rc=$?; [ "$rc" -ne 0 ] && exit "$rc"; exit "$(cat ci_rc_${MARKER}.txt)"
+      - sh .woodpecker/scripts/freecad-mcp-freecad-tests.sh
