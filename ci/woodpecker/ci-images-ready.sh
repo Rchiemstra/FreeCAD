@@ -26,6 +26,12 @@ for attempt in $(seq 1 360); do
 done
 
 echo "CI images were not published within 60 minutes"
-echo "deps tags: ${deps_tags:-<none>}"
-echo "mcp tags:  ${mcp_tags:-<none>}"
+if [ -z "$deps_tags" ]; then
+  deps_tags="<none>"
+fi
+if [ -z "$mcp_tags" ]; then
+  mcp_tags="<none>"
+fi
+echo "deps tags: $deps_tags"
+echo "mcp tags:  $mcp_tags"
 exit 1
