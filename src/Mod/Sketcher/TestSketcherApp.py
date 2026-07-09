@@ -31,6 +31,7 @@ from SketcherTests.TestSketchDeltaPosition import TestSketchDeltaPosition
 from SketcherTests.TestSketchValidateCoincidents import TestSketchValidateCoincidents
 from SketcherTests.TestSketchCarbonCopyReverseMapping import TestSketchCarbonCopyReverseMapping
 from SketcherTests.TestSketchInternalFaces import TestSketchInternalFaces
+from SketcherTests.TestSketchMalformedConstraints import TestSketchMalformedConstraints
 
 # Path and PartDesign tests use these functions that used to live here
 # but moved to SketcherTests/TestSketcherSolver.py
