@@ -21,8 +21,17 @@
 #                                                                           *
 # ***************************************************************************/
 
-"""Regression coverage for P5 (doc/mcp-feedback.md): an Assembly joint moving
-a body breaks cross-body PartDesign datums attached to that body.
+"""Regression coverage for cross-body PartDesign datums after Assembly-style
+body movement.
+
+P1 (doc/mcp-feedback.md) covers the creation-time case: a PartDesign datum
+created on one body and attached to a face on another body must include the
+source body's current non-identity placement. This is the exact PartDesign
+datum + Assembly movement repro left open in doc/freecad_issues_status_check.md.
+
+P5 covers the later staleness case: after a valid cross-body datum exists, an
+Assembly joint can move the source body and then suppress the touched state, so
+the datum does not recompute.
 
 ``AssemblyObject::setNewPlacements`` (src/Mod/Assembly/App/AssemblyObject.cpp)
 writes each joint-moved body's solved Placement and then immediately calls
@@ -64,9 +73,8 @@ class TestCrossBodyDatumStaleness(unittest.TestCase):
     def tearDown(self):
         App.closeDocument(self.doc.Name)
 
-    @unittest.expectedFailure
-    def test_datum_stays_stale_after_purgeTouched_placement_write(self):
-        body_b = self.doc.addObject("PartDesign::Body", "MovableSource")
+    def makePaddedSourceBody(self, name):
+        body_b = self.doc.addObject("PartDesign::Body", name)
         sketch = body_b.newObject("Sketcher::SketchObject", "Sk")
         sketch.AttachmentSupport = [(_xy_plane(body_b), "")]
         sketch.MapMode = "FlatFace"
@@ -84,12 +92,38 @@ class TestCrossBodyDatumStaleness(unittest.TestCase):
             if type(f.Surface).__name__ == "Plane" and abs(c.z - 5.0) < 0.5:
                 top_face = f"Face{i}"
         self.assertIsNotNone(top_face, "could not locate the pad's top face")
+        return body_b, pad, top_face
 
+    def makeCrossBodyDatum(self, support, subelement):
         body_a = self.doc.addObject("PartDesign::Body", "DatumOwner")
         datum = body_a.newObject("PartDesign::Plane", "CrossDatum")
-        datum.AttachmentSupport = [(pad, top_face)]
+        datum.AttachmentSupport = [(support, subelement)]
         datum.MapMode = "FlatFace"
         self.doc.recompute()
+        return datum
+
+    def assertDatumContainsSourceFace(self, pad, top_face, datum):
+        face_centre = pad.getGlobalPlacement() * pad.Shape.Faces[int(top_face[4:]) - 1].CenterOfMass
+        datum_base = datum.getGlobalPlacement().Base
+        drift = (face_centre - datum_base).Length
+        self.assertLess(drift, 1e-2, f"datum drifted {drift:.4f} mm from the moved source face")
+
+    def test_datum_created_after_body_move_uses_current_source_placement(self):
+        body_b, pad, top_face = self.makePaddedSourceBody("MovedBeforeDatumCreation")
+
+        # Reproduce the P1 creation-time boundary left open in the feedback
+        # status doc: Assembly has already moved the source body, then a
+        # PartDesign datum is created cross-body on that moved source.
+        body_b.Placement = App.Placement(App.Vector(0, 0, 10), App.Rotation())
+        self.doc.recompute()
+
+        datum = self.makeCrossBodyDatum(pad, top_face)
+        self.assertDatumContainsSourceFace(pad, top_face, datum)
+
+    @unittest.expectedFailure
+    def test_datum_stays_stale_after_purgeTouched_placement_write(self):
+        body_b, pad, top_face = self.makePaddedSourceBody("MovedAfterDatumCreation")
+        datum = self.makeCrossBodyDatum(pad, top_face)
 
         # Reproduce AssemblyObject::setNewPlacements's exact write pattern for
         # a body moved as a *side effect* of a joint solve (not the object
@@ -98,10 +132,6 @@ class TestCrossBodyDatumStaleness(unittest.TestCase):
         body_b.purgeTouched()
         self.doc.recompute()
 
-        face_centre = pad.getGlobalPlacement() * pad.Shape.Faces[int(top_face[4:]) - 1].CenterOfMass
-        datum_base = datum.getGlobalPlacement().Base
-        drift = (face_centre - datum_base).Length
-
         # Desired behaviour: the datum should track the moved face after a
         # recompute. Currently it does not (drift == the full 10 mm move).
-        self.assertLess(drift, 1e-2, f"datum drifted {drift:.4f} mm from the moved source face")
+        self.assertDatumContainsSourceFace(pad, top_face, datum)
