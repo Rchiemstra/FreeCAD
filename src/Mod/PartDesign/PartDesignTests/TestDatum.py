@@ -71,6 +71,12 @@ class TestDatumPlane(unittest.TestCase):
     def setUp(self):
         self.Doc = FreeCAD.newDocument("PartDesignTestDatumPlane")
 
+    def _originPlane(self, body, label):
+        for feat in body.Origin.OriginFeatures:
+            if feat.Label == label or feat.Name == label:
+                return feat
+        self.fail(f"{label} not found on {body.Name}")
+
     def testXYDatumPlane(self):
         self.Body = self.Doc.addObject("PartDesign::Body", "Body")
         self.DatumPlane = self.Doc.addObject("PartDesign::Plane", "DatumPlane")
@@ -80,6 +86,57 @@ class TestDatumPlane(unittest.TestCase):
         self.Doc.recompute()
         self.DatumPlaneNormal = self.DatumPlane.Shape.Surface.Axis
         self.assertEqual(abs(self.DatumPlaneNormal.dot(App.Vector(0, 0, 1))), 1)
+
+    def testCrossBodyFlatFaceKeepsSourceBodyPlacement(self):
+        """A datum attached across bodies must use the source body's placement.
+
+        The attacher computes the support pose in global coordinates. When the
+        attached object lives inside a body, its stored Placement is body-local;
+        writing the global pose directly used to drop or double-apply body
+        placements for cross-body FlatFace attachments.
+        """
+        source = self.Doc.addObject("PartDesign::Body", "SourceBody")
+        source.Placement.Base = App.Vector(0, 0, 10)
+
+        sketch = source.newObject("Sketcher::SketchObject", "CircleSketch")
+        sketch.AttachmentSupport = [(self._originPlane(source, "XY_Plane"), "")]
+        sketch.MapMode = "FlatFace"
+        sketch.addGeometry(Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 5), False)
+        self.Doc.recompute()
+
+        pad = source.newObject("PartDesign::Pad", "Pad")
+        pad.Profile = sketch
+        pad.Length = 5
+        self.Doc.recompute()
+
+        pad_global = pad.getGlobalPlacement()
+        top_face = None
+        for i, face in enumerate(pad.Shape.Faces, start=1):
+            centre = pad_global * face.CenterOfMass
+            if type(face.Surface).__name__ == "Plane" and abs(centre.z - 15.0) < 0.5:
+                top_face = f"Face{i}"
+                break
+        self.assertIsNotNone(top_face, "could not locate the moved pad's global top face")
+
+        target = self.Doc.addObject("PartDesign::Body", "DatumBody")
+        datum = target.newObject("PartDesign::Plane", "CrossDatum")
+        datum.AttachmentSupport = [(pad, top_face)]
+        datum.MapMode = "FlatFace"
+        datum.AttachmentOffset = App.Placement()
+        self.Doc.recompute()
+
+        face = pad.Shape.Faces[int(top_face[4:]) - 1]
+        face_centre = pad_global * face.CenterOfMass
+        face_normal = pad_global.Rotation * App.Vector(
+            face.Surface.Axis.x,
+            face.Surface.Axis.y,
+            face.Surface.Axis.z,
+        )
+        datum_global = datum.getGlobalPlacement()
+        datum_normal = datum_global.Rotation * App.Vector(0, 0, 1)
+
+        self.assertAlmostEqual(abs(face_normal.dot(datum_normal)), 1.0, places=4)
+        self.assertLess(abs((face_centre - datum_global.Base).dot(datum_normal)), 1e-2)
 
     def testFlatFaceOriginIsNotFaceCentre(self):
         """Regression coverage for P3/P7 feedback (doc/mcp-feedback.md): a
