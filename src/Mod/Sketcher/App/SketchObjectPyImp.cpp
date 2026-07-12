@@ -786,14 +786,15 @@ PyObject* SketchObjectPy::addExternal(PyObject* args)
     }
 
     // add the external
-    if (skObj->addExternal(Obj, SubName, isDefining, isIntersection) < 0) {
+    int extIndex = skObj->addExternal(Obj, SubName, isDefining, isIntersection);
+    if (extIndex < 0) {
         std::stringstream str;
         str << "Not able to add external shape element " << SubName;
         PyErr_SetString(PyExc_ValueError, str.str().c_str());
         return nullptr;
     }
 
-    Py_Return;
+    return PyLong_FromLong(static_cast<long>(Sketcher::GeoEnum::RefExt) - extIndex);
 }
 
 PyObject* SketchObjectPy::delExternal(PyObject* args)
