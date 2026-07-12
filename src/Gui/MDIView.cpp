@@ -516,6 +516,31 @@ void MDIView::setCurrentViewMode(ViewMode mode)
     }
 }
 
+MDIView* MDIView::changeViewMode(MDIView* view, ViewMode mode)
+{
+    if (!view || view->currentViewMode() == mode) {
+        return view;
+    }
+
+    const auto oldmode = view->currentViewMode();
+    const bool needsClone = mode == Child || oldmode == Child;
+    MDIView* clone = needsClone ? view->clone() : nullptr;
+
+    if (clone) {
+        if (mode == Child) {
+            getMainWindow()->addWindow(clone);
+        }
+        else {
+            clone->setCurrentViewMode(mode);
+        }
+        view->deleteSelf();
+        return clone;
+    }
+
+    view->setCurrentViewMode(mode);
+    return view;
+}
+
 QString MDIView::buildWindowTitle() const
 {
     QString windowTitle;

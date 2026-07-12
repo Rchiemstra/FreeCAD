@@ -92,6 +92,11 @@ public:
         return sheet;
     }
 
+    const App::DocumentObject* getOwnerObject() const override
+    {
+        return sheet;
+    }
+
     std::vector<App::Range> selectedRanges() const;
 
     QModelIndexList selectedIndexes() const;

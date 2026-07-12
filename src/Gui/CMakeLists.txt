@@ -1239,6 +1239,7 @@ SET(Widget_CPP_SRCS
     WidgetFactory.cpp
     Widgets.cpp
     Window.cpp
+    WindowLayout.cpp
     WorkbenchSelector.cpp
     ElideLabel.cpp
     ElideCheckBox.cpp
@@ -1272,6 +1273,8 @@ SET(Widget_HPP_SRCS
     WidgetFactory.h
     Widgets.h
     Window.h
+    WindowLayout.h
+    WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
     ElideCheckBox.h

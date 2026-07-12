@@ -130,6 +130,10 @@ public:
      * QWidget::showFullScreen ().
      */
     virtual void setCurrentViewMode(ViewMode mode);
+    /** Change a view's mode, cloning it when required to avoid Qt/OpenGL reparenting issues.
+     * Returns the surviving view, which can differ from \a view when cloning succeeds.
+     */
+    static MDIView* changeViewMode(MDIView* view, ViewMode mode);
     ViewMode currentViewMode() const
     {
         return currentMode;
@@ -173,6 +177,12 @@ public:
     virtual bool containsViewProvider(const ViewProvider*) const
     {
         return false;
+    }
+
+    /// The document object this view is dedicated to, or nullptr for general document views.
+    virtual const App::DocumentObject* getOwnerObject() const
+    {
+        return nullptr;
     }
 
 public Q_SLOTS:
