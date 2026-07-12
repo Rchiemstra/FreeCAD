@@ -8,7 +8,7 @@ endif(BUILD_GUI)
 set(Spreadsheet_Scripts
     Init.py
     TestSpreadsheet.py
-    TestSpreadsheetGui.py
+    TestSpreadsheetWindowGui.py
     importXLSX.py
     test_importXLSX.py
 )
