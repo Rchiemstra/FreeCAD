@@ -38,6 +38,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QProcess>
@@ -47,6 +48,7 @@
 #include <QSettings>
 #include <QSignalMapper>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QThread>
 #include <QTimer>
 #include <QToolBar>
@@ -87,6 +89,7 @@
 #include <TaskView/TaskView.h>
 
 #include "MainWindow.h"
+#include "MainWindowInternal.h"
 #include "Action.h"
 #include "Assistant.h"
 #include "BitmapFactory.h"
@@ -112,6 +115,7 @@
 #include "Utilities.h"
 #include "Tree.h"
 #include "WaitCursor.h"
+#include "WindowLayout.h"
 #include "WorkbenchManager.h"
 #include "Workbench.h"
 
@@ -314,6 +318,10 @@ struct MainWindowP
     QTimer saveStateTimer;
     QTimer restoreStateTimer;
     QMdiArea* mdiArea;
+    QPointer<QTabBar> mdiTabBar;
+    QPoint mdiTabDragStart;
+    int mdiTabDragIndex = -1;
+    QPointer<MDIView> mdiTabDragView;
     QPointer<MDIView> activeView;
     QSignalMapper* windowMapper;
     SplashScreen* splashscreen;
@@ -400,6 +408,8 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     d->mdiArea->setViewMode(QMdiArea::TabbedView);
     auto tab = d->mdiArea->findChild<QTabBar*>();
     if (tab) {
+        d->mdiTabBar = tab;
+        tab->installEventFilter(this);
         tab->setTabsClosable(true);
         // The tabs might be very wide
         tab->setExpanding(false);
@@ -1206,6 +1216,88 @@ bool MainWindow::event(QEvent* e)
 
 bool MainWindow::eventFilter(QObject* o, QEvent* e)
 {
+    if (o == d->mdiTabBar) {
+        auto* tabBar = d->mdiTabBar.data();
+        if (e->type() == QEvent::MouseButtonPress) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(e);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                d->mdiTabDragStart = mouseEvent->pos();
+                d->mdiTabDragIndex = tabBar->tabAt(d->mdiTabDragStart);
+                d->mdiTabDragView.clear();
+            }
+        }
+        else if (e->type() == QEvent::MouseMove && d->mdiTabDragIndex >= 0) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(e);
+            if (mouseEvent->buttons().testFlag(Qt::LeftButton) && !d->mdiTabDragView) {
+                if (auto* subWindow = d->mdiArea->activeSubWindow()) {
+                    d->mdiTabDragView = qobject_cast<MDIView*>(subWindow->widget());
+                }
+            }
+        }
+        else if (e->type() == QEvent::MouseButtonRelease) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(e);
+            if (mouseEvent->button() == Qt::LeftButton && d->mdiTabDragIndex >= 0) {
+                QPointer<MDIView> draggedView = d->mdiTabDragView;
+                if (!draggedView) {
+                    if (auto* subWindow = d->mdiArea->activeSubWindow()) {
+                        draggedView = qobject_cast<MDIView*>(subWindow->widget());
+                    }
+                }
+
+                const QPoint releasePosition = mouseEvent->pos();
+                const QPoint globalReleasePosition = tabBar->mapToGlobal(releasePosition);
+                const bool detach = MainWindowInternal::isTabDetachGesture(
+                    d->mdiTabDragStart,
+                    releasePosition,
+                    tabBar->rect(),
+                    QApplication::startDragDistance()
+                );
+
+                d->mdiTabDragIndex = -1;
+                d->mdiTabDragView.clear();
+
+                if (detach && draggedView) {
+                    QTimer::singleShot(
+                        0,
+                        this,
+                        [draggedView, globalReleasePosition]() {
+                            if (!draggedView
+                                || draggedView->currentViewMode() != MDIView::Child) {
+                                return;
+                            }
+
+                            auto* detachedView = MDIView::changeViewMode(
+                                draggedView,
+                                MDIView::TopLevel
+                            );
+                            if (!detachedView || detachedView->isMaximized()) {
+                                return;
+                            }
+
+                            QRect geometry(QPoint(), detachedView->size());
+                            geometry.moveCenter(globalReleasePosition);
+                            geometry = WindowLayout::clampToAvailableScreens(
+                                geometry,
+                                detachedView->minimumSizeHint()
+                            );
+                            detachedView->resize(geometry.size());
+                            detachedView->move(geometry.topLeft());
+                        }
+                    );
+                }
+            }
+            else {
+                d->mdiTabDragIndex = -1;
+                d->mdiTabDragView.clear();
+            }
+        }
+
+        if (e->type() == QEvent::UngrabMouse || e->type() == QEvent::Hide) {
+            d->mdiTabDragIndex = -1;
+            d->mdiTabDragView.clear();
+        }
+    }
+
     if (o != this) {
         if (e->type() == QEvent::WindowStateChange) {
             // notify all mdi views when the active view receives a show normal, show minimized
@@ -2038,39 +2130,12 @@ void MainWindow::loadWindowSettings()
 
     winSize = winSize.expandedTo(minimumSize());
 
-    // Check that no part of window outside all screens
-    QRect winGeometry = QRect(winPos, winSize + frameSizeDiff);
-    const auto screens = QApplication::screens();
-    auto invisible = QPolygon(winGeometry);
-    for (auto s : screens) {
-        invisible = invisible.subtracted(s->geometry().adjusted(-10, -10, 10, 10));
-    }
-    if (!invisible.empty()) {
-        // If not, move it inside the most overlapped or closest screen
-        // Union of screens are not considered, as it e.g. may have holes in general case
-        QRect screen {};
-        for (int screenArea = 0; auto s : screens) {
-            auto overlap = s->availableGeometry().intersected(winGeometry);
-            int overlapArea = overlap.width() * overlap.height();
-            if (overlapArea > screenArea) {
-                screen = s->availableGeometry();
-                screenArea = overlapArea;
-            }
-        }
-        if (screen.isEmpty()) {
-            for (int screenDist = -1; auto s : screens) {
-                auto dist = (winGeometry.center() - s->availableGeometry().center()).manhattanLength();
-                if (screenDist == -1 || dist < screenDist) {
-                    screen = s->availableGeometry();
-                    screenDist = dist;
-                }
-            }
-        }
-        winSize = winSize.boundedTo(screen.size() - frameSizeDiff).expandedTo(minimumSize());
-        winGeometry = QRect(winPos, winSize + frameSizeDiff);
-        winPos.setX(qMax(qMin(winPos.x(), screen.right() - winGeometry.width()), screen.x()));
-        winPos.setY(qMax(qMin(winPos.y(), screen.bottom() - winGeometry.height()), screen.y()));
-    }
+    const QRect winGeometry = WindowLayout::clampToAvailableScreens(
+        QRect(winPos, winSize + frameSizeDiff),
+        minimumSize() + frameSizeDiff
+    );
+    winPos = winGeometry.topLeft();
+    winSize = winGeometry.size() - frameSizeDiff;
 
     // Scale before move reducing, or vice versa, so a dpi change wont force window to be moved
     resize(winSize.boundedTo(size()));

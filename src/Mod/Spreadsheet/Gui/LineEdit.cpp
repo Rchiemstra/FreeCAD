@@ -27,9 +27,10 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QGraphicsProxyWidget>
+#include <QGraphicsScene>
 
 #include "LineEdit.h"
-#include <Gui/MainWindow.h>
+#include "SheetTableView.h"
 #include "ZoomableView.h"
 
 
@@ -53,15 +54,17 @@ void LineEdit::setDocumentObject(const App::DocumentObject* currentDocObj, bool 
      * So, the algorithm is to obtain globalPos, then to make the widget parentless,
      * to add it to the scene, setting the globalPos after. */
 
-    QPointer<Gui::MDIView> active_view = Gui::MainWindow::getInstance()->activeWindow();
-    if (!active_view) {
-        Base::Console().developerWarning(
-            "LineEdit::setDocumentObject",
-            "The active view is not a spreadsheet"
-        );
-        return;
+    QWidget* widget = parentWidget();
+    while (widget && !qobject_cast<SheetTableView*>(widget)) {
+        widget = widget->parentWidget();
     }
-    QPointer<ZoomableView> zv = active_view->findChild<ZoomableView*>();
+
+    auto* tableView = qobject_cast<SheetTableView*>(widget);
+    auto* tableProxy = tableView ? tableView->graphicsProxyWidget() : nullptr;
+    auto* scene = tableProxy ? tableProxy->scene() : nullptr;
+    QPointer<ZoomableView> zv = scene && !scene->views().isEmpty()
+        ? qobject_cast<ZoomableView*>(scene->views().constFirst())
+        : nullptr;
     if (!zv) {
         Base::Console().developerWarning("LineEdit::setDocumentObject", "ZoomableView not found");
         return;

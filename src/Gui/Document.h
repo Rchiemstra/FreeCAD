@@ -93,6 +93,7 @@ protected:
     void slotActivatedObject(const App::DocumentObject&);
     void slotStartRestoreDocument(const App::Document&);
     void slotFinishRestoreDocument(const App::Document&);
+    void slotFinishSaveDocument(const App::Document&, const std::string& fileName);
     void slotUndoDocument(const App::Document&);
     void slotRedoDocument(const App::Document&);
     void slotShowHidden(const App::Document&);

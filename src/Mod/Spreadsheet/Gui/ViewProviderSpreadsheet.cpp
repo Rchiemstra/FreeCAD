@@ -58,7 +58,12 @@ ViewProviderSheet::ViewProviderSheet()
 ViewProviderSheet::~ViewProviderSheet()
 {
     if (!view.isNull()) {
-        Gui::getMainWindow()->removeWindow(view);
+        if (view->currentViewMode() != Gui::MDIView::Child) {
+            view->deleteSelf();
+        }
+        else {
+            Gui::getMainWindow()->removeWindow(view);
+        }
     }
 }
 
@@ -136,6 +141,12 @@ void ViewProviderSheet::setupContextMenu(QMenu* menu, QObject* receiver, const c
     QAction* act;
     act = menu->addAction(QObject::tr("Show Spreadsheet"), receiver, member);
     act->setData(QVariant((int)ViewProvider::Default));
+
+    act = menu->addAction(QObject::tr("Open in New Window"));
+    QObject::connect(act, &QAction::triggered, act, [this]() {
+        showSheetMdi();
+        Gui::MDIView::changeViewMode(view, Gui::MDIView::TopLevel);
+    });
 }
 
 Sheet* ViewProviderSheet::getSpreadsheetObject() const
@@ -152,7 +163,12 @@ void ViewProviderSheet::beforeDelete()
     if (view == Gui::getMainWindow()->activeWindow()) {
         getDocument()->setActiveView(nullptr, Gui::View3DInventor::getClassTypeId());
     }
-    Gui::getMainWindow()->removeWindow(view);
+    if (view->currentViewMode() != Gui::MDIView::Child) {
+        view->deleteSelf();
+    }
+    else {
+        Gui::getMainWindow()->removeWindow(view);
+    }
 }
 
 SheetView* ViewProviderSheet::showSpreadsheetView()

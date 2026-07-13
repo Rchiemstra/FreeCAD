@@ -13,6 +13,8 @@ add_executable(Gui_tests_run
         StyleParameters/ParameterManagerTest.cpp
         StyleParameters/YamlParameterSourceTest.cpp
         InputHintTest.cpp
+        MainWindow.cpp
+        WindowLayout.cpp
 )
 
 # Qt tests
