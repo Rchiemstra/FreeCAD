@@ -1257,6 +1257,7 @@ SET(Widget_HPP_SRCS
     FileDialog.h
     FileDialogInternal.h
     MainWindow.h
+    MainWindowInternal.h
     MainWindowPy.h
     NotificationBox.h
     NotificationArea.h
