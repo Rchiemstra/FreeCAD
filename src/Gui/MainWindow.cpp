@@ -1729,7 +1729,14 @@ QList<QWidget*> MainWindow::windows(QMdiArea::WindowOrder order) const
 MDIView* MainWindow::activeWindow() const
 {
     // each activated window notifies this main window when it is activated
-    return d->activeView;
+    auto* activeView = d->activeView.data();
+    if (!activeView || activeView->isDeleting()) {
+        return nullptr;
+    }
+    if (auto* view3d = dynamic_cast<View3DInventor*>(activeView); view3d && !view3d->getViewer()) {
+        return nullptr;
+    }
+    return activeView;
 }
 
 void MainWindow::closeEvent(QCloseEvent* e)
