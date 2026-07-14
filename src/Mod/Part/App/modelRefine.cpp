@@ -684,6 +684,24 @@ TopoDS_Face FaceTypedCylinder::buildFace(const FaceVectorType& faces) const
     if (surface.IsNull()) {
         return dummy;
     }
+
+    // Rebuild on a private copy of the surface rather than on the input face's own handle.
+    //
+    // fixFace() below runs ShapeFix_Face (FixMissingSeam/FixOrientation), which writes the
+    // pcurves it computes straight into the boundary edges -- and those edges belong to the
+    // caller's shape, since FaceUniter only holds a handle to the shell (the TopoDS_TShape
+    // graph is shared). A pcurve is stored per (edge, surface, location), so handing over the
+    // input's own surface makes ShapeFix overwrite the very records the input's faces are
+    // parametrised by: a 180 degree cylindrical face silently becomes the full 360 degree
+    // cylinder, and the caller's solid turns invalid. Keying the new pcurves on a surface that
+    // nobody else references keeps those writes additive, so the input keeps its own
+    // parametrisation.
+    //
+    // The edges themselves are deliberately *not* copied: the refined shell has to keep sharing
+    // them with the input, otherwise GenericShapeMapper::init() can no longer look the result's
+    // edges up in the source shape and topological naming is lost.
+    surface = Handle(Geom_CylindricalSurface)::DownCast(surface->Copy());
+
     std::vector<TopoDS_Wire> innerWires, encirclingWires;
     std::vector<TopoDS_Wire>::iterator wireIt;
     for (wireIt = allWires.begin(); wireIt != allWires.end(); ++wireIt) {
@@ -1056,6 +1074,11 @@ TopoDS_Face FaceTypedBSpline::buildFace(const FaceVectorType& faces) const
     if (!surface) {
         return {};
     }
+    // Rebuild on a private copy of the surface: the ShapeFix_Face below writes its pcurves
+    // into the boundary edges, which are still owned by the caller's shape. See the same
+    // guard in FaceTypedCylinder::buildFace() for the full story.
+    surface = Handle(Geom_BSplineSurface)::DownCast(surface->Copy());
+
     std::vector<TopoDS_Wire>::iterator wireIt;
     wireIt = wires.begin();
     BRepBuilderAPI_MakeFace faceMaker(surface, *wireIt);
