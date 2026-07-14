@@ -88,6 +88,10 @@ public:
     bool canClose() override;
     /// delete itself
     void deleteSelf() override;
+    bool isDeleting() const
+    {
+        return _isDeleting;
+    }
     PyObject* getPyObject() override;
     /** @name Printing */
     //@{
@@ -200,6 +204,11 @@ protected Q_SLOTS:
     virtual void windowStateChanged(QWidget*);
 
 protected:
+    void markDeleting()
+    {
+        _isDeleting = true;
+    }
+
     void closeEvent(QCloseEvent* e) override;
     /** \internal */
     void changeEvent(QEvent* e) override;
@@ -214,6 +223,7 @@ protected:
 private:
     ViewMode currentMode;
     Qt::WindowStates wstate;
+    bool _isDeleting {false};
     // list of active objects of this view
     ActiveObjectList ActiveObjects;
     using Connection = fastsignals::connection;

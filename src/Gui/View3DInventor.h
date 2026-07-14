@@ -159,7 +159,7 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
-    View3DInventorViewer* _viewer;
+    View3DInventorViewer* _viewer {nullptr};
     PyObject* _viewerPy;
     QTimer* stopSpinTimer;
     QStackedWidget* stack;

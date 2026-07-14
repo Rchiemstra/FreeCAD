@@ -107,6 +107,7 @@ MDIView::~MDIView()
 
 void MDIView::deleteSelf()
 {
+    markDeleting();
     // When using QMdiArea make sure to remove the QMdiSubWindow
     // this view is associated with.
     //

@@ -2716,7 +2716,7 @@ MDIView* Document::getActiveView() const
     // check whether the active view is part of this document
     bool ok = false;
     for (const auto& mdi : mdis) {
-        if (mdi == active) {
+        if (mdi == active && !mdi->isDeleting()) {
             ok = true;
             break;
         }
@@ -2729,6 +2729,12 @@ MDIView* Document::getActiveView() const
     // the active view is not part of this document, just use the last view
     const auto& windows = Gui::getMainWindow()->windows();
     for (auto rit = mdis.rbegin(); rit != mdis.rend(); ++rit) {
+        if ((*rit)->isDeleting()) {
+            continue;
+        }
+        if (auto* view3d = dynamic_cast<View3DInventor*>(*rit); view3d && !view3d->getViewer()) {
+            continue;
+        }
         // Some view is removed from window list for some reason, e.g. TechDraw
         // hidden page has view but not in the list. By right, the view will
         // self delete, but not the case for TechDraw, especially during

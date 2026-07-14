@@ -184,6 +184,7 @@ void Gui::WindowLayout::restore(Gui::Document& document)
         }
         else {
             auto views = document.getMDIViewsOfType(type);
+            views.remove_if([](MDIView* v) { return v->isDeleting(); });
             if (record.ordinal < views.size()) {
                 auto iterator = views.begin();
                 std::advance(iterator, record.ordinal);

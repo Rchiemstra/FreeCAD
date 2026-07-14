@@ -39,6 +39,7 @@
 #include <QMenu>
 
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
 #include <Gui/Application.h>
@@ -380,6 +381,20 @@ SbBox3f ViewProviderDatum::getRelevantBoundBox() const
             // Fallback to whole document
             objs = this->getObject()->getDocument()->getObjects();
         }
+    }
+
+    // Document restore can process queued view deletion while new view providers
+    // are being attached. In that state getActiveView() may still expose a 3D
+    // view whose embedded QuarterWidget has already been destroyed. A viewport
+    // of this size is sufficient for computing datum extents and avoids touching
+    // the live OpenGL viewer until restoration has finished.
+    if (App::GetApplication().isRestoring()) {
+        SoGetBoundingBoxAction bboxAction(SbViewportRegion(1280, 1024));
+        SbBox3f bbox = getRelevantBoundBox(bboxAction, objs);
+        if (bbox.getVolume() < Precision::Confusion()) {
+            bbox.extendBy(defaultBoundBox());
+        }
+        return bbox;
     }
 
     Gui::View3DInventor* view = dynamic_cast<Gui::View3DInventor*>(this->getActiveView());

@@ -154,6 +154,11 @@ View3DInventor::View3DInventor(
 
 View3DInventor::~View3DInventor()
 {
+    // Qt can destroy the view directly without going through deleteSelf().
+    // Mark it before deleting the embedded viewer because that destruction can
+    // process events and re-enter MainWindow::activeWindow().
+    markDeleting();
+
     if (_pcDocument) {
         SoCamera* Cam = _viewer->getSoRenderManager()->getCamera();
         if (Cam) {
