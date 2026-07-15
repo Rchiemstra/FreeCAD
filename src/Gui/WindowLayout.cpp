@@ -110,7 +110,7 @@ void Gui::WindowLayout::save(const Gui::Document& document, const std::string& f
     std::map<std::string, std::size_t> typeOrdinals;
     int recordIndex = 0;
     for (auto* view : document.getMDIViews()) {
-        const std::string typeName = view->getTypeId().getName();
+        const std::string typeName(view->getTypeId().getName());
         const std::size_t ordinal = typeOrdinals[typeName]++;
         if (view->currentViewMode() == Gui::MDIView::Child) {
             continue;
