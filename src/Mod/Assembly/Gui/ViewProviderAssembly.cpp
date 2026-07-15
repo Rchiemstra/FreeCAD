@@ -321,7 +321,7 @@ bool ViewProviderAssembly::setEdit(int mode)
             [this](const QString& name) { this->onWorkbenchActivated(name); }
         );
 
-        assembly->solve();
+        assembly->recomputeFeature(true);
 
         return true;
     }
@@ -1539,7 +1539,9 @@ void ViewProviderAssembly::isolateJointReferences(App::DocumentObject* joint, Is
 
     isolatedJoint = joint;
     isolatedJointVisibilityBackup = joint->Visibility.getValue();
-    joint->Visibility.setValue(true);
+    if (!isolatedJointVisibilityBackup) {
+        joint->Visibility.setValue(true);
+    }
 
     std::set<App::DocumentObject*> isolateSet = {part1, part2};
     isolateComponents(isolateSet, mode);
@@ -1550,7 +1552,9 @@ void ViewProviderAssembly::isolateJointReferences(App::DocumentObject* joint, Is
 void ViewProviderAssembly::clearIsolate()
 {
     if (isolatedJoint) {
-        isolatedJoint->Visibility.setValue(isolatedJointVisibilityBackup);
+        if (!isolatedJointVisibilityBackup) {
+            isolatedJoint->Visibility.setValue(false);
+        }
         isolatedJoint = nullptr;
 
         clearJointElementHighlight();

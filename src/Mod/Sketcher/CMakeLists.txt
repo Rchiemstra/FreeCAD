@@ -31,9 +31,12 @@ if(BUILD_GUI)
           TestSketcherGui.py
     )
     list (APPEND Sketcher_TestScripts
+          SketcherTests/TestConstraintPreselectionGui.py
+          SketcherTests/GuiTestCase.py
           SketcherTests/TestPlacementUpdate.py
           SketcherTests/TestOnViewParameterGui.py
           SketcherTests/TestSketcherOffsetGui.py
+          SketcherTests/TestExternalFacePreselection.py
     )
 endif(BUILD_GUI)
 

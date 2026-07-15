@@ -1244,8 +1244,8 @@
     </message>
     <message>
       <location filename="../../Command.cpp" line="1405"/>
-      <source>Applies a boolean operations with the selected shapes</source>
-      <translation>தேர்ந்தெடுக்கப்பட்ட வடிவங்களுடன் பூலியன் செயல்பாடுகளைப் பயன்படுத்துகிறது</translation>
+      <source>Applies a boolean operation with the selected shapes</source>
+      <translation type="unfinished">Applies a boolean operation with the selected shapes</translation>
     </message>
   </context>
   <context>
@@ -2221,12 +2221,12 @@ of the projection.</source>
       <translation>கண்ணி மாற்றவும்</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1589"/>
+      <location filename="../../TaskAttacher.cpp" line="1579"/>
       <source>Edit attachment</source>
       <translation>இணைப்பைத் திருத்தவும்</translation>
     </message>
     <message>
-      <location filename="../../TaskFaceAppearances.cpp" line="488"/>
+      <location filename="../../TaskFaceAppearances.cpp" line="523"/>
       <source>Change face colors</source>
       <translation>முகத்தின் நிறங்களை மாற்றவும்</translation>
     </message>
@@ -2262,12 +2262,12 @@ of the projection.</source>
       <translation>திடமான</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="423"/>
+      <location filename="../../TaskSweep.cpp" line="417"/>
       <source>Sweep</source>
       <translation>துடைக்கவும்</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="1613"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="1615"/>
       <source>Project on surface</source>
       <translation>மேற்பரப்பில் திட்டம்</translation>
     </message>
@@ -4144,17 +4144,17 @@ Check one or more edge entities first.</source>
       <translation>சட்</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="138"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="140"/>
       <source>Projection object</source>
       <translation>திட்ட பொருள்</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="165"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="167"/>
       <source>No active document</source>
       <translation>செயலில் உள்ள ஆவணம் இல்லை</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="171"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="173"/>
       <source>Cannot create a projection object</source>
       <translation>திட்டப் பொருளை உருவாக்க முடியாது</translation>
     </message>
@@ -4892,8 +4892,8 @@ the sketch plane's normal vector will be used</source>
     </message>
     <message>
       <location filename="../../TaskLoft.cpp" line="199"/>
-      <source>Too few elements</source>
-      <translation>மிகக் குறைவான கூறுகள்</translation>
+      <source>Too Few Elements</source>
+      <translation type="unfinished">Too Few Elements</translation>
     </message>
     <message>
       <location filename="../../TaskLoft.cpp" line="200"/>
@@ -5005,7 +5005,7 @@ the sketch plane's normal vector will be used</source>
     <message>
       <location filename="../../TaskOffset.cpp" line="228"/>
       <source>Input error</source>
-      <translation type="unfinished">Input error</translation>
+      <translation>உள்ளீடு பிழை</translation>
     </message>
   </context>
   <context>
@@ -5171,19 +5171,19 @@ only created cuts will be visible</source>
     <message>
       <location filename="../../TaskShapeBuilder.cpp" line="233"/>
       <location filename="../../TaskShapeBuilder.cpp" line="252"/>
+      <source>Select two vertices</source>
+      <translation>இரண்டு முனைகளைத் தேர்ந்தெடுக்கவும்</translation>
+    </message>
+    <message>
+      <location filename="../../TaskShapeBuilder.cpp" line="233"/>
+      <location filename="../../TaskShapeBuilder.cpp" line="252"/>
       <location filename="../../TaskShapeBuilder.cpp" line="281"/>
       <location filename="../../TaskShapeBuilder.cpp" line="323"/>
       <location filename="../../TaskShapeBuilder.cpp" line="378"/>
       <location filename="../../TaskShapeBuilder.cpp" line="432"/>
       <location filename="../../TaskShapeBuilder.cpp" line="498"/>
-      <source>Wrong selection</source>
+      <source>Wrong Selection</source>
       <translation>தவறான தேர்வு</translation>
-    </message>
-    <message>
-      <location filename="../../TaskShapeBuilder.cpp" line="233"/>
-      <location filename="../../TaskShapeBuilder.cpp" line="252"/>
-      <source>Select two vertices</source>
-      <translation>இரண்டு முனைகளைத் தேர்ந்தெடுக்கவும்</translation>
     </message>
     <message>
       <location filename="../../TaskShapeBuilder.cpp" line="281"/>
@@ -5251,18 +5251,8 @@ only created cuts will be visible</source>
     </message>
     <message>
       <location filename="../../TaskSweep.cpp" line="376"/>
-      <source>Too few elements</source>
-      <translation>மிகக் குறைவான கூறுகள்</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="376"/>
       <source>At least one edge or wire is required.</source>
       <translation>குறைந்தபட்சம் ஒரு விளிம்பு அல்லது கம்பி தேவை.</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="382"/>
-      <source>Invalid selection</source>
-      <translation>தவறான தேர்வு</translation>
     </message>
     <message>
       <location filename="../../TaskSweep.cpp" line="383"/>
@@ -5270,8 +5260,18 @@ only created cuts will be visible</source>
       <translation>ஒரு பொருளிலிருந்து குறைந்தபட்சம் 1 விளிம்பைத் தேர்ந்தெடுக்கவும்.</translation>
     </message>
     <message>
+      <location filename="../../TaskSweep.cpp" line="376"/>
+      <source>Too Few Elements</source>
+      <translation type="unfinished">Too Few Elements</translation>
+    </message>
+    <message>
+      <location filename="../../TaskSweep.cpp" line="382"/>
+      <source>Invalid Selection</source>
+      <translation type="unfinished">Invalid Selection</translation>
+    </message>
+    <message>
       <location filename="../../TaskSweep.cpp" line="393"/>
-      <source>Wrong selection</source>
+      <source>Wrong Selection</source>
       <translation>தவறான தேர்வு</translation>
     </message>
     <message>
@@ -5280,39 +5280,39 @@ only created cuts will be visible</source>
       <translation>'% 1' ஐ சுயவிவரமாகவும் பாதையாகவும் பயன்படுத்த முடியாது.</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="437"/>
+      <location filename="../../TaskSweep.cpp" line="431"/>
       <source>Input error</source>
-      <translation type="unfinished">Input error</translation>
+      <translation>உள்ளீடு பிழை</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="478"/>
+      <location filename="../../TaskSweep.cpp" line="472"/>
       <source>Done</source>
       <translation>முடிந்தது</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="481"/>
+      <location filename="../../TaskSweep.cpp" line="475"/>
       <source>Select one or more connected edges in the 3D view and press 'Done'</source>
       <translation>3D காட்சியில் ஒன்று அல்லது அதற்கு மேற்பட்ட இணைக்கப்பட்ட விளிம்புகளைத் தேர்ந்தெடுத்து 'முடிந்தது' என்பதை அழுத்தவும்</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="505"/>
-      <location filename="../../TaskSweep.cpp" line="513"/>
-      <source>Sweep path</source>
-      <translation>ச்வீப் பாதை</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="505"/>
-      <location filename="../../TaskSweep.cpp" line="513"/>
+      <location filename="../../TaskSweep.cpp" line="499"/>
+      <location filename="../../TaskSweep.cpp" line="507"/>
       <source>The selected sweep path is invalid.</source>
       <translation>தேர்ந்தெடுக்கப்பட்ட ச்வீப் பாதை தவறானது.</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="525"/>
+      <location filename="../../TaskSweep.cpp" line="499"/>
+      <location filename="../../TaskSweep.cpp" line="507"/>
+      <source>Sweep Path</source>
+      <translation>ச்வீப் பாதை</translation>
+    </message>
+    <message>
+      <location filename="../../TaskSweep.cpp" line="519"/>
       <source>Vertex/Wire</source>
       <translation type="unfinished">Vertex/Wire</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="526"/>
+      <location filename="../../TaskSweep.cpp" line="520"/>
       <source>Sweep</source>
       <translation>துடைக்கவும்</translation>
     </message>
@@ -5450,12 +5450,12 @@ of the object being attached.</source>
       <translation>முறை% 1 உடன் இணைக்கப்பட்டது</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1037"/>
+      <location filename="../../TaskAttacher.cpp" line="1027"/>
       <source>Selecting…</source>
       <translation>தேர்ந்தெடுக்கிறது…</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="940"/>
+      <location filename="../../TaskAttacher.cpp" line="930"/>
       <source>Face</source>
       <translation>முகம்</translation>
     </message>
@@ -5470,37 +5470,37 @@ of the object being attached.</source>
       <translation>இணைப்பு ஆஃப்செட் (செயலற்றது - இணைக்கப்படவில்லை):</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="947"/>
+      <location filename="../../TaskAttacher.cpp" line="937"/>
       <source>Edge</source>
       <translation>விளிம்பு</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="954"/>
+      <location filename="../../TaskAttacher.cpp" line="944"/>
       <source>Vertex</source>
       <translation type="unfinished">Vertex</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1043"/>
+      <location filename="../../TaskAttacher.cpp" line="1033"/>
       <source>Reference%1</source>
       <translation>குறிப்பு% 1</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1112"/>
+      <location filename="../../TaskAttacher.cpp" line="1102"/>
       <source>Not editable because rotation of AttachmentOffset is bound by expressions.</source>
       <translation>AttachmentOffset இன் சுழற்சி வெளிப்பாடுகளால் பிணைக்கப்பட்டுள்ளதால் திருத்த முடியாது.</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1195"/>
+      <location filename="../../TaskAttacher.cpp" line="1185"/>
       <source>Reference combinations:</source>
       <translation>குறிப்பு சேர்க்கைகள்:</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1217"/>
+      <location filename="../../TaskAttacher.cpp" line="1207"/>
       <source>%1 (add %2)</source>
       <translation>% 1 (% 2 சேர்)</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1220"/>
+      <location filename="../../TaskAttacher.cpp" line="1210"/>
       <source>%1 (add more references)</source>
       <translation>% 1 (மேலும் குறிப்புகளைச் சேர்க்கவும்)</translation>
     </message>
@@ -5801,22 +5801,22 @@ Individual boolean operation checks:</source>
   <context>
     <name>PartGui::TaskDlgAttacher</name>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1481"/>
+      <location filename="../../TaskAttacher.cpp" line="1471"/>
       <source>Attachment</source>
       <translation>இணைப்பு</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1502"/>
+      <location filename="../../TaskAttacher.cpp" line="1492"/>
       <source>%1 select reference</source>
       <translation type="unfinished">%1 select reference</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1508"/>
+      <location filename="../../TaskAttacher.cpp" line="1498"/>
       <source>2x%1 select and confirm</source>
       <translation type="unfinished">2x%1 select and confirm</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1654"/>
+      <location filename="../../TaskAttacher.cpp" line="1648"/>
       <source>Datum dialog: input error</source>
       <translation>தரவு உரையாடல்: உள்ளீடு பிழை</translation>
     </message>
@@ -6001,7 +6001,7 @@ Individual boolean operation checks:</source>
       <translation>ஃப்ரெனெட்</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="551"/>
+      <location filename="../../TaskSweep.cpp" line="545"/>
       <source>Select at least 1 profile and an edge or wire
 in the 3D view for the sweep path.</source>
       <translation>குறைந்தபட்சம் 1 சுயவிவரத்தையும் ஒரு விளிம்பு அல்லது கம்பியையும் தேர்ந்தெடுக்கவும் 
@@ -6058,7 +6058,7 @@ in the 3D view for the sweep path.</source>
     <message>
       <location filename="../../TaskThickness.cpp" line="297"/>
       <source>Input error</source>
-      <translation type="unfinished">Input error</translation>
+      <translation>உள்ளீடு பிழை</translation>
     </message>
   </context>
   <context>
@@ -6090,16 +6090,6 @@ in the 3D view for the sweep path.</source>
       <translation>இறக்குமதி-ஏற்றுமதி</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="333"/>
-      <location filename="../../Command.cpp" line="410"/>
-      <location filename="../../Command.cpp" line="510"/>
-      <location filename="../../Command.cpp" line="952"/>
-      <location filename="../../Command.cpp" line="1015"/>
-      <location filename="../../Command.cpp" line="2277"/>
-      <source>Wrong selection</source>
-      <translation>தவறான தேர்வு</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="350"/>
       <location filename="../../Command.cpp" line="427"/>
       <location filename="../../Command.cpp" line="527"/>
@@ -6111,6 +6101,16 @@ in the 3D view for the sweep path.</source>
       <location filename="../../Command.cpp" line="1016"/>
       <source>Select 2 shapes</source>
       <translation>2 வடிவங்களைத் தேர்ந்தெடுக்கவும்</translation>
+    </message>
+    <message>
+      <location filename="../../Command.cpp" line="333"/>
+      <location filename="../../Command.cpp" line="410"/>
+      <location filename="../../Command.cpp" line="510"/>
+      <location filename="../../Command.cpp" line="952"/>
+      <location filename="../../Command.cpp" line="1015"/>
+      <location filename="../../Command.cpp" line="2277"/>
+      <source>Wrong Selection</source>
+      <translation>தவறான தேர்வு</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="351"/>
@@ -6556,12 +6556,12 @@ Continue?</source>
       <translation>குறுக்குவெட்டு</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderCompound.cpp" line="76"/>
+      <location filename="../../ViewProviderCompound.cpp" line="94"/>
       <source>Delete compound content?</source>
       <translation>கலவை உள்ளடக்கத்தை நீக்கவா?</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderCompound.cpp" line="77"/>
+      <location filename="../../ViewProviderCompound.cpp" line="95"/>
       <source>The compound '%1' has %2 child objects. Do you want to delete them as well?</source>
       <translation>'% 1' கலவை % 2 குழந்தைப் பொருள்களைக் கொண்டுள்ளது. அவற்றையும் நீக்க வேண்டுமா?</translation>
     </message>
@@ -6902,117 +6902,117 @@ for collision or distance filtering.</source>
   <context>
     <name>TaskCheckGeometryResults</name>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="31"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="30"/>
       <source>Shape type</source>
       <translation>வடிவ வகை</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="33"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="32"/>
       <source>Vertices</source>
       <translation>செங்குத்துகள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="35"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="34"/>
       <source>Edges</source>
       <translation>விளிம்புகள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="36"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="35"/>
       <source>Wires</source>
       <translation>கம்பிகள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="37"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="36"/>
       <source>Faces</source>
       <translation>முகங்கள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="38"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="37"/>
       <source>Shells</source>
       <translation>குண்டுகள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="39"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="38"/>
       <source>Solids</source>
       <translation>திடப்பொருட்கள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="42"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="41"/>
       <source>CompSolids</source>
       <translation type="unfinished">CompSolids</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="47"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="46"/>
       <source>Compounds</source>
       <translation>இனம்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="51"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="50"/>
       <source>Shapes</source>
       <translation>வடிவங்கள்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="76"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="75"/>
       <source>Area</source>
       <translation>பகுதி</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="89"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="88"/>
       <source>Volume</source>
       <translation>தொகுதி</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="96"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="95"/>
       <source>Mass</source>
       <translation>நிறை</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="103"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="102"/>
       <source>Length</source>
       <translation>நீளம்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="110"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="109"/>
       <source>Radius</source>
       <translation>ஆரம்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="117"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="116"/>
       <source>Curve center</source>
       <translation>வளைவு நடுவண்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="124"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="123"/>
       <source>Continuity</source>
       <translation>தொடர்ச்சி</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="131"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="130"/>
       <source>Center of mass</source>
       <translation>வெகுசன நடுவண்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="152"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="151"/>
       <source>Is closed</source>
       <translation>மூடப்பட்டுள்ளது</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="159"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="158"/>
       <source>Orientation</source>
       <translation>நோக்குநிலை</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="177"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="176"/>
       <source>Global center of mass</source>
       <translation>உலகளாவிய வெகுசன நடுவண்</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="195"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="194"/>
       <source>Global placement</source>
       <translation>உலகளாவிய வேலை வாய்ப்பு</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="197"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="196"/>
       <source>Placement</source>
       <translation>இடவமைவு</translation>
     </message>
@@ -7139,12 +7139,12 @@ Overlapping volumes of the shapes will be removed.</source>
   <context>
     <name>Part::FaceMakerSimple</name>
     <message>
-      <location filename="../../../App/FaceMaker.cpp" line="332"/>
+      <location filename="../../../App/FaceMaker.cpp" line="338"/>
       <source>Simple</source>
       <translation>எளிமையானது</translation>
     </message>
     <message>
-      <location filename="../../../App/FaceMaker.cpp" line="337"/>
+      <location filename="../../../App/FaceMaker.cpp" line="343"/>
       <source>Makes separate plane face from every wire independently. No support for holes; wires can be on different planes.</source>
       <translation>ஒவ்வொரு கம்பியிலிருந்தும் தனித்தனி விமான முகத்தை சுயாதீனமாக உருவாக்குகிறது. துளைகளுக்கு உதவி இல்லை; கம்பிகள் வெவ்வேறு விமானங்களில் இருக்கலாம்.</translation>
     </message>
@@ -7178,12 +7178,12 @@ Overlapping volumes of the shapes will be removed.</source>
   <context>
     <name>Part::FaceMakerExtrusion</name>
     <message>
-      <location filename="../../../App/FeatureExtrusion.cpp" line="421"/>
+      <location filename="../../../App/FeatureExtrusion.cpp" line="427"/>
       <source>Part Extrude facemaker</source>
       <translation>பகுதி எக்ச்ட்ரூட் ஃபேச்மேக்கர்</translation>
     </message>
     <message>
-      <location filename="../../../App/FeatureExtrusion.cpp" line="426"/>
+      <location filename="../../../App/FeatureExtrusion.cpp" line="432"/>
       <source>Supports making faces with holes, does not support nesting.</source>
       <translation>துளைகளுடன் முகங்களை உருவாக்குவதை ஆதரிக்கிறது, கூடு கட்டுவதை ஆதரிக்காது.</translation>
     </message>
@@ -7321,7 +7321,7 @@ Overlapping volumes of the shapes will be removed.</source>
   <context>
     <name>Exceptions</name>
     <message>
-      <location filename="../../../App/Geometry.cpp" line="6698"/>
+      <location filename="../../../App/Geometry.cpp" line="6701"/>
       <source>Unable to guess intersection of curves. Try adding a coincident constraint between the vertices of the curves you are intending to fillet.</source>
       <translation>வளைவுகளின் குறுக்குவெட்டை யூகிக்க முடியவில்லை. நீங்கள் ஃபில்லட் செய்ய விரும்பும் வளைவுகளின் செங்குத்துகளுக்கு இடையில் ஒரு தற்செயல் தடையைச் சேர்க்க முயற்சிக்கவும்.</translation>
     </message>
@@ -7623,12 +7623,12 @@ Overlapping volumes of the shapes will be removed.</source>
   <context>
     <name>PartCmdRemoveSelectionGate</name>
     <message>
-      <location filename="../../CommandFilter.cpp" line="268"/>
+      <location filename="../../CommandFilter.cpp" line="273"/>
       <source>No Selection Filters</source>
       <translation>தேர்வு வடிப்பான்கள் இல்லை</translation>
     </message>
     <message>
-      <location filename="../../CommandFilter.cpp" line="269"/>
+      <location filename="../../CommandFilter.cpp" line="274"/>
       <source>Clears all selection filters</source>
       <translation>அனைத்து தேர்வு வடிப்பான்களையும் அழிக்கும்</translation>
     </message>
@@ -7698,32 +7698,37 @@ Overlapping volumes of the shapes will be removed.</source>
       <translation>நிகழ்வுகள்</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="69"/>
+      <location filename="../../PatternParametersWidget.cpp" line="78"/>
       <source>Axis</source>
       <translation>அச்சு</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="70"/>
-      <location filename="../../PatternParametersWidget.cpp" line="72"/>
+      <location filename="../../PatternParametersWidget.cpp" line="79"/>
+      <location filename="../../PatternParametersWidget.cpp" line="81"/>
       <source>Total Angle</source>
       <translation type="unfinished">Total Angle</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="71"/>
-      <location filename="../../PatternParametersWidget.cpp" line="73"/>
+      <location filename="../../PatternParametersWidget.cpp" line="80"/>
+      <location filename="../../PatternParametersWidget.cpp" line="82"/>
       <source>Angular Spacing</source>
       <translation type="unfinished">Angular Spacing</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="412"/>
-      <location filename="../../PatternParametersWidget.cpp" line="508"/>
+      <location filename="../../PatternParametersWidget.cpp" line="423"/>
+      <location filename="../../PatternParametersWidget.cpp" line="519"/>
       <source>Spacing %1</source>
       <translation>இடைவெளி% 1</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="428"/>
+      <location filename="../../PatternParametersWidget.cpp" line="439"/>
       <source>Remove this spacing definition.</source>
       <translation>இந்த இடைவெளி வரையறையை நீக்கவும்.</translation>
+    </message>
+    <message>
+      <location filename="../../PatternParametersWidget.cpp" line="940"/>
+      <source>Reset spacing</source>
+      <translation type="unfinished">Reset spacing</translation>
     </message>
   </context>
   <context>
@@ -7741,6 +7746,19 @@ Overlapping volumes of the shapes will be removed.</source>
       <source>STEP with colors</source>
       <extracomment>Translation note: "STEP" is a file type end should not be translated</extracomment>
       <translation type="unfinished">STEP with colors</translation>
+    </message>
+  </context>
+  <context>
+    <name>Part::FaceMakerUnified</name>
+    <message>
+      <location filename="../../../App/FaceMakerUnified.cpp" line="53"/>
+      <source>Unified facemaker</source>
+      <translation type="unfinished">Unified facemaker</translation>
+    </message>
+    <message>
+      <location filename="../../../App/FaceMakerUnified.cpp" line="58"/>
+      <source>Unified: handles nested holes, overlapping wires, and curved surfaces</source>
+      <translation type="unfinished">Unified: handles nested holes, overlapping wires, and curved surfaces</translation>
     </message>
   </context>
   <context>

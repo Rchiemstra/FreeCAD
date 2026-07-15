@@ -240,7 +240,7 @@ Plusieurs dossiers peuvent être ajoutés en utilisant « ;; » pour séparer le
     <message>
       <location filename="../../DlgStartPreferences.ui" line="64"/>
       <source>Shows example files on the start page</source>
-      <translation>Afficher les fichiers des exemples sur la page d'accueil</translation>
+      <translation>Affiche les fichiers des exemples sur la page d'accueil.</translation>
     </message>
     <message>
       <location filename="../../DlgStartPreferences.ui" line="114"/>
@@ -269,12 +269,12 @@ Plusieurs dossiers peuvent être ajoutés en utilisant « ;; » pour séparer le
   <context>
     <name>Start::DisplayedFilesModel</name>
     <message>
-      <location filename="../../../App/DisplayedFilesModel.cpp" line="130"/>
+      <location filename="../../../App/DisplayedFilesModel.cpp" line="131"/>
       <source>Created at:</source>
       <translation>Créé le :</translation>
     </message>
     <message>
-      <location filename="../../../App/DisplayedFilesModel.cpp" line="131"/>
+      <location filename="../../../App/DisplayedFilesModel.cpp" line="132"/>
       <source>Modified at:</source>
       <translation>Modifié le :</translation>
     </message>

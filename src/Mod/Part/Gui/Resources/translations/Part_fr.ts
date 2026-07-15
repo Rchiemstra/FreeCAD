@@ -1276,8 +1276,8 @@ des plans vertical et horizontal avec un sommet ou le long d'une ligne.</transla
     </message>
     <message>
       <location filename="../../Command.cpp" line="1405"/>
-      <source>Applies a boolean operations with the selected shapes</source>
-      <translation>Applique une opération booléenne aux formes sélectionnées.</translation>
+      <source>Applies a boolean operation with the selected shapes</source>
+      <translation>Applique un opérateur booléen aux formes sélectionnées.</translation>
     </message>
   </context>
   <context>
@@ -2251,12 +2251,12 @@ projection.</translation>
       <translation>Convertir le maillage</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1589"/>
+      <location filename="../../TaskAttacher.cpp" line="1579"/>
       <source>Edit attachment</source>
       <translation>Modifier l'ancrage</translation>
     </message>
     <message>
-      <location filename="../../TaskFaceAppearances.cpp" line="488"/>
+      <location filename="../../TaskFaceAppearances.cpp" line="523"/>
       <source>Change face colors</source>
       <translation>Changer les couleurs des faces</translation>
     </message>
@@ -2292,12 +2292,12 @@ projection.</translation>
       <translation>Solide</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="423"/>
+      <location filename="../../TaskSweep.cpp" line="417"/>
       <source>Sweep</source>
       <translation>Balayage</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="1613"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="1615"/>
       <source>Project on surface</source>
       <translation>Projeter sur une surface</translation>
     </message>
@@ -4170,17 +4170,17 @@ transformations. Cela allonge la durée de l'importation, mais n'affecte ni la p
       <translation>Z</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="138"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="140"/>
       <source>Projection object</source>
       <translation>Objet de projection</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="165"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="167"/>
       <source>No active document</source>
       <translation>Aucun document actif</translation>
     </message>
     <message>
-      <location filename="../../DlgProjectionOnSurface.cpp" line="171"/>
+      <location filename="../../DlgProjectionOnSurface.cpp" line="173"/>
       <source>Cannot create a projection object</source>
       <translation>Impossible de créer un objet de projection</translation>
     </message>
@@ -4525,7 +4525,7 @@ fonction isolée.</translation>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="361"/>
       <source>Experimental</source>
-      <translation>Expérimental</translation>
+      <translation>Expérimental pour les manipulateurs</translation>
     </message>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="367"/>
@@ -4566,7 +4566,7 @@ fonction en cours d'édition par le glisser-déposer.</translation>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="466"/>
       <source>Default coarse drag behavior</source>
-      <translation>Comportement par défaut du glissement par pas importants</translation>
+      <translation>Comportement par défaut du glissement du manipulateur</translation>
     </message>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="473"/>
@@ -4576,12 +4576,12 @@ fonction en cours d'édition par le glisser-déposer.</translation>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="493"/>
       <source>Coarse movement multiplier</source>
-      <translation>Multiplicateur de mouvement par pas importants</translation>
+      <translation>Multiplicateur de mouvement</translation>
     </message>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="523"/>
       <source>Coarse rotation step (degrees)</source>
-      <translation>Pas de rotation par pas importants (degrés)</translation>
+      <translation>Pas de rotation (degrés)</translation>
     </message>
     <message>
       <location filename="../../DlgSettingsGeneral.ui" line="233"/>
@@ -4612,7 +4612,7 @@ fonction en cours d'édition par le glisser-déposer.</translation>
       <location filename="../../DlgSettingsGeneral.cpp" line="57"/>
       <source>Coarse</source>
       <extracomment>Part/PartDesign settings: drag behavior mode when not holding the snap modifier key</extracomment>
-      <translation>Grossier</translation>
+      <translation>Important</translation>
     </message>
     <message>
       <location filename="../../DlgSettingsGeneral.cpp" line="58"/>
@@ -4924,8 +4924,8 @@ sinon le vecteur normal du plan de l'esquisse sera utilisé.</translation>
     </message>
     <message>
       <location filename="../../TaskLoft.cpp" line="199"/>
-      <source>Too few elements</source>
-      <translation>Trop peu d'éléments</translation>
+      <source>Too Few Elements</source>
+      <translation>Il y a trop peu d'éléments.</translation>
     </message>
     <message>
       <location filename="../../TaskLoft.cpp" line="200"/>
@@ -5199,19 +5199,19 @@ only created cuts will be visible</source>
     <message>
       <location filename="../../TaskShapeBuilder.cpp" line="233"/>
       <location filename="../../TaskShapeBuilder.cpp" line="252"/>
+      <source>Select two vertices</source>
+      <translation>Sélectionner deux sommets</translation>
+    </message>
+    <message>
+      <location filename="../../TaskShapeBuilder.cpp" line="233"/>
+      <location filename="../../TaskShapeBuilder.cpp" line="252"/>
       <location filename="../../TaskShapeBuilder.cpp" line="281"/>
       <location filename="../../TaskShapeBuilder.cpp" line="323"/>
       <location filename="../../TaskShapeBuilder.cpp" line="378"/>
       <location filename="../../TaskShapeBuilder.cpp" line="432"/>
       <location filename="../../TaskShapeBuilder.cpp" line="498"/>
-      <source>Wrong selection</source>
+      <source>Wrong Selection</source>
       <translation>Sélection incorrecte</translation>
-    </message>
-    <message>
-      <location filename="../../TaskShapeBuilder.cpp" line="233"/>
-      <location filename="../../TaskShapeBuilder.cpp" line="252"/>
-      <source>Select two vertices</source>
-      <translation>Sélectionner deux sommets</translation>
     </message>
     <message>
       <location filename="../../TaskShapeBuilder.cpp" line="281"/>
@@ -5279,18 +5279,8 @@ only created cuts will be visible</source>
     </message>
     <message>
       <location filename="../../TaskSweep.cpp" line="376"/>
-      <source>Too few elements</source>
-      <translation>Trop peu d'éléments</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="376"/>
       <source>At least one edge or wire is required.</source>
       <translation>Au moins une arête ou un fil est requis.</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="382"/>
-      <source>Invalid selection</source>
-      <translation>Sélection non valide</translation>
     </message>
     <message>
       <location filename="../../TaskSweep.cpp" line="383"/>
@@ -5298,9 +5288,19 @@ only created cuts will be visible</source>
       <translation>Sélectionner au moins une arête à partir d'un seul objet</translation>
     </message>
     <message>
+      <location filename="../../TaskSweep.cpp" line="376"/>
+      <source>Too Few Elements</source>
+      <translation>Il y a trop peu d'éléments.</translation>
+    </message>
+    <message>
+      <location filename="../../TaskSweep.cpp" line="382"/>
+      <source>Invalid Selection</source>
+      <translation>La sélection est non valide.</translation>
+    </message>
+    <message>
       <location filename="../../TaskSweep.cpp" line="393"/>
-      <source>Wrong selection</source>
-      <translation>Sélection non valide</translation>
+      <source>Wrong Selection</source>
+      <translation>Sélection incorrecte</translation>
     </message>
     <message>
       <location filename="../../TaskSweep.cpp" line="394"/>
@@ -5308,39 +5308,39 @@ only created cuts will be visible</source>
       <translation>'%1' ne peut pas servir de profil et de trajectoire.</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="437"/>
+      <location filename="../../TaskSweep.cpp" line="431"/>
       <source>Input error</source>
       <translation>Erreur de saisie</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="478"/>
+      <location filename="../../TaskSweep.cpp" line="472"/>
       <source>Done</source>
       <translation>Valider</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="481"/>
+      <location filename="../../TaskSweep.cpp" line="475"/>
       <source>Select one or more connected edges in the 3D view and press 'Done'</source>
       <translation>Sélectionner une ou plusieurs arêtes connectées dans la vue 3D et appuyer sur "Valider".</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="505"/>
-      <location filename="../../TaskSweep.cpp" line="513"/>
-      <source>Sweep path</source>
-      <translation>Trajectoire de balayage</translation>
-    </message>
-    <message>
-      <location filename="../../TaskSweep.cpp" line="505"/>
-      <location filename="../../TaskSweep.cpp" line="513"/>
+      <location filename="../../TaskSweep.cpp" line="499"/>
+      <location filename="../../TaskSweep.cpp" line="507"/>
       <source>The selected sweep path is invalid.</source>
       <translation>La trajectoire de balayage sélectionnée n'est pas valide.</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="525"/>
+      <location filename="../../TaskSweep.cpp" line="499"/>
+      <location filename="../../TaskSweep.cpp" line="507"/>
+      <source>Sweep Path</source>
+      <translation>Trajectoire de balayage</translation>
+    </message>
+    <message>
+      <location filename="../../TaskSweep.cpp" line="519"/>
       <source>Vertex/Wire</source>
       <translation>Sommet/polyligne</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="526"/>
+      <location filename="../../TaskSweep.cpp" line="520"/>
       <source>Sweep</source>
       <translation>Paramètres du balayage</translation>
     </message>
@@ -5477,12 +5477,12 @@ Remarque : le décalage est exprimé dans le système de coordonnées local de l
       <translation>Ancré par le mode %1</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1037"/>
+      <location filename="../../TaskAttacher.cpp" line="1027"/>
       <source>Selecting…</source>
       <translation>Sélectionner…</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="940"/>
+      <location filename="../../TaskAttacher.cpp" line="930"/>
       <source>Face</source>
       <translation>Face</translation>
     </message>
@@ -5497,37 +5497,37 @@ Remarque : le décalage est exprimé dans le système de coordonnées local de l
       <translation>Décalage de l'ancrage (inactif/non ancré) :</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="947"/>
+      <location filename="../../TaskAttacher.cpp" line="937"/>
       <source>Edge</source>
       <translation>Arête</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="954"/>
+      <location filename="../../TaskAttacher.cpp" line="944"/>
       <source>Vertex</source>
       <translation>Sommet</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1043"/>
+      <location filename="../../TaskAttacher.cpp" line="1033"/>
       <source>Reference%1</source>
       <translation>Référence%1</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1112"/>
+      <location filename="../../TaskAttacher.cpp" line="1102"/>
       <source>Not editable because rotation of AttachmentOffset is bound by expressions.</source>
       <translation>Non modifiable parce que la rotation du décalage de l'ancrage est définie par des expressions.</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1195"/>
+      <location filename="../../TaskAttacher.cpp" line="1185"/>
       <source>Reference combinations:</source>
       <translation>Combinaisons de référence :</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1217"/>
+      <location filename="../../TaskAttacher.cpp" line="1207"/>
       <source>%1 (add %2)</source>
       <translation>%1 (ajouter %2)</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1220"/>
+      <location filename="../../TaskAttacher.cpp" line="1210"/>
       <source>%1 (add more references)</source>
       <translation>%1 (ajouter plus de références)</translation>
     </message>
@@ -5839,22 +5839,22 @@ Valeur par défaut : true</translation>
   <context>
     <name>PartGui::TaskDlgAttacher</name>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1481"/>
+      <location filename="../../TaskAttacher.cpp" line="1471"/>
       <source>Attachment</source>
       <translation>Ancrage</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1502"/>
+      <location filename="../../TaskAttacher.cpp" line="1492"/>
       <source>%1 select reference</source>
       <translation>%1 sélectionner une référence</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1508"/>
+      <location filename="../../TaskAttacher.cpp" line="1498"/>
       <source>2x%1 select and confirm</source>
       <translation>2x %1 sélectionner et confirmer</translation>
     </message>
     <message>
-      <location filename="../../TaskAttacher.cpp" line="1654"/>
+      <location filename="../../TaskAttacher.cpp" line="1648"/>
       <source>Datum dialog: input error</source>
       <translation>Boîte de dialogue de la référence : erreur de saisie</translation>
     </message>
@@ -6039,7 +6039,7 @@ Valeur par défaut : true</translation>
       <translation>Frenet</translation>
     </message>
     <message>
-      <location filename="../../TaskSweep.cpp" line="551"/>
+      <location filename="../../TaskSweep.cpp" line="545"/>
       <source>Select at least 1 profile and an edge or wire
 in the 3D view for the sweep path.</source>
       <translation>Sélectionner au moins un profil et une arête ou une polyligne dans la vue 3D pour la trajectoire</translation>
@@ -6127,16 +6127,6 @@ in the 3D view for the sweep path.</source>
       <translation>Importer/Exporter</translation>
     </message>
     <message>
-      <location filename="../../Command.cpp" line="333"/>
-      <location filename="../../Command.cpp" line="410"/>
-      <location filename="../../Command.cpp" line="510"/>
-      <location filename="../../Command.cpp" line="952"/>
-      <location filename="../../Command.cpp" line="1015"/>
-      <location filename="../../Command.cpp" line="2277"/>
-      <source>Wrong selection</source>
-      <translation>Sélection non valide</translation>
-    </message>
-    <message>
       <location filename="../../Command.cpp" line="350"/>
       <location filename="../../Command.cpp" line="427"/>
       <location filename="../../Command.cpp" line="527"/>
@@ -6148,6 +6138,16 @@ in the 3D view for the sweep path.</source>
       <location filename="../../Command.cpp" line="1016"/>
       <source>Select 2 shapes</source>
       <translation>Sélectionner 2 formes</translation>
+    </message>
+    <message>
+      <location filename="../../Command.cpp" line="333"/>
+      <location filename="../../Command.cpp" line="410"/>
+      <location filename="../../Command.cpp" line="510"/>
+      <location filename="../../Command.cpp" line="952"/>
+      <location filename="../../Command.cpp" line="1015"/>
+      <location filename="../../Command.cpp" line="2277"/>
+      <source>Wrong Selection</source>
+      <translation>Sélection incorrecte</translation>
     </message>
     <message>
       <location filename="../../Command.cpp" line="351"/>
@@ -6523,7 +6523,7 @@ Continue?</source>
     <message>
       <location filename="../../CommandSimple.cpp" line="185"/>
       <source>Distance in Parameter Space</source>
-      <translation>Distance dans l'espace des paramètres</translation>
+      <translation>Distance entre les points</translation>
     </message>
     <message>
       <location filename="../../CommandSimple.cpp" line="186"/>
@@ -6592,12 +6592,12 @@ Continue?</source>
       <translation>Intersection</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderCompound.cpp" line="76"/>
+      <location filename="../../ViewProviderCompound.cpp" line="94"/>
       <source>Delete compound content?</source>
       <translation>Faut-il supprimer le contenu du composé ?</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderCompound.cpp" line="77"/>
+      <location filename="../../ViewProviderCompound.cpp" line="95"/>
       <source>The compound '%1' has %2 child objects. Do you want to delete them as well?</source>
       <translation>Le composé « %1 » comporte %2 objets enfants. Faut-il également les supprimer ?</translation>
     </message>
@@ -6861,7 +6861,7 @@ Si un deuxième objet est sélectionné, il sera utilisé comme référence, par
     <message>
       <location filename="../../../AttachmentEditor/TaskAttachmentEditor.py" line="269"/>
       <source>Continue</source>
-      <translation>Continuer</translation>
+      <translation>Continu</translation>
     </message>
     <message>
       <location filename="../../../AttachmentEditor/TaskAttachmentEditor.py" line="354"/>
@@ -6938,117 +6938,117 @@ Si un deuxième objet est sélectionné, il sera utilisé comme référence, par
   <context>
     <name>TaskCheckGeometryResults</name>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="31"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="30"/>
       <source>Shape type</source>
       <translation>Type de forme</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="33"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="32"/>
       <source>Vertices</source>
       <translation>Sommets</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="35"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="34"/>
       <source>Edges</source>
       <translation>Arêtes</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="36"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="35"/>
       <source>Wires</source>
       <translation>Polylignes</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="37"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="36"/>
       <source>Faces</source>
       <translation>Faces</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="38"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="37"/>
       <source>Shells</source>
       <translation>Coques</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="39"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="38"/>
       <source>Solids</source>
       <translation>Solides</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="42"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="41"/>
       <source>CompSolids</source>
       <translation>Solides composites</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="47"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="46"/>
       <source>Compounds</source>
       <translation>Composés</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="51"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="50"/>
       <source>Shapes</source>
       <translation>Formes</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="76"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="75"/>
       <source>Area</source>
       <translation>Surface</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="89"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="88"/>
       <source>Volume</source>
       <translation>Volume</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="96"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="95"/>
       <source>Mass</source>
       <translation>Masse</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="103"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="102"/>
       <source>Length</source>
       <translation>Longueur</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="110"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="109"/>
       <source>Radius</source>
       <translation>Rayon</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="117"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="116"/>
       <source>Curve center</source>
       <translation>Centre de la courbe</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="124"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="123"/>
       <source>Continuity</source>
       <translation>Continuité</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="131"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="130"/>
       <source>Center of mass</source>
       <translation>Centre d'inertie</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="152"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="151"/>
       <source>Is closed</source>
       <translation>La forme est-elle fermée</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="159"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="158"/>
       <source>Orientation</source>
       <translation>Orientation</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="177"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="176"/>
       <source>Global center of mass</source>
       <translation>Centre d'inertie global</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="195"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="194"/>
       <source>Global placement</source>
       <translation>Position globale</translation>
     </message>
     <message>
-      <location filename="../../../BasicShapes/ShapeContent.py" line="197"/>
+      <location filename="../../../BasicShapes/ShapeContent.py" line="196"/>
       <source>Placement</source>
       <translation>Position</translation>
     </message>
@@ -7174,12 +7174,12 @@ volumes se chevauchant seront supprimés.</translation>
   <context>
     <name>Part::FaceMakerSimple</name>
     <message>
-      <location filename="../../../App/FaceMaker.cpp" line="332"/>
+      <location filename="../../../App/FaceMaker.cpp" line="338"/>
       <source>Simple</source>
       <translation>Simple</translation>
     </message>
     <message>
-      <location filename="../../../App/FaceMaker.cpp" line="337"/>
+      <location filename="../../../App/FaceMaker.cpp" line="343"/>
       <source>Makes separate plane face from every wire independently. No support for holes; wires can be on different planes.</source>
       <translation>Construit des faces planes séparées à partir de chaque polyligne indépendamment. Les trous ne sont pas pris en charge. Les polylignes peuvent être sur différents plans.</translation>
     </message>
@@ -7213,12 +7213,12 @@ volumes se chevauchant seront supprimés.</translation>
   <context>
     <name>Part::FaceMakerExtrusion</name>
     <message>
-      <location filename="../../../App/FeatureExtrusion.cpp" line="421"/>
+      <location filename="../../../App/FeatureExtrusion.cpp" line="427"/>
       <source>Part Extrude facemaker</source>
       <translation>Générateur de faces avec des trous par extrusion</translation>
     </message>
     <message>
-      <location filename="../../../App/FeatureExtrusion.cpp" line="426"/>
+      <location filename="../../../App/FeatureExtrusion.cpp" line="432"/>
       <source>Supports making faces with holes, does not support nesting.</source>
       <translation>Permet de créer des faces avec des trous mais pas d'imbrication.</translation>
     </message>
@@ -7291,7 +7291,7 @@ volumes se chevauchant seront supprimés.</translation>
     <message>
       <location filename="../../../BOPTools/ToleranceFeatures.py" line="91"/>
       <source>Continue</source>
-      <translation>Continuer</translation>
+      <translation>Continu</translation>
     </message>
   </context>
   <context>
@@ -7356,7 +7356,7 @@ volumes se chevauchant seront supprimés.</translation>
   <context>
     <name>Exceptions</name>
     <message>
-      <location filename="../../../App/Geometry.cpp" line="6698"/>
+      <location filename="../../../App/Geometry.cpp" line="6701"/>
       <source>Unable to guess intersection of curves. Try adding a coincident constraint between the vertices of the curves you are intending to fillet.</source>
       <translation>Il n'est pas possible de déterminer l'intersection des courbes. Essayer d'ajouter une
 contrainte de coïncidence entre les sommets des courbes là où il est prévu des congés.</translation>
@@ -7659,12 +7659,12 @@ contrainte de coïncidence entre les sommets des courbes là où il est prévu d
   <context>
     <name>PartCmdRemoveSelectionGate</name>
     <message>
-      <location filename="../../CommandFilter.cpp" line="268"/>
+      <location filename="../../CommandFilter.cpp" line="273"/>
       <source>No Selection Filters</source>
       <translation>Aucun filtre de sélection</translation>
     </message>
     <message>
-      <location filename="../../CommandFilter.cpp" line="269"/>
+      <location filename="../../CommandFilter.cpp" line="274"/>
       <source>Clears all selection filters</source>
       <translation>Efface tous les filtres de sélection.</translation>
     </message>
@@ -7734,32 +7734,37 @@ contrainte de coïncidence entre les sommets des courbes là où il est prévu d
       <translation>Occurrences</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="69"/>
+      <location filename="../../PatternParametersWidget.cpp" line="78"/>
       <source>Axis</source>
       <translation>Axe</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="70"/>
-      <location filename="../../PatternParametersWidget.cpp" line="72"/>
+      <location filename="../../PatternParametersWidget.cpp" line="79"/>
+      <location filename="../../PatternParametersWidget.cpp" line="81"/>
       <source>Total Angle</source>
       <translation>Angle total</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="71"/>
-      <location filename="../../PatternParametersWidget.cpp" line="73"/>
+      <location filename="../../PatternParametersWidget.cpp" line="80"/>
+      <location filename="../../PatternParametersWidget.cpp" line="82"/>
       <source>Angular Spacing</source>
       <translation>Espacement angulaire</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="412"/>
-      <location filename="../../PatternParametersWidget.cpp" line="508"/>
+      <location filename="../../PatternParametersWidget.cpp" line="423"/>
+      <location filename="../../PatternParametersWidget.cpp" line="519"/>
       <source>Spacing %1</source>
       <translation>Espacement %1</translation>
     </message>
     <message>
-      <location filename="../../PatternParametersWidget.cpp" line="428"/>
+      <location filename="../../PatternParametersWidget.cpp" line="439"/>
       <source>Remove this spacing definition.</source>
       <translation>Supprimer cette définition d'espacement</translation>
+    </message>
+    <message>
+      <location filename="../../PatternParametersWidget.cpp" line="940"/>
+      <source>Reset spacing</source>
+      <translation>Réinitialiser l'espacement</translation>
     </message>
   </context>
   <context>
@@ -7780,11 +7785,24 @@ contrainte de coïncidence entre les sommets des courbes là où il est prévu d
     </message>
   </context>
   <context>
+    <name>Part::FaceMakerUnified</name>
+    <message>
+      <location filename="../../../App/FaceMakerUnified.cpp" line="53"/>
+      <source>Unified facemaker</source>
+      <translation>Générateur unifié</translation>
+    </message>
+    <message>
+      <location filename="../../../App/FaceMakerUnified.cpp" line="58"/>
+      <source>Unified: handles nested holes, overlapping wires, and curved surfaces</source>
+      <translation>Unifié : prend en charge les trous imbriqués, les polylignes qui se chevauchent et les surfaces courbes.</translation>
+    </message>
+  </context>
+  <context>
     <name>Part::FaceMakerBuildFace</name>
     <message>
       <location filename="../../../App/FaceMakerBuildFace.cpp" line="60"/>
       <source>BuildFace facemaker</source>
-      <translation>Générateur de BuildFace</translation>
+      <translation>Générateur de faces BuildFace</translation>
     </message>
     <message>
       <location filename="../../../App/FaceMakerBuildFace.cpp" line="65"/>

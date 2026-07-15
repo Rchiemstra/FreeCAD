@@ -23,8 +23,8 @@
     </message>
     <message>
       <location filename="../../../CommandInsertLink.py" line="80"/>
-      <source>Component</source>
-      <translation>კომპონენტი</translation>
+      <source>Insert Component</source>
+      <translation>კომპონენტის ჩასმა</translation>
     </message>
   </context>
   <context>
@@ -48,7 +48,7 @@
       <translation type="unfinished">Assembly</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="146"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="147"/>
       <source>Active object</source>
       <translation>აქტიური ობიექტი</translation>
     </message>
@@ -130,7 +130,7 @@
     </message>
     <message>
       <location filename="../../../JointObject.py" line="55"/>
-      <location filename="../../../JointObject.py" line="1852"/>
+      <location filename="../../../JointObject.py" line="1896"/>
       <source>Distance</source>
       <translation>დაშორება</translation>
     </message>
@@ -175,22 +175,27 @@
       <translation>გაფუჭებული ბმული სად: </translation>
     </message>
     <message>
-      <location filename="../../../JointObject.py" line="1671"/>
+      <location filename="../../../JointObject.py" line="1238"/>
+      <source>Edit Joint</source>
+      <translation type="unfinished">Edit Joint</translation>
+    </message>
+    <message>
+      <location filename="../../../JointObject.py" line="1704"/>
       <source>Select 2 elements from 2 separate parts</source>
       <translation>აირჩიეთ 2 ელემენტი 2 განსხვავებული ნაწილიდან</translation>
     </message>
     <message>
-      <location filename="../../../JointObject.py" line="1854"/>
+      <location filename="../../../JointObject.py" line="1898"/>
       <source>Radius 1</source>
       <translation>რადიუსი 1</translation>
     </message>
     <message>
-      <location filename="../../../JointObject.py" line="1856"/>
+      <location filename="../../../JointObject.py" line="1900"/>
       <source>Thread pitch</source>
       <translation>კუთხვილის ტონი</translation>
     </message>
     <message>
-      <location filename="../../../JointObject.py" line="1858"/>
+      <location filename="../../../JointObject.py" line="1902"/>
       <source>Pitch radius</source>
       <translation>ფერდობის რადიუსი</translation>
     </message>
@@ -482,44 +487,39 @@ SLOPE აღწერს დახრილობას 0-დან H1-მდე
       <translation type="unfinished">Not enough frames to create an animation.</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1053"/>
+      <location filename="../../../CommandCreateSimulation.py" line="1068"/>
       <source>Save Animation</source>
       <translation>ანიმაციის შენახვა</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1075"/>
+      <location filename="../../../CommandCreateSimulation.py" line="1093"/>
+      <source>Pillow (PIL) is not installed. It is required for video export.</source>
+      <translation type="unfinished">Pillow (PIL) is not installed. It is required for video export.</translation>
+    </message>
+    <message>
+      <location filename="../../../CommandCreateSimulation.py" line="1100"/>
       <source>Generating Frames…</source>
       <translation>კადრების გენერაცია…</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1076"/>
+      <location filename="../../../CommandCreateSimulation.py" line="1101"/>
       <source>Cancel</source>
       <translation>გაუქმება</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1103"/>
+      <location filename="../../../CommandCreateSimulation.py" line="1128"/>
       <source>Assembling animation…</source>
       <translation>ანიმაციის აწყობა…</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1119"/>
+      <location filename="../../../CommandCreateSimulation.py" line="1150"/>
       <source>An error occurred while saving the animation</source>
       <translation type="unfinished">An error occurred while saving the animation</translation>
     </message>
     <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1137"/>
-      <source>Pillow (PIL) is not installed. It is required for GIF export.</source>
-      <translation type="unfinished">Pillow (PIL) is not installed. It is required for GIF export.</translation>
-    </message>
-    <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1160"/>
-      <source>OpenCV is not installed. It is required for video export.</source>
-      <translation type="unfinished">OpenCV is not installed. It is required for video export.</translation>
-    </message>
-    <message>
-      <location filename="../../../CommandCreateSimulation.py" line="1177"/>
-      <source>Could not open video writer. Check codecs.</source>
-      <translation type="unfinished">Could not open video writer. Check codecs.</translation>
+      <location filename="../../../CommandCreateSimulation.py" line="1184"/>
+      <source>PyAv is not installed. It is required for video export.</source>
+      <translation type="unfinished">PyAv is not installed. It is required for video export.</translation>
     </message>
     <message>
       <location filename="../../../InitGui.py" line="160"/>
@@ -677,7 +677,7 @@ SLOPE აღწერს დახრილობას 0-დან H1-მდე
       <translation>ამ შეერთების {order} მიმართვა</translation>
     </message>
     <message>
-      <location filename="../../../JointObject.py" line="1280"/>
+      <location filename="../../../JointObject.py" line="1288"/>
       <source>The object to ground</source>
       <translation>ობიექტი დამაგრებამდე</translation>
     </message>
@@ -806,42 +806,52 @@ SLOPE აღწერს დახრილობას 0-დან H1-მდე
       <translation>დააყენებს სახსრის მეორე მარკერის (კოოარდინატების სისტემის) მიმაგრების წანაცვლებას</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="231"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="237"/>
       <source>Reverse the direction of the joint</source>
       <translation>სახსრის მიმართულების რევერსი</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="234"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="240"/>
       <source>Reverse</source>
       <translation>რევერსი</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="245"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="257"/>
+      <source>Rotate the joint 90 degrees</source>
+      <translation>სახსრის შებრუნება 90 გრადუსით</translation>
+    </message>
+    <message>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="260"/>
+      <source>Rotate</source>
+      <translation>შებრუნება</translation>
+    </message>
+    <message>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="291"/>
       <source>Limits</source>
       <translation>ზღვრები</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="251"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="297"/>
       <source>Min length</source>
       <translation>მინ სიგრძე</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="274"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="320"/>
       <source>Max length</source>
       <translation>მაქს სიგრძე</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="297"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="343"/>
       <source>Min angle</source>
       <translation>მინ კუთხე</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="326"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="372"/>
       <source>Max angle</source>
       <translation>მაქს კუთხე</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="358"/>
+      <location filename="../panels/TaskAssemblyCreateJoint.ui" line="404"/>
       <source>Reverse rotation</source>
       <translation>შებრუნების რევერსი</translation>
     </message>
@@ -860,8 +870,8 @@ SLOPE აღწერს დახრილობას 0-დან H1-მდე
     </message>
     <message>
       <location filename="../panels/TaskAssemblyInsertLink.ui" line="39"/>
-      <source>Cannot find the part? </source>
-      <translation>ვერ მოვძებნე ნაწილი? </translation>
+      <source>Cannot find the part?</source>
+      <translation>ვერ მოვძებნე ნაწილი?</translation>
     </message>
     <message>
       <location filename="../panels/TaskAssemblyInsertLink.ui" line="46"/>
@@ -939,52 +949,52 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
   <context>
     <name>AssemblyGui::ViewProviderAssembly</name>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="214"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="215"/>
       <source>The object is associated to one or more joints.</source>
       <translation>ობიექტი ასოცირებულია ერთ ან მეტ სახსართან.</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="216"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="217"/>
       <source>Do you want to move the object and delete associated joints?</source>
       <translation>გნებავთ გადაიტანოთ ობიექტი და წაშალოთ ასოცირებული სახსრები?</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1103"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1090"/>
       <source>Move part</source>
       <translation>ნაწილის გადატანა</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1816"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1807"/>
       <source>Empty Assembly</source>
       <translation>სარიელი ანაწყობი</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1828"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1819"/>
       <source>Over-constrained:</source>
       <translation>ზედმეტად-შეზღუდული:</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1836"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1827"/>
       <source>Malformed joints:</source>
       <translation>არასწორად შექმნილი სახსრები:</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1801"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1792"/>
       <source>and %1 more</source>
       <translation>და %1 სხვა</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1860"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1851"/>
       <source>Solver failed to converge</source>
       <translation>ამომხსნელის შეცდომა შეერთების დროს</translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1868"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1859"/>
       <source>Under-constrained:</source>
       <translation>საკმარისზე ნაკლებად შეზღუდული:</translation>
     </message>
     <message numerus="yes">
-      <location filename="../../ViewProviderAssembly.cpp" line="1870"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1861"/>
       <source>%n Degrees of Freedom</source>
       <translation>
         <numerusform>%n თავისუფლების ხარისხი</numerusform>
@@ -992,7 +1002,7 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
       </translation>
     </message>
     <message>
-      <location filename="../../ViewProviderAssembly.cpp" line="1874"/>
+      <location filename="../../ViewProviderAssembly.cpp" line="1865"/>
       <source>Fully constrained</source>
       <translation>სრულად შეზღუდული</translation>
     </message>
@@ -1127,7 +1137,7 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
   <context>
     <name>Assembly::AssemblyLink</name>
     <message>
-      <location filename="../../../App/AssemblyLink.cpp" line="689"/>
+      <location filename="../../../App/AssemblyLink.cpp" line="690"/>
       <source>Joints</source>
       <translation>შეერთებები</translation>
     </message>
@@ -1255,27 +1265,27 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
       <translation>0,00 წმ</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="256"/>
+      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="278"/>
       <source>Step backward</source>
       <translation>ნაბიჯი უკან</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="276"/>
+      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="310"/>
       <source>Play backward</source>
       <translation>უკან დაკვრა</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="296"/>
+      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="348"/>
       <source>Stop</source>
       <translation>გაჩერება</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="316"/>
+      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="380"/>
       <source>Play forward</source>
       <translation>დაკვრა წინ</translation>
     </message>
     <message>
-      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="336"/>
+      <location filename="../panels/TaskAssemblyCreateSimulation.ui" line="412"/>
       <source>Step forward</source>
       <translation>ნაბიჯი წინ</translation>
     </message>
@@ -1321,8 +1331,8 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
     </message>
     <message>
       <location filename="../../../CommandCreateJoint.py" line="83"/>
-      <source>&lt;p&gt;1 - If an assembly is active : Creates a joint permanently locking two parts together, preventing any movement or rotation&lt;/p&gt;&lt;p&gt;2 - If a part is active: Positions sub-parts by matching selected coordinate systems. The second part selected will move.&lt;/p&gt;</source>
-      <translation type="unfinished">&lt;p&gt;1 - If an assembly is active : Creates a joint permanently locking two parts together, preventing any movement or rotation&lt;/p&gt;&lt;p&gt;2 - If a part is active: Positions sub-parts by matching selected coordinate systems. The second part selected will move.&lt;/p&gt;</translation>
+      <source>&lt;p&gt;1 - If an assembly is active : Creates a joint statically locking two parts together, preventing any movement or rotation&lt;/p&gt;&lt;p&gt;2 - If a part is active: Positions sub-parts by matching selected coordinate systems. The second part selected will move.&lt;/p&gt;</source>
+      <translation type="unfinished">&lt;p&gt;1 - If an assembly is active : Creates a joint statically locking two parts together, preventing any movement or rotation&lt;/p&gt;&lt;p&gt;2 - If a part is active: Positions sub-parts by matching selected coordinate systems. The second part selected will move.&lt;/p&gt;</translation>
     </message>
   </context>
   <context>
@@ -1534,27 +1544,27 @@ The files are named "runPreDrag.asmt" and "dragging.log" and are located in the 
     </message>
     <message>
       <location filename="../../TaskAssemblyMessages.cpp" line="56"/>
-      <source>Click to select these conflicting joints.</source>
-      <translation>დააწკაპუნეთ ამ კონფლიქტური სახსრების მოსანიშნად.</translation>
+      <source>Selects these conflicting joints</source>
+      <translation type="unfinished">Selects these conflicting joints</translation>
     </message>
     <message>
       <location filename="../../TaskAssemblyMessages.cpp" line="59"/>
-      <source>Click to select these redundant joints.</source>
-      <translation>დააწკაპუნეთ დამატებითი სახსრების მოსანიშნად.</translation>
+      <source>Selects these redundant joints</source>
+      <translation type="unfinished">Selects these redundant joints</translation>
     </message>
     <message>
-      <location filename="../../TaskAssemblyMessages.cpp" line="62"/>
+      <location filename="../../TaskAssemblyMessages.cpp" line="63"/>
       <source>The assembly has unconstrained components giving rise to those Degrees Of Freedom.
-Click to select these unconstrained components.
+Selects these unconstrained components.
 Note: Currently this selects only unconnected parts, not constrained parts that still have free DoF.</source>
       <translation type="unfinished">The assembly has unconstrained components giving rise to those Degrees Of Freedom.
-Click to select these unconstrained components.
+Selects these unconstrained components.
 Note: Currently this selects only unconnected parts, not constrained parts that still have free DoF.</translation>
     </message>
     <message>
       <location filename="../../TaskAssemblyMessages.cpp" line="70"/>
-      <source>Click to select these malformed joints.</source>
-      <translation>დააწკაპუნეთ არასწორად ჩამოყალიბებული სახსრების მოსანიშნად.</translation>
+      <source>Selects these malformed joints</source>
+      <translation type="unfinished">Selects these malformed joints</translation>
     </message>
   </context>
   <context>
@@ -1566,7 +1576,7 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="102"/>
-      <source>Go to linked Assembly</source>
+      <source>Go to Linked Assembly</source>
       <translation>დაკავშირებულ ანაწყობზე გადასვლა</translation>
     </message>
     <message>
@@ -1584,8 +1594,8 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="166"/>
-      <source>Select conflicting constraints</source>
-      <translation type="unfinished">Select conflicting constraints</translation>
+      <source>Select Conflicting Constraints</source>
+      <translation>აირჩიეთ კონფლიქტური შეზღუდვები</translation>
     </message>
     <message>
       <location filename="../../Commands.cpp" line="167"/>
@@ -1602,8 +1612,8 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="201"/>
-      <source>Select redundant constraints</source>
-      <translation type="unfinished">Select redundant constraints</translation>
+      <source>Select Redundant Constraints</source>
+      <translation>აირჩიეთ დამატებითი შეზღუდვები</translation>
     </message>
     <message>
       <location filename="../../Commands.cpp" line="202"/>
@@ -1620,8 +1630,8 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="234"/>
-      <source>Select malformed constraints</source>
-      <translation type="unfinished">Select malformed constraints</translation>
+      <source>Select Malformed Constraints</source>
+      <translation>აირჩიეთ დეფორმირებული შეზღუდვები</translation>
     </message>
     <message>
       <location filename="../../Commands.cpp" line="235"/>
@@ -1638,8 +1648,8 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="268"/>
-      <source>Select components with DoFs</source>
-      <translation type="unfinished">Select components with DoFs</translation>
+      <source>Select Components With DoFs</source>
+      <translation>აირჩიეთ კომპონენტები თხ-ებით</translation>
     </message>
     <message>
       <location filename="../../Commands.cpp" line="269"/>
@@ -1656,8 +1666,8 @@ Note: Currently this selects only unconnected parts, not constrained parts that 
     </message>
     <message>
       <location filename="../../Commands.cpp" line="311"/>
-      <source>Select component joints</source>
-      <translation>კომპონენტის სახსრების მონიშვნა</translation>
+      <source>Select Component Joints</source>
+      <translation>აირჩეთ კომპონენტის სახსრები</translation>
     </message>
     <message>
       <location filename="../../Commands.cpp" line="312"/>

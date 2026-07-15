@@ -1636,6 +1636,10 @@ bool TaskDlgAttacher::accept()
         );
         Gui::cmdAppObject(obj, "recompute()");
 
+        if (!obj->isValid()) {
+            throw Base::RuntimeError(obj->getStatusString());
+        }
+
         document->commitCommand();
     }
     catch (const Base::Exception& e) {
