@@ -34,6 +34,7 @@ if(BUILD_GUI)
           SketcherTests/TestPlacementUpdate.py
           SketcherTests/TestOnViewParameterGui.py
           SketcherTests/TestExternalFacePreselection.py
+          SketcherTests/TestSketcherOffsetGui.py
     )
 endif(BUILD_GUI)
 
