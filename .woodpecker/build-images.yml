@@ -55,7 +55,7 @@ labels:
 
 # Non-recursive, shallow clone: the deps build only needs package/ubuntu/ and the
 # mcp build only needs tools/mcp/freecad-mcp/ (fetched on demand below). Avoids
-# cloning the large submodules (OndselSolver, tests/lib, GSL, AddonManager).
+# cloning the large submodules (OndselSolver, GSL, AddonManager).
 clone:
   - name: clone-shallow
     image: woodpeckerci/plugin-git
