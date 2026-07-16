@@ -1,22 +1,34 @@
 #!/bin/sh
-# Ensure Coin3D development files are present and expose Coin_DIR for CMake.
-# The CI deps image should already include libcoin-dev, but a stale registry
-# image or a minimal runner may not; configure must fail with a clear fix, not
-# a blind FATAL_ERROR from SetupCoin3D.
+# Ensure Coin3D/Pivy build dependencies are present and expose Coin_DIR for CMake.
+# The CI deps image should already include these packages, but a stale registry
+# image or a minimal runner may not.
 
 set -e
+
+_apt_install() {
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y --no-install-recommends "$@"
+}
 
 _ensure_coin3d() {
     if [ -f /usr/include/Inventor/So.h ] || [ -f /usr/include/Inventor/C/basic.h ]; then
         return 0
     fi
     echo "Coin3D headers missing; installing libcoin-dev..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y --no-install-recommends libcoin-dev
+    _apt_install libcoin-dev
+}
+
+_ensure_pivy() {
+    if python3 -c "import pivy" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "pivy missing; installing python3-pivy..."
+    _apt_install python3-pivy
 }
 
 _ensure_coin3d
+_ensure_pivy
 
 COIN_CMAKE_ARGS=""
 for candidate in \
