@@ -19,6 +19,27 @@ macro(SetupCoin3D)
         # Try MODULE mode (FindCoin3D.cmake, included by CMake)
         find_package(Coin3D)
         if (NOT COIN3D_FOUND)
+            # Ubuntu libcoin-dev often ships coin-config without a CMake package file.
+            find_program(COIN_CONFIG_EXECUTABLE coin-config)
+            if (COIN_CONFIG_EXECUTABLE)
+                execute_process(
+                    COMMAND ${COIN_CONFIG_EXECUTABLE} --includedir
+                    OUTPUT_VARIABLE _coin_include_dir
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                )
+                execute_process(
+                    COMMAND ${COIN_CONFIG_EXECUTABLE} --libs
+                    OUTPUT_VARIABLE _coin_libs
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                )
+                if (_coin_include_dir AND _coin_libs)
+                    set(COIN3D_INCLUDE_DIRS "${_coin_include_dir}")
+                    set(COIN3D_LIBRARIES "${_coin_libs}")
+                    set(COIN3D_FOUND TRUE)
+                endif ()
+            endif ()
+        endif ()
+        if (NOT COIN3D_FOUND)
             message(FATAL_ERROR "Could not find Coin3D")
         endif ()
     endif ()
