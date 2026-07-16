@@ -1,1 +1,4 @@
 ci/woodpecker/*.sh text eol=lf
+package/ubuntu/*.sh text eol=lf
+*.sh text eol=lf
+

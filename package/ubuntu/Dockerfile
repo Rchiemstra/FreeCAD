@@ -54,7 +54,8 @@ RUN apt-get update \
          python3-pip \
          python3-yaml \
          git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --break-system-packages ifcopenshell
 
 # UTF-8 locale: with no LANG set, CPython's filesystem encoding degrades to
 # 'ascii' inside the container -- BaseTests.FileSystem.testEncoding asserts

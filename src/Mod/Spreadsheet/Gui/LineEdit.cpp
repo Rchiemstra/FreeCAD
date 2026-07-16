@@ -32,6 +32,7 @@
 #include "LineEdit.h"
 #include "SheetTableView.h"
 #include "ZoomableView.h"
+#include <Base/Console.h>
 
 
 using namespace SpreadsheetGui;

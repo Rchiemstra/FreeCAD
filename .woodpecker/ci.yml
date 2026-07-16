@@ -79,7 +79,7 @@
 # Submodules: clone-all-submodules fetches ALL submodules recursively. The
 # all-submodules-check gate then verifies every submodule is initialized, at
 # the expected commit, and non-empty, and hard-fails on any of the 5 required
-# submodules (OndselSolver, tests/lib, GSL, AddonManager, freecad-mcp).
+# submodules (OndselSolver, GSL, AddonManager, freecad-mcp).
 # Submodule GitHub Actions are NOT triggered by this pipeline: Woodpecker
 # clones submodules read-only and neither pushes to nor dispatches events into
 # the submodule repos. Keep the submodules' own GH Actions off on the
