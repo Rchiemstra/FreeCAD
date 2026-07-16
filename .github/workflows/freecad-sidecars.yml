@@ -4,6 +4,7 @@ name: FreeCAD Sidecars
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "**/*.FCStd"
       - "**/*.fcstd"
@@ -13,7 +14,7 @@ on:
       - ".freecad-git.toml"
       - ".github/workflows/freecad-sidecars.yml"
   push:
-    branches: [FreeCAD-start, main]
+    branches: [main]
     paths:
       - "**/*.FCStd"
       - "**/*.fcstd"

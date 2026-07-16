@@ -592,6 +592,7 @@ tools/freecad_git/tests/test_freecad_adapter.py
 tools/freecad_git/tests/fixtures/...
 .freecad-git.toml
 .github/workflows/freecad-sidecars.yml
+.woodpecker/ci.yml
 ```
 
 Use small purpose-built FCStd fixtures rather than copying full user models.
@@ -615,7 +616,7 @@ No MCP submodule change is required in phase one. A later MCP adapter would need
    Implement archive validation, hardened XML parsing, canonical model construction, JSON output, and the `export` and `check` commands.
 
 3. **Repository workflow**
-   Add attributes, configuration, documentation, manual commands, and read-only GitHub Actions verification.
+   Add attributes, configuration, documentation, manual commands, Woodpecker CI verification (for `FreeCAD-start`), and GitHub Actions verification (for `main`).
 
 4. **Opt-in post-save adapter**
    Add the FreeCAD observer, `GenerateGitSidecarAfterSave` preference, destination eligibility rules, snapshot/recovery suppression, re-entrancy guard, synchronous invocation, atomic sidecar publication, and non-fatal reporting. Test ordinary save, Save As, deliberate `saveCopy()`, suppressed snapshots, output failure, and unchanged repeated saves.
