@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<GuiDocument SchemaVersion="1" ProgramVersion="0.21R">
+  <ObjectData Count="1">
+    <Object name="Box">
+      <Properties Count="1">
+        <Property name="Visibility" type="App::PropertyBool">
+          <Bool value="false"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</GuiDocument>

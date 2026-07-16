@@ -1,0 +1,40 @@
+{
+  "dependencies": [],
+  "document": {
+    "file_version": "1",
+    "freecad_version": "0.21R",
+    "label": "BasicDoc",
+    "name": "BasicDoc",
+    "schema_version": "4"
+  },
+  "external_references": [],
+  "generator": {
+    "name": "freecad-git",
+    "profile": "semantic",
+    "version": "0.1.0"
+  },
+  "objects": {
+    "Box": {
+      "label": "Box",
+      "placement": {
+        "position_mm": [
+          "0",
+          "0",
+          "0"
+        ],
+        "rotation_xyzw": [
+          "0",
+          "0",
+          "0",
+          "1"
+        ]
+      },
+      "type": "App::DocumentObject"
+    }
+  },
+  "schema": "freecad-git-sidecar/v1",
+  "source": {
+    "filename": "basic.FCStd",
+    "semantic_sha256": "117f852393b41090c20052bb9ac82b00c1ef038a87df4361a145525c5d85b749"
+  }
+}

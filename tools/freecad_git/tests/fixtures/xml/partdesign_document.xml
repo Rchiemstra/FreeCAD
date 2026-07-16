@@ -1,0 +1,67 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="PartDesignDoc">
+  <Properties Count="0"/>
+  <Objects Count="3">
+    <Object type="PartDesign::Body" name="Body"/>
+    <Object type="Sketcher::SketchObject" name="Sketch"/>
+    <Object type="PartDesign::Pad" name="Pad"/>
+  </Objects>
+  <ObjectData Count="3">
+    <Object name="Body">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Body"/>
+        </Property>
+        <Property name="Group" type="App::PropertyLinkList">
+          <LinkList count="2">
+            <Link value="Sketch"/>
+            <Link value="Pad"/>
+          </LinkList>
+        </Property>
+      </Properties>
+    </Object>
+    <Object name="Sketch">
+      <Properties Count="4">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Sketch"/>
+        </Property>
+        <Property name="AttachmentSupport" type="App::PropertyLinkSubList">
+          <LinkSubList count="1">
+            <Link obj="XY_Plane" sub=""/>
+          </LinkSubList>
+        </Property>
+        <Property name="Geometry" type="Part::PropertyGeometryList">
+          <GeometryList count="1">
+            <Geometry type="Part::GeomLineSegment" id="1">
+              <LineSegment StartX="0" StartY="0" StartZ="0" EndX="10" EndY="0" EndZ="0"/>
+              <Construction value="0"/>
+            </Geometry>
+          </GeometryList>
+        </Property>
+        <Property name="Constraints" type="Sketcher::PropertyConstraintList">
+          <ConstraintList count="1">
+            <Constrain Name="Width" Type="DistanceX" Value="10" First="0" Second="1" IsDriving="1"/>
+          </ConstraintList>
+        </Property>
+      </Properties>
+    </Object>
+    <Object name="Pad">
+      <Properties Count="4">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Pad"/>
+        </Property>
+        <Property name="Base" type="App::PropertyLinkSub">
+          <LinkSub value="Sketch" count="1">
+            <Sub value=""/>
+          </LinkSub>
+        </Property>
+        <Property name="Length" type="App::PropertyLength">
+          <Float value="25"/>
+        </Property>
+        <Property name="Body" type="App::PropertyLink">
+          <Link value="Body"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

@@ -1,0 +1,55 @@
+[project]
+name = "freecad-git"
+version = "0.1.0"
+description = "Deterministic Git sidecar generator for FreeCAD .FCStd documents"
+readme = "README.md"
+license = { text = "LGPL-2.1-or-later" }
+requires-python = ">=3.10"
+dependencies = [
+    "defusedxml>=0.7.1",
+    "jsonschema>=4.21.0",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hatchling",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "black>=24.0",
+]
+
+[project.scripts]
+freecad-git = "freecad_git.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freecad_git"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/freecad_git"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schema/freecad-git-sidecar.schema.json" = "freecad_git/schema/freecad-git-sidecar.schema.json"
+
+[tool.hatch.build]
+include = [
+    "src/freecad_git/**/*.py",
+    "schema/*.json",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

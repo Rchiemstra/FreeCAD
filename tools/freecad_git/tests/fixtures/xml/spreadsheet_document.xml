@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="SpreadsheetDoc">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="Spreadsheet::Sheet" name="Parameters"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="Parameters">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Parameters"/>
+        </Property>
+        <Property name="cells" type="Spreadsheet::PropertySheet">
+          <Cells Count="2" xlink="1">
+            <Cell address="A1" content="10"/>
+            <Cell address="B1" content="=0.2 mm" alias="printerOffset"/>
+          </Cells>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

@@ -5,6 +5,7 @@
 files: |
     (?x)^(
         .github|
+        tools/freecad_git|
         src/Base|
         src/Gui|
         src/Main|
@@ -93,3 +94,13 @@ repos:
         language: python
         files: '(pixi\.toml|recipe\.yaml|declarations\.nsh|freecad\.spec)'
         pass_filenames: false
+    -   id: freecad-git-sidecar-check
+        name: Check FreeCAD Git sidecars
+        entry: python tools/freecad_git/scripts/precommit_check.py check
+        language: python
+        additional_dependencies: [defusedxml>=0.7.1, jsonschema>=4.21.0, tomli>=2.0.1]
+        files: '\.(FCStd|fcstd)$'
+        pass_filenames: true
+        always_run: false
+        require_serial: true
+        stages: [pre-commit]

@@ -1,1 +1,5 @@
+*.FCStd binary
+*.fcstd binary
+*.FCStd.git.json text eol=lf
+*.fcstd.git.json text eol=lf
 ci/woodpecker/*.sh text eol=lf
