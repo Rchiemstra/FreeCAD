@@ -64,6 +64,22 @@ def _is_eligible_target(filename: str) -> bool:
     return True
 
 
+def _python_executable() -> str:
+    """Return a real Python executable when running inside embedded FreeCAD."""
+    if sys.platform == "win32":
+        python = Path(sys.prefix) / "python.exe"
+    else:
+        python = Path(sys.prefix) / "bin" / "python"
+    return str(python) if python.is_file() else sys.executable
+
+
+def _subprocess_creation_flags() -> int:
+    """Suppress the transient Python console window on Windows."""
+    if sys.platform == "win32":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
+
+
 def _invoke_exporter(filename: str) -> None:
     """Invoke the standalone freecad-git exporter."""
     canonical = str(Path(filename).resolve())
@@ -74,10 +90,11 @@ def _invoke_exporter(filename: str) -> None:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "freecad_git.cli", "export", filename],
+            [_python_executable(), "-m", "freecad_git.cli", "export", filename],
             capture_output=True,
             text=True,
             timeout=300,
+            creationflags=_subprocess_creation_flags(),
         )
         if result.returncode != 0:
             _report_warning(filename, result.stderr or result.stdout or "export failed")

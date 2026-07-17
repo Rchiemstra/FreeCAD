@@ -12,7 +12,7 @@ from typing import Any
 from . import __schema__, __version__
 from .archive import SafeArchive, validate_and_open
 from .config import Config
-from .document_xml import parse_document_xml
+from .document_xml import parse_document_xml, parse_gui_document_xml
 from .errors import (
     FreecadGitError,
     InvalidSchemaError,
@@ -41,6 +41,18 @@ def _build_document_info(parser: Any, source_filename: str) -> dict[str, Any]:
     if "SchemaVersion" in attrs:
         info["schema_version"] = attrs["SchemaVersion"]
     return info
+
+
+def _extract_document_visibility(properties: list[dict[str, Any]]) -> bool | None:
+    """Read Visibility directly from Document.xml as a GUI-data fallback."""
+    for prop in properties:
+        if prop.get("name") != "Visibility":
+            continue
+        for element in prop.get("elements", []):
+            if element.get("tag") == "Bool":
+                value = element.get("attrs", {}).get("value", "true")
+                return str(value).strip().lower() == "true"
+    return None
 
 
 def _extract_dependencies(objects: dict[str, dict[str, Any]]) -> list[list[str]]:
@@ -104,6 +116,14 @@ def build_semantic_model(
         config.xml,
         config.collections,
     )
+    gui_visibility: dict[str, bool] = {}
+    if archive.gui_document_xml is not None:
+        gui_parser = parse_gui_document_xml(
+            archive.gui_document_xml,
+            config.xml,
+            config.collections,
+        )
+        gui_visibility = gui_parser.object_visibility
 
     model = SemanticModel(source_filename=source_filename)
     model.document = _build_document_info(parser, source_filename)
@@ -130,6 +150,11 @@ def build_semantic_model(
             obj_entry["label"] = parsed.pop("label")
         else:
             obj_entry["label"] = obj_name
+        visibility = gui_visibility.get(obj_name)
+        if visibility is None:
+            visibility = _extract_document_visibility(properties)
+        if visibility is not None:
+            obj_entry["visibility"] = visibility
         obj_entry.update(parsed)
         model.objects[obj_name] = obj_entry
 

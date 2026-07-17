@@ -69,11 +69,26 @@ class TestSemanticDiffs:
         # Label appears exactly once per object in semantic model
         assert list(modified["objects"]["Box"].values()).count("Box renamed") == 1
 
-    def test_gui_only_no_semantic_diff(self, fixtures_dir):
+    def test_gui_visibility_is_semantic(self, fixtures_dir):
         base = export_to_dict(fixtures_dir / "basic.FCStd")
         gui = export_to_dict(fixtures_dir / "gui_only.FCStd")
-        assert base["source"]["semantic_sha256"] == gui["source"]["semantic_sha256"]
-        assert base["objects"] == gui["objects"]
+        assert base["source"]["semantic_sha256"] != gui["source"]["semantic_sha256"]
+        assert gui["objects"]["Box"]["visibility"] is False
+
+    def test_document_visibility_fallback_is_semantic(self, tmp_path):
+        visibility_property = """
+        <Property name="Visibility" type="App::PropertyBool" status="1">
+          <Bool value="true"/>
+        </Property>"""
+        modified_xml = BASIC_DOCUMENT_XML.replace(
+            '<Properties Count="2">',
+            f'<Properties Count="3">{visibility_property}',
+        )
+        modified_path = tmp_path / "document_visibility.FCStd"
+        write_fixture(modified_path, modified_xml)
+
+        data = export_to_dict(modified_path)
+        assert data["objects"]["Box"]["visibility"] is True
 
     def test_timestamp_only_no_diff(self, fixtures_dir):
         a = export_to_dict(fixtures_dir / "basic_timestamp_a.FCStd")

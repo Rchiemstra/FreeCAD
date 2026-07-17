@@ -140,6 +140,7 @@
       "properties": {
         "type": { "type": "string" },
         "label": { "type": "string" },
+        "visibility": { "type": "boolean" },
         "placement": { "$ref": "#/$defs/placement" },
         "membership": { "type": "object" },
         "expressions": { "type": "object" },
