@@ -1,0 +1,72 @@
+# FreeCAD Git sidecar configuration
+# See tools/freecad_git/README.md for documentation.
+
+profile = "semantic"
+
+# Managed sidecar scope: only listed globs require sidecars in CI.
+# Add paths deliberately when adopting sidecars for a model.
+include = [
+    # Example when adopting a managed model:
+    # "models/**/*.FCStd",
+]
+
+exclude = [
+    "**/tests/**",
+    "**/fixtures/**",
+    "src/**",
+    "data/examples/**",
+    "build/**",
+    "build-*/**",
+    "cmake-build*/**",
+    ".git/**",
+    "src/3rdParty/**",
+    "src/Mod/**/data/**",
+    "src/Mod/**/Test/**",
+    "src/Mod/AddonManager/**",
+]
+
+fixture_exclude = [
+    "**/tests/**",
+    "**/fixtures/**",
+]
+
+skip_directories = [
+    ".git",
+    "build",
+    "build-debug",
+    "build-release",
+    "cmake-build-debug",
+    "cmake-build-release",
+    "node_modules",
+    ".venv",
+    "bin",
+    "lib",
+    "src/3rdParty",
+]
+
+external_reference_policy = "redact"
+
+[archive]
+max_entries = 10000
+max_compressed_bytes = 268435456
+max_uncompressed_bytes = 536870912
+max_xml_bytes = 67108864
+max_compression_ratio = 100.0
+
+[xml]
+max_depth = 256
+max_attributes = 1024
+max_text_bytes = 16777216
+max_properties_per_object = 10000
+
+[collections]
+max_list_length = 100000
+max_string_length = 1000000
+max_objects = 50000
+max_dependencies = 500000
+
+[diagnostics]
+max_runtime_seconds = 120
+
+[sidecar]
+size_warning_bytes = 500000

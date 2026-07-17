@@ -11,6 +11,7 @@
 !/.gitmodules
 !/.packit.yaml
 !/.pre-commit-config.yaml
+!/.freecad-git.toml
 !/.pylintrc
 !/.woodpecker.yml
 !/.woodpecker/
@@ -54,6 +55,9 @@ ui_*.h
 /cmake-build*/
 /conda/environment.yml
 /doc/
+!/doc/
+/doc/*
+!/doc/freecad-git-sidecar-strategy.md
 /lib/
 /src/Tools/offlinedoc/*.txt
 /src/Tools/offlinedoc/localwiki/

@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="ExternalLinkDoc">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="App::Link" name="ExternalPart"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="ExternalPart">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="ExternalPart"/>
+        </Property>
+        <Property name="LinkedObject" type="App::PropertyXLink">
+          <XLink file="models/OtherModel.FCStd" doc="OtherModel" obj="Part" sub="Face1"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

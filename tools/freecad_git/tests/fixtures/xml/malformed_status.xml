@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="App::DocumentObject" name="Obj"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="Obj">
+      <Properties Count="1">
+        <Property name="Label" type="App::PropertyString" status="not-a-number">
+          <String value="Obj"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

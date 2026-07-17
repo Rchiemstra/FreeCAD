@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="BasicDoc">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="App::DocumentObject" name="Box"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="Box">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Box"/>
+        </Property>
+        <Property name="Placement" type="App::PropertyPlacement">
+          <PropertyPlacement Px="0" Py="0" Pz="0" Q0="0" Q1="0" Q2="0" Q3="1"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

@@ -17,6 +17,13 @@ echo "deb [signed-by=/usr/share/keyrings/neon-keyring.gpg] http://archive.neon.k
 
 sudo apt-get update -qq
 
+# libcoin-dev lives in universe; ensure the component is enabled on minimal images.
+if ! apt-cache show libcoin-dev >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends software-properties-common
+  sudo add-apt-repository -y universe
+  sudo apt-get update -qq
+fi
+
 packages=(
   build-essential
   ccache

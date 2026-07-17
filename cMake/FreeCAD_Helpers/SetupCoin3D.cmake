@@ -19,7 +19,42 @@ macro(SetupCoin3D)
         # Try MODULE mode (FindCoin3D.cmake, included by CMake)
         find_package(Coin3D)
         if (NOT COIN3D_FOUND)
+            # Ubuntu libcoin-dev often ships coin-config without a CMake package file.
+            find_program(COIN_CONFIG_EXECUTABLE coin-config)
+            if (COIN_CONFIG_EXECUTABLE)
+                execute_process(
+                    COMMAND ${COIN_CONFIG_EXECUTABLE} --includedir
+                    OUTPUT_VARIABLE _coin_include_dir
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                )
+                execute_process(
+                    COMMAND ${COIN_CONFIG_EXECUTABLE} --libs
+                    OUTPUT_VARIABLE _coin_libs
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                )
+                if (_coin_include_dir AND _coin_libs)
+                    set(COIN3D_INCLUDE_DIRS "${_coin_include_dir}")
+                    set(COIN3D_LIBRARIES "${_coin_libs}")
+                    set(COIN3D_FOUND TRUE)
+                endif ()
+            endif ()
+        endif ()
+        if (NOT COIN3D_FOUND)
+            find_path(COIN3D_INCLUDE_DIRS NAMES Inventor/So.h
+                HINTS /usr/include /usr/local/include)
+            find_library(COIN3D_LIBRARY NAMES Coin
+                HINTS /usr/lib/x86_64-linux-gnu /usr/lib /lib/x86_64-linux-gnu)
+            if (COIN3D_INCLUDE_DIRS AND COIN3D_LIBRARY)
+                set(COIN3D_LIBRARIES ${COIN3D_LIBRARY})
+                set(COIN3D_FOUND TRUE)
+            endif ()
+        endif ()
+        if (NOT COIN3D_FOUND)
             message(FATAL_ERROR "Could not find Coin3D")
+        endif ()
+        set(COIN3D_INCLUDE_DIRS "${COIN3D_INCLUDE_DIRS}" CACHE PATH "Coin3D include directory" FORCE)
+        if (COIN3D_LIBRARIES)
+            set(COIN3D_LIBRARIES "${COIN3D_LIBRARIES}" CACHE STRING "Coin3D libraries" FORCE)
         endif ()
     endif ()
 
@@ -48,7 +83,7 @@ macro(SetupPivy)
             if (RETURN_CODE EQUAL 0)
                 message(STATUS "Found Pivy ${PIVY_VERSION}")
             else ()
-                message(ERROR "Failed to import Pivy using ${Python3_EXECUTABLE}")
+                message(FATAL_ERROR "Failed to import Pivy using ${Python3_EXECUTABLE}")
             endif ()
         ENDIF ()
 
@@ -60,7 +95,7 @@ macro(SetupPivy)
         if (RETURN_CODE EQUAL 0)
             message(STATUS "Found Pivy Coin3D ${PIVY_COIN_VERSION}")
         else ()
-            message(ERROR "Failed to get Pivy Coin3D version using ${Python3_EXECUTABLE}")
+            message(FATAL_ERROR "Failed to get Pivy Coin3D version using ${Python3_EXECUTABLE}")
         endif ()
 
         if (${PIVY_COIN_VERSION} MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+)")
