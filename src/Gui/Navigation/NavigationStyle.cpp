@@ -1183,18 +1183,23 @@ void NavigationStyle::setRotationCenter(const SbVec3f& cnt)
     this->rotationCenterFound = true;
 
     const auto camera = getCamera();
-    if (camera->isOfType(SoPerspectiveCamera::getClassTypeId())) {
-        SbVec3f direction;
-        camera->orientation.getValue().multVec(SbVec3f(0, 0, -1), direction);
-
-        // Calculate distance from camera to rotation center
-        const auto rotationCenterDistance = rotationCenter - camera->position.getValue();
-        const auto rotationCenterDepth = rotationCenterDistance.dot(direction);
-
-        // Set focal distance to match rotation center depth so we can zoom at the new rotation
-        // center with a perspective camera
-        camera->focalDistance.setValue(rotationCenterDepth);
+    // Camera can be transiently null while an MDI 3D view is cloned/destroyed or
+    // while the render manager is rebuilt. Never dereference it here — that path
+    // runs from mouse handlers and would raise AccessViolation on every move.
+    if (!camera || !camera->isOfType(SoPerspectiveCamera::getClassTypeId())) {
+        return;
     }
+
+    SbVec3f direction;
+    camera->orientation.getValue().multVec(SbVec3f(0, 0, -1), direction);
+
+    // Calculate distance from camera to rotation center
+    const auto rotationCenterDistance = rotationCenter - camera->position.getValue();
+    const auto rotationCenterDepth = rotationCenterDistance.dot(direction);
+
+    // Set focal distance to match rotation center depth so we can zoom at the new rotation
+    // center with a perspective camera
+    camera->focalDistance.setValue(rotationCenterDepth);
 }
 
 /** Uses the sphere sheet projector to map the mouse position onto
@@ -1235,6 +1240,11 @@ void NavigationStyle::spinInternal(const SbVec2f& pointerpos, const SbVec2f& las
 {
     float sensitivity = getSensitivity();
 
+    SoCamera* camera = viewer ? viewer->getSoRenderManager()->getCamera() : nullptr;
+    if (!camera) {
+        return;
+    }
+
     // Adjust the spin projector sphere to the screen position of the rotation center when the mouse
     // intersects an object
     if ((getOrbitStyle() == Trackball || getOrbitStyle() == TrackballClassic
@@ -1261,7 +1271,7 @@ void NavigationStyle::spinInternal(const SbVec2f& pointerpos, const SbVec2f& las
 
     // 0000333: Turntable camera rotation
     SbMatrix mat;
-    viewer->getSoRenderManager()->getCamera()->orientation.getValue().getValue(mat);
+    camera->orientation.getValue().getValue(mat);
     this->spinprojector->setWorkingSpace(mat);
 
     this->spinprojector->project(lastpos);
@@ -1277,10 +1287,10 @@ void NavigationStyle::spinInternal(const SbVec2f& pointerpos, const SbVec2f& las
     r.invert();
 
     if (this->rotationCenterMode && this->rotationCenterFound) {
-        this->reorientCamera(viewer->getSoRenderManager()->getCamera(), r, rotationCenter);
+        this->reorientCamera(camera, r, rotationCenter);
     }
     else {
-        this->reorientCamera(viewer->getSoRenderManager()->getCamera(), r);
+        this->reorientCamera(camera, r);
     }
 
     // Calculate an average angle magnitude value to make the transition
@@ -1405,8 +1415,13 @@ void NavigationStyle::spinSimplifiedInternal(SbVec2f curpos, SbVec2f prevpos)
 void NavigationStyle::spinSimplifiedInternal(SbVec2f curpos, SbVec2f prevpos, const SbVec3f* center)
 {
     // 0000333: Turntable camera rotation
+    SoCamera* camera = viewer ? viewer->getSoRenderManager()->getCamera() : nullptr;
+    if (!camera || !this->spinprojector) {
+        return;
+    }
+
     SbMatrix mat;
-    viewer->getSoRenderManager()->getCamera()->orientation.getValue().getValue(mat);
+    camera->orientation.getValue().getValue(mat);
     this->spinprojector->setWorkingSpace(mat);
 
     this->spinprojector->project(prevpos);
@@ -1423,13 +1438,13 @@ void NavigationStyle::spinSimplifiedInternal(SbVec2f curpos, SbVec2f prevpos, co
     r.invert();
 
     if (center) {
-        this->reorientCamera(viewer->getSoRenderManager()->getCamera(), r, *center);
+        this->reorientCamera(camera, r, *center);
     }
     else if (this->rotationCenterMode && this->rotationCenterFound) {
-        this->reorientCamera(viewer->getSoRenderManager()->getCamera(), r, rotationCenter);
+        this->reorientCamera(camera, r, rotationCenter);
     }
     else {
-        this->reorientCamera(viewer->getSoRenderManager()->getCamera(), r);
+        this->reorientCamera(camera, r);
     }
 }
 
@@ -2526,6 +2541,13 @@ void NavigationStyle::replayDeferredMouseDownEvent()
         return;
     }
 
+    // Drop deferred presses if the viewer was torn down mid-gesture (MDI
+    // clone/delete, document close). Replaying into a dead viewer causes AVs.
+    if (!viewer || !viewer->getSoRenderManager() || !viewer->getSoRenderManager()->getCamera()) {
+        clearDeferredMouseDownEvent();
+        return;
+    }
+
     NavigationStyle::processSoEvent(&deferredMouseDownEvent);
     clearDeferredMouseDownEvent();
 }
@@ -2535,8 +2557,13 @@ SbBool NavigationStyle::processWheelEvent(const SoMouseWheelEvent* const event)
     const SbVec2s pos(event->getPosition());
     const SbVec2f posn = normalizePixelPos(pos);
 
+    SoCamera* camera = viewer ? viewer->getSoRenderManager()->getCamera() : nullptr;
+    if (!camera) {
+        return true;
+    }
+
     // handle mouse wheel zoom
-    doZoom(viewer->getSoRenderManager()->getCamera(), event->getDelta(), posn);
+    doZoom(camera, event->getDelta(), posn);
     return true;
 }
 
