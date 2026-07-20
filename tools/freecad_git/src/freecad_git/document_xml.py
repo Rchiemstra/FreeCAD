@@ -154,6 +154,7 @@ class GuiDocumentParser(_DepthTrackingHandler):
         self.object_visibility: dict[str, bool] = {}
         self._current_object: str | None = None
         self._in_object_data = False
+        self._in_view_provider_data = False
         self._in_properties = False
         self._current_property_name: str | None = None
 
@@ -162,7 +163,11 @@ class GuiDocumentParser(_DepthTrackingHandler):
         attr_dict = {k: v for k, v in attrs.items()}
         if name == "ObjectData":
             self._in_object_data = True
+        elif name == "ViewProviderData":
+            self._in_view_provider_data = True
         elif name == "Object" and self._in_object_data:
+            self._current_object = attr_dict.get("name")
+        elif name == "ViewProvider" and self._in_view_provider_data:
             self._current_object = attr_dict.get("name")
         elif name == "Properties":
             self._in_properties = True
@@ -170,17 +175,20 @@ class GuiDocumentParser(_DepthTrackingHandler):
             self._current_property_name = attr_dict.get("name")
         elif name == "Bool" and self._current_property_name == "Visibility":
             if self._current_object:
-                self.object_visibility[self._current_object] = attr_dict.get("value", "true") == "true"
+                value = attr_dict.get("value", "true").strip().lower()
+                self.object_visibility[self._current_object] = value == "true"
 
     def endElement(self, name: str) -> None:
         if name == "Property":
             self._current_property_name = None
         elif name == "Properties":
             self._in_properties = False
-        elif name == "Object":
+        elif name in ("Object", "ViewProvider"):
             self._current_object = None
         elif name == "ObjectData":
             self._in_object_data = False
+        elif name == "ViewProviderData":
+            self._in_view_provider_data = False
         super().endElement(name)
 
 

@@ -11,7 +11,7 @@ Model.FCStd
 Model.FCStd.git.json
 ```
 
-The `.FCStd` file remains **authoritative**. The JSON sidecar is a **generated, never manually edited** review artifact containing stable document structure, parameters, expressions, constraints, links, and other semantic information.
+The `.FCStd` file remains **authoritative**. The JSON sidecar is a **generated, never manually edited** review artifact containing stable document structure, parameters, expressions, constraints, links, object visibility, and other semantic information.
 
 **The JSON is not a reconstruction format.** Merging JSON does not resolve binary model conflicts.
 
