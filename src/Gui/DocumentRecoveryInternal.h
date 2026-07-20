@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <FCGlobal.h>
 #include <QString>
 
 namespace Gui::Dialog::DocumentRecoveryInternal
@@ -16,12 +17,12 @@ enum class ProjectValidationResult
 };
 
 /// Rough ZIP integrity check. Opens a stream per entry; streams are owned via unique_ptr.
-ProjectValidationResult checkZipData(const QString& fcstdFile);
+ProjectValidationResult GuiExport checkZipData(const QString& fcstdFile);
 
 /// Validates Document.xml (required) and GuiDocument.xml (optional if present).
-ProjectValidationResult checkXmlFiles(const QString& fcstdFile);
+ProjectValidationResult GuiExport checkXmlFiles(const QString& fcstdFile);
 
 /// Recovery pre-check: checkZipData then checkXmlFiles; returns the first non-Ok result.
-ProjectValidationResult validateProjectArchive(const QString& fcstdFile);
+ProjectValidationResult GuiExport validateProjectArchive(const QString& fcstdFile);
 
 }  // namespace Gui::Dialog::DocumentRecoveryInternal
