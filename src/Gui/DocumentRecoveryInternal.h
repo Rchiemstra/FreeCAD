@@ -21,4 +21,7 @@ ProjectValidationResult checkZipData(const QString& fcstdFile);
 /// Validates Document.xml (required) and GuiDocument.xml (optional if present).
 ProjectValidationResult checkXmlFiles(const QString& fcstdFile);
 
+/// Recovery pre-check: checkZipData then checkXmlFiles; returns the first non-Ok result.
+ProjectValidationResult validateProjectArchive(const QString& fcstdFile);
+
 }  // namespace Gui::Dialog::DocumentRecoveryInternal

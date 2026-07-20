@@ -588,6 +588,15 @@ ProjectValidationResult checkXmlFiles(const QString& fcstdFile)
     }
 }
 
+ProjectValidationResult validateProjectArchive(const QString& fcstdFile)
+{
+    const auto zipResult = checkZipData(fcstdFile);
+    if (zipResult != ProjectValidationResult::Ok) {
+        return zipResult;
+    }
+    return checkXmlFiles(fcstdFile);
+}
+
 }  // namespace Gui::Dialog::DocumentRecoveryInternal
 
 static void logValidationFailure(
@@ -619,18 +628,11 @@ bool DocumentRecoveryPrivate::isValidProject(const QFileInfo& fi) const
     const QString projectFile = fi.absoluteFilePath();
 
     using Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult;
-    using Gui::Dialog::DocumentRecoveryInternal::checkXmlFiles;
-    using Gui::Dialog::DocumentRecoveryInternal::checkZipData;
+    using Gui::Dialog::DocumentRecoveryInternal::validateProjectArchive;
 
-    const auto zipResult = checkZipData(projectFile);
-    if (zipResult != ProjectValidationResult::Ok) {
-        logValidationFailure(projectFile, zipResult, "ZIP check");
-        return false;
-    }
-
-    const auto xmlResult = checkXmlFiles(projectFile);
-    if (xmlResult != ProjectValidationResult::Ok) {
-        logValidationFailure(projectFile, xmlResult, "XML check");
+    const auto archiveResult = validateProjectArchive(projectFile);
+    if (archiveResult != ProjectValidationResult::Ok) {
+        logValidationFailure(projectFile, archiveResult, "archive check");
         return false;
     }
 
