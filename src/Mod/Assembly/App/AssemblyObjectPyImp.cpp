@@ -197,6 +197,46 @@ PyObject* AssemblyObjectPy::exportAsASMT(PyObject* args) const
     Py_Return;
 }
 
+PyObject* AssemblyObjectPy::exportAsWebotsPROTO(PyObject* args) const
+{
+    char* utf8Name;
+    if (!PyArg_ParseTuple(args, "et", "utf-8", &utf8Name)) {
+        return nullptr;
+    }
+
+    std::string fileName = utf8Name;
+    PyMem_Free(utf8Name);
+
+    if (fileName.empty()) {
+        PyErr_SetString(PyExc_ValueError, "Passed string is empty");
+        return nullptr;
+    }
+
+    PyObject* module = PyImport_ImportModule("WebotsExport");
+    if (!module) {
+        return nullptr;
+    }
+
+    PyObject* function = PyObject_GetAttrString(module, "exportAssembly");
+    Py_DECREF(module);
+    if (!function) {
+        return nullptr;
+    }
+
+    PyObject* fileNamePy = PyUnicode_FromStringAndSize(fileName.data(), fileName.size());
+    if (!fileNamePy) {
+        Py_DECREF(function);
+        return nullptr;
+    }
+
+    PyObject* assemblyPy = this->getAssemblyObjectPtr()->getPyObject();
+    PyObject* result = PyObject_CallFunctionObjArgs(function, assemblyPy, fileNamePy, nullptr);
+    Py_DECREF(assemblyPy);
+    Py_DECREF(fileNamePy);
+    Py_DECREF(function);
+    return result;
+}
+
 Py::List AssemblyObjectPy::getJoints() const
 {
     Py::List ret;
