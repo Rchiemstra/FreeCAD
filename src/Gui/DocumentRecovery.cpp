@@ -43,6 +43,7 @@
 #include <QTreeWidgetItem>
 #include <QXmlStreamReader>
 #include <QVector>
+#include <memory>
 #include <sstream>
 
 #include <FCConfig.h>
@@ -50,14 +51,20 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/ProjectFile.h>
+#include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Gui/Application.h>
 #include <Gui/Command.h>
 #include <Gui/Dialogs/DlgCheckableMessageBox.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
+#ifdef _MSC_VER
+# include <zipios++/zipios-config.h>
+#endif
+#include <zipios++/zipfile.h>
 
 #include "DocumentRecovery.h"
+#include "DocumentRecoveryInternal.h"
 #include "ui_DocumentRecovery.h"
 #include "WaitCursor.h"
 
@@ -475,7 +482,8 @@ DocumentRecoveryPrivate::Info DocumentRecoveryPrivate::getRecoveryInfo(const QFi
                 else {
                     info.status = DocumentRecoveryPrivate::Corrupted;
                     writeRecoveryInfo(info);
-                    qWarning() << "Original project file is corrupted: " << info.fileName << "\n";
+                    qWarning() << "Original project file failed recovery validation"
+                               << " (unreadable or corrupted): " << info.fileName << "\n";
                 }
             }
         }
@@ -484,31 +492,6 @@ DocumentRecoveryPrivate::Info DocumentRecoveryPrivate::getRecoveryInfo(const QFi
     return info;
 }
 
-
-/// Rough check to see if the ZIP data is valid. No CRC calculation, just a fast iteration over the
-/// contents to see if it seems basically OK.
-bool zipDataIsValid(const QString& fcstdFile)
-{
-    try {
-        zipios::ZipFile zf(fcstdFile.toStdString());
-        auto entries = zf.entries();
-        int n = 0;
-        for (auto it = entries.begin(); it != entries.end(); ++it) {
-            auto s = zf.getInputStream(*it);
-            if (!s || !(*s)) {
-                return false;
-            }
-            ++n;
-        }
-        if (n == 0) {
-            return false;
-        }
-        return true;
-    }
-    catch (...) {
-        return false;
-    }
-}
 
 static zipios::ConstEntryPointer findEntry(zipios::ZipFile& zf, const std::string& name)
 {
@@ -521,45 +504,118 @@ static zipios::ConstEntryPointer findEntry(zipios::ZipFile& zf, const std::strin
     return {};
 }
 
-bool xmlFilesAreValid(const QString& fcstdFile)
+namespace Gui::Dialog::DocumentRecoveryInternal
+{
+
+/// Rough check to see if the ZIP data is valid. No CRC calculation, just a fast iteration over the
+/// contents to see if it seems basically OK.
+///
+/// ZipFile::getInputStream() returns a heap stream owning an ifstream; callers must delete it.
+ProjectValidationResult checkZipData(const QString& fcstdFile)
 {
     try {
         zipios::ZipFile zf(fcstdFile.toStdString());
+        if (!zf.isValid()) {
+            return ProjectValidationResult::OpenFailed;
+        }
+
+        auto entries = zf.entries();
+        int n = 0;
+        for (auto it = entries.begin(); it != entries.end(); ++it) {
+            std::unique_ptr<std::istream> s(zf.getInputStream(*it));
+            if (!s || !(*s)) {
+                return ProjectValidationResult::OpenFailed;
+            }
+            ++n;
+        }
+        if (n == 0) {
+            return ProjectValidationResult::InvalidContent;
+        }
+        return ProjectValidationResult::Ok;
+    }
+    catch (...) {
+        return ProjectValidationResult::OpenFailed;
+    }
+}
+
+ProjectValidationResult checkXmlFiles(const QString& fcstdFile)
+{
+    try {
+        zipios::ZipFile zf(fcstdFile.toStdString());
+        if (!zf.isValid()) {
+            return ProjectValidationResult::OpenFailed;
+        }
+
         auto doc = findEntry(zf, "Document.xml");
         if (!doc) {
-            return false;
+            return ProjectValidationResult::InvalidContent;
         }
         {
-            auto s = zf.getInputStream(doc);
-            QByteArray bytes;
-            bytes.resize(0);
+            std::unique_ptr<std::istream> s(zf.getInputStream(doc));
+            if (!s || !(*s)) {
+                return ProjectValidationResult::OpenFailed;
+            }
             std::string tmp((std::istreambuf_iterator<char>(*s)), std::istreambuf_iterator<char>());
             QXmlStreamReader xr(QByteArray(tmp.data(), int(tmp.size())));
             while (!xr.atEnd()) {
                 xr.readNext();
             }
             if (xr.hasError()) {
-                return false;
+                return ProjectValidationResult::InvalidContent;
             }
         }
 
         // GuiDocument.xml is optional, but if it's present it must be well-formed
         if (auto gui = findEntry(zf, "GuiDocument.xml")) {
-            auto s = zf.getInputStream(gui);
+            std::unique_ptr<std::istream> s(zf.getInputStream(gui));
+            if (!s || !(*s)) {
+                return ProjectValidationResult::OpenFailed;
+            }
             std::string tmp((std::istreambuf_iterator<char>(*s)), std::istreambuf_iterator<char>());
             QXmlStreamReader xr(QByteArray(tmp.data(), int(tmp.size())));
             while (!xr.atEnd()) {
                 xr.readNext();
             }
             if (xr.hasError()) {
-                return false;
+                return ProjectValidationResult::InvalidContent;
             }
         }
 
-        return true;
+        return ProjectValidationResult::Ok;
     }
     catch (...) {
-        return false;
+        return ProjectValidationResult::OpenFailed;
+    }
+}
+
+ProjectValidationResult validateProjectArchive(const QString& fcstdFile)
+{
+    const auto zipResult = checkZipData(fcstdFile);
+    if (zipResult != ProjectValidationResult::Ok) {
+        return zipResult;
+    }
+    return checkXmlFiles(fcstdFile);
+}
+
+}  // namespace Gui::Dialog::DocumentRecoveryInternal
+
+static void logValidationFailure(
+    const QString& projectFile,
+    Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult result,
+    const char* stage)
+{
+    if (result == Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult::OpenFailed) {
+        Base::Console().warning(
+            "Cannot open project file during recovery %s (file may be locked or too many "
+            "files are open): %s\n",
+            stage,
+            projectFile.toUtf8().constData());
+    }
+    else if (result
+             == Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult::InvalidContent) {
+        Base::Console().warning("Project file appears malformed during recovery %s: %s\n",
+                                stage,
+                                projectFile.toUtf8().constData());
     }
 }
 
@@ -571,16 +627,23 @@ bool DocumentRecoveryPrivate::isValidProject(const QFileInfo& fi) const
 
     const QString projectFile = fi.absoluteFilePath();
 
-    if (!zipDataIsValid(projectFile)) {
-        return false;
-    }
+    using Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult;
+    using Gui::Dialog::DocumentRecoveryInternal::validateProjectArchive;
 
-    if (!xmlFilesAreValid(projectFile)) {
+    const auto archiveResult = validateProjectArchive(projectFile);
+    if (archiveResult != ProjectValidationResult::Ok) {
+        logValidationFailure(projectFile, archiveResult, "archive check");
         return false;
     }
 
     App::ProjectFile project(projectFile.toStdString());
-    return project.loadDocument();
+    if (!project.loadDocument()) {
+        Base::Console().warning(
+            "Project file Document.xml failed to parse during recovery validation: %s\n",
+            projectFile.toUtf8().constData());
+        return false;
+    }
+    return true;
 }
 
 DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(const QString& fn) const
