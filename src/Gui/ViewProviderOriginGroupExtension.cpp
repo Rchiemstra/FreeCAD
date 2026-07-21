@@ -70,7 +70,12 @@ std::vector<App::DocumentObject*> ViewProviderOriginGroupExtension::constructChi
     if (originObj) {
         std::vector<App::DocumentObject*> rv;
         rv.push_back(originObj);
-        std::copy(children.begin(), children.end(), std::back_inserter(rv));
+        // Skip Origin if it is also present in Group (avoids ComboView duplicate-child warning)
+        for (auto* child : children) {
+            if (child != originObj) {
+                rv.push_back(child);
+            }
+        }
         return rv;
     }
     else {  // Generally shouldn't happen but must be handled in case origin is lost

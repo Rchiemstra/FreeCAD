@@ -60,6 +60,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestCore.py
     AssemblyTests/TestCommandInsertLink.py
     AssemblyTests/TestCrossBodyDatumStaleness.py
+    AssemblyTests/TestOverlayIconsAndOrigin.py
     AssemblyTests/TestWebotsExport.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
