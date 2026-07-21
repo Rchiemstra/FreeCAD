@@ -1216,7 +1216,7 @@ class ViewProviderJoint:
 
         assembly = self.app_obj.Proxy.getAssembly(self.app_obj)
         # Assuming Reference1 corresponds to the first part link
-        if hasattr(self.app_obj, "Reference1"):
+        if hasattr(self.app_obj, "Reference1") and assembly is not None:
             part = UtilsAssembly.getMovingPart(self.app_obj.Reference1)
             if part is not None and not assembly.isPartConnected(part):
                 overlays[Gui.IconPosition.BottomLeft] = "Part_Detached"
