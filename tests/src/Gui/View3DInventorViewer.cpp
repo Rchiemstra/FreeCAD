@@ -9,23 +9,23 @@
 namespace
 {
 
-TEST(DetachedNavigationUpdate, requestsViewportUpdateForMouseDrag)
+TEST(DetachedNavigationRedraw, requestsGuardedRedrawForMouseDrag)
 {
-    int updateRequests = 0;
+    int redrawRequests = 0;
 
-    EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationUpdate(
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
         true,
         true,
         true,
         true,
-        [&updateRequests] {
-            ++updateRequests;
+        [&redrawRequests] {
+            ++redrawRequests;
         }
     ));
-    EXPECT_EQ(updateRequests, 1);
+    EXPECT_EQ(redrawRequests, 1);
 }
 
-TEST(DetachedNavigationUpdate, ignoresEventsThatAreNotDetachedMouseDrags)
+TEST(DetachedNavigationRedraw, ignoresEventsThatAreNotDetachedMouseDrags)
 {
     struct EventState
     {
@@ -43,17 +43,17 @@ TEST(DetachedNavigationUpdate, ignoresEventsThatAreNotDetachedMouseDrags)
     }};
 
     for (const auto& event : ignoredEvents) {
-        int updateRequests = 0;
-        EXPECT_FALSE(Gui::View3DInventorViewerInternal::requestDetachedNavigationUpdate(
+        int redrawRequests = 0;
+        EXPECT_FALSE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
             event.eventProcessed,
             event.mouseButtonPressed,
             event.isLocationEvent,
             event.isDetachedView,
-            [&updateRequests] {
-                ++updateRequests;
+            [&redrawRequests] {
+                ++redrawRequests;
             }
         ));
-        EXPECT_EQ(updateRequests, 0);
+        EXPECT_EQ(redrawRequests, 0);
     }
 }
 
