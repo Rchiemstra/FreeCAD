@@ -49,6 +49,10 @@ public:
 /**
  * Single source of truth for lease-gated document mutation authority.
  * Documents without MCP ownership remain unrestricted.
+ *
+ * Capabilities bind to fencing generation AND a non-reusable authority epoch.
+ * Epochs survive clear/re-own and document pointer reuse so old capabilities
+ * cannot be reactivated by fencing-generation rollback.
  */
 class AppExport DocumentMutationAuthority: public DocumentMutationGuard
 {
@@ -65,8 +69,15 @@ public:
     void clearOwner(const Document& document);
     MutationOwner owner(const Document& document) const;
     std::uint64_t fencingGeneration(const Document& document) const;
+    std::uint64_t authorityEpoch(const Document& document) const;
     std::string providerId(const Document& document) const;
     bool isRestricted(const Document& document) const;
+
+    /** True if the calling thread has a capability covering kind for document. */
+    bool hasActiveCapability(const Document& document, MutationKind kind) const;
+
+    /** True if the calling thread has any valid capability for this document. */
+    bool hasActiveCapabilityForDocument(const Document& document) const;
 
     /** Issue a short-lived capability after lease auth (in-process only). */
     MutationCapabilityScope openCapability(Document& document,
@@ -74,7 +85,7 @@ public:
                                            std::uint64_t fencingGeneration,
                                            MutationOrigin origin = MutationOrigin::Mcp);
 
-    /** Bump fencing generation, revoke MCP capabilities, switch to UserOwned. */
+    /** Bump fencing generation + epoch, revoke MCP capabilities, switch to UserOwned. */
     std::uint64_t takeover(Document& document);
 
     MutationDecision authorize(Document& document,
@@ -99,12 +110,14 @@ private:
     {
         MutationOwner owner {MutationOwner::Unrestricted};
         std::uint64_t fencingGeneration {0};
+        std::uint64_t authorityEpoch {0};
         std::string providerId;
         bool recoveryMode {false};
     };
 
     DocumentState* stateFor(const Document& document);
     const DocumentState* stateFor(const Document& document) const;
+    std::uint64_t bumpEpochLocked(const Document& document);
     MutationDecision authorizeLocked(Document& document,
                                      MutationKind kind,
                                      const MutationContext& context,
@@ -112,6 +125,8 @@ private:
 
     mutable std::mutex _mutex;
     std::unordered_map<const Document*, DocumentState> _states;
+    /** Survives clear/forget so pointer reuse cannot revive old epochs. */
+    std::unordered_map<const Document*, std::uint64_t> _epochs;
     std::shared_ptr<ExternalMutationAuthorityProvider> _provider;
     std::uint64_t _nextCapabilityId {1};
 };

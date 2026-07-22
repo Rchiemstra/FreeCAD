@@ -5,8 +5,6 @@
 #include <FCGlobal.h>
 #include <string>
 
-class QLabel;
-
 namespace App
 {
 class Document;
@@ -29,8 +27,6 @@ public:
     {
         Cancel = 0,
         TakeOver = 1,
-        Inspect = 2,
-        RequestPause = 3,
     };
 
     explicit DlgMutationTakeover(App::Document* document,

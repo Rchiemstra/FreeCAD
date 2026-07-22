@@ -1297,6 +1297,9 @@ App::MutationKindMask parseMutationKinds(PyObject* kindsObj)
         else if (name == "BulkCopy") {
             mask |= App::mutationKindBit(App::MutationKind::BulkCopy);
         }
+        else if (name == "StructuralProperty") {
+            mask |= App::mutationKindBit(App::MutationKind::StructuralProperty);
+        }
         else if (name == "All") {
             mask = App::MutationKindAll;
         }
@@ -1390,7 +1393,7 @@ PyObject* DocumentPy::bumpMutationGeneration(PyObject* args)
     }
     const auto generation =
         App::DocumentMutationAuthority::instance().takeover(*getDocumentPtr());
-    return Py::new_reference_to(Py::Long(static_cast<long>(generation)));
+    return PyLong_FromUnsignedLongLong(generation);
 }
 
 PyObject* DocumentPy::mutationAuthorityStatus(PyObject* args)
@@ -1402,7 +1405,9 @@ PyObject* DocumentPy::mutationAuthorityStatus(PyObject* args)
     Document* doc = getDocumentPtr();
     Py::Dict status;
     status["owner"] = Py::String(App::mutationOwnerName(authority.owner(*doc)));
-    status["generation"] = Py::Long(static_cast<long>(authority.fencingGeneration(*doc)));
+    status["generation"] = Py::asObject(PyLong_FromUnsignedLongLong(authority.fencingGeneration(*doc)));
+    status["authority_epoch"] =
+        Py::asObject(PyLong_FromUnsignedLongLong(authority.authorityEpoch(*doc)));
     status["provider_id"] = Py::String(authority.providerId(*doc));
     status["restricted"] = Py::Boolean(authority.isRestricted(*doc));
     return Py::new_reference_to(status);

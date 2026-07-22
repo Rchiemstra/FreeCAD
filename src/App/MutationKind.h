@@ -24,6 +24,8 @@ enum class MutationKind : std::uint32_t
     TransactionAbort = 1u << 11,
     ImportExport = 1u << 12,
     BulkCopy = 1u << 13,
+    /** add/change/rename/remove of dynamic properties */
+    StructuralProperty = 1u << 14,
 };
 
 using MutationKindMask = std::uint32_t;
@@ -41,7 +43,8 @@ constexpr MutationKindMask MutationKindAll =
     | mutationKindBit(MutationKind::Close) | mutationKindBit(MutationKind::TransactionOpen)
     | mutationKindBit(MutationKind::TransactionCommit)
     | mutationKindBit(MutationKind::TransactionAbort)
-    | mutationKindBit(MutationKind::ImportExport) | mutationKindBit(MutationKind::BulkCopy);
+    | mutationKindBit(MutationKind::ImportExport) | mutationKindBit(MutationKind::BulkCopy)
+    | mutationKindBit(MutationKind::StructuralProperty);
 
 inline const char* mutationKindName(MutationKind kind)
 {
@@ -74,6 +77,8 @@ inline const char* mutationKindName(MutationKind kind)
             return "ImportExport";
         case MutationKind::BulkCopy:
             return "BulkCopy";
+        case MutationKind::StructuralProperty:
+            return "StructuralProperty";
     }
     return "Unknown";
 }
@@ -102,6 +107,7 @@ enum class MutationDecision : std::uint8_t
     DenyStaleGeneration = 3,
     DenyRecoveryMode = 4,
     RequireTakeover = 5,
+    DenyStaleEpoch = 6,
 };
 
 inline const char* mutationDecisionName(MutationDecision decision)
@@ -119,6 +125,8 @@ inline const char* mutationDecisionName(MutationDecision decision)
             return "DENY_RECOVERY_MODE";
         case MutationDecision::RequireTakeover:
             return "REQUIRE_TAKEOVER";
+        case MutationDecision::DenyStaleEpoch:
+            return "DENY_STALE_EPOCH";
     }
     return "UNKNOWN";
 }
@@ -141,6 +149,7 @@ struct MutationContext
     MutationKind kind {MutationKind::PropertyWrite};
     MutationOrigin origin {MutationOrigin::Cpp};
     std::uint64_t fencingGeneration {0};
+    std::uint64_t authorityEpoch {0};
     std::uint64_t capabilityId {0};
     std::string documentName;
     std::string objectName;

@@ -462,15 +462,20 @@ void Command::_invoke(int id, bool disablelog)
 
         // check if it really works NOW (could be a delay between click deactivation of the button)
         if (isActive()) {
-            if (App::Document* appDoc = App::GetApplication().getActiveDocument()) {
-                auto& authority = App::DocumentMutationAuthority::instance();
-                if (authority.isRestricted(*appDoc)
-                    && !App::MutationAuthorityTLS::hasInternalGrant(appDoc)
-                    && App::MutationAuthorityTLS::activeCapabilities().empty()) {
-                    const auto choice = Dialog::DlgMutationTakeover::ask(
-                        appDoc, displayText.empty() ? std::string(sName ? sName : "") : displayText);
-                    if (choice != Dialog::DlgMutationTakeover::Result::TakeOver) {
-                        return;
+            const bool commandMutatesDocument = (eType & AlterDoc) != 0;
+            if (commandMutatesDocument) {
+                if (App::Document* appDoc = App::GetApplication().getActiveDocument()) {
+                    auto& authority = App::DocumentMutationAuthority::instance();
+                    if (authority.isRestricted(*appDoc)
+                        && !App::MutationAuthorityTLS::hasInternalGrant(appDoc)
+                        && !authority.hasActiveCapabilityForDocument(*appDoc)) {
+                        const auto choice = Dialog::DlgMutationTakeover::ask(
+                            appDoc,
+                            displayText.empty() ? std::string(sName ? sName : "")
+                                                : displayText);
+                        if (choice != Dialog::DlgMutationTakeover::Result::TakeOver) {
+                            return;
+                        }
                     }
                 }
             }

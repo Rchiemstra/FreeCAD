@@ -5,6 +5,7 @@
 #include <FCGlobal.h>
 
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 namespace App
@@ -12,19 +13,25 @@ namespace App
 
 class Document;
 
-/** Opaque in-process mutation grant bound to a document and fencing generation. */
+/**
+ * Opaque in-process mutation grant bound to a document, fencing generation,
+ * and non-reusable authority epoch.
+ */
 struct MutationCapability
 {
     std::uint64_t id {0};
     Document* document {nullptr};
     std::uint64_t fencingGeneration {0};
+    std::uint64_t authorityEpoch {0};
     MutationKindMask allowedKinds {0};
     MutationOrigin origin {MutationOrigin::Mcp};
+    std::thread::id creatorThread {};
 };
 
 /**
- * RAII registration of an active capability on the calling thread.
- * While alive, authorize() may ALLOW matching mutations for the bound document.
+ * RAII registration of an active capability on the creator thread.
+ * Destruction from any thread removes the grant from the creator thread's
+ * synchronized authorization registry.
  */
 class AppExport MutationCapabilityScope
 {
@@ -75,11 +82,23 @@ private:
     bool _active {false};
 };
 
-/** Thread-local accessors used by DocumentMutationAuthority. */
+/** Synchronized capability / internal-grant accessors. */
 namespace MutationAuthorityTLS
 {
-AppExport const std::vector<MutationCapability>& activeCapabilities();
+/** Capabilities active for the calling thread only. */
+AppExport std::vector<MutationCapability> activeCapabilities();
+
+/** True if the calling thread holds a matching capability for document+kind. */
+AppExport bool hasMatchingCapability(const Document* document, MutationKind kind);
+
 AppExport bool hasInternalGrant(const Document* document);
+
+/** Activate/deactivate used by MutationCapabilityScope (any-thread deactivate). */
+AppExport void activateCapability(const MutationCapability& capability);
+AppExport void deactivateCapability(std::uint64_t capabilityId);
+
+AppExport void activateInternalGrant(Document* document);
+AppExport void deactivateInternalGrant(Document* document);
 }  // namespace MutationAuthorityTLS
 
 }  // namespace App

@@ -4,6 +4,9 @@
 
 #include <App/Document.h>
 #include <App/DocumentMutationAuthority.h>
+#include <Base/Console.h>
+#include <Base/Interpreter.h>
+#include <Base/PyObjectBase.h>
 #include <Gui/MainWindow.h>
 
 #include <QHBoxLayout>
@@ -13,6 +16,61 @@
 
 using namespace Gui;
 using namespace Gui::Dialog;
+
+namespace
+{
+
+bool syncMcpLeaseTakeover(App::Document* document)
+{
+    if (!document) {
+        return false;
+    }
+    try {
+        Base::PyGILStateLocker lock;
+        PyObject* module = nullptr;
+        // Prefer in-addon bridge module (Mod path / addon import).
+        module = PyImport_ImportModule("document_lease.core_authority");
+        if (!module) {
+            PyErr_Clear();
+            module = PyImport_ImportModule("addon.FreeCADMCP.document_lease.core_authority");
+        }
+        if (!module) {
+            PyErr_Clear();
+            // Soft-compat: no MCP addon loaded; core takeover alone is fine.
+            return true;
+        }
+        PyObject* func = PyObject_GetAttrString(module, "sync_gui_lease_takeover");
+        Py_DECREF(module);
+        if (!func || !PyCallable_Check(func)) {
+            Py_XDECREF(func);
+            PyErr_Clear();
+            return true;
+        }
+        PyObject* docPy = document->getPyObject();
+        PyObject* result = PyObject_CallFunctionObjArgs(func, docPy, nullptr);
+        Py_DECREF(func);
+        Py_XDECREF(docPy);
+        if (!result) {
+            Base::PyException exc;
+            Base::Console().warning("MCP lease takeover sync failed: %s\n",
+                                    exc.what());
+            return false;
+        }
+        const bool ok = PyObject_IsTrue(result) == 1;
+        Py_DECREF(result);
+        return ok;
+    }
+    catch (const Base::Exception& e) {
+        Base::Console().warning("MCP lease takeover sync failed: %s\n", e.what());
+        return false;
+    }
+    catch (...) {
+        Base::Console().warning("MCP lease takeover sync failed with unknown error\n");
+        return false;
+    }
+}
+
+}  // namespace
 
 DlgMutationTakeover::DlgMutationTakeover(App::Document* document,
                                          const std::string& operation,
@@ -44,13 +102,9 @@ DlgMutationTakeover::DlgMutationTakeover(App::Document* document,
     layout->addWidget(text);
 
     auto* buttons = new QHBoxLayout();
-    auto* inspectBtn = new QPushButton(tr("Inspect"), this);
-    auto* pauseBtn = new QPushButton(tr("Request Pause"), this);
     auto* takeOverBtn = new QPushButton(tr("Take Over"), this);
     auto* cancelBtn = new QPushButton(tr("Cancel"), this);
     takeOverBtn->setDefault(true);
-    buttons->addWidget(inspectBtn);
-    buttons->addWidget(pauseBtn);
     buttons->addStretch();
     buttons->addWidget(takeOverBtn);
     buttons->addWidget(cancelBtn);
@@ -58,14 +112,6 @@ DlgMutationTakeover::DlgMutationTakeover(App::Document* document,
 
     connect(cancelBtn, &QPushButton::clicked, this, [this]() {
         _result = Result::Cancel;
-        reject();
-    });
-    connect(inspectBtn, &QPushButton::clicked, this, [this]() {
-        _result = Result::Inspect;
-        reject();
-    });
-    connect(pauseBtn, &QPushButton::clicked, this, [this]() {
-        _result = Result::RequestPause;
         reject();
     });
     connect(takeOverBtn, &QPushButton::clicked, this, [this]() {
@@ -80,8 +126,15 @@ DlgMutationTakeover::Result DlgMutationTakeover::ask(App::Document* document,
 {
     DlgMutationTakeover dialog(document, operation, parent ? parent : getMainWindow());
     dialog.exec();
-    if (dialog.resultChoice() == Result::TakeOver && document) {
-        App::DocumentMutationAuthority::instance().takeover(*document);
+    if (dialog.resultChoice() != Result::TakeOver || !document) {
+        return dialog.resultChoice();
     }
-    return dialog.resultChoice();
+    // Lease token rotation / sidecar first so core and lease cannot split.
+    if (!syncMcpLeaseTakeover(document)) {
+        Base::Console().warning(
+            "Take over aborted: could not synchronize MCP lease authority\n");
+        return Result::Cancel;
+    }
+    App::DocumentMutationAuthority::instance().takeover(*document);
+    return Result::TakeOver;
 }
