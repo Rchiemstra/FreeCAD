@@ -525,3 +525,57 @@ class Document(PropertyContainer):
         the next transaction will stick to if no change has occurred yet
         """
         ...
+
+    def setMutationOwner(
+        self,
+        mode: str,
+        generation: int = 0,
+        provider_id: str = "",
+        /,
+    ) -> None:
+        """
+        setMutationOwner(mode, generation=0, provider_id="") -> None
+
+        Activate lease-gated mutation authority for this document.
+        mode: 'unrestricted' | 'mcp' | 'user'
+        """
+        ...
+
+    def clearMutationOwner(self) -> None:
+        """
+        clearMutationOwner() -> None
+
+        Remove mutation ownership and restore unrestricted FreeCAD behaviour.
+        """
+        ...
+
+    def openMutationCapability(
+        self,
+        kinds: object = None,
+        generation: int = 0,
+        /,
+    ) -> object:
+        """
+        openMutationCapability(kinds=None, generation=0) -> capsule
+
+        Issue a short-lived in-process mutation capability. Keep the returned
+        object alive for the duration of the mutation (context manager / finally).
+        kinds may be None (all), an int bitmask, or a sequence of kind names.
+        """
+        ...
+
+    def bumpMutationGeneration(self) -> int:
+        """
+        bumpMutationGeneration() -> int
+
+        User takeover: bump fencing generation, revoke MCP capabilities, switch to user ownership.
+        """
+        ...
+
+    def mutationAuthorityStatus(self) -> dict:
+        """
+        mutationAuthorityStatus() -> dict
+
+        Return owner mode, fencing generation, provider id, and restricted flag.
+        """
+        ...

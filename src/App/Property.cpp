@@ -34,6 +34,8 @@
 #include "Property.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
+#include "DocumentMutationAuthority.h"
+#include "DocumentObject.h"
 
 
 using namespace App;
@@ -302,6 +304,17 @@ void Property::hasSetValue()
 void Property::aboutToSetValue()
 {
     if (father) {
+        if (Document* doc = documentFromPropertyContainer(father)) {
+            const char* objectName = nullptr;
+            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
+                objectName = obj->getNameInDocument();
+            }
+            enforceDocumentMutation(doc,
+                                    MutationKind::PropertyWrite,
+                                    MutationOrigin::Cpp,
+                                    objectName,
+                                    getName());
+        }
         father->onBeforeChange(this);
     }
 }

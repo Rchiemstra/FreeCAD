@@ -75,6 +75,7 @@
 #include "Application.h"
 #include "AutoTransaction.h"
 #include "BackupPolicy.h"
+#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
 #include "License.h"
@@ -173,6 +174,9 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    enforceDocumentMutation(this, MutationKind::Undo);
+    MutationInternalScope internalGrant(this);
+
     if (id != 0) {
         const auto it = mUndoMap.find(id);
         if (it == mUndoMap.end()) {
@@ -226,6 +230,9 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    enforceDocumentMutation(this, MutationKind::Redo);
+    MutationInternalScope internalGrant(this);
+
     if (id != 0) {
         const auto it = mRedoMap.find(id);
         if (it == mRedoMap.end()) {
@@ -342,6 +349,9 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
+    enforceDocumentMutation(this, MutationKind::TransactionOpen, MutationOrigin::Cpp, nullptr,
+                            name.name.c_str());
+
     if (tid != NullTransaction && tid == d->bookedTransaction) {
         return tid; // Early exit without warning
     }
@@ -554,6 +564,8 @@ void Document::_clearRedos()
 
 void Document::commitTransaction() // NOLINT
 {
+    enforceDocumentMutation(this, MutationKind::TransactionCommit);
+
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot commit transaction while transacting");
@@ -621,6 +633,8 @@ bool Document::_commitTransaction(const bool notify)
 
 void Document::abortTransaction() const
 {
+    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::TransactionAbort);
+
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot abort transaction while transacting");
@@ -1039,6 +1053,8 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
+
+    DocumentMutationAuthority::instance().forgetDocument(*this);
 
     try {
         clearUndos();
@@ -1867,6 +1883,9 @@ static std::string checkFileName(const char* file)
 
 bool Document::saveAs(const char* _file)
 {
+    enforceDocumentMutation(this, MutationKind::SaveAs);
+    MutationInternalScope internalGrant(this);
+
     const std::string file = checkFileName(_file);
     const Base::FileInfo fi(file.c_str());
     if (this->FileName.getStrValue() != file) {
@@ -1880,6 +1899,9 @@ bool Document::saveAs(const char* _file)
 
 bool Document::saveCopy(const char* file) const
 {
+    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::SaveAs);
+    MutationInternalScope internalGrant(const_cast<Document*>(this));
+
     const std::string checked = checkFileName(file);
     return this->FileName.getStrValue() != checked ? saveToFile(checked.c_str()) : false;
 }
@@ -1894,6 +1916,9 @@ bool Document::canWriteRecoverySnapshot() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
+    enforceDocumentMutation(this, MutationKind::Save);
+    MutationInternalScope internalGrant(this);
+
     if (testStatus(Document::PartialDoc)) {
         FC_ERR("Partial loaded document '" << Label.getValue() << "' cannot be saved");
         // TODO We don't make this a fatal error and return 'true' to make it possible to
@@ -2829,6 +2854,9 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
 {
     ZoneScoped;
 
+    enforceDocumentMutation(this, MutationKind::Recompute);
+    MutationInternalScope internalGrant(this);
+
     // Recompute can execute Python-backed features. Keep the GIL for the full
     // recompute so async recompute still serializes Python execution the same
     // way the main-thread path does, preserving compatibility with existing
@@ -3396,6 +3424,11 @@ void Document::addObject(DocumentObject* obj, const char* name)
 
 void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
 {
+    enforceDocumentMutation(this,
+                            MutationKind::AddObject,
+                            MutationOrigin::Cpp,
+                            pObjectName);
+
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -3507,6 +3540,11 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
+    enforceDocumentMutation(this,
+                            MutationKind::RemoveObject,
+                            MutationOrigin::Cpp,
+                            pcObject ? pcObject->getNameInDocument() : nullptr);
+
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing) && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
         return;
