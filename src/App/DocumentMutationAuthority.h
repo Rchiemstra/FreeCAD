@@ -62,7 +62,7 @@ public:
                   MutationOwner owner,
                   std::uint64_t fencingGeneration = 0,
                   const std::string& providerId = {});
-    void clearOwner(Document& document);
+    void clearOwner(const Document& document);
     MutationOwner owner(const Document& document) const;
     std::uint64_t fencingGeneration(const Document& document) const;
     std::string providerId(const Document& document) const;
@@ -86,8 +86,9 @@ public:
 
     void forgetDocument(const Document& document);
 
-    using DeniedSignal = sb::fastsignals::signal<void(Document&, const MutationContext&, MutationDecision)>;
-    using TakeoverSignal = sb::fastsignals::signal<void(Document&, std::uint64_t)>;
+    using DeniedSignal =
+        fastsignals::signal<void(Document&, const MutationContext&, MutationDecision)>;
+    using TakeoverSignal = fastsignals::signal<void(Document&, std::uint64_t)>;
     DeniedSignal signalDenied;
     TakeoverSignal signalTakeover;
 

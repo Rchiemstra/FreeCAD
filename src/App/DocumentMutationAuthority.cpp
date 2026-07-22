@@ -70,7 +70,7 @@ void DocumentMutationAuthority::setOwner(Document& document,
     state.providerId = providerId;
 }
 
-void DocumentMutationAuthority::clearOwner(Document& document)
+void DocumentMutationAuthority::clearOwner(const Document& document)
 {
     std::lock_guard<std::mutex> lock(_mutex);
     _states.erase(&document);
