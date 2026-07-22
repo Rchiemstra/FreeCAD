@@ -160,6 +160,7 @@ TEST_F(DocumentMutationAuthorityTest, removeObjectRequiresCapability)
         auto scope = auth().openCapability(*doc(), mutationKindBit(MutationKind::RemoveObject), 1);
         EXPECT_NO_THROW(doc()->removeObject("ToRemove"));
     }
+    EXPECT_EQ(doc()->getObject("ToRemove"), nullptr);
 }
 
 TEST_F(DocumentMutationAuthorityTest, recomputeRequiresCapability)

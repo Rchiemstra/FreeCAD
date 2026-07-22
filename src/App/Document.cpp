@@ -3529,6 +3529,12 @@ void Document::removeObject(const char* sName)
         return;
     }
 
+    enforceDocumentMutation(this,
+                            MutationKind::RemoveObject,
+                            MutationOrigin::Cpp,
+                            pos->second->getNameInDocument());
+    MutationInternalScope internalGrant(this);
+
     if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
         // TODO: shall we allow removal if there is active undo transaction?
         FC_MSG("pending remove of " << sName << " after recomputing document " << getName());
