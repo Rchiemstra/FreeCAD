@@ -63,6 +63,7 @@
 #include <Inventor/errors/SoDebugError.h>
 #include <Inventor/events/SoEvent.h>
 #include <Inventor/events/SoKeyboardEvent.h>
+#include <Inventor/events/SoLocation2Event.h>
 #include <Inventor/events/SoMotion3Event.h>
 #include <Inventor/manips/SoClipPlaneManip.h>
 #include <Inventor/nodes/SoAnnotation.h>
@@ -88,6 +89,7 @@
 #include <Inventor/nodes/SoTexture2.h>
 #include <Inventor/nodes/SoTextureCoordinate2.h>
 #include <Inventor/nodes/SoVertexProperty.h>
+#include <QApplication>
 #include <QBitmap>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -120,6 +122,7 @@
 #include <Gui/BitmapFactory.h>
 
 #include "View3DInventorViewer.h"
+#include "View3DInventorViewerInternal.h"
 #include "Application.h"
 #include "Camera.h"
 #include "Command.h"
@@ -129,6 +132,7 @@
 #include "Inventor/SoFCBackgroundGradient.h"
 #include "Inventor/SoFCBoundingBox.h"
 #include "MainWindow.h"
+#include "MDIView.h"
 #include "Multisample.h"
 #include "NaviCube.h"
 #include "Navigation/NavigationStyle.h"
@@ -3457,7 +3461,26 @@ bool View3DInventorViewer::processSoEvent(const SoEvent* ev)
         }
     }
 
-    return navigation->processEvent(ev);
+    const bool processed = navigation->processEvent(ev);
+
+#ifdef Q_OS_WIN
+    // Coin's redraw sensor can remain pending while a detached top-level window owns a mouse
+    // grab. The camera still follows the drag, but no viewport update is requested until the
+    // button is released. Request the update directly so detached views remain interactive while
+    // keeping the actual paint asynchronous and outside Quarter's recursive repaint path.
+    auto* mdiView = qobject_cast<MDIView*>(window());
+    View3DInventorViewerInternal::requestDetachedNavigationUpdate(
+        processed,
+        QApplication::mouseButtons() != Qt::NoButton,
+        ev->isOfType(SoLocation2Event::getClassTypeId()),
+        mdiView && mdiView->currentViewMode() != MDIView::Child,
+        [this] {
+            viewport()->update();
+        }
+    );
+#endif
+
+    return processed;
 }
 
 bool View3DInventorViewer::processSoEventBase(const SoEvent* const ev)
