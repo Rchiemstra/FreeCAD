@@ -1393,7 +1393,7 @@ PyObject* DocumentPy::bumpMutationGeneration(PyObject* args)
     }
     const auto generation =
         App::DocumentMutationAuthority::instance().takeover(*getDocumentPtr());
-    return PyLong_FromUnsignedLongLong(generation);
+    return Py::new_reference_to(Py::Long(generation));
 }
 
 PyObject* DocumentPy::mutationAuthorityStatus(PyObject* args)
@@ -1405,9 +1405,8 @@ PyObject* DocumentPy::mutationAuthorityStatus(PyObject* args)
     Document* doc = getDocumentPtr();
     Py::Dict status;
     status["owner"] = Py::String(App::mutationOwnerName(authority.owner(*doc)));
-    status["generation"] = Py::asObject(PyLong_FromUnsignedLongLong(authority.fencingGeneration(*doc)));
-    status["authority_epoch"] =
-        Py::asObject(PyLong_FromUnsignedLongLong(authority.authorityEpoch(*doc)));
+    status["generation"] = Py::Long(authority.fencingGeneration(*doc));
+    status["authority_epoch"] = Py::Long(authority.authorityEpoch(*doc));
     status["provider_id"] = Py::String(authority.providerId(*doc));
     status["restricted"] = Py::Boolean(authority.isRestricted(*doc));
     return Py::new_reference_to(status);
