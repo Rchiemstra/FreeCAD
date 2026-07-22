@@ -914,6 +914,7 @@ SET(View3D_SRCS
     View3DInventor.h
     View3DInventorSelection.h
     View3DInventorViewer.h
+    View3DInventorViewerInternal.h
     View3DPy.h
     View3DInventorRiftViewer.h
     View3DSettings.h
