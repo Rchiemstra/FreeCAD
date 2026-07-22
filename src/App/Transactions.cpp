@@ -33,6 +33,7 @@
 #include "Transactions.h"
 #include "Document.h"
 #include "DocumentObject.h"
+#include "DocumentMutationAuthority.h"
 #include "Property.h"
 
 
@@ -178,6 +179,8 @@ void Transaction::addOrRemoveProperty(TransactionalObject* Obj, const Property* 
 
 void Transaction::apply(Document& Doc, bool forward)
 {
+    MutationInternalScope internalGrant(&Doc);
+
     std::string errMsg;
     try {
         auto& index = _Objects.get<0>();

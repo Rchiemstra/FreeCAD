@@ -29,6 +29,7 @@
 #include "Document.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
+#include "DocumentMutationAuthority.h"
 #include "DocumentSettings.h"
 #include "DocumentSettingsPy.h"
 #include "MergeDocuments.h"
@@ -1216,6 +1217,199 @@ PyObject* DocumentPy::getBookedTransactionID(PyObject* args)
     }
     int tid = getDocumentPtr()->getBookedTransactionID();
     return Py::new_reference_to(Py::Long(tid));
+}
+
+namespace
+{
+
+App::MutationOwner parseMutationOwnerMode(const char* mode)
+{
+    if (!mode) {
+        throw Py::ValueError("mode must be a string");
+    }
+    std::string value(mode);
+    if (value == "unrestricted" || value == "none" || value == "off") {
+        return App::MutationOwner::Unrestricted;
+    }
+    if (value == "mcp" || value == "MCP" || value == "agent") {
+        return App::MutationOwner::McpOwned;
+    }
+    if (value == "user" || value == "User") {
+        return App::MutationOwner::UserOwned;
+    }
+    throw Py::ValueError("mode must be 'unrestricted', 'mcp', or 'user'");
+}
+
+App::MutationKindMask parseMutationKinds(PyObject* kindsObj)
+{
+    if (!kindsObj || kindsObj == Py_None) {
+        return App::MutationKindAll;
+    }
+    if (PyLong_Check(kindsObj)) {
+        return static_cast<App::MutationKindMask>(PyLong_AsUnsignedLongMask(kindsObj));
+    }
+    if (!PySequence_Check(kindsObj)) {
+        throw Py::TypeError("kinds must be None, int, or a sequence of kind names");
+    }
+    App::MutationKindMask mask = 0;
+    const Py::Sequence seq(kindsObj);
+    for (Py::Sequence::size_type i = 0; i < seq.size(); ++i) {
+        const std::string name = static_cast<std::string>(Py::String(seq[i]));
+        if (name == "PropertyWrite") {
+            mask |= App::mutationKindBit(App::MutationKind::PropertyWrite);
+        }
+        else if (name == "AddObject") {
+            mask |= App::mutationKindBit(App::MutationKind::AddObject);
+        }
+        else if (name == "RemoveObject") {
+            mask |= App::mutationKindBit(App::MutationKind::RemoveObject);
+        }
+        else if (name == "Recompute") {
+            mask |= App::mutationKindBit(App::MutationKind::Recompute);
+        }
+        else if (name == "Undo") {
+            mask |= App::mutationKindBit(App::MutationKind::Undo);
+        }
+        else if (name == "Redo") {
+            mask |= App::mutationKindBit(App::MutationKind::Redo);
+        }
+        else if (name == "Save") {
+            mask |= App::mutationKindBit(App::MutationKind::Save);
+        }
+        else if (name == "SaveAs") {
+            mask |= App::mutationKindBit(App::MutationKind::SaveAs);
+        }
+        else if (name == "Close") {
+            mask |= App::mutationKindBit(App::MutationKind::Close);
+        }
+        else if (name == "TransactionOpen") {
+            mask |= App::mutationKindBit(App::MutationKind::TransactionOpen);
+        }
+        else if (name == "TransactionCommit") {
+            mask |= App::mutationKindBit(App::MutationKind::TransactionCommit);
+        }
+        else if (name == "TransactionAbort") {
+            mask |= App::mutationKindBit(App::MutationKind::TransactionAbort);
+        }
+        else if (name == "ImportExport") {
+            mask |= App::mutationKindBit(App::MutationKind::ImportExport);
+        }
+        else if (name == "BulkCopy") {
+            mask |= App::mutationKindBit(App::MutationKind::BulkCopy);
+        }
+        else if (name == "StructuralProperty") {
+            mask |= App::mutationKindBit(App::MutationKind::StructuralProperty);
+        }
+        else if (name == "All") {
+            mask = App::MutationKindAll;
+        }
+        else {
+            throw Py::ValueError(std::string("Unknown mutation kind: ") + name);
+        }
+    }
+    return mask ? mask : App::MutationKindAll;
+}
+
+void mutationCapabilityCapsuleDestructor(PyObject* capsule)
+{
+    void* pointer = PyCapsule_GetPointer(capsule, "App.MutationCapabilityScope");
+    delete static_cast<App::MutationCapabilityScope*>(pointer);
+}
+
+}  // namespace
+
+PyObject* DocumentPy::setMutationOwner(PyObject* args)
+{
+    const char* mode = nullptr;
+    unsigned long long generation = 0;
+    const char* providerId = "";
+    if (!PyArg_ParseTuple(args, "s|Ks", &mode, &generation, &providerId)) {
+        return nullptr;
+    }
+    try {
+        auto owner = parseMutationOwnerMode(mode);
+        auto& authority = App::DocumentMutationAuthority::instance();
+        if (owner == App::MutationOwner::Unrestricted) {
+            authority.clearOwner(*getDocumentPtr());
+        }
+        else {
+            authority.setOwner(*getDocumentPtr(), owner, generation,
+                              providerId ? std::string(providerId) : std::string());
+        }
+        Py_Return;
+    }
+    catch (const Py::Exception&) {
+        return nullptr;
+    }
+}
+
+PyObject* DocumentPy::clearMutationOwner(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    App::DocumentMutationAuthority::instance().clearOwner(*getDocumentPtr());
+    Py_Return;
+}
+
+PyObject* DocumentPy::openMutationCapability(PyObject* args)
+{
+    PyObject* kindsObj = Py_None;
+    unsigned long long generation = 0;
+    if (!PyArg_ParseTuple(args, "|OK", &kindsObj, &generation)) {
+        return nullptr;
+    }
+    try {
+        auto& authority = App::DocumentMutationAuthority::instance();
+        Document* doc = getDocumentPtr();
+        if (generation == 0) {
+            generation = authority.fencingGeneration(*doc);
+        }
+        App::MutationKindMask kinds = parseMutationKinds(kindsObj);
+        auto scope = authority.openCapability(*doc, kinds, generation, App::MutationOrigin::Mcp);
+        if (!scope.valid()) {
+            PyErr_SetString(PyExc_RuntimeError,
+                            "Failed to open mutation capability (wrong owner or stale generation)");
+            return nullptr;
+        }
+        auto* heapScope = new App::MutationCapabilityScope(std::move(scope));
+        PyObject* capsule =
+            PyCapsule_New(heapScope, "App.MutationCapabilityScope", mutationCapabilityCapsuleDestructor);
+        if (!capsule) {
+            delete heapScope;
+            return nullptr;
+        }
+        return capsule;
+    }
+    catch (const Py::Exception&) {
+        return nullptr;
+    }
+}
+
+PyObject* DocumentPy::bumpMutationGeneration(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    const auto generation =
+        App::DocumentMutationAuthority::instance().takeover(*getDocumentPtr());
+    return Py::new_reference_to(Py::Long(generation));
+}
+
+PyObject* DocumentPy::mutationAuthorityStatus(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    auto& authority = App::DocumentMutationAuthority::instance();
+    Document* doc = getDocumentPtr();
+    Py::Dict status;
+    status["owner"] = Py::String(App::mutationOwnerName(authority.owner(*doc)));
+    status["generation"] = Py::Long(authority.fencingGeneration(*doc));
+    status["authority_epoch"] = Py::Long(authority.authorityEpoch(*doc));
+    status["provider_id"] = Py::String(authority.providerId(*doc));
+    status["restricted"] = Py::Boolean(authority.isRestricted(*doc));
+    return Py::new_reference_to(status);
 }
 
 

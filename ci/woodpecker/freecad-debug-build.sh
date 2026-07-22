@@ -1,8 +1,6 @@
 #!/bin/sh
 set -e
 
-. "$(dirname "$0")/ensure-coin3d.sh"
-
 mkdir -p "$CCACHE_DIR"
 export CCACHE_BASEDIR="$CI_WORKSPACE"
 ccache -M "$CCACHE_MAXSIZE" || true

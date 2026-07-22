@@ -487,6 +487,22 @@ public:
     PyObject* getPyExceptionType() const override;
 };
 
+/** Raised when DocumentMutationAuthority denies a mutation. */
+class BaseExport MutationDeniedException: public RuntimeError
+{
+public:
+    explicit MutationDeniedException(const std::string& message = "Mutation denied",
+                                     int decisionCode = 0);
+    int getDecisionCode() const
+    {
+        return decisionCode;
+    }
+    PyObject* getPyExceptionType() const override;
+
+private:
+    int decisionCode {0};
+};
+
 inline void Exception::setMessage(const std::string& message)
 {
     errorMessage = message;

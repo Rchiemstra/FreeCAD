@@ -589,6 +589,18 @@ PyObject* RestoreError::getPyExceptionType() const
 
 // ---------------------------------------------------------
 
+MutationDeniedException::MutationDeniedException(const std::string& message, int decisionCode)
+    : RuntimeError(message)
+    , decisionCode(decisionCode)
+{}
+
+PyObject* MutationDeniedException::getPyExceptionType() const
+{
+    return PyExc_RuntimeError;
+}
+
+// ---------------------------------------------------------
+
 #if defined(__GNUC__) && defined(FC_OS_LINUX)
 # include <stdexcept>
 # include <iostream>
