@@ -8,6 +8,7 @@ add_executable(App_tests_run
         Branding.cpp
         ComplexGeoData.cpp
         Document.cpp
+        DocumentMutationAuthority.cpp
         DocumentObject.cpp
         DocumentObserver.cpp
         Expression.cpp

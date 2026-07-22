@@ -121,6 +121,7 @@
 #include "DocumentObserver.h"
 #include "DocumentPy.h"
 #include "DocumentSettingsPy.h"
+#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
 #include "FeaturePython.h"
@@ -693,6 +694,9 @@ bool Application::closeDocument(const char* name)
     const auto pos = DocMap.find( name );
     if (pos == DocMap.end()) // no such document
         return false;
+
+    enforceDocumentMutation(pos->second, MutationKind::Close);
+    DocumentMutationAuthority::instance().forgetDocument(*pos->second);
 
     Base::ConsoleRefreshDisabler disabler;
 

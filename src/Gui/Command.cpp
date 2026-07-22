@@ -38,6 +38,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentMutationAuthority.h>
 #include <App/Transactions.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -51,6 +52,7 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Control.h"
+#include "Dialogs/DlgMutationTakeover.h"
 #include "Dialogs/DlgUndoRedo.h"
 #include "PreferencePages/DlgSettingsWorkbenchesImp.h"
 #include "Document.h"
@@ -460,6 +462,24 @@ void Command::_invoke(int id, bool disablelog)
 
         // check if it really works NOW (could be a delay between click deactivation of the button)
         if (isActive()) {
+            const bool commandMutatesDocument = (eType & AlterDoc) != 0;
+            if (commandMutatesDocument) {
+                if (App::Document* appDoc = App::GetApplication().getActiveDocument()) {
+                    auto& authority = App::DocumentMutationAuthority::instance();
+                    if (authority.isRestricted(*appDoc)
+                        && !App::MutationAuthorityTLS::hasInternalGrant(appDoc)
+                        && !authority.hasActiveCapabilityForDocument(*appDoc)) {
+                        const auto choice = Dialog::DlgMutationTakeover::ask(
+                            appDoc,
+                            displayText.empty() ? std::string(sName ? sName : "")
+                                                : displayText);
+                        if (choice != Dialog::DlgMutationTakeover::Result::TakeOver) {
+                            return;
+                        }
+                    }
+                }
+            }
+
             auto manager = getGuiApplication()->macroManager();
 
             if (!logdisabler) {
