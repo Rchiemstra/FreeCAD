@@ -1,8 +1,6 @@
 #!/bin/sh
 set -e
 
-. "$(dirname "$0")/ensure-coin3d.sh"
-
 mkdir -p /tmp/gtest
 rc=0
 failed=""

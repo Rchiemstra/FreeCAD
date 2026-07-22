@@ -3,14 +3,14 @@
 # Mirrors what FreeCAD's own GitHub Actions does on an ubuntu-24.04 runner: it
 # runs install-apt-packages.sh (sits next to this Dockerfile), which adds the
 # KDE Neon Qt6/PySide6 apt repo and installs the full FreeCAD build dependency
-# set (Qt6, OCCT, Coin, Python3.12 dev, Boost, VTK, PCL, Eigen, Xerces, etc.)
+# set (Qt6, OCCT, Python3.12 dev, Boost, VTK, PCL, Eigen, Xerces, etc.)
 # plus build-essential, ccache, ninja, cmake and xvfb. On top of that it adds
 # clang-format, python3-pip and git which the CI steps need but the apt script
 # does not pull in.
 #
 # This is the image every FreeCAD-track build/test step runs in, AND the base for
 # freecad-ci-mcp:24.04 (so the MCP live-test image is ABI-compatible with the
-# build/debug FreeCAD tree -- same apt Qt6/OCCT/Coin/libpython3.12).
+# build/debug FreeCAD tree -- same apt Qt6/OCCT/libpython3.12).
 #
 # Build context is THIS directory (package/ubuntu/), so the COPY path below is
 # relative to it and the context stays tiny (just install-apt-packages.sh). Built

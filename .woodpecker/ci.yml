@@ -17,7 +17,7 @@
 # insecure-registry config while still keeping pulls auth-free):
 #   127.0.0.1:5001/freecad-ci-deps:24.04
 #       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
-#       (Qt6/OCCT/Coin/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
+#       (Qt6/OCCT/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
 #       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
 #       (build context = package/ubuntu/, so the context is tiny). Used by every
 #       FreeCAD-track BUILD/test step (configure, debug-build, unit, integration,
@@ -27,7 +27,7 @@
 #   127.0.0.1:5001/freecad-ci-mcp:24.04
 #       FROM registry-freecad:5000/freecad-ci-deps:24.04 during kaniko builds + COPY (pyproject.toml
 #       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
-#       Qt6/OCCT/Coin/libpython3.12 as the deps image -> ABI-compatible with the
+#       Qt6/OCCT/libpython3.12 as the deps image -> ABI-compatible with the
 #       build/debug FreeCAD tree, and FreeCADCmd's embedded python3.12 is the SAME
 #       interpreter whose site-packages receive the editable install (the
 #       interpreter-identity assumption freecad-mcp-load-preflight verifies).
