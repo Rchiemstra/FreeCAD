@@ -197,6 +197,11 @@ View3DInventor::~View3DInventor()
 
 void View3DInventor::deleteSelf()
 {
+    // Switching between child and top-level modes clones the view, then tears down the old one.
+    // Stop queued viewport paints before clearing its scene graph: otherwise a QOpenGLWidget paint
+    // can render the half-destroyed viewer and raise AccessViolation on Windows.
+    markDeleting();
+    _viewer->setUpdatesEnabled(false);
     _viewer->setSceneGraph(nullptr);
     _viewer->setDocument(nullptr);
     MDIViewWithCamera::deleteSelf();

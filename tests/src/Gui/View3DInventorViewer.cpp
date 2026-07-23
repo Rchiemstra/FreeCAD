@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 
 #include <array>
 
@@ -9,23 +10,37 @@
 namespace
 {
 
-TEST(DetachedNavigationUpdate, requestsViewportUpdateForCameraDrag)
+TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)
 {
-    int updateRequests = 0;
-
-    EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationUpdate(
-        true,
-        true,
-        true,
-        true,
-        [&updateRequests] {
-            ++updateRequests;
-        }
-    ));
-    EXPECT_EQ(updateRequests, 1);
+    EXPECT_NONFATAL_FAILURE(
+        EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
+            true,
+            true,
+            true,
+            false,
+            [] {}
+        )),
+        ""
+    );
 }
 
-TEST(DetachedNavigationUpdate, ignoresEventsThatAreNotDetachedCameraDrags)
+TEST(DetachedNavigationRedraw, requestsGuardedRedrawForCameraDrag)
+{
+    int redrawRequests = 0;
+
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
+        true,
+        true,
+        true,
+        true,
+        [&redrawRequests] {
+            ++redrawRequests;
+        }
+    ));
+    EXPECT_EQ(redrawRequests, 1);
+}
+
+TEST(DetachedNavigationRedraw, ignoresEventsThatAreNotDetachedCameraDrags)
 {
     struct EventState
     {
@@ -43,17 +58,17 @@ TEST(DetachedNavigationUpdate, ignoresEventsThatAreNotDetachedCameraDrags)
     }};
 
     for (const auto& event : ignoredEvents) {
-        int updateRequests = 0;
-        EXPECT_FALSE(Gui::View3DInventorViewerInternal::requestDetachedNavigationUpdate(
+        int redrawRequests = 0;
+        EXPECT_FALSE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
             event.eventProcessed,
             event.cameraNavigationActive,
             event.isLocationEvent,
             event.isDetachedView,
-            [&updateRequests] {
-                ++updateRequests;
+            [&redrawRequests] {
+                ++redrawRequests;
             }
         ));
-        EXPECT_EQ(updateRequests, 0);
+        EXPECT_EQ(redrawRequests, 0);
     }
 }
 
