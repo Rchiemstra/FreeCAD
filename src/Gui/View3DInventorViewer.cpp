@@ -89,7 +89,6 @@
 #include <Inventor/nodes/SoTexture2.h>
 #include <Inventor/nodes/SoTextureCoordinate2.h>
 #include <Inventor/nodes/SoVertexProperty.h>
-#include <QApplication>
 #include <QBitmap>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -3465,18 +3464,22 @@ bool View3DInventorViewer::processSoEvent(const SoEvent* ev)
 
 #ifdef Q_OS_WIN
     // Coin's redraw sensor can remain pending while a detached top-level window owns a mouse
-    // grab. The camera still follows the drag, but no redraw is requested until the button is
-    // released. QuarterWidget::redraw() keeps the paint asynchronous and marks its pending sensor
-    // queue as already handled. Calling viewport()->update() directly would skip that guard and
-    // can re-enter another OpenGL context while the detached view is painting.
+    // grab. The camera still follows the drag, but no viewport update is requested until the
+    // button is released. Use the normal asynchronous Qt update path here. Calling redraw()
+    // directly would incorrectly tell QuarterWidget::paintEvent() that Coin's pending sensor queue
+    // has already been processed, which is only true when redraw() comes from the render callback.
+    const auto navigationMode = navigation->getViewingMode();
+    const bool cameraNavigationActive = navigationMode == NavigationStyle::ZOOMING
+        || navigationMode == NavigationStyle::PANNING
+        || navigationMode == NavigationStyle::DRAGGING;
     auto* mdiView = qobject_cast<MDIView*>(window());
-    View3DInventorViewerInternal::requestDetachedNavigationRedraw(
+    View3DInventorViewerInternal::requestDetachedNavigationUpdate(
         processed,
-        QApplication::mouseButtons() != Qt::NoButton,
+        cameraNavigationActive,
         ev->isOfType(SoLocation2Event::getClassTypeId()),
-        mdiView && mdiView->currentViewMode() != MDIView::Child,
+        mdiView && !mdiView->isDeleting() && mdiView->currentViewMode() != MDIView::Child,
         [this] {
-            redraw();
+            viewport()->update();
         }
     );
 #endif

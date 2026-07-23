@@ -5,20 +5,20 @@
 namespace Gui::View3DInventorViewerInternal
 {
 
-template<typename RedrawRequest>
-inline bool requestDetachedNavigationRedraw(
+template<typename UpdateRequest>
+inline bool requestDetachedNavigationUpdate(
     bool eventProcessed,
-    bool mouseButtonPressed,
+    bool cameraNavigationActive,
     bool isLocationEvent,
     bool isDetachedView,
-    RedrawRequest&& requestRedraw
+    UpdateRequest&& requestUpdate
 )
 {
-    if (!eventProcessed || !mouseButtonPressed || !isLocationEvent || !isDetachedView) {
+    if (!eventProcessed || !cameraNavigationActive || !isLocationEvent || !isDetachedView) {
         return false;
     }
 
-    requestRedraw();
+    requestUpdate();
     return true;
 }
 
