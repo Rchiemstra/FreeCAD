@@ -17,6 +17,7 @@ target_link_libraries(AssemblyGui_tests_run
     ${Python3_LIBRARIES}
     Assembly
     AssemblyGui
+    PartGui
     FreeCADGui
     ${QtConcurrent_LIBRARIES}
 )

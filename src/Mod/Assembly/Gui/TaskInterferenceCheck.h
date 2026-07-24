@@ -95,6 +95,21 @@ public:
     double testClearanceRawMm() const;
     void testSetClearanceQuantity(const Base::Quantity& quantity);
 
+    /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
+    void testEnsureDetachedPreviewRoot();
+    bool testHasPreviewRoot() const;
+    void testSelectResultRow(int row);
+    int testPreviewShapeCount() const;
+    bool testPreviewShapeTranslation(
+        int shapeIndex,
+        double& x,
+        double& y,
+        double& z
+    ) const;
+    void testOpenManageExclusions();
+    bool testManageExclusionsOpen() const;
+    bool testHasAssembly() const;
+
 private Q_SLOTS:
     void onRun();
     void onCancelScan();

@@ -307,6 +307,94 @@ void TaskInterferenceCheck::testSetClearanceQuantity(const Base::Quantity& quant
     }
 }
 
+void TaskInterferenceCheck::testEnsureDetachedPreviewRoot()
+{
+    if (previewRoot) {
+        return;
+    }
+    previewRoot = new SoSeparator;
+    previewRoot->ref();
+    auto* pick = new SoPickStyle;
+    pick->style = SoPickStyle::UNPICKABLE;
+    previewRoot->addChild(pick);
+}
+
+bool TaskInterferenceCheck::testHasPreviewRoot() const
+{
+    return previewRoot != nullptr;
+}
+
+void TaskInterferenceCheck::testSelectResultRow(int row)
+{
+    if (!resultsTable || row < 0 || row >= resultsTable->rowCount()) {
+        return;
+    }
+    resultsTable->selectRow(row);
+    onRowChanged();
+}
+
+int TaskInterferenceCheck::testPreviewShapeCount() const
+{
+    if (!previewRoot) {
+        return 0;
+    }
+    int count = 0;
+    for (int i = 0; i < previewRoot->getNumChildren(); ++i) {
+        if (dynamic_cast<PartGui::SoPreviewShape*>(previewRoot->getChild(i))) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool TaskInterferenceCheck::testPreviewShapeTranslation(
+    int shapeIndex,
+    double& x,
+    double& y,
+    double& z
+) const
+{
+    if (!previewRoot || shapeIndex < 0) {
+        return false;
+    }
+    int seen = -1;
+    for (int i = 0; i < previewRoot->getNumChildren(); ++i) {
+        auto* shape = dynamic_cast<PartGui::SoPreviewShape*>(previewRoot->getChild(i));
+        if (!shape) {
+            continue;
+        }
+        ++seen;
+        if (seen != shapeIndex) {
+            continue;
+        }
+        SbVec3f translation;
+        SbRotation rotation;
+        SbVec3f scale;
+        SbRotation scaleOrientation;
+        shape->transform.getValue().getTransform(translation, rotation, scale, scaleOrientation);
+        x = translation[0];
+        y = translation[1];
+        z = translation[2];
+        return true;
+    }
+    return false;
+}
+
+void TaskInterferenceCheck::testOpenManageExclusions()
+{
+    onManageExclusions();
+}
+
+bool TaskInterferenceCheck::testManageExclusionsOpen() const
+{
+    return manageExclusionsDialog != nullptr;
+}
+
+bool TaskInterferenceCheck::testHasAssembly() const
+{
+    return assembly != nullptr;
+}
+
 Gui::View3DInventorViewer* TaskInterferenceCheck::viewer() const
 {
     if (attachedViewer) {
@@ -929,18 +1017,21 @@ void TaskInterferenceCheck::updatePreviewForCurrentRow()
         auto* node = new PartGui::SoPreviewShape;
         node->color.setValue(color);
         node->transparency.setValue(transparency);
+        // Capture placement before setupCoinGeometry strips TopLoc_Location.
+        // Apply transform even if meshing fails so placed/nested previews stay world-correct.
+        const Part::TopoShape topo(shape);
+        const SbMatrix transform = Base::convertTo<SbMatrix>(topo.getTransform());
+        node->transform.setValue(transform);
         try {
-            // Capture placement before setupCoinGeometry strips TopLoc_Location.
-            const Part::TopoShape topo(shape);
-            const SbMatrix transform = Base::convertTo<SbMatrix>(topo.getTransform());
             // Deep-copy so BRepTools::Clean / remesh cannot mutate shared document geometry.
             const TopoDS_Shape previewShape =
                 BRepBuilderAPI_Copy(shape, Standard_True, Standard_False).Shape();
             PartGui::ViewProviderPartExt::setupCoinGeometry(previewShape, node, 0.5, 28.65);
+            // setupCoinGeometry must not clear SoPreviewShape::transform; re-assert for safety.
             node->transform.setValue(transform);
         }
         catch (...) {
-            // Keep the node so markers still show even if mesh conversion fails.
+            // Keep the node (and its transform) so markers still show if mesh conversion fails.
         }
         previewRoot->addChild(node);
     };
@@ -1232,10 +1323,16 @@ void TaskInterferenceCheck::onManageExclusions()
     connect(box, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     connect(box, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
     layout->addWidget(box);
-    dialog->exec();
-    if (manageExclusionsDialog == dialog) {
-        manageExclusionsDialog.clear();
-    }
+
+    // Non-blocking modal: allows document/task teardown while the dialog is open
+    // (exec() would freeze the event loop and hide that lifecycle path).
+    dialog->setModal(true);
+    connect(dialog, &QDialog::finished, this, [this, dialog](int) {
+        if (manageExclusionsDialog == dialog) {
+            manageExclusionsDialog.clear();
+        }
+    });
+    dialog->open();
 }
 
 TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(AssemblyObject* assembly)

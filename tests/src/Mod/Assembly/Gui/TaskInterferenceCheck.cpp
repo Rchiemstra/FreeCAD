@@ -6,6 +6,11 @@
 #include <memory>
 #include <string>
 
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
+#include <TopLoc_Location.hxx>
+
 #include <QApplication>
 
 #include <App/Document.h>
@@ -13,14 +18,31 @@
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Inventor/So3DAnnotation.h>
+#include <Inventor/SoDB.h>
+#include <Inventor/SoInteraction.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/Gui/TaskInterferenceCheck.h>
 #include <Mod/Part/App/InterferenceDetection.h>
+#include <Mod/Part/Gui/SoBrepEdgeSet.h>
+#include <Mod/Part/Gui/SoBrepFaceSet.h>
+#include <Mod/Part/Gui/SoBrepPointSet.h>
+#include <Mod/Part/Gui/SoFCShapeObject.h>
+#include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
 #include <src/App/InitApplication.h>
 
 namespace
 {
+
+TopoDS_Shape makePlacedBox(double dx, double dy, double dz, double tx, double ty, double tz)
+{
+    TopoDS_Shape box = BRepPrimAPI_MakeBox(dx, dy, dz).Shape();
+    gp_Trsf trsf;
+    trsf.SetTranslation(gp_Vec(tx, ty, tz));
+    box.Location(TopLoc_Location(trsf));
+    return box;
+}
 
 Assembly::InterferenceScanResult makeResult(int penetrations, const char* statusTag)
 {
@@ -55,6 +77,15 @@ Assembly::InterferenceScanResult makeResult(int penetrations, const char* status
     return result;
 }
 
+Assembly::InterferenceScanResult makePlacedPenetrationResult()
+{
+    auto result = makeResult(1, "P");
+    // Leaf A at origin; leaf B translated so preview transform must be non-identity.
+    result.leaves[0].worldShape = makePlacedBox(10, 10, 10, 0, 0, 0);
+    result.leaves[1].worldShape = makePlacedBox(10, 10, 10, 40, 15, 7);
+    return result;
+}
+
 }  // namespace
 
 class TaskInterferenceCheckTest: public ::testing::Test
@@ -71,6 +102,21 @@ protected:
             new QApplication(argc, argv);
         }
         tests::initApplication();
+        // Minimal Inventor bootstrap for SoPreviewShape (no Gui::Application / MainWindow).
+        if (!SoDB::isInitialized()) {
+            SoDB::init();
+            SoInteraction::init();
+        }
+        static bool previewNodeReady = false;
+        if (!previewNodeReady) {
+            PartGui::SoBrepFaceSet::initClass();
+            PartGui::SoBrepEdgeSet::initClass();
+            PartGui::SoBrepPointSet::initClass();
+            PartGui::SoFCShape::initClass();
+            Gui::So3DAnnotation::initClass();
+            PartGui::SoPreviewShape::initClass();
+            previewNodeReady = true;
+        }
         Base::Interpreter().runString("import Part");
         Base::Interpreter().runString("import Material");
         Base::Interpreter().runString("import Spreadsheet");
@@ -148,6 +194,7 @@ TEST_F(TaskInterferenceCheckTest, constructsWithoutMainWindow)
     EXPECT_FALSE(task.isScanning());
     EXPECT_FALSE(task.hasResults());
     EXPECT_FALSE(task.testStatusText().isEmpty());
+    EXPECT_FALSE(task.testHasPreviewRoot());
 }
 
 TEST_F(TaskInterferenceCheckTest, clearanceEditorUsesLengthQuantitySchema)
@@ -164,6 +211,66 @@ TEST_F(TaskInterferenceCheckTest, clearanceEditorUsesLengthQuantitySchema)
 
     task.testSetClearanceQuantity(Base::Quantity(0.0, Base::Unit::Length));
     EXPECT_NEAR(task.testClearanceRawMm(), 0.0, 1e-12);
+}
+
+TEST_F(TaskInterferenceCheckTest, placedLeafPreviewRestoresWorldTransform)
+{
+    // Without MainWindow, attach a detached Inventor root and prove placed shapes
+    // keep their world translation on SoPreviewShape::transform (setupCoinGeometry strips location).
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    ASSERT_TRUE(task.testHasPreviewRoot());
+
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makePlacedPenetrationResult());
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    task.testSelectResultRow(0);
+
+    // Two leaf previews (no common shape in the synthetic result).
+    ASSERT_EQ(task.testPreviewShapeCount(), 2);
+
+    double x0 = 0, y0 = 0, z0 = 0;
+    double x1 = 0, y1 = 0, z1 = 0;
+    ASSERT_TRUE(task.testPreviewShapeTranslation(0, x0, y0, z0));
+    ASSERT_TRUE(task.testPreviewShapeTranslation(1, x1, y1, z1));
+    EXPECT_NEAR(x0, 0.0, 1e-4);
+    EXPECT_NEAR(y0, 0.0, 1e-4);
+    EXPECT_NEAR(z0, 0.0, 1e-4);
+    EXPECT_NEAR(x1, 40.0, 1e-4);
+    EXPECT_NEAR(y1, 15.0, 1e-4);
+    EXPECT_NEAR(z1, 7.0, 1e-4);
+
+    // Teardown path: reject clears preview children via discard/detach.
+    EXPECT_TRUE(task.reject());
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_FALSE(task.testHasPreviewRoot());
+}
+
+TEST_F(TaskInterferenceCheckTest, documentCloseDiscardsResultsAndClosesManageExclusions)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makeResult(1, "T"));
+    ASSERT_TRUE(task.hasResults());
+
+    task.testOpenManageExclusions();
+    QApplication::processEvents();
+    ASSERT_TRUE(task.testManageExclusionsOpen());
+    ASSERT_TRUE(task.testHasAssembly());
+
+    App::GetApplication().closeDocument(_docName.c_str());
+    _doc = nullptr;
+    _assembly = nullptr;
+    QApplication::processEvents();
+
+    EXPECT_FALSE(task.testHasAssembly());
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_FALSE(task.testManageExclusionsOpen());
+    EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("Document closed"), Qt::CaseInsensitive)
+                || task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
 }
 
 int main(int argc, char** argv)
