@@ -31,6 +31,7 @@
 #include <Base/Handle.h>
 #include <Base/Bitmask.h>
 #include <App/MainThreadSignal.h>
+#include <App/GeometryJob.h>
 
 #include "PropertyContainer.h"
 #include "PropertyLinks.h"
@@ -44,6 +45,12 @@
 #include <list>
 #include <string>
 #include <string_view>
+
+namespace App
+{
+class DocumentRecomputeCoordinator;
+}
+
 
 namespace Base
 {
@@ -287,7 +294,21 @@ public:
     /// Clear the document of all its administration.
     void clearDocument();
 
+    /// Document revision and generation tracking
+    DocumentRevisionToken getRevisionToken() const;
+    Base::Uuid getUuid() const;
+    uint64_t getRuntimeIncarnation() const;
+    uint64_t getModelGeneration() const;
+    void advanceModelGeneration();
+
+    DocumentRecomputeCoordinator& getRecomputeCoordinator();
+    const DocumentRecomputeCoordinator& getRecomputeCoordinator() const;
+
+    bool isCommittingGeometryJob() const;
+    void setCommittingGeometryJob(bool committing);
+
     /** @name File handling of the document
+
      * @{
      */
 

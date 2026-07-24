@@ -11,7 +11,9 @@ add_executable(App_tests_run
         DocumentMutationAuthority.cpp
         DocumentObject.cpp
         DocumentObserver.cpp
+        TestGeometryJob.cpp
         Expression.cpp
+
         ExpressionParser.cpp
         ElementMap.cpp
         ElementNamingUtils.cpp

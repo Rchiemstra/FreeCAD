@@ -101,8 +101,15 @@ public:
     void hide() override;
     void show() override;
 
+
+    void setVisualGeneration(uint64_t gen) { _visualGeneration = gen; }
+    uint64_t getVisualGeneration() const { return _visualGeneration; }
+    bool isVisualStale(uint64_t currentModelGen) const { return _visualGeneration < currentModelGen; }
+    bool swapVisualRepresentation(SoNode* newRootNode, uint64_t targetGeneration);
+
     /// Get the python wrapper for that ViewProvider
     PyObject* getPyObject() override;
+
 
 protected:
     /// get called by the container whenever a property has been changed
@@ -132,6 +139,8 @@ protected:
     SoNodeSensor* pcSwitchSensor {nullptr};
 
     App::Material materialAppearance;
+    uint64_t _visualGeneration {0};
 };
+
 
 }  // namespace Gui

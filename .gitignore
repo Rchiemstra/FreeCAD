@@ -51,6 +51,8 @@ ui_*.h
 /ZERO_CHECK.dir/
 /bin/
 /build-*/
+/build_*/
+/build_docker/
 /build/
 /cmake-build*/
 /conda/environment.yml
@@ -58,6 +60,9 @@ ui_*.h
 !/doc/
 /doc/*
 !/doc/freecad-git-sidecar-strategy.md
+!/doc/PLAN.md
+!/doc/PROGRESS.md
+
 /lib/
 /src/Tools/offlinedoc/*.txt
 /src/Tools/offlinedoc/localwiki/

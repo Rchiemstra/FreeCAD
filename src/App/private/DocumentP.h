@@ -45,7 +45,10 @@
 #include <App/DocumentObserver.h>
 #include <App/StringHasher.h>
 #include <App/ExportInfo.h>
+#include <App/GeometryJob.h>
+#include <App/DocumentRecomputeCoordinator.h>
 #include <Base/UniqueNameManager.h>
+#include <Base/Uuid.h>
 
 // using VertexProperty = boost::property<boost::vertex_root_t, DocumentObject* >;
 using DependencyList = boost::adjacency_list<
@@ -71,7 +74,14 @@ class Transaction;
 // Pimpl class
 struct DocumentP
 {
+    Base::Uuid documentUid;
+    uint64_t runtimeIncarnation {0};
+    uint64_t modelGeneration {1};
+    std::unique_ptr<DocumentRecomputeCoordinator> recomputeCoordinator;
+    bool isCommittingGeometryJob {false};
+
     // Array to preserve the creation order of created objects
+
     std::vector<DocumentObject*> objectArray;
     std::unordered_set<App::DocumentObject*> touchedObjs;
     std::unordered_map<std::string, DocumentObject*> objectMap;

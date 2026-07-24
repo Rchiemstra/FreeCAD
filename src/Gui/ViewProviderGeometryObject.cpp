@@ -449,3 +449,21 @@ void ViewProviderGeometryObject::handleChangedPropertyName(
         ViewProviderDragger::handleChangedPropertyName(reader, TypeName, PropName);
     }
 }
+
+bool ViewProviderGeometryObject::swapVisualRepresentation(SoNode* newRootNode, uint64_t targetGeneration)
+{
+    if (targetGeneration < _visualGeneration) {
+        // Obsolete representation from superseded generation; discard.
+        return false;
+    }
+
+    if (newRootNode && pcRoot) {
+        // Safe Coin3D tree node replacement on main thread
+        pcRoot->removeAllChildren();
+        pcRoot->addChild(newRootNode);
+        _visualGeneration = targetGeneration;
+        return true;
+    }
+    return false;
+}
+

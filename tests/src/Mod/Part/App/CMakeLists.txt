@@ -29,7 +29,9 @@ add_executable(Part_tests_run
         TopoShapeExpansion.cpp
         TopoShapeMakeElementRefine.cpp
         TopoShapeMakeShapeWithElementMap.cpp
+        TestNonBlockingGeometry.cpp
         TopoShapeMapper.cpp
+
         TopoShapeMakeShape.cpp
         WireJoiner.cpp
 )

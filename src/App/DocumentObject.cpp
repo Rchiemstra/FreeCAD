@@ -1869,3 +1869,15 @@ std::set<ObjectIdentifier> DocumentObject::getPropertyUses(const App::Property *
 
     return uses;
 }
+
+ObjectRevisionToken DocumentObject::getRevisionToken() const
+{
+    ObjectRevisionToken token;
+    token.internalName = getNameInDocument() ? getNameInDocument() : "";
+    token.objectId = getID();
+    token.type = getTypeId();
+    return token;
+}
+
+
+

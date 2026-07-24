@@ -43,6 +43,8 @@
 #include <boost/bimap.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/topological_sort.hpp>
+#include "GeometryJobManager.h"
+
 
 #include <boost/regex.hpp>
 #include <random>
@@ -945,6 +947,14 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 Document::Document(const char* documentName)
     : d(new DocumentP), myName(documentName)
 {
+    static std::atomic<uint64_t> s_nextIncarnation{1};
+    d->documentUid.setValue(Base::Uuid::createUuid());
+    d->runtimeIncarnation = s_nextIncarnation.fetch_add(1);
+
+
+    d->modelGeneration = 1;
+    d->recomputeCoordinator = std::make_unique<DocumentRecomputeCoordinator>(*this);
+
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
     // get a reference then the object wouldn't get deleted in the destructor.
@@ -954,6 +964,7 @@ Document::Document(const char* documentName)
     setAutoCreated(false);
     Base::PyGILStateLocker lock;
     d->DocumentPythonObject = Py::Object(new DocumentPy(this), true);
+
 
 #ifdef FC_LOGUPDATECHAIN
     Console().log("+App::Document: %p\n", this);
@@ -4142,3 +4153,58 @@ bool Document::mustExecute() const
     }
     return false;
 }
+
+DocumentRevisionToken Document::getRevisionToken() const
+{
+    DocumentRevisionToken token;
+    token.documentUid = d->documentUid;
+    token.internalName = myName;
+    token.runtimeIncarnation = d->runtimeIncarnation;
+    token.modelGeneration = d->modelGeneration;
+    return token;
+}
+
+Base::Uuid Document::getUuid() const
+{
+    return d->documentUid;
+}
+
+uint64_t Document::getRuntimeIncarnation() const
+{
+    return d->runtimeIncarnation;
+}
+
+uint64_t Document::getModelGeneration() const
+{
+    return d->modelGeneration;
+}
+
+void Document::advanceModelGeneration()
+{
+    if (d->isCommittingGeometryJob) {
+        return;
+    }
+    d->modelGeneration++;
+    GeometryJobManager::instance().invalidateDocument(getRevisionToken(), CancelReason::NewGeneration);
+}
+
+DocumentRecomputeCoordinator& Document::getRecomputeCoordinator()
+{
+    return *d->recomputeCoordinator;
+}
+
+const DocumentRecomputeCoordinator& Document::getRecomputeCoordinator() const
+{
+    return *d->recomputeCoordinator;
+}
+
+bool Document::isCommittingGeometryJob() const
+{
+    return d->isCommittingGeometryJob;
+}
+
+void Document::setCommittingGeometryJob(bool committing)
+{
+    d->isCommittingGeometryJob = committing;
+}
+

@@ -430,6 +430,19 @@ class Document(PropertyContainer):
         """
         ...
 
+    def recomputeAsync(
+        self,
+        objs: Sequence[DocumentObject] = None,
+        force: bool = False,
+        check_cycle: bool = False,
+        /,
+    ) -> int:
+        """
+        Asynchronously request a document recompute via DocumentRecomputeCoordinator.
+        """
+        ...
+
+
     def mustExecute(self) -> bool:
         """
         Check if any object must be recomputed
