@@ -1375,6 +1375,9 @@ public:
         return filePath.c_str();
     }
 
+    /** Break a live link while preserving file/object identity for unresolved review. */
+    void breakLink(App::DocumentObject* obj, bool clear) override;
+
     virtual bool upgrade(Base::XMLReader& reader, const char* typeName);
 
     void setSyncSubObject(bool enable);

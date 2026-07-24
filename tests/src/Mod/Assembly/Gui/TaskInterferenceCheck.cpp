@@ -21,6 +21,8 @@
 #include <Gui/Inventor/So3DAnnotation.h>
 #include <Inventor/SoDB.h>
 #include <Inventor/SoInteraction.h>
+#include <Inventor/nodes/SoGroup.h>
+#include <Inventor/nodes/SoSeparator.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/Gui/TaskInterferenceCheck.h>
@@ -271,6 +273,30 @@ TEST_F(TaskInterferenceCheckTest, documentCloseDiscardsResultsAndClosesManageExc
     EXPECT_FALSE(task.testManageExclusionsOpen());
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("Document closed"), Qt::CaseInsensitive)
                 || task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, previewAttachesAndDetachesFromSceneGraph)
+{
+    // Proves the shared attachPreviewToScene / detach path used by attachPreviewToViewer,
+    // without requiring FreeCADCmd / MainWindow / View3DInventor.
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+
+    auto* scene = new SoSeparator;
+    scene->ref();
+    const int before = scene->getNumChildren();
+
+    task.testAttachPreviewToScene(scene);
+    ASSERT_TRUE(task.testHasPreviewRoot());
+    EXPECT_EQ(scene->getNumChildren(), before + 1);
+    EXPECT_GE(task.testPreviewIndexInScene(scene), 0);
+
+    task.testDetachPreview();
+    EXPECT_FALSE(task.testHasPreviewRoot());
+    EXPECT_EQ(scene->getNumChildren(), before);
+    EXPECT_EQ(task.testPreviewIndexInScene(scene), -1);
+
+    scene->unref();
 }
 
 int main(int argc, char** argv)

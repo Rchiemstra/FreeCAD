@@ -26,6 +26,7 @@ class QLabel;
 class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
+class SoGroup;
 class SoSeparator;
 
 namespace App
@@ -109,6 +110,10 @@ public:
     void testOpenManageExclusions();
     bool testManageExclusionsOpen() const;
     bool testHasAssembly() const;
+    /** Attach previewRoot to an arbitrary Coin scene (no MainWindow required). */
+    void testAttachPreviewToScene(SoGroup* scene);
+    void testDetachPreview();
+    int testPreviewIndexInScene(SoGroup* scene) const;
 
 private Q_SLOTS:
     void onRun();
@@ -126,6 +131,12 @@ private Q_SLOTS:
 private:
     void setupUi();
     void attachPreviewToViewer();
+    /** Create previewRoot and add it to scene; optional viewer/view for live teardown hooks. */
+    void attachPreviewToScene(
+        SoGroup* scene,
+        Gui::View3DInventorViewer* view = nullptr,
+        Gui::View3DInventor* viewWin = nullptr
+    );
     void detachPreviewFromViewer();
     void clearPreview();
     void updatePreviewForCurrentRow();
@@ -167,6 +178,7 @@ private:
 
     Assembly::InterferenceScanResult lastResult;
     SoSeparator* previewRoot = nullptr;
+    SoGroup* attachedScene = nullptr;
     Gui::View3DInventorViewer* attachedViewer = nullptr;
     QPointer<Gui::View3DInventor> attachedView;
     QPointer<QDialog> manageExclusionsDialog;

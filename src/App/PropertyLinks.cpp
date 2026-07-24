@@ -4060,6 +4060,28 @@ const char* PropertyXLink::getObjectName() const
     return objectName.c_str();
 }
 
+void PropertyXLink::breakLink(App::DocumentObject* obj, bool clear)
+{
+    if (clear && getContainer() == obj) {
+        setValue(nullptr);
+        return;
+    }
+    if (_pcLink != obj) {
+        return;
+    }
+
+    // Preserve objectName (and DocInfo/filePath) so Manage Exclusions / restore UIs can still
+    // show same-document deleted endpoints and cross-doc detached identity.
+    aboutToSetValue();
+    if (objectName.empty() && obj && obj->isAttachedToDocument() && obj->getNameInDocument()) {
+        objectName = obj->getNameInDocument();
+    }
+    resetLink();
+    setFlag(LinkDetached);
+    updateElementReference(nullptr);
+    hasSetValue();
+}
+
 bool PropertyXLink::upgrade(Base::XMLReader& reader, const char* typeName)
 {
     if (typeName == App::PropertyLinkGlobal::getClassTypeId().getName()
@@ -5563,7 +5585,8 @@ void PropertyXLinkSubList::breakLink(App::DocumentObject* obj, bool clear)
     for (auto& l : _Links) {
         if (l.getValue() == obj) {
             guard.aboutToChange();
-            l.setValue(nullptr);
+            // Use PropertyXLink::breakLink so objectName / DocInfo survive deletion.
+            l.breakLink(obj, false);
         }
     }
     guard.tryInvoke();

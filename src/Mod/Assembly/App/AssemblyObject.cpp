@@ -2250,6 +2250,12 @@ std::string xlinkIdentity(const App::PropertyXLinkSub& link)
     if (auto* doc = link.getDocument()) {
         return std::string(doc->getName()) + "#" + objectName;
     }
+    // Same-document deleted endpoints keep objectName but have no DocInfo.
+    if (auto* owner = freecad_cast<App::DocumentObject*>(link.getContainer())) {
+        if (owner->getDocument()) {
+            return std::string(owner->getDocument()->getName()) + "#" + objectName;
+        }
+    }
     return std::string("#") + objectName;
 }
 

@@ -332,6 +332,41 @@ TEST_F(InterferenceScanTest, unresolvedExclusionRulesSurviveRewrite)
     EXPECT_TRUE(sawUnresolved);
 }
 
+TEST_F(InterferenceScanTest, sameDocDeletedExclusionEndpointKeepsIdentity)
+{
+    try {
+        auto* a = _doc->addObject<App::DocumentObject>("SourceKeepA");
+        auto* b = _doc->addObject<App::DocumentObject>("SourceDeleteB");
+        ASSERT_NE(a, nullptr);
+        ASSERT_NE(b, nullptr);
+
+        _assembly->addInterferenceExclusion(a, b);
+        {
+            const auto rules = _assembly->getInterferenceExclusionRules();
+            ASSERT_EQ(rules.size(), 1u);
+            EXPECT_TRUE(rules[0].valid);
+        }
+
+        const std::string deletedName = b->getNameInDocument();
+        _doc->removeObject(deletedName.c_str());
+
+        const auto rules = _assembly->getInterferenceExclusionRules();
+        ASSERT_EQ(rules.size(), 1u);
+        EXPECT_FALSE(rules[0].valid);
+        EXPECT_TRUE(
+            rules[0].firstIdentity.find(deletedName) != std::string::npos
+            || rules[0].secondIdentity.find(deletedName) != std::string::npos
+        ) << "first=" << rules[0].firstIdentity << " second=" << rules[0].secondIdentity;
+        EXPECT_TRUE(
+            rules[0].firstIdentity.find("SourceKeepA") != std::string::npos
+            || rules[0].secondIdentity.find("SourceKeepA") != std::string::npos
+        );
+    }
+    catch (const Base::Exception& exc) {
+        FAIL() << "Base::Exception: " << exc.what();
+    }
+}
+
 TEST_F(InterferenceScanTest, detachedCrossDocExclusionIdentitySurvivesAddAndIndexedRemove)
 {
     try {

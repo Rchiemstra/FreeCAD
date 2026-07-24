@@ -395,6 +395,24 @@ bool TaskInterferenceCheck::testHasAssembly() const
     return assembly != nullptr;
 }
 
+void TaskInterferenceCheck::testAttachPreviewToScene(SoGroup* scene)
+{
+    attachPreviewToScene(scene);
+}
+
+void TaskInterferenceCheck::testDetachPreview()
+{
+    detachPreviewFromViewer();
+}
+
+int TaskInterferenceCheck::testPreviewIndexInScene(SoGroup* scene) const
+{
+    if (!scene || !previewRoot) {
+        return -1;
+    }
+    return scene->findChild(previewRoot);
+}
+
 Gui::View3DInventorViewer* TaskInterferenceCheck::viewer() const
 {
     if (attachedViewer) {
@@ -471,18 +489,37 @@ void TaskInterferenceCheck::attachPreviewToViewer()
     if (!view) {
         return;
     }
+    auto* scene = dynamic_cast<SoGroup*>(view->getSceneGraph());
+    if (!scene) {
+        return;
+    }
+    attachPreviewToScene(scene, view, viewWin);
+}
+
+void TaskInterferenceCheck::attachPreviewToScene(
+    SoGroup* scene,
+    Gui::View3DInventorViewer* view,
+    Gui::View3DInventor* viewWin
+)
+{
+    detachPreviewFromViewer();
+    if (!scene) {
+        return;
+    }
     previewRoot = new SoSeparator;
     previewRoot->ref();
     auto* pick = new SoPickStyle;
     pick->style = SoPickStyle::UNPICKABLE;
     previewRoot->addChild(pick);
-    if (auto* scene = dynamic_cast<SoGroup*>(view->getSceneGraph())) {
-        scene->addChild(previewRoot);
-        attachedViewer = view;
-        attachedView = viewWin;
+    scene->addChild(previewRoot);
+    attachedScene = scene;
+    attachedViewer = view;
+    attachedView = viewWin;
+    if (viewWin) {
         connect(viewWin, &QObject::destroyed, this, [this]() {
             attachedViewer = nullptr;
             attachedView.clear();
+            attachedScene = nullptr;
             if (previewRoot) {
                 previewRoot->unref();
                 previewRoot = nullptr;
@@ -490,27 +527,22 @@ void TaskInterferenceCheck::attachPreviewToViewer()
             markStale("View closed");
         });
     }
-    else {
-        previewRoot->unref();
-        previewRoot = nullptr;
-    }
 }
 
 void TaskInterferenceCheck::detachPreviewFromViewer()
 {
     clearPreview();
-    if (previewRoot && attachedViewer) {
-        if (auto* scene = dynamic_cast<SoGroup*>(attachedViewer->getSceneGraph())) {
-            const int idx = scene->findChild(previewRoot);
-            if (idx >= 0) {
-                scene->removeChild(idx);
-            }
+    if (previewRoot && attachedScene) {
+        const int idx = attachedScene->findChild(previewRoot);
+        if (idx >= 0) {
+            attachedScene->removeChild(idx);
         }
     }
     if (previewRoot) {
         previewRoot->unref();
         previewRoot = nullptr;
     }
+    attachedScene = nullptr;
     attachedViewer = nullptr;
     attachedView.clear();
 }
