@@ -88,9 +88,9 @@ Base::Vector3d ViewProviderReviewNote::worldToAnnotationPoint(const Base::Vector
     if (!note) {
         return world;
     }
-    if (auto* assembly = note->getAssembly()) {
+    if (auto* owner = note->getOwnerPart()) {
         Base::Vector3d local;
-        App::GeoFeature::getGlobalPlacement(assembly).inverse().multVec(world, local);
+        App::GeoFeature::getGlobalPlacement(owner).inverse().multVec(world, local);
         return local;
     }
     return world;

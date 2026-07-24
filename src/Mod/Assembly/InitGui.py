@@ -155,20 +155,21 @@ class AssemblyWorkbench(Workbench):
                 ["Assembly_EditReviewNote", "Assembly_ToggleResolveReviewNote"],
             )
 
-        assembly = UtilsAssembly.activeAssembly()
-        if assembly is None:
-            return
-
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             return
 
-        # Add Review Note only for the 3D view context menu with exactly one
-        # supported Assembly target. Do not add a toolbar button.
+        # Add Review Note for View context when exactly one supported target exists
+        # under the nearest owning App::Part (or active AssemblyObject).
+        owner = CommandReviewNote.find_review_note_owner(selection=selection)
         if recipient == "View" and CommandReviewNote.is_add_review_note_eligible(
-            assembly, selection
+            owner, selection
         ):
             self.appendContextMenu("", ["Assembly_AddReviewNote"])
+
+        assembly = UtilsAssembly.activeAssembly()
+        if assembly is None:
+            return
 
         for sel in selection:
             for sub_name in sel.SubElementNames:

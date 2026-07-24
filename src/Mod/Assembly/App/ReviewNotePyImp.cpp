@@ -23,6 +23,8 @@
  ***************************************************************************/
 
 
+#include "AssemblyObject.h"
+#include "Groups.h"
 #include "ReviewNotePy.h"
 #include "ReviewNotePy.cpp"
 
@@ -48,6 +50,42 @@ PyObject* ReviewNotePy::isAttachmentBroken(PyObject* args) const
         return nullptr;
     }
     return Py::new_reference_to(Py::Boolean(getReviewNotePtr()->isAttachmentBroken()));
+}
+
+PyObject* ReviewNotePy::getOwnerPart(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    App::DocumentObject* owner = getReviewNotePtr()->getOwnerPart();
+    if (!owner) {
+        Py_Return;
+    }
+    return owner->getPyObject();
+}
+
+PyObject* ReviewNotePy::getAssembly(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    AssemblyObject* assembly = getReviewNotePtr()->getAssembly();
+    if (!assembly) {
+        Py_Return;
+    }
+    return assembly->getPyObject();
+}
+
+PyObject* ReviewNotePy::getGroup(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    ReviewNoteGroup* group = getReviewNotePtr()->getGroup();
+    if (!group) {
+        Py_Return;
+    }
+    return group->getPyObject();
 }
 
 PyObject* ReviewNotePy::getCustomAttributes(const char* /*attr*/) const

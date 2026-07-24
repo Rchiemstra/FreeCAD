@@ -23,6 +23,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectGroup.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 
@@ -66,4 +67,17 @@ QIcon ViewProviderViewGroup::getIcon() const
 QIcon ViewProviderReviewNoteGroup::getIcon() const
 {
     return Gui::BitmapFactory().pixmap("Assembly_ReviewNoteGroup.svg");
+}
+
+bool ViewProviderReviewNoteGroup::onDelete(const std::vector<std::string>& subNames)
+{
+    auto* group = freecad_cast<App::DocumentObjectGroup*>(getObject());
+    if (!group) {
+        return false;
+    }
+    // Keep populated groups protected so notes cannot be bulk-deleted accidentally.
+    if (!group->Group.getValues().empty()) {
+        return false;
+    }
+    return ViewProviderGroupBase::onDelete(subNames);
 }

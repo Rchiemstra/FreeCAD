@@ -126,11 +126,8 @@ public:
 
     QIcon getIcon() const override;
 
-    // Protect the group from independent deletion (like JointGroup).
-    bool onDelete(const std::vector<std::string>&) override
-    {
-        return false;
-    };
+    /// Allow deleting an empty group; block deletion when notes are present.
+    bool onDelete(const std::vector<std::string>& subNames) override;
 };
 
 }  // namespace AssemblyGui

@@ -24,6 +24,7 @@
 #pragma once
 
 #include <App/Annotation.h>
+#include <App/Part.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/PropertyGeo.h>
@@ -69,7 +70,7 @@ public:
     App::DocumentObjectExecReturn* execute() override;
     void onDocumentRestored() override;
 
-    /// Recompute BasePosition from Target + LocalAnchor (assembly-local).
+    /// Recompute BasePosition from Target + LocalAnchor (owner-Part-local).
     void refreshBasePosition();
 
     /// True when Target is missing or no longer resolves.
@@ -78,19 +79,30 @@ public:
     /// Sync AttachmentBroken output property from isAttachmentBroken().
     void updateAttachmentState();
 
+    /// Nearest owning App::Part (or AssemblyObject) that holds the Review Notes group.
+    App::Part* getOwnerPart() const;
+
+    /// Owning AssemblyObject when the owner is an assembly; otherwise nullptr.
     AssemblyObject* getAssembly() const;
+
     ReviewNoteGroup* getGroup() const;
 
     /// First non-whitespace LabelText line (for tree display); empty clears Label.
     std::string firstTextLine() const;
 
-    /// Ensure a document-level observer exists (legacy entry; delegates per-Assembly).
+    /// Ensure observers for every note owner in the document.
     static void ensureDocumentObserver(App::Document* doc);
 
-    /// Ensure a Placement/reference observer for notes owned by this Assembly.
+    /// Ensure a Placement/reference observer for notes owned by this Part/Assembly.
+    static void ensureOwnerObserver(App::Part* owner);
+
+    /// Compatibility wrapper when the owner is an AssemblyObject.
     static void ensureAssemblyObserver(AssemblyObject* assembly);
 
-    /// Drop the observer when an Assembly is torn down.
+    /// Drop the observer when an owning Part/Assembly is torn down.
+    static void revokeOwnerObserver(App::Part* owner);
+
+    /// Compatibility wrapper when the owner is an AssemblyObject.
     static void revokeAssemblyObserver(AssemblyObject* assembly);
 
 protected:
