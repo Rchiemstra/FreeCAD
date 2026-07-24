@@ -8,13 +8,13 @@ namespace Gui::View3DInventorViewerInternal
 template<typename RedrawRequest>
 inline bool requestDetachedNavigationRedraw(
     bool eventProcessed,
-    bool mouseButtonPressed,
+    bool cameraNavigationActive,
     bool isLocationEvent,
     bool isDetachedView,
     RedrawRequest&& requestRedraw
 )
 {
-    if (!eventProcessed || !mouseButtonPressed || !isLocationEvent || !isDetachedView) {
+    if (!eventProcessed || !cameraNavigationActive || !isLocationEvent || !isDetachedView) {
         return false;
     }
 

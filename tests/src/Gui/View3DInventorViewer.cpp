@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 
 #include <array>
 
@@ -9,7 +10,21 @@
 namespace
 {
 
-TEST(DetachedNavigationRedraw, requestsGuardedRedrawForMouseDrag)
+TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)
+{
+    EXPECT_NONFATAL_FAILURE(
+        EXPECT_TRUE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
+            true,
+            true,
+            true,
+            false,
+            [] {}
+        )),
+        ""
+    );
+}
+
+TEST(DetachedNavigationRedraw, requestsGuardedRedrawForCameraDrag)
 {
     int redrawRequests = 0;
 
@@ -25,12 +40,12 @@ TEST(DetachedNavigationRedraw, requestsGuardedRedrawForMouseDrag)
     EXPECT_EQ(redrawRequests, 1);
 }
 
-TEST(DetachedNavigationRedraw, ignoresEventsThatAreNotDetachedMouseDrags)
+TEST(DetachedNavigationRedraw, ignoresEventsThatAreNotDetachedCameraDrags)
 {
     struct EventState
     {
         bool eventProcessed;
-        bool mouseButtonPressed;
+        bool cameraNavigationActive;
         bool isLocationEvent;
         bool isDetachedView;
     };
@@ -46,7 +61,7 @@ TEST(DetachedNavigationRedraw, ignoresEventsThatAreNotDetachedMouseDrags)
         int redrawRequests = 0;
         EXPECT_FALSE(Gui::View3DInventorViewerInternal::requestDetachedNavigationRedraw(
             event.eventProcessed,
-            event.mouseButtonPressed,
+            event.cameraNavigationActive,
             event.isLocationEvent,
             event.isDetachedView,
             [&redrawRequests] {
