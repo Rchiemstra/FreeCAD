@@ -228,6 +228,83 @@ class TestReviewNotes(unittest.TestCase):
         expected = self.box.Placement.multVec(note.LocalAnchor)
         self.assertTrue(note.BasePosition.isEqual(expected, 1e-6), operation)
 
+        # Moving the Assembly must not rewrite assembly-local BasePosition.
+        before = App.Vector(note.BasePosition)
+        self.assembly.Placement = App.Placement(App.Vector(1, 2, 3), App.Rotation(0, 0, 90))
+        self.assertTrue(
+            note.BasePosition.isEqual(before, 1e-6),
+            "{}: Assembly move changed local BasePosition".format(operation),
+        )
+
+    def test_parent_note_follows_nested_container_placement(self):
+        operation = "Parent-owned note follows nested Assembly placement"
+        _msg("  Test '{}'".format(operation))
+
+        nested = self.assembly.newObject("Assembly::AssemblyObject", "Nested")
+        inner = nested.newObject("Part::Box", "Inner")
+        inner.Length = 10
+        inner.Width = 20
+        inner.Height = 30
+        self.doc.recompute()
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, inner, "", picked_point=App.Vector(5, 10, 15)
+        )
+        self.assertIsNotNone(data, operation)
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Nested container"], open_transaction=False
+        )
+
+        nested.Placement = App.Placement(App.Vector(100, 0, 0), App.Rotation(0, 0, 45))
+        expected = nested.Placement.multVec(inner.Placement.multVec(note.LocalAnchor))
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-5),
+            "{}: got {} expected {}".format(operation, note.BasePosition, expected),
+        )
+
+        # Rotation-only intermediate move must also refresh.
+        nested.Placement = App.Placement(App.Vector(0, 50, 0), App.Rotation(0, 90, 0))
+        expected = nested.Placement.multVec(inner.Placement.multVec(note.LocalAnchor))
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-5),
+            "{} after rotate: got {} expected {}".format(
+                operation, note.BasePosition, expected
+            ),
+        )
+
+    def test_joint_note_follows_nested_container_placement(self):
+        operation = "Joint note follows nested container move of its reference"
+        _msg("  Test '{}'".format(operation))
+
+        nested = self.assembly.newObject("Assembly::AssemblyObject", "NestedJ")
+        inner = nested.newObject("Part::Box", "InnerJ")
+        inner.Length = 10
+        inner.Width = 20
+        inner.Height = 30
+        box2 = self.assembly.newObject("Part::Box", "Box2J")
+        self.doc.recompute()
+
+        joint = self.jointgroup.newObject("App::FeaturePython", "JointNested")
+        JointObject.Joint(joint, 0)
+        joint.Reference1 = [inner, ["Face6", "Vertex7"]]
+        joint.Reference2 = [box2, ["Face6", "Vertex7"]]
+        joint.Placement1 = App.Placement(App.Vector(5, 10, 30), App.Rotation())
+        joint.Placement2 = App.Placement(App.Vector(5, 10, 0), App.Rotation())
+        self.doc.recompute()
+
+        data = CommandReviewNote.normalize_review_note_target(self.assembly, joint, "")
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Joint nested"], open_transaction=False
+        )
+
+        nested.Placement = App.Placement(App.Vector(80, 0, 0), App.Rotation())
+        # Reference1 / moving part lives under nested; BasePosition is assembly-local.
+        expected = nested.Placement.multVec(inner.Placement.multVec(joint.Placement1.Base))
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-5),
+            "{}: got {} expected {}".format(operation, note.BasePosition, expected),
+        )
+
     def test_purge_touched_placement_path(self):
         operation = "Placement-then-purgeTouched refresh"
         _msg("  Test '{}'".format(operation))
@@ -1321,6 +1398,34 @@ class TestReviewNotesGui(unittest.TestCase):
             "{}: BasePosition {}".format(operation, note.BasePosition),
         )
         self.assertTrue(note.TextPosition.isEqual(App.Vector(15, 0, 0), 1e-6), operation)
+
+    def test_gui_review_note_group_claims_notes_3d(self):
+        operation = "Assembly GeoFeatureGroup 3D-claims review notes"
+        _msg("  Test '{}'".format(operation))
+
+        self.assembly.Placement = App.Placement(App.Vector(40, 50, 60), App.Rotation(0, 0, 30))
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["CS claim"], open_transaction=False
+        )
+        groups = [o for o in self.assembly.Group if o.TypeId == "Assembly::ReviewNoteGroup"]
+        self.assertEqual(len(groups), 1, operation)
+        group = groups[0]
+        # GeoFeatureGroup auto-adds subgroup children into Assembly.Group, so notes
+        # inherit the Assembly transform via Assembly.claimChildren3D (assembly-local
+        # BasePosition/TextPosition stay correct under non-identity Assembly placement).
+        self.assertIn(note, self.assembly.Group, "{}: note missing from Assembly.Group".format(operation))
+        self.assertIn(note, group.Group, "{}: note missing from Review Notes group".format(operation))
+        self.assertIsNotNone(self.assembly.ViewObject, operation)
+        self.assertTrue(
+            hasattr(self.assembly.ViewObject, "claimChildren3D"),
+            "{}: claimChildren3D binding missing".format(operation),
+        )
+        asm_claimed = self.assembly.ViewObject.claimChildren3D()
+        self.assertIn(group, asm_claimed, "{}: group not under Assembly 3D".format(operation))
+        self.assertIn(note, asm_claimed, "{}: note not under Assembly 3D CS".format(operation))
 
     def test_gui_view_and_tree_context_menus(self):
         operation = "View and Tree context menus expose review-note commands"

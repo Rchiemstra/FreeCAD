@@ -25,6 +25,7 @@
 #include <App/Document.h>
 #include <App/FeaturePythonPyImp.h>
 #include <App/GeoFeature.h>
+#include <App/GroupExtension.h>
 #include <App/Link.h>
 #include <App/PropertyGeo.h>
 #include <Base/Placement.h>
@@ -110,6 +111,15 @@ bool objectInAssembly(AssemblyObject* assembly, App::DocumentObject* obj)
     return assembly->hasObject(obj, true);
 }
 
+bool groupContainsObject(const App::DocumentObject& container, const App::DocumentObject* obj)
+{
+    if (!obj) {
+        return false;
+    }
+    auto* group = container.getExtensionByType<App::GroupExtension>(true);
+    return group && group->hasObject(obj, true);
+}
+
 bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
 {
     auto* target = note.Target.getValue();
@@ -120,6 +130,10 @@ bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
         return true;
     }
     if (shapeOwnerFor(target) == &obj) {
+        return true;
+    }
+    // Nested/container placements between the owning assembly and the target.
+    if (groupContainsObject(obj, target) || groupContainsObject(obj, shapeOwnerFor(target))) {
         return true;
     }
 
@@ -137,6 +151,11 @@ bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
                 if (moving == &obj) {
                     return true;
                 }
+            }
+            // Intermediate containers that move a joint reference/moving part.
+            if (groupContainsObject(obj, ref->getValue())
+                || groupContainsObject(obj, getMovingPartFromRef(ref))) {
+                return true;
             }
         }
     }
