@@ -44,6 +44,14 @@ namespace Data
 class ElementMap;
 using ElementMapPtr = std::shared_ptr<ElementMap>;
 
+struct AppExport ElementMapArchiveContext
+{
+    App::StringHasherRef hasher;
+    std::unordered_map<const ElementMap*, uint32_t> mapToId;
+    std::vector<ElementMapPtr> idToMap;
+};
+
+
 /**
  * @brief The element trace callback.
  *

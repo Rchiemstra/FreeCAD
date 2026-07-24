@@ -207,6 +207,10 @@ SET(Document_CPP_SRCS
     LinkBaseExtensionPyImp.cpp
     VarSet.cpp
     License.h
+    GeometryJob.cpp
+    GeometryJobManager.cpp
+    DocumentRecomputeCoordinator.cpp
+    DetachedDocumentArchive.cpp
 )
 
 SET(Document_HPP_SRCS
@@ -258,6 +262,10 @@ SET(Document_HPP_SRCS
     TextDocument.h
     VarSet.h
     Link.h
+    GeometryJob.h
+    GeometryJobManager.h
+    DocumentRecomputeCoordinator.h
+    DetachedDocumentArchive.h
 )
 SET(Document_SRCS
     ${Document_CPP_SRCS}

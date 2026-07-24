@@ -36,6 +36,8 @@
 #include "PropertyContainer.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
+#include "Document.h"
+
 
 
 using namespace App;
@@ -314,10 +316,12 @@ void Property::aboutToSetValue()
                                     MutationOrigin::Cpp,
                                     objectName,
                                     getName());
+            doc->advanceModelGeneration();
         }
         father->onBeforeChange(this);
     }
 }
+
 
 void Property::verifyPath(const ObjectIdentifier& p) const
 {

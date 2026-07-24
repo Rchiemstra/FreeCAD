@@ -842,13 +842,11 @@ bool Application::isFineGrainedRecomputeEnabled()
 
 bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 {
-    if (DocumentObject* documentObject = req.resolveDocumentObject()) {
-        return documentObject->canRecomputeOnWorker();
-    }
-
-    Document* document = req.resolveDocument();
-    return !document || documentCanRecomputeOnWorker(*document);
+    // Live document objects and live documents must NEVER be recomputed on a raw background thread.
+    // Detached operations use GeometryJobManager and DocumentRecomputeCoordinator instead.
+    return false;
 }
+
 
 void Application::queueRecomputeRequest(RecomputeRequest req)
 {
