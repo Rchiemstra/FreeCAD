@@ -29,6 +29,7 @@ set(Assembly_Scripts
     CommandCreateSimulation.py
     CommandCreateSnapshot.py
     CommandExportASMT.py
+    CommandReviewNote.py
     TestAssemblyWorkbench.py
     JointObject.py
     Preferences.py
@@ -62,6 +63,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestCrossBodyDatumStaleness.py
     AssemblyTests/TestOverlayIconsAndOrigin.py
     AssemblyTests/TestWebotsExport.py
+    AssemblyTests/TestReviewNotes.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
 )

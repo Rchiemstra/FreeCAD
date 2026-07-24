@@ -30,6 +30,7 @@
 #include "AssemblyLink.h"
 #include "BomObject.h"
 #include "Groups.h"
+#include "ReviewNote.h"
 
 
 namespace Assembly
@@ -61,12 +62,14 @@ PyMOD_INIT_FUNC(AssemblyApp)
     Assembly::AssemblyObject ::init();
     Assembly::AssemblyLink ::init();
     Assembly::BomObject ::init();
+    Assembly::ReviewNote ::init();
 
     Assembly::BomGroup ::init();
     Assembly::JointGroup ::init();
     Assembly::ViewGroup ::init();
     Assembly::SimulationGroup ::init();
     Assembly::SnapshotGroup ::init();
+    Assembly::ReviewNoteGroup ::init();
 
     PyMOD_Return(mod);
 }

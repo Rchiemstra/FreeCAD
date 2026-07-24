@@ -74,6 +74,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
+        import CommandReviewNote
         import Preferences
 
         FreeCADGui.addLanguagePath(":/translations")
@@ -139,6 +140,20 @@ class AssemblyWorkbench(Workbench):
 
     def ContextMenu(self, recipient):
         import UtilsAssembly
+        import CommandReviewNote
+
+        # Edit / resolve when a review note is selected (tree or view), even if
+        # no Assembly is currently active.
+        notes = [
+            obj
+            for obj in Gui.Selection.getSelection()
+            if obj.isDerivedFrom("Assembly::ReviewNote")
+        ]
+        if len(notes) == 1:
+            self.appendContextMenu(
+                "",
+                ["Assembly_EditReviewNote", "Assembly_ToggleResolveReviewNote"],
+            )
 
         assembly = UtilsAssembly.activeAssembly()
         if assembly is None:
@@ -147,6 +162,13 @@ class AssemblyWorkbench(Workbench):
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
             return
+
+        # Add Review Note only for the 3D view context menu with exactly one
+        # supported Assembly target. Do not add a toolbar button.
+        if recipient == "View" and CommandReviewNote.is_add_review_note_eligible(
+            assembly, selection
+        ):
+            self.appendContextMenu("", ["Assembly_AddReviewNote"])
 
         for sel in selection:
             for sub_name in sel.SubElementNames:

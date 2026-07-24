@@ -178,8 +178,8 @@ bool ViewProviderAssembly::doubleClicked()
 
 bool ViewProviderAssembly::canDragObject(App::DocumentObject* obj) const
 {
-    // The user should not be able to drag the joint group out of the assembly
-    return obj && !obj->is<Assembly::JointGroup>();
+    // The user should not be able to drag the joint group or review-note group out of the assembly
+    return obj && !obj->is<Assembly::JointGroup>() && !obj->is<Assembly::ReviewNoteGroup>();
 }
 
 bool ViewProviderAssembly::canDragObjectToTarget(App::DocumentObject* obj, App::DocumentObject* target) const
@@ -1271,7 +1271,7 @@ bool ViewProviderAssembly::onDelete(const std::vector<std::string>& subNames)
     // Delete the assembly groups when assembly is deleted
     for (auto obj : getObject()->getOutList()) {
         if (obj->is<Assembly::JointGroup>() || obj->is<Assembly::ViewGroup>()
-            || obj->is<Assembly::BomGroup>()) {
+            || obj->is<Assembly::BomGroup>() || obj->is<Assembly::ReviewNoteGroup>()) {
 
             // Delete the group content first.
             Gui::Command::doCommand(

@@ -53,6 +53,8 @@ SET(AssemblyGui_SRCS_Module
     ViewProviderBom.h
     ViewProviderGroups.cpp
     ViewProviderGroups.h
+    ViewProviderReviewNote.cpp
+    ViewProviderReviewNote.h
     ${Assembly_QRC_SRCS}
 )
 

@@ -714,7 +714,7 @@ App::DocumentObject* getMovingPartFromSel(
     return nullptr;
 }
 
-App::DocumentObject* getMovingPartFromRef(App::PropertyXLinkSub* prop)
+App::DocumentObject* getMovingPartFromRef(const App::PropertyXLinkSub* prop)
 {
     if (!prop) {
         return nullptr;
