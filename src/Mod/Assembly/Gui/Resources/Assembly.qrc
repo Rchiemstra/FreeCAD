@@ -31,6 +31,10 @@
         <file>icons/Assembly_CreateSimulation.svg</file>
         <file>icons/Assembly_SimulationGroup.svg</file>
         <file>icons/Assembly_SnapshotGroup.svg</file>
+        <file>icons/Assembly_ReviewNote.svg</file>
+        <file>icons/Assembly_ReviewNoteResolved.svg</file>
+        <file>icons/Assembly_ReviewNoteBroken.svg</file>
+        <file>icons/Assembly_ReviewNoteGroup.svg</file>
         <file>panels/TaskAssemblyCreateBom.ui</file>
         <file>panels/TaskAssemblyCreateJoint.ui</file>
         <file>panels/TaskAssemblyInsertLink.ui</file>

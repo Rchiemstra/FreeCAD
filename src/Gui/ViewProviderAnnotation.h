@@ -112,6 +112,9 @@ protected:
     void onChanged(const App::Property* prop) override;
     void drawImage(const std::vector<std::string>&);
 
+    /** Map a world-space point into BasePosition/TextPosition space (identity by default). */
+    virtual Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const;
+
 private:
     static void dragStartCallback(void* data, SoDragger* d);
     static void dragFinishCallback(void* data, SoDragger* d);

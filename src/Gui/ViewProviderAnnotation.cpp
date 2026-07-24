@@ -490,15 +490,17 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
     if (auto* obj = that->getObject<App::AnnotationLabel>()) {
         const Base::Vector3d basePosition = obj->BasePosition.getValue();
         const Base::Vector3d startTextPosition = obj->TextPosition.getValue();
-        const Base::Vector3d pickedPoint = Base::convertTo<Base::Vector3d>(
+        const Base::Vector3d pickedWorld = Base::convertTo<Base::Vector3d>(
             drag->getWorldStartingPoint()
         );
+        const Base::Vector3d pickedLocal = that->worldToAnnotationPoint(pickedWorld);
 
         DragState state;
         state.basePosition = basePosition;
         state.currentTextPosition = startTextPosition;
-        state.pickOffset = pickedPoint - (basePosition + startTextPosition);
-        state.planePoint = pickedPoint;
+        state.pickOffset = pickedLocal - (basePosition + startTextPosition);
+        // Keep the drag plane in world space for pointer intersection.
+        state.planePoint = pickedWorld;
         state.planeNormal = Base::convertTo<Base::Vector3d>(
             drag->getViewVolume().getProjectionDirection()
         );
@@ -533,9 +535,12 @@ void ViewProviderAnnotationLabel::dragMotionCallback(void* data, SoDragger* drag
     }
 
     DragState& state = *that->dragState;
-    Base::Vector3d pointerPosition;
-    if (projectPointerToPlane(*drag, state.planePoint, state.planeNormal, pointerPosition)) {
-        that->previewTextPosition(state, pointerPosition - state.pickOffset - state.basePosition);
+    Base::Vector3d pointerWorld;
+    if (projectPointerToPlane(*drag, state.planePoint, state.planeNormal, pointerWorld)) {
+        const Base::Vector3d pointerLocal = that->worldToAnnotationPoint(pointerWorld);
+        that->previewTextPosition(
+            state, pointerLocal - state.pickOffset - state.basePosition
+        );
     }
 }
 
@@ -544,6 +549,11 @@ void ViewProviderAnnotationLabel::previewTextPosition(DragState& state, const Ba
     state.currentTextPosition = textPosition;
     pCoords->point.set1Value(1, SbVec3f(textPosition.x, textPosition.y, textPosition.z));
     pTextTranslation->translation.setValue(textPosition.x, textPosition.y, textPosition.z);
+}
+
+Base::Vector3d ViewProviderAnnotationLabel::worldToAnnotationPoint(const Base::Vector3d& world) const
+{
+    return world;
 }
 
 void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)

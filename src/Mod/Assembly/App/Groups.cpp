@@ -32,6 +32,7 @@
 #include "Groups.h"
 #include "BomGroupPy.h"
 #include "JointGroupPy.h"
+#include "ReviewNoteGroupPy.h"
 #include "SimulationGroupPy.h"
 #include "SnapshotGroupPy.h"
 #include "ViewGroupPy.h"
@@ -44,6 +45,7 @@ PROPERTY_SOURCE(Assembly::JointGroup, App::DocumentObjectGroup)
 PROPERTY_SOURCE(Assembly::SimulationGroup, App::DocumentObjectGroup)
 PROPERTY_SOURCE(Assembly::SnapshotGroup, App::DocumentObjectGroup)
 PROPERTY_SOURCE(Assembly::ViewGroup, App::DocumentObjectGroup)
+PROPERTY_SOURCE(Assembly::ReviewNoteGroup, App::DocumentObjectGroup)
 
 
 PyObject* BomGroup::getPyObject()
@@ -117,6 +119,16 @@ PyObject* ViewGroup::getPyObject()
     if (PythonObject.is(Py::_None())) {
         // ref counter is set to 1
         PythonObject = Py::Object(new ViewGroupPy(this), true);
+    }
+    return Py::new_reference_to(PythonObject);
+}
+
+
+PyObject* ReviewNoteGroup::getPyObject()
+{
+    if (PythonObject.is(Py::_None())) {
+        // ref counter is set to 1
+        PythonObject = Py::Object(new ReviewNoteGroupPy(this), true);
     }
     return Py::new_reference_to(PythonObject);
 }

@@ -1107,6 +1107,10 @@ class ViewProviderJoint:
         self.switch_JCS_preview = SoSwitchMarker(vobj)
 
         self.display_mode = coin.SoType.fromName("SoFCSelection").createInstance()
+        self.display_mode.documentName.setValue(vobj.Object.Document.Name)
+        self.display_mode.objectName.setValue(vobj.Object.Name)
+        # Synthetic subelement so 3D joint picks expose "Main" for nearest-JCS selection.
+        self.display_mode.subElementName.setValue("Main")
         self.display_mode.addChild(self.switch_JCS1)
         self.display_mode.addChild(self.switch_JCS2)
         self.display_mode.addChild(self.switch_JCS_preview)
