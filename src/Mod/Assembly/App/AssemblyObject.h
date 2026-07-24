@@ -32,6 +32,9 @@
 #include <App/Part.h>
 #include <App/PropertyLinks.h>
 
+#include <App/PropertyUnits.h>
+#include <App/PropertyLinks.h>
+
 #include <OndselSolver/enum.h>
 
 namespace MbD
@@ -70,6 +73,17 @@ struct ObjRef
     App::PropertyXLinkSub* ref;
 };
 
+struct InterferenceExclusionRule
+{
+    App::DocumentObject* first = nullptr;
+    App::DocumentObject* second = nullptr;
+    /** Stable identity even when the endpoint DocumentObject* is unresolved. */
+    std::string firstIdentity;
+    std::string secondIdentity;
+    bool valid = true;
+    std::string diagnostic;
+};
+
 class AssemblyExport AssemblyObject: public App::Part
 {
     PROPERTY_HEADER_WITH_OVERRIDE(Assembly::AssemblyObject);
@@ -85,6 +99,27 @@ public:
     {
         return "AssemblyGui::ViewProviderAssembly";
     }
+
+    App::PropertyLength InterferenceClearance;
+    /** Hidden alternating source-definition endpoints for excluded unordered pairs. */
+    App::PropertyXLinkSubList InterferenceExcludedSources;
+
+    /** Minimum clearance used by interference checks (nonnegative length). */
+    double getInterferenceClearance() const;
+    void setInterferenceClearance(double clearanceMm);
+
+    std::vector<InterferenceExclusionRule> getInterferenceExclusionRules() const;
+    bool hasInterferenceExclusion(
+        App::DocumentObject* first,
+        App::DocumentObject* second
+    ) const;
+    void addInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second);
+    void removeInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second);
+    /** Remove one stored pair by rule index without destroying other XLink identities. */
+    void removeInterferenceExclusionAt(std::size_t ruleIndex);
+    void setInterferenceExclusions(
+        const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
+    );
 
     App::DocumentObjectExecReturn* execute() override;
     void onChanged(const App::Property* prop) override;

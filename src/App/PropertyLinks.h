@@ -1481,6 +1481,15 @@ public:
     void
     addValue(App::DocumentObject* obj, std::vector<std::string>&& SubList = {}, bool reset = false);
 
+    /** Always append a new entry (allows null). Unlike addValue, does not merge by object. */
+    void append(DocumentObject* obj);
+
+    /** Append a deep copy of an existing XLink entry (preserves detached file/object identity). */
+    void addLink(const PropertyXLinkSub& link);
+
+    /** Remove \a count entries starting at 0-based index \a start. */
+    void removeIndices(int start, int count);
+
     /**
      * @brief setValue: PropertyLinkSub-compatible overload
      * @param SubList

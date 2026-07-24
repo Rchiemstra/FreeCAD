@@ -27,6 +27,7 @@
 #include <App/DocumentObject.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
+#include <Gui/Control.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
@@ -38,6 +39,7 @@
 
 #include "Commands.h"
 #include "ViewProviderAssembly.h"
+#include "TaskInterferenceCheck.h"
 
 
 using namespace Assembly;
@@ -363,6 +365,37 @@ bool CmdAssemblySelectJointsOfComponent::isActive()
 }
 
 
+DEF_STD_CMD_A(CmdAssemblyCheckInterference)
+
+CmdAssemblyCheckInterference::CmdAssemblyCheckInterference()
+    : Command("Assembly_CheckInterference")
+{
+    sAppModule = "Assembly";
+    sGroup = QT_TR_NOOP("Assembly");
+    sMenuText = QT_TR_NOOP("Check Interference");
+    sToolTipText = QT_TR_NOOP("Check the active assembly for interference and clearance issues");
+    sWhatsThis = "Assembly_CheckInterference";
+    sStatusTip = sToolTipText;
+    sPixmap = "Assembly_CheckInterference";
+    eType = ForEdit;
+}
+
+void CmdAssemblyCheckInterference::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    AssemblyObject* assembly = getActiveAssembly();
+    if (!assembly) {
+        return;
+    }
+    Gui::Control().showDialog(new TaskInterferenceCheckDialog(assembly));
+}
+
+bool CmdAssemblyCheckInterference::isActive()
+{
+    return getActiveAssembly() != nullptr;
+}
+
+
 // ================================================================================
 // Command Creation
 // ================================================================================
@@ -377,4 +410,5 @@ void AssemblyGui::CreateAssemblyCommands()
     rcCmdMgr.addCommand(new CmdAssemblySelectMalformedConstraints());
     rcCmdMgr.addCommand(new CmdAssemblySelectComponentsWithDoFs());
     rcCmdMgr.addCommand(new CmdAssemblySelectJointsOfComponent());
+    rcCmdMgr.addCommand(new CmdAssemblyCheckInterference());
 }

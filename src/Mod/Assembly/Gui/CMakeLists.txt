@@ -8,6 +8,7 @@ set(AssemblyGui_LIBS
     Spreadsheet
     SpreadsheetGui
     FreeCADGui
+    ${QtConcurrent_LIBRARIES}
 )
 
 set (Assembly_TR_QRC ${CMAKE_CURRENT_BINARY_DIR}/Resources/Assembly_translation.qrc)
@@ -47,6 +48,8 @@ SET(AssemblyGui_SRCS_Module
     Commands.h
     TaskAssemblyMessages.cpp
     TaskAssemblyMessages.h
+    TaskInterferenceCheck.cpp
+    TaskInterferenceCheck.h
     ViewProviderAssembly.cpp
     ViewProviderAssembly.h
     ViewProviderAssemblyLink.cpp
@@ -89,6 +92,7 @@ target_include_directories(
     PRIVATE
     ${CMAKE_BINARY_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${QtConcurrent_INCLUDE_DIRS}
 )
 
 if(WIN32)

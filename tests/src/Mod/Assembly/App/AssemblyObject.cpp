@@ -8,6 +8,7 @@
 #include <App/Document.h>
 #include <App/Expression.h>
 #include <App/ObjectIdentifier.h>
+#include <Base/Interpreter.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/Groups.h>
 #include <src/App/InitApplication.h>
@@ -18,14 +19,26 @@ protected:
     static void SetUpTestSuite()
     {
         tests::initApplication();
+        Base::Interpreter().runString("import Part");
+        Base::Interpreter().runString("import Material");
+        Base::Interpreter().runString("import Spreadsheet");
+        Base::Interpreter().runString("import AssemblyApp");
     }
 
     void SetUp() override
     {
         _docName = App::GetApplication().getUniqueDocumentName("test");
         auto _doc = App::GetApplication().newDocument(_docName.c_str(), "testUser");
-        _assemblyObj = _doc->addObject<Assembly::AssemblyObject>();
-        _jointGroupObj = _assemblyObj->addObject<Assembly::JointGroup>("jointGroupTest");
+        try {
+            _assemblyObj = _doc->addObject<Assembly::AssemblyObject>();
+            _jointGroupObj = _assemblyObj->addObject<Assembly::JointGroup>("jointGroupTest");
+        }
+        catch (const Base::Exception& e) {
+            FAIL() << "AssemblyObject setup failed: " << e.what();
+        }
+        catch (const std::exception& e) {
+            FAIL() << "AssemblyObject setup failed(std): " << e.what();
+        }
     }
 
     void TearDown() override

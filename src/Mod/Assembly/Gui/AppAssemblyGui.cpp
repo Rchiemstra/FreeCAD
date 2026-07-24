@@ -44,6 +44,7 @@ PyMOD_INIT_FUNC(AssemblyGui)
     // load dependent module
     try {
         Base::Interpreter().runString("import SpreadsheetGui");
+        Base::Interpreter().runString("import PartGui");
     }
     catch (const Base::Exception& e) {
         PyErr_SetString(PyExc_ImportError, e.what());

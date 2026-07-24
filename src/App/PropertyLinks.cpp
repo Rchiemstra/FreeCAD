@@ -4981,6 +4981,39 @@ void PropertyXLinkSubList::addValue(App::DocumentObject* obj,
     guard.tryInvoke();
 }
 
+void PropertyXLinkSubList::append(DocumentObject* obj)
+{
+    atomic_change guard(*this);
+    _Links.emplace_back(testFlag(LinkAllowPartial), this);
+    _Links.back().setValue(obj);
+    guard.tryInvoke();
+}
+
+void PropertyXLinkSubList::addLink(const PropertyXLinkSub& link)
+{
+    atomic_change guard(*this);
+    _Links.emplace_back(testFlag(LinkAllowPartial), this);
+    _Links.back().Paste(link);
+    guard.tryInvoke();
+}
+
+void PropertyXLinkSubList::removeIndices(int start, int count)
+{
+    if (start < 0 || count < 0 || start + count > getSize()) {
+        throw Base::RuntimeError("index out of bound");
+    }
+    if (count == 0) {
+        return;
+    }
+    atomic_change guard(*this);
+    auto it = _Links.begin();
+    std::advance(it, start);
+    for (int i = 0; i < count; ++i) {
+        it = _Links.erase(it);
+    }
+    guard.tryInvoke();
+}
+
 void PropertyXLinkSubList::setValue(DocumentObject* lValue, const std::vector<std::string>& SubList)
 {
     std::map<DocumentObject*, std::vector<std::string>> values;

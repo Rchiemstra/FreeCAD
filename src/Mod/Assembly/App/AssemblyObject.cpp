@@ -23,6 +23,7 @@
 
 #include <boost/core/ignore_unused.hpp>
 #include <cmath>
+#include <set>
 #include <vector>
 #include <unordered_map>
 
@@ -35,6 +36,7 @@
 #include <App/FeaturePythonPyImp.h>
 #include <App/Link.h>
 #include <App/PropertyPythonObject.h>
+#include <App/PropertyUnits.h>
 #include <Base/Console.h>
 #include <Base/Placement.h>
 #include <Base/Rotation.h>
@@ -109,6 +111,21 @@ AssemblyObject::AssemblyObject()
     , lastSolverStatus(0)
 {
     mbdAssembly->externalSystem->freecadAssemblyObject = this;
+
+    ADD_PROPERTY_TYPE(
+        InterferenceClearance,
+        (0.0),
+        "Interference",
+        (App::PropertyType)(App::Prop_NoRecompute),
+        "Minimum clearance for interference checks (0 still reports contact/penetration)"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceExcludedSources,
+        (nullptr),
+        "Interference",
+        (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Alternating source-definition endpoints for excluded unordered pairs"
+    );
 
     lastDoF = numberOfComponents() * 6;
     signalSolverUpdate();
@@ -2205,4 +2222,214 @@ int AssemblyObject::numberOfComponents() const
 bool AssemblyObject::isEmpty() const
 {
     return numberOfComponents() == 0;
+}
+
+namespace
+{
+std::string sourceIdentity(const App::DocumentObject* obj)
+{
+    if (!obj || !obj->isAttachedToDocument()) {
+        return {};
+    }
+    return std::string(obj->getDocument()->getName()) + "#" + obj->getNameInDocument();
+}
+
+std::string xlinkIdentity(const App::PropertyXLinkSub& link)
+{
+    if (auto* obj = link.getValue(); obj && obj->isAttachedToDocument()) {
+        return sourceIdentity(obj);
+    }
+    const char* objectName = link.getObjectName();
+    if (!objectName || *objectName == '\0') {
+        return {};
+    }
+    const char* docPath = link.getDocumentPath();
+    if (docPath && *docPath != '\0') {
+        return std::string(docPath) + "#" + objectName;
+    }
+    if (auto* doc = link.getDocument()) {
+        return std::string(doc->getName()) + "#" + objectName;
+    }
+    return std::string("#") + objectName;
+}
+
+std::pair<App::DocumentObject*, App::DocumentObject*> canonicalPair(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return {first, second};
+    }
+    if (sourceIdentity(first) <= sourceIdentity(second)) {
+        return {first, second};
+    }
+    return {second, first};
+}
+}  // namespace
+
+double AssemblyObject::getInterferenceClearance() const
+{
+    return InterferenceClearance.getValue();
+}
+
+void AssemblyObject::setInterferenceClearance(double clearanceMm)
+{
+    if (clearanceMm < 0.0 || !std::isfinite(clearanceMm)) {
+        throw Base::ValueError("Interference clearance must be finite and nonnegative");
+    }
+    InterferenceClearance.setValue(clearanceMm);
+}
+
+std::vector<InterferenceExclusionRule> AssemblyObject::getInterferenceExclusionRules() const
+{
+    std::vector<InterferenceExclusionRule> rules;
+    const auto& links = InterferenceExcludedSources.getSubListValues();
+    std::vector<const App::PropertyXLinkSub*> endpoints;
+    endpoints.reserve(links.size());
+    for (const auto& link : links) {
+        endpoints.push_back(&link);
+    }
+
+    if (endpoints.size() % 2 != 0) {
+        InterferenceExclusionRule malformed;
+        malformed.valid = false;
+        malformed.diagnostic = "Stored exclusion list has an odd number of endpoints";
+        if (!endpoints.empty()) {
+            malformed.first = endpoints.back()->getValue();
+            malformed.firstIdentity = xlinkIdentity(*endpoints.back());
+        }
+        rules.push_back(malformed);
+        if (!endpoints.empty()) {
+            endpoints.pop_back();
+        }
+    }
+
+    for (std::size_t i = 0; i + 1 < endpoints.size(); i += 2) {
+        InterferenceExclusionRule rule;
+        rule.first = endpoints[i]->getValue();
+        rule.second = endpoints[i + 1]->getValue();
+        rule.firstIdentity = xlinkIdentity(*endpoints[i]);
+        rule.secondIdentity = xlinkIdentity(*endpoints[i + 1]);
+        if (!rule.first || !rule.first->isAttachedToDocument() || !rule.second
+            || !rule.second->isAttachedToDocument()) {
+            rule.valid = false;
+            rule.diagnostic = "Unresolved or deleted exclusion endpoint";
+        }
+        rules.push_back(rule);
+    }
+    return rules;
+}
+
+bool AssemblyObject::hasInterferenceExclusion(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+) const
+{
+    if (!first || !second) {
+        return false;
+    }
+    const auto want = canonicalPair(first, second);
+    for (const auto& rule : getInterferenceExclusionRules()) {
+        if (!rule.valid) {
+            continue;
+        }
+        const auto have = canonicalPair(rule.first, rule.second);
+        if (have.first == want.first && have.second == want.second) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void AssemblyObject::setInterferenceExclusions(
+    const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
+)
+{
+    // Full replace via DocumentObject* cannot express detached XLink identity.
+    // Prefer addInterferenceExclusion / removeInterferenceExclusion(At) which preserve
+    // existing PropertyXLinkSub entries.
+    std::vector<App::DocumentObject*> flat;
+    flat.reserve(pairs.size() * 2);
+    std::set<std::pair<std::string, std::string>> seen;
+    for (const auto& pair : pairs) {
+        // Preserve fully unresolved placeholder pairs for review.
+        if (!pair.first && !pair.second) {
+            flat.push_back(nullptr);
+            flat.push_back(nullptr);
+            continue;
+        }
+        if (pair.first && pair.second && pair.first->isAttachedToDocument()
+            && pair.second->isAttachedToDocument()) {
+            auto canon = canonicalPair(pair.first, pair.second);
+            const auto key =
+                std::make_pair(sourceIdentity(canon.first), sourceIdentity(canon.second));
+            if (!seen.insert(key).second) {
+                continue;
+            }
+            flat.push_back(canon.first);
+            flat.push_back(canon.second);
+        }
+        else {
+            flat.push_back(pair.first);
+            flat.push_back(pair.second);
+        }
+    }
+    if (flat.size() % 2 != 0) {
+        throw Base::ValueError("Exclusion endpoints must form even pairs");
+    }
+    InterferenceExcludedSources.setValues(flat);
+}
+
+void AssemblyObject::addInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second)
+{
+    if (!first || !second) {
+        throw Base::ValueError("Exclusion endpoints must be valid document objects");
+    }
+    if (!first->isAttachedToDocument() || !second->isAttachedToDocument()) {
+        throw Base::ValueError("Exclusion endpoints must be attached to a document");
+    }
+    if (hasInterferenceExclusion(first, second)) {
+        return;
+    }
+    auto canon = canonicalPair(first, second);
+    // Append without rewriting existing entries so detached XLink identity is preserved.
+    InterferenceExcludedSources.append(canon.first);
+    InterferenceExcludedSources.append(canon.second);
+}
+
+void AssemblyObject::removeInterferenceExclusionAt(std::size_t ruleIndex)
+{
+    const int size = InterferenceExcludedSources.getSize();
+    if (size % 2 != 0) {
+        throw Base::ValueError("Stored exclusion list has an odd number of endpoints");
+    }
+    const auto ruleCount = static_cast<std::size_t>(size / 2);
+    if (ruleIndex >= ruleCount) {
+        throw Base::ValueError("Exclusion rule index out of range");
+    }
+    InterferenceExcludedSources.removeIndices(static_cast<int>(ruleIndex * 2), 2);
+}
+
+void AssemblyObject::removeInterferenceExclusion(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return;
+    }
+    const auto want = canonicalPair(first, second);
+    const auto rules = getInterferenceExclusionRules();
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const auto& rule = rules[i];
+        if (!rule.valid || !rule.first || !rule.second) {
+            continue;
+        }
+        const auto have = canonicalPair(rule.first, rule.second);
+        if (have.first == want.first && have.second == want.second) {
+            removeInterferenceExclusionAt(i);
+            return;
+        }
+    }
 }

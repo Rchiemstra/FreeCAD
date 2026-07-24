@@ -96,6 +96,7 @@ class AssemblyWorkbench(Workbench):
         cmdListMenuOnly = [
             "Assembly_LinkSelectLinked",
             "Assembly_ExportASMT",
+            "Assembly_CheckInterference",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -288,6 +289,7 @@ class AssemblyWorkbench(Workbench):
                 self.commands = [
                     "Assembly_CreateView",
                     "Assembly_CreateBom",
+                    "Assembly_CheckInterference",
                 ]
                 self.title = translate("Assembly", "Tools")
 

@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
+#pragma once
+
+#include <Mod/Assembly/AssemblyGlobal.h>
+
+#include <atomic>
+#include <functional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <Base/BoundBox.h>
+#include <Base/Vector3D.h>
+#include <Mod/Part/App/InterferenceDetection.h>
+#include <TopoDS_Shape.hxx>
+
+namespace Assembly
+{
+
+class AssemblyObject;
+
+/** Immutable snapshot of one physical leaf occurrence (safe for worker threads). */
+struct InterferenceLeaf
+{
+    /** Sub-object path relative to the scanned assembly (e.g. NestedPart.InnerBox.). */
+    std::string occurrenceSubName;
+    std::string displayPath;
+    /** Stable source-definition identity (document#name of linked definition). */
+    std::string sourceId;
+    TopoDS_Shape worldShape;
+    Base::BoundBox3d worldBoundBox;
+    bool visible = true;
+    bool shapeValid = true;
+    std::string diagnostic;
+};
+
+struct InterferencePairResult
+{
+    std::size_t leafIndexA = 0;
+    std::size_t leafIndexB = 0;
+    Part::InterferenceResult detection;
+    bool excluded = false;
+};
+
+struct InterferenceComponentIssue
+{
+    std::size_t leafIndex = 0;
+    std::string diagnostic;
+};
+
+struct InterferenceScanCounts
+{
+    int penetrations = 0;
+    int contacts = 0;
+    int clearanceViolations = 0;
+    int excludedViolations = 0;
+    int invalidInputs = 0;
+    int inconclusivePairs = 0;
+    int clearPairs = 0;
+};
+
+struct InterferenceScanResult
+{
+    std::vector<InterferenceLeaf> leaves;
+    std::vector<InterferencePairResult> pairs;
+    std::vector<InterferenceComponentIssue> componentIssues;
+    InterferenceScanCounts counts;
+    bool cancelled = false;
+    bool complete = false;
+};
+
+struct InterferenceScanOptions
+{
+    double clearance = 0.0;
+    bool includeHidden = false;
+    Part::InterferenceOptions detectionOptions;
+    const std::atomic<bool>* cancelFlag = nullptr;
+    std::function<void(int current, int total)> progress;
+};
+
+/**
+ * Collect physical leaf occurrences for interference checking.
+ * Descends assemblies/links/groups; treats Body Tip and solid GeoFeatures as leaves.
+ * Resolves world shapes through the assembly subobject path (including nested
+ * App::Part / App::Link / AssemblyLink transforms).
+ */
+AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeaves(
+    const AssemblyObject* assembly,
+    bool includeHidden
+);
+
+/** Deterministic sweep-and-prune candidate pairs (i < j). */
+AssemblyExport std::vector<std::pair<std::size_t, std::size_t>> broadPhaseCandidatePairs(
+    const std::vector<InterferenceLeaf>& leaves,
+    double clearance,
+    double tolerance
+);
+
+/**
+ * Run full scan over an immutable leaf snapshot.
+ * Exclusions are canonical unordered source-ID pairs; the worker never uses
+ * App::DocumentObject*. Exclusions apply only to penetration/contact/clearance.
+ */
+AssemblyExport InterferenceScanResult runInterferenceScan(
+    const std::vector<InterferenceLeaf>& leaves,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs = {}
+);
+
+}  // namespace Assembly
