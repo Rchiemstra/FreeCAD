@@ -498,6 +498,25 @@ PyObject* ViewProviderPy::claimChildren(PyObject* args) const
     return Py::new_reference_to(ret);
 }
 
+PyObject* ViewProviderPy::claimChildren3D(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    std::vector<App::DocumentObject*> children = this->getViewProviderPtr()->claimChildren3D();
+    Py::List ret;
+    for (auto* child : children) {
+        if (child) {
+            ret.append(Py::asObject(child->getPyObject()));
+        }
+        else {
+            ret.append(Py::None());
+        }
+    }
+    return Py::new_reference_to(ret);
+}
+
 PyObject* ViewProviderPy::claimChildrenRecursive(PyObject* args) const
 {
     if (!PyArg_ParseTuple(args, "")) {

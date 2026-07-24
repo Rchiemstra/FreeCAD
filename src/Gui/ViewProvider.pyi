@@ -208,6 +208,13 @@ class ViewProvider(ExtensionContainer):
         ...
 
     @constmethod
+    def claimChildren3D(self) -> list:
+        """
+        Returns list of objects that are claimed into this object's 3D scene graph.
+        """
+        ...
+
+    @constmethod
     def claimChildrenRecursive(self) -> list:
         """
         Returns list of objects that are to be grouped in tree under this object recursively.
