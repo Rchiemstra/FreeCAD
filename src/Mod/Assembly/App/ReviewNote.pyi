@@ -28,3 +28,18 @@ class ReviewNote(DocumentObject):
     def isAttachmentBroken(self) -> bool:
         """True when the target is missing or invalid."""
         ...
+
+    @constmethod
+    def getOwnerPart(self) -> object:
+        """Return the owning App::Part (or AssemblyObject) for this note."""
+        ...
+
+    @constmethod
+    def getAssembly(self) -> object:
+        """Return the owning AssemblyObject when the owner is an assembly."""
+        ...
+
+    @constmethod
+    def getGroup(self) -> object:
+        """Return the ReviewNoteGroup containing this note."""
+        ...

@@ -917,6 +917,206 @@ class TestReviewNotes(unittest.TestCase):
             "{}: got {}".format(operation, note.BasePosition),
         )
 
+    def test_link_element_target_follows_parent_link(self):
+        operation = "LinkElement note follows parent Link Placement (FreeCAD#16113)"
+        _msg("  Test '{}'".format(operation))
+
+        source = self.doc.addObject("Part::Box", "SourceArray")
+        source.Length = 10
+        source.Width = 20
+        source.Height = 30
+        link = self.assembly.newObject("App::Link", "ArrayLink")
+        link.LinkedObject = source
+        link.ElementCount = 2
+        self.doc.recompute()
+
+        elements = list(getattr(link, "ElementList", []) or [])
+        self.assertGreaterEqual(len(elements), 1, operation)
+        elem = elements[0]
+        self.assertEqual(elem.TypeId, "App::LinkElement", operation)
+        self.assertFalse(
+            self.assembly.hasObject(elem, True),
+            "{}: precondition — hasObject must miss LinkElements".format(operation),
+        )
+
+        # Selection-style path: Assembly + LinkElement name.
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.assembly, elem.Name, picked_point=App.Vector(5, 10, 15)
+        )
+        self.assertIsNotNone(data, "{}: normalize Assembly+LinkElement".format(operation))
+        self.assertEqual(data["target_obj"], elem, operation)
+
+        # Direct LinkElement root must also be accepted.
+        data_direct = CommandReviewNote.normalize_review_note_target(
+            self.assembly, elem, "", picked_point=App.Vector(5, 10, 15)
+        )
+        self.assertIsNotNone(data_direct, "{}: normalize LinkElement root".format(operation))
+
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["LinkElement"], open_transaction=False
+        )
+        self.assertFalse(note.isAttachmentBroken(), operation)
+        self.assertEqual(note.Target[0], elem, operation)
+
+        before = App.Vector(note.BasePosition)
+        link.Placement = App.Placement(App.Vector(100, 0, 0), App.Rotation())
+        expected = link.Placement.multVec(elem.Placement.multVec(note.LocalAnchor))
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-5),
+            "{}: got {} expected {} (before {})".format(
+                operation, note.BasePosition, expected, before
+            ),
+        )
+
+    def test_part_owner_occurrence_path_not_remapped(self):
+        operation = "App::Part owner keeps Link occurrence (not linked twin)"
+        _msg("  Test '{}'".format(operation))
+
+        owner = self.doc.addObject("App::Part", "PartAssembly")
+        twin = self.doc.addObject("Part::Box", "SimSpool")
+        twin.Length = 40
+        twin.Width = 40
+        twin.Height = 20
+        occ_a = owner.newObject("App::Link", "AssemblySpool")
+        occ_a.LinkedObject = twin
+        occ_a.Placement = App.Placement(App.Vector(100, 0, 0), App.Rotation())
+        occ_b = owner.newObject("App::Link", "OtherSpool")
+        occ_b.LinkedObject = twin
+        occ_b.Placement = App.Placement(App.Vector(-100, 0, 0), App.Rotation())
+
+        gear = self.doc.addObject("App::Part", "SimGearPart")
+        tip = gear.newObject("Part::Box", "Spool_GearTipRelief")
+        tip.Length = 10
+        tip.Width = 20
+        tip.Height = 30
+        occ_gear = owner.newObject("App::Link", "AssemblySpoolGear")
+        occ_gear.LinkedObject = gear
+        occ_gear.Placement = App.Placement(App.Vector(0, 50, 0), App.Rotation())
+        self.doc.recompute()
+
+        sub = "AssemblySpoolGear.Spool_GearTipRelief.Face6"
+        data = CommandReviewNote.normalize_review_note_target(
+            owner, owner, sub, picked_point=App.Vector(5, 60, 30)
+        )
+        self.assertIsNotNone(data, operation)
+        self.assertEqual(data["target_obj"], occ_gear, "{} target occurrence".format(operation))
+        self.assertEqual(
+            list(data["sub_list"]),
+            ["Spool_GearTipRelief.Face6"],
+            "{} relative sub".format(operation),
+        )
+        self.assertNotEqual(data["target_obj"].Name, "SimSpool", operation)
+        self.assertNotEqual(data["target_obj"].Name, "Spool_GearTipRelief", operation)
+
+        note = CommandReviewNote.create_review_note(
+            owner, data, ["Part occurrence"], open_transaction=False
+        )
+        self.assertIsNotNone(note, operation)
+        self.assertEqual(note.getOwnerPart(), owner, operation)
+        self.assertIsNone(note.getAssembly(), "{} plain Part has no AssemblyObject".format(operation))
+        groups = [o for o in owner.Group if o.TypeId == "Assembly::ReviewNoteGroup"]
+        self.assertEqual(len(groups), 1, operation)
+        self.assertIn(note, groups[0].Group, operation)
+        self.assertFalse(note.isAttachmentBroken(), operation)
+
+        before = App.Vector(note.BasePosition)
+        occ_gear.Placement = App.Placement(App.Vector(0, 150, 0), App.Rotation())
+        expected = occ_gear.Placement.multVec(note.LocalAnchor)
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-5),
+            "{} follow: got {} expected {} (before {})".format(
+                operation, note.BasePosition, expected, before
+            ),
+        )
+
+        note.Target = (occ_gear, ["Spool_GearTipRelief.Face999"])
+        note.refreshBasePosition()
+        self.assertTrue(note.isAttachmentBroken(), "{} missing face".format(operation))
+
+        self.assertEqual(
+            CommandReviewNote.find_review_note_owner(owner, "AssemblySpool.Face6"),
+            owner,
+            operation,
+        )
+
+    def test_observer_survives_assembly_create_undo(self):
+        operation = "Observer revoked on undo of Assembly create (no UAF)"
+        _msg("  Test '{}'".format(operation))
+
+        self.doc.openTransaction("Create assembly with note")
+        asm = self.doc.addObject("Assembly::AssemblyObject", "AsmUndoCreate")
+        asm.newObject("Assembly::JointGroup", "Joints")
+        box = asm.newObject("Part::Box", "BoxUndo")
+        box.Length = 10
+        box.Width = 20
+        box.Height = 30
+        self.doc.recompute()
+        data = CommandReviewNote.normalize_review_note_target(
+            asm, box, "", picked_point=App.Vector(1, 2, 3)
+        )
+        CommandReviewNote.create_review_note(
+            asm, data, ["Undo create"], open_transaction=False
+        )
+        self.doc.commitTransaction()
+
+        self.doc.undo()
+        self.assertIsNone(self.doc.getObject("AsmUndoCreate"), operation)
+
+        # Recreate and move — must not SIGSEGV from a dangling tracker.
+        self.doc.openTransaction("Recreate")
+        asm2 = self.doc.addObject("Assembly::AssemblyObject", "AsmUndoCreate")
+        asm2.newObject("Assembly::JointGroup", "Joints")
+        box2 = asm2.newObject("Part::Box", "BoxUndo")
+        box2.Length = 10
+        box2.Width = 20
+        box2.Height = 30
+        self.doc.recompute()
+        data2 = CommandReviewNote.normalize_review_note_target(
+            asm2, box2, "", picked_point=App.Vector(1, 2, 3)
+        )
+        note2 = CommandReviewNote.create_review_note(
+            asm2, data2, ["After undo"], open_transaction=False
+        )
+        self.doc.commitTransaction()
+        box2.Placement = App.Placement(App.Vector(10, 0, 0), App.Rotation())
+        self.assertTrue(
+            note2.BasePosition.isEqual(App.Vector(11, 2, 3), 1e-6),
+            "{}: tracking after recreate got {}".format(operation, note2.BasePosition),
+        )
+
+    def test_observer_reinstalled_after_assembly_delete_undo(self):
+        operation = "Observer reinstalled after undo of Assembly deletion"
+        _msg("  Test '{}'".format(operation))
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "", picked_point=App.Vector(2, 3, 4)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Delete undo"], open_transaction=False
+        )
+        asm_name = self.assembly.Name
+        note_name = note.Name
+
+        self.doc.openTransaction("Delete assembly")
+        self.doc.removeObject(asm_name)
+        self.doc.commitTransaction()
+        self.assertIsNone(self.doc.getObject(asm_name), operation)
+
+        self.doc.undo()
+        asm = self.doc.getObject(asm_name)
+        note = self.doc.getObject(note_name)
+        self.assertIsNotNone(asm, operation)
+        self.assertIsNotNone(note, operation)
+        box = self.doc.getObject("Box")
+        self.assertIsNotNone(box, operation)
+
+        box.Placement = App.Placement(App.Vector(0, 0, 25), App.Rotation())
+        expected = box.Placement.multVec(App.Vector(2, 3, 4))
+        self.assertTrue(
+            note.BasePosition.isEqual(expected, 1e-6),
+            "{}: got {} expected {}".format(operation, note.BasePosition, expected),
+        )
+
     def test_reference2_joint_tracking(self):
         operation = "Reference2 joint note tracks Placement2 / part move"
         _msg("  Test '{}'".format(operation))
@@ -1544,3 +1744,66 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertTrue(plain.TextPosition.isEqual(App.Vector(4, 5, 6), 1e-6), operation)
         if plain.ViewObject:
             self.assertIsNotNone(plain.ViewObject.Icon, operation)
+
+    def test_delete_empty_review_notes_group_from_tree(self):
+        operation = "Empty Review Notes group deletable via Std_Delete with undo/redo"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        group = UtilsAssembly.getReviewNoteGroup(self.assembly)
+        group_name = group.Name
+        self.assertEqual(group.TypeId, "Assembly::ReviewNoteGroup", operation)
+        self.assertEqual(list(group.Group), [], operation)
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(group)
+        Gui.runCommand("Std_Delete")
+
+        self.assertIsNone(self.doc.getObject(group_name), operation)
+        self.assertIs(self.doc.getObject(self.assembly.Name), self.assembly, operation)
+
+        self.doc.undo()
+        restored = self.doc.getObject(group_name)
+        self.assertIsNotNone(restored, operation)
+        self.assertEqual(restored.TypeId, "Assembly::ReviewNoteGroup", operation)
+
+        self.doc.redo()
+        self.assertIsNone(self.doc.getObject(group_name), operation)
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["After empty delete"], open_transaction=False
+        )
+        self.assertIsNotNone(note, operation)
+        recreated = UtilsAssembly.getReviewNoteGroup(self.assembly)
+        self.assertIsNotNone(recreated, operation)
+        self.assertEqual(len(recreated.Group), 1, operation)
+        self.assertIn(note, recreated.Group, operation)
+
+    def test_populated_review_notes_group_remains_protected(self):
+        operation = "Populated Review Notes group protected from Std_Delete"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Keep me"], open_transaction=False
+        )
+        group = note.getGroup()
+        self.assertIsNotNone(group, operation)
+        group_name = group.Name
+        note_name = note.Name
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(group)
+        Gui.runCommand("Std_Delete")
+
+        self.assertIsNotNone(self.doc.getObject(group_name), operation)
+        self.assertIsNotNone(self.doc.getObject(note_name), operation)
+        self.assertIsNotNone(group.Document, operation)
+        self.assertIsNotNone(note.Document, operation)
+        self.assertIn(note, group.Group, operation)

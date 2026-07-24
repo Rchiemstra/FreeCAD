@@ -16,6 +16,8 @@
  *                                                                          *
  ***************************************************************************/
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -27,6 +29,7 @@
 #include <App/GeoFeature.h>
 #include <App/GroupExtension.h>
 #include <App/Link.h>
+#include <App/Part.h>
 #include <App/PropertyGeo.h>
 #include <Base/Placement.h>
 #include <Base/Tools.h>
@@ -73,6 +76,19 @@ App::DocumentObject* shapeOwnerFor(App::DocumentObject* obj)
     return obj;
 }
 
+bool isGeometryElementName(const std::string& name)
+{
+    static const char* prefixes[] = {"Face", "Edge", "Vertex"};
+    for (const char* prefix : prefixes) {
+        const size_t len = std::strlen(prefix);
+        if (name.size() <= len || name.compare(0, len, prefix) != 0) {
+            continue;
+        }
+        return std::all_of(name.begin() + static_cast<std::ptrdiff_t>(len), name.end(), ::isdigit);
+    }
+    return false;
+}
+
 bool geometrySubExists(App::DocumentObject* obj, const std::string& sub)
 {
     if (!obj) {
@@ -80,6 +96,30 @@ bool geometrySubExists(App::DocumentObject* obj, const std::string& sub)
     }
     if (sub.empty() || sub == "Main") {
         return true;
+    }
+
+    // Occurrence-relative paths under Links/Parts (e.g. Spool_GearTipRelief.Face6).
+    // getSubObject() can return a non-null whole shape for missing FaceN, so resolve the
+    // path to a shape owner + element name and validate the element on that shape.
+    if (sub.find('.') != std::string::npos) {
+        const char* element = nullptr;
+        std::string childName;
+        App::DocumentObject* parent = nullptr;
+        App::DocumentObject* resolved =
+            obj->resolve(sub.c_str(), &parent, &childName, &element);
+        if (!resolved) {
+            return false;
+        }
+        const auto dot = sub.find_last_of('.');
+        const std::string last = sub.substr(dot + 1);
+        if (isGeometryElementName(last)) {
+            if (!element || last != element) {
+                return false;
+            }
+            return geometrySubExists(resolved, last);
+        }
+        // Path ends at a nested object (optional trailing '.').
+        return resolved != obj || !childName.empty();
     }
 
     App::DocumentObject* owner = shapeOwnerFor(obj);
@@ -100,15 +140,24 @@ bool geometrySubExists(App::DocumentObject* obj, const std::string& sub)
     }
 }
 
-bool objectInAssembly(AssemblyObject* assembly, App::DocumentObject* obj)
+bool objectInOwner(App::Part* owner, App::DocumentObject* obj)
 {
-    if (!assembly || !obj) {
+    if (!owner || !obj) {
         return false;
     }
-    if (obj == assembly) {
+    if (obj == owner) {
         return true;
     }
-    return assembly->hasObject(obj, true);
+    if (owner->hasObject(obj, true)) {
+        return true;
+    }
+    // hasObject does not detect LinkElements (FreeCAD#16113).
+    if (auto* linkEl = freecad_cast<App::LinkElement*>(obj)) {
+        if (auto* linkGroup = linkEl->getLinkGroup()) {
+            return owner->hasObject(linkGroup, true);
+        }
+    }
+    return false;
 }
 
 bool groupContainsObject(const App::DocumentObject& container, const App::DocumentObject* obj)
@@ -118,6 +167,14 @@ bool groupContainsObject(const App::DocumentObject& container, const App::Docume
     }
     auto* group = container.getExtensionByType<App::GroupExtension>(true);
     return group && group->hasObject(obj, true);
+}
+
+App::Link* linkGroupOf(App::DocumentObject* obj)
+{
+    if (auto* linkEl = freecad_cast<App::LinkElement*>(obj)) {
+        return linkEl->getLinkGroup();
+    }
+    return nullptr;
 }
 
 bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
@@ -135,6 +192,17 @@ bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
     // Nested/container placements between the owning assembly and the target.
     if (groupContainsObject(obj, target) || groupContainsObject(obj, shapeOwnerFor(target))) {
         return true;
+    }
+    // Link-array parent: LinkElements are not GroupExtension children (FreeCAD#16113).
+    if (auto* linkGroup = linkGroupOf(target)) {
+        if (linkGroup == &obj) {
+            return true;
+        }
+    }
+    if (auto* linkGroup = linkGroupOf(shapeOwnerFor(target))) {
+        if (linkGroup == &obj) {
+            return true;
+        }
     }
 
     if (note.JointSide.getValue() != static_cast<long>(ReviewNoteJointSide::None)) {
@@ -157,30 +225,40 @@ bool noteDependsOnObject(const ReviewNote& note, const App::DocumentObject& obj)
                 || groupContainsObject(obj, getMovingPartFromRef(ref))) {
                 return true;
             }
+            if (auto* linkGroup = linkGroupOf(ref->getValue())) {
+                if (linkGroup == &obj) {
+                    return true;
+                }
+            }
+            if (auto* linkGroup = linkGroupOf(getMovingPartFromRef(ref))) {
+                if (linkGroup == &obj) {
+                    return true;
+                }
+            }
         }
     }
 
     return false;
 }
 
-Base::Placement placementOfObjectInAssembly(AssemblyObject* assembly, App::DocumentObject* obj)
+Base::Placement placementOfObjectInOwner(App::Part* owner, App::DocumentObject* obj)
 {
-    if (!assembly || !obj) {
+    if (!owner || !obj) {
         return {};
     }
 
     auto parents = obj->getParents();
     for (const auto& parent : parents) {
-        if (parent.first == assembly) {
-            Base::Placement full = assembly->getPlacementOf(parent.second, obj);
-            if (auto* asmPlc = assembly->getPlacementProperty()) {
-                return asmPlc->getValue().inverse() * full;
+        if (parent.first == owner) {
+            Base::Placement full = owner->getPlacementOf(parent.second, obj);
+            if (auto* ownerPlc = owner->getPlacementProperty()) {
+                return ownerPlc->getValue().inverse() * full;
             }
             return full;
         }
     }
 
-    if (assembly->hasObject(obj, false)) {
+    if (owner->hasObject(obj, false)) {
         if (auto* plcProp = obj->getPlacementProperty()) {
             return plcProp->getValue();
         }
@@ -192,21 +270,19 @@ Base::Placement placementOfObjectInAssembly(AssemblyObject* assembly, App::Docum
     return {};
 }
 
-/// One observer per Assembly: only refreshes notes owned by that Assembly.
-class ReviewNoteAssemblyTracker
+/// One observer per owning App::Part / AssemblyObject.
+class ReviewNoteOwnerTracker
 {
 public:
-    explicit ReviewNoteAssemblyTracker(AssemblyObject* assembly)
-        : assembly(assembly)
+    explicit ReviewNoteOwnerTracker(App::Part* owner)
+        : owner(owner)
     {
         connChanged = App::GetApplication().signalChangedObject.connect(
             [this](const App::DocumentObject& obj, const App::Property& prop) {
                 onChangedObject(obj, prop);
             }
         );
-        if (App::Document* doc = assembly->getDocument()) {
-            // Plan: also refresh on recompute (covers paths where Placement is not the
-            // only updated state, and document restore recomputes).
+        if (App::Document* doc = owner->getDocument()) {
             connRecomputed = doc->signalRecomputedObject.connect(
                 [this](const App::DocumentObject& obj) {
                     onRecomputedObject(obj);
@@ -215,22 +291,22 @@ public:
         }
     }
 
-    AssemblyObject* getAssembly() const
+    App::Part* getOwner() const
     {
-        return assembly;
+        return owner;
     }
 
     App::Document* getDocument() const
     {
-        return assembly ? assembly->getDocument() : nullptr;
+        return owner ? owner->getDocument() : nullptr;
     }
 
     void onChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)
     {
-        if (!assembly || !assembly->isAttachedToDocument()) {
+        if (!owner || !owner->isAttachedToDocument()) {
             return;
         }
-        App::Document* doc = assembly->getDocument();
+        App::Document* doc = owner->getDocument();
         if (!doc || Obj.getDocument() != doc) {
             return;
         }
@@ -240,11 +316,10 @@ public:
         if (!isPlacementLikeProperty(Prop)) {
             return;
         }
-        // During Assembly teardown, Group changes can fire after unsetup begins.
         if (!Obj.isAttachedToDocument()) {
             return;
         }
-        if (&Obj != assembly && !assembly->hasObject(&Obj, true)) {
+        if (&Obj != owner && !objectInOwner(owner, const_cast<App::DocumentObject*>(&Obj))) {
             return;
         }
 
@@ -253,13 +328,11 @@ public:
 
         for (auto* obj : doc->getObjectsOfType(ReviewNote::getClassTypeId())) {
             auto* note = freecad_cast<ReviewNote*>(obj);
-            if (!note || !note->isAttachedToDocument() || note->getAssembly() != assembly) {
+            if (!note || !note->isAttachedToDocument() || note->getOwnerPart() != owner) {
                 continue;
             }
-            // Shape and placement-like props: only notes that depend on Obj.
-            // Group: assembly / note-group membership can orphan or rehome targets.
             if (noteDependsOnObject(*note, Obj)
-                || (isGroup && (&Obj == assembly || &Obj == note->getGroup()))) {
+                || (isGroup && (&Obj == owner || &Obj == note->getGroup()))) {
                 note->refreshBasePosition();
             }
         }
@@ -267,10 +340,10 @@ public:
 
     void onRecomputedObject(const App::DocumentObject& Obj)
     {
-        if (!assembly || !assembly->isAttachedToDocument()) {
+        if (!owner || !owner->isAttachedToDocument()) {
             return;
         }
-        App::Document* doc = assembly->getDocument();
+        App::Document* doc = owner->getDocument();
         if (!doc || Obj.getDocument() != doc) {
             return;
         }
@@ -280,13 +353,13 @@ public:
         if (!Obj.isAttachedToDocument()) {
             return;
         }
-        if (&Obj != assembly && !assembly->hasObject(&Obj, true)) {
+        if (&Obj != owner && !objectInOwner(owner, const_cast<App::DocumentObject*>(&Obj))) {
             return;
         }
 
         for (auto* obj : doc->getObjectsOfType(ReviewNote::getClassTypeId())) {
             auto* note = freecad_cast<ReviewNote*>(obj);
-            if (!note || !note->isAttachedToDocument() || note->getAssembly() != assembly) {
+            if (!note || !note->isAttachedToDocument() || note->getOwnerPart() != owner) {
                 continue;
             }
             if (noteDependsOnObject(*note, Obj)) {
@@ -296,22 +369,24 @@ public:
     }
 
 private:
-    AssemblyObject* assembly = nullptr;
+    App::Part* owner = nullptr;
     fastsignals::scoped_connection connChanged;
     fastsignals::scoped_connection connRecomputed;
 };
 
-std::map<AssemblyObject*, std::unique_ptr<ReviewNoteAssemblyTracker>> g_assemblyTrackers;
+std::map<App::Part*, std::unique_ptr<ReviewNoteOwnerTracker>> g_ownerTrackers;
 fastsignals::scoped_connection g_docDeleteHook;
-bool g_docDeleteHookInstalled = false;
+fastsignals::scoped_connection g_deletedObjectHook;
+fastsignals::scoped_connection g_undoHook;
+fastsignals::scoped_connection g_redoHook;
+bool g_lifecycleHooksInstalled = false;
 
 void revokeTrackersForDocument(const App::Document& doc)
 {
-    for (auto it = g_assemblyTrackers.begin(); it != g_assemblyTrackers.end();) {
+    for (auto it = g_ownerTrackers.begin(); it != g_ownerTrackers.end();) {
         App::Document* trackerDoc = it->second ? it->second->getDocument() : nullptr;
-        // Also drop entries whose Assembly was already destroyed (null / detached).
-        if (!it->second || !it->second->getAssembly() || trackerDoc == &doc) {
-            it = g_assemblyTrackers.erase(it);
+        if (!it->second || !it->second->getOwner() || trackerDoc == &doc) {
+            it = g_ownerTrackers.erase(it);
         }
         else {
             ++it;
@@ -319,18 +394,48 @@ void revokeTrackersForDocument(const App::Document& doc)
     }
 }
 
-void ensureDocumentDeleteHook()
+void reinstallTrackersForDocument(const App::Document& doc)
 {
-    if (g_docDeleteHookInstalled) {
+    for (auto* obj : doc.getObjectsOfType(ReviewNote::getClassTypeId())) {
+        auto* note = freecad_cast<ReviewNote*>(obj);
+        if (!note || !note->isAttachedToDocument()) {
+            continue;
+        }
+        ReviewNote::ensureOwnerObserver(note->getOwnerPart());
+    }
+}
+
+void ensureLifecycleHooks()
+{
+    if (g_lifecycleHooksInstalled) {
         return;
     }
-    // closeDocument() does not call unsetupObject; tear down observers here instead.
     g_docDeleteHook = App::GetApplication().signalDeleteDocument.connect(
         [](const App::Document& doc) {
             revokeTrackersForDocument(doc);
         }
     );
-    g_docDeleteHookInstalled = true;
+    // unsetupObject is skipped while undoing/rolling back; revoke on delete instead.
+    g_deletedObjectHook = App::GetApplication().signalDeletedObject.connect(
+        [](const App::DocumentObject& obj) {
+            if (obj.isDerivedFrom(App::Part::getClassTypeId())) {
+                g_ownerTrackers.erase(
+                    static_cast<App::Part*>(const_cast<App::DocumentObject*>(&obj))
+                );
+            }
+        }
+    );
+    g_undoHook = App::GetApplication().signalUndoDocument.connect(
+        [](const App::Document& doc) {
+            reinstallTrackersForDocument(doc);
+        }
+    );
+    g_redoHook = App::GetApplication().signalRedoDocument.connect(
+        [](const App::Document& doc) {
+            reinstallTrackersForDocument(doc);
+        }
+    );
+    g_lifecycleHooksInstalled = true;
 }
 
 }  // namespace
@@ -402,25 +507,25 @@ void ReviewNote::ensureDocumentObserver(App::Document* doc)
         if (!note) {
             continue;
         }
-        ensureAssemblyObserver(note->getAssembly());
+        ensureOwnerObserver(note->getOwnerPart());
     }
 }
 
-void ReviewNote::ensureAssemblyObserver(AssemblyObject* assembly)
+void ReviewNote::ensureOwnerObserver(App::Part* owner)
 {
-    if (!assembly) {
+    if (!owner) {
         return;
     }
-    ensureDocumentDeleteHook();
+    ensureLifecycleHooks();
 
-    auto& tracker = g_assemblyTrackers[assembly];
-    if (!tracker || tracker->getAssembly() != assembly) {
-        tracker = std::make_unique<ReviewNoteAssemblyTracker>(assembly);
+    auto& tracker = g_ownerTrackers[owner];
+    if (!tracker || tracker->getOwner() != owner) {
+        tracker = std::make_unique<ReviewNoteOwnerTracker>(owner);
     }
 
-    for (auto it = g_assemblyTrackers.begin(); it != g_assemblyTrackers.end();) {
-        if (!it->second || !it->second->getAssembly()) {
-            it = g_assemblyTrackers.erase(it);
+    for (auto it = g_ownerTrackers.begin(); it != g_ownerTrackers.end();) {
+        if (!it->second || !it->second->getOwner()) {
+            it = g_ownerTrackers.erase(it);
         }
         else {
             ++it;
@@ -428,17 +533,27 @@ void ReviewNote::ensureAssemblyObserver(AssemblyObject* assembly)
     }
 }
 
-void ReviewNote::revokeAssemblyObserver(AssemblyObject* assembly)
+void ReviewNote::ensureAssemblyObserver(AssemblyObject* assembly)
 {
-    if (!assembly) {
+    ensureOwnerObserver(assembly);
+}
+
+void ReviewNote::revokeOwnerObserver(App::Part* owner)
+{
+    if (!owner) {
         return;
     }
-    g_assemblyTrackers.erase(assembly);
+    g_ownerTrackers.erase(owner);
+}
+
+void ReviewNote::revokeAssemblyObserver(AssemblyObject* assembly)
+{
+    revokeOwnerObserver(assembly);
 }
 
 App::DocumentObjectExecReturn* ReviewNote::execute()
 {
-    ensureAssemblyObserver(getAssembly());
+    ensureOwnerObserver(getOwnerPart());
     refreshBasePosition();
     return App::DocumentObject::StdReturn;
 }
@@ -446,7 +561,7 @@ App::DocumentObjectExecReturn* ReviewNote::execute()
 void ReviewNote::onDocumentRestored()
 {
     App::AnnotationLabel::onDocumentRestored();
-    ensureAssemblyObserver(getAssembly());
+    ensureOwnerObserver(getOwnerPart());
     refreshBasePosition();
     updateLabelFromText();
 }
@@ -459,7 +574,7 @@ void ReviewNote::onChanged(const App::Property* prop)
     }
 
     if (!isRestoring() && getDocument() && !getDocument()->isPerformingTransaction()) {
-        ensureAssemblyObserver(getAssembly());
+        ensureOwnerObserver(getOwnerPart());
     }
 
     if (prop == &LabelText) {
@@ -506,8 +621,8 @@ bool ReviewNote::isAttachmentBroken() const
         return true;
     }
 
-    auto* assembly = getAssembly();
-    if (!assembly || !objectInAssembly(assembly, target)) {
+    auto* owner = getOwnerPart();
+    if (!owner || !objectInOwner(owner, target)) {
         return true;
     }
 
@@ -537,11 +652,11 @@ bool ReviewNote::isAttachmentBroken() const
             return true;
         }
         App::DocumentObject* refObj = ref->getValue();
-        if (refObj->getDocument() != getDocument() || !objectInAssembly(assembly, refObj)) {
+        if (refObj->getDocument() != getDocument() || !objectInOwner(owner, refObj)) {
             return true;
         }
         if (auto* moving = getMovingPartFromRef(ref)) {
-            if (moving->getDocument() != getDocument() || !objectInAssembly(assembly, moving)) {
+            if (moving->getDocument() != getDocument() || !objectInOwner(owner, moving)) {
                 return true;
             }
         }
@@ -569,21 +684,26 @@ void ReviewNote::updateAttachmentState()
     updatingAttachment = false;
 }
 
-AssemblyObject* ReviewNote::getAssembly() const
+App::Part* ReviewNote::getOwnerPart() const
 {
     for (auto* obj : getInList()) {
         if (auto* group = freecad_cast<ReviewNoteGroup*>(obj)) {
             for (auto* parent : group->getInList()) {
-                if (auto* assembly = freecad_cast<AssemblyObject*>(parent)) {
-                    return assembly;
+                if (auto* part = freecad_cast<App::Part*>(parent)) {
+                    return part;
                 }
             }
         }
-        if (auto* assembly = freecad_cast<AssemblyObject*>(obj)) {
-            return assembly;
+        if (auto* part = freecad_cast<App::Part*>(obj)) {
+            return part;
         }
     }
     return nullptr;
+}
+
+AssemblyObject* ReviewNote::getAssembly() const
+{
+    return freecad_cast<AssemblyObject*>(getOwnerPart());
 }
 
 ReviewNoteGroup* ReviewNote::getGroup() const
@@ -602,7 +722,8 @@ void ReviewNote::refreshBasePosition()
         return;
     }
 
-    ensureAssemblyObserver(getAssembly());
+    auto* owner = getOwnerPart();
+    ensureOwnerObserver(owner);
     updateAttachmentState();
 
     if (isAttachmentBroken()) {
@@ -611,7 +732,6 @@ void ReviewNote::refreshBasePosition()
     }
 
     auto* target = Target.getValue();
-    auto* assembly = getAssembly();
     Base::Placement targetPlc;
 
     if (JointSide.getValue() != static_cast<long>(ReviewNoteJointSide::None)) {
@@ -632,11 +752,11 @@ void ReviewNote::refreshBasePosition()
             movingPart = refProp->getValue();
         }
 
-        Base::Placement partPlc = placementOfObjectInAssembly(assembly, movingPart);
+        Base::Placement partPlc = placementOfObjectInOwner(owner, movingPart);
         targetPlc = partPlc * jcsPlcProp->getValue();
     }
     else {
-        targetPlc = placementOfObjectInAssembly(assembly, target);
+        targetPlc = placementOfObjectInOwner(owner, target);
     }
 
     Base::Vector3d base;

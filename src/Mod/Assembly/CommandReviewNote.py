@@ -76,14 +76,15 @@ def _is_unsupported_target_object(obj):
 
 
 def _is_supported_geometry_sub(sub_name):
-    """Accept empty (whole component) or a single Face/Edge/Vertex element name."""
+    """Accept empty (whole component) or a Face/Edge/Vertex, optionally under a relative path."""
     if not sub_name:
         return True
-    # Reject multi-segment or dotted element paths (e.g. Face6.Extra).
     parts = [p for p in str(sub_name).split(".") if p]
-    if len(parts) != 1:
+    if not parts:
         return False
-    element = parts[0]
+    # Occurrence-relative paths like Spool_GearTipRelief.Face182 are allowed;
+    # only the final segment must be a geometry element name.
+    element = parts[-1]
     return any(
         element.startswith(prefix) and element[len(prefix) :].isdigit()
         for prefix in _SUPPORTED_SUB_PREFIXES
@@ -118,9 +119,33 @@ def _target_in_assembly(assembly, obj):
     if obj == assembly:
         return True
     try:
-        return bool(assembly.hasObject(obj, True))
+        if bool(assembly.hasObject(obj, True)):
+            return True
     except Exception:
-        return False
+        pass
+    # hasObject does not detect LinkElements (FreeCAD#16113).
+    if getattr(obj, "TypeId", None) == "App::LinkElement":
+        link_group = None
+        getter = getattr(obj, "getLinkGroup", None)
+        if callable(getter):
+            try:
+                link_group = getter()
+            except Exception:
+                link_group = None
+        if link_group is None:
+            for parent in getattr(obj, "InList", []) or []:
+                if (
+                    getattr(parent, "TypeId", None) == "App::Link"
+                    and obj in list(getattr(parent, "ElementList", []) or [])
+                ):
+                    link_group = parent
+                    break
+        if link_group is not None:
+            try:
+                return bool(assembly.hasObject(link_group, True))
+            except Exception:
+                return False
+    return False
 
 
 def _selection_entries(selection=None):
@@ -141,6 +166,77 @@ def _selection_entries(selection=None):
     return entries
 
 
+def _selection_path_names(root_obj, sub_name):
+    """Return document object names from a selection path, preserving occurrences."""
+    names = []
+    if root_obj is not None and getattr(root_obj, "Name", None):
+        names.append(root_obj.Name)
+    for part in str(sub_name or "").split("."):
+        if not part or ";" in part or part.startswith(":"):
+            continue
+        names.append(part)
+    return names
+
+
+def _component_in_selection_path(root_obj, sub_name, component):
+    """True when component.Name appears in the raw selection path (occurrence-preserving)."""
+    if component is None:
+        return False
+    return component.Name in _selection_path_names(root_obj, sub_name)
+
+
+def find_review_note_owner(root_obj=None, sub_name="", selection=None):
+    """Nearest owning App::Part for a selection (AssemblyObject counts as App::Part).
+
+    Prefers an active AssemblyObject when the selection lies under it; otherwise uses
+    the selected Part root or the nearest Part parent of the selected object.
+    """
+    if selection is None and root_obj is None:
+        if App.GuiUp:
+            selection = Gui.Selection.getSelectionEx("*", 0)
+        else:
+            selection = []
+
+    if root_obj is None:
+        entries = _selection_entries(selection)
+        if not entries:
+            # Fall back to active assembly when nothing is selected.
+            return UtilsAssembly.activeAssembly() if App.GuiUp else None
+        root_obj, sub_name, _pick = entries[0]
+
+    if root_obj is None:
+        return None
+
+    # Selection rooted at a Part/Assembly with an inside subpath → that Part owns the note.
+    if root_obj.isDerivedFrom("App::Part") and (sub_name or ""):
+        return root_obj
+
+    active = None
+    if App.GuiUp:
+        try:
+            active = UtilsAssembly.activeAssembly()
+        except Exception:
+            active = None
+    if active is not None and _target_in_assembly(active, root_obj):
+        return active
+
+    if root_obj.isDerivedFrom("App::Part"):
+        return root_obj
+
+    # Climb parents for the nearest App::Part.
+    seen = set()
+    stack = list(getattr(root_obj, "InList", []) or [])
+    while stack:
+        parent = stack.pop(0)
+        if parent is None or id(parent) in seen:
+            continue
+        seen.add(id(parent))
+        if parent.isDerivedFrom("App::Part"):
+            return parent
+        stack.extend(list(getattr(parent, "InList", []) or []))
+    return active
+
+
 def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=None):
     """Normalize a selection into review-note target data.
 
@@ -148,8 +244,9 @@ def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=N
       target_obj, sub_list, local_anchor, joint_side
     or None if unsupported.
 
-    Selection may report the Assembly (or other container) as Object with a
-    child subpath such as ``Box.Face6``; resolve that before rejecting containers.
+    Selection may report a Part/Assembly as Object with a child subpath such as
+    ``AssemblySpool.Spool_GearTipRelief.Face182``. The occurrence name from the
+    selection path is preserved (not remapped through link resolution).
     """
     if assembly is None or root_obj is None:
         return None
@@ -177,8 +274,34 @@ def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=N
             "jcs_placement": jcs_plc,
         }
 
-    # Resolve container + subpath (e.g. Assembly + "Box.Face6") to a component.
+    # Resolve container + subpath to a component, preferring the occurrence named
+    # in the selection path so Links are not collapsed to their linked object.
     comp, rel_sub = UtilsAssembly.getComponentReference(assembly, root_obj, sub_name or "")
+    if comp and not _component_in_selection_path(root_obj, sub_name, comp):
+        # getComponentReference remapped through a link; fall back to path walk.
+        comp = None
+        rel_sub = ""
+        path = _selection_path_names(root_obj, sub_name)
+        try:
+            owner_idx = path.index(assembly.Name)
+            candidates = path[owner_idx + 1 :]
+        except ValueError:
+            candidates = path[1:] if path and path[0] == root_obj.Name else path
+        doc = assembly.Document
+        for i, name in enumerate(candidates):
+            obj = doc.getObject(name)
+            if not obj:
+                continue
+            if obj.isDerivedFrom("App::DocumentObjectGroup"):
+                continue
+            if UtilsAssembly.isLinkGroup(obj):
+                continue
+            if UtilsAssembly.isLink(obj) or obj.isDerivedFrom("App::GeoFeature"):
+                if _is_supported_component(obj) and not _is_unsupported_target_object(obj):
+                    comp = obj
+                    rel_sub = ".".join(candidates[i + 1 :])
+                    break
+
     if not comp:
         # Whole-component selection where root_obj is already the component.
         if (
@@ -194,7 +317,7 @@ def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=N
 
     if not _target_in_assembly(assembly, comp):
         return None
-    # Never anchor to the owning Assembly, LCS/origin/datum/group, etc.
+    # Never anchor to the owning Part/Assembly, LCS/origin/datum/group, etc.
     if comp == assembly or _is_unsupported_target_object(comp):
         return None
 
@@ -549,17 +672,17 @@ class CommandAddReviewNote:
         }
 
     def IsActive(self):
-        assembly = UtilsAssembly.activeAssembly()
-        if assembly is None:
+        owner = find_review_note_owner()
+        if owner is None:
             return False
-        return is_add_review_note_eligible(assembly)
+        return is_add_review_note_eligible(owner)
 
     def Activated(self):
-        assembly = UtilsAssembly.activeAssembly()
-        if assembly is None:
+        owner = find_review_note_owner()
+        if owner is None:
             return
 
-        targets = collect_review_note_targets(assembly)
+        targets = collect_review_note_targets(owner)
         if len(targets) != 1:
             return
 
@@ -567,7 +690,7 @@ class CommandAddReviewNote:
         if lines is None:
             return
 
-        create_review_note(assembly, targets[0], lines)
+        create_review_note(owner, targets[0], lines)
 
 
 class CommandEditReviewNote:
