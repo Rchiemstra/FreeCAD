@@ -28,6 +28,7 @@
 
 # datum tools
 from PartDesignTests.TestDatum import TestDatumPoint, TestDatumLine, TestDatumPlane
+from PartDesignTests.TestDatum import TestDeactivatedPlacement
 from PartDesignTests.TestShapeBinder import TestShapeBinder
 from PartDesignTests.TestShapeBinder import TestSubShapeBinder
 

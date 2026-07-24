@@ -6,12 +6,15 @@
 	url = https://github.com/microsoft/GSL
 [submodule "src/Mod/AddonManager"]
 	path = src/Mod/AddonManager
-	url = https://github.com/FreeCAD/AddonManager.git
+	url = https://github.com/Rchiemstra/AddonManager.git
+[submodule "tools/mcp/freecad-mcp"]
+	path = tools/mcp/freecad-mcp
+	url = https://github.com/Rchiemstra/freecad-mcp.git
 [submodule "src/3rdParty/coin"]
 	path = src/3rdParty/coin
 	url = https://github.com/FreeCAD/coin.git
 	branch = freecad-master
 [submodule "src/3rdParty/pivy"]
 	path = src/3rdParty/pivy
-	url = https://github.com/FreeCAD/pivy.git
+	url = https://github.com/Rchiemstra/pivy.git
 	branch = freecad-master

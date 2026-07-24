@@ -39,6 +39,8 @@
 
 #include "DynamicProperty.h"
 #include "Application.h"
+#include "DocumentMutationAuthority.h"
+#include "DocumentObject.h"
 #include "Property.h"
 #include "PropertyContainer.h"
 
@@ -47,6 +49,24 @@ FC_LOG_LEVEL_INIT("Property", true, true)
 
 
 using namespace App;
+
+namespace
+{
+void enforceStructuralPropertyMutation(PropertyContainer& container, const char* propertyName)
+{
+    if (Document* doc = documentFromPropertyContainer(&container)) {
+        const char* objectName = nullptr;
+        if (const auto* obj = dynamic_cast<const DocumentObject*>(&container)) {
+            objectName = obj->getNameInDocument();
+        }
+        enforceDocumentMutation(doc,
+                                MutationKind::StructuralProperty,
+                                MutationOrigin::Cpp,
+                                objectName,
+                                propertyName);
+    }
+}
+}  // namespace
 
 std::size_t CStringHasher::operator()(const char* s) const {
     if (!s) {
@@ -223,6 +243,8 @@ Property* DynamicProperty::addDynamicProperty(
     bool hidden
 )
 {
+    enforceStructuralPropertyMutation(pc, cstrName);
+
     if (type.empty()) {
         type = "<null>";
     }
@@ -337,6 +359,9 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
     auto& index = impl->props.get<0>();
     auto it = index.find(name);
     if (it != index.end()) {
+        if (PropertyContainer* container = it->property->getContainer()) {
+            enforceStructuralPropertyMutation(*container, name);
+        }
         if (it->property->testStatus(Property::LockDynamic)) {
             throw Base::RuntimeError("property is locked");
         }
@@ -449,6 +474,9 @@ bool DynamicProperty::changeDynamicProperty(const Property* prop,
     if (it == index.end()) {
         return false;
     }
+    if (PropertyContainer* container = it->property->getContainer()) {
+        enforceStructuralPropertyMutation(*container, prop ? prop->getName() : nullptr);
+    }
     if (group) {
         it->group = group;
     }
@@ -467,6 +495,10 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
         return false;
     }
     const PropData& data = *propIt;
+
+    if (PropertyContainer* container = prop->getContainer()) {
+        enforceStructuralPropertyMutation(*container, newName);
+    }
 
     if (propIt->property->testStatus(Property::LockDynamic)) {
         FC_THROWM(Base::RuntimeError, "Property " << prop->getName() << " is locked");

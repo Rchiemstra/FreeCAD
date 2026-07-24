@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 
 #include <QCoreApplication>
 
@@ -35,6 +36,7 @@
 #include <App/ObjectIdentifier.h>
 #include <Base/Console.h>
 #include <Base/Tools.h>
+#include <Base/Uuid.h>
 #include <Base/Vector3D.h>
 
 #include <memory>
@@ -224,6 +226,123 @@ double SketchObject::getDatum(int ConstrId) const
         return 0.0;
     }
     return this->Constraints[ConstrId]->getValue();
+}
+
+std::pair<int, int> SketchObject::addDeltaPositionConstraint(int referenceGeoId,
+                                                             PointPos referencePosId,
+                                                             int targetGeoId,
+                                                             PointPos targetPosId,
+                                                             double deltaX,
+                                                             double deltaY)
+{
+    auto xConstraint = std::make_unique<Constraint>();
+    xConstraint->Type = DistanceX;
+    xConstraint->First = referenceGeoId;
+    xConstraint->FirstPos = referencePosId;
+    xConstraint->Second = targetGeoId;
+    xConstraint->SecondPos = targetPosId;
+    xConstraint->setValue(deltaX);
+
+    auto yConstraint = std::make_unique<Constraint>();
+    yConstraint->Type = DistanceY;
+    yConstraint->First = referenceGeoId;
+    yConstraint->FirstPos = referencePosId;
+    yConstraint->Second = targetGeoId;
+    yConstraint->SecondPos = targetPosId;
+    yConstraint->setValue(deltaY);
+
+    if (!evaluateConstraint(xConstraint.get()) || !evaluateConstraint(yConstraint.get())) {
+        return {-1, -1};
+    }
+
+    const std::string groupId = Base::Uuid::createUuid();
+    xConstraint->setDeltaPositionMetadata(groupId, "x");
+    yConstraint->setDeltaPositionMetadata(groupId, "y");
+
+    std::vector<Constraint*> constraints = {xConstraint.get(), yConstraint.get()};
+    const int lastIndex = addConstraints(constraints);
+
+    return {lastIndex - 1, lastIndex};
+}
+
+std::pair<int, int> SketchObject::getDeltaPositionConstraintPair(int ConstrId) const
+{
+    const std::vector<Constraint*>& vals = this->Constraints.getValues();
+
+    if (ConstrId < 0 || ConstrId >= int(vals.size())) {
+        return {-1, -1};
+    }
+
+    const Constraint* source = vals[ConstrId];
+    if (!source || !source->isDeltaPositionConstraint()) {
+        return {-1, -1};
+    }
+
+    const std::string groupId = source->getDeltaPositionId();
+    int xIndex = -1;
+    int yIndex = -1;
+
+    for (int i = 0; i < int(vals.size()); ++i) {
+        const Constraint* constraint = vals[i];
+        if (!constraint || constraint->getDeltaPositionId() != groupId) {
+            continue;
+        }
+
+        const std::string axis = constraint->getDeltaPositionAxis();
+        if (axis == "x" && constraint->Type == DistanceX) {
+            xIndex = i;
+        }
+        else if (axis == "y" && constraint->Type == DistanceY) {
+            yIndex = i;
+        }
+    }
+
+    return {xIndex, yIndex};
+}
+
+std::vector<std::pair<int, int>> SketchObject::getDeltaPositionConstraintPairs() const
+{
+    const std::vector<Constraint*>& vals = this->Constraints.getValues();
+
+    // Single pass: collect the x/y indices of every delta-position group, preserving the
+    // order in which each group is first encountered.
+    std::map<std::string, std::pair<int, int>> groups;  // groupId -> {xIndex, yIndex}
+    std::vector<std::string> order;
+
+    for (int i = 0; i < int(vals.size()); ++i) {
+        const Constraint* constraint = vals[i];
+        if (!constraint || !constraint->isDeltaPositionConstraint()) {
+            continue;
+        }
+
+        const std::string groupId = constraint->getDeltaPositionId();
+        if (groupId.empty()) {
+            continue;
+        }
+
+        auto [it, inserted] = groups.try_emplace(groupId, std::pair<int, int> {-1, -1});
+        if (inserted) {
+            order.push_back(groupId);
+        }
+
+        const std::string axis = constraint->getDeltaPositionAxis();
+        if (axis == "x" && constraint->Type == DistanceX) {
+            it->second.first = i;
+        }
+        else if (axis == "y" && constraint->Type == DistanceY) {
+            it->second.second = i;
+        }
+    }
+
+    std::vector<std::pair<int, int>> pairs;
+    for (const std::string& groupId : order) {
+        const auto& pair = groups[groupId];
+        if (pair.first >= 0 && pair.second >= 0) {
+            pairs.push_back(pair);
+        }
+    }
+
+    return pairs;
 }
 
 int SketchObject::setDriving(int ConstrId, bool isdriving)

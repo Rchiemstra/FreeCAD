@@ -121,6 +121,7 @@
 #include "DocumentObserver.h"
 #include "DocumentPy.h"
 #include "DocumentSettingsPy.h"
+#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
 #include "FeaturePython.h"
@@ -694,6 +695,9 @@ bool Application::closeDocument(const char* name)
     if (pos == DocMap.end()) // no such document
         return false;
 
+    enforceDocumentMutation(pos->second, MutationKind::Close);
+    DocumentMutationAuthority::instance().forgetDocument(*pos->second);
+
     Base::ConsoleRefreshDisabler disabler;
 
     // Trigger observers before removing the document from the internal map.
@@ -838,13 +842,11 @@ bool Application::isFineGrainedRecomputeEnabled()
 
 bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 {
-    if (DocumentObject* documentObject = req.resolveDocumentObject()) {
-        return documentObject->canRecomputeOnWorker();
-    }
-
-    Document* document = req.resolveDocument();
-    return !document || documentCanRecomputeOnWorker(*document);
+    // Live document objects and live documents must NEVER be recomputed on a raw background thread.
+    // Detached operations use GeometryJobManager and DocumentRecomputeCoordinator instead.
+    return false;
 }
+
 
 void Application::queueRecomputeRequest(RecomputeRequest req)
 {

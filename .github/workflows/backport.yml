@@ -1,9 +1,11 @@
 name: Backport merged pull request
 
 on:
-  pull_request_target:
-    types: [closed, labeled]
-    branches: [main, releases/*]
+  workflow_dispatch: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # pull_request_target:
+  #   types: [closed, labeled]
+  #   branches: [main, releases/*]
 
 permissions:
   contents: read

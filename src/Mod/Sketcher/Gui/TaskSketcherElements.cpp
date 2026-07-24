@@ -90,6 +90,8 @@ QT_TRANSLATE_NOOP("SketcherGui::ElementView", "Group Constraint");
 
 QT_TRANSLATE_NOOP("SketcherGui::ElementView", "Lock Position");
 
+QT_TRANSLATE_NOOP("SketcherGui::ElementView", "Delta Position");
+
 QT_TRANSLATE_NOOP("SketcherGui::ElementView", "Horizontal Dimension");
 
 QT_TRANSLATE_NOOP("SketcherGui::ElementView", "Vertical Dimension");
@@ -817,6 +819,11 @@ void ElementView::contextMenuEvent(QContextMenuEvent* event)
         "Constraint_Block", "Block Constraint", "Sketcher_ConstrainBlock", doBlockConstraint, true)
     CONTEXT_ITEM(
         "Constraint_Group", "Group constraint", "Sketcher_ConstrainGroup", doGroupConstraint, true)
+    CONTEXT_ITEM("Constraint_DeltaPosition",
+                 "Delta Position",
+                 "Sketcher_ConstrainDeltaPosition",
+                 doDeltaPositionConstraint,
+                 true)
     CONTEXT_ITEM("Constraint_HorizontalDistance",
                  "Horizontal Dimension",
                  "Sketcher_ConstrainDistanceX",
@@ -936,6 +943,7 @@ CONTEXT_MEMBER_DEF("Sketcher_ConstrainSymmetric", doSymmetricConstraint)
 CONTEXT_MEMBER_DEF("Sketcher_ConstrainBlock", doBlockConstraint)
 CONTEXT_MEMBER_DEF("Sketcher_ConstrainGroup", doGroupConstraint)
 
+CONTEXT_MEMBER_DEF("Sketcher_ConstrainDeltaPosition", doDeltaPositionConstraint)
 CONTEXT_MEMBER_DEF("Sketcher_ConstrainDistanceX", doHorizontalDistance)
 CONTEXT_MEMBER_DEF("Sketcher_ConstrainDistanceY", doVerticalDistance)
 CONTEXT_MEMBER_DEF("Sketcher_ConstrainDistance", doLengthConstraint)

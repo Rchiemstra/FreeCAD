@@ -777,6 +777,182 @@ class TopoShapeTest(unittest.TestCase, TopoShapeAssertions):
         if removed.ElementMapVersion != "":  # Should be '4' as of Mar 2023.
             self.assertEqual(removed.ElementMapSize, 38)
 
+    # --- removeSplitter() input-corruption regression -------------------------
+    #
+    # removeSplitter() used to corrupt the shape it was called on. ModelRefine's
+    # fixFace() runs ShapeFix_Face on the face it rebuilds, and ShapeFix writes the
+    # pcurves it computes straight into that face's boundary edges. Those edges belong
+    # to the caller: FaceUniter only holds a handle to the shell, so the TopoDS_TShape
+    # graph is shared. As the rebuilt face was handed the *input face's own* surface,
+    # and a pcurve is stored per (edge, surface, location), ShapeFix overwrote the very
+    # records the input's own faces are parametrised by. A half cylinder's two 180
+    # degree faces silently became the full 360 degree cylinder and the caller's solid
+    # turned invalid -- even though the returned shape was fine.
+    #
+    # A cylinder cut in half is the smallest shape that triggers it: the cut leaves the
+    # curved surface carried by two faces, which refine unites into one.
+
+    def _splitCylinder(self):
+        cyl = Part.makeCylinder(15, 60)
+        knife = Part.makeBox(500, 500, 500, App.Vector(-500, -250, -250))
+        return cyl.cut(knife)
+
+    def _splitTube(self):
+        """A second shape through the same code path, with an inner bore."""
+        tube = Part.makeCylinder(30, 20).cut(
+            Part.makeCylinder(15, 60, App.Vector(0, 0, -20))
+        )
+        knife = Part.makeBox(500, 500, 500, App.Vector(-500, -250, -250))
+        return tube.cut(knife)
+
+    @staticmethod
+    def _parametrisation(shape, samples=7):
+        """Sample every face's pcurves in UV space.
+
+        For each face, and each edge of that face, this walks the 2d curve the edge is
+        parametrised by *on that face's surface* -- i.e. exactly the BRep_CurveOnSurface
+        record keyed by (edge, surface, location) that ShapeFix_Face was overwriting.
+        Comparing sampled points rather than object reprs is what makes the overwrite
+        detectable: a rewritten pcurve maps the same edge to different UV coordinates.
+        """
+        parametrisation = []
+        for face in shape.Faces:
+            for edge in face.Edges:
+                curve = face.curveOnSurface(edge)
+                if curve is None:
+                    parametrisation.append(None)
+                    continue
+                curve2d, first, last = curve
+                span = last - first
+                points = []
+                for step in range(samples):
+                    param = first + span * step / (samples - 1)
+                    point = curve2d.value(param)
+                    points.append((round(point.x, 7), round(point.y, 7)))
+                parametrisation.append(points)
+        return parametrisation
+
+    def _geometry(self, shape):
+        """Everything about a shape that refining it must not change."""
+        bb = shape.BoundBox
+        return {
+            "valid": shape.isValid(),
+            "volume": round(shape.Volume, 7),
+            "area": round(shape.Area, 7),
+            "bbox": tuple(
+                round(v, 7)
+                for v in (bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax)
+            ),
+            "solids": len(shape.Solids),
+            "faces": len(shape.Faces),
+            "edges": len(shape.Edges),
+            "vertexes": len(shape.Vertexes),
+        }
+
+    def testRemoveSplitterDoesNotMutateInput(self):
+        """removeSplitter() must not touch the shape it is called on."""
+        for name, build in (
+            ("split cylinder", self._splitCylinder),
+            ("split tube", self._splitTube),
+        ):
+            with self.subTest(shape=name):
+                source = build()
+                self.assertTrue(source.isValid(), "test fixture must start out valid")
+                before = self._geometry(source)
+
+                source.removeSplitter()
+
+                # A volume-only check is not enough: assert geometry *and* topology.
+                self.assertEqual(
+                    self._geometry(source),
+                    before,
+                    "removeSplitter() mutated the shape it was called on",
+                )
+
+    def testRemoveSplitterPreservesInputPCurves(self):
+        """The input's own (edge, surface) pcurve records must survive intact.
+
+        This is the actual corruption -- ShapeFix_Face overwriting those records --
+        rather than the shape's measurements merely drifting. Refining may *add* records
+        (the rebuilt face keeps sharing these edges and needs pcurves on its own
+        surface), but it must never rewrite one the input was already parametrised by.
+        """
+        source = self._splitCylinder()
+        before = self._parametrisation(source)
+
+        source.removeSplitter()
+
+        self.assertEqual(
+            self._parametrisation(source),
+            before,
+            "removeSplitter() overwrote the pcurves of the shape it was called on",
+        )
+
+    def testRemoveSplitterReturnsEquivalentSolid(self):
+        """The returned shape must be the same solid, only with fewer faces.
+
+        Checked against the input as it was *before* the call, so that this stands on
+        its own even if the input contract is broken.
+        """
+        source = self._splitCylinder()
+        before = self._geometry(source)
+
+        result = source.removeSplitter()
+
+        self.assertFalse(result.isNull())
+        self.assertTrue(result.isValid())
+        self.assertEqual(len(result.Solids), before["solids"])
+        # Refining removes splitter faces; it must not add or remove material.
+        self.assertAlmostEqual(result.Volume, before["volume"], places=4)
+        rbb = result.BoundBox
+        got = tuple(
+            round(v, 7)
+            for v in (rbb.XMin, rbb.YMin, rbb.ZMin, rbb.XMax, rbb.YMax, rbb.ZMax)
+        )
+        for value, want in zip(got, before["bbox"]):
+            self.assertAlmostEqual(value, want, places=4)
+        # The two half-cylinder faces are united into one.
+        self.assertLess(len(result.Faces), before["faces"])
+
+    def testRemoveSplitterKeepsSharedEdgeIdentity(self):
+        """The refined shape must keep sharing the input's edges.
+
+        Topological naming depends on it: GenericShapeMapper::init() re-attaches
+        element names by looking the result's edges back up in the source shape. A fix
+        that copied the edges to protect the input would silently break naming, so
+        pin the identity down here.
+        """
+        source = self._splitCylinder()
+
+        result = source.removeSplitter()
+
+        shared = sum(
+            1
+            for edge in result.Edges
+            if any(edge.isSame(original) for original in source.Edges)
+        )
+        self.assertGreater(shared, 0, "refined shape shares no edges with its input")
+
+    def testRemoveSplitterIsRepeatable(self):
+        """Refining the same shape repeatedly keeps giving the same answer.
+
+        Note: each call appends one pcurve record per boundary edge to the input, on a
+        surface private to that call, so the input's serialized BRep does grow. That is
+        additive -- the records above prove the originals are untouched and the shape
+        stays valid -- but it is why this asserts on geometry rather than on the BRep.
+        """
+        source = self._splitCylinder()
+        before = self._geometry(source)
+
+        first = source.removeSplitter()
+        for _ in range(2):
+            again = source.removeSplitter()
+            self.assertTrue(again.isValid())
+            self.assertAlmostEqual(again.Volume, first.Volume, places=4)
+            self.assertEqual(len(again.Faces), len(first.Faces))
+            # and the input is no more disturbed by the third call than by the first
+            self.assertEqual(self._geometry(source), before)
+
     def testTopoShapeCompSolid(self):
         # Act
         compSolid = Part.CompSolid([self.doc.Box1.Shape, self.doc.Box2.Shape])  # list of subobjects

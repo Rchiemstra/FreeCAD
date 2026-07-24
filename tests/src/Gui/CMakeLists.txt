@@ -7,12 +7,16 @@ add_subdirectory(propertyeditor)
 add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
+        DocumentRecovery.cpp
         FileDialog.cpp
         StyleParameters/StyleParametersApplicationTest.cpp
         StyleParameters/ParserTest.cpp
         StyleParameters/ParameterManagerTest.cpp
         StyleParameters/YamlParameterSourceTest.cpp
         InputHintTest.cpp
+        MainWindow.cpp
+        View3DInventorViewer.cpp
+        WindowLayout.cpp
         SelectionTest.cpp
 )
 

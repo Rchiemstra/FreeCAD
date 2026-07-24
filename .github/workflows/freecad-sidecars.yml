@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+name: FreeCAD Sidecars
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.FCStd"
+      - "**/*.fcstd"
+      - "**/*.FCStd.git.json"
+      - "**/*.fcstd.git.json"
+      - "tools/freecad_git/**"
+      - ".freecad-git.toml"
+      - ".github/workflows/freecad-sidecars.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.FCStd"
+      - "**/*.fcstd"
+      - "**/*.FCStd.git.json"
+      - "**/*.fcstd.git.json"
+      - "tools/freecad_git/**"
+      - ".freecad-git.toml"
+      - ".github/workflows/freecad-sidecars.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-sidecars:
+    name: Verify Git sidecars
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/freecad_git
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest -ra --tb=short
+
+      - name: Verify tracked sidecars
+        working-directory: ${{ github.workspace }}
+        run: |
+          cd tools/freecad_git
+          pip install -e .
+          freecad-git check --all || {
+            echo "::error::Sidecar verification failed. Regenerate with: freecad-git export --all"
+            exit 1
+          }
+
+      - name: Validate committed sidecars
+        working-directory: ${{ github.workspace }}
+        run: |
+          find . -name "*.FCStd.git.json" -o -name "*.fcstd.git.json" | while read -r f; do
+            freecad-git validate "$f" || exit 1
+          done

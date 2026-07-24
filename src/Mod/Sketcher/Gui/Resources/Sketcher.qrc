@@ -9,6 +9,8 @@
         <file>icons/constraints/Constraint_Block.svg</file>
         <file>icons/constraints/Constraint_Coincident.svg</file>
         <file>icons/constraints/Constraint_Concentric.svg</file>
+        <file>icons/constraints/Constraint_DeltaPosition.svg</file>
+        <file>icons/constraints/Constraint_DeltaPosition_Driven.svg</file>
         <file>icons/constraints/Constraint_Dimension.svg</file>
         <file>icons/constraints/Constraint_Dimension_Driven.svg</file>
         <file>icons/constraints/Constraint_Diameter.svg</file>

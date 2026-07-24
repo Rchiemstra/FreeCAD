@@ -78,6 +78,7 @@ protected Q_SLOTS:
     void doPointOnObjectConstraint();
     void doVerticalDistance();
     void doHorizontalDistance();
+    void doDeltaPositionConstraint();
     void doParallelConstraint();
     void doPerpendicularConstraint();
     void doTangentConstraint();

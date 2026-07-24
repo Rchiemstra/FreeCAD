@@ -835,7 +835,7 @@ class Joint:
 
         self.updateJCSPlacements(joint)
 
-    def setJointConnectors(self, joint, refs):
+    def setJointConnectors(self, joint, refs, solve=True, presolve=True):
         # current selection is a vector of strings like "Assembly.Assembly1.Assembly2.Body.Pad.Edge16" including both what selection return as obj_name and obj_sub
         assembly = self.getAssembly(joint)
         isAssembly = assembly.Type == "Assembly"
@@ -852,12 +852,12 @@ class Joint:
 
             self.ensureUnconnectedIsSecondRef(joint)
 
-            if joint.JointType in JointUsingPreSolve:
+            if presolve and joint.JointType in JointUsingPreSolve:
                 self.preSolve(joint)
-            elif joint.JointType in JointParallelForbidden:
+            elif presolve and joint.JointType in JointParallelForbidden:
                 self.preventParallel(joint)
 
-            if isAssembly:
+            if isAssembly and solve:
                 solveIfAllowed(assembly, True)
             else:
                 self.updateJCSPlacements(joint)
@@ -865,7 +865,7 @@ class Joint:
         else:
             joint.Reference2 = None
             joint.Placement2 = App.Placement()
-            if isAssembly:
+            if isAssembly and solve:
                 assembly.undoSolve()
             self.undoPreSolve(joint)
 
@@ -1216,7 +1216,7 @@ class ViewProviderJoint:
 
         assembly = self.app_obj.Proxy.getAssembly(self.app_obj)
         # Assuming Reference1 corresponds to the first part link
-        if hasattr(self.app_obj, "Reference1"):
+        if hasattr(self.app_obj, "Reference1") and assembly is not None:
             part = UtilsAssembly.getMovingPart(self.app_obj.Reference1)
             if part is not None and not assembly.isPartConnected(part):
                 overlays[Gui.IconPosition.BottomLeft] = "Part_Detached"

@@ -37,6 +37,7 @@
 #include <QOpenGLWidget>
 #include <QTextStream>
 #include <QStatusBar>
+#include <QTimer>
 #include <Inventor/actions/SoSearchAction.h>
 #include <Inventor/nodes/SoSeparator.h>
 
@@ -70,6 +71,7 @@
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderDocumentObjectGroup.h"
 #include "WaitCursor.h"
+#include "WindowLayout.h"
 
 
 FC_LOG_LEVEL_INIT("Gui", true, true)
@@ -130,7 +132,7 @@ struct DocumentP
     Connection connectStartLoadDocument;
     Connection connectFinishLoadDocument;
     Connection connectShowHidden;
-    Connection connectFinishRestoreDocument;
+    Connection connectFinishSaveDocument;
     Connection connectFinishRestoreObject;
     Connection connectExportObjects;
     Connection connectImportObjects;
@@ -479,6 +481,9 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectFinishLoadDocument = App::GetApplication().signalFinishRestoreDocument.connect(
         std::bind(&Gui::Document::slotFinishRestoreDocument, this, sp::_1)
     );
+    d->connectFinishSaveDocument = App::GetApplication().signalFinishSaveDocument.connect(
+        std::bind(&Gui::Document::slotFinishSaveDocument, this, sp::_1, sp::_2)
+    );
     d->connectShowHidden = App::GetApplication().signalShowHidden.connect(
         std::bind(&Gui::Document::slotShowHidden, this, sp::_1)
     );
@@ -556,6 +561,7 @@ Document::~Document()
     d->connectRestDocument.disconnect();
     d->connectStartLoadDocument.disconnect();
     d->connectFinishLoadDocument.disconnect();
+    d->connectFinishSaveDocument.disconnect();
     d->connectShowHidden.disconnect();
     d->connectFinishRestoreObject.disconnect();
     d->connectExportObjects.disconnect();
@@ -1083,6 +1089,8 @@ void Document::slotDeletedObject(const App::DocumentObject& Obj)
 
 void Document::beforeDelete()
 {
+    WindowLayout::save(*this, d->_pcDocument->FileName.getValue());
+
     Application::Instance->unsetEditDocumentIf([this](Gui::Document* editDoc) {
         auto vp = freecad_cast<ViewProviderDocumentObject*>(editDoc->d->_editViewProvider);
         auto vpp = freecad_cast<ViewProviderDocumentObject*>(editDoc->d->_editViewProviderParent);
@@ -2052,6 +2060,28 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
 
     // reset modified flag
     setModified(doc.testStatus(App::Document::LinkStampChanged));
+
+    const std::string documentName = doc.getName();
+    QTimer::singleShot(0, [documentName]() {
+        if (!Gui::Application::Instance || !Gui::getMainWindow()) {
+            return;
+        }
+        auto* guiDocument = Gui::Application::Instance->getDocument(documentName.c_str());
+        if (!guiDocument || guiDocument->getMDIViews().empty()) {
+            return;
+        }
+        WindowLayout::restore(*guiDocument);
+    });
+}
+
+void Document::slotFinishSaveDocument(
+    const App::Document& doc,
+    const std::string& fileName
+)
+{
+    if (d->_pcDocument == &doc) {
+        WindowLayout::save(*this, fileName);
+    }
 }
 
 void Document::slotShowHidden(const App::Document& doc)
@@ -2682,7 +2712,7 @@ MDIView* Document::getActiveView() const
     // check whether the active view is part of this document
     bool ok = false;
     for (const auto& mdi : mdis) {
-        if (mdi == active) {
+        if (mdi == active && !mdi->isDeleting()) {
             ok = true;
             break;
         }
@@ -2695,6 +2725,12 @@ MDIView* Document::getActiveView() const
     // the active view is not part of this document, just use the last view
     const auto& windows = Gui::getMainWindow()->windows();
     for (auto rit = mdis.rbegin(); rit != mdis.rend(); ++rit) {
+        if ((*rit)->isDeleting()) {
+            continue;
+        }
+        if (auto* view3d = dynamic_cast<View3DInventor*>(*rit); view3d && !view3d->getViewer()) {
+            continue;
+        }
         // Some view is removed from window list for some reason, e.g. TechDraw
         // hidden page has view but not in the list. By right, the view will
         // self delete, but not the case for TechDraw, especially during

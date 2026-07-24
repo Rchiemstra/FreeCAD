@@ -88,6 +88,10 @@ public:
     bool canClose() override;
     /// delete itself
     void deleteSelf() override;
+    bool isDeleting() const
+    {
+        return _isDeleting;
+    }
     PyObject* getPyObject() override;
     /** @name Printing */
     //@{
@@ -130,6 +134,10 @@ public:
      * QWidget::showFullScreen ().
      */
     virtual void setCurrentViewMode(ViewMode mode);
+    /** Change a view's mode, cloning it when required to avoid Qt/OpenGL reparenting issues.
+     * Returns the surviving view, which can differ from \a view when cloning succeeds.
+     */
+    static MDIView* changeViewMode(MDIView* view, ViewMode mode);
     ViewMode currentViewMode() const
     {
         return currentMode;
@@ -175,6 +183,12 @@ public:
         return false;
     }
 
+    /// The document object this view is dedicated to, or nullptr for general document views.
+    virtual const App::DocumentObject* getOwnerObject() const
+    {
+        return nullptr;
+    }
+
 public Q_SLOTS:
     virtual void setOverrideCursor(const QCursor&);
     virtual void restoreOverrideCursor();
@@ -190,6 +204,11 @@ protected Q_SLOTS:
     virtual void windowStateChanged(QWidget*);
 
 protected:
+    void markDeleting()
+    {
+        _isDeleting = true;
+    }
+
     void closeEvent(QCloseEvent* e) override;
     /** \internal */
     void changeEvent(QEvent* e) override;
@@ -204,6 +223,7 @@ protected:
 private:
     ViewMode currentMode;
     Qt::WindowStates wstate;
+    bool _isDeleting {false};
     // list of active objects of this view
     ActiveObjectList ActiveObjects;
     using Connection = fastsignals::connection;

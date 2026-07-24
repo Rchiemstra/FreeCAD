@@ -1331,9 +1331,15 @@ TopoShape Feature::getTopoShape(
         // processing here.
         if (subname && *subname && Data::findElementName(subname) == subname) {
             TopoShape ts = static_cast<const Part::Feature*>(obj)->Shape.getShape();
-            if (!options.testFlag(ShapeOption::Transform)) {
-                ts.setShape(ts.getShape().Located(TopLoc_Location()), false);
-            }
+            // Shape.getShape() already carries the object's Placement baked into its
+            // TopLoc_Location (Feature::onChanged keeps the two in sync). Per the "always
+            // return shape without top level transformation" invariant documented above,
+            // strip that location unconditionally here -- the Transform-conditional block
+            // below is the single place that re-applies Placement. Previously this only
+            // stripped when Transform was NOT requested, so the Transform-requested case
+            // (the common one, e.g. RuledSurface::execute()) applied Placement twice: once
+            // via the un-stripped Location and again via the explicit transformShape() call.
+            ts.setShape(ts.getShape().Located(TopLoc_Location()), false);
             if (options.testFlag(ShapeOption::NoElementMap)) {
                 ts = ts.getSubShape(subname, true);
             }
@@ -1344,8 +1350,15 @@ TopoShape Feature::getTopoShape(
                 if (powner) {
                     *powner = const_cast<App::DocumentObject*>(obj);
                 }
-                if (pmat && options.testFlag(ShapeOption::Transform)) {
-                    *pmat = static_cast<const Part::Feature*>(obj)->Placement.getValue().toMatrix();
+                if (options.testFlag(ShapeOption::Transform)) {
+                    auto mat =
+                        static_cast<const Part::Feature*>(obj)->Placement.getValue().toMatrix();
+                    if (pmat) {
+                        *pmat = mat;
+                    }
+                    else {
+                        ts.transformShape(mat, false, true);
+                    }
                 }
                 return ts;
             }

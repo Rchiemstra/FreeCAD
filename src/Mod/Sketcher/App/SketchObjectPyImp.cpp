@@ -50,6 +50,43 @@
 
 using namespace Sketcher;
 
+namespace
+{
+bool getLengthDatum(PyObject* object, double& value)
+{
+    if (PyObject_TypeCheck(object, &(Base::QuantityPy::Type))) {
+        Base::Quantity quantity = *(static_cast<Base::QuantityPy*>(object)->getQuantityPtr());
+        if (!quantity.isDimensionlessOrUnit(Base::Unit::Length)) {
+            PyErr_SetString(PyExc_ValueError, "Delta Position values must be lengths");
+            return false;
+        }
+        value = quantity.getValue();
+        return true;
+    }
+
+    if (PyNumber_Check(object)) {
+        PyObject* number = PyNumber_Float(object);
+        if (!number) {
+            return false;
+        }
+        value = PyFloat_AsDouble(number);
+        Py_DECREF(number);
+        return !PyErr_Occurred();
+    }
+
+    PyErr_SetString(PyExc_TypeError, "Delta Position values must be numbers or quantities");
+    return false;
+}
+
+PyObject* buildIntPair(int first, int second)
+{
+    Py::Tuple tuple(2);
+    tuple.setItem(0, Py::Long(first));
+    tuple.setItem(1, Py::Long(second));
+    return Py::new_reference_to(tuple);
+}
+}  // namespace
+
 // returns a string which represents the object e.g. when printed in python
 std::string SketchObjectPy::representation() const
 {
@@ -403,6 +440,19 @@ PyObject* SketchObjectPy::addConstraint(PyObject* args)
             this->getSketchObjectPtr()->setUpSketch();
             this->getSketchObjectPtr()->Constraints.touch();  // update solver information
         }
+        // Malformed constraints (e.g. a PointPos omitted for a constraint type/geometry
+        // combination that requires one, such as DistanceX on a non-Line geometry) are
+        // structurally invalid and can never become valid by adding more constraints, unlike
+        // redundant/conflicting/over-constrained sketches. Previously this was silently
+        // accepted here and only surfaced as an opaque "malformed constraints" document error
+        // on the next recompute. Report it immediately, with the offending constraint index.
+        if (this->getSketchObjectPtr()->getLastHasMalformedConstraints()) {
+            std::string msg = "Constraint added but the sketch is now malformed. ";
+            Sketcher::SketchObject::appendMalformedConstraintsMsg(
+                this->getSketchObjectPtr()->getLastMalformedConstraints(), msg);
+            PyErr_SetString(PyExc_ValueError, msg.c_str());
+            return nullptr;
+        }
         return Py::new_reference_to(Py::Long(ret));
     }
     else if (PyObject_TypeCheck(pcObj, &(PyList_Type)) || PyObject_TypeCheck(pcObj, &(PyTuple_Type))) {
@@ -440,6 +490,80 @@ PyObject* SketchObjectPy::addConstraint(PyObject* args)
     std::string error = std::string("type must be 'Constraint' or list of 'Constraint', not ");
     error += pcObj->ob_type->tp_name;
     throw Py::TypeError(error);
+}
+
+PyObject* SketchObjectPy::addDeltaPositionConstraint(PyObject* args)
+{
+    int referenceGeoId;
+    int referencePosId;
+    int targetGeoId;
+    int targetPosId;
+    PyObject* deltaXObj;
+    PyObject* deltaYObj;
+
+    if (!PyArg_ParseTuple(args,
+                          "iiiiOO",
+                          &referenceGeoId,
+                          &referencePosId,
+                          &targetGeoId,
+                          &targetPosId,
+                          &deltaXObj,
+                          &deltaYObj)) {
+        return nullptr;
+    }
+
+    double deltaX = 0.0;
+    double deltaY = 0.0;
+    if (!getLengthDatum(deltaXObj, deltaX) || !getLengthDatum(deltaYObj, deltaY)) {
+        return nullptr;
+    }
+
+    auto pair = this->getSketchObjectPtr()->addDeltaPositionConstraint(
+        referenceGeoId,
+        static_cast<Sketcher::PointPos>(referencePosId),
+        targetGeoId,
+        static_cast<Sketcher::PointPos>(targetPosId),
+        deltaX,
+        deltaY
+    );
+
+    if (pair.first < 0 || pair.second < 0) {
+        PyErr_SetString(PyExc_IndexError, "Delta Position constraint has invalid indexes");
+        return nullptr;
+    }
+
+    return buildIntPair(pair.first, pair.second);
+}
+
+PyObject* SketchObjectPy::getDeltaPositionConstraintPairs(PyObject* args) const
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+
+    const auto pairs = this->getSketchObjectPtr()->getDeltaPositionConstraintPairs();
+    Py::Tuple tuple(pairs.size());
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        tuple.setItem(i, Py::Object(buildIntPair(pairs[i].first, pairs[i].second), true));
+    }
+    return Py::new_reference_to(tuple);
+}
+
+PyObject* SketchObjectPy::getDeltaPositionConstraintPair(PyObject* args) const
+{
+    int constraintIndex;
+    if (!PyArg_ParseTuple(args, "i", &constraintIndex)) {
+        return nullptr;
+    }
+
+    const auto pair = this->getSketchObjectPtr()->getDeltaPositionConstraintPair(constraintIndex);
+    if (pair.first < 0 || pair.second < 0) {
+        PyErr_SetString(PyExc_IndexError,
+                        "Constraint index does not belong to a Delta Position constraint");
+        return nullptr;
+    }
+
+    return buildIntPair(pair.first, pair.second);
 }
 
 PyObject* SketchObjectPy::delConstraint(PyObject* args)
@@ -662,14 +786,15 @@ PyObject* SketchObjectPy::addExternal(PyObject* args)
     }
 
     // add the external
-    if (skObj->addExternal(Obj, SubName, isDefining, isIntersection) < 0) {
+    int extIndex = skObj->addExternal(Obj, SubName, isDefining, isIntersection);
+    if (extIndex < 0) {
         std::stringstream str;
         str << "Not able to add external shape element " << SubName;
         PyErr_SetString(PyExc_ValueError, str.str().c_str());
         return nullptr;
     }
 
-    Py_Return;
+    return PyLong_FromLong(static_cast<long>(Sketcher::GeoEnum::RefExt) - extIndex);
 }
 
 PyObject* SketchObjectPy::delExternal(PyObject* args)

@@ -29,6 +29,7 @@
 
 #include <App/Document.h>
 #include <App/Datums.h>
+#include <App/GeoFeatureGroupExtension.h>
 #include <App/ObjectIdentifier.h>
 #include <App/Expression.h>
 #include <App/ExpressionParser.h>
@@ -87,6 +88,21 @@ void restoreAttacherEngine(AttachExtension* self)
     if (strcmp(mode, type) != 0) {
         self->AttacherEngine.setValue(classToEnum(type));
     }
+}
+
+Base::Placement parentGroupPlacement(const App::DocumentObject* obj)
+{
+    auto* group = App::GeoFeatureGroupExtension::getGroupOfObject(obj);
+    if (!group) {
+        return {};
+    }
+
+    auto* groupExtension = group->getExtensionByType<App::GeoFeatureGroupExtension>();
+    if (!groupExtension) {
+        return {};
+    }
+
+    return groupExtension->globalGroupPlacement();
 }
 }  // namespace
 
@@ -377,6 +393,7 @@ bool AttachExtension::positionBySupport()
         subChanged = false;
         _props.attacher->setOffset(AttachmentOffset.getValue() * basePlacement.inverse());
         auto placement = _props.attacher->calculateAttachedPlacement(plaOriginal, &subChanged);
+        placement = parentGroupPlacement(getExtendedObject()).inverse() * placement;
         if (subChanged) {
             Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
                 App::Property::User3,

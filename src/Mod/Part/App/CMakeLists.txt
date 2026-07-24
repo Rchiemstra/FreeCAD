@@ -246,8 +246,22 @@ SET(Features_SRCS
     PrismExtension.h
     VectorAdapter.cpp
     VectorAdapter.h
+    TopoShapeArchive.cpp
+    TopoShapeArchive.h
+    GeometryWorker.cpp
+    GeometryWorker.h
+    GeometryWorkerRegistry.cpp
+    GeometryWorkerRegistry.h
+    BooleanGeometryOperation.cpp
+    BooleanGeometryOperation.h
+    FilletGeometryOperation.cpp
+    FilletGeometryOperation.h
+    SweepGeometryOperation.cpp
+    SweepGeometryOperation.h
 )
 SOURCE_GROUP("Features" FILES ${Features_SRCS})
+
+
 
 SET(Properties_SRCS
     PropertyTopoShape.cpp

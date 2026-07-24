@@ -152,6 +152,8 @@ SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
     Document.cpp
+    DocumentMutationAuthority.cpp
+    MutationCapability.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
     DepEdgePyImp.cpp
@@ -205,12 +207,19 @@ SET(Document_CPP_SRCS
     LinkBaseExtensionPyImp.cpp
     VarSet.cpp
     License.h
+    GeometryJob.cpp
+    GeometryJobManager.cpp
+    DocumentRecomputeCoordinator.cpp
+    DetachedDocumentArchive.cpp
 )
 
 SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
     Document.h
+    DocumentMutationAuthority.h
+    MutationCapability.h
+    MutationKind.h
     RecoverySnapshot.h
     DepEdge.h
     DocumentObject.h
@@ -253,6 +262,10 @@ SET(Document_HPP_SRCS
     TextDocument.h
     VarSet.h
     Link.h
+    GeometryJob.h
+    GeometryJobManager.h
+    DocumentRecomputeCoordinator.h
+    DetachedDocumentArchive.h
 )
 SET(Document_SRCS
     ${Document_CPP_SRCS}

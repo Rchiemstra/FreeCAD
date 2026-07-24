@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="App::Link" name="AbsLink"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="AbsLink">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="AbsLink"/>
+        </Property>
+        <Property name="LinkedObject" type="App::PropertyXLink">
+          <XLink file="C:/Users/dev/secret/model.FCStd" doc="model" obj="Part"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

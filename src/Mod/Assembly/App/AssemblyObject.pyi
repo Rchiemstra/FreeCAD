@@ -154,6 +154,11 @@ class AssemblyObject(Part):
         ...
 
     @constmethod
+    def exportAsWebotsPROTO(self, file_name: str, /) -> None:
+        """Export this assembly as a self-contained Webots R2025a PROTO file."""
+        ...
+
+    @constmethod
     def getDownstreamParts(
         self, start_part: DocumentObject, joint_to_ignore: DocumentObject, /
     ) -> list[DocumentObject]:

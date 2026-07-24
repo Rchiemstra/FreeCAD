@@ -29,9 +29,13 @@ ParGrp.SetString("HelpIndex", "Assembly/Help/index.html")
 ParGrp.SetString("WorkBenchName", "Assembly")
 ParGrp.SetString("WorkBenchModule", "AssemblyWorkbench.py")
 
+translate = FreeCAD.Qt.translate
+
 FreeCAD.__unit_test__ += ["TestAssemblyWorkbench"]
 
 # This adds a custom import type to the FreeCAD import dialog.
 # The correct format for assembly interoperability is a research topic. ASMT is a placeholder.
 FreeCAD.addImportType("Assembly Format (*.asmt *.ASMT)", "AssemblyImport")
-# FreeCAD.addExportType()
+FreeCAD.addTranslatableExportType(
+    translate("FileFormat", "Webots PROTO"), ["proto"], "WebotsExport"
+)

@@ -33,6 +33,7 @@ set(Assembly_Scripts
     JointObject.py
     Preferences.py
     AssemblyImport.py
+    WebotsExport.py
     SoSwitchMarker.py
     UtilsAssembly.py
 )
@@ -50,6 +51,7 @@ INSTALL(
 
 SET(AssemblyScripts_SRCS
     Assembly/__init__.py
+    Assembly/api.py
 )
 
 
@@ -57,6 +59,9 @@ SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestCore.py
     AssemblyTests/TestCommandInsertLink.py
+    AssemblyTests/TestCrossBodyDatumStaleness.py
+    AssemblyTests/TestOverlayIconsAndOrigin.py
+    AssemblyTests/TestWebotsExport.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
 )

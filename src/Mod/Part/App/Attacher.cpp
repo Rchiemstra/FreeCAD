@@ -65,6 +65,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/Datums.h>
+#include <App/GeoFeatureGroupExtension.h>
 #include <Base/Console.h>
 
 #include "Attacher.h"
@@ -203,6 +204,31 @@ Base::Rotation rotationAlignedToNormal(
     matrix.setCol(2, normal);
 
     return {matrix};
+}
+
+Base::Placement parentGroupPlacement(const App::DocumentObject* obj)
+{
+    auto* group = App::GeoFeatureGroupExtension::getGroupOfObject(obj);
+    if (!group) {
+        return {};
+    }
+
+    auto* groupExtension = group->getExtensionByType<App::GeoFeatureGroupExtension>();
+    if (!groupExtension) {
+        return {};
+    }
+
+    return groupExtension->globalGroupPlacement();
+}
+
+Base::Placement supportPlacement(
+    App::DocumentObject* rootObj,
+    App::DocumentObject* targetObj,
+    const std::string& sub
+)
+{
+    return parentGroupPlacement(rootObj)
+        * App::GeoFeature::getGlobalPlacement(targetObj, rootObj, sub);
 }
 
 }  // namespace
@@ -1069,6 +1095,10 @@ TopoShape AttachEngine::extractSubShape(App::DocumentObject* obj, const std::str
         );
     }
 
+    if (!shape.isNull()) {
+        shape.transformShape(parentGroupPlacement(obj).toMatrix(), false, true);
+    }
+
     return shape;
 }
 
@@ -1344,7 +1374,7 @@ Base::Placement AttachEngine3D::_calculateAttachedPlacement(
 
     // common stuff for all map modes
     App::DocumentObject* subObj = objs[0]->getSubObject(subs[0].c_str());
-    Base::Placement Place = App::GeoFeature::getGlobalPlacement(subObj, objs[0], subs[0]);
+    Base::Placement Place = supportPlacement(objs[0], subObj, subs[0]);
     Base::Vector3d vec = Place.getPosition();
     gp_Pnt refOrg = gp_Pnt(vec.x, vec.y, vec.z);  // origin of linked object
 
@@ -2503,7 +2533,7 @@ Base::Placement AttachEngineLine::_calculateAttachedPlacement(
 
         // common stuff for all map modes
         App::DocumentObject* subObj = objs[0]->getSubObject(subs[0].c_str());
-        Base::Placement Place = App::GeoFeature::getGlobalPlacement(subObj, objs[0], subs[0]);
+        Base::Placement Place = supportPlacement(objs[0], subObj, subs[0]);
         Base::Vector3d vec = Place.getPosition();
         gp_Pnt refOrg = gp_Pnt(vec.x, vec.y, vec.z);  // origin of linked object
 

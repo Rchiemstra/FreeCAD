@@ -520,6 +520,7 @@ SET(Dialog_CPP_SRCS
     TaskElementColors.cpp
     Dialogs/DlgObjectSelection.cpp
     Dialogs/DlgAddProperty.cpp
+    Dialogs/DlgMutationTakeover.cpp
     VectorListEditor.cpp
 )
 
@@ -560,9 +561,11 @@ SET(Dialog_HPP_SRCS
     DownloadItem.h
     DownloadManager.h
     DocumentRecovery.h
+    DocumentRecoveryInternal.h
     TaskElementColors.h
     Dialogs/DlgObjectSelection.h
     Dialogs/DlgAddProperty.h
+    Dialogs/DlgMutationTakeover.h
     VectorListEditor.h
 )
 
@@ -911,6 +914,7 @@ SET(View3D_SRCS
     View3DInventor.h
     View3DInventorSelection.h
     View3DInventorViewer.h
+    View3DInventorViewerInternal.h
     View3DPy.h
     View3DInventorRiftViewer.h
     View3DSettings.h
@@ -1161,11 +1165,14 @@ SET(Widget_CPP_SRCS
     WidgetFactory.cpp
     Widgets.cpp
     Window.cpp
+    WindowLayout.cpp
     WorkbenchSelector.cpp
     ElideLabel.cpp
     ElideCheckBox.cpp
     FontScaledSVG.cpp
     SplitButton.cpp
+    GeometryWorkerProcess.cpp
+    GeometryProgressController.cpp
 )
 if(WIN32)
     SET(Widget_CPP_SRCS
@@ -1178,6 +1185,7 @@ SET(Widget_HPP_SRCS
     FileDialog.h
     FileDialogInternal.h
     MainWindow.h
+    MainWindowInternal.h
     MainWindowPy.h
     NotificationBox.h
     NotificationArea.h
@@ -1194,12 +1202,17 @@ SET(Widget_HPP_SRCS
     WidgetFactory.h
     Widgets.h
     Window.h
+    WindowLayout.h
+    WindowLayoutInternal.h
     WorkbenchSelector.h
     ElideLabel.h
     ElideCheckBox.h
     FontScaledSVG.h
     SplitButton.h
+    GeometryWorkerProcess.h
+    GeometryProgressController.h
 )
+
 SET(Widget_SRCS
     ${Widget_CPP_SRCS}
     ${Widget_HPP_SRCS}

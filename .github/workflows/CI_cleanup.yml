@@ -38,10 +38,12 @@
 name: FreeCAD CI cleaner
 
 on:
-  workflow_run:
-    workflows: [FreeCAD CI primary, FreeCAD CI approved]
-    types:
-      - completed
+  workflow_dispatch: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # workflow_run:
+  #   workflows: [FreeCAD CI primary, FreeCAD CI approved]
+  #   types:
+  #     - completed
 
 env:
   dryrun: false

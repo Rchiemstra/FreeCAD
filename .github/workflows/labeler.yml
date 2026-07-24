@@ -6,8 +6,10 @@
 
 name: Labeler
 on:
-  pull_request_target:
-    types: [opened, reopened]
+  workflow_dispatch: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # pull_request_target:
+  #   types: [opened, reopened]
 
 permissions:
   contents: read

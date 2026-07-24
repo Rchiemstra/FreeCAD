@@ -38,13 +38,14 @@ name: FreeCAD CI approved
 
 on:
   workflow_dispatch: ~
-  push:
-    branches:
-      - main
-      - releases/**
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  merge_group: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # push:
+  #   branches:
+  #     - main
+  #     - releases/**
+  # pull_request:
+  #   types: [opened, synchronize, reopened, labeled]
+  # merge_group: ~
 
 permissions:
   contents: read

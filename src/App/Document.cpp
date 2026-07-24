@@ -43,6 +43,8 @@
 #include <boost/bimap.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/topological_sort.hpp>
+#include "GeometryJobManager.h"
+
 
 #include <boost/regex.hpp>
 #include <random>
@@ -75,6 +77,7 @@
 #include "Application.h"
 #include "AutoTransaction.h"
 #include "BackupPolicy.h"
+#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
 #include "License.h"
@@ -173,6 +176,9 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    enforceDocumentMutation(this, MutationKind::Undo);
+    MutationInternalScope internalGrant(this);
+
     if (id != 0) {
         const auto it = mUndoMap.find(id);
         if (it == mUndoMap.end()) {
@@ -226,6 +232,9 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    enforceDocumentMutation(this, MutationKind::Redo);
+    MutationInternalScope internalGrant(this);
+
     if (id != 0) {
         const auto it = mRedoMap.find(id);
         if (it == mRedoMap.end()) {
@@ -342,6 +351,9 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
+    enforceDocumentMutation(this, MutationKind::TransactionOpen, MutationOrigin::Cpp, nullptr,
+                            name.name.c_str());
+
     if (tid != NullTransaction && tid == d->bookedTransaction) {
         return tid; // Early exit without warning
     }
@@ -554,6 +566,8 @@ void Document::_clearRedos()
 
 void Document::commitTransaction() // NOLINT
 {
+    enforceDocumentMutation(this, MutationKind::TransactionCommit);
+
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot commit transaction while transacting");
@@ -621,6 +635,8 @@ bool Document::_commitTransaction(const bool notify)
 
 void Document::abortTransaction() const
 {
+    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::TransactionAbort);
+
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot abort transaction while transacting");
@@ -931,6 +947,14 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 Document::Document(const char* documentName)
     : d(new DocumentP), myName(documentName)
 {
+    static std::atomic<uint64_t> s_nextIncarnation{1};
+    d->documentUid.setValue(Base::Uuid::createUuid());
+    d->runtimeIncarnation = s_nextIncarnation.fetch_add(1);
+
+
+    d->modelGeneration = 1;
+    d->recomputeCoordinator = std::make_unique<DocumentRecomputeCoordinator>(*this);
+
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
     // get a reference then the object wouldn't get deleted in the destructor.
@@ -940,6 +964,7 @@ Document::Document(const char* documentName)
     setAutoCreated(false);
     Base::PyGILStateLocker lock;
     d->DocumentPythonObject = Py::Object(new DocumentPy(this), true);
+
 
 #ifdef FC_LOGUPDATECHAIN
     Console().log("+App::Document: %p\n", this);
@@ -1039,6 +1064,8 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
+
+    DocumentMutationAuthority::instance().forgetDocument(*this);
 
     try {
         clearUndos();
@@ -1867,6 +1894,9 @@ static std::string checkFileName(const char* file)
 
 bool Document::saveAs(const char* _file)
 {
+    enforceDocumentMutation(this, MutationKind::SaveAs);
+    MutationInternalScope internalGrant(this);
+
     const std::string file = checkFileName(_file);
     const Base::FileInfo fi(file.c_str());
     if (this->FileName.getStrValue() != file) {
@@ -1880,6 +1910,9 @@ bool Document::saveAs(const char* _file)
 
 bool Document::saveCopy(const char* file) const
 {
+    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::SaveAs);
+    MutationInternalScope internalGrant(const_cast<Document*>(this));
+
     const std::string checked = checkFileName(file);
     return this->FileName.getStrValue() != checked ? saveToFile(checked.c_str()) : false;
 }
@@ -1894,6 +1927,9 @@ bool Document::canWriteRecoverySnapshot() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
+    enforceDocumentMutation(this, MutationKind::Save);
+    MutationInternalScope internalGrant(this);
+
     if (testStatus(Document::PartialDoc)) {
         FC_ERR("Partial loaded document '" << Label.getValue() << "' cannot be saved");
         // TODO We don't make this a fatal error and return 'true' to make it possible to
@@ -2829,6 +2865,9 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
 {
     ZoneScoped;
 
+    enforceDocumentMutation(this, MutationKind::Recompute);
+    MutationInternalScope internalGrant(this);
+
     // Recompute can execute Python-backed features. Keep the GIL for the full
     // recompute so async recompute still serializes Python execution the same
     // way the main-thread path does, preserving compatibility with existing
@@ -3396,6 +3435,11 @@ void Document::addObject(DocumentObject* obj, const char* name)
 
 void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
 {
+    enforceDocumentMutation(this,
+                            MutationKind::AddObject,
+                            MutationOrigin::Cpp,
+                            pObjectName);
+
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -3496,6 +3540,12 @@ void Document::removeObject(const char* sName)
         return;
     }
 
+    enforceDocumentMutation(this,
+                            MutationKind::RemoveObject,
+                            MutationOrigin::Cpp,
+                            pos->second->getNameInDocument());
+    MutationInternalScope internalGrant(this);
+
     if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
         // TODO: shall we allow removal if there is active undo transaction?
         FC_MSG("pending remove of " << sName << " after recomputing document " << getName());
@@ -3507,6 +3557,11 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
+    enforceDocumentMutation(this,
+                            MutationKind::RemoveObject,
+                            MutationOrigin::Cpp,
+                            pcObject ? pcObject->getNameInDocument() : nullptr);
+
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing) && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
         return;
@@ -4098,3 +4153,58 @@ bool Document::mustExecute() const
     }
     return false;
 }
+
+DocumentRevisionToken Document::getRevisionToken() const
+{
+    DocumentRevisionToken token;
+    token.documentUid = d->documentUid;
+    token.internalName = myName;
+    token.runtimeIncarnation = d->runtimeIncarnation;
+    token.modelGeneration = d->modelGeneration;
+    return token;
+}
+
+Base::Uuid Document::getUuid() const
+{
+    return d->documentUid;
+}
+
+uint64_t Document::getRuntimeIncarnation() const
+{
+    return d->runtimeIncarnation;
+}
+
+uint64_t Document::getModelGeneration() const
+{
+    return d->modelGeneration;
+}
+
+void Document::advanceModelGeneration()
+{
+    if (d->isCommittingGeometryJob) {
+        return;
+    }
+    d->modelGeneration++;
+    GeometryJobManager::instance().invalidateDocument(getRevisionToken(), CancelReason::NewGeneration);
+}
+
+DocumentRecomputeCoordinator& Document::getRecomputeCoordinator()
+{
+    return *d->recomputeCoordinator;
+}
+
+const DocumentRecomputeCoordinator& Document::getRecomputeCoordinator() const
+{
+    return *d->recomputeCoordinator;
+}
+
+bool Document::isCommittingGeometryJob() const
+{
+    return d->isCommittingGeometryJob;
+}
+
+void Document::setCommittingGeometryJob(bool committing)
+{
+    d->isCommittingGeometryJob = committing;
+}
+

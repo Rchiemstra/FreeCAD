@@ -12,12 +12,14 @@
 name: "CodeQL Advanced"
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '28 12 * * 6'
+  workflow_dispatch: ~
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # push:
+  #   branches: [ "main" ]
+  # pull_request:
+  #   branches: [ "main" ]
+  # schedule:
+  #   - cron: '28 12 * * 6'
 
 permissions:
   contents: read

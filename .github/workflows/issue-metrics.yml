@@ -1,8 +1,9 @@
 name: Monthly issue metrics
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 15 * *'
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # schedule:
+  #   - cron: '0 0 15 * *'
 
 permissions:
   issues: write

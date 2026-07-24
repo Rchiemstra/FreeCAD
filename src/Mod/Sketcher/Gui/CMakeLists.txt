@@ -140,6 +140,8 @@ SET(SketcherGui_SRCS
     Workbench.h
     EditDatumDialog.cpp
     EditDatumDialog.h
+    EditDeltaPositionDialog.cpp
+    EditDeltaPositionDialog.h
     EditTextDialog.ui
     EditTextDialog.cpp
     EditTextDialog.h

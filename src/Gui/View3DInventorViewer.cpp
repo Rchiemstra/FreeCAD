@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <initializer_list>
 
 #include <Inventor/SbBox.h>
 #include <Inventor/sensors/SoTimerSensor.h>
@@ -63,6 +64,7 @@
 #include <Inventor/errors/SoDebugError.h>
 #include <Inventor/events/SoEvent.h>
 #include <Inventor/events/SoKeyboardEvent.h>
+#include <Inventor/events/SoLocation2Event.h>
 #include <Inventor/events/SoMotion3Event.h>
 #include <Inventor/manips/SoClipPlaneManip.h>
 #include <Inventor/nodes/SoAnnotation.h>
@@ -72,6 +74,7 @@
 #include <Inventor/nodes/SoDirectionalLight.h>
 #include <Inventor/nodes/SoEventCallback.h>
 #include <Inventor/nodes/SoLightModel.h>
+#include <Inventor/nodes/SoLineSet.h>
 #include <Inventor/nodes/SoMaterial.h>
 #include <Inventor/nodes/SoOrthographicCamera.h>
 #include <Inventor/nodes/SoPerspectiveCamera.h>
@@ -120,6 +123,7 @@
 #include <Gui/BitmapFactory.h>
 
 #include "View3DInventorViewer.h"
+#include "View3DInventorViewerInternal.h"
 #include "Application.h"
 #include "Camera.h"
 #include "Command.h"
@@ -129,6 +133,7 @@
 #include "Inventor/SoFCBackgroundGradient.h"
 #include "Inventor/SoFCBoundingBox.h"
 #include "MainWindow.h"
+#include "MDIView.h"
 #include "Multisample.h"
 #include "NaviCube.h"
 #include "Navigation/NavigationStyle.h"
@@ -515,6 +520,7 @@ SoSeparator* createAxisArrowGeometry()
 
 struct OverlayAxisCrossState
 {
+    SoSeparator* renderRoot {nullptr};
     SoSeparator* axisRoot {nullptr};
     SoPerspectiveCamera* axisCamera {nullptr};
     SoDepthBuffer* axisDepth {nullptr};
@@ -544,9 +550,8 @@ struct OverlayAxisCrossState
         SoSeparator* root {nullptr};
         SoTranslation* position {nullptr};
         SoScale* scale {nullptr};
-        SoTexture2* texture {nullptr};
         SoVertexProperty* vertices {nullptr};
-        SoFaceSet* quad {nullptr};
+        SoLineSet* strokes {nullptr};
     };
 
     Letter xLetter;
@@ -555,12 +560,14 @@ struct OverlayAxisCrossState
 
     void ensureCreated()
     {
-        if (axisRoot) {
+        if (renderRoot) {
             return;
         }
 
+        renderRoot = new SoSeparator;
+        renderRoot->ref();
+
         axisRoot = new SoSeparator;
-        axisRoot->ref();
 
         axisCamera = new SoPerspectiveCamera;
         axisCamera->position.setValue(0.0f, 0.0f, 0.0f);
@@ -620,7 +627,6 @@ struct OverlayAxisCrossState
         zAxis->addChild(arrow);
 
         lettersRoot = new SoSeparator;
-        lettersRoot->ref();
 
         lettersCamera = new SoOrthographicCamera;
         lettersRoot->addChild(lettersCamera);
@@ -640,7 +646,11 @@ struct OverlayAxisCrossState
         lettersMaterial->transparency.setValue(0.0f);
         lettersRoot->addChild(lettersMaterial);
 
-        auto buildLetter = [](Letter& out, int w, int h) {
+        // Keep the letters as line geometry. Coin texture caches can retain the QOpenGLWidget
+        // context that rendered them, which is unsafe when an MDI view is cloned for detaching.
+        auto buildLetter = [](Letter& out,
+                              std::initializer_list<SbVec3f> points,
+                              std::initializer_list<int> strokeSizes) {
             out.root = new SoSeparator;
 
             out.position = new SoTranslation;
@@ -649,40 +659,53 @@ struct OverlayAxisCrossState
             out.scale = new SoScale;
             out.root->addChild(out.scale);
 
-            out.texture = new SoTexture2;
-            out.texture->wrapS.setValue(SoTexture2::CLAMP);
-            out.texture->wrapT.setValue(SoTexture2::CLAMP);
-            out.texture->model.setValue(SoTexture2::MODULATE);
-            out.texture->enableCompressedTexture.setValue(FALSE);
-            out.root->addChild(out.texture);
-
             out.vertices = new SoVertexProperty;
-            out.vertices->vertex.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
-            out.vertices->vertex.set1Value(1, SbVec3f(static_cast<float>(w), 0.0f, 0.0f));
-            out.vertices->vertex.set1Value(
-                2,
-                SbVec3f(static_cast<float>(w), static_cast<float>(h), 0.0f)
-            );
-            out.vertices->vertex.set1Value(3, SbVec3f(0.0f, static_cast<float>(h), 0.0f));
+            int pointIndex = 0;
+            for (const auto& point : points) {
+                out.vertices->vertex.set1Value(pointIndex++, point);
+            }
 
-            out.vertices->texCoord.set1Value(0, SbVec2f(0.0f, 0.0f));
-            out.vertices->texCoord.set1Value(1, SbVec2f(1.0f, 0.0f));
-            out.vertices->texCoord.set1Value(2, SbVec2f(1.0f, 1.0f));
-            out.vertices->texCoord.set1Value(3, SbVec2f(0.0f, 1.0f));
-
-            out.quad = new SoFaceSet;
-            out.quad->vertexProperty.setValue(out.vertices);
-            out.quad->numVertices.setValue(4);
-            out.root->addChild(out.quad);
+            out.strokes = new SoLineSet;
+            out.strokes->vertexProperty.setValue(out.vertices);
+            int strokeIndex = 0;
+            for (const int strokeSize : strokeSizes) {
+                out.strokes->numVertices.set1Value(strokeIndex++, strokeSize);
+            }
+            out.root->addChild(out.strokes);
         };
 
-        buildLetter(xLetter, XPM_WIDTH, XPM_HEIGHT);
-        buildLetter(yLetter, YPM_WIDTH, YPM_HEIGHT);
-        buildLetter(zLetter, ZPM_WIDTH, ZPM_HEIGHT);
+        buildLetter(
+            xLetter,
+            {SbVec3f(0, 0, 0),
+             SbVec3f(18, 24, 0),
+             SbVec3f(18, 0, 0),
+             SbVec3f(0, 24, 0)},
+            {2, 2}
+        );
+        buildLetter(
+            yLetter,
+            {SbVec3f(0, 24, 0),
+             SbVec3f(9, 12, 0),
+             SbVec3f(18, 24, 0),
+             SbVec3f(9, 12, 0),
+             SbVec3f(9, 0, 0)},
+            {3, 2}
+        );
+        buildLetter(
+            zLetter,
+            {SbVec3f(0, 24, 0),
+             SbVec3f(18, 24, 0),
+             SbVec3f(0, 0, 0),
+             SbVec3f(18, 0, 0)},
+            {4}
+        );
 
         lettersRoot->addChild(xLetter.root);
         lettersRoot->addChild(yLetter.root);
         lettersRoot->addChild(zLetter.root);
+
+        renderRoot->addChild(axisRoot);
+        renderRoot->addChild(lettersRoot);
     }
 };
 
@@ -3457,7 +3480,30 @@ bool View3DInventorViewer::processSoEvent(const SoEvent* ev)
         }
     }
 
-    return navigation->processEvent(ev);
+    const bool processed = navigation->processEvent(ev);
+
+#ifdef Q_OS_WIN
+    // Coin's redraw sensor can remain pending while a detached top-level window owns a mouse
+    // grab. The camera still follows the drag, but no redraw is requested until the button is
+    // released. Go through QuarterWidget::redraw() so paintEvent() does not process unrelated
+    // pending Coin sensors while the detached OpenGL context is current.
+    const auto navigationMode = navigation->getViewingMode();
+    const bool cameraNavigationActive = navigationMode == NavigationStyle::ZOOMING
+        || navigationMode == NavigationStyle::PANNING
+        || navigationMode == NavigationStyle::DRAGGING;
+    auto* mdiView = qobject_cast<MDIView*>(window());
+    View3DInventorViewerInternal::requestDetachedNavigationRedraw(
+        processed,
+        cameraNavigationActive,
+        ev->isOfType(SoLocation2Event::getClassTypeId()),
+        mdiView && !mdiView->isDeleting() && mdiView->currentViewMode() != MDIView::Child,
+        [this] {
+            redraw();
+        }
+    );
+#endif
+
+    return processed;
 }
 
 bool View3DInventorViewer::processSoEventBase(const SoEvent* const ev)
@@ -5001,40 +5047,11 @@ void View3DInventorViewer::setViewing(bool enable)
     inherited::setViewing(enable);
 }
 
-unsigned char View3DInventorViewer::XPM_pixel_data[XPM_WIDTH * XPM_HEIGHT * XPM_BYTES_PER_PIXEL + 1]
-    = {};
-unsigned char View3DInventorViewer::YPM_pixel_data[YPM_WIDTH * YPM_HEIGHT * YPM_BYTES_PER_PIXEL + 1]
-    = {};
-unsigned char View3DInventorViewer::ZPM_pixel_data[ZPM_WIDTH * ZPM_HEIGHT * ZPM_BYTES_PER_PIXEL + 1]
-    = {};
-
 void View3DInventorViewer::setAxisLetterColor(const SbColor& color)
 {
-    unsigned packed = color.getPackedValue();
-
-    auto recolor = [&](const unsigned char* mask,
-                       unsigned char* data,
-                       unsigned width,
-                       unsigned height,
-                       unsigned bitdepth) {
-        for (unsigned y = 0; y < height; y++) {
-            for (unsigned x = 0; x < width; x++) {
-                unsigned offset = (y * width + x) * bitdepth;
-
-                const unsigned char* src = &mask[offset];
-                unsigned char* dst = &data[offset];
-
-                dst[0] = (packed >> 24) & 0xFF;  // RR - from color
-                dst[1] = (packed >> 16) & 0xFF;  // GG - from color
-                dst[2] = (packed >> 8) & 0xFF;   // BB - from color
-                dst[3] = src[3];                 // AA - from mask
-            }
-        }
-    };
-
-    recolor(XPM_PIXEL_MASK, XPM_pixel_data, XPM_WIDTH, XPM_HEIGHT, XPM_BYTES_PER_PIXEL);
-    recolor(YPM_PIXEL_MASK, YPM_pixel_data, YPM_WIDTH, YPM_HEIGHT, YPM_BYTES_PER_PIXEL);
-    recolor(ZPM_PIXEL_MASK, ZPM_pixel_data, ZPM_WIDTH, ZPM_HEIGHT, ZPM_BYTES_PER_PIXEL);
+    auto& overlay = overlayAxisCrossState();
+    overlay.ensureCreated();
+    overlay.lettersMaterial->diffuseColor.setValue(color);
 }
 
 void View3DInventorViewer::updateColors()
@@ -5113,7 +5130,7 @@ void View3DInventorViewer::drawAxisCross()
 
     auto& overlay = overlayAxisCrossState();
     overlay.ensureCreated();
-    if (!overlay.axisRoot || !overlay.axisTransform || !overlay.axisGroup || !overlay.lettersRoot
+    if (!overlay.renderRoot || !overlay.axisTransform || !overlay.axisGroup
         || !overlay.lettersCamera) {
         return;
     }
@@ -5165,22 +5182,15 @@ void View3DInventorViewer::drawAxisCross()
     overlay.zLetter.position->translation
         .setValue(zpos[0] - 0.5f * viewWidth, zpos[1] - 0.5f * viewHeight, 0.0f);
 
-    overlay.xLetter.texture->image.setValue(SbVec2s(XPM_WIDTH, XPM_HEIGHT), 4, XPM_pixel_data);
-    overlay.yLetter.texture->image.setValue(SbVec2s(YPM_WIDTH, YPM_HEIGHT), 4, YPM_pixel_data);
-    overlay.zLetter.texture->image.setValue(SbVec2s(ZPM_WIDTH, ZPM_HEIGHT), 4, ZPM_pixel_data);
-
     SbViewportRegion vp = this->getSoRenderManager()->getViewportRegion();
     vp.setViewportPixels(origin[0], origin[1], pixelarea, pixelarea);
 
-    SoGLRenderAction axisAction(vp);
-    setOverlayCacheContext(axisAction, this);
-    axisAction.setTransparencyType(SoGLRenderAction::BLEND);
-    axisAction.apply(overlay.axisRoot);
-
-    SoGLRenderAction letterAction(vp);
-    setOverlayCacheContext(letterAction, this);
-    letterAction.setTransparencyType(SoGLRenderAction::BLEND);
-    letterAction.apply(overlay.lettersRoot);
+    // Traverse both cameras with one action so the detached context cannot change between
+    // separate axis and letter overlay passes.
+    SoGLRenderAction overlayAction(vp);
+    setOverlayCacheContext(overlayAction, this);
+    overlayAction.setTransparencyType(SoGLRenderAction::BLEND);
+    overlayAction.apply(overlay.renderRoot);
 }
 
 void View3DInventorViewer::drawSingleBackground(const QColor& col)

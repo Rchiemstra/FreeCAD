@@ -59,6 +59,7 @@
 
 #include "CommandConstraints.h"
 #include "DrawSketchHandler.h"
+#include "EditDeltaPositionDialog.h"
 #include "EditDatumDialog.h"
 #include "Utils.h"
 #include "ViewProviderSketch.h"
@@ -442,6 +443,54 @@ void finishDatumConstraint(Gui::Command* cmd,
     }
 
     tryAutoRecompute(sketch);
+    cmd->getSelection().clearSelection();
+}
+
+void finishDeltaPositionConstraint(Gui::Command* cmd,
+                                   Sketcher::SketchObject* sketch,
+                                   int xConstraintIndex,
+                                   int yConstraintIndex,
+                                   bool isDriving = true)
+{
+    ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Mod/Sketcher");
+
+    Gui::Document* doc = cmd->getActiveGuiDocument();
+    if (doc && doc->getInEdit()
+        && doc->getInEdit()->isDerivedFrom<SketcherGui::ViewProviderSketch>()) {
+        SketcherGui::ViewProviderSketch* vp =
+            static_cast<SketcherGui::ViewProviderSketch*>(doc->getInEdit());
+
+        for (int constraintIndex : {xConstraintIndex, yConstraintIndex}) {
+            Base::Vector2d labelPosition;
+            const std::vector<Sketcher::Constraint*>& constraints =
+                sketch->Constraints.getValues();
+
+            if (constraintIndex >= 0 && constraintIndex < static_cast<int>(constraints.size())
+                && LinearDatumLabelPlacement::computeLabelPosition(
+                    sketch, constraints[constraintIndex], labelPosition)) {
+                ViewProviderSketchCommandConstraintsAttorney::moveConstraint(
+                    *vp, constraintIndex, labelPosition);
+            }
+        }
+
+        vp->draw(false, false);
+    }
+
+    bool show = hGrp->GetBool("ShowDialogOnDistanceConstraint", true);
+
+    if (show && isDriving) {
+        EditDeltaPositionDialog editDeltaPositionDialog(
+            cmd->transactionID(), sketch, xConstraintIndex);
+        cmd->resetTransactionID();
+        editDeltaPositionDialog.exec();
+    }
+    else {
+        sketch->solve();
+        cmd->commitCommand();
+        tryAutoRecompute(sketch);
+    }
+
     cmd->getSelection().clearSelection();
 }
 
@@ -1504,6 +1553,18 @@ public:
         }
     }
 
+    // Special case for Sketcher_ConstrainDeltaPosition to generate context-aware hints
+    if (commandName == "Sketcher_ConstrainDeltaPosition") {
+        if (selectionStep == 0) {
+            return {
+                {QObject::tr("Pick the reference point"), {Gui::InputHint::UserInput::MouseLeft}}};
+        }
+        else if (selectionStep == 1) {
+            return {{QObject::tr("Pick the target point"),
+                     {Gui::InputHint::UserInput::MouseLeft}}};
+        }
+    }
+
     // Special case for Sketcher_ConstrainDistanceX to generate context-aware hints
     if (commandName == "Sketcher_ConstrainDistanceX") {
         if (selectionStep == 0) {
@@ -1850,6 +1911,7 @@ public:
 
         addCommand("Sketcher_Dimension");
         addCommand(); //separator
+        addCommand("Sketcher_ConstrainDeltaPosition");
         addCommand("Sketcher_ConstrainDistanceX");
         addCommand("Sketcher_ConstrainDistanceY");
         addCommand("Sketcher_ConstrainDistance");
@@ -1873,27 +1935,29 @@ public:
         case Reference:
             al[0]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Dimension_Driven"));
             //al[1] is the separator
-            al[2]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance_Driven"));
-            al[3]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance_Driven"));
-            al[4]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Length_Driven"));
-            al[5]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radiam_Driven"));
-            al[6]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radius_Driven"));
-            al[7]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Diameter_Driven"));
-            al[8]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_InternalAngle_Driven"));
-            al[9]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Lock_Driven"));
+            al[2]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition_Driven"));
+            al[3]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance_Driven"));
+            al[4]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance_Driven"));
+            al[5]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Length_Driven"));
+            al[6]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radiam_Driven"));
+            al[7]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radius_Driven"));
+            al[8]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Diameter_Driven"));
+            al[9]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_InternalAngle_Driven"));
+            al[10]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Lock_Driven"));
             getAction()->setIcon(al[index]->icon());
             break;
         case Driving:
             al[0]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Dimension"));
             //al[1] is the separator
-            al[2]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance"));
-            al[3]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance"));
-            al[4]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Length"));
-            al[5]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radiam"));
-            al[6]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radius"));
-            al[7]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Diameter"));
-            al[8]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_InternalAngle"));
-            al[9]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Lock"));
+            al[2]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition"));
+            al[3]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_HorizontalDistance"));
+            al[4]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance"));
+            al[5]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Length"));
+            al[6]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radiam"));
+            al[7]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Radius"));
+            al[8]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Diameter"));
+            al[9]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_InternalAngle"));
+            al[10]->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_Lock"));
             getAction()->setIcon(al[index]->icon());
             break;
         }
@@ -6497,6 +6561,192 @@ void CmdSketcherConstrainDistanceY::updateAction(int mode)
             if (getAction()) {
                 getAction()->setIcon(
                     Gui::BitmapFactory().iconFromTheme("Constraint_VerticalDistance"));
+            }
+            break;
+    }
+}
+
+// ======================================================================================
+
+class CmdSketcherConstrainDeltaPosition: public CmdSketcherConstraint
+{
+public:
+    CmdSketcherConstrainDeltaPosition();
+    ~CmdSketcherConstrainDeltaPosition() override
+    {}
+    void updateAction(int mode) override;
+    const char* className() const override
+    {
+        return "CmdSketcherConstrainDeltaPosition";
+    }
+
+protected:
+    void activated(int iMsg) override;
+    void applyConstraint(std::vector<SelIdPair>& selSeq, int seqIndex) override;
+};
+
+CmdSketcherConstrainDeltaPosition::CmdSketcherConstrainDeltaPosition()
+    : CmdSketcherConstraint("Sketcher_ConstrainDeltaPosition")
+{
+    sAppModule = "Sketcher";
+    sGroup = "Sketcher";
+    sMenuText = QT_TR_NOOP("Delta Position");
+    sToolTipText = QT_TR_NOOP(
+        "Constrains the target point relative to the reference point with Delta X and Delta Y");
+    sWhatsThis = "Sketcher_ConstrainDeltaPosition";
+    sStatusTip = sToolTipText;
+    sPixmap = "Constraint_DeltaPosition";
+    eType = ForEdit;
+
+    allowedSelSequences = {{SelVertexOrRoot, SelVertexOrRoot}};
+}
+
+void CmdSketcherConstrainDeltaPosition::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+
+    std::vector<Gui::SelectionObject> selection = getSelection().getSelectionEx();
+
+    if (selection.size() != 1
+        || !selection[0].isObjectTypeOf(Sketcher::SketchObject::getClassTypeId())) {
+        ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
+            "User parameter:BaseApp/Preferences/Mod/Sketcher");
+        bool constraintMode = hGrp->GetBool("ContinuousConstraintMode", true);
+
+        if (constraintMode) {
+            ActivateHandler(getActiveGuiDocument(),
+                            std::make_unique<DrawSketchHandlerGenConstraint>(this));
+            getSelection().clearSelection();
+        }
+        else {
+            Gui::TranslatedUserWarning(getActiveGuiDocument(),
+                                       QObject::tr("Wrong selection"),
+                                       QObject::tr("Select two points from the sketch."));
+        }
+        return;
+    }
+
+    const std::vector<std::string>& SubNames = selection[0].getSubNames();
+    auto* Obj = static_cast<Sketcher::SketchObject*>(selection[0].getObject());
+
+    if (SubNames.size() != 2) {
+        Gui::TranslatedUserWarning(Obj,
+                                   QObject::tr("Wrong selection"),
+                                   QObject::tr("Select exactly two points from the sketch."));
+        return;
+    }
+
+    int referenceGeoId = GeoEnum::GeoUndef;
+    int targetGeoId = GeoEnum::GeoUndef;
+    Sketcher::PointPos referencePosId = Sketcher::PointPos::none;
+    Sketcher::PointPos targetPosId = Sketcher::PointPos::none;
+    getIdsFromName(SubNames[0], Obj, referenceGeoId, referencePosId);
+    getIdsFromName(SubNames[1], Obj, targetGeoId, targetPosId);
+
+    if (!isVertex(referenceGeoId, referencePosId) || !isVertex(targetGeoId, targetPosId)) {
+        Gui::TranslatedUserWarning(Obj,
+                                   QObject::tr("Wrong selection"),
+                                   QObject::tr("Select exactly two points from the sketch."));
+        return;
+    }
+
+    Base::Vector3d referencePoint = Obj->getPoint(referenceGeoId, referencePosId);
+    Base::Vector3d targetPoint = Obj->getPoint(targetGeoId, targetPosId);
+    double deltaX = targetPoint.x - referencePoint.x;
+    double deltaY = targetPoint.y - referencePoint.y;
+
+    bool bothPointsFixed = areBothPointsOrSegmentsFixed(Obj, referenceGeoId, targetGeoId);
+    bool isDriving = !bothPointsFixed && constraintCreationMode == Driving;
+
+    openCommand(QT_TRANSLATE_NOOP("Command", "Add Delta Position constraint"));
+
+    const int xConstraintIndex = Obj->Constraints.getSize();
+    const int yConstraintIndex = xConstraintIndex + 1;
+    Gui::cmdAppObjectArgs(selection[0].getObject(),
+                          "addDeltaPositionConstraint(%d,%d,%d,%d,%f,%f)",
+                          referenceGeoId,
+                          static_cast<int>(referencePosId),
+                          targetGeoId,
+                          static_cast<int>(targetPosId),
+                          deltaX,
+                          deltaY);
+
+    if (!isDriving) {
+        Gui::cmdAppObjectArgs(selection[0].getObject(),
+                              "setDriving(%d,%s)",
+                              xConstraintIndex,
+                              "False");
+        Gui::cmdAppObjectArgs(selection[0].getObject(),
+                              "setDriving(%d,%s)",
+                              yConstraintIndex,
+                              "False");
+    }
+
+    finishDeltaPositionConstraint(this, Obj, xConstraintIndex, yConstraintIndex, isDriving);
+}
+
+void CmdSketcherConstrainDeltaPosition::applyConstraint(std::vector<SelIdPair>& selSeq,
+                                                        int seqIndex)
+{
+    Q_UNUSED(seqIndex);
+
+    SketcherGui::ViewProviderSketch* sketchgui =
+        static_cast<SketcherGui::ViewProviderSketch*>(getActiveGuiDocument()->getInEdit());
+    Sketcher::SketchObject* Obj = sketchgui->getSketchObject();
+
+    int referenceGeoId = selSeq.at(0).GeoId;
+    int targetGeoId = selSeq.at(1).GeoId;
+    Sketcher::PointPos referencePosId = selSeq.at(0).PosId;
+    Sketcher::PointPos targetPosId = selSeq.at(1).PosId;
+
+    if (!isVertex(referenceGeoId, referencePosId) || !isVertex(targetGeoId, targetPosId)) {
+        Gui::TranslatedUserWarning(Obj,
+                                   QObject::tr("Wrong selection"),
+                                   QObject::tr("Select exactly two points from the sketch."));
+        return;
+    }
+
+    Base::Vector3d referencePoint = Obj->getPoint(referenceGeoId, referencePosId);
+    Base::Vector3d targetPoint = Obj->getPoint(targetGeoId, targetPosId);
+    double deltaX = targetPoint.x - referencePoint.x;
+    double deltaY = targetPoint.y - referencePoint.y;
+
+    bool bothPointsFixed = areBothPointsOrSegmentsFixed(Obj, referenceGeoId, targetGeoId);
+    bool isDriving = !bothPointsFixed && constraintCreationMode == Driving;
+
+    openCommand(QT_TRANSLATE_NOOP("Command", "Add Delta Position constraint"));
+
+    const int xConstraintIndex = Obj->Constraints.getSize();
+    const int yConstraintIndex = xConstraintIndex + 1;
+    Gui::cmdAppObjectArgs(Obj,
+                          "addDeltaPositionConstraint(%d,%d,%d,%d,%f,%f)",
+                          referenceGeoId,
+                          static_cast<int>(referencePosId),
+                          targetGeoId,
+                          static_cast<int>(targetPosId),
+                          deltaX,
+                          deltaY);
+
+    if (!isDriving) {
+        Gui::cmdAppObjectArgs(Obj, "setDriving(%d,%s)", xConstraintIndex, "False");
+        Gui::cmdAppObjectArgs(Obj, "setDriving(%d,%s)", yConstraintIndex, "False");
+    }
+
+    finishDeltaPositionConstraint(this, Obj, xConstraintIndex, yConstraintIndex, isDriving);
+}
+
+void CmdSketcherConstrainDeltaPosition::updateAction(int mode)
+{
+    switch (mode) {
+        case Reference:
+            if (getAction()) {
+                getAction()->setIcon(
+                    Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition_Driven"));
+            }
+            break;
+        case Driving:
+            if (getAction()) {
+                getAction()->setIcon(Gui::BitmapFactory().iconFromTheme("Constraint_DeltaPosition"));
             }
             break;
     }
@@ -11303,6 +11553,7 @@ CmdSketcherToggleDrivingConstraint::CmdSketcherToggleDrivingConstraint()
     Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
     rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainLock");
     rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainDistance");
+    rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainDeltaPosition");
     rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainDistanceX");
     rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainDistanceY");
     rcCmdMgr.addCommandMode("ToggleDrivingConstraint", "Sketcher_ConstrainRadius");
@@ -11543,6 +11794,7 @@ void CreateSketcherCommandsConstraints()
     rcCmdMgr.addCommand(new CmdSketcherConstrainPerpendicular());
     rcCmdMgr.addCommand(new CmdSketcherConstrainTangent());
     rcCmdMgr.addCommand(new CmdSketcherConstrainDistance());
+    rcCmdMgr.addCommand(new CmdSketcherConstrainDeltaPosition());
     rcCmdMgr.addCommand(new CmdSketcherConstrainDistanceX());
     rcCmdMgr.addCommand(new CmdSketcherConstrainDistanceY());
     rcCmdMgr.addCommand(new CmdSketcherConstrainRadius());

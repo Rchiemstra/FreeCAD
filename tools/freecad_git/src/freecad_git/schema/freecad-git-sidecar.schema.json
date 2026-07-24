@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "freecad-git-sidecar/v1",
+  "title": "FreeCAD Git Sidecar",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generator",
+    "source",
+    "document",
+    "objects",
+    "dependencies",
+    "external_references"
+  ],
+  "properties": {
+    "schema": {
+      "const": "freecad-git-sidecar/v1"
+    },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "profile"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "profile": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "semantic_sha256"],
+      "properties": {
+        "filename": { "type": "string" },
+        "semantic_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "label"],
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string" },
+        "freecad_version": { "type": "string" },
+        "file_version": { "type": "string" },
+        "schema_version": { "type": "string" }
+      }
+    },
+    "objects": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/object" }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "string" }
+      }
+    },
+    "external_references": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/external_reference" }
+    }
+  },
+  "$defs": {
+    "decimal_string": {
+      "type": "string",
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*)?(e-?[0-9]+)?$"
+    },
+    "quantity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "type": "string" },
+        "value": { "$ref": "#/$defs/decimal_string" },
+        "unit": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position_mm", "rotation_xyzw"],
+      "properties": {
+        "position_mm": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/decimal_string" }
+        },
+        "rotation_xyzw": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/decimal_string" }
+        }
+      }
+    },
+    "external_reference": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["reference_type"],
+      "properties": {
+        "source_object": { "type": "string" },
+        "path": { "type": "string" },
+        "relative": { "type": "boolean" },
+        "absolute": { "type": "boolean" },
+        "document": { "type": "string" },
+        "object": { "type": "string" },
+        "subelement": { "type": "string" },
+        "reference_type": { "type": "string" }
+      }
+    },
+    "typed_fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "xml"],
+      "properties": {
+        "type": { "type": "string" },
+        "xml": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "label"],
+      "properties": {
+        "type": { "type": "string" },
+        "label": { "type": "string" },
+        "visibility": { "type": "boolean" },
+        "placement": { "$ref": "#/$defs/placement" },
+        "membership": { "type": "object" },
+        "expressions": { "type": "object" },
+        "local_links": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "external_links": { "type": "array" },
+        "attachment": { "type": "object" },
+        "map_mode": { "type": "string" },
+        "support": { "type": "array" },
+        "spreadsheet": { "type": "object" },
+        "sketch": { "type": "object" },
+        "partdesign": { "type": "object" },
+        "properties": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

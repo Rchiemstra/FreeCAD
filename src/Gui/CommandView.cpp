@@ -2027,29 +2027,7 @@ void StdViewDockUndockFullscreen::activated(int iMsg)
         return;
     }
 
-    // Change the view mode after an mdi view was already visible doesn't
-    // work well with Qt5 any more because of some strange OpenGL behaviour.
-    // A workaround is to clone the mdi view, set its view mode and delete
-    // the original view.
-
-    bool needsClone = mode == MDIView::Child || oldmode == MDIView::Child;
-    Gui::MDIView* clone = needsClone ? view->clone() : nullptr;
-
-    if (clone) {
-        if (mode == MDIView::Child) {
-            getMainWindow()->addWindow(clone);
-        }
-        else {
-            clone->setCurrentViewMode(mode);
-        }
-
-        // destroy the old view
-        view->deleteSelf();
-    }
-    else {
-        // no clone needed, simply change the view mode
-        view->setCurrentViewMode(mode);
-    }
+    MDIView::changeViewMode(view, mode);
 }
 
 bool StdViewDockUndockFullscreen::isActive()

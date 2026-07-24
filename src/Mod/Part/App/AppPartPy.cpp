@@ -98,6 +98,8 @@
 #include "PartPyCXX.h"
 #include "PyException.h"
 #include "Tools.h"
+#include "GeometryWorker.h"
+
 #include "TopoShapeCompoundPy.h"
 #include "TopoShapePy.h"
 #include "TopoShapeEdgePy.h"
@@ -457,6 +459,12 @@ public:
             &Module::open,
             "open(string) -- Create a new document and load the file into the document."
         );
+        add_varargs_method(
+            "_runGeometryWorker",
+            &Module::runGeometryWorker,
+            "_runGeometryWorker(request_path) -- Run non-blocking geometry worker process."
+        );
+
         add_varargs_method(
             "insert",
             &Module::insert,
@@ -2752,7 +2760,18 @@ private:
         }
         return Py::String(subname);
     }
+
+    Py::Object runGeometryWorker(const Py::Tuple& args)
+    {
+        const char* requestPath;
+        if (!PyArg_ParseTuple(args.ptr(), "s", &requestPath)) {
+            throw Py::Exception();
+        }
+        int res = GeometryWorker::runWorkerProcess(requestPath);
+        return Py::Long(res);
+    }
 };
+
 
 PyObject* initModule()
 {

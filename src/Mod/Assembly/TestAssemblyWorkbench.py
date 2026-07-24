@@ -25,7 +25,13 @@ import TestApp
 
 from AssemblyTests.TestCore import TestCore
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
+from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
+from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
+from AssemblyTests.TestWebotsExport import TestWebotsExport
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
 True if TestCommandInsertLink else False
+True if TestCrossBodyDatumStaleness else False
+True if TestOverlayIconsAndOrigin else False
+True if TestWebotsExport else False

@@ -1,8 +1,9 @@
 name: Weekly compare link to release notes
 
 on:
-  release:
-    types: [published]   # run automatically when a (pre-)release is published
+  # Automatic triggers disabled on FreeCAD-start branch:
+  # release:
+  #   types: [published]   # run automatically when a (pre-)release is published
   workflow_dispatch:      # allow manual runs too
     inputs:
       current_tag:

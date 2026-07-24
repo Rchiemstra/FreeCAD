@@ -111,3 +111,17 @@ The FreeCAD Contribution Process is expressed here with the following specific g
 7. The list of Maintainers SHALL be publicly accessible and reflective of current activity on the project.
 8. Administrators SHALL act expediently to protect the FreeCAD infrastructure and resources.
 9. Administrators SHOULD block or ban “bad actors” who cause stress, animosity, or confusion to others in the project. This SHOULD be done after public discussion, with a chance for all parties to speak. A bad actor is someone who repeatedly ignores the rules and culture of the project, who is hostile or offensive, who impedes the productive exchange of information, and who is unable to self-correct their behavior when asked to do so by others.
+
+## 9. Git-Friendly FreeCAD Documents
+
+Tracked `.FCStd` models may include a generated `.FCStd.git.json` sidecar for readable pull-request review. The `.FCStd` file remains authoritative; the JSON is generated, never edited manually, and must not be used to reconstruct or merge models.
+
+Developer workflow:
+
+```text
+Save in FreeCAD → freecad-git export → inspect diff → stage both files → commit → CI verifies
+```
+
+After resolving a binary `.FCStd` conflict in FreeCAD, regenerate the sidecar with `freecad-git export`. Never treat a successful JSON merge as a successful model merge.
+
+See `tools/freecad_git/README.md` and `doc/freecad-git-sidecar-strategy.md` for full documentation.

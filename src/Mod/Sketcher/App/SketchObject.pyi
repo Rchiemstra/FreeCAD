@@ -250,6 +250,57 @@ class SketchObject(Part2DObject):
         """
         ...
 
+    def addDeltaPositionConstraint(
+        self,
+        referenceGeoId: int,
+        referencePosId: int,
+        targetGeoId: int,
+        targetPosId: int,
+        deltaX: Union[float, Quantity],
+        deltaY: Union[float, Quantity],
+        /,
+    ) -> Tuple[int, int]:
+        """
+        Add a Delta Position constraint pair.
+
+        addDeltaPositionConstraint(referenceGeoId, referencePosId, targetGeoId, targetPosId, deltaX, deltaY) -> Tuple(int, int)
+
+            Adds one horizontal distance constraint and one vertical distance
+            constraint so that the target point is constrained relative to the
+            reference point. Positive deltaX places the target to the right,
+            and positive deltaY places it above.
+
+            Returns:
+                The zero-based indices of the X and Y child constraints.
+        """
+        ...
+
+    @constmethod
+    def getDeltaPositionConstraintPairs(self) -> Tuple[Tuple[int, int], ...]:
+        """
+        Return all Delta Position constraint pairs.
+
+        getDeltaPositionConstraintPairs() -> Tuple(Tuple(int, int))
+
+            Returns:
+                A tuple of ``(xConstraintIndex, yConstraintIndex)`` pairs.
+        """
+        ...
+
+    @constmethod
+    def getDeltaPositionConstraintPair(self, constraintIndex: int, /) -> Tuple[int, int]:
+        """
+        Return the Delta Position pair that contains a child constraint.
+
+        getDeltaPositionConstraintPair(constraintIndex:int) -> Tuple(int, int)
+
+            Returns:
+                The ``(xConstraintIndex, yConstraintIndex)`` pair, or
+                ``(-1, -1)`` if the constraint is not a complete Delta
+                Position child.
+        """
+        ...
+
     def delConstraint(self, constraintIndex: int, noSolve: bool, /) -> None:
         """
         Delete a constraint from the sketch.

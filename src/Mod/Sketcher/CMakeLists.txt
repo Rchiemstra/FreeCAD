@@ -17,10 +17,12 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchFillet.py
     SketcherTests/TestSketcherSolver.py
     SketcherTests/TestSketchExpression.py
+    SketcherTests/TestSketchDeltaPosition.py
     SketcherTests/TestSketchValidateCoincidents.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.FCStd
     SketcherTests/TestSketchInternalFaces.py
+    SketcherTests/TestSketchMalformedConstraints.py
 )
 
 if(BUILD_GUI)
@@ -33,6 +35,7 @@ if(BUILD_GUI)
           SketcherTests/GuiTestCase.py
           SketcherTests/TestPlacementUpdate.py
           SketcherTests/TestOnViewParameterGui.py
+          SketcherTests/TestSketcherOffsetGui.py
           SketcherTests/TestExternalFacePreselection.py
     )
 endif(BUILD_GUI)

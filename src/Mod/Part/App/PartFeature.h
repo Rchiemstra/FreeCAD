@@ -81,6 +81,8 @@ public:
     short mustExecute() const override;
     //@}
 
+
+
     /// returns the type name of the ViewProvider
     const char* getViewProviderName() const override;
     const App::PropertyComplexGeoData* getPropertyOfGeometry() const override;

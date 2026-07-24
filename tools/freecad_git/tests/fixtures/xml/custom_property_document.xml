@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="CustomDoc">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="App::FeaturePython" name="CustomObj"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="CustomObj">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Custom"/>
+        </Property>
+        <Property name="CustomData" type="CustomWorkbench::PropertyCustom">
+          <CustomData value="test" count="3"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

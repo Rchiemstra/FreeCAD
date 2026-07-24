@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1">
+  <Properties Count="0"/>
+  <Objects Count="2">
+    <Object type="App::Link" name="LinkA"/>
+    <Object type="App::Link" name="LinkB"/>
+  </Objects>
+  <ObjectData Count="2">
+    <Object name="LinkA">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="A"/>
+        </Property>
+        <Property name="LinkedObject" type="App::PropertyXLink">
+          <XLink file="models/shared.FCStd" doc="Shared" obj="Part"/>
+        </Property>
+      </Properties>
+    </Object>
+    <Object name="LinkB">
+      <Properties Count="2">
+        <Property name="Label" type="App::PropertyString">
+          <String value="B"/>
+        </Property>
+        <Property name="LinkedObject" type="App::PropertyXLink">
+          <XLink file="models/shared.FCStd" doc="Shared" obj="Part"/>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>

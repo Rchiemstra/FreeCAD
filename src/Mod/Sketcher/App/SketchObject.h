@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <utility>
+
 #include <App/FeaturePython.h>
 #include <App/IndexedName.h>
 #include <App/PropertyFile.h>
@@ -354,6 +356,19 @@ public:
     int setDatum(int ConstrId, double Datum);
     /// get the datum of a Distance or Angle constraint
     double getDatum(int ConstrId) const;
+    /// add a pair of signed X/Y distance constraints that define target relative to reference
+    std::pair<int, int> addDeltaPositionConstraint(
+        int referenceGeoId,
+        PointPos referencePosId,
+        int targetGeoId,
+        PointPos targetPosId,
+        double deltaX,
+        double deltaY
+    );
+    /// get the paired X/Y constraint indices for a Delta Position child constraint
+    std::pair<int, int> getDeltaPositionConstraintPair(int ConstrId) const;
+    /// get all Delta Position X/Y constraint pairs
+    std::vector<std::pair<int, int>> getDeltaPositionConstraintPairs() const;
     /// set the text and font of a text constraint
     int setTextAndFont(
         int ConstrId,

@@ -32,8 +32,10 @@
 #include <App/PropertyGeo.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
+#include <App/GeometryJob.h>
 #include <Base/SmartPtrPy.h>
 #include <Base/Placement.h>
+
 
 #include <bitset>
 #include <unordered_map>
@@ -1295,19 +1297,37 @@ public:
         return 0;
     }
 
+    ObjectRevisionToken getRevisionToken() const;
+
     /**
      * @brief Whether this object's recompute path is safe to run on the worker thread.
      *
-     * This is used by async recompute scheduling. Objects that can touch GUI or
-     * other thread-affine state during recompute must return false. Returning
-     * true means the recompute path is limited to worker-safe App/model work
-     * and does not depend on GUI, Qt event-loop state, or other thread-affine
-     * APIs.
+     * @deprecated Deprecated contract. Default is false. Use prepareDetachedRecompute/commitDetachedRecompute instead.
      */
-    virtual bool canRecomputeOnWorker() const
+    [[deprecated("Use prepareDetachedRecompute/commitDetachedRecompute contract instead")]] virtual bool canRecomputeOnWorker() const
     {
-        return true;
+        return false;
     }
+
+
+    /**
+     * @brief Prepare a detached geometry job request.
+     */
+    virtual std::optional<PreparedDetachedRecompute>
+    prepareDetachedRecompute([[maybe_unused]] const SnapshotContext& ctx) const
+    {
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Commit the result of a detached geometry job.
+     */
+    virtual DocumentObjectExecReturn*
+    commitDetachedRecompute([[maybe_unused]] const DetachedGeometryResult& result, [[maybe_unused]] CommitContext& ctx)
+    {
+        return nullptr;
+    }
+
 
     /**
      * @brief Called when an element reference is updated.

@@ -1,0 +1,323 @@
+# =============================================================================
+# FreeCAD Woodpecker CI (Linux) -- FreeCAD-start branch
+# =============================================================================
+# Triggers (top-level `when` below):
+#   * manual, tag                        (any branch; tags ignore branch filter)
+#   * push to FreeCAD-start              (branch filter excludes main)
+#   * pull_request targeting FreeCAD-start (Woodpecker `branch` matches the PR
+#                                          target branch, so this also excludes
+#                                          PRs into main)
+# `main` is intentionally NOT triggered.
+#
+# ---------------------------------------------------------------------------
+# CI images (owned by THIS repo, pushed to the LOCAL registry by kaniko as
+# registry-freecad:5000/<repo>:<tag>, then pulled by the Woodpecker Docker daemon via
+# the same registry's host-published loopback endpoint, 127.0.0.1:5001. Docker
+# treats 127.0.0.0/8 as an insecure-local registry, avoiding per-daemon LAN-IP
+# insecure-registry config while still keeping pulls auth-free):
+#   127.0.0.1:5001/freecad-ci-deps:24.04
+#       Ubuntu 24.04 + `package/ubuntu/install-apt-packages.sh` apt deps
+#       (Qt6/OCCT/Python3.12-dev/Boost/VTK/PCL/...) + ccache + Ninja + xvfb
+#       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
+#       (build context = package/ubuntu/, so the context is tiny). Used by every
+#       FreeCAD-track BUILD/test step (configure, debug-build, unit, integration,
+#       e2e, release-linux) and as the base for the MCP image. freecad-lint does
+#       NOT use it -- its checks (sync_version + codespell) are pure Python and
+#       run on python:3.12-slim.
+#   127.0.0.1:5001/freecad-ci-mcp:24.04
+#       FROM registry-freecad:5000/freecad-ci-deps:24.04 during kaniko builds + COPY (pyproject.toml
+#       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
+#       Qt6/OCCT/libpython3.12 as the deps image -> ABI-compatible with the
+#       build/debug FreeCAD tree, and FreeCADCmd's embedded python3.12 is the SAME
+#       interpreter whose site-packages receive the editable install (the
+#       interpreter-identity assumption freecad-mcp-load-preflight verifies).
+#       Baking the full [dev] install (not a frozen pytest list) means test deps
+#       track pyproject.toml and hatchling is present, so the runtime
+#       `pip install --no-build-isolation --no-deps -e .` is
+#       network-restricted-safe. The baked /tmp/mcp copy is dead weight at
+#       runtime (only carries deps); the runtime editable install repoints the
+#       finder at the workspace source. Dockerfile: tools/mcp/freecad-mcp/
+#       Dockerfile.ci (build context = the mcp package dir).
+#   HOW IMAGES GET INTO 127.0.0.1:5001:
+#     PRIMARY: .woodpecker/build-images.yml -- a separate Woodpecker workflow with
+#       two kaniko steps (deps, then mcp) that build+push on the agent through
+#       the Docker-network alias `registry-freecad:5000`, gated to push/tag/manual/cron
+#       but NOT pull_request, so the ~15-min deps build does NOT run per-PR. This
+#       workflow auto-populates an empty registry on FreeCAD-start pushes, and
+#       can also run on a weekly cron for an apt security refresh. Rebuild on
+#       demand when install-apt-packages.sh (deps+mcp) or pyproject.toml (mcp)
+#       changes. kaniko needs no Docker daemon; it pushes to the insecure
+#       registry via `insecure: true` + `insecure-registry: registry-freecad:5000`.
+#     OPTIONAL (local, from your own machine): ci/build-images.sh -- same two
+#       Dockerfiles, hash-keyed (rolling :24.04 + immutable :24.04-<hash>). Only
+#       works if your Docker daemon can reach the registry endpoint in REGISTRY.
+#       From a LAN machine, REGISTRY=192.168.2.23:5001 still needs Docker
+#       insecure-registry config because that endpoint is HTTP.
+#   PREREQ on the AGENT: its Docker daemon must run on the same host that
+#       publishes the registry UI/API on 127.0.0.1:5001. Verify on the agent host
+#       with `curl http://127.0.0.1:5001/v2/`. If the agent is remote, use a TLS
+#       registry or add the LAN IP to that daemon's insecure-registries instead.
+#   FIRST RUN: build-images.yml runs alongside this workflow on push/tag/manual.
+#       The public-image `ci-images-ready` gate polls `registry-freecad:5000` from inside
+#       the Woodpecker job network and blocks the heavy image pulls until both
+#       current-commit tags exist (PRs wait for the rolling `:24.04` tags, since
+#       PRs do not rebuild images). Heavy image steps also set `pull: true`, so a
+#       stale local Docker cache cannot reuse an older `:24.04` image.
+#   conda-forge image is RETIRED -- core/e2e run against THIS branch's
+#   build/debug FreeCAD (ABI-correct) inside 127.0.0.1:5001/freecad-ci-mcp:24.04.
+#
+# ---------------------------------------------------------------------------
+# ccache: persistent Docker named volume (no secrets).
+#   The build steps set CMAKE_*_COMPILER_LAUNCHER=ccache and CCACHE_DIR to a
+#   named Docker volume (`freecad-ci-ccache:/woodpecker-cache/ccache`). Woodpecker
+#   mounts the same workspace to every step, so the release build reuses the
+#   debug build's cache within a single run, and the named volume also survives
+#   pipeline timeout/retry. The repo must be trusted for volumes. If Woodpecker
+#   3.14 shows separate trust toggles, enable Trusted Volumes.
+#
+# ---------------------------------------------------------------------------
+# Submodules: clone-all-submodules fetches ALL submodules recursively. The
+# all-submodules-check gate then verifies every submodule is initialized, at
+# the expected commit, and non-empty, and hard-fails on any of the 5 required
+# submodules (OndselSolver, GSL, AddonManager, freecad-mcp).
+# Submodule GitHub Actions are NOT triggered by this pipeline: Woodpecker
+# clones submodules read-only and neither pushes to nor dispatches events into
+# the submodule repos. Keep the submodules' own GH Actions off on the
+# FreeCAD-start line of work.
+#
+# ---------------------------------------------------------------------------
+# DAG / skip-propagation reminders:
+#   * Setting `depends_on` on ANY step flips the whole workflow to DAG mode;
+#     steps without `depends_on` (or with `depends_on: []`) run immediately in
+#     parallel after clone.
+#   * A step whose `depends_on` target was filtered out by a `when` condition
+#     is itself SKIPPED (this Woodpecker version does NOT support the
+#     `{name: ..., optional: true}` object form in depends_on -- only strings).
+#   * A failed dependency skips its dependents (desired: failures gate
+#     downstream work).
+#
+# ---------------------------------------------------------------------------
+# MCP core/e2e verdict (the green-but-lying defence):
+#   core/e2e run pytest via FreeCADCmd using ci/run_freecad_tests.py, which
+#   writes ci_rc_${MARKER}.txt = 0 only when the JUnit report shows
+#     errors == 0 AND failures == 0 AND skipped == 0 AND collected > 0.
+#   (`failures == 0` is included on top of the errors/skipped/collected triple
+#   as defence-in-depth: if FreeCADCmd swallows pytest's non-zero exit code,
+#   the caller's `rc=$?` short-circuit would miss a plain failure, so the JUnit
+#   verdict must catch it. `skipped == 0` catches `pytest.importorskip` skipping
+#   a whole module when FreeCAD is mis-loaded -- pytest exits 0 there, so
+#   FreeCADCmd's exit code would report green while validating nothing.)
+#   The step's LAST command is `exit "$(cat ci_rc_${MARKER}.txt)"` so the
+#   verdict file -- not FreeCADCmd's untrusted zero exit -- decides status.
+#
+#   core tests carry `xfail(strict=True)` for still-open upstream bugs. Under
+#   this verdict an expected-fail (skipped) OR an unexpected-pass (failure)
+#   makes core RED. core can only go green once each xfail marker is removed
+#   in-branch after confirming the fix. That is intentional: no green while a
+#   known regression is flagged xfail.
+#
+# ---------------------------------------------------------------------------
+# First run -- verify these before trusting a green:
+#   * all-submodules-check passes (5 required submodules non-empty + .git).
+#   * freecad-mcp-load-preflight prints PREFLIGHT_OK (pytest importable under
+#     FreeCADCmd -- the interpreter-identity assumption).
+#   * core collected > 0 and e2e collected > 0 (markers actually select tests;
+#     a 0 means a module silently failed to collect and would have been a
+#     green lie under exit-code-only gating).
+#   * ccache is persistent: release reuses debug's cache in the same run, and
+#     later runs reuse the Docker named volume if Trusted Volumes is enabled.
+#   * 127.0.0.1:5001/freecad-ci-deps:24.04 & 127.0.0.1:5001/freecad-ci-mcp:24.04
+#     are present in 127.0.0.1:5001 (the .woodpecker/build-images.yml workflow
+#     populates them on push/tag/manual/cron; see the CI-images section above)
+#     and pullable by the agent (the agent daemon can reach
+#     http://127.0.0.1:5001/v2/).
+#
+# Known limitation (NOT hardened here -- flag for first runs):
+#   freecad-integration-tests (FreeCADCmd -t 0) and freecad-e2e (run_gui_tests.py
+#   driving `FreeCAD -t <mod>`) rely on FreeCAD's `-t` exit code. FreeCADCmd can
+#   swallow sys.exit/exceptions and exit 0 (the same reason the MCP core/e2e
+#   steps use a JUnit-verdict file instead of the exit code). If first runs show
+#   these steps green while the FreeCAD log reports failures, apply the same
+#   verdict-file pattern (parse the TestFramework output / gtest json) -- do NOT
+#   trust a green there until the exit-code propagation is confirmed.
+#
+# Windows is a SEPARATE workflow (its own agent, clone, libpack, msbuild) --
+# see doc/woodpecker-windows-appendix.yml. It is deliberately NOT part of this
+# Linux workflow: a step-level platform filter would just skip on a Linux
+# agent, not route to a Windows one, and it cannot share this workspace.
+# =============================================================================
+
+when:
+  - event: [manual, tag]
+  - event: [push, pull_request]
+    branch: FreeCAD-start
+
+labels:
+  backend: docker
+
+variables:
+  - &freecad_registry_internal_url http://registry-freecad:5000
+  - &freecad_ccache_env
+    CCACHE_DIR: /woodpecker-cache/ccache
+    CCACHE_COMPILERCHECK: content
+    CCACHE_SLOPPINESS: include_file_ctime,include_file_mtime,pch_defines,time_macros
+    CCACHE_MAXSIZE: 8G
+  - &freecad_ccache_volume
+    - freecad-ci-ccache:/woodpecker-cache/ccache
+
+clone:
+  - name: clone-all-submodules
+    image: woodpeckerci/plugin-git
+    settings:
+      recursive: true
+      tags: true
+      depth: 50
+
+steps:
+  # ---------------------------------------------------------------------------
+  # GATE: every submodule initialized, at expected commit, non-empty; the 5
+  # required submodules hard-fail if missing/empty/uninitialized.
+  # ---------------------------------------------------------------------------
+  - name: all-submodules-check
+    image: alpine/git
+    depends_on: []
+    commands:
+      - sh ci/woodpecker/all-submodules-check.sh
+
+  # ---------------------------------------------------------------------------
+  # FreeCAD track
+  # ---------------------------------------------------------------------------
+
+  # Fast first check: pure-Python lints that need NO FreeCAD build env, so this
+  # runs on a tiny python:3.12-slim image (not the heavy deps image) -- it can
+  # pass/fail in seconds while the deps image is still pulling. Two checks:
+  #   1. sync_version -- whole-repo version consistency (stdlib only).
+  #   2. codespell    -- on CHANGED files only (via tools/lint/codespell.py),
+  #                      so it never false-reds on pre-existing spelling in
+  #                      untouched files. Best-effort base detection: the PR
+  #                      target branch (CI_COMMIT_TARGET_BRANCH), else HEAD~1
+  #                      (clone depth is 50); skips cleanly if no base.
+  - name: freecad-lint
+    image: python:3.12-slim
+    depends_on: [all-submodules-check]
+    commands:
+      - sh ci/woodpecker/freecad-lint.sh
+
+  # Public-image gate: avoid pulling the heavy private CI images before the
+  # image-builder workflow has populated an empty local registry.
+  - name: ci-images-ready
+    image: alpine:3.20
+    depends_on: []
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
+    commands:
+      - sh ci/woodpecker/ci-images-ready.sh
+
+  - name: freecad-configure-debug
+    image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
+    pull: true
+    depends_on: [freecad-lint, ci-images-ready]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
+    commands:
+      - sh ci/woodpecker/freecad-configure-debug.sh
+
+  - name: freecad-debug-build
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-configure-debug]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
+    commands:
+      - sh ci/woodpecker/freecad-debug-build.sh
+
+  - name: freecad-unit-tests
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-debug-build]
+    commands:
+      - sh ci/woodpecker/freecad-unit-tests.sh
+
+  - name: freecad-integration-tests
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-unit-tests]
+    commands:
+      - sh ci/woodpecker/freecad-integration-tests.sh
+
+  - name: freecad-e2e
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-integration-tests]
+    commands:
+      - sh ci/woodpecker/freecad-e2e.sh
+
+  - name: freecad-release-linux
+    image: *freecad_ci_deps_image
+    pull: true
+    depends_on: [freecad-e2e]
+    environment: *freecad_ccache_env
+    volumes: *freecad_ccache_volume
+    when:
+      - event: [tag, manual]
+    commands:
+      - sh ci/woodpecker/freecad-release-linux.sh
+
+  # ccache is a persistent Docker named volume -- see the file header.
+
+  # ---------------------------------------------------------------------------
+  # freecad-mcp track
+  # ---------------------------------------------------------------------------
+
+  # Fast first check: Python syntax smoke for the MCP package (no install).
+  - name: freecad-mcp-lint
+    image: python:3.12
+    depends_on: [all-submodules-check]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-lint.sh
+
+  - name: freecad-mcp-unit-tests
+    image: python:3.12
+    depends_on: [freecad-mcp-lint]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-unit-tests.sh
+
+  # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
+  # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
+  # FreeCAD, so FreeCADCmd is invoked by ABSOLUTE path from the workspace build
+  # tree ($CI_WORKSPACE/build/debug/bin/FreeCADCmd) -- a relative path would
+  # resolve under tools/mcp/freecad-mcp/ after the `cd`. Verifies the
+  # interpreter-identity assumption (pytest + freecad_mcp importable under
+  # FreeCADCmd) by grepping the PREFLIGHT_OK sentinel -- FreeCADCmd's exit
+  # code is not trusted to flag an import failure.
+  - name: freecad-mcp-load-preflight
+    image: &freecad_ci_mcp_image 127.0.0.1:5001/freecad-ci-mcp:24.04
+    pull: true
+    depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-load-preflight.sh
+
+  # core/e2e: gated push/tag/manual (not PR). Per-marker output files + rm -f so
+  # parallel/sequential runs cannot read a stale or interleaved verdict. The
+  # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
+  - name: freecad-mcp-core-tests
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
+    environment:
+      MARKER: core
+    when:
+      - event: [push, tag, manual]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
+
+  - name: freecad-mcp-e2e
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
+    environment:
+      MARKER: e2e
+    when:
+      - event: [push, tag, manual]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
