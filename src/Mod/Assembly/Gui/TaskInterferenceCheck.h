@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -115,6 +116,25 @@ public:
     void testOpenManageExclusions();
     bool testManageExclusionsOpen() const;
     bool testHasHost() const;
+    QString testScopeText() const;
+    bool testIsSelectedPairMode() const;
+    void testRefreshScanScope();
+    /**
+     * Headless-safe stand-in for Gui::Selection: feeds the same handle list
+     * refreshScanScope would build from Selection.getSelectionEx(). Valid
+     * addSelection() requires Gui::Application/MainWindow and crashes without it.
+     */
+    void testSetSelectionHandles(
+        std::vector<Assembly::InterferenceSelectionHandle> handles
+    );
+    void testClearSelectionHandles();
+    void testNotifySelectionChanged();
+    void testSetPreparationBarrier(std::function<void()> barrier);
+    void testClearPreparationBarrier();
+    void testSetIncludeHidden(bool enabled);
+    void testRunScan();
+    bool testIsPreparing() const;
+    bool testIsCancelEnabled() const;
     /** Attach previewRoot to an arbitrary Coin scene (no MainWindow required). */
     void testAttachPreviewToScene(SoGroup* scene);
     void testDetachPreview();
@@ -132,9 +152,11 @@ private Q_SLOTS:
     void onRowChanged();
     void onScanFinished(std::uint64_t generation, const Assembly::InterferenceScanResult& result);
     void onScanProgress(int current, int total);
+    void onSelectionChanged();
 
 private:
     void setupUi();
+    void refreshScanScope();
     void attachPreviewToViewer();
     /** Create previewRoot and add it to scene; optional viewer/view for live teardown hooks. */
     void attachPreviewToScene(
@@ -169,11 +191,21 @@ private:
     Assembly::InterferenceComponentOccurrence selectedA;
     Assembly::InterferenceComponentOccurrence selectedB;
     bool selectedComponentsMode = false;
+    /** When true, scope stays on the constructor-provided component pair. */
+    bool scopeLockedToSelection = false;
+    /** Selection changed while a scan was busy; refresh scope after finish. */
+    bool selectionDirtyWhileBusy = false;
+    std::function<void()> testPreparationBarrierFn;
+    bool hasTestSelectionOverride = false;
+    std::vector<Assembly::InterferenceSelectionHandle> testSelectionHandles;
+    /** True while DocumentObject-backed snapshot preparation is running (Cancel inactive). */
+    bool preparingScan = false;
     Assembly::InterferenceScanSession session;
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
     QCheckBox* showExcludedCheck = nullptr;
     QLabel* summaryLabel = nullptr;
+    QLabel* scopeLabel = nullptr;
     QLabel* statusLabel = nullptr;
     QLabel* progressLabel = nullptr;
     QTableWidget* resultsTable = nullptr;

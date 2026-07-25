@@ -55,6 +55,7 @@
 #include <QFutureWatcher>
 #include <QMetaObject>
 #include <cmath>
+#include <functional>
 
 using namespace Assembly;
 using namespace AssemblyGui;
@@ -133,6 +134,7 @@ TaskInterferenceCheck::TaskInterferenceCheck(
           && !componentA.occurrencePrefix.empty() && !componentB.occurrencePrefix.empty()
           && componentA.occurrencePrefix != componentB.occurrencePrefix
       )
+    , scopeLockedToSelection(selectedComponentsMode)
 {
     setupUi();
     connectDocumentSignals();
@@ -143,14 +145,7 @@ TaskInterferenceCheck::TaskInterferenceCheck(
         );
     }
 
-    if (selectedComponentsMode && statusLabel) {
-        statusLabel->setText(
-            tr("Ready. Run a scan between '%1' and '%2'.")
-                .arg(QString::fromStdString(selectedA.displayPath))
-                .arg(QString::fromStdString(selectedB.displayPath))
-        );
-    }
-
+    refreshScanScope();
     attachPreviewToViewer();
     updateRowActionState();
 }
@@ -168,8 +163,11 @@ void TaskInterferenceCheck::setupUi()
 {
     auto* layout = new QVBoxLayout(this);
 
-    statusLabel = new QLabel(tr("Ready. Run a scan to inspect the selected part or assembly."), this);
+    statusLabel = new QLabel(tr("Ready."), this);
     layout->addWidget(statusLabel);
+    scopeLabel = new QLabel(tr("Scan scope: —"), this);
+    scopeLabel->setWordWrap(true);
+    layout->addWidget(scopeLabel);
     progressLabel = new QLabel(QString(), this);
     layout->addWidget(progressLabel);
 
@@ -417,6 +415,72 @@ bool TaskInterferenceCheck::testManageExclusionsOpen() const
 bool TaskInterferenceCheck::testHasHost() const
 {
     return host != nullptr;
+}
+
+QString TaskInterferenceCheck::testScopeText() const
+{
+    return scopeLabel ? scopeLabel->text() : QString();
+}
+
+bool TaskInterferenceCheck::testIsSelectedPairMode() const
+{
+    return selectedComponentsMode;
+}
+
+void TaskInterferenceCheck::testRefreshScanScope()
+{
+    refreshScanScope();
+}
+
+void TaskInterferenceCheck::testSetSelectionHandles(
+    std::vector<InterferenceSelectionHandle> handles
+)
+{
+    testSelectionHandles = std::move(handles);
+    hasTestSelectionOverride = true;
+}
+
+void TaskInterferenceCheck::testClearSelectionHandles()
+{
+    testSelectionHandles.clear();
+    hasTestSelectionOverride = false;
+}
+
+void TaskInterferenceCheck::testNotifySelectionChanged()
+{
+    onSelectionChanged();
+}
+
+void TaskInterferenceCheck::testSetPreparationBarrier(std::function<void()> barrier)
+{
+    testPreparationBarrierFn = std::move(barrier);
+}
+
+void TaskInterferenceCheck::testClearPreparationBarrier()
+{
+    testPreparationBarrierFn = {};
+}
+
+void TaskInterferenceCheck::testSetIncludeHidden(bool enabled)
+{
+    if (includeHiddenCheck) {
+        includeHiddenCheck->setChecked(enabled);
+    }
+}
+
+void TaskInterferenceCheck::testRunScan()
+{
+    onRun();
+}
+
+bool TaskInterferenceCheck::testIsPreparing() const
+{
+    return preparingScan;
+}
+
+bool TaskInterferenceCheck::testIsCancelEnabled() const
+{
+    return cancelButton && cancelButton->isEnabled();
 }
 
 void TaskInterferenceCheck::testAttachPreviewToScene(SoGroup* scene)
@@ -774,6 +838,12 @@ void TaskInterferenceCheck::connectDocumentSignals()
             }
         }
     ));
+
+    connections.push_back(Gui::Selection().signalSelectionChanged.connect(
+        [this](const Gui::SelectionChanges&) {
+            onSelectionChanged();
+        }
+    ));
 }
 
 void TaskInterferenceCheck::disconnectDocumentSignals()
@@ -783,6 +853,121 @@ void TaskInterferenceCheck::disconnectDocumentSignals()
     }
     connections.clear();
     watchedDocuments.clear();
+}
+
+void TaskInterferenceCheck::onSelectionChanged()
+{
+    if (scopeLockedToSelection) {
+        return;
+    }
+    if (session.isBusy()) {
+        // Defer: when the active generation finishes, refreshScanScope syncs to the
+        // current selection (locked dialogs never follow global selection).
+        selectionDirtyWhileBusy = true;
+        return;
+    }
+    refreshScanScope();
+}
+
+void TaskInterferenceCheck::refreshScanScope()
+{
+    if (!scopeLabel) {
+        return;
+    }
+    if (!host) {
+        selectedComponentsMode = false;
+        scopeLabel->setText(tr("Scan scope: no active part."));
+        if (statusLabel && !session.isBusy()) {
+            statusLabel->setText(tr("Select an App::Part or activate an assembly."));
+        }
+        return;
+    }
+
+    const bool includeHidden = includeHiddenCheck && includeHiddenCheck->isChecked();
+
+    if (!scopeLockedToSelection) {
+        selectedComponentsMode = false;
+        selectedA = {};
+        selectedB = {};
+
+        std::vector<InterferenceSelectionHandle> handles;
+        if (hasTestSelectionOverride) {
+            handles = testSelectionHandles;
+        }
+        else {
+            auto selection = Gui::Selection().getSelectionEx(
+                "",
+                App::DocumentObject::getClassTypeId(),
+                Gui::ResolveMode::NoResolve
+            );
+            for (auto& sel : selection) {
+                App::DocumentObject* obj = sel.getObject();
+                if (!obj) {
+                    continue;
+                }
+                const auto subs = sel.getSubNames();
+                if (subs.empty()) {
+                    handles.push_back({obj, {}});
+                    continue;
+                }
+                for (const auto& sub : subs) {
+                    handles.push_back({obj, sub});
+                }
+            }
+        }
+
+        const auto scope = resolveInterferenceSelectionScope(host, handles);
+        if (scope.mode == InterferenceScanScopeMode::SelectedPair) {
+            selectedA = scope.first;
+            selectedB = scope.second;
+            selectedComponentsMode = true;
+        }
+    }
+
+    if (selectedComponentsMode) {
+        scopeLabel->setText(
+            tr("Scan scope: selected pair — '%1' ↔ '%2' (faces are pick handles; complete "
+               "occurrences including nested solids).")
+                .arg(QString::fromStdString(selectedA.displayPath))
+                .arg(QString::fromStdString(selectedB.displayPath))
+        );
+        if (statusLabel && !session.isBusy() && !hasResults()) {
+            statusLabel->setText(tr("Ready to check the selected component pair."));
+        }
+        return;
+    }
+
+    const auto components = listInterferenceComponentOccurrences(host, includeHidden);
+    if (components.empty()) {
+        scopeLabel->setText(
+            includeHidden ? tr("Scan scope: no component occurrences under this part.")
+                          : tr("Scan scope: no visible component occurrences (enable Include "
+                               "hidden to include hidden components).")
+        );
+    }
+    else {
+        QStringList names;
+        names.reserve(static_cast<int>(components.size()));
+        for (const auto& occ : components) {
+            names << QString::fromStdString(occ.displayPath);
+        }
+        QString listed = names.join(QStringLiteral(", "));
+        constexpr int maxLen = 180;
+        if (listed.size() > maxLen) {
+            listed = listed.left(maxLen - 1) + QChar(0x2026);
+        }
+        scopeLabel->setText(
+            tr("Scan scope: all %1 %2 component occurrence(s) — %3")
+                .arg(components.size())
+                .arg(includeHidden ? tr("components (including hidden)") : tr("visible"))
+                .arg(listed)
+        );
+    }
+    if (statusLabel && !session.isBusy() && !hasResults()) {
+        statusLabel->setText(
+            tr("Ready to check all listed component occurrences under the active part.")
+        );
+    }
 }
 
 void TaskInterferenceCheck::markStale(const char* reason)
@@ -836,26 +1021,82 @@ void TaskInterferenceCheck::onRun()
 
     auto handle = session.beginScan();
     setScanControlsEnabled(false);
-    cancelButton->setEnabled(true);
-    statusLabel->setText(tr("Scanning…"));
-    progressLabel->setText(tr("Progress: starting…"));
+    // DocumentObject-backed extraction blocks the GUI thread; Cancel cannot
+    // interrupt this phase. Advertise Preparing distinctly from Scanning.
+    preparingScan = true;
+    cancelButton->setEnabled(false);
+    statusLabel->setText(tr("Preparing scan…"));
+    progressLabel->setText(tr("Progress: preparing geometry…"));
     clearPreview();
     lastResult = {};
     rebuildTable();
 
+    refreshScanScope();
     const bool includeHidden = includeHiddenCheck->isChecked();
     auto excluded = currentExclusionSourceIds();
     auto cancel = handle.cancel;
     const auto generation = handle.generation;
     QPointer<TaskInterferenceCheck> self(this);
 
-    std::vector<InterferenceLeaf> leaves;
+    InterferenceScanOptions prepOptions;
+    prepOptions.clearance = clearance;
+    prepOptions.cancelFlag = cancel.get();
+    prepOptions.detectionOptions.clearance = clearance;
+    prepOptions.detectionOptions.cancelFlag = cancel.get();
+
+    if (!host || !host->isAttachedToDocument()) {
+        preparingScan = false;
+        session.requestCancel();
+        (void)session.finishScan(generation);
+        discardResults();
+        cancelButton->setEnabled(false);
+        setScanControlsEnabled(false);
+        if (statusLabel) {
+            statusLabel->setText(tr("Scan aborted (host unavailable)."));
+        }
+        return;
+    }
+
+    // Snapshot DocumentObject-backed geometry on this thread before the worker.
+    // Optional test barrier runs mid-preparation (after occurrence listing).
+    auto snapshot = prepareInterferenceComponentScanSnapshot(
+        host,
+        includeHidden,
+        prepOptions,
+        testPreparationBarrierFn
+    );
+    preparingScan = false;
+    if (!host || !host->isAttachedToDocument() || snapshot.cancelled
+        || (cancel && cancel->load(std::memory_order_relaxed))) {
+        // finishScan clears busy; false means cancelled/stale — still clean up UI.
+        (void)session.finishScan(generation);
+        discardResults();
+        cancelButton->setEnabled(false);
+        setScanControlsEnabled(host != nullptr);
+        if (statusLabel) {
+            statusLabel->setText(tr("Scan cancelled."));
+        }
+        if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+            selectionDirtyWhileBusy = false;
+            refreshScanScope();
+        }
+        return;
+    }
+
+    const bool betweenSelected = selectedComponentsMode;
     std::vector<InterferenceLeaf> leavesA;
     std::vector<InterferenceLeaf> leavesB;
-    const bool betweenSelected = selectedComponentsMode;
+    InterferenceComponentScanSnapshot acrossSnapshot;
     if (betweenSelected) {
-        leavesA = collectInterferenceLeavesUnderPrefix(host, selectedA.occurrencePrefix, includeHidden);
-        leavesB = collectInterferenceLeavesUnderPrefix(host, selectedB.occurrencePrefix, includeHidden);
+        for (std::size_t i = 0; i < snapshot.leaves.size(); ++i) {
+            const auto& leaf = snapshot.leaves[i];
+            if (leaf.occurrenceSubName.rfind(selectedA.occurrencePrefix, 0) == 0) {
+                leavesA.push_back(leaf);
+            }
+            else if (leaf.occurrenceSubName.rfind(selectedB.occurrencePrefix, 0) == 0) {
+                leavesB.push_back(leaf);
+            }
+        }
         if (statusLabel) {
             statusLabel->setText(
                 tr("Scanning selected components '%1' and '%2'…")
@@ -865,7 +1106,16 @@ void TaskInterferenceCheck::onRun()
         }
     }
     else {
-        leaves = collectInterferenceLeaves(host, includeHidden);
+        acrossSnapshot = std::move(snapshot);
+        if (statusLabel) {
+            statusLabel->setText(tr("Scanning all applicable component occurrences…"));
+        }
+    }
+
+    // Worker phase: Cancel is meaningful for pair classification.
+    cancelButton->setEnabled(true);
+    if (progressLabel) {
+        progressLabel->setText(tr("Progress: starting…"));
     }
 
     auto* watcher = new QFutureWatcher<InterferenceScanResult>(this);
@@ -882,15 +1132,14 @@ void TaskInterferenceCheck::onRun()
             if (watcher->future().isFinished()) {
                 result = watcher->result();
             }
-            // Generation ownership is decided only inside finishScan / onScanFinished.
             self->onScanFinished(generation, result);
         }
     );
 
     QFuture<InterferenceScanResult> future = QtConcurrent::run(
-        [leaves = std::move(leaves),
-         leavesA = std::move(leavesA),
+        [leavesA = std::move(leavesA),
          leavesB = std::move(leavesB),
+         acrossSnapshot = std::move(acrossSnapshot),
          betweenSelected,
          excluded = std::move(excluded),
          clearance,
@@ -920,7 +1169,7 @@ void TaskInterferenceCheck::onRun()
             if (betweenSelected) {
                 return runInterferenceScanBetweenLeafSets(leavesA, leavesB, options, excluded);
             }
-            return runInterferenceScan(leaves, options, excluded);
+            return runInterferenceScanAcrossComponents(acrossSnapshot, options, excluded);
         }
     );
     watcher->setFuture(future);
@@ -968,6 +1217,10 @@ void TaskInterferenceCheck::onScanFinished(
             discardResults();
         }
         updateRowActionState();
+        if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+            selectionDirtyWhileBusy = false;
+            refreshScanScope();
+        }
         return;
     }
 
@@ -978,6 +1231,10 @@ void TaskInterferenceCheck::onScanFinished(
     if (lastResult.cancelled) {
         statusLabel->setText(tr("Scan cancelled."));
         discardResults();
+        if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+            selectionDirtyWhileBusy = false;
+            refreshScanScope();
+        }
         return;
     }
 
@@ -986,6 +1243,10 @@ void TaskInterferenceCheck::onScanFinished(
     rebuildTable();
     updateSummary();
     updateRowActionState();
+    if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+        selectionDirtyWhileBusy = false;
+        refreshScanScope();
+    }
 }
 
 void TaskInterferenceCheck::rebuildTable()
@@ -1059,6 +1320,7 @@ void TaskInterferenceCheck::onShowExcludedToggled(bool)
 
 void TaskInterferenceCheck::onIncludeHiddenToggled(bool)
 {
+    refreshScanScope();
     markStale("Include-hidden changed");
 }
 

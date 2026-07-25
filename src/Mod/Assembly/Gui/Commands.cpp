@@ -83,6 +83,31 @@ static App::DocumentObject* getInterferenceHost()
     return nullptr;
 }
 
+static std::vector<InterferenceSelectionHandle> currentInterferenceSelectionHandles()
+{
+    std::vector<InterferenceSelectionHandle> handles;
+    auto selection = Gui::Selection().getSelectionEx(
+        "",
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    for (auto& sel : selection) {
+        App::DocumentObject* obj = sel.getObject();
+        if (!obj) {
+            continue;
+        }
+        const auto subs = sel.getSubNames();
+        if (subs.empty()) {
+            handles.push_back({obj, {}});
+            continue;
+        }
+        for (const auto& sub : subs) {
+            handles.push_back({obj, sub});
+        }
+    }
+    return handles;
+}
+
 static bool resolveTwoSelectedComponents(
     App::DocumentObject* root,
     InterferenceComponentOccurrence& first,
@@ -91,58 +116,12 @@ static bool resolveTwoSelectedComponents(
 {
     first = {};
     second = {};
-    if (!root) {
+    const auto scope = resolveInterferenceSelectionScope(root, currentInterferenceSelectionHandles());
+    if (scope.mode != InterferenceScanScopeMode::SelectedPair) {
         return false;
     }
-
-    auto selection = Gui::Selection().getSelectionEx(
-        "",
-        App::DocumentObject::getClassTypeId(),
-        Gui::ResolveMode::NoResolve
-    );
-
-    std::vector<InterferenceComponentOccurrence> resolved;
-    for (auto& sel : selection) {
-        App::DocumentObject* obj = sel.getObject();
-        if (!obj) {
-            continue;
-        }
-        const auto subs = sel.getSubNames();
-        if (subs.empty()) {
-            InterferenceComponentOccurrence occ;
-            if (resolveInterferenceComponentOccurrence(root, obj, {}, occ)) {
-                resolved.push_back(std::move(occ));
-            }
-            continue;
-        }
-        for (const auto& sub : subs) {
-            InterferenceComponentOccurrence occ;
-            if (resolveInterferenceComponentOccurrence(root, obj, sub, occ)) {
-                resolved.push_back(std::move(occ));
-            }
-        }
-    }
-
-    // Keep first occurrence of each distinct prefix, in selection order.
-    std::vector<InterferenceComponentOccurrence> unique;
-    for (auto& occ : resolved) {
-        bool seen = false;
-        for (const auto& existing : unique) {
-            if (existing.occurrencePrefix == occ.occurrencePrefix) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) {
-            unique.push_back(std::move(occ));
-        }
-    }
-
-    if (unique.size() != 2) {
-        return false;
-    }
-    first = std::move(unique[0]);
-    second = std::move(unique[1]);
+    first = scope.first;
+    second = scope.second;
     return true;
 }
 
@@ -459,7 +438,9 @@ CmdAssemblyCheckInterference::CmdAssemblyCheckInterference()
     sGroup = QT_TR_NOOP("Assembly");
     sMenuText = QT_TR_NOOP("Check Interference");
     sToolTipText = QT_TR_NOOP(
-        "Check the active assembly or a selected App::Part for interference and clearance issues"
+        "Check interference for the active App::Part or assembly: with exactly two selected "
+        "subelements, check that component pair; otherwise check all applicable component "
+        "occurrences (hidden omitted unless Include hidden)"
     );
     sWhatsThis = "Assembly_CheckInterference";
     sStatusTip = sToolTipText;

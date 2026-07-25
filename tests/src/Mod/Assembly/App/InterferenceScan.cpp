@@ -5,10 +5,14 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <Standard_Failure.hxx>
 #include <gp_Pnt.hxx>
+#include <atomic>
+#include <cmath>
+#include <limits>
 #include <cstdio>
 #include <sstream>
 
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/Link.h>
 #include <App/Part.h>
 #include <Base/Interpreter.h>
@@ -896,25 +900,610 @@ TEST_F(InterferenceScanTest, resolveSelectedComponentUsesFirstOccurrenceUnderRoo
     ));
     EXPECT_EQ(spoolOcc.component, spool);
     EXPECT_EQ(spoolOcc.occurrencePrefix, "AssemblySpool.");
-
-    // Selecting the nested feature object still resolves to the root-level component.
-    Assembly::InterferenceComponentOccurrence fromNested;
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        _assembly,
-        faceOwner,
-        {},
-        fromNested
-    ));
-    EXPECT_EQ(fromNested.component, casePart);
-    EXPECT_EQ(fromNested.occurrencePrefix, "AssemblyCase.");
 }
 
-TEST_F(InterferenceScanTest, selectedComponentsScanIncludesNestedPartGeometry)
+TEST_F(InterferenceScanTest, ordinaryGroupPathPrefixAndPenetration)
+{
+    auto* folder = freecad_cast<App::DocumentObjectGroup*>(
+        _doc->addObject("App::DocumentObjectGroup", "Folder")
+    );
+    ASSERT_NE(folder, nullptr);
+    auto* componentA = _doc->addObject<App::Part>("ComponentA");
+    auto* nested = _doc->addObject<App::Part>("NestedA");
+    auto* solidA = makeBox(_doc, "SolidA", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    nested->addObject(solidA);
+    componentA->addObject(nested);
+    folder->addObject(componentA);
+
+    auto* componentB = _doc->addObject<App::Part>("ComponentB");
+    componentB->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    auto* solidB = makeBox(_doc, "SolidB", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    componentB->addObject(solidB);
+
+    _assembly->addObject(folder);
+    _assembly->addObject(componentB);
+    _doc->recompute();
+
+    auto listed = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    ASSERT_EQ(listed.size(), 2u);
+    bool sawFolderPrefix = false;
+    for (const auto& occ : listed) {
+        if (occ.occurrencePrefix == "Folder.ComponentA.") {
+            sawFolderPrefix = true;
+        }
+    }
+    EXPECT_TRUE(sawFolderPrefix);
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, options);
+    ASSERT_TRUE(result.complete);
+    EXPECT_GE(result.counts.penetrations, 1);
+    bool sawFolderLeaf = false;
+    for (const auto& pair : result.pairs) {
+        const auto& a = result.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& b = result.leaves[pair.leafIndexB].occurrenceSubName;
+        if (a.rfind("Folder.ComponentA.", 0) == 0 || b.rfind("Folder.ComponentA.", 0) == 0) {
+            sawFolderLeaf = true;
+            EXPECT_TRUE(
+                a.rfind("Folder.ComponentA.", 0) == 0 || b.rfind("Folder.ComponentA.", 0) == 0
+            );
+            EXPECT_TRUE(a.rfind("ComponentB.", 0) == 0 || b.rfind("ComponentB.", 0) == 0);
+        }
+    }
+    EXPECT_TRUE(sawFolderLeaf);
+}
+
+TEST_F(InterferenceScanTest, hiddenParentGroupOmitsComponentUnlessIncludeHidden)
+{
+    auto* folder = freecad_cast<App::DocumentObjectGroup*>(
+        _doc->addObject("App::DocumentObjectGroup", "Folder")
+    );
+    ASSERT_NE(folder, nullptr);
+    auto* hiddenComp = _doc->addObject<App::Part>("HiddenComp");
+    auto* solidH = makeBox(_doc, "SolidH", Base::Vector3d(5, 0, 0), 20, 20, 20);
+    hiddenComp->addObject(solidH);
+    folder->addObject(hiddenComp);
+    folder->Visibility.setValue(false);
+
+    auto* visible = _doc->addObject<App::Part>("VisibleComp");
+    auto* solidV = makeBox(_doc, "SolidV", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    visible->addObject(solidV);
+
+    auto* other = _doc->addObject<App::Part>("OtherComp");
+    other->Placement.setValue(Base::Placement(Base::Vector3d(100, 0, 0), Base::Rotation()));
+    auto* solidO = makeBox(_doc, "SolidO", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    other->addObject(solidO);
+
+    _assembly->addObject(folder);
+    _assembly->addObject(visible);
+    _assembly->addObject(other);
+    _doc->recompute();
+
+    auto without = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    for (const auto& occ : without) {
+        EXPECT_EQ(occ.occurrencePrefix.find("HiddenComp"), std::string::npos);
+    }
+
+    Assembly::InterferenceScanOptions options;
+    auto scanWithout =
+        Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, options);
+    for (const auto& pair : scanWithout.pairs) {
+        EXPECT_EQ(
+            scanWithout.leaves[pair.leafIndexA].occurrenceSubName.find("HiddenComp"),
+            std::string::npos
+        );
+        EXPECT_EQ(
+            scanWithout.leaves[pair.leafIndexB].occurrenceSubName.find("HiddenComp"),
+            std::string::npos
+        );
+    }
+
+    auto withHidden = Assembly::listInterferenceComponentOccurrences(_assembly, true);
+    bool listedHidden = false;
+    for (const auto& occ : withHidden) {
+        if (occ.occurrencePrefix.find("HiddenComp") != std::string::npos) {
+            listedHidden = true;
+        }
+    }
+    EXPECT_TRUE(listedHidden);
+
+    auto scanWith = Assembly::runInterferenceScanAllVisibleComponents(_assembly, true, options);
+    bool pairMentionsHidden = false;
+    for (const auto& pair : scanWith.pairs) {
+        const auto& a = scanWith.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& b = scanWith.leaves[pair.leafIndexB].occurrenceSubName;
+        if (a.find("HiddenComp") != std::string::npos
+            || b.find("HiddenComp") != std::string::npos) {
+            pairMentionsHidden = true;
+        }
+    }
+    EXPECT_TRUE(pairMentionsHidden);
+}
+
+TEST_F(InterferenceScanTest, nestedOrganizerGroupsPreserveFullPrefixes)
+{
+    auto* outer = freecad_cast<App::DocumentObjectGroup*>(
+        _doc->addObject("App::DocumentObjectGroup", "OuterFolder")
+    );
+    auto* inner = freecad_cast<App::DocumentObjectGroup*>(
+        _doc->addObject("App::DocumentObjectGroup", "InnerFolder")
+    );
+    ASSERT_NE(outer, nullptr);
+    ASSERT_NE(inner, nullptr);
+    auto* comp = _doc->addObject<App::Part>("DeepComp");
+    auto* box = makeBox(_doc, "DeepBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    comp->addObject(box);
+    inner->addObject(comp);
+    outer->addObject(inner);
+    _assembly->addObject(outer);
+    _doc->recompute();
+
+    auto listed = Assembly::listInterferenceComponentOccurrences(_assembly, true);
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed[0].occurrencePrefix, "OuterFolder.InnerFolder.DeepComp.");
+    EXPECT_NE(listed[0].displayPath.find("OuterFolder"), std::string::npos);
+
+    auto snap = Assembly::prepareInterferenceComponentScanSnapshot(_assembly, true);
+    ASSERT_EQ(snap.leaves.size(), 1u);
+    EXPECT_EQ(snap.leaves[0].occurrenceSubName.rfind("OuterFolder.InnerFolder.DeepComp.", 0), 0);
+}
+
+TEST_F(InterferenceScanTest, collapsedLinkArrayElementsAreDistinctOccurrences)
+{
+    auto* source = makeBox(_doc, "ArraySource", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "ArrayLink"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->ElementCount.setValue(2);
+    link->ShowElement.setValue(false);
+    std::vector<Base::Placement> placements {
+        Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()),
+        Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation())
+    };
+    link->PlacementList.setValues(placements);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    auto listed = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    ASSERT_EQ(listed.size(), 2u);
+    EXPECT_EQ(listed[0].occurrencePrefix, "ArrayLink.0.");
+    EXPECT_EQ(listed[1].occurrencePrefix, "ArrayLink.1.");
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, options);
+    ASSERT_TRUE(result.complete);
+    EXPECT_GE(result.counts.penetrations, 1);
+    ASSERT_FALSE(result.pairs.empty());
+    const auto& a = result.leaves[result.pairs.front().leafIndexA].occurrenceSubName;
+    const auto& b = result.leaves[result.pairs.front().leafIndexB].occurrenceSubName;
+    EXPECT_TRUE(
+        (a.rfind("ArrayLink.0.", 0) == 0 && b.rfind("ArrayLink.1.", 0) == 0)
+        || (a.rfind("ArrayLink.1.", 0) == 0 && b.rfind("ArrayLink.0.", 0) == 0)
+    );
+}
+
+TEST_F(InterferenceScanTest, linkArrayDoesNotPairLeavesWithinOneElement)
+{
+    // Two solids under a linked Part definition: one array element must not
+    // report its own internal overlap as a cross-occurrence pair.
+    auto* def = _doc->addObject<App::Part>("ArrayDef");
+    auto* a = makeBox(_doc, "DefA", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* b = makeBox(_doc, "DefB", Base::Vector3d(5, 0, 0), 10, 10, 10);
+    def->addObject(a);
+    def->addObject(b);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "FarArray"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, def);
+    link->ElementCount.setValue(2);
+    link->ShowElement.setValue(false);
+    std::vector<Base::Placement> placements {
+        Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()),
+        Base::Placement(Base::Vector3d(200, 0, 0), Base::Rotation())
+    };
+    link->PlacementList.setValues(placements);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, options);
+    ASSERT_TRUE(result.complete);
+    for (const auto& pair : result.pairs) {
+        const auto& pa = result.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& pb = result.leaves[pair.leafIndexB].occurrenceSubName;
+        const bool both0 = pa.rfind("FarArray.0.", 0) == 0 && pb.rfind("FarArray.0.", 0) == 0;
+        const bool both1 = pa.rfind("FarArray.1.", 0) == 0 && pb.rfind("FarArray.1.", 0) == 0;
+        EXPECT_FALSE(both0);
+        EXPECT_FALSE(both1);
+    }
+}
+
+TEST_F(InterferenceScanTest, hiddenLinkArrayElementRespectsIncludeHidden)
+{
+    auto* source = makeBox(_doc, "VisSource", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "VisArray"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->ElementCount.setValue(2);
+    link->ShowElement.setValue(false);
+    std::vector<Base::Placement> placements {
+        Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()),
+        Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation())
+    };
+    link->PlacementList.setValues(placements);
+    link->setElementVisible("1", false);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    auto without = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    for (const auto& occ : without) {
+        EXPECT_NE(occ.occurrencePrefix, "VisArray.1.");
+    }
+    auto withHidden = Assembly::listInterferenceComponentOccurrences(_assembly, true);
+    bool saw1 = false;
+    for (const auto& occ : withHidden) {
+        if (occ.occurrencePrefix == "VisArray.1.") {
+            saw1 = true;
+        }
+    }
+    EXPECT_TRUE(saw1);
+}
+
+TEST_F(InterferenceScanTest, expandedLinkArrayElementsAreDistinctOccurrences)
+{
+    auto* source = makeBox(_doc, "ExpSource", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "ExpArray"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->ShowElement.setValue(true);
+    link->ElementCount.setValue(2);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    ASSERT_EQ(link->ElementList.getSize(), 2);
+    auto* elt0 = freecad_cast<App::LinkElement*>(link->ElementList.getValues()[0]);
+    auto* elt1 = freecad_cast<App::LinkElement*>(link->ElementList.getValues()[1]);
+    ASSERT_NE(elt0, nullptr);
+    ASSERT_NE(elt1, nullptr);
+    elt0->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
+    elt1->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    _doc->recompute();
+
+    const std::string prefix0 =
+        std::string("ExpArray.") + elt0->getNameInDocument() + ".";
+    const std::string prefix1 =
+        std::string("ExpArray.") + elt1->getNameInDocument() + ".";
+
+    auto listed = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    ASSERT_EQ(listed.size(), 2u);
+    EXPECT_EQ(listed[0].occurrencePrefix, prefix0);
+    EXPECT_EQ(listed[1].occurrencePrefix, prefix1);
+
+    auto snap = Assembly::prepareInterferenceComponentScanSnapshot(_assembly, false);
+    ASSERT_EQ(snap.leaves.size(), 2u);
+    EXPECT_EQ(snap.leaves[0].occurrenceSubName.rfind(prefix0, 0), 0);
+    EXPECT_EQ(snap.leaves[1].occurrenceSubName.rfind(prefix1, 0), 0);
+
+    Assembly::InterferenceComponentOccurrence occ;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        std::string("ExpArray.") + elt0->getNameInDocument() + ".Face1",
+        occ
+    ));
+    EXPECT_EQ(occ.occurrencePrefix, prefix0);
+
+    // Selection rooted at the LinkElement itself.
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        elt1,
+        "Face1",
+        occ
+    ));
+    EXPECT_EQ(occ.occurrencePrefix, prefix1);
+
+    // Malformed / oversized index → resolution fails (all-components fallback).
+    EXPECT_FALSE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        "ExpArray.999999999999999999999999.Face1",
+        occ
+    ));
+    EXPECT_FALSE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        "ExpArray.notAnElement.Face1",
+        occ
+    ));
+    auto badScope = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {Assembly::InterferenceSelectionHandle {_assembly, "ExpArray.notAnElement.Face1"},
+         Assembly::InterferenceSelectionHandle {_assembly, "ExpArray.alsoBad.Face1"}}
+    );
+    EXPECT_EQ(badScope.mode, Assembly::InterferenceScanScopeMode::AllComponents);
+
+    // Collapsed-style numeric address is rejected while expanded.
+    EXPECT_FALSE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        "ExpArray.0.Face1",
+        occ
+    ));
+}
+
+TEST_F(InterferenceScanTest, expandedLinkArraySelectedPairDoesNotLeakSibling)
+{
+    auto* source = makeBox(_doc, "LeakSource", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "LeakArray"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->ShowElement.setValue(true);
+    link->ElementCount.setValue(2);
+    auto* other = _doc->addObject<App::Part>("LeakOther");
+    auto* otherBox = makeBox(_doc, "LeakOtherBox", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    other->addObject(otherBox);
+    other->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    _assembly->addObject(link);
+    _assembly->addObject(other);
+    _doc->recompute();
+
+    ASSERT_EQ(link->ElementList.getSize(), 2);
+    auto* elt0 = freecad_cast<App::LinkElement*>(link->ElementList.getValues()[0]);
+    auto* elt1 = freecad_cast<App::LinkElement*>(link->ElementList.getValues()[1]);
+    ASSERT_NE(elt0, nullptr);
+    ASSERT_NE(elt1, nullptr);
+    // elt0 clear of Other; elt1 penetrates Other.
+    elt0->Placement.setValue(Base::Placement(Base::Vector3d(200, 0, 0), Base::Rotation()));
+    elt1->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
+    _doc->recompute();
+
+    const std::string prefix0 =
+        std::string("LeakArray.") + elt0->getNameInDocument() + ".";
+    const std::string prefix1 =
+        std::string("LeakArray.") + elt1->getNameInDocument() + ".";
+
+    Assembly::InterferenceComponentOccurrence clearOcc;
+    Assembly::InterferenceComponentOccurrence hitOcc;
+    Assembly::InterferenceComponentOccurrence otherOcc;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, prefix0 + "Face1", clearOcc
+    ));
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, prefix1 + "Face1", hitOcc
+    ));
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, "LeakOther.LeakOtherBox.Face1", otherOcc
+    ));
+    EXPECT_EQ(clearOcc.occurrencePrefix, prefix0);
+    EXPECT_EQ(hitOcc.occurrencePrefix, prefix1);
+
+    auto snap = Assembly::prepareInterferenceComponentScanSnapshot(_assembly, false);
+    auto leavesFor = [&](const std::string& prefix) {
+        std::vector<Assembly::InterferenceLeaf> out;
+        for (const auto& leaf : snap.leaves) {
+            if (leaf.occurrenceSubName.rfind(prefix, 0) == 0) {
+                out.push_back(leaf);
+            }
+        }
+        return out;
+    };
+    auto clearLeaves = leavesFor(prefix0);
+    auto hitLeaves = leavesFor(prefix1);
+    auto otherLeaves = leavesFor("LeakOther.");
+    ASSERT_FALSE(clearLeaves.empty());
+    ASSERT_FALSE(hitLeaves.empty());
+    ASSERT_FALSE(otherLeaves.empty());
+
+    Assembly::InterferenceScanOptions options;
+    auto clearPair =
+        Assembly::runInterferenceScanBetweenLeafSets(clearLeaves, otherLeaves, options);
+    ASSERT_TRUE(clearPair.complete);
+    EXPECT_EQ(clearPair.counts.penetrations, 0);
+    for (const auto& pair : clearPair.pairs) {
+        const auto& a = clearPair.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& b = clearPair.leaves[pair.leafIndexB].occurrenceSubName;
+        EXPECT_TRUE(a.rfind(prefix1, 0) != 0 && b.rfind(prefix1, 0) != 0);
+    }
+
+    auto hitPair = Assembly::runInterferenceScanBetweenLeafSets(hitLeaves, otherLeaves, options);
+    ASSERT_TRUE(hitPair.complete);
+    EXPECT_GE(hitPair.counts.penetrations, 1);
+    bool sawHit = false;
+    for (const auto& pair : hitPair.pairs) {
+        const auto& a = hitPair.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& b = hitPair.leaves[pair.leafIndexB].occurrenceSubName;
+        if ((a.rfind(prefix1, 0) == 0 && b.rfind("LeakOther.", 0) == 0)
+            || (b.rfind(prefix1, 0) == 0 && a.rfind("LeakOther.", 0) == 0)) {
+            sawHit = true;
+        }
+        EXPECT_TRUE(a.rfind(prefix0, 0) != 0 && b.rfind(prefix0, 0) != 0);
+    }
+    EXPECT_TRUE(sawHit);
+
+    // No intra-element pairs when scanning all expanded elements.
+    auto all = Assembly::runInterferenceScanAcrossComponents(snap, options);
+    ASSERT_TRUE(all.complete);
+    for (const auto& pair : all.pairs) {
+        const auto& a = all.leaves[pair.leafIndexA].occurrenceSubName;
+        const auto& b = all.leaves[pair.leafIndexB].occurrenceSubName;
+        EXPECT_FALSE(a.rfind(prefix0, 0) == 0 && b.rfind(prefix0, 0) == 0);
+        EXPECT_FALSE(a.rfind(prefix1, 0) == 0 && b.rfind(prefix1, 0) == 0);
+    }
+}
+
+TEST_F(InterferenceScanTest, hiddenExpandedLinkElementRespectsIncludeHidden)
+{
+    auto* source = makeBox(_doc, "HidExpSource", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "HidExp"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->ShowElement.setValue(true);
+    link->ElementCount.setValue(2);
+    _assembly->addObject(link);
+    _doc->recompute();
+    ASSERT_EQ(link->ElementList.getSize(), 2);
+    auto* elt1 = freecad_cast<App::LinkElement*>(link->ElementList.getValues()[1]);
+    ASSERT_NE(elt1, nullptr);
+    elt1->Visibility.setValue(false);
+    _doc->recompute();
+
+    const std::string prefix1 =
+        std::string("HidExp.") + elt1->getNameInDocument() + ".";
+    auto without = Assembly::listInterferenceComponentOccurrences(_assembly, false);
+    for (const auto& occ : without) {
+        EXPECT_NE(occ.occurrencePrefix, prefix1);
+    }
+    auto withHidden = Assembly::listInterferenceComponentOccurrences(_assembly, true);
+    bool saw = false;
+    for (const auto& occ : withHidden) {
+        if (occ.occurrencePrefix == prefix1) {
+            saw = true;
+        }
+    }
+    EXPECT_TRUE(saw);
+}
+
+TEST_F(InterferenceScanTest, workerSnapshotPreservesInvalidLeafDiagnostics)
+{
+    Assembly::InterferenceComponentScanSnapshot snap;
+    Assembly::InterferenceComponentOccurrence occ;
+    occ.occurrencePrefix = "Only.";
+    occ.displayPath = "Only";
+    snap.components.push_back(occ);
+
+    Assembly::InterferenceLeaf bad;
+    bad.occurrenceSubName = "Only.Bad.";
+    bad.displayPath = "Only.Bad";
+    bad.sourceId = "doc#Bad";
+    bad.shapeValid = false;
+    bad.diagnostic = "synthetic null shape";
+    snap.leaves.push_back(bad);
+    snap.componentIndexOfLeaf.push_back(0);
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanAcrossComponents(snap, options, {});
+    EXPECT_FALSE(result.complete);
+    EXPECT_GT(result.counts.invalidInputs, 0);
+    ASSERT_FALSE(result.componentIssues.empty());
+    EXPECT_NE(result.componentIssues.front().diagnostic.find("synthetic"), std::string::npos);
+}
+
+TEST_F(InterferenceScanTest, emptyOrSingleComponentInvalidOptionsAndCancel)
+{
+    Assembly::InterferenceScanOptions badClearance;
+    badClearance.clearance = -1.0;
+    auto r1 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, badClearance);
+    EXPECT_FALSE(r1.complete);
+    EXPECT_GT(r1.counts.invalidInputs, 0);
+
+    Assembly::InterferenceScanOptions badTol;
+    badTol.detectionOptions.linearTolerance = -1.0;
+    auto r2 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, badTol);
+    EXPECT_FALSE(r2.complete);
+    EXPECT_GT(r2.counts.invalidInputs, 0);
+
+    Assembly::InterferenceScanOptions nanTol;
+    nanTol.detectionOptions.linearTolerance = std::numeric_limits<double>::quiet_NaN();
+    auto r3 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, nanTol);
+    EXPECT_FALSE(r3.complete);
+    EXPECT_GT(r3.counts.invalidInputs, 0);
+
+    std::atomic<bool> cancel {true};
+    Assembly::InterferenceScanOptions cancelled;
+    cancelled.cancelFlag = &cancel;
+    auto r4 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, cancelled);
+    EXPECT_TRUE(r4.cancelled);
+
+    auto* only = _doc->addObject<App::Part>("OnlyComp");
+    auto* box = makeBox(_doc, "OnlyBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    only->addObject(box);
+    _assembly->addObject(only);
+    _doc->recompute();
+
+    auto r5 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, badClearance);
+    EXPECT_FALSE(r5.complete);
+    EXPECT_GT(r5.counts.invalidInputs, 0);
+
+    cancel.store(true);
+    auto r6 = Assembly::runInterferenceScanAllVisibleComponents(_assembly, false, cancelled);
+    EXPECT_TRUE(r6.cancelled);
+}
+
+TEST_F(InterferenceScanTest, selectionCardinalityExactTwoSubelements)
+{
+    auto* a = _doc->addObject<App::Part>("SelA");
+    auto* boxA = makeBox(_doc, "SelBoxA", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    a->addObject(boxA);
+    auto* b = _doc->addObject<App::Part>("SelB");
+    auto* boxB = makeBox(_doc, "SelBoxB", Base::Vector3d(50, 0, 0), 10, 10, 10);
+    b->addObject(boxB);
+    auto* c = _doc->addObject<App::Part>("SelC");
+    auto* boxC = makeBox(_doc, "SelBoxC", Base::Vector3d(100, 0, 0), 10, 10, 10);
+    c->addObject(boxC);
+    _assembly->addObject(a);
+    _assembly->addObject(b);
+    _assembly->addObject(c);
+    _doc->recompute();
+
+    using Assembly::InterferenceSelectionHandle;
+    using Assembly::InterferenceScanScopeMode;
+
+    auto none = Assembly::resolveInterferenceSelectionScope(_assembly, {});
+    EXPECT_EQ(none.mode, InterferenceScanScopeMode::AllComponents);
+
+    auto one = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {_assembly, "SelA.SelBoxA."}}
+    );
+    EXPECT_EQ(one.mode, InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(one.subelementHandleCount, 1);
+
+    auto two = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {_assembly, "SelA.SelBoxA."},
+         InterferenceSelectionHandle {_assembly, "SelB.SelBoxB."}}
+    );
+    EXPECT_EQ(two.mode, InterferenceScanScopeMode::SelectedPair);
+    EXPECT_EQ(two.subelementHandleCount, 2);
+
+    auto same = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {_assembly, "SelA.SelBoxA.Face1"},
+         InterferenceSelectionHandle {_assembly, "SelA.SelBoxA.Face2"}}
+    );
+    EXPECT_EQ(same.mode, InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(same.distinctOccurrenceCount, 1);
+
+    auto three = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {_assembly, "SelA.SelBoxA."},
+         InterferenceSelectionHandle {_assembly, "SelB.SelBoxB."},
+         InterferenceSelectionHandle {_assembly, "SelC.SelBoxC."}}
+    );
+    EXPECT_EQ(three.mode, InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(three.subelementHandleCount, 3);
+
+    auto threeToTwo = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {_assembly, "SelA.SelBoxA.Face1"},
+         InterferenceSelectionHandle {_assembly, "SelA.SelBoxA.Face2"},
+         InterferenceSelectionHandle {_assembly, "SelB.SelBoxB."}}
+    );
+    EXPECT_EQ(threeToTwo.mode, InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(threeToTwo.subelementHandleCount, 3);
+    EXPECT_EQ(threeToTwo.distinctOccurrenceCount, 2);
+
+    auto wholes = Assembly::resolveInterferenceSelectionScope(
+        _assembly,
+        {InterferenceSelectionHandle {a, {}}, InterferenceSelectionHandle {b, {}}}
+    );
+    EXPECT_EQ(wholes.mode, InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(wholes.subelementHandleCount, 0);
+}
+
+TEST_F(InterferenceScanTest, selectedPairAndAllVisibleAgreeOnTwoComponentPenetration)
 {
     auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
-    casePart->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
     auto* nested = _doc->addObject<App::Part>("NestedCase");
-    nested->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
     auto* caseBox = makeBox(_doc, "CaseBox", Base::Vector3d(0, 0, 0), 20, 20, 20);
     nested->addObject(caseBox);
     casePart->addObject(nested);
@@ -928,109 +1517,41 @@ TEST_F(InterferenceScanTest, selectedComponentsScanIncludesNestedPartGeometry)
     _assembly->addObject(spool);
     _doc->recompute();
 
-    Assembly::InterferenceComponentOccurrence caseOcc;
-    Assembly::InterferenceComponentOccurrence spoolOcc;
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        _assembly, _assembly, "AssemblyCase.NestedCase.CaseBox.", caseOcc
-    ));
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        _assembly, _assembly, "AssemblySpool.SpoolBox.", spoolOcc
-    ));
-
-    auto leavesA =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, caseOcc.occurrencePrefix, false);
-    auto leavesB =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, spoolOcc.occurrencePrefix, false);
-    ASSERT_EQ(leavesA.size(), 1u);
-    ASSERT_EQ(leavesB.size(), 1u);
-    EXPECT_NE(leavesA[0].occurrenceSubName.find("CaseBox"), std::string::npos);
-    EXPECT_NEAR(leavesA[0].worldBoundBox.MinX, 0.0, 1e-6);
-    EXPECT_NEAR(leavesB[0].worldBoundBox.MinX, 10.0, 1e-6);
-
-    Assembly::InterferenceScanOptions options;
-    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
-    ASSERT_TRUE(result.complete);
-    EXPECT_GE(result.counts.penetrations, 1);
-    ASSERT_FALSE(result.pairs.empty());
-    EXPECT_GE(result.pairs.front().detection.overlapVolume, 1.0);
-}
-
-TEST_F(InterferenceScanTest, selectedComponentsScanIncludesLinkedGeometry)
-{
-    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
-    auto* caseBox = makeBox(_doc, "CaseLocal", Base::Vector3d(0, 0, 0), 20, 20, 20);
-    casePart->addObject(caseBox);
-
-    auto* source = makeBox(_doc, "SpoolSource", Base::Vector3d(0, 0, 0), 20, 20, 20);
-    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "AssemblySpool"));
-    ASSERT_NE(link, nullptr);
-    link->setLink(-1, source);
-    link->LinkPlacement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
-
-    _assembly->addObject(casePart);
-    _assembly->addObject(link);
-    _doc->recompute();
-
-    Assembly::InterferenceComponentOccurrence caseOcc;
-    Assembly::InterferenceComponentOccurrence spoolOcc;
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        _assembly, _assembly, "AssemblyCase.CaseLocal.", caseOcc
-    ));
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        _assembly, _assembly, "AssemblySpool.", spoolOcc
-    ));
-    EXPECT_EQ(spoolOcc.component, link);
-    EXPECT_EQ(spoolOcc.occurrencePrefix, "AssemblySpool.");
-
-    auto leavesA =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, caseOcc.occurrencePrefix, false);
-    auto leavesB =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, spoolOcc.occurrencePrefix, false);
-    ASSERT_EQ(leavesA.size(), 1u);
-    ASSERT_EQ(leavesB.size(), 1u);
-    EXPECT_EQ(leavesB[0].sourceId, std::string(_doc->getName()) + "#SpoolSource");
-    EXPECT_NEAR(leavesB[0].worldBoundBox.MinX, 10.0, 1e-6);
-
-    Assembly::InterferenceScanOptions options;
-    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
-    ASSERT_TRUE(result.complete);
-    EXPECT_GE(result.counts.penetrations, 1);
-}
-
-TEST_F(InterferenceScanTest, selectedComponentsScanDoesNotPairWithinSameComponent)
-{
-    auto* left = _doc->addObject<App::Part>("LeftComp");
-    auto* a = makeBox(_doc, "LeftA", Base::Vector3d(0, 0, 0), 10, 10, 10);
-    auto* b = makeBox(_doc, "LeftB", Base::Vector3d(5, 0, 0), 10, 10, 10);
-    left->addObject(a);
-    left->addObject(b);
-
-    auto* right = _doc->addObject<App::Part>("RightComp");
-    auto* c = makeBox(_doc, "RightC", Base::Vector3d(100, 0, 0), 10, 10, 10);
-    right->addObject(c);
-
-    _assembly->addObject(left);
-    _assembly->addObject(right);
-    _doc->recompute();
-
-    auto leavesA =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "LeftComp.", false);
-    auto leavesB =
-        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "RightComp.", false);
-    ASSERT_EQ(leavesA.size(), 2u);
-    ASSERT_EQ(leavesB.size(), 1u);
-
-    Assembly::InterferenceScanOptions options;
-    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
-    ASSERT_TRUE(result.complete);
-    EXPECT_EQ(result.counts.penetrations, 0);
-    EXPECT_EQ(result.counts.contacts, 0);
-    EXPECT_EQ(result.counts.clearanceViolations, 0);
-    // Intra-LeftComp overlap must not appear as a selected-components violation.
-    for (const auto& pair : result.pairs) {
-        EXPECT_TRUE(pair.leafIndexA < leavesA.size());
-        EXPECT_GE(pair.leafIndexB, leavesA.size());
+    auto snap = Assembly::prepareInterferenceComponentScanSnapshot(_assembly, false);
+    std::vector<Assembly::InterferenceLeaf> leavesA;
+    std::vector<Assembly::InterferenceLeaf> leavesB;
+    for (const auto& leaf : snap.leaves) {
+        if (leaf.occurrenceSubName.rfind("AssemblyCase.", 0) == 0) {
+            leavesA.push_back(leaf);
+        }
+        else if (leaf.occurrenceSubName.rfind("AssemblySpool.", 0) == 0) {
+            leavesB.push_back(leaf);
+        }
     }
+
+    Assembly::InterferenceScanOptions options;
+    auto selected = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
+    auto allVisible = Assembly::runInterferenceScanAcrossComponents(snap, options);
+    ASSERT_TRUE(selected.complete);
+    ASSERT_TRUE(allVisible.complete);
+    EXPECT_EQ(selected.counts.penetrations, allVisible.counts.penetrations);
+    EXPECT_EQ(selected.counts.contacts, allVisible.counts.contacts);
+    ASSERT_EQ(selected.pairs.size(), allVisible.pairs.size());
+    ASSERT_FALSE(selected.pairs.empty());
+
+    auto endpointKey = [](const Assembly::InterferenceScanResult& r,
+                          const Assembly::InterferencePairResult& p) {
+        auto a = r.leaves[p.leafIndexA].occurrenceSubName;
+        auto b = r.leaves[p.leafIndexB].occurrenceSubName;
+        return (a <= b) ? a + "|" + b : b + "|" + a;
+    };
+    EXPECT_EQ(endpointKey(selected, selected.pairs.front()), endpointKey(allVisible, allVisible.pairs.front()));
+    EXPECT_EQ(selected.pairs.front().detection.kind, allVisible.pairs.front().detection.kind);
+    EXPECT_NEAR(
+        selected.pairs.front().detection.overlapVolume,
+        allVisible.pairs.front().detection.overlapVolume,
+        1e-6
+    );
 }
 
 TEST_F(InterferenceScanTest, plainPartRootCollectsNestedAndLinkedGeometry)

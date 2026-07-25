@@ -14,10 +14,13 @@
 #include <QApplication>
 
 #include <App/Document.h>
+#include <App/Part.h>
 #include <Base/Interpreter.h>
+#include <Base/Placement.h>
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Selection/Selection.h>
 #include <Gui/Inventor/So3DAnnotation.h>
 #include <Inventor/SoDB.h>
 #include <Inventor/SoInteraction.h>
@@ -26,6 +29,7 @@
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/Gui/TaskInterferenceCheck.h>
+#include <Mod/Part/App/FeaturePartBox.h>
 #include <Mod/Part/App/InterferenceDetection.h>
 #include <Mod/Part/Gui/SoBrepEdgeSet.h>
 #include <Mod/Part/Gui/SoBrepFaceSet.h>
@@ -197,6 +201,284 @@ TEST_F(TaskInterferenceCheckTest, constructsWithoutMainWindow)
     EXPECT_FALSE(task.hasResults());
     EXPECT_FALSE(task.testStatusText().isEmpty());
     EXPECT_FALSE(task.testHasPreviewRoot());
+}
+
+TEST_F(TaskInterferenceCheckTest, defaultScopeIsAllVisibleComponentsWhenNothingSelected)
+{
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    Gui::Selection().clearSelection();
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("Scan scope:"), Qt::CaseInsensitive));
+    EXPECT_TRUE(
+        task.testScopeText().contains(QStringLiteral("visible"), Qt::CaseInsensitive)
+        || task.testScopeText().contains(QStringLiteral("component"), Qt::CaseInsensitive)
+    );
+}
+
+TEST_F(TaskInterferenceCheckTest, lockedSelectedPairScopeShowsBothComponents)
+{
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    Assembly::InterferenceComponentOccurrence a;
+    a.component = _assembly;
+    a.occurrencePrefix = "CompA.";
+    a.displayPath = "CompA";
+    Assembly::InterferenceComponentOccurrence b;
+    b.component = _assembly;
+    b.occurrencePrefix = "CompB.";
+    b.displayPath = "CompB";
+    AssemblyGui::TaskInterferenceCheck task(_assembly, a, b);
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("CompA")));
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("CompB")));
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("selected pair"), Qt::CaseInsensitive));
+
+    // Locked dialog ignores selection-handle changes.
+    task.testSetSelectionHandles(
+        {{_assembly, "Other.Face1"}, {_assembly, "AlsoOther.Face1"}}
+    );
+    task.testNotifySelectionChanged();
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("CompA")));
+}
+
+TEST_F(TaskInterferenceCheckTest, selectionCardinalityDrivesScopeMode)
+{
+    auto* partA = _doc->addObject<App::Part>("CompA");
+    auto* boxA = _doc->addObject<Part::Box>("BoxA");
+    boxA->Length.setValue(10);
+    boxA->Width.setValue(10);
+    boxA->Height.setValue(10);
+    partA->addObject(boxA);
+    auto* partB = _doc->addObject<App::Part>("CompB");
+    auto* boxB = _doc->addObject<Part::Box>("BoxB");
+    boxB->Length.setValue(10);
+    boxB->Width.setValue(10);
+    boxB->Height.setValue(10);
+    partB->addObject(boxB);
+    auto* partC = _doc->addObject<App::Part>("CompC");
+    auto* boxC = _doc->addObject<Part::Box>("BoxC");
+    boxC->Length.setValue(10);
+    boxC->Width.setValue(10);
+    boxC->Height.setValue(10);
+    partC->addObject(boxC);
+    _assembly->addObject(partA);
+    _assembly->addObject(partB);
+    _assembly->addObject(partC);
+    _doc->recompute();
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+
+    task.testClearSelectionHandles();
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("3")));
+
+    task.testSetSelectionHandles({{_assembly, "CompA.BoxA.Face1"}});
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    task.testSetSelectionHandles(
+        {{_assembly, "CompA.BoxA.Face1"}, {_assembly, "CompB.BoxB.Face1"}}
+    );
+    task.testRefreshScanScope();
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("CompA"), Qt::CaseInsensitive)
+                || task.testScopeText().contains(QStringLiteral("selected pair"), Qt::CaseInsensitive));
+
+    task.testSetSelectionHandles(
+        {{_assembly, "CompA.BoxA.Face1"}, {_assembly, "CompA.BoxA.Face2"}}
+    );
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    task.testSetSelectionHandles(
+        {{_assembly, "CompA.BoxA.Face1"},
+         {_assembly, "CompB.BoxB.Face1"},
+         {_assembly, "CompC.BoxC.Face1"}}
+    );
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    // Three faces that collapse to two occurrences still require exact two handles.
+    task.testSetSelectionHandles(
+        {{_assembly, "CompA.BoxA.Face1"},
+         {_assembly, "CompA.BoxA.Face2"},
+         {_assembly, "CompB.BoxB.Face1"}}
+    );
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    // Whole-object selections are not subelement handles.
+    task.testSetSelectionHandles({{partA, {}}, {partB, {}}});
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    // Unresolvable subnames are ignored safely.
+    task.testSetSelectionHandles(
+        {{_assembly, "NoSuch.Face1"}, {_assembly, "AlsoMissing.Face1"}}
+    );
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+}
+
+TEST_F(TaskInterferenceCheckTest, selectionChangeWhileBusySyncsScopeAfterFinish)
+{
+    auto* partA = _doc->addObject<App::Part>("BusyA");
+    auto* boxA = _doc->addObject<Part::Box>("BusyBoxA");
+    boxA->Length.setValue(10);
+    boxA->Width.setValue(10);
+    boxA->Height.setValue(10);
+    partA->addObject(boxA);
+    auto* partB = _doc->addObject<App::Part>("BusyB");
+    auto* boxB = _doc->addObject<Part::Box>("BusyBoxB");
+    boxB->Length.setValue(10);
+    boxB->Width.setValue(10);
+    boxB->Height.setValue(10);
+    partB->addObject(boxB);
+    _assembly->addObject(partA);
+    _assembly->addObject(partB);
+    _doc->recompute();
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testClearSelectionHandles();
+    task.testRefreshScanScope();
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    ASSERT_TRUE(session.isBusy());
+
+    task.testSetSelectionHandles(
+        {{_assembly, "BusyA.BusyBoxA.Face1"}, {_assembly, "BusyB.BusyBoxB.Face1"}}
+    );
+    task.testNotifySelectionChanged();
+    // Still all-visible while busy; refresh is deferred.
+    EXPECT_FALSE(task.testIsSelectedPairMode());
+
+    task.testDeliverScanFinished(scan.generation, makeResult(0, "idle"));
+    EXPECT_FALSE(session.isBusy());
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("selected pair"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, mutatePropertyDuringPreparationInvalidatesGeneration)
+{
+    auto* part = _doc->addObject<App::Part>("MutPart");
+    auto* box = _doc->addObject<Part::Box>("MutBox");
+    box->Length.setValue(10);
+    box->Width.setValue(10);
+    box->Height.setValue(10);
+    part->addObject(box);
+    _assembly->addObject(part);
+    _doc->recompute();
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto seed = session.beginScan();
+    task.testDeliverScanFinished(seed.generation, makeResult(1, "seed"));
+    ASSERT_TRUE(task.hasResults());
+
+    task.testSetPreparationBarrier([part]() {
+        part->Placement.setValue(Base::Placement(Base::Vector3d(5, 0, 0), Base::Rotation()));
+    });
+    task.testRunScan();
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_TRUE(
+        session.isStale()
+        || task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive)
+        || task.testStatusText().contains(QStringLiteral("cancel"), Qt::CaseInsensitive)
+    );
+    task.testClearPreparationBarrier();
+}
+
+TEST_F(TaskInterferenceCheckTest, includeHiddenToggleUpdatesScopeAndMarksStale)
+{
+    auto* visible = _doc->addObject<App::Part>("VisibleP");
+    auto* boxV = _doc->addObject<Part::Box>("BoxV");
+    boxV->Length.setValue(10);
+    boxV->Width.setValue(10);
+    boxV->Height.setValue(10);
+    visible->addObject(boxV);
+    auto* hidden = _doc->addObject<App::Part>("HiddenP");
+    hidden->Visibility.setValue(false);
+    auto* boxH = _doc->addObject<Part::Box>("BoxH");
+    boxH->Length.setValue(10);
+    boxH->Width.setValue(10);
+    boxH->Height.setValue(10);
+    hidden->addObject(boxH);
+    _assembly->addObject(visible);
+    _assembly->addObject(hidden);
+    _doc->recompute();
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    Gui::Selection().clearSelection();
+    task.testSetIncludeHidden(false);
+    task.testRefreshScanScope();
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("1")));
+    EXPECT_FALSE(task.testScopeText().contains(QStringLiteral("HiddenP")));
+
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makeResult(1, "T"));
+    ASSERT_TRUE(task.hasResults());
+
+    task.testSetIncludeHidden(true);
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive)
+        || task.testScopeText().contains(QStringLiteral("HiddenP"))
+    );
+    task.testRefreshScanScope();
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("2")));
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("HiddenP")));
+}
+
+TEST_F(TaskInterferenceCheckTest, hostDeleteDuringPreparationAbortsWithoutResults)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testSetPreparationBarrier([&task, this]() {
+        EXPECT_TRUE(task.testIsPreparing());
+        EXPECT_FALSE(task.testIsCancelEnabled());
+        EXPECT_TRUE(
+            task.testStatusText().contains(QStringLiteral("Preparing"), Qt::CaseInsensitive)
+        );
+        // Cancel before destroying the document so prepare never touches a
+        // dangling host pointer after this barrier returns.
+        task.scanSession().requestCancel();
+        App::GetApplication().closeDocument(_docName.c_str());
+        _doc = nullptr;
+        _assembly = nullptr;
+        EXPECT_FALSE(task.testHasHost());
+    });
+    task.testRunScan();
+    EXPECT_FALSE(task.testIsPreparing());
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_FALSE(task.testHasHost());
+    task.testClearPreparationBarrier();
+}
+
+TEST_F(TaskInterferenceCheckTest, preparingStateDisablesCancelUntilWorkerStarts)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    bool sawPreparing = false;
+    bool cancelDisabledWhilePreparing = false;
+    task.testSetPreparationBarrier([&]() {
+        sawPreparing = task.testIsPreparing();
+        cancelDisabledWhilePreparing = !task.testIsCancelEnabled();
+        EXPECT_TRUE(
+            task.testStatusText().contains(QStringLiteral("Preparing"), Qt::CaseInsensitive)
+        );
+        // Abort before expensive extract so the test stays deterministic.
+        task.scanSession().requestCancel();
+    });
+    task.testRunScan();
+    EXPECT_TRUE(sawPreparing);
+    EXPECT_TRUE(cancelDisabledWhilePreparing);
+    EXPECT_FALSE(task.testIsPreparing());
+    EXPECT_FALSE(task.hasResults());
+    task.testClearPreparationBarrier();
 }
 
 TEST_F(TaskInterferenceCheckTest, clearanceEditorUsesLengthQuantitySchema)

@@ -140,12 +140,13 @@ AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeaves(
 /**
  * First component occurrence directly beneath an interference root.
  * Selected faces/edges/vertices are pick handles only; the component is the first
- * non-group object on the path under the root (e.g. AssemblyCase.….Face68 → AssemblyCase).
+ * non-organizer object on the path under the root (groups remain in the prefix).
+ * Example: Folder.AssemblyCase.….Face68 → prefix "Folder.AssemblyCase."
  */
 struct InterferenceComponentOccurrence
 {
     App::DocumentObject* component = nullptr;
-    /** Subname prefix relative to root, e.g. "AssemblyCase." or "Link.0.". */
+    /** Subname prefix relative to root, e.g. "Folder.AssemblyCase." or "Link.0.". */
     std::string occurrencePrefix;
     std::string displayPath;
 };
@@ -165,12 +166,103 @@ AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefi
 );
 
 /**
+ * Top-level component occurrences under the root (through ordinary organizer groups).
+ * Link arrays contribute one occurrence per element. Hidden occurrences (including
+ * those under a hidden ancestor group) are omitted unless includeHidden is true.
+ */
+AssemblyExport std::vector<InterferenceComponentOccurrence> listInterferenceComponentOccurrences(
+    const App::DocumentObject* root,
+    bool includeHidden
+);
+
+/**
+ * Immutable, worker-safe snapshot: one leaf collection plus component assignment.
+ * Built on the caller thread while DocumentObjects are valid.
+ */
+struct InterferenceComponentScanSnapshot
+{
+    std::vector<InterferenceComponentOccurrence> components;
+    std::vector<InterferenceLeaf> leaves;
+    /** Parallel to leaves; npos if a leaf matches no listed component. */
+    std::vector<std::size_t> componentIndexOfLeaf;
+    bool cancelled = false;
+};
+
+/**
+ * List components and collect leaves once, then assign each leaf to the longest
+ * matching occurrence prefix. Optional testBarrier runs after listing and before
+ * leaf extraction (still on the caller thread).
+ */
+AssemblyExport InterferenceComponentScanSnapshot prepareInterferenceComponentScanSnapshot(
+    const App::DocumentObject* root,
+    bool includeHidden,
+    const InterferenceScanOptions& options = {},
+    const std::function<void()>& testBarrier = {}
+);
+
+/**
+ * Selection handle for interference scope resolution.
+ * Empty subName means a whole-object/tree selection (not a subelement pick handle).
+ */
+struct InterferenceSelectionHandle
+{
+    App::DocumentObject* object = nullptr;
+    std::string subName;
+};
+
+enum class InterferenceScanScopeMode
+{
+    AllComponents,
+    SelectedPair
+};
+
+struct InterferenceSelectionScope
+{
+    InterferenceScanScopeMode mode = InterferenceScanScopeMode::AllComponents;
+    InterferenceComponentOccurrence first;
+    InterferenceComponentOccurrence second;
+    /** Count of non-empty subName handles (literal subelement picks). */
+    int subelementHandleCount = 0;
+    /** Distinct resolved occurrence prefixes among those handles. */
+    int distinctOccurrenceCount = 0;
+};
+
+/**
+ * Exactly two non-empty subelement handles that resolve to two distinct occurrences
+ * → SelectedPair. Any other cardinality or resolution → AllComponents.
+ */
+AssemblyExport InterferenceSelectionScope resolveInterferenceSelectionScope(
+    const App::DocumentObject* root,
+    const std::vector<InterferenceSelectionHandle>& handles
+);
+
+/**
  * Scan only across two leaf sets (A×B). Does not pair leaves within the same set.
- * Used for Check Selected Components between two complete root-level occurrences.
  */
 AssemblyExport InterferenceScanResult runInterferenceScanBetweenLeafSets(
     const std::vector<InterferenceLeaf>& leavesA,
     const std::vector<InterferenceLeaf>& leavesB,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs = {}
+);
+
+/**
+ * Cross-component scan over an immutable snapshot (worker-safe).
+ * Does not pair leaves that share the same componentIndexOfLeaf.
+ */
+AssemblyExport InterferenceScanResult runInterferenceScanAcrossComponents(
+    const InterferenceComponentScanSnapshot& snapshot,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs = {}
+);
+
+/**
+ * Convenience: prepare snapshot then run across components.
+ * Prefer prepare + runAcross from GUI so workers never touch DocumentObject*.
+ */
+AssemblyExport InterferenceScanResult runInterferenceScanAllVisibleComponents(
+    const App::DocumentObject* root,
+    bool includeHidden,
     const InterferenceScanOptions& options,
     const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs = {}
 );

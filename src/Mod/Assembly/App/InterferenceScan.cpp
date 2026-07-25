@@ -8,6 +8,7 @@
 # include <TopExp_Explorer.hxx>
 # include <algorithm>
 # include <cmath>
+# include <limits>
 # include <set>
 # include <sstream>
 # include <unordered_set>
@@ -22,6 +23,7 @@
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/GeoFeature.h>
+#include <App/GroupExtension.h>
 #include <App/Link.h>
 #include <App/Part.h>
 #include <App/Datums.h>
@@ -29,6 +31,7 @@
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Tools.h>
+#include <functional>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/PartDesign/App/Body.h>
@@ -98,6 +101,85 @@ bool isHelperOrNonPhysical(const App::DocumentObject* obj)
     return false;
 }
 
+bool isPlainOrganizerGroup(const App::DocumentObject* obj)
+{
+    return obj && obj->isDerivedFrom<App::DocumentObjectGroup>()
+        && !freecad_cast<const App::Part*>(obj) && !freecad_cast<const AssemblyObject*>(obj)
+        && !freecad_cast<const AssemblyLink*>(obj) && !obj->isLinkGroup()
+        && !isHelperOrNonPhysical(obj);
+}
+
+bool isDigitsToken(const std::string& token)
+{
+    return !token.empty()
+        && std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+               return std::isdigit(ch) != 0;
+           });
+}
+
+/** Parse a non-negative int without throwing on overflow/malformed input. */
+bool tryParseNonNegativeInt(const std::string& token, int& out)
+{
+    if (!isDigitsToken(token)) {
+        return false;
+    }
+    unsigned long long value = 0;
+    for (unsigned char ch : token) {
+        value = value * 10ull + static_cast<unsigned long long>(ch - '0');
+        if (value > static_cast<unsigned long long>(std::numeric_limits<int>::max())) {
+            return false;
+        }
+    }
+    out = static_cast<int>(value);
+    return true;
+}
+
+bool expandedLinkElementOwns(
+    App::DocumentObject* element,
+    App::DocumentObject* selObj
+)
+{
+    if (!element || !selObj) {
+        return false;
+    }
+    if (element == selObj) {
+        return true;
+    }
+    if (auto* part = freecad_cast<App::Part*>(element)) {
+        return part->hasObject(selObj, true);
+    }
+    if (element->isLink()) {
+        if (auto* linked = element->getLinkedObject(true)) {
+            if (linked == selObj) {
+                return true;
+            }
+            if (auto* part = freecad_cast<App::Part*>(linked)) {
+                return part->hasObject(selObj, true);
+            }
+        }
+    }
+    if (auto* group = element->getExtensionByType<App::GroupExtension>(true)) {
+        return group->hasObject(selObj, true);
+    }
+    return false;
+}
+
+App::DocumentObject* findExpandedLinkElement(
+    App::Link* link,
+    const std::string& name
+)
+{
+    if (!link || name.empty()) {
+        return nullptr;
+    }
+    for (auto* child : link->ElementList.getValues()) {
+        if (child && child->getNameInDocument() && name == child->getNameInDocument()) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
 bool isContainerToDescend(const App::DocumentObject* obj)
 {
     if (!obj) {
@@ -140,6 +222,47 @@ std::vector<App::DocumentObject*> childrenOf(App::DocumentObject* obj)
         return part->Group.getValues();
     }
     return children;
+}
+
+/**
+ * GeoFeatureGroup containers (Assembly / Part) also claim nested objects into
+ * their flat Group list. Prefer the hierarchical path through organizer groups
+ * and nested Parts so Folder.Component. (and Component.Nested.Solid) wins over
+ * a flat duplicate claim.
+ */
+bool isOwnedBySiblingStructuralGroup(
+    App::DocumentObject* obj,
+    App::DocumentObject* container
+)
+{
+    if (!obj || !container) {
+        return false;
+    }
+    for (auto* sibling : childrenOf(container)) {
+        if (!sibling || sibling == obj || isHelperOrNonPhysical(sibling)) {
+            continue;
+        }
+        if (auto* link = freecad_cast<App::Link*>(sibling)) {
+            if (link->ElementCount.getValue() > 0) {
+                for (auto* element : link->ElementList.getValues()) {
+                    if (element == obj) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (!(isPlainOrganizerGroup(sibling) || freecad_cast<App::Part*>(sibling)
+              || freecad_cast<AssemblyObject*>(sibling)
+              || freecad_cast<AssemblyLink*>(sibling))) {
+            continue;
+        }
+        if (auto* group = sibling->getExtensionByType<App::GroupExtension>(true)) {
+            if (group->hasObject(obj, true)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool isPathVisible(const std::vector<App::DocumentObject*>& path)
@@ -278,12 +401,23 @@ bool tryMakeLeaf(
         (void)body;
     }
     else if (!occurrence->isDerivedFrom<Part::Feature>()
+             && !occurrence->isLink()
              && !freecad_cast<App::Link*>(occurrence)
              && !occurrence->isDerivedFrom<App::GeoFeature>()) {
+        // App::Link with ElementCount>0 reports isLink()==false (isLinkGroup);
+        // still accept it via freecad_cast<App::Link*>.
         return false;
     }
 
-    const bool visible = isPathVisible(visibilityPath);
+    const bool pathVisible = isPathVisible(visibilityPath);
+    bool visible = pathVisible;
+    if (arrayIndex >= 0 && occurrence) {
+        const std::string element = std::to_string(arrayIndex);
+        const int elementVis = occurrence->isElementVisible(element.c_str());
+        if (elementVis == 0) {
+            visible = false;
+        }
+    }
     if (!includeHidden && !visible) {
         return false;
     }
@@ -364,26 +498,11 @@ bool tryMakeLeaf(
         return true;
     }
     leaf.visible = visible;
-
-    try {
-        BRepCheck_Analyzer analyzer(shape);
-        leaf.shapeValid = analyzer.IsValid() ? true : false;
-        if (!leaf.shapeValid) {
-            leaf.diagnostic = "BRepCheck_Analyzer reported invalid geometry";
-        }
-        else if (!leaf.worldBoundBox.IsValid()) {
-            leaf.shapeValid = false;
-            leaf.diagnostic = "Missing or invalid world bounds";
-        }
-    }
-    catch (const Standard_Failure& exc) {
-        leaf.shapeValid = false;
-        leaf.diagnostic = exc.GetMessageString() ? exc.GetMessageString()
-                                                 : "BRepCheck_Analyzer failed";
-    }
-    catch (...) {
-        leaf.shapeValid = false;
-        leaf.diagnostic = "Unknown failure validating leaf geometry";
+    // Shape extraction requires DocumentObject access (GUI/safe thread). Defer
+    // BRepCheck_Analyzer to the worker via validateOwnedLeafGeometry().
+    leaf.shapeValid = leaf.worldBoundBox.IsValid();
+    if (!leaf.shapeValid) {
+        leaf.diagnostic = "Missing or invalid world bounds";
     }
 
     leaves.push_back(std::move(leaf));
@@ -416,6 +535,9 @@ void collectRecursively(
     if (isContainerToDescend(obj)) {
         visiting.insert(obj);
         for (auto* child : childrenOf(obj)) {
+            if (isOwnedBySiblingStructuralGroup(child, obj)) {
+                continue;
+            }
             collectRecursively(root,
                 child,
                 pathFromRoot,
@@ -431,6 +553,32 @@ void collectRecursively(
 
     if (auto* body = freecad_cast<Part::BodyBase*>(obj)) {
         tryMakeLeaf(root, body, pathFromRoot, visibilityPath, includeHidden, leaves);
+        return;
+    }
+
+    // Expanded App::LinkElement (and other non-App::Link link objects).
+    if (obj->isLink() && !freecad_cast<App::Link*>(obj)) {
+        auto* linked = obj->getLinkedObject(true);
+        if (linked && isContainerToDescend(linked) && !freecad_cast<Part::BodyBase*>(linked)) {
+            visiting.insert(obj);
+            for (auto* child : childrenOf(linked)) {
+                if (isOwnedBySiblingStructuralGroup(child, linked)) {
+                    continue;
+                }
+                collectRecursively(root,
+                    child,
+                    pathFromRoot,
+                    visibilityPath,
+                    includeHidden,
+                    visiting,
+                    leaves
+                );
+            }
+            visiting.erase(obj);
+        }
+        else {
+            tryMakeLeaf(root, obj, pathFromRoot, visibilityPath, includeHidden, leaves);
+        }
         return;
     }
 
@@ -473,6 +621,9 @@ void collectRecursively(
         if (linked && isContainerToDescend(linked) && !freecad_cast<Part::BodyBase*>(linked)) {
             visiting.insert(obj);
             for (auto* child : childrenOf(linked)) {
+                if (isOwnedBySiblingStructuralGroup(child, linked)) {
+                    continue;
+                }
                 collectRecursively(root,
                     child,
                     pathFromRoot,
@@ -702,6 +853,9 @@ std::vector<InterferenceLeaf> collectInterferenceLeaves(
     visiting.insert(mutableRoot);
     std::vector<App::DocumentObject*> visibilityRoot {mutableRoot};
     for (auto* child : childrenOf(mutableRoot)) {
+        if (isOwnedBySiblingStructuralGroup(child, mutableRoot)) {
+            continue;
+        }
         collectRecursively(
             root,
             child,
@@ -724,11 +878,6 @@ bool resolveInterferenceComponentOccurrence(
 {
     out = {};
     if (!isInterferenceRoot(root) || !selObj || !root->isAttachedToDocument()) {
-        return false;
-    }
-
-    auto* rootPart = freecad_cast<const App::Part*>(root);
-    if (!rootPart) {
         return false;
     }
 
@@ -767,176 +916,219 @@ bool resolveInterferenceComponentOccurrence(
         }
     }
 
-    if (!sawRoot) {
-        // Selection rooted at a descendant (e.g. tree-click on a nested feature).
-        // Map it to the first component occurrence directly under the root that contains it.
-        if (selObj == root) {
-            return false;
-        }
-        App::DocumentObject* owner = nullptr;
-        for (auto* child : childrenOf(const_cast<App::DocumentObject*>(root))) {
-            if (!child) {
+    auto emitOccurrence =
+        [&](App::DocumentObject* component,
+            const std::vector<App::DocumentObject*>& path,
+            int arrayIndex) {
+            if (!component || !component->getNameInDocument()) {
+                return false;
+            }
+            out.component = component;
+            std::ostringstream prefix;
+            std::ostringstream display;
+            bool firstLabel = true;
+            for (auto* obj : path) {
+                if (!obj || !obj->getNameInDocument()) {
+                    continue;
+                }
+                prefix << obj->getNameInDocument() << '.';
+                if (!firstLabel) {
+                    display << '.';
+                }
+                firstLabel = false;
+                display << obj->Label.getValue();
+            }
+            if (arrayIndex >= 0) {
+                prefix << arrayIndex << '.';
+                display << '.' << arrayIndex;
+            }
+            out.occurrencePrefix = prefix.str();
+            out.displayPath = display.str();
+            return !out.occurrencePrefix.empty();
+        };
+
+    // Path-based resolution when the root appears in the selection subname.
+    if (sawRoot) {
+        std::vector<App::DocumentObject*> path;
+        App::DocumentObject* component = nullptr;
+        int arrayIndex = -1;
+        bool acceptArrayIndex = false;
+        doc = root->getDocument();
+
+        for (std::size_t i = start; i < names.size(); ++i) {
+            const std::string& name = names[i];
+            if (name.empty()) {
                 continue;
             }
-            if (child->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(child)
-                && !freecad_cast<AssemblyObject*>(child) && !freecad_cast<AssemblyLink*>(child)) {
-                for (auto* nested : childrenOf(child)) {
-                    if (!nested || isHelperOrNonPhysical(nested) || nested->isLinkGroup()) {
-                        continue;
-                    }
-                    if (nested == selObj) {
-                        owner = nested;
-                        break;
-                    }
-                    if (auto* part = freecad_cast<App::Part*>(nested)) {
-                        if (part->hasObject(selObj, true)) {
-                            owner = nested;
-                            break;
+            if (component) {
+                if (acceptArrayIndex) {
+                    if (auto* link = freecad_cast<App::Link*>(component)) {
+                        const bool expanded = link->ShowElement.getValue()
+                            && !link->ElementList.getValues().empty();
+                        if (expanded) {
+                            if (auto* element = findExpandedLinkElement(link, name)) {
+                                path.push_back(element);
+                                component = element;
+                                arrayIndex = -1;
+                                acceptArrayIndex = false;
+                            }
+                            else {
+                                return false;
+                            }
+                        }
+                        else {
+                            int parsedIndex = -1;
+                            if (tryParseNonNegativeInt(name, parsedIndex)
+                                && parsedIndex < link->ElementCount.getValue()) {
+                                arrayIndex = parsedIndex;
+                                acceptArrayIndex = false;
+                            }
+                            else {
+                                return false;
+                            }
                         }
                     }
-                    if (auto* link = freecad_cast<App::Link*>(nested)) {
-                        if (link == selObj || link->getLinkedObject(true) == selObj) {
-                            owner = nested;
-                            break;
-                        }
+                    else {
+                        return false;
                     }
                 }
-                if (owner) {
-                    break;
-                }
-                continue;
-            }
-            if (child->isLinkGroup() || isHelperOrNonPhysical(child)) {
-                continue;
-            }
-            if (child == selObj) {
-                owner = child;
                 break;
             }
-            if (auto* part = freecad_cast<App::Part*>(child)) {
-                if (part->hasObject(selObj, true)) {
-                    owner = child;
-                    break;
+            if (!doc) {
+                break;
+            }
+            if (isDigitsToken(name)) {
+                continue;
+            }
+            App::DocumentObject* cur = doc->getObject(name.c_str());
+            if (!cur) {
+                continue;
+            }
+            if (cur->isLink()) {
+                if (auto* linked = cur->getLinkedObject()) {
+                    if (linked->getDocument()) {
+                        doc = linked->getDocument();
+                    }
                 }
             }
-            if (auto* link = freecad_cast<App::Link*>(child)) {
-                if (link == selObj || link->getLinkedObject(true) == selObj) {
-                    owner = child;
-                    break;
-                }
+            if (isHelperOrNonPhysical(cur)) {
+                continue;
             }
-            if (auto* asmLink = freecad_cast<AssemblyLink*>(child)) {
-                if (asmLink == selObj || asmLink->hasObject(selObj, true)) {
-                    owner = child;
-                    break;
-                }
+            if (isPlainOrganizerGroup(cur)) {
+                path.push_back(cur);
+                continue;
             }
+            if (cur->isLinkGroup() && freecad_cast<App::Link*>(cur)
+                && freecad_cast<App::Link*>(cur)->ElementCount.getValue() <= 0) {
+                continue;
+            }
+
+            component = cur;
+            path.push_back(cur);
+            acceptArrayIndex = freecad_cast<App::Link*>(cur)
+                && freecad_cast<App::Link*>(cur)->ElementCount.getValue() > 0;
         }
-        if (!owner || !owner->getNameInDocument()) {
+
+        if (!component) {
             return false;
         }
-        out.component = owner;
-        out.occurrencePrefix = std::string(owner->getNameInDocument()) + ".";
-        out.displayPath = owner->Label.getValue();
-        return true;
+        // Array links require an element index or expanded LinkElement token.
+        if (acceptArrayIndex) {
+            return false;
+        }
+        return emitOccurrence(component, path, arrayIndex);
     }
 
-    auto isDigits = [](const std::string& token) {
-        return !token.empty()
-            && std::all_of(token.begin(), token.end(), [](unsigned char ch) {
-                   return std::isdigit(ch) != 0;
-               });
+    // Selection rooted at a descendant: find the top-level occurrence that owns it.
+    if (selObj == root) {
+        return false;
+    }
+
+    std::function<bool(
+        App::DocumentObject*,
+        std::vector<App::DocumentObject*>,
+        std::vector<App::DocumentObject*>
+    )>
+        search;
+    search = [&](App::DocumentObject* obj,
+                 std::vector<App::DocumentObject*> path,
+                 std::vector<App::DocumentObject*> vis) -> bool {
+        if (!obj || isHelperOrNonPhysical(obj)) {
+            return false;
+        }
+        path.push_back(obj);
+        vis.push_back(obj);
+
+        if (isPlainOrganizerGroup(obj)) {
+            for (auto* child : childrenOf(obj)) {
+                if (isOwnedBySiblingStructuralGroup(child, obj)) {
+                    continue;
+                }
+                if (search(child, path, vis)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (auto* link = freecad_cast<App::Link*>(obj)) {
+            const int elementCount = link->ElementCount.getValue();
+            if (elementCount > 0) {
+                const bool expanded =
+                    link->ShowElement.getValue() && !link->ElementList.getValues().empty();
+                if (expanded) {
+                    for (auto* child : link->ElementList.getValues()) {
+                        if (!child) {
+                            continue;
+                        }
+                        if (expandedLinkElementOwns(child, selObj)) {
+                            std::vector<App::DocumentObject*> elementPath = path;
+                            elementPath.push_back(child);
+                            return emitOccurrence(child, elementPath, -1);
+                        }
+                    }
+                    return false;
+                }
+                // Collapsed array: ownership is the link itself (any element).
+                if (link == selObj || link->getLinkedObject(true) == selObj) {
+                    return emitOccurrence(link, path, 0);
+                }
+                return false;
+            }
+        }
+
+        bool owns = (obj == selObj);
+        if (!owns) {
+            if (auto* part = freecad_cast<App::Part*>(obj)) {
+                owns = part->hasObject(selObj, true);
+            }
+            else if (auto* link = freecad_cast<App::Link*>(obj)) {
+                owns = link->getLinkedObject(true) == selObj;
+            }
+            else if (auto* asmLink = freecad_cast<AssemblyLink*>(obj)) {
+                owns = asmLink->hasObject(selObj, true);
+            }
+        }
+        if (owns) {
+            return emitOccurrence(obj, path, -1);
+        }
+        return false;
     };
 
-    App::DocumentObject* component = nullptr;
-    std::string prefix;
-    bool acceptArrayIndex = false;
-
-    for (std::size_t i = start; i < names.size(); ++i) {
-        const std::string& name = names[i];
-        if (name.empty()) {
+    std::vector<App::DocumentObject*> empty;
+    auto* mutableRoot = const_cast<App::DocumentObject*>(root);
+    std::vector<App::DocumentObject*> visRoot {mutableRoot};
+    for (auto* child : childrenOf(mutableRoot)) {
+        if (isOwnedBySiblingStructuralGroup(child, mutableRoot)) {
             continue;
         }
-
-        if (component) {
-            if (acceptArrayIndex && isDigits(name)) {
-                prefix += name;
-                prefix += '.';
-                acceptArrayIndex = false;
-            }
-            break;
-        }
-
-        if (!doc) {
-            break;
-        }
-        App::DocumentObject* cur = doc->getObject(name.c_str());
-        if (!cur) {
-            continue;
-        }
-        if (cur->isLink()) {
-            if (auto* linked = cur->getLinkedObject()) {
-                if (linked->getDocument()) {
-                    doc = linked->getDocument();
-                }
-            }
-        }
-        if (cur->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(cur)
-            && !freecad_cast<AssemblyObject*>(cur) && !freecad_cast<AssemblyLink*>(cur)) {
-            continue;
-        }
-        if (cur->isLinkGroup()) {
-            continue;
-        }
-        if (isHelperOrNonPhysical(cur)) {
-            continue;
-        }
-
-        component = cur;
-        prefix = std::string(cur->getNameInDocument()) + ".";
-        acceptArrayIndex = freecad_cast<App::Link*>(cur) != nullptr;
-    }
-
-    if (!component || prefix.empty()) {
-        return false;
-    }
-
-    // Component must be a first-level (non-group) occurrence under the root.
-    bool direct = false;
-    for (auto* child : childrenOf(const_cast<App::DocumentObject*>(root))) {
-        if (!child) {
-            continue;
-        }
-        if (child->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(child)
-            && !freecad_cast<AssemblyObject*>(child) && !freecad_cast<AssemblyLink*>(child)) {
-            for (auto* nested : childrenOf(child)) {
-                if (nested == component) {
-                    direct = true;
-                    break;
-                }
-            }
-            if (direct) {
-                break;
-            }
-            continue;
-        }
-        if (child->isLinkGroup()) {
-            continue;
-        }
-        if (child == component) {
-            direct = true;
-            break;
+        if (search(child, empty, visRoot)) {
+            return true;
         }
     }
-    if (!direct) {
-        return false;
-    }
-
-    out.component = component;
-    out.occurrencePrefix = std::move(prefix);
-    out.displayPath = component->Label.getValue();
-    return true;
+    return false;
 }
+
 
 std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
     const App::DocumentObject* root,
@@ -956,6 +1148,412 @@ std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
         }
     }
     return filtered;
+}
+
+namespace
+{
+
+std::string joinObjectPathNames(const std::vector<App::DocumentObject*>& path)
+{
+    std::ostringstream ss;
+    for (auto* obj : path) {
+        if (!obj || !obj->getNameInDocument()) {
+            continue;
+        }
+        ss << obj->getNameInDocument() << '.';
+    }
+    return ss.str();
+}
+
+std::string joinObjectPathLabels(const std::vector<App::DocumentObject*>& path)
+{
+    std::ostringstream ss;
+    bool first = true;
+    for (auto* obj : path) {
+        if (!obj || !obj->getNameInDocument()) {
+            continue;
+        }
+        if (!first) {
+            ss << '.';
+        }
+        first = false;
+        ss << obj->Label.getValue();
+    }
+    return ss.str();
+}
+
+bool pathVisibleIncludingElement(
+    const std::vector<App::DocumentObject*>& visibilityPath,
+    App::DocumentObject* elementOwner,
+    int arrayIndex
+)
+{
+    if (!isPathVisible(visibilityPath)) {
+        return false;
+    }
+    if (arrayIndex < 0 || !elementOwner) {
+        return true;
+    }
+    const std::string element = std::to_string(arrayIndex);
+    return elementOwner->isElementVisible(element.c_str()) != 0;
+}
+
+void appendComponentOccurrence(
+    std::vector<InterferenceComponentOccurrence>& out,
+    App::DocumentObject* component,
+    const std::vector<App::DocumentObject*>& pathFromRoot,
+    const std::vector<App::DocumentObject*>& visibilityPath,
+    int arrayIndex,
+    bool includeHidden
+)
+{
+    if (!component || !component->getNameInDocument()) {
+        return;
+    }
+    if (!includeHidden
+        && !pathVisibleIncludingElement(visibilityPath, component, arrayIndex)) {
+        return;
+    }
+
+    InterferenceComponentOccurrence occ;
+    occ.component = component;
+    occ.occurrencePrefix = joinObjectPathNames(pathFromRoot);
+    if (arrayIndex >= 0) {
+        occ.occurrencePrefix += std::to_string(arrayIndex);
+        occ.occurrencePrefix += '.';
+    }
+    occ.displayPath = joinObjectPathLabels(pathFromRoot);
+    if (arrayIndex >= 0) {
+        occ.displayPath += '.';
+        occ.displayPath += std::to_string(arrayIndex);
+    }
+    out.push_back(std::move(occ));
+}
+
+void listComponentsRecursively(
+    const App::DocumentObject* root,
+    App::DocumentObject* obj,
+    std::vector<App::DocumentObject*> pathFromRoot,
+    std::vector<App::DocumentObject*> visibilityPath,
+    bool includeHidden,
+    std::unordered_set<App::DocumentObject*>& visiting,
+    std::vector<InterferenceComponentOccurrence>& out
+)
+{
+    if (!obj || !root) {
+        return;
+    }
+    if (visiting.contains(obj)) {
+        return;
+    }
+    if (isHelperOrNonPhysical(obj)) {
+        return;
+    }
+
+    pathFromRoot.push_back(obj);
+    visibilityPath.push_back(obj);
+
+    if (isPlainOrganizerGroup(obj)) {
+        visiting.insert(obj);
+        for (auto* child : childrenOf(obj)) {
+            if (isOwnedBySiblingStructuralGroup(child, obj)) {
+                continue;
+            }
+            listComponentsRecursively(
+                root,
+                child,
+                pathFromRoot,
+                visibilityPath,
+                includeHidden,
+                visiting,
+                out
+            );
+        }
+        visiting.erase(obj);
+        return;
+    }
+
+    if (auto* link = freecad_cast<App::Link*>(obj)) {
+        const int elementCount = link->ElementCount.getValue();
+        if (elementCount > 0) {
+            const bool expanded =
+                link->ShowElement.getValue() && !link->ElementList.getValues().empty();
+            if (expanded) {
+                visiting.insert(obj);
+                for (auto* child : link->ElementList.getValues()) {
+                    if (!child || isHelperOrNonPhysical(child)) {
+                        continue;
+                    }
+                    // Each expanded element is its own top-level occurrence.
+                    std::vector<App::DocumentObject*> elementPath = pathFromRoot;
+                    std::vector<App::DocumentObject*> elementVis = visibilityPath;
+                    elementPath.push_back(child);
+                    elementVis.push_back(child);
+                    appendComponentOccurrence(
+                        out,
+                        child,
+                        elementPath,
+                        elementVis,
+                        -1,
+                        includeHidden
+                    );
+                }
+                visiting.erase(obj);
+            }
+            else {
+                for (int i = 0; i < elementCount; ++i) {
+                    appendComponentOccurrence(
+                        out,
+                        link,
+                        pathFromRoot,
+                        visibilityPath,
+                        i,
+                        includeHidden
+                    );
+                }
+            }
+            return;
+        }
+    }
+
+    // Part, Body, Feature, non-array Link, AssemblyLink, etc.
+    appendComponentOccurrence(out, obj, pathFromRoot, visibilityPath, -1, includeHidden);
+}
+
+bool optionsInvalid(const InterferenceScanOptions& options)
+{
+    return options.clearance < 0.0 || !std::isfinite(options.clearance)
+        || options.detectionOptions.linearTolerance < 0.0
+        || !std::isfinite(options.detectionOptions.linearTolerance);
+}
+
+/**
+ * Worker-safe validation of already-owned leaf shapes: bounds normalization and
+ * BRepCheck_Analyzer. Must not touch DocumentObject pointers.
+ */
+void validateOwnedLeafGeometry(
+    std::vector<InterferenceLeaf>& leaves,
+    InterferenceScanResult& result,
+    const InterferenceScanOptions& options
+)
+{
+    for (std::size_t i = 0; i < leaves.size(); ++i) {
+        if (isCancelled(options)) {
+            result.cancelled = true;
+            return;
+        }
+        auto& leaf = leaves[i];
+        if (!leaf.shapeValid) {
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic =
+                leaf.diagnostic.empty() ? "Invalid leaf geometry" : leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+            continue;
+        }
+        if (leaf.worldShape.IsNull()) {
+            leaf.shapeValid = false;
+            leaf.diagnostic = "Null world shape";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+            continue;
+        }
+        if (!leaf.worldBoundBox.IsValid()) {
+            try {
+                leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
+            }
+            catch (...) {
+                leaf.worldBoundBox = Base::BoundBox3d();
+            }
+        }
+        if (!leaf.worldBoundBox.IsValid()) {
+            leaf.shapeValid = false;
+            leaf.diagnostic = "Missing or invalid world bounds";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+            continue;
+        }
+        try {
+            BRepCheck_Analyzer analyzer(leaf.worldShape);
+            if (!analyzer.IsValid()) {
+                leaf.shapeValid = false;
+                leaf.diagnostic = "BRepCheck_Analyzer reported invalid geometry";
+                InterferenceComponentIssue issue;
+                issue.leafIndex = i;
+                issue.diagnostic = leaf.diagnostic;
+                result.componentIssues.push_back(issue);
+                result.counts.invalidInputs += 1;
+            }
+        }
+        catch (const Standard_Failure& exc) {
+            leaf.shapeValid = false;
+            leaf.diagnostic =
+                exc.GetMessageString() ? exc.GetMessageString() : "BRepCheck_Analyzer failed";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+        }
+        catch (...) {
+            leaf.shapeValid = false;
+            leaf.diagnostic = "Unknown failure validating leaf geometry";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+        }
+    }
+}
+
+}  // namespace
+
+std::vector<InterferenceComponentOccurrence> listInterferenceComponentOccurrences(
+    const App::DocumentObject* root,
+    bool includeHidden
+)
+{
+    std::vector<InterferenceComponentOccurrence> result;
+    if (!isInterferenceRoot(root)) {
+        return result;
+    }
+
+    std::unordered_set<App::DocumentObject*> visiting;
+    visiting.insert(const_cast<App::DocumentObject*>(root));
+    std::vector<App::DocumentObject*> emptyPath;
+    auto* mutableRoot = const_cast<App::DocumentObject*>(root);
+    std::vector<App::DocumentObject*> visibilityRoot {mutableRoot};
+    for (auto* child : childrenOf(mutableRoot)) {
+        if (isOwnedBySiblingStructuralGroup(child, mutableRoot)) {
+            continue;
+        }
+        listComponentsRecursively(
+            root,
+            child,
+            emptyPath,
+            visibilityRoot,
+            includeHidden,
+            visiting,
+            result
+        );
+    }
+    return result;
+}
+
+InterferenceComponentScanSnapshot prepareInterferenceComponentScanSnapshot(
+    const App::DocumentObject* root,
+    bool includeHidden,
+    const InterferenceScanOptions& options,
+    const std::function<void()>& testBarrier
+)
+{
+    InterferenceComponentScanSnapshot snap;
+    if (isCancelled(options)) {
+        snap.cancelled = true;
+        return snap;
+    }
+    if (!isInterferenceRoot(root) || !root->isAttachedToDocument()) {
+        return snap;
+    }
+
+    snap.components = listInterferenceComponentOccurrences(root, includeHidden);
+    if (isCancelled(options)) {
+        snap.cancelled = true;
+        return snap;
+    }
+    if (testBarrier) {
+        testBarrier();
+    }
+    // After the barrier the host DocumentObject may have been destroyed. Do not
+    // touch root again unless the scan is still live; callers that destroy the
+    // host must set cancelFlag inside the barrier before deleting.
+    if (isCancelled(options)) {
+        snap.cancelled = true;
+        snap.components.clear();
+        return snap;
+    }
+    if (!root->isAttachedToDocument()) {
+        snap.cancelled = true;
+        snap.components.clear();
+        return snap;
+    }
+
+    snap.leaves = collectInterferenceLeaves(root, includeHidden);
+    snap.componentIndexOfLeaf.assign(snap.leaves.size(), std::string::npos);
+    for (std::size_t li = 0; li < snap.leaves.size(); ++li) {
+        std::size_t best = std::string::npos;
+        std::size_t bestLen = 0;
+        for (std::size_t ci = 0; ci < snap.components.size(); ++ci) {
+            const auto& prefix = snap.components[ci].occurrencePrefix;
+            if (prefix.empty()) {
+                continue;
+            }
+            if (snap.leaves[li].occurrenceSubName.rfind(prefix, 0) == 0
+                && prefix.size() > bestLen) {
+                best = ci;
+                bestLen = prefix.size();
+            }
+        }
+        snap.componentIndexOfLeaf[li] = best;
+    }
+    return snap;
+}
+
+InterferenceSelectionScope resolveInterferenceSelectionScope(
+    const App::DocumentObject* root,
+    const std::vector<InterferenceSelectionHandle>& handles
+)
+{
+    InterferenceSelectionScope scope;
+    if (!isInterferenceRoot(root)) {
+        return scope;
+    }
+
+    std::vector<InterferenceComponentOccurrence> resolved;
+    for (const auto& handle : handles) {
+        if (!handle.object) {
+            continue;
+        }
+        // Literal subelement requirement: empty subName is whole-object, not a handle.
+        if (handle.subName.empty()) {
+            continue;
+        }
+        scope.subelementHandleCount += 1;
+        InterferenceComponentOccurrence occ;
+        if (resolveInterferenceComponentOccurrence(root, handle.object, handle.subName, occ)) {
+            resolved.push_back(std::move(occ));
+        }
+    }
+
+    std::vector<InterferenceComponentOccurrence> unique;
+    for (auto& occ : resolved) {
+        bool seen = false;
+        for (const auto& existing : unique) {
+            if (existing.occurrencePrefix == occ.occurrencePrefix) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            unique.push_back(std::move(occ));
+        }
+    }
+    scope.distinctOccurrenceCount = static_cast<int>(unique.size());
+
+    if (scope.subelementHandleCount == 2 && unique.size() == 2) {
+        scope.mode = InterferenceScanScopeMode::SelectedPair;
+        scope.first = std::move(unique[0]);
+        scope.second = std::move(unique[1]);
+    }
+    return scope;
 }
 
 std::vector<std::pair<std::size_t, std::size_t>> broadPhaseCandidatePairs(
@@ -1051,6 +1649,11 @@ InterferenceScanResult runInterferenceScan(
     InterferenceScanResult result;
     result.leaves = leaves;
 
+    if (isCancelled(options)) {
+        result.cancelled = true;
+        return result;
+    }
+
     if (options.clearance < 0.0 || !std::isfinite(options.clearance)
         || options.detectionOptions.linearTolerance < 0.0
         || !std::isfinite(options.detectionOptions.linearTolerance)) {
@@ -1071,45 +1674,10 @@ InterferenceScanResult runInterferenceScan(
         excluded.insert(std::move(canon));
     }
 
-    // Normalize bounds and demote leaves that cannot participate in pairing.
-    for (std::size_t i = 0; i < result.leaves.size(); ++i) {
-        auto& leaf = result.leaves[i];
-        if (!leaf.shapeValid) {
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic =
-                leaf.diagnostic.empty() ? "Invalid leaf geometry" : leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-            continue;
-        }
-        if (leaf.worldShape.IsNull()) {
-            leaf.shapeValid = false;
-            leaf.diagnostic = "Null world shape";
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic = leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-            continue;
-        }
-        if (!leaf.worldBoundBox.IsValid()) {
-            try {
-                leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
-            }
-            catch (...) {
-                leaf.worldBoundBox = Base::BoundBox3d();
-            }
-        }
-        if (!leaf.worldBoundBox.IsValid()) {
-            leaf.shapeValid = false;
-            leaf.diagnostic = "Missing or invalid world bounds";
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic = leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-        }
+    // Normalize bounds and validate owned shapes on the worker thread.
+    validateOwnedLeafGeometry(result.leaves, result, options);
+    if (result.cancelled) {
+        return result;
     }
 
     if (isCancelled(options)) {
@@ -1239,6 +1807,11 @@ InterferenceScanResult runInterferenceScanBetweenLeafSets(
     result.leaves.insert(result.leaves.end(), leavesA.begin(), leavesA.end());
     result.leaves.insert(result.leaves.end(), leavesB.begin(), leavesB.end());
 
+    if (isCancelled(options)) {
+        result.cancelled = true;
+        return result;
+    }
+
     if (options.clearance < 0.0 || !std::isfinite(options.clearance)
         || options.detectionOptions.linearTolerance < 0.0
         || !std::isfinite(options.detectionOptions.linearTolerance)) {
@@ -1259,44 +1832,9 @@ InterferenceScanResult runInterferenceScanBetweenLeafSets(
         excluded.insert(std::move(canon));
     }
 
-    for (std::size_t i = 0; i < result.leaves.size(); ++i) {
-        auto& leaf = result.leaves[i];
-        if (!leaf.shapeValid) {
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic =
-                leaf.diagnostic.empty() ? "Invalid leaf geometry" : leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-            continue;
-        }
-        if (leaf.worldShape.IsNull()) {
-            leaf.shapeValid = false;
-            leaf.diagnostic = "Null world shape";
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic = leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-            continue;
-        }
-        if (!leaf.worldBoundBox.IsValid()) {
-            try {
-                leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
-            }
-            catch (...) {
-                leaf.worldBoundBox = Base::BoundBox3d();
-            }
-        }
-        if (!leaf.worldBoundBox.IsValid()) {
-            leaf.shapeValid = false;
-            leaf.diagnostic = "Missing or invalid world bounds";
-            InterferenceComponentIssue issue;
-            issue.leafIndex = i;
-            issue.diagnostic = leaf.diagnostic;
-            result.componentIssues.push_back(issue);
-            result.counts.invalidInputs += 1;
-        }
+    validateOwnedLeafGeometry(result.leaves, result, options);
+    if (result.cancelled) {
+        return result;
     }
 
     if (isCancelled(options)) {
@@ -1441,6 +1979,193 @@ InterferenceScanResult runInterferenceScanBetweenLeafSets(
     result.complete = !result.cancelled && result.counts.invalidInputs == 0
         && result.counts.inconclusivePairs == 0;
     return result;
+}
+
+InterferenceScanResult runInterferenceScanAcrossComponents(
+    const InterferenceComponentScanSnapshot& snapshot,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs
+)
+{
+    InterferenceScanResult acc;
+    acc.leaves = snapshot.leaves;
+    if (snapshot.cancelled || isCancelled(options)) {
+        acc.cancelled = true;
+        return acc;
+    }
+
+    if (optionsInvalid(options)) {
+        acc.complete = false;
+        acc.counts.invalidInputs += 1;
+        InterferenceComponentIssue issue;
+        issue.diagnostic = "Clearance/tolerance must be finite and nonnegative";
+        acc.componentIssues.push_back(issue);
+        return acc;
+    }
+
+    validateOwnedLeafGeometry(acc.leaves, acc, options);
+    if (acc.cancelled) {
+        return acc;
+    }
+
+    if (isCancelled(options)) {
+        acc.cancelled = true;
+        return acc;
+    }
+
+    std::set<std::pair<std::string, std::string>> excluded;
+    for (const auto& pair : excludedSourceIdPairs) {
+        auto canon = canonicalSourceIdPair(pair.first, pair.second);
+        if (canon.first.empty() || canon.second.empty()) {
+            continue;
+        }
+        excluded.insert(std::move(canon));
+    }
+
+    const double tolerance = options.detectionOptions.linearTolerance > 0.0
+        ? options.detectionOptions.linearTolerance
+        : Precision::Confusion();
+    const double margin = 0.5 * options.clearance + tolerance;
+    const auto& componentOfLeaf = snapshot.componentIndexOfLeaf;
+
+    std::vector<std::pair<std::size_t, std::size_t>> candidates;
+    std::size_t validCrossPairs = 0;
+    for (std::size_t i = 0; i < acc.leaves.size(); ++i) {
+        if (i >= componentOfLeaf.size() || componentOfLeaf[i] == std::string::npos) {
+            continue;
+        }
+        if (!acc.leaves[i].shapeValid || acc.leaves[i].worldShape.IsNull()
+            || !acc.leaves[i].worldBoundBox.IsValid()) {
+            continue;
+        }
+        Base::BoundBox3d boxA = acc.leaves[i].worldBoundBox;
+        enlargeBoundBox(boxA, margin);
+        for (std::size_t j = i + 1; j < acc.leaves.size(); ++j) {
+            if (j >= componentOfLeaf.size() || componentOfLeaf[j] == std::string::npos) {
+                continue;
+            }
+            if (componentOfLeaf[i] == componentOfLeaf[j]) {
+                continue;
+            }
+            if (!acc.leaves[j].shapeValid || acc.leaves[j].worldShape.IsNull()
+                || !acc.leaves[j].worldBoundBox.IsValid()) {
+                continue;
+            }
+            ++validCrossPairs;
+            Base::BoundBox3d boxB = acc.leaves[j].worldBoundBox;
+            enlargeBoundBox(boxB, margin);
+            if (boxesOverlap(boxA, boxB)) {
+                candidates.emplace_back(i, j);
+            }
+        }
+    }
+
+    acc.counts.clearPairs = static_cast<int>(
+        validCrossPairs > candidates.size() ? validCrossPairs - candidates.size() : 0
+    );
+
+    Part::InterferenceOptions detection = options.detectionOptions;
+    detection.clearance = options.clearance;
+    detection.cancelFlag = options.cancelFlag;
+    detection.skipGeometryValidation = true;
+
+    const int total = static_cast<int>(candidates.size());
+    int current = 0;
+    for (const auto& candidate : candidates) {
+        if (isCancelled(options)) {
+            acc.cancelled = true;
+            return acc;
+        }
+        const auto& leafA = acc.leaves[candidate.first];
+        const auto& leafB = acc.leaves[candidate.second];
+        if (!leafA.shapeValid || !leafB.shapeValid) {
+            ++current;
+            if (options.progress) {
+                options.progress(current, total);
+            }
+            continue;
+        }
+
+        InterferencePairResult pairResult;
+        pairResult.leafIndexA = candidate.first;
+        pairResult.leafIndexB = candidate.second;
+        pairResult.detection =
+            Part::classifyInterference(leafA.worldShape, leafB.worldShape, detection);
+        const bool sourcesExcluded =
+            isExcludedBySourceId(leafA.sourceId, leafB.sourceId, excluded);
+
+        switch (pairResult.detection.kind) {
+            case Part::InterferenceKind::Clear:
+                acc.counts.clearPairs += 1;
+                break;
+            case Part::InterferenceKind::ClearanceViolation:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    acc.counts.excludedViolations += 1;
+                }
+                else {
+                    acc.counts.clearanceViolations += 1;
+                }
+                acc.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Contact:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    acc.counts.excludedViolations += 1;
+                }
+                else {
+                    acc.counts.contacts += 1;
+                }
+                acc.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Penetration:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    acc.counts.excludedViolations += 1;
+                }
+                else {
+                    acc.counts.penetrations += 1;
+                }
+                acc.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::InvalidInput:
+                acc.counts.invalidInputs += 1;
+                acc.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Inconclusive:
+                acc.counts.inconclusivePairs += 1;
+                acc.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Cancelled:
+                acc.cancelled = true;
+                return acc;
+        }
+        ++current;
+        if (options.progress) {
+            options.progress(current, total);
+        }
+    }
+
+    acc.complete = !acc.cancelled && acc.counts.invalidInputs == 0
+        && acc.counts.inconclusivePairs == 0;
+    return acc;
+}
+
+InterferenceScanResult runInterferenceScanAllVisibleComponents(
+    const App::DocumentObject* root,
+    bool includeHidden,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs
+)
+{
+    auto snapshot = prepareInterferenceComponentScanSnapshot(root, includeHidden, options);
+    if (snapshot.cancelled) {
+        InterferenceScanResult cancelled;
+        cancelled.cancelled = true;
+        cancelled.leaves = std::move(snapshot.leaves);
+        return cancelled;
+    }
+    return runInterferenceScanAcrossComponents(snapshot, options, excludedSourceIdPairs);
 }
 
 double getInterferenceClearance(const App::DocumentObject* host)
