@@ -149,14 +149,32 @@ class DocumentXmlParser(_DepthTrackingHandler):
 class GuiDocumentParser(_DepthTrackingHandler):
     """Parse GuiDocument.xml for presentation profile data."""
 
+    # Semantic display properties kept for AnnotationLabel / ReviewNote view providers.
+    _VIEW_PROPERTY_ALLOWLIST = frozenset(
+        {
+            "Visibility",
+            "BackgroundColor",
+            "TextColor",
+            "FontName",
+            "FontSize",
+            "Frame",
+            "Justification",
+            "ShowInTree",
+            "DisplayMode",
+        }
+    )
+
     def __init__(self, xml_limits: XmlLimits, collection_limits: CollectionLimits) -> None:
         super().__init__(xml_limits, collection_limits)
         self.object_visibility: dict[str, bool] = {}
+        self.object_view_properties: dict[str, dict[str, Any]] = {}
         self._current_object: str | None = None
         self._in_object_data = False
         self._in_view_provider_data = False
         self._in_properties = False
-        self._current_property_name: str | None = None
+        self._current_property: dict[str, Any] | None = None
+        self._element_stack: list[dict[str, Any]] = []
+        self._text_buffer: list[str] = []
 
     def startElement(self, name: str, attrs: AttributesImpl) -> None:
         super().startElement(name, attrs)
@@ -172,15 +190,38 @@ class GuiDocumentParser(_DepthTrackingHandler):
         elif name == "Properties":
             self._in_properties = True
         elif name == "Property" and self._in_properties:
-            self._current_property_name = attr_dict.get("name")
-        elif name == "Bool" and self._current_property_name == "Visibility":
-            if self._current_object:
-                value = attr_dict.get("value", "true").strip().lower()
-                self.object_visibility[self._current_object] = value == "true"
+            self._current_property = {
+                "name": attr_dict.get("name", ""),
+                "type": attr_dict.get("type", ""),
+                "status": attr_dict.get("status"),
+                "elements": [],
+            }
+            self._element_stack = []
+            self._text_buffer = []
+        elif self._current_property is not None:
+            self._text_buffer = []
+            elem: dict[str, Any] = {"tag": name, "attrs": attr_dict, "children": [], "text": ""}
+            if self._element_stack:
+                self._element_stack[-1]["children"].append(elem)
+            else:
+                self._current_property["elements"].append(elem)
+            self._element_stack.append(elem)
+
+    def characters(self, content: str) -> None:
+        super().characters(content)
+        if self._element_stack:
+            self._text_buffer.append(content)
 
     def endElement(self, name: str) -> None:
-        if name == "Property":
-            self._current_property_name = None
+        if self._element_stack and self._element_stack[-1]["tag"] == name:
+            elem = self._element_stack.pop()
+            elem["text"] = "".join(self._text_buffer)
+            self._text_buffer = []
+        elif name == "Property" and self._current_property is not None:
+            self._finalize_view_property(self._current_property)
+            self._current_property = None
+            self._element_stack = []
+            self._text_buffer = []
         elif name == "Properties":
             self._in_properties = False
         elif name in ("Object", "ViewProvider"):
@@ -190,6 +231,40 @@ class GuiDocumentParser(_DepthTrackingHandler):
         elif name == "ViewProviderData":
             self._in_view_provider_data = False
         super().endElement(name)
+
+    def _finalize_view_property(self, prop: dict[str, Any]) -> None:
+        if not self._current_object:
+            return
+        name = prop.get("name", "")
+        if not name:
+            return
+        elements = prop.get("elements", [])
+        if name == "Visibility":
+            for elem in elements:
+                if elem.get("tag") == "Bool":
+                    value = elem.get("attrs", {}).get("value", "true").strip().lower()
+                    self.object_visibility[self._current_object] = value == "true"
+                    break
+        if name not in self._VIEW_PROPERTY_ALLOWLIST or name == "Visibility":
+            return
+
+        from .config import CollectionLimits
+        from .properties import _SKIP_STATUS_MASK, _parse_property_value, _parse_status
+
+        status = _parse_status(prop.get("status"))
+        if status & _SKIP_STATUS_MASK:
+            return
+        value = _parse_property_value(
+            name,
+            prop.get("type", ""),
+            elements,
+            CollectionLimits(),
+            "redact",
+        )
+        if value is None:
+            return
+        bucket = self.object_view_properties.setdefault(self._current_object, {})
+        bucket[name] = value
 
 
 def parse_document_xml(

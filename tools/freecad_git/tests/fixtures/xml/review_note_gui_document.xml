@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='utf-8'?>
+<GuiDocument SchemaVersion="1" ProgramVersion="1.0R">
+  <ViewProviderData Count="2">
+    <ViewProvider name="ReviewNotes" expanded="0">
+      <Properties Count="1">
+        <Property name="Visibility" type="App::PropertyBool" status="1">
+          <Bool value="true"/>
+        </Property>
+      </Properties>
+    </ViewProvider>
+    <ViewProvider name="ReviewNote" expanded="0">
+      <Properties Count="7">
+        <Property name="BackgroundColor" type="App::PropertyColor" status="1">
+          <PropertyColor value="5636095"/>
+        </Property>
+        <Property name="TextColor" type="App::PropertyColor" status="1">
+          <PropertyColor value="4294967295"/>
+        </Property>
+        <Property name="FontName" type="App::PropertyFont" status="1">
+          <String value="Segoe UI"/>
+        </Property>
+        <Property name="FontSize" type="App::PropertyFloat" status="1">
+          <Float value="9.0000000000000000"/>
+        </Property>
+        <Property name="Frame" type="App::PropertyBool" status="1">
+          <Bool value="true"/>
+        </Property>
+        <Property name="Justification" type="App::PropertyEnumeration" status="1">
+          <Integer value="0"/>
+        </Property>
+        <Property name="Visibility" type="App::PropertyBool" status="1">
+          <Bool value="true"/>
+        </Property>
+      </Properties>
+    </ViewProvider>
+  </ViewProviderData>
+</GuiDocument>

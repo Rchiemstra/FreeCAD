@@ -117,6 +117,7 @@ def build_semantic_model(
         config.collections,
     )
     gui_visibility: dict[str, bool] = {}
+    gui_view_properties: dict[str, dict[str, Any]] = {}
     if archive.gui_document_xml is not None:
         gui_parser = parse_gui_document_xml(
             archive.gui_document_xml,
@@ -124,6 +125,7 @@ def build_semantic_model(
             config.collections,
         )
         gui_visibility = gui_parser.object_visibility
+        gui_view_properties = gui_parser.object_view_properties
 
     model = SemanticModel(source_filename=source_filename)
     model.document = _build_document_info(parser, source_filename)
@@ -155,6 +157,9 @@ def build_semantic_model(
             visibility = _extract_document_visibility(properties)
         if visibility is not None:
             obj_entry["visibility"] = visibility
+        view_props = gui_view_properties.get(obj_name)
+        if view_props:
+            obj_entry["view"] = view_props
         obj_entry.update(parsed)
         model.objects[obj_name] = obj_entry
 

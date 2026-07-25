@@ -190,6 +190,40 @@ def cmd_diagnostics(args: argparse.Namespace) -> int:
     return EXIT_SUCCESS
 
 
+def cmd_restore_review_notes(args: argparse.Namespace) -> int:
+    """Restore Review Notes from a sidecar into an open FreeCAD document via FreeCADCmd."""
+    from .restore import restore_review_notes_from_file
+
+    try:
+        import FreeCAD as App
+    except ImportError:
+        print("error: FreeCAD is required for restore-review-notes", file=sys.stderr)
+        return EXIT_GENERAL_FAILURE
+
+    sidecar = Path(args.sidecar)
+    if args.document:
+        doc = App.getDocument(args.document)
+        if doc is None:
+            print(f"error: document not found: {args.document}", file=sys.stderr)
+            return EXIT_GENERAL_FAILURE
+    else:
+        doc = App.ActiveDocument
+        if doc is None:
+            print("error: no active FreeCAD document", file=sys.stderr)
+            return EXIT_GENERAL_FAILURE
+
+    result = restore_review_notes_from_file(
+        doc, sidecar, replace_existing=bool(args.replace_existing)
+    )
+    print(
+        "Restored review notes: groups={groups} notes={notes}".format(
+            groups=",".join(result["groups"]) or "-",
+            notes=",".join(result["notes"]) or "-",
+        )
+    )
+    return EXIT_SUCCESS
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="freecad-git",
@@ -219,6 +253,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diag_p.add_argument("paths", nargs="+", help="Path to .FCStd file(s)")
     diag_p.set_defaults(func=cmd_diagnostics)
+
+    restore_p = sub.add_parser(
+        "restore-review-notes",
+        help="Recreate Assembly Review Notes from a .FCStd.git.json sidecar (requires FreeCAD)",
+    )
+    restore_p.add_argument("sidecar", help="Path to .FCStd.git.json")
+    restore_p.add_argument(
+        "--document",
+        help="FreeCAD document name (default: active document)",
+    )
+    restore_p.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Remove existing ReviewNote/ReviewNoteGroup objects named in the sidecar first",
+    )
+    restore_p.set_defaults(func=cmd_restore_review_notes)
 
     return parser
 

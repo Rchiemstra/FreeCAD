@@ -106,6 +106,9 @@ _DEFAULT_EXCLUDED_PROPERTIES = frozenset(
         "_Object",
         "ModifiedLink",
         "LinkStamp",
+        # Camera-derived Review Note leader geometry (persisted App setting is LeaderPort).
+        "LeaderEnd",
+        "LeaderHalfExtent",
     }
 )
 

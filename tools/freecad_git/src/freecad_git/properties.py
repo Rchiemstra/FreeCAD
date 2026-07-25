@@ -284,13 +284,25 @@ def _parse_property_value(
     xlink = _child(elements, "XLink")
     if xlink is not None:
         path = xlink["attrs"].get("file", "")
+        obj_name = xlink["attrs"].get("name", "") or xlink["attrs"].get("obj", "")
+        sub = xlink["attrs"].get("sub", "")
+        # Local XLink/XLinkSub (empty file) is an in-document link, not external.
+        if not path:
+            if sub:
+                return {
+                    "type": "link_sub",
+                    "object": obj_name,
+                    "subelement": sub,
+                    "subelements": [sub],
+                }
+            return {"type": "link", "target": obj_name} if obj_name else None
         safe = safe_external_path(path, external_policy)
         return {
             "type": "external_link",
             **safe,
             "document": xlink["attrs"].get("doc", ""),
-            "object": xlink["attrs"].get("obj", ""),
-            "subelement": xlink["attrs"].get("sub", ""),
+            "object": obj_name,
+            "subelement": sub,
         }
 
     if prop_type == "App::PropertyExpressionEngine" or _child(elements, "ExpressionEngine") is not None:
@@ -307,8 +319,40 @@ def _parse_property_value(
             return {"cells": _parse_spreadsheet_cells(container, limits)}
         return None
 
+    string_list = _child(elements, "StringList")
+    if string_list is not None or prop_type == "App::PropertyStringList":
+        if string_list is not None:
+            lines: list[str] = []
+            for item in _children(string_list.get("children", []), "String"):
+                if len(lines) >= limits.max_list_length:
+                    raise UnsupportedDocumentError("string list length exceeds limit")
+                lines.append(item["attrs"].get("value", item.get("text", "")))
+            return lines
+        return []
+
+    vector_elem = _child(elements, "PropertyVector")
+    if vector_elem is not None or prop_type == "App::PropertyVector":
+        if vector_elem is not None:
+            return [
+                canonical_decimal(vector_elem["attrs"].get("valueX", "0")),
+                canonical_decimal(vector_elem["attrs"].get("valueY", "0")),
+                canonical_decimal(vector_elem["attrs"].get("valueZ", "0")),
+            ]
+        return None
+
+    color_elem = _child(elements, "PropertyColor")
+    if color_elem is not None or prop_type == "App::PropertyColor":
+        if color_elem is not None:
+            return {"type": "color", "packed": str(color_elem["attrs"].get("value", "0"))}
+        return None
+
     string_elem = _child(elements, "String")
-    if string_elem is not None and prop_type in ("App::PropertyString", "App::PropertyFile", ""):
+    if string_elem is not None and prop_type in (
+        "App::PropertyString",
+        "App::PropertyFile",
+        "App::PropertyFont",
+        "",
+    ):
         return string_elem["attrs"].get("value", string_elem.get("text", ""))
 
     bool_elem = _child(elements, "Bool")
@@ -325,10 +369,14 @@ def _parse_property_value(
             "App::PropertyAngle",
         ):
             return quantity_from_float(float_elem["attrs"].get("value", "0"), prop_type)
+        if prop_type in ("App::PropertyFloat", "App::PropertyFloatConstraint"):
+            return canonical_decimal(float_elem["attrs"].get("value", "0"))
         return {"type": prop_type, "value": canonical_decimal(float_elem["attrs"].get("value", "0"))}
 
     int_elem = _child(elements, "Integer")
     if int_elem is not None:
+        if prop_type == "App::PropertyEnumeration":
+            return {"type": prop_type, "value": int_elem["attrs"].get("value", "0")}
         return {"type": prop_type, "value": canonical_decimal(int_elem["attrs"].get("value", "0"))}
 
     enum_elem = _child(elements, "Enumeration")
@@ -347,6 +395,15 @@ def _parse_status(status: str | None) -> int:
         return int(status)
     except ValueError as exc:
         raise InvalidXmlError(f"invalid property status value: {status!r}") from exc
+
+
+# App::Property::Status bit positions (see src/App/Property.h). Touched (bit 0) is
+# runtime dirty state and must NOT suppress semantic export — saved documents often
+# leave it set on LabelText, Target, Group, etc.
+_STATUS_TRANSIENT = 1 << 4
+_STATUS_PROP_NO_PERSIST = 1 << 22
+_STATUS_PROP_TRANSIENT = 1 << 25
+_SKIP_STATUS_MASK = _STATUS_TRANSIENT | _STATUS_PROP_NO_PERSIST | _STATUS_PROP_TRANSIENT
 
 
 def parse_object_properties(
@@ -382,7 +439,7 @@ def parse_object_properties(
             continue
 
         status = _parse_status(prop.get("status"))
-        if status & 0x1:
+        if status & _SKIP_STATUS_MASK:
             continue
 
         elements = prop.get("elements", [])
