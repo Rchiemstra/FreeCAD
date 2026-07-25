@@ -1554,21 +1554,240 @@ TEST_F(InterferenceScanTest, selectionExTnpPathsPreferSharedRootOverUnrelatedEdi
     EXPECT_EQ(scope.first.occurrencePrefix, "AssemblyCase.");
     EXPECT_EQ(scope.second.occurrencePrefix, "AssemblySpool.");
 
-    Assembly::InterferenceComponentOccurrence occ;
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        host,
-        _assembly,
-        tnpCase,
-        occ
-    ));
-    EXPECT_EQ(occ.occurrencePrefix, "AssemblyCase.");
-    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
-        host,
-        _assembly,
-        tnpSpool,
-        occ
-    ));
-    EXPECT_EQ(occ.occurrencePrefix, "AssemblySpool.");
+    // Command-facing seam: SelectedPair ⇒ Check Selected Components active.
+    EXPECT_EQ(scope.mode, Assembly::InterferenceScanScopeMode::SelectedPair);
+}
+
+TEST_F(InterferenceScanTest, hostPrecedenceExactPairAndFallbacks)
+{
+    auto* editA = _doc->addObject<Assembly::AssemblyObject>("EditAssemblyA");
+    auto* rootB = _doc->addObject<Assembly::AssemblyObject>("ScanAssemblyB");
+    auto* rootC = _doc->addObject<Assembly::AssemblyObject>("ScanAssemblyC");
+    ASSERT_NE(editA, nullptr);
+    ASSERT_NE(rootB, nullptr);
+    ASSERT_NE(rootC, nullptr);
+
+    auto* b1 = _doc->addObject<App::Part>("BComp1");
+    auto* b1box = makeBox(_doc, "BBox1", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    b1->addObject(b1box);
+    auto* b2 = _doc->addObject<App::Part>("BComp2");
+    auto* b2box = makeBox(_doc, "BBox2", Base::Vector3d(20, 0, 0), 10, 10, 10);
+    b2->addObject(b2box);
+    rootB->addObject(b1);
+    rootB->addObject(b2);
+
+    auto* c1 = _doc->addObject<App::Part>("CComp1");
+    auto* c1box = makeBox(_doc, "CBox1", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    c1->addObject(c1box);
+    auto* c2 = _doc->addObject<App::Part>("CComp2");
+    auto* c2box = makeBox(_doc, "CBox2", Base::Vector3d(20, 0, 0), 10, 10, 10);
+    c2->addObject(c2box);
+    rootC->addObject(c1);
+    rootC->addObject(c2);
+    _doc->recompute();
+
+    const std::string pathB1 = "BComp1.BBox1.Face1";
+    const std::string pathB2 = "BComp2.BBox2.Face1";
+    const std::string pathB1Face2 = "BComp1.BBox1.Face2";
+    const std::string pathC1 = "CComp1.CBox1.Face1";
+    const std::string pathC2 = "CComp2.CBox2.Face1";
+    const std::string tnpB1 = "BComp1.BBox1.;#a:1;:G0;XTR;:Hc94:8,F.Face1";
+    const std::string tnpB2 = "BComp2.BBox2.;#b:2;:G0;XTR;:Hd12:8,F.Face1";
+
+    using Assembly::InterferenceSelectionHandle;
+    using Assembly::InterferenceScanScopeMode;
+
+    auto expectSelectedPairActive = [](App::DocumentObject* host,
+                                       const std::vector<InterferenceSelectionHandle>& handles) {
+        ASSERT_NE(host, nullptr);
+        const auto scope = Assembly::resolveInterferenceSelectionScope(host, handles);
+        EXPECT_EQ(scope.mode, InterferenceScanScopeMode::SelectedPair);
+        EXPECT_EQ(scope.subelementHandleCount, 2);
+        EXPECT_EQ(scope.distinctOccurrenceCount, 2);
+        EXPECT_NE(scope.first.occurrencePrefix, scope.second.occurrencePrefix);
+    };
+
+    auto expectSelectedInactiveKeepEdit =
+        [&](const std::vector<InterferenceSelectionHandle>& handles) {
+            auto* host = Assembly::resolveInterferenceHostFromHandles(handles, editA);
+            EXPECT_EQ(host, editA);
+            if (host) {
+                const auto scope = Assembly::resolveInterferenceSelectionScope(host, handles);
+                EXPECT_NE(scope.mode, InterferenceScanScopeMode::SelectedPair);
+            }
+        };
+
+    // Happy: exact two old-style paths under shared root B override edit A.
+    {
+        std::vector<InterferenceSelectionHandle> handles {{rootB, pathB1}, {rootB, pathB2}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, editA);
+        EXPECT_EQ(host, rootB);
+        expectSelectedPairActive(host, handles);
+    }
+
+    // Happy: exact two TNP paths under B override edit A.
+    {
+        std::vector<InterferenceSelectionHandle> handles {{rootB, tnpB1}, {rootB, tnpB2}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, editA);
+        EXPECT_EQ(host, rootB);
+        expectSelectedPairActive(host, handles);
+    }
+
+    // Happy: selection root equals edit root.
+    {
+        std::vector<InterferenceSelectionHandle> handles {{rootB, pathB1}, {rootB, pathB2}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, rootB);
+        EXPECT_EQ(host, rootB);
+        expectSelectedPairActive(host, handles);
+    }
+
+    // Happy: no edit assembly — one selected interference root hosts all-visible.
+    {
+        std::vector<InterferenceSelectionHandle> handles {{rootB, pathB1}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, nullptr);
+        EXPECT_EQ(host, rootB);
+        const auto scope = Assembly::resolveInterferenceSelectionScope(host, handles);
+        EXPECT_EQ(scope.mode, InterferenceScanScopeMode::AllComponents);
+        EXPECT_EQ(scope.subelementHandleCount, 1);
+    }
+
+    // Happy: no edit — whole-object App::Part/Assembly selection.
+    {
+        std::vector<InterferenceSelectionHandle> handles {{rootB, {}}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, nullptr);
+        EXPECT_EQ(host, rootB);
+    }
+    {
+        auto* plain = _doc->addObject<App::Part>("PlainHostPart");
+        std::vector<InterferenceSelectionHandle> handles {{plain, {}}};
+        auto* host = Assembly::resolveInterferenceHostFromHandles(handles, nullptr);
+        EXPECT_EQ(host, plain);
+    }
+
+    // Negative: one valid pick under B while A is in edit → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}});
+
+    // Negative: two faces on the same occurrence under B → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}, {rootB, pathB1Face2}});
+
+    // Negative: three valid picks under B → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}, {rootB, pathB2}, {rootB, pathB1Face2}});
+
+    // Negative: two valid under B plus a third under C → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}, {rootB, pathB2}, {rootC, pathC1}});
+
+    // Negative: one under B and one under C → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}, {rootC, pathC1}});
+
+    // Negative: two roots each with a local pair — ambiguous global selection → A.
+    {
+        std::vector<InterferenceSelectionHandle> handles {
+            {rootB, pathB1},
+            {rootB, pathB2},
+            {rootC, pathC1},
+            {rootC, pathC2}
+        };
+        EXPECT_EQ(Assembly::resolveInterferenceHostFromHandles(handles, editA), editA);
+        // Reordering must not change the fallback host.
+        std::vector<InterferenceSelectionHandle> reordered {
+            {rootC, pathC2},
+            {rootB, pathB2},
+            {rootC, pathC1},
+            {rootB, pathB1}
+        };
+        EXPECT_EQ(Assembly::resolveInterferenceHostFromHandles(reordered, editA), editA);
+    }
+
+    // Negative: one valid + one unresolved under B → A.
+    expectSelectedInactiveKeepEdit({{rootB, pathB1}, {rootB, "NoSuch.Face1"}});
+
+    // Negative: two unresolved under B → A.
+    expectSelectedInactiveKeepEdit({{rootB, "MissingA.Face1"}, {rootB, "MissingB.Face1"}});
+
+    // Negative: non-interference-root object cannot override A.
+    {
+        auto* box = makeBox(_doc, "LoneBox", Base::Vector3d(0, 0, 0), 5, 5, 5);
+        expectSelectedInactiveKeepEdit({{box, "Face1"}, {box, "Face2"}});
+    }
+
+    // Negative: null objects / empty subnames do not qualify as pair handles.
+    {
+        std::vector<InterferenceSelectionHandle> handles {
+            {nullptr, pathB1},
+            {rootB, pathB2},
+            {rootB, {}}
+        };
+        EXPECT_EQ(Assembly::resolveInterferenceHostFromHandles(handles, editA), editA);
+        // Only one live non-empty subelement handle globally (rootB/pathB2).
+        EXPECT_EQ(
+            Assembly::resolveInterferenceSelectionScope(rootB, handles).subelementHandleCount,
+            1
+        );
+    }
+
+    // Negative: pair handles on a non-attached root are rejected (null stands in safely).
+    {
+        std::vector<InterferenceSelectionHandle> handles {
+            {nullptr, "DetachedComp.Face1"},
+            {nullptr, "OtherComp.Face1"}
+        };
+        EXPECT_EQ(Assembly::resolveInterferenceHostFromHandles(handles, editA), editA);
+    }
+}
+
+TEST_F(InterferenceScanTest, normalizeInterferenceSubNameBadPaths)
+{
+    auto* casePart = _doc->addObject<App::Part>("NormCase");
+    auto* box = makeBox(_doc, "NormBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    casePart->addObject(box);
+    _assembly->addObject(casePart);
+    _doc->recompute();
+
+    EXPECT_EQ(Assembly::normalizeInterferenceSubName(_assembly, ""), "");
+    EXPECT_EQ(
+        Assembly::normalizeInterferenceSubName(_assembly, "NormCase.NormBox.Face1"),
+        "NormCase.NormBox.Face1"
+    );
+
+    const std::string mapped =
+        "NormCase.NormBox.;#a:1;:G0;XTR;:Hc94:8,F.Face1";
+    EXPECT_EQ(
+        Assembly::normalizeInterferenceSubName(_assembly, mapped),
+        "NormCase.NormBox.Face1"
+    );
+
+    // Stale mapped face that resolveElement may mark missing must not leak ?FaceN.
+    const std::string stale =
+        "NormCase.NormBox.;#dead:1;:G0;XTR;:Hbad:8,F.Face99";
+    const std::string staleOut = Assembly::normalizeInterferenceSubName(_assembly, stale);
+    EXPECT_EQ(staleOut.find('?'), std::string::npos);
+    EXPECT_NE(staleOut.find("Face99"), std::string::npos);
+
+    EXPECT_NO_THROW({
+        (void)Assembly::normalizeInterferenceSubName(_assembly, "NormCase.;#@@.Face1");
+        (void)Assembly::normalizeInterferenceSubName(_assembly, "NormCase.NormBox.;#a:1;:G0");
+        (void)Assembly::normalizeInterferenceSubName(
+            _assembly,
+            "NormCase.NormBox.;#a:1;:G0;XTR;:Hc94:8,F.;#b:2;:G0;XTR;:Hd:8,F.Face1"
+        );
+        (void)Assembly::normalizeInterferenceSubName(
+            _assembly,
+            std::string("NormCase.NormBox.;#") + std::string(400, 'x') + ".Face1"
+        );
+        (void)Assembly::normalizeInterferenceSubName(nullptr, mapped);
+    });
+
+    // Two unresolved occurrences must not manufacture a selected pair.
+    auto* editA = _doc->addObject<Assembly::AssemblyObject>("NormEditA");
+    std::vector<Assembly::InterferenceSelectionHandle> badPair {
+        {_assembly, "GhostA.;#x.Face1"},
+        {_assembly, "GhostB.;#y.Face2"}
+    };
+    EXPECT_EQ(Assembly::resolveInterferenceHostFromHandles(badPair, editA), editA);
+    const auto scope = Assembly::resolveInterferenceSelectionScope(_assembly, badPair);
+    EXPECT_EQ(scope.mode, Assembly::InterferenceScanScopeMode::AllComponents);
+    EXPECT_EQ(scope.subelementHandleCount, 2);
+    EXPECT_LT(scope.distinctOccurrenceCount, 2);
 }
 
 TEST_F(InterferenceScanTest, selectedPairAndAllVisibleAgreeOnTwoComponentPenetration)

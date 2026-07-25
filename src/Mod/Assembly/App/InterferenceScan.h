@@ -237,9 +237,13 @@ AssemblyExport std::string normalizeInterferenceSubName(
 );
 
 /**
- * Choose an interference host from selection handles, preferring an explicit
- * selection-backed App::Part/Assembly root over an unrelated edit-mode assembly.
- * When two subelement picks share one interference root, that root is returned.
+ * Choose an interference host from selection handles.
+ *
+ * An unrelated edit-mode assembly is overridden only by an exact global selected
+ * pair: exactly two non-empty subelement handles on the same interference root
+ * that resolve to two distinct occurrence prefixes. Otherwise a valid edit-mode
+ * assembly remains the host. With no edit-mode assembly, selected
+ * App::Part/Assembly roots (including whole-object picks) can still host scans.
  */
 AssemblyExport App::DocumentObject* resolveInterferenceHostFromHandles(
     const std::vector<InterferenceSelectionHandle>& handles,

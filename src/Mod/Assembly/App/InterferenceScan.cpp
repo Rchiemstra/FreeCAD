@@ -1546,56 +1546,46 @@ App::DocumentObject* resolveInterferenceHostFromHandles(
     App::DocumentObject* editModeAssemblyOrNull
 )
 {
-    // Selection-backed interference roots (SelectionEx object with subelement picks).
-    std::vector<App::DocumentObject*> selectionRoots;
+    // Global pair-host gate: count every non-empty subelement handle, including
+    // those under other roots, so filtered per-root scopes cannot hide extras.
+    std::vector<const InterferenceSelectionHandle*> subHandles;
+    subHandles.reserve(handles.size());
     for (const auto& handle : handles) {
-        if (!handle.object || handle.subName.empty() || !isInterferenceRoot(handle.object)) {
+        if (!handle.object || handle.subName.empty()) {
             continue;
         }
-        if (std::find(selectionRoots.begin(), selectionRoots.end(), handle.object)
-            == selectionRoots.end()) {
-            selectionRoots.push_back(handle.object);
-        }
+        subHandles.push_back(&handle);
     }
 
-    auto handlesForRoot = [&](App::DocumentObject* root) {
-        std::vector<InterferenceSelectionHandle> scoped;
-        for (const auto& handle : handles) {
-            if (handle.object == root) {
-                scoped.push_back(handle);
-            }
-        }
-        return scoped;
-    };
-
-    // Prefer a selection root that yields an exact selected-pair scope.
-    for (auto* root : selectionRoots) {
-        const auto scope = resolveInterferenceSelectionScope(root, handlesForRoot(root));
-        if (scope.mode == InterferenceScanScopeMode::SelectedPair) {
-            return root;
-        }
-    }
-
-    // Any selection root that owns at least one resolvable subelement pick.
-    for (auto* root : selectionRoots) {
-        for (const auto& handle : handlesForRoot(root)) {
-            InterferenceComponentOccurrence occ;
-            if (resolveInterferenceComponentOccurrence(root, handle.object, handle.subName, occ)) {
+    if (subHandles.size() == 2 && subHandles[0]->object == subHandles[1]->object) {
+        App::DocumentObject* root = subHandles[0]->object;
+        if (isInterferenceRoot(root) && root->isAttachedToDocument()) {
+            // Use the shared scope resolver on the full handle list so empty
+            // whole-object entries do not invent extra subelement cardinality.
+            const auto scope = resolveInterferenceSelectionScope(root, handles);
+            if (scope.mode == InterferenceScanScopeMode::SelectedPair
+                && scope.subelementHandleCount == 2
+                && scope.distinctOccurrenceCount == 2) {
                 return root;
             }
         }
-        // Explicit picks under this root still identify it as the host even if
-        // occurrence resolution is incomplete (e.g. mid-edit geometry).
-        return root;
     }
 
-    if (editModeAssemblyOrNull && isInterferenceRoot(editModeAssemblyOrNull)) {
+    if (editModeAssemblyOrNull && isInterferenceRoot(editModeAssemblyOrNull)
+        && editModeAssemblyOrNull->isAttachedToDocument()) {
         return editModeAssemblyOrNull;
     }
 
-    // Whole-object selection of an interference root.
+    // No edit-mode assembly: keep selected-root support for general scans.
     for (const auto& handle : handles) {
-        if (handle.object && handle.subName.empty() && isInterferenceRoot(handle.object)) {
+        if (handle.object && !handle.subName.empty() && isInterferenceRoot(handle.object)
+            && handle.object->isAttachedToDocument()) {
+            return handle.object;
+        }
+    }
+    for (const auto& handle : handles) {
+        if (handle.object && handle.subName.empty() && isInterferenceRoot(handle.object)
+            && handle.object->isAttachedToDocument()) {
             return handle.object;
         }
     }
