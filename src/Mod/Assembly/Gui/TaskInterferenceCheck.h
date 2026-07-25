@@ -16,6 +16,7 @@
 #include <Base/Unit.h>
 #include <Gui/TaskView/TaskDialog.h>
 #include <Gui/TaskView/TaskView.h>
+#include <Mod/Assembly/AssemblyGlobal.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/App/InterferenceScanSession.h>
 #include <fastsignals/connection.h>
@@ -52,7 +53,7 @@ class AssemblyObject;
 namespace AssemblyGui
 {
 
-class TaskInterferenceCheck: public QWidget
+class AssemblyGuiExport TaskInterferenceCheck: public QWidget
 {
     Q_OBJECT
 
@@ -187,7 +188,7 @@ private:
     std::vector<fastsignals::connection> connections;
 };
 
-class TaskInterferenceCheckDialog: public Gui::TaskView::TaskDialog
+class AssemblyGuiExport TaskInterferenceCheckDialog: public Gui::TaskView::TaskDialog
 {
     Q_OBJECT
 
