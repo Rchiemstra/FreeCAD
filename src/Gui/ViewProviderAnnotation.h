@@ -38,6 +38,7 @@ class SoTransform;
 class SoRotationXYZ;
 class SoImage;
 class SoCoordinate3;
+class SoDragger;
 
 namespace Gui
 {
@@ -109,18 +110,6 @@ public:
     void setDisplayMode(const char* ModeName) override;
 
 protected:
-    void onChanged(const App::Property* prop) override;
-    void drawImage(const std::vector<std::string>&);
-
-    /** Map a world-space point into BasePosition/TextPosition space (identity by default). */
-    virtual Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const;
-
-private:
-    static void dragStartCallback(void* data, SoDragger* d);
-    static void dragFinishCallback(void* data, SoDragger* d);
-    static void dragMotionCallback(void* data, SoDragger* d);
-
-private:
     struct DragState
     {
         Base::Vector3d basePosition;
@@ -130,9 +119,24 @@ private:
         Base::Vector3d planeNormal;
     };
 
-    void previewTextPosition(DragState& state, const Base::Vector3d& textPosition);
+    void onChanged(const App::Property* prop) override;
+    virtual void drawImage(const std::vector<std::string>&);
 
-private:
+    /** Map a world-space point into BasePosition/TextPosition space (identity by default). */
+    virtual Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const;
+
+    /** Leader end relative to BasePosition. Default is the text/image origin. */
+    virtual Base::Vector3d leaderEndpoint(const Base::Vector3d& textPosition) const;
+
+    /** Return false to cancel label drag (e.g. clickable @ref hit). */
+    virtual bool acceptLabelDragStart(SoDragger* drag, DragState& state);
+
+    /** Called after a completed label drag commits TextPosition. */
+    virtual void onLabelDragFinished(const DragState& state);
+
+    void previewTextPosition(DragState& state, const Base::Vector3d& textPosition);
+    void setLeaderCoords(const Base::Vector3d& textPosition);
+
     SoCoordinate3* pCoords;
     SoImage* pImage;
     SoImage* pImageHitProxy;
@@ -140,6 +144,15 @@ private:
     SoTranslation* pBaseTranslation;
     TranslateManip* pTextTranslation;
     std::optional<DragState> dragState;
+
+    /** Last drawn image size in pixels (0 if hidden/empty). */
+    int labelImageWidth = 0;
+    int labelImageHeight = 0;
+
+private:
+    static void dragStartCallback(void* data, SoDragger* d);
+    static void dragFinishCallback(void* data, SoDragger* d);
+    static void dragMotionCallback(void* data, SoDragger* d);
 
     static const char* JustificationEnums[];
 };

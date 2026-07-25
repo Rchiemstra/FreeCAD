@@ -59,6 +59,8 @@ public:
     App::PropertyBool Resolved;
     /// Computed: true when Target is missing or invalid (drives icon refresh).
     App::PropertyBool AttachmentBroken;
+    /// Leader attachment on annotation-box perimeter in [0,1]; negative means auto.
+    App::PropertyFloat LeaderPort;
 
     const char* getViewProviderName() const override
     {

@@ -481,6 +481,13 @@ ReviewNote::ReviewNote()
         static_cast<App::PropertyType>(App::Prop_Output | App::Prop_ReadOnly | App::Prop_Hidden),
         "Computed: true when the attachment target is missing or invalid"
     );
+    ADD_PROPERTY_TYPE(
+        LeaderPort,
+        (-1.0),
+        "ReviewNote",
+        App::Prop_None,
+        "Leader attachment on the annotation box perimeter [0,1]; negative means auto"
+    );
 
     BasePosition.setStatus(App::Property::Output, false);
     TextPosition.setStatus(App::Property::Output, false);

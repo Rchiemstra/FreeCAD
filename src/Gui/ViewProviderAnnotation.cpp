@@ -475,7 +475,7 @@ void ViewProviderAnnotationLabel::updateData(const App::Property* prop)
     }
     else if (prop->is<App::PropertyVector>() && strcmp(prop->getName(), "TextPosition") == 0) {
         Base::Vector3d v = static_cast<const App::PropertyVector*>(prop)->getValue();
-        pCoords->point.set1Value(1, SbVec3f(v.x, v.y, v.z));
+        setLeaderCoords(v);
         pTextTranslation->translation.setValue(v.x, v.y, v.z);
     }
 
@@ -504,6 +504,9 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
         state.planeNormal = Base::convertTo<Base::Vector3d>(
             drag->getViewVolume().getProjectionDirection()
         );
+        if (!that->acceptLabelDragStart(drag, state)) {
+            return;
+        }
         that->dragState = state;
     }
 
@@ -516,12 +519,14 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
 void ViewProviderAnnotationLabel::dragFinishCallback(void* data, SoDragger*)
 {
     auto that = static_cast<ViewProviderAnnotationLabel*>(data);
-    if (that->dragState) {
-        if (auto* obj = that->getObject<App::AnnotationLabel>()) {
-            obj->TextPosition.setValue(that->dragState->currentTextPosition);
-        }
-        that->dragState.reset();
+    if (!that->dragState) {
+        return;
     }
+    if (auto* obj = that->getObject<App::AnnotationLabel>()) {
+        obj->TextPosition.setValue(that->dragState->currentTextPosition);
+    }
+    that->onLabelDragFinished(*that->dragState);
+    that->dragState.reset();
 
     // This is called when a manipulator has done manipulating
     Gui::Application::Instance->activeDocument()->commitCommand();
@@ -547,9 +552,29 @@ void ViewProviderAnnotationLabel::dragMotionCallback(void* data, SoDragger* drag
 void ViewProviderAnnotationLabel::previewTextPosition(DragState& state, const Base::Vector3d& textPosition)
 {
     state.currentTextPosition = textPosition;
-    pCoords->point.set1Value(1, SbVec3f(textPosition.x, textPosition.y, textPosition.z));
+    setLeaderCoords(textPosition);
     pTextTranslation->translation.setValue(textPosition.x, textPosition.y, textPosition.z);
 }
+
+void ViewProviderAnnotationLabel::setLeaderCoords(const Base::Vector3d& textPosition)
+{
+    const Base::Vector3d end = leaderEndpoint(textPosition);
+    pCoords->point.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
+    pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
+}
+
+Base::Vector3d ViewProviderAnnotationLabel::leaderEndpoint(const Base::Vector3d& textPosition) const
+{
+    return textPosition;
+}
+
+bool ViewProviderAnnotationLabel::acceptLabelDragStart(SoDragger*, DragState&)
+{
+    return true;
+}
+
+void ViewProviderAnnotationLabel::onLabelDragFinished(const DragState&)
+{}
 
 Base::Vector3d ViewProviderAnnotationLabel::worldToAnnotationPoint(const Base::Vector3d& world) const
 {
@@ -561,6 +586,8 @@ void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)
     if (s.empty()) {
         pImage->image = SoSFImage();
         pImageHitProxy->image = SoSFImage();
+        labelImageWidth = 0;
+        labelImageHeight = 0;
         this->hide();
         return;
     }
@@ -618,6 +645,9 @@ void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)
     painter.setFont(font);
     painter.drawText(textPadding, textPadding, w, h, align, text);
     painter.end();
+
+    labelImageWidth = image.width();
+    labelImageHeight = image.height();
 
     SoSFImage sfimage;
     Gui::BitmapFactory().convert(image, sfimage);
