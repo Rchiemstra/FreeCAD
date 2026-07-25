@@ -15,15 +15,34 @@
 #include <Mod/Part/App/InterferenceDetection.h>
 #include <TopoDS_Shape.hxx>
 
+namespace App
+{
+class DocumentObject;
+class Part;
+class PropertyLength;
+class PropertyXLinkSubList;
+}
+
 namespace Assembly
 {
 
 class AssemblyObject;
 
+struct InterferenceExclusionRule
+{
+    App::DocumentObject* first = nullptr;
+    App::DocumentObject* second = nullptr;
+    /** Stable identity even when the endpoint DocumentObject* is unresolved. */
+    std::string firstIdentity;
+    std::string secondIdentity;
+    bool valid = true;
+    std::string diagnostic;
+};
+
 /** Immutable snapshot of one physical leaf occurrence (safe for worker threads). */
 struct InterferenceLeaf
 {
-    /** Sub-object path relative to the scanned assembly (e.g. NestedPart.InnerBox.). */
+    /** Sub-object path relative to the scanned root (e.g. NestedPart.InnerBox.). */
     std::string occurrenceSubName;
     std::string displayPath;
     /** Stable source-definition identity (document#name of linked definition). */
@@ -80,13 +99,41 @@ struct InterferenceScanOptions
 };
 
 /**
+ * True for App::Part containers that can be interference roots
+ * (includes AssemblyObject / AssemblyLink; excludes PartDesign::Body).
+ */
+AssemblyExport bool isInterferenceRoot(const App::DocumentObject* obj);
+
+/** Clearance / exclusion metadata for AssemblyObject (static props) or App::Part (dynamic). */
+AssemblyExport double getInterferenceClearance(const App::DocumentObject* host);
+AssemblyExport void setInterferenceClearance(App::DocumentObject* host, double clearanceMm);
+AssemblyExport std::vector<InterferenceExclusionRule>
+getInterferenceExclusionRules(const App::DocumentObject* host);
+AssemblyExport bool hasInterferenceExclusion(
+    const App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+);
+AssemblyExport void addInterferenceExclusion(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+);
+AssemblyExport void removeInterferenceExclusion(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+);
+AssemblyExport void removeInterferenceExclusionAt(App::DocumentObject* host, std::size_t ruleIndex);
+
+/**
  * Collect physical leaf occurrences for interference checking.
- * Descends assemblies/links/groups; treats Body Tip and solid GeoFeatures as leaves.
- * Resolves world shapes through the assembly subobject path (including nested
+ * Descends parts/assemblies/links/groups; treats Body Tip and solid GeoFeatures as leaves.
+ * Resolves world shapes through the root subobject path (including nested
  * App::Part / App::Link / AssemblyLink transforms).
  */
 AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeaves(
-    const AssemblyObject* assembly,
+    const App::DocumentObject* root,
     bool includeHidden
 );
 

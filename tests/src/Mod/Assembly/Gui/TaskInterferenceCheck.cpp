@@ -261,14 +261,14 @@ TEST_F(TaskInterferenceCheckTest, documentCloseDiscardsResultsAndClosesManageExc
     task.testOpenManageExclusions();
     QApplication::processEvents();
     ASSERT_TRUE(task.testManageExclusionsOpen());
-    ASSERT_TRUE(task.testHasAssembly());
+    ASSERT_TRUE(task.testHasHost());
 
     App::GetApplication().closeDocument(_docName.c_str());
     _doc = nullptr;
     _assembly = nullptr;
     QApplication::processEvents();
 
-    EXPECT_FALSE(task.testHasAssembly());
+    EXPECT_FALSE(task.testHasHost());
     EXPECT_FALSE(task.hasResults());
     EXPECT_FALSE(task.testManageExclusionsOpen());
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("Document closed"), Qt::CaseInsensitive)

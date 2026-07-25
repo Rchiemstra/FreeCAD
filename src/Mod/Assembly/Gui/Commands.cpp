@@ -36,6 +36,7 @@
 #include <Mod/Assembly/App/AssemblyLink.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/AssemblyUtils.h>
+#include <Mod/Assembly/App/InterferenceScan.h>
 
 #include "Commands.h"
 #include "ViewProviderAssembly.h"
@@ -58,6 +59,27 @@ static AssemblyObject* getActiveAssembly()
         return assemblyVP->getObject<AssemblyObject>();
     }
 
+    return nullptr;
+}
+
+/** Active assembly, else a selected App::Part interference root (e.g. plain Part). */
+static App::DocumentObject* getInterferenceHost()
+{
+    if (auto* assembly = getActiveAssembly()) {
+        return assembly;
+    }
+
+    auto selection = Gui::Selection().getSelectionEx(
+        "",
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    for (auto& sel : selection) {
+        App::DocumentObject* obj = sel.getObject();
+        if (isInterferenceRoot(obj)) {
+            return obj;
+        }
+    }
     return nullptr;
 }
 
@@ -373,26 +395,28 @@ CmdAssemblyCheckInterference::CmdAssemblyCheckInterference()
     sAppModule = "Assembly";
     sGroup = QT_TR_NOOP("Assembly");
     sMenuText = QT_TR_NOOP("Check Interference");
-    sToolTipText = QT_TR_NOOP("Check the active assembly for interference and clearance issues");
+    sToolTipText = QT_TR_NOOP(
+        "Check the active assembly or a selected App::Part for interference and clearance issues"
+    );
     sWhatsThis = "Assembly_CheckInterference";
     sStatusTip = sToolTipText;
     sPixmap = "Assembly_CheckInterference";
-    eType = ForEdit;
+    eType = AlterDoc;
 }
 
 void CmdAssemblyCheckInterference::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    AssemblyObject* assembly = getActiveAssembly();
-    if (!assembly) {
+    App::DocumentObject* host = getInterferenceHost();
+    if (!host) {
         return;
     }
-    Gui::Control().showDialog(new TaskInterferenceCheckDialog(assembly));
+    Gui::Control().showDialog(new TaskInterferenceCheckDialog(host));
 }
 
 bool CmdAssemblyCheckInterference::isActive()
 {
-    return getActiveAssembly() != nullptr;
+    return getInterferenceHost() != nullptr;
 }
 
 

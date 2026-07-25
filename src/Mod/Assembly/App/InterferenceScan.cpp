@@ -23,7 +23,9 @@
 #include <App/DocumentObjectGroup.h>
 #include <App/GeoFeature.h>
 #include <App/Link.h>
+#include <App/Part.h>
 #include <App/Datums.h>
+#include <App/PropertyUnits.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Mod/Part/App/BodyBase.h>
@@ -232,29 +234,29 @@ bool boxesOverlap(const Base::BoundBox3d& a, const Base::BoundBox3d& b)
 }
 
 TopoDS_Shape resolveWorldShape(
-    const AssemblyObject* assembly,
+    const App::DocumentObject* root,
     App::DocumentObject* occurrence,
     const std::string& occurrenceSubName
 )
 {
-    if (!assembly || !occurrence || occurrenceSubName.empty()) {
+    if (!root || !occurrence || occurrenceSubName.empty()) {
         return {};
     }
 
-    // Resolve exclusively through the assembly/subobject path so nested
+    // Resolve exclusively through the root/subobject path so nested
     // App::Part / Link / AssemblyLink placements are included. No manual
     // placement composition fallback.
     return Part::Feature::getShape(
-        assembly,
+        const_cast<App::DocumentObject*>(root),
         Part::ShapeOption::ResolveLink | Part::ShapeOption::Transform,
         occurrenceSubName.c_str()
     );
 }
 
 bool tryMakeLeaf(
-    const AssemblyObject* assembly,
+    const App::DocumentObject* root,
     App::DocumentObject* occurrence,
-    const std::vector<App::DocumentObject*>& pathFromAssembly,
+    const std::vector<App::DocumentObject*>& pathFromRoot,
     const std::vector<App::DocumentObject*>& visibilityPath,
     bool includeHidden,
     std::vector<InterferenceLeaf>& leaves,
@@ -284,12 +286,12 @@ bool tryMakeLeaf(
         return false;
     }
 
-    std::string subName = makeOccurrenceSubName(pathFromAssembly);
+    std::string subName = makeOccurrenceSubName(pathFromRoot);
     if (arrayIndex >= 0) {
         subName += std::to_string(arrayIndex);
         subName += '.';
     }
-    std::string display = makeDisplayPath(pathFromAssembly);
+    std::string display = makeDisplayPath(pathFromRoot);
     if (arrayIndex >= 0) {
         display += '.';
         display += std::to_string(arrayIndex);
@@ -297,7 +299,7 @@ bool tryMakeLeaf(
 
     TopoDS_Shape shape;
     try {
-        shape = resolveWorldShape(assembly, occurrence, subName);
+        shape = resolveWorldShape(root, occurrence, subName);
     }
     catch (const Base::Exception& exc) {
         InterferenceLeaf leaf;
@@ -387,9 +389,9 @@ bool tryMakeLeaf(
 }
 
 void collectRecursively(
-    const AssemblyObject* assembly,
+    const App::DocumentObject* root,
     App::DocumentObject* obj,
-    std::vector<App::DocumentObject*> pathFromAssembly,
+    std::vector<App::DocumentObject*> pathFromRoot,
     std::vector<App::DocumentObject*> visibilityPath,
     bool includeHidden,
     std::unordered_set<App::DocumentObject*>& visiting,
@@ -406,16 +408,15 @@ void collectRecursively(
         return;
     }
 
-    pathFromAssembly.push_back(obj);
+    pathFromRoot.push_back(obj);
     visibilityPath.push_back(obj);
 
     if (isContainerToDescend(obj)) {
         visiting.insert(obj);
         for (auto* child : childrenOf(obj)) {
-            collectRecursively(
-                assembly,
+            collectRecursively(root,
                 child,
-                pathFromAssembly,
+                pathFromRoot,
                 visibilityPath,
                 includeHidden,
                 visiting,
@@ -427,7 +428,7 @@ void collectRecursively(
     }
 
     if (auto* body = freecad_cast<Part::BodyBase*>(obj)) {
-        tryMakeLeaf(assembly, body, pathFromAssembly, visibilityPath, includeHidden, leaves);
+        tryMakeLeaf(root, body, pathFromRoot, visibilityPath, includeHidden, leaves);
         return;
     }
 
@@ -439,10 +440,9 @@ void collectRecursively(
             if (expanded) {
                 visiting.insert(obj);
                 for (auto* child : link->ElementList.getValues()) {
-                    collectRecursively(
-                        assembly,
+                    collectRecursively(root,
                         child,
-                        pathFromAssembly,
+                        pathFromRoot,
                         visibilityPath,
                         includeHidden,
                         visiting,
@@ -454,10 +454,9 @@ void collectRecursively(
             else {
                 // Collapsed link array: virtual occurrences via PlacementList indices.
                 for (int i = 0; i < elementCount; ++i) {
-                    tryMakeLeaf(
-                        assembly,
+                    tryMakeLeaf(root,
                         link,
-                        pathFromAssembly,
+                        pathFromRoot,
                         visibilityPath,
                         includeHidden,
                         leaves,
@@ -472,10 +471,9 @@ void collectRecursively(
         if (linked && isContainerToDescend(linked) && !freecad_cast<Part::BodyBase*>(linked)) {
             visiting.insert(obj);
             for (auto* child : childrenOf(linked)) {
-                collectRecursively(
-                    assembly,
+                collectRecursively(root,
                     child,
-                    pathFromAssembly,
+                    pathFromRoot,
                     visibilityPath,
                     includeHidden,
                     visiting,
@@ -485,12 +483,12 @@ void collectRecursively(
             visiting.erase(obj);
         }
         else {
-            tryMakeLeaf(assembly, link, pathFromAssembly, visibilityPath, includeHidden, leaves);
+            tryMakeLeaf(root, link, pathFromRoot, visibilityPath, includeHidden, leaves);
         }
         return;
     }
 
-    tryMakeLeaf(assembly, obj, pathFromAssembly, visibilityPath, includeHidden, leaves);
+    tryMakeLeaf(root, obj, pathFromRoot, visibilityPath, includeHidden, leaves);
 }
 
 std::pair<std::string, std::string> canonicalSourceIdPair(
@@ -518,22 +516,192 @@ bool isExcludedBySourceId(
 
 }  // namespace
 
+bool isInterferenceRoot(const App::DocumentObject* obj)
+{
+    if (!obj) {
+        return false;
+    }
+    // App::Part containers including AssemblyObject / AssemblyLink; exclude Bodies.
+    return obj->isDerivedFrom<App::Part>() && !obj->isDerivedFrom<Part::BodyBase>();
+}
+
+namespace
+{
+
+std::string sourceIdentity(const App::DocumentObject* obj)
+{
+    if (!obj || !obj->isAttachedToDocument()) {
+        return {};
+    }
+    return std::string(obj->getDocument()->getName()) + "#" + obj->getNameInDocument();
+}
+
+std::string xlinkIdentity(const App::PropertyXLinkSub& link)
+{
+    if (auto* obj = link.getValue(); obj && obj->isAttachedToDocument()) {
+        return sourceIdentity(obj);
+    }
+    const char* objectName = link.getObjectName();
+    if (!objectName || *objectName == '\0') {
+        return {};
+    }
+    const char* docPath = link.getDocumentPath();
+    if (docPath && *docPath != '\0') {
+        return std::string(docPath) + "#" + objectName;
+    }
+    if (auto* doc = link.getDocument()) {
+        return std::string(doc->getName()) + "#" + objectName;
+    }
+    if (auto* owner = freecad_cast<App::DocumentObject*>(link.getContainer())) {
+        if (owner->getDocument()) {
+            return std::string(owner->getDocument()->getName()) + "#" + objectName;
+        }
+    }
+    return std::string("#") + objectName;
+}
+
+std::pair<App::DocumentObject*, App::DocumentObject*> canonicalPair(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return {first, second};
+    }
+    if (sourceIdentity(first) <= sourceIdentity(second)) {
+        return {first, second};
+    }
+    return {second, first};
+}
+
+std::vector<InterferenceExclusionRule> rulesFromProperty(const App::PropertyXLinkSubList& prop)
+{
+    std::vector<InterferenceExclusionRule> rules;
+    const auto& links = prop.getSubListValues();
+    std::vector<const App::PropertyXLinkSub*> endpoints;
+    endpoints.reserve(links.size());
+    for (const auto& link : links) {
+        endpoints.push_back(&link);
+    }
+
+    if (endpoints.size() % 2 != 0) {
+        InterferenceExclusionRule malformed;
+        malformed.valid = false;
+        malformed.diagnostic = "Stored exclusion list has an odd number of endpoints";
+        if (!endpoints.empty()) {
+            malformed.first = endpoints.back()->getValue();
+            malformed.firstIdentity = xlinkIdentity(*endpoints.back());
+        }
+        rules.push_back(malformed);
+        if (!endpoints.empty()) {
+            endpoints.pop_back();
+        }
+    }
+
+    for (std::size_t i = 0; i + 1 < endpoints.size(); i += 2) {
+        InterferenceExclusionRule rule;
+        rule.first = endpoints[i]->getValue();
+        rule.second = endpoints[i + 1]->getValue();
+        rule.firstIdentity = xlinkIdentity(*endpoints[i]);
+        rule.secondIdentity = xlinkIdentity(*endpoints[i + 1]);
+        if (!rule.first || !rule.first->isAttachedToDocument() || !rule.second
+            || !rule.second->isAttachedToDocument()) {
+            rule.valid = false;
+            rule.diagnostic = "Unresolved or deleted exclusion endpoint";
+        }
+        rules.push_back(rule);
+    }
+    return rules;
+}
+
+App::PropertyLength* ensureClearanceProperty(App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<AssemblyObject*>(host)) {
+        return &assembly->InterferenceClearance;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    if (auto* existing = dynamic_cast<App::PropertyLength*>(host->getPropertyByName("InterferenceClearance"))) {
+        return existing;
+    }
+    auto* prop = dynamic_cast<App::PropertyLength*>(host->addDynamicProperty(
+        "App::PropertyLength",
+        "InterferenceClearance",
+        "Interference",
+        "Minimum clearance for interference checks (0 still reports contact/penetration)",
+        App::Prop_NoRecompute
+    ));
+    if (prop) {
+        prop->setValue(0.0);
+    }
+    return prop;
+}
+
+App::PropertyXLinkSubList* ensureExclusionProperty(App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<AssemblyObject*>(host)) {
+        return &assembly->InterferenceExcludedSources;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    if (auto* existing =
+            dynamic_cast<App::PropertyXLinkSubList*>(host->getPropertyByName("InterferenceExcludedSources"))) {
+        return existing;
+    }
+    return dynamic_cast<App::PropertyXLinkSubList*>(host->addDynamicProperty(
+        "App::PropertyXLinkSubList",
+        "InterferenceExcludedSources",
+        "Interference",
+        "Alternating source-definition endpoints for excluded unordered pairs",
+        App::Prop_Hidden | App::Prop_NoRecompute
+    ));
+}
+
+const App::PropertyLength* clearanceProperty(const App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<const AssemblyObject*>(host)) {
+        return &assembly->InterferenceClearance;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    return dynamic_cast<const App::PropertyLength*>(host->getPropertyByName("InterferenceClearance"));
+}
+
+const App::PropertyXLinkSubList* exclusionProperty(const App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<const AssemblyObject*>(host)) {
+        return &assembly->InterferenceExcludedSources;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    return dynamic_cast<const App::PropertyXLinkSubList*>(
+        host->getPropertyByName("InterferenceExcludedSources")
+    );
+}
+
+}  // namespace
+
 std::vector<InterferenceLeaf> collectInterferenceLeaves(
-    const AssemblyObject* assembly,
+    const App::DocumentObject* root,
     bool includeHidden
 )
 {
     std::vector<InterferenceLeaf> leaves;
-    if (!assembly) {
+    if (!isInterferenceRoot(root)) {
         return leaves;
     }
 
+    auto* mutableRoot = const_cast<App::DocumentObject*>(root);
     std::unordered_set<App::DocumentObject*> visiting;
-    visiting.insert(const_cast<AssemblyObject*>(assembly));
-    std::vector<App::DocumentObject*> visibilityRoot {const_cast<AssemblyObject*>(assembly)};
-    for (auto* child : assembly->Group.getValues()) {
+    visiting.insert(mutableRoot);
+    std::vector<App::DocumentObject*> visibilityRoot {mutableRoot};
+    for (auto* child : childrenOf(mutableRoot)) {
         collectRecursively(
-            assembly,
+            root,
             child,
             {},
             visibilityRoot,
@@ -812,6 +980,121 @@ InterferenceScanResult runInterferenceScan(
     result.complete = !result.cancelled && result.counts.invalidInputs == 0
         && result.counts.inconclusivePairs == 0;
     return result;
+}
+
+double getInterferenceClearance(const App::DocumentObject* host)
+{
+    if (const auto* prop = clearanceProperty(host)) {
+        return prop->getValue();
+    }
+    return 0.0;
+}
+
+void setInterferenceClearance(App::DocumentObject* host, double clearanceMm)
+{
+    if (clearanceMm < 0.0 || !std::isfinite(clearanceMm)) {
+        throw Base::ValueError("Interference clearance must be finite and nonnegative");
+    }
+    auto* prop = ensureClearanceProperty(host);
+    if (!prop) {
+        throw Base::ValueError("Interference clearance host must be an App::Part root");
+    }
+    prop->setValue(clearanceMm);
+}
+
+std::vector<InterferenceExclusionRule> getInterferenceExclusionRules(const App::DocumentObject* host)
+{
+    if (const auto* prop = exclusionProperty(host)) {
+        return rulesFromProperty(*prop);
+    }
+    return {};
+}
+
+bool hasInterferenceExclusion(
+    const App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return false;
+    }
+    const auto want = canonicalPair(first, second);
+    for (const auto& rule : getInterferenceExclusionRules(host)) {
+        if (!rule.valid) {
+            continue;
+        }
+        const auto have = canonicalPair(rule.first, rule.second);
+        if (have.first == want.first && have.second == want.second) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void addInterferenceExclusion(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        throw Base::ValueError("Exclusion endpoints must be valid document objects");
+    }
+    if (!first->isAttachedToDocument() || !second->isAttachedToDocument()) {
+        throw Base::ValueError("Exclusion endpoints must be attached to a document");
+    }
+    if (hasInterferenceExclusion(host, first, second)) {
+        return;
+    }
+    auto* prop = ensureExclusionProperty(host);
+    if (!prop) {
+        throw Base::ValueError("Interference exclusion host must be an App::Part root");
+    }
+    auto canon = canonicalPair(first, second);
+    prop->append(canon.first);
+    prop->append(canon.second);
+}
+
+void removeInterferenceExclusionAt(App::DocumentObject* host, std::size_t ruleIndex)
+{
+    auto* prop = ensureExclusionProperty(host);
+    if (!prop) {
+        throw Base::ValueError("Interference exclusion host must be an App::Part root");
+    }
+    const int size = prop->getSize();
+    if (size % 2 != 0) {
+        throw Base::ValueError("Stored exclusion list has an odd number of endpoints");
+    }
+    const auto ruleCount = static_cast<std::size_t>(size / 2);
+    if (ruleIndex >= ruleCount) {
+        throw Base::ValueError("Exclusion rule index out of range");
+    }
+    prop->removeIndices(static_cast<int>(ruleIndex * 2), 2);
+}
+
+void removeInterferenceExclusion(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return;
+    }
+    const auto want = canonicalPair(first, second);
+    const auto rules = getInterferenceExclusionRules(host);
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const auto& rule = rules[i];
+        if (!rule.valid || !rule.first || !rule.second) {
+            continue;
+        }
+        const auto have = canonicalPair(rule.first, rule.second);
+        if (have.first == want.first && have.second == want.second) {
+            removeInterferenceExclusionAt(host, i);
+            return;
+        }
+    }
 }
 
 }  // namespace Assembly

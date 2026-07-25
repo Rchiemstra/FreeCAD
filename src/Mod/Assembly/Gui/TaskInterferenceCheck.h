@@ -45,11 +45,6 @@ class View3DInventor;
 class View3DInventorViewer;
 }
 
-namespace Assembly
-{
-class AssemblyObject;
-}
-
 namespace AssemblyGui
 {
 
@@ -58,7 +53,7 @@ class AssemblyGuiExport TaskInterferenceCheck: public QWidget
     Q_OBJECT
 
 public:
-    explicit TaskInterferenceCheck(Assembly::AssemblyObject* assembly, QWidget* parent = nullptr);
+    explicit TaskInterferenceCheck(App::DocumentObject* host, QWidget* parent = nullptr);
     ~TaskInterferenceCheck() override;
 
     bool accept();
@@ -110,7 +105,7 @@ public:
     ) const;
     void testOpenManageExclusions();
     bool testManageExclusionsOpen() const;
-    bool testHasAssembly() const;
+    bool testHasHost() const;
     /** Attach previewRoot to an arbitrary Coin scene (no MainWindow required). */
     void testAttachPreviewToScene(SoGroup* scene);
     void testDetachPreview();
@@ -151,7 +146,7 @@ private:
     void disconnectDocumentSignals();
     void closeManageExclusionsDialog();
     bool isResultAffectingProperty(const App::Property& prop) const;
-    Gui::Document* assemblyGuiDocument() const;
+    Gui::Document* hostGuiDocument() const;
     Gui::View3DInventorViewer* viewer() const;
     std::vector<std::pair<std::string, std::string>> currentExclusionSourceIds() const;
     App::DocumentObject* resolveSourceId(const std::string& sourceId) const;
@@ -161,7 +156,7 @@ private:
     QString formatPairDistance(const Part::InterferenceResult& detection) const;
     QString formatPairVolume(const Part::InterferenceResult& detection) const;
 
-    Assembly::AssemblyObject* assembly = nullptr;
+    App::DocumentObject* host = nullptr;
     Assembly::InterferenceScanSession session;
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
@@ -193,7 +188,7 @@ class AssemblyGuiExport TaskInterferenceCheckDialog: public Gui::TaskView::TaskD
     Q_OBJECT
 
 public:
-    explicit TaskInterferenceCheckDialog(Assembly::AssemblyObject* assembly);
+    explicit TaskInterferenceCheckDialog(App::DocumentObject* host);
     ~TaskInterferenceCheckDialog() override;
 
     QDialogButtonBox::StandardButtons getStandardButtons() const override

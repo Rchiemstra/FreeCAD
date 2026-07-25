@@ -860,3 +860,79 @@ TEST_F(InterferenceScanTest, clearancePropertyUndoRedoRoundTrip)
     _doc->redo();
     EXPECT_DOUBLE_EQ(_assembly->getInterferenceClearance(), 7.0);
 }
+
+TEST_F(InterferenceScanTest, plainPartRootCollectsNestedAndLinkedGeometry)
+{
+    auto* root = _doc->addObject<App::Part>("PartRoot");
+    auto* nested = _doc->addObject<App::Part>("NestedPart");
+    nested->Placement.setValue(Base::Placement(Base::Vector3d(100, 0, 0), Base::Rotation()));
+    auto* inner = makeBox(_doc, "InnerBox", Base::Vector3d(0, 0, 0), 10, 4, 5);
+    nested->addObject(inner);
+
+    auto* source = makeBox(_doc, "LinkedSource", Base::Vector3d(0, 0, 0), 8, 8, 8);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "PartLink"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->LinkPlacement.setValue(Base::Placement(Base::Vector3d(0, 50, 0), Base::Rotation()));
+
+    root->addObject(nested);
+    root->addObject(link);
+    _doc->recompute();
+
+    EXPECT_TRUE(Assembly::isInterferenceRoot(root));
+    EXPECT_FALSE(Assembly::isInterferenceRoot(source));
+
+    auto leaves = Assembly::collectInterferenceLeaves(root, false);
+    ASSERT_EQ(leaves.size(), 2u);
+
+    bool sawNested = false;
+    bool sawLink = false;
+    for (const auto& leaf : leaves) {
+        if (leaf.occurrenceSubName.find("InnerBox") != std::string::npos) {
+            sawNested = true;
+            EXPECT_NEAR(leaf.worldBoundBox.MinX, 100.0, 1e-6);
+            EXPECT_NEAR(leaf.worldBoundBox.MaxX, 110.0, 1e-6);
+        }
+        if (leaf.occurrenceSubName.find("PartLink") != std::string::npos) {
+            sawLink = true;
+            EXPECT_NEAR(leaf.worldBoundBox.MinY, 50.0, 1e-6);
+            EXPECT_NEAR(leaf.worldBoundBox.MaxY, 58.0, 1e-6);
+            EXPECT_EQ(leaf.sourceId, std::string(_doc->getName()) + "#LinkedSource");
+        }
+    }
+    EXPECT_TRUE(sawNested);
+    EXPECT_TRUE(sawLink);
+}
+
+TEST_F(InterferenceScanTest, plainPartClearanceAndExclusionsUseDynamicProperties)
+{
+    auto* root = _doc->addObject<App::Part>("PartRoot");
+    auto* a = makeBox(_doc, "BoxA", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* b = makeBox(_doc, "BoxB", Base::Vector3d(5, 0, 0), 10, 10, 10);
+    root->addObject(a);
+    root->addObject(b);
+    _doc->recompute();
+
+    Assembly::setInterferenceClearance(root, 1.25);
+    EXPECT_DOUBLE_EQ(Assembly::getInterferenceClearance(root), 1.25);
+    ASSERT_NE(root->getPropertyByName("InterferenceClearance"), nullptr);
+
+    Assembly::addInterferenceExclusion(root, a, b);
+    EXPECT_TRUE(Assembly::hasInterferenceExclusion(root, a, b));
+    ASSERT_NE(root->getPropertyByName("InterferenceExcludedSources"), nullptr);
+
+    auto leaves = Assembly::collectInterferenceLeaves(root, false);
+    ASSERT_EQ(leaves.size(), 2u);
+    Assembly::InterferenceScanOptions options;
+    options.clearance = Assembly::getInterferenceClearance(root);
+    std::vector<std::pair<std::string, std::string>> excluded {
+        canonicalIds(leaves[0].sourceId, leaves[1].sourceId)
+    };
+    auto result = Assembly::runInterferenceScan(leaves, options, excluded);
+    ASSERT_TRUE(result.complete);
+    EXPECT_EQ(result.counts.penetrations, 0);
+    EXPECT_GE(result.counts.excludedViolations, 1);
+
+    Assembly::removeInterferenceExclusion(root, a, b);
+    EXPECT_FALSE(Assembly::hasInterferenceExclusion(root, a, b));
+}

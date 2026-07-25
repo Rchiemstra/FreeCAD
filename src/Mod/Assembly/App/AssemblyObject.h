@@ -35,6 +35,8 @@
 #include <App/PropertyUnits.h>
 #include <App/PropertyLinks.h>
 
+#include <Mod/Assembly/App/InterferenceScan.h>
+
 #include <OndselSolver/enum.h>
 
 namespace MbD
@@ -71,17 +73,6 @@ struct ObjRef
 {
     App::DocumentObject* obj;
     App::PropertyXLinkSub* ref;
-};
-
-struct InterferenceExclusionRule
-{
-    App::DocumentObject* first = nullptr;
-    App::DocumentObject* second = nullptr;
-    /** Stable identity even when the endpoint DocumentObject* is unresolved. */
-    std::string firstIdentity;
-    std::string secondIdentity;
-    bool valid = true;
-    std::string diagnostic;
 };
 
 class AssemblyExport AssemblyObject: public App::Part

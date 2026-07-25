@@ -114,16 +114,16 @@ bool hasValidClosestPoints(const Part::InterferenceResult& detection)
 
 }  // namespace
 
-TaskInterferenceCheck::TaskInterferenceCheck(AssemblyObject* assembly, QWidget* parent)
+TaskInterferenceCheck::TaskInterferenceCheck(App::DocumentObject* host, QWidget* parent)
     : QWidget(parent)
-    , assembly(assembly)
+    , host(host)
 {
     setupUi();
     connectDocumentSignals();
 
-    if (assembly) {
+    if (host) {
         clearanceSpin->setValue(
-            Base::Quantity(assembly->getInterferenceClearance(), Base::Unit::Length)
+            Base::Quantity(Assembly::getInterferenceClearance(host), Base::Unit::Length)
         );
     }
 
@@ -144,7 +144,7 @@ void TaskInterferenceCheck::setupUi()
 {
     auto* layout = new QVBoxLayout(this);
 
-    statusLabel = new QLabel(tr("Ready. Run a scan to inspect the active assembly."), this);
+    statusLabel = new QLabel(tr("Ready. Run a scan to inspect the selected part or assembly."), this);
     layout->addWidget(statusLabel);
     progressLabel = new QLabel(QString(), this);
     layout->addWidget(progressLabel);
@@ -390,9 +390,9 @@ bool TaskInterferenceCheck::testManageExclusionsOpen() const
     return manageExclusionsDialog != nullptr;
 }
 
-bool TaskInterferenceCheck::testHasAssembly() const
+bool TaskInterferenceCheck::testHasHost() const
 {
-    return assembly != nullptr;
+    return host != nullptr;
 }
 
 void TaskInterferenceCheck::testAttachPreviewToScene(SoGroup* scene)
@@ -426,19 +426,19 @@ Gui::View3DInventorViewer* TaskInterferenceCheck::viewer() const
     return view ? view->getViewer() : nullptr;
 }
 
-Gui::Document* TaskInterferenceCheck::assemblyGuiDocument() const
+Gui::Document* TaskInterferenceCheck::hostGuiDocument() const
 {
-    if (!assembly || !assembly->getDocument() || !Gui::Application::Instance) {
+    if (!host || !host->getDocument() || !Gui::Application::Instance) {
         return nullptr;
     }
-    return Gui::Application::Instance->getDocument(assembly->getDocument());
+    return Gui::Application::Instance->getDocument(host->getDocument());
 }
 
 std::vector<std::pair<std::string, std::string>>
 TaskInterferenceCheck::currentExclusionSourceIds() const
 {
     std::vector<std::pair<std::string, std::string>> excluded;
-    if (!assembly) {
+    if (!host) {
         return excluded;
     }
     auto objectKey = [](const App::DocumentObject* obj) -> std::string {
@@ -447,7 +447,7 @@ TaskInterferenceCheck::currentExclusionSourceIds() const
         }
         return std::string(obj->getDocument()->getName()) + "#" + obj->getNameInDocument();
     };
-    for (const auto& rule : assembly->getInterferenceExclusionRules()) {
+    for (const auto& rule : Assembly::getInterferenceExclusionRules(host)) {
         if (!rule.valid) {
             continue;
         }
@@ -575,7 +575,7 @@ void TaskInterferenceCheck::setScanControlsEnabled(bool enabled)
         runButton->setEnabled(enabled);
     }
     if (manageExclusionsButton) {
-        manageExclusionsButton->setEnabled(enabled && assembly);
+        manageExclusionsButton->setEnabled(enabled && host);
     }
     updateRowActionState();
 }
@@ -584,7 +584,7 @@ void TaskInterferenceCheck::updateRowActionState()
 {
     const bool idle = !session.isBusy();
     const int pairIndex = currentPairIndex();
-    const bool hasPair = idle && pairIndex >= 0 && assembly;
+    const bool hasPair = idle && pairIndex >= 0 && host;
     bool canExclude = false;
     bool canRestore = false;
     if (hasPair) {
@@ -681,7 +681,7 @@ void TaskInterferenceCheck::connectDocumentSignals()
 {
     connections.clear();
     watchedDocuments.clear();
-    if (!assembly || !assembly->getDocument()) {
+    if (!host || !host->getDocument()) {
         return;
     }
 
@@ -698,23 +698,23 @@ void TaskInterferenceCheck::connectDocumentSignals()
         ));
         connections.push_back(doc->signalChangedObject.connect(
             [this](const App::DocumentObject& obj, const App::Property& prop) {
-                if (!assembly || !isResultAffectingProperty(prop)) {
+                if (!host || !isResultAffectingProperty(prop)) {
                     return;
                 }
-                if (&obj == assembly || watchedDocuments.count(obj.getDocument()) != 0) {
+                if (&obj == host || watchedDocuments.count(obj.getDocument()) != 0) {
                     markStale("Object change");
                 }
             }
         ));
         connections.push_back(doc->signalDeletedObject.connect([this](const App::DocumentObject& obj) {
-            if (!assembly) {
+            if (!host) {
                 return;
             }
-            if (&obj == assembly) {
-                assembly = nullptr;
+            if (&obj == host) {
+                host = nullptr;
                 closeManageExclusionsDialog();
                 disconnectDocumentSignals();
-                markStale("Assembly deleted");
+                markStale("Host deleted");
                 setScanControlsEnabled(false);
                 return;
             }
@@ -724,8 +724,8 @@ void TaskInterferenceCheck::connectDocumentSignals()
         }));
     };
 
-    attachDocument(assembly->getDocument());
-    for (App::DocumentObject* obj : assembly->getOutListRecursive()) {
+    attachDocument(host->getDocument());
+    for (App::DocumentObject* obj : host->getOutListRecursive()) {
         if (obj) {
             attachDocument(obj->getDocument());
         }
@@ -733,11 +733,11 @@ void TaskInterferenceCheck::connectDocumentSignals()
 
     connections.push_back(App::GetApplication().signalDeleteDocument.connect(
         [this](const App::Document& deleted) {
-            if (!assembly) {
+            if (!host) {
                 return;
             }
-            if (assembly->getDocument() == &deleted) {
-                assembly = nullptr;
+            if (host->getDocument() == &deleted) {
+                host = nullptr;
                 closeManageExclusionsDialog();
                 disconnectDocumentSignals();
                 markStale("Document closed");
@@ -773,14 +773,14 @@ void TaskInterferenceCheck::markStale(const char* reason)
         cancelButton->setEnabled(session.isBusy());
     }
     if (runButton) {
-        runButton->setEnabled(assembly != nullptr);
+        runButton->setEnabled(host != nullptr);
     }
     updateRowActionState();
 }
 
 void TaskInterferenceCheck::onRun()
 {
-    if (!assembly) {
+    if (!host) {
         return;
     }
 
@@ -799,14 +799,14 @@ void TaskInterferenceCheck::onRun()
         return;
     }
 
-    if (std::abs(assembly->getInterferenceClearance() - clearance) > 1e-12) {
-        if (auto* guiDoc = assemblyGuiDocument()) {
+    if (std::abs(Assembly::getInterferenceClearance(host) - clearance) > 1e-12) {
+        if (auto* guiDoc = hostGuiDocument()) {
             guiDoc->openCommand("Set interference clearance");
-            assembly->setInterferenceClearance(clearance);
+            Assembly::setInterferenceClearance(host, clearance);
             guiDoc->commitCommand();
         }
         else {
-            assembly->setInterferenceClearance(clearance);
+            Assembly::setInterferenceClearance(host, clearance);
         }
     }
 
@@ -820,7 +820,7 @@ void TaskInterferenceCheck::onRun()
     rebuildTable();
 
     const bool includeHidden = includeHiddenCheck->isChecked();
-    auto leaves = collectInterferenceLeaves(assembly, includeHidden);
+    auto leaves = collectInterferenceLeaves(host, includeHidden);
     auto excluded = currentExclusionSourceIds();
     auto cancel = handle.cancel;
     const auto generation = handle.generation;
@@ -911,7 +911,7 @@ void TaskInterferenceCheck::onScanFinished(
 
     if (!session.finishScan(generation)) {
         cancelButton->setEnabled(false);
-        setScanControlsEnabled(assembly != nullptr);
+        setScanControlsEnabled(host != nullptr);
         if (session.isStale()) {
             statusLabel->setText(tr("Scan finished but results are stale. Run again."));
         }
@@ -924,7 +924,7 @@ void TaskInterferenceCheck::onScanFinished(
     }
 
     cancelButton->setEnabled(false);
-    setScanControlsEnabled(assembly != nullptr);
+    setScanControlsEnabled(host != nullptr);
     lastResult = result;
 
     if (lastResult.cancelled) {
@@ -1114,15 +1114,15 @@ void TaskInterferenceCheck::updatePreviewForCurrentRow()
 void TaskInterferenceCheck::onSelectPair()
 {
     const int pairIndex = currentPairIndex();
-    if (pairIndex < 0 || !assembly || !assembly->isAttachedToDocument()) {
+    if (pairIndex < 0 || !host || !host->isAttachedToDocument()) {
         return;
     }
     const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
     const auto& leafA = lastResult.leaves[pair.leafIndexA];
     const auto& leafB = lastResult.leaves[pair.leafIndexB];
     Gui::Selection().clearSelection();
-    const char* docName = assembly->getDocument()->getName();
-    const char* asmName = assembly->getNameInDocument();
+    const char* docName = host->getDocument()->getName();
+    const char* asmName = host->getNameInDocument();
     if (!leafA.occurrenceSubName.empty()) {
         Gui::Selection().addSelection(docName, asmName, leafA.occurrenceSubName.c_str());
     }
@@ -1134,7 +1134,7 @@ void TaskInterferenceCheck::onSelectPair()
 void TaskInterferenceCheck::onExcludePair()
 {
     const int pairIndex = currentPairIndex();
-    if (pairIndex < 0 || !assembly) {
+    if (pairIndex < 0 || !host) {
         return;
     }
     const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
@@ -1171,13 +1171,13 @@ void TaskInterferenceCheck::onExcludePair()
         return;
     }
 
-    if (auto* guiDoc = assemblyGuiDocument()) {
+    if (auto* guiDoc = hostGuiDocument()) {
         guiDoc->openCommand("Exclude interference source pair");
-        assembly->addInterferenceExclusion(sourceA, sourceB);
+        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
         guiDoc->commitCommand();
     }
     else {
-        assembly->addInterferenceExclusion(sourceA, sourceB);
+        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
     }
     onRun();
 }
@@ -1185,7 +1185,7 @@ void TaskInterferenceCheck::onExcludePair()
 void TaskInterferenceCheck::onRestorePair()
 {
     const int pairIndex = currentPairIndex();
-    if (pairIndex < 0 || !assembly) {
+    if (pairIndex < 0 || !host) {
         return;
     }
     const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
@@ -1194,20 +1194,20 @@ void TaskInterferenceCheck::onRestorePair()
     if (!sourceA || !sourceB) {
         return;
     }
-    if (auto* guiDoc = assemblyGuiDocument()) {
+    if (auto* guiDoc = hostGuiDocument()) {
         guiDoc->openCommand("Restore interference source pair");
-        assembly->removeInterferenceExclusion(sourceA, sourceB);
+        Assembly::removeInterferenceExclusion(host, sourceA, sourceB);
         guiDoc->commitCommand();
     }
     else {
-        assembly->removeInterferenceExclusion(sourceA, sourceB);
+        Assembly::removeInterferenceExclusion(host, sourceA, sourceB);
     }
     onRun();
 }
 
 void TaskInterferenceCheck::onManageExclusions()
 {
-    if (!assembly) {
+    if (!host) {
         return;
     }
 
@@ -1249,10 +1249,10 @@ void TaskInterferenceCheck::onManageExclusions()
 
     auto fillTable = [this, table, labelOf]() {
         table->setRowCount(0);
-        if (!assembly) {
+        if (!host) {
             return;
         }
-        const auto rules = assembly->getInterferenceExclusionRules();
+        const auto rules = Assembly::getInterferenceExclusionRules(host);
         for (std::size_t i = 0; i < rules.size(); ++i) {
             const auto& rule = rules[i];
             QString status = tr("Dormant");
@@ -1307,12 +1307,12 @@ void TaskInterferenceCheck::onManageExclusions()
     };
 
     connect(restoreBtn, &QPushButton::clicked, dialog, [this, dialog, selectedRuleIndex, fillTable]() {
-        if (!assembly) {
+        if (!host) {
             dialog->reject();
             return;
         }
         const int index = selectedRuleIndex();
-        auto rules = assembly->getInterferenceExclusionRules();
+        auto rules = Assembly::getInterferenceExclusionRules(host);
         if (index < 0 || index >= static_cast<int>(rules.size())) {
             return;
         }
@@ -1320,19 +1320,19 @@ void TaskInterferenceCheck::onManageExclusions()
         if (!rule.valid || !rule.first || !rule.second) {
             return;
         }
-        if (auto* guiDoc = assemblyGuiDocument()) {
+        if (auto* guiDoc = hostGuiDocument()) {
             guiDoc->openCommand("Restore interference source pair");
-            assembly->removeInterferenceExclusion(rule.first, rule.second);
+            Assembly::removeInterferenceExclusion(host, rule.first, rule.second);
             guiDoc->commitCommand();
         }
         else {
-            assembly->removeInterferenceExclusion(rule.first, rule.second);
+            Assembly::removeInterferenceExclusion(host, rule.first, rule.second);
         }
         fillTable();
     });
 
     connect(removeBtn, &QPushButton::clicked, dialog, [this, dialog, selectedRuleIndex, fillTable]() {
-        if (!assembly) {
+        if (!host) {
             dialog->reject();
             return;
         }
@@ -1340,13 +1340,13 @@ void TaskInterferenceCheck::onManageExclusions()
         if (index < 0) {
             return;
         }
-        if (auto* guiDoc = assemblyGuiDocument()) {
+        if (auto* guiDoc = hostGuiDocument()) {
             guiDoc->openCommand("Remove interference exclusion rule");
-            assembly->removeInterferenceExclusionAt(static_cast<std::size_t>(index));
+            Assembly::removeInterferenceExclusionAt(host, static_cast<std::size_t>(index));
             guiDoc->commitCommand();
         }
         else {
-            assembly->removeInterferenceExclusionAt(static_cast<std::size_t>(index));
+            Assembly::removeInterferenceExclusionAt(host, static_cast<std::size_t>(index));
         }
         fillTable();
     });
@@ -1367,9 +1367,9 @@ void TaskInterferenceCheck::onManageExclusions()
     dialog->open();
 }
 
-TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(AssemblyObject* assembly)
+TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(App::DocumentObject* host)
 {
-    widget = new TaskInterferenceCheck(assembly);
+    widget = new TaskInterferenceCheck(host);
     taskbox = new Gui::TaskView::TaskBox(
         Gui::BitmapFactory().pixmap("Assembly_CheckInterference"),
         tr("Check Interference"),
