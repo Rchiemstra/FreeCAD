@@ -587,8 +587,91 @@ class TestReviewNotes(unittest.TestCase):
         self.assertEqual(inserted, "See @" + long_path, operation)
         self.assertNotIn("…", inserted, operation)
 
+    def test_at_suggestions_exact_subelement_beyond_preview_limit(self):
+        operation = "@ suggestions offer Face126/Edge/Vertex beyond preview limit"
+        _msg("  Test '{}'".format(operation))
+
+        # 25 boxes → 150 faces / 300 edges / 200 vertices — past the Face60 preview cap.
+        solids = [Part.makeBox(1, 1, 1, App.Vector(i * 2, 0, 0)) for i in range(25)]
+        many = self.doc.addObject("Part::Feature", "CaseSnapWindowRightPocket")
+        many.Shape = Part.makeCompound(solids)
+        # Nested path matching the reported case layout.
+        assembly_case = self.doc.addObject("App::Part", "AssemblyCase")
+        assembly_case.addObject(many)
+        self.doc.recompute()
+
+        self.assertGreaterEqual(len(many.Shape.Faces), 126, operation)
+        self.assertGreaterEqual(len(many.Shape.Edges), 70, operation)
+        self.assertGreaterEqual(len(many.Shape.Vertexes), 70, operation)
+
+        preview = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "AssemblyCase.CaseSnapWindowRightPocket.Face"
+        )
+        self.assertTrue(
+            any(s.endswith(".Face1") for s in preview),
+            "{} preview still lists early faces".format(operation),
+        )
+        self.assertNotIn(
+            "AssemblyCase.CaseSnapWindowRightPocket.Face126",
+            preview,
+            "{} Face126 must stay outside the uncapped-number preview".format(operation),
+        )
+        face_preview = [s for s in preview if ".Face" in s and s.rsplit(".", 1)[-1][4:].isdigit()]
+        self.assertLessEqual(
+            len(face_preview),
+            60,
+            "{} Face preview stays capped for performance".format(operation),
+        )
+
+        face126 = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "AssemblyCase.CaseSnapWindowRightPocket.Face126"
+        )
+        self.assertIn(
+            "AssemblyCase.CaseSnapWindowRightPocket.Face126",
+            face126,
+            "{} typed Face126 must be offered".format(operation),
+        )
+        self.assertEqual(
+            CommandReviewNote._exact_shape_element_if_valid(many, "Face126"),
+            "Face126",
+            operation,
+        )
+        self.assertIsNone(
+            CommandReviewNote._exact_shape_element_if_valid(many, "Face9999"),
+            "{} missing Face9999".format(operation),
+        )
+
+        edge70 = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "AssemblyCase.CaseSnapWindowRightPocket.Edge70"
+        )
+        self.assertIn(
+            "AssemblyCase.CaseSnapWindowRightPocket.Edge70",
+            edge70,
+            "{} typed Edge70 must be offered".format(operation),
+        )
+        vertex70 = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "AssemblyCase.CaseSnapWindowRightPocket.Vertex70"
+        )
+        self.assertIn(
+            "AssemblyCase.CaseSnapWindowRightPocket.Vertex70",
+            vertex70,
+            "{} typed Vertex70 must be offered".format(operation),
+        )
+
+        # Direct object path (no nesting) still works for high-index faces.
+        direct = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "CaseSnapWindowRightPocket.Face126"
+        )
+        self.assertIn("CaseSnapWindowRightPocket.Face126", direct, operation)
+
+        # Invalid high index must not be invented.
+        missing = CommandReviewNote.collect_review_note_at_suggestions(
+            self.doc, "CaseSnapWindowRightPocket.Face9999"
+        )
+        self.assertNotIn("CaseSnapWindowRightPocket.Face9999", missing, operation)
+
     def test_leader_port_undo_redo_and_boundary(self):
-        operation = "LeaderPort auto/manual with undo/redo and boundary endpoint"
+        operation = "LeaderPort property undo/redo and nearest-border endpoint"
         _msg("  Test '{}'".format(operation))
 
         data = CommandReviewNote.normalize_review_note_target(
@@ -611,7 +694,7 @@ class TestReviewNotes(unittest.TestCase):
 
         # Boundary endpoint must leave the text/image center for a non-trivial offset.
         half_w, half_h = CommandReviewNote.review_note_label_half_extents(120, 40, font_size=10)
-        # Auto mode attaches to the midpoint of the facing box side (not a corner).
+        # Nearest border along the ray toward the base (axis-aligned clip).
         auto = CommandReviewNote.review_note_auto_boundary_endpoint(
             note.TextPosition, half_w, half_h
         )
@@ -619,11 +702,39 @@ class TestReviewNotes(unittest.TestCase):
             auto.isEqual(note.TextPosition, 1e-6),
             "{} auto endpoint must leave text center".format(operation),
         )
-        # TextOffset is +X → attach on the left face midpoint.
+        # TextOffset is +X → attach on the left face (border intersection).
         self.assertAlmostEqual(auto.y, note.TextPosition.y, places=5, msg=operation)
         self.assertLess(auto.x, note.TextPosition.x, operation)
         self.assertAlmostEqual(auto.x, note.TextPosition.x - half_w, places=5, msg=operation)
 
+        # Diagonal offset: endpoint sits on whichever edge is hit first — not forced to a side midpoint.
+        diag_text = App.Vector(40, 20, 0)
+        diag = CommandReviewNote.review_note_auto_boundary_endpoint(diag_text, half_w, half_h)
+        off = App.Vector(diag.x - diag_text.x, diag.y - diag_text.y, 0)
+        on_vertical = abs(abs(off.x) - half_w) < 1e-5
+        on_horizontal = abs(abs(off.y) - half_h) < 1e-5
+        self.assertTrue(
+            on_vertical or on_horizontal,
+            "{} diagonal must hit a box edge (got {})".format(operation, diag),
+        )
+        # Stay on the ray from text center toward the base (2D cross ≈ 0).
+        toward = diag_text * (-1.0)
+        self.assertAlmostEqual(
+            off.x * toward.y - off.y * toward.x,
+            0.0,
+            places=4,
+            msg="{} diagonal must stay on the ray toward base".format(operation),
+        )
+        # Pure vertical / opposite / near-zero offsets.
+        up = CommandReviewNote.review_note_auto_boundary_endpoint(App.Vector(0, 40, 0), half_w, half_h)
+        self.assertAlmostEqual(up.x, 0.0, places=5, msg=operation)
+        self.assertAlmostEqual(up.y, 40.0 - half_h, places=5, msg=operation)
+        left = CommandReviewNote.review_note_auto_boundary_endpoint(
+            App.Vector(-30, 0, 0), half_w, half_h
+        )
+        self.assertAlmostEqual(left.x, -30.0 + half_w, places=5, msg=operation)
+        origin = CommandReviewNote.review_note_auto_boundary_endpoint(App.Vector(), half_w, half_h)
+        self.assertAlmostEqual(origin.x, -half_w, places=5, msg=operation)
     # --- Attachment correctness regressions -----------------------------
 
     def test_reject_assembly_lcs_origin_group_targets(self):
@@ -1718,12 +1829,15 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertFalse(note.ViewObject.Visibility, "{} visibility redo".format(operation))
         note.ViewObject.Visibility = True
 
-        original_prompt = CommandReviewNote._prompt_multiline_text
-        CommandReviewNote._prompt_multiline_text = lambda existing=None: ["Edited via double-click"]
-        try:
-            self.assertTrue(note.ViewObject.doubleClicked(), operation)
-        finally:
-            CommandReviewNote._prompt_multiline_text = original_prompt
+        self.assertTrue(note.ViewObject.doubleClicked(), operation)
+        import FreeCADGui as Gui
+
+        task = CommandReviewNote.get_active_review_note_task()
+        self.assertIsNotNone(task, "{} expected modeless editor".format(operation))
+        self.assertTrue(Gui.Control.activeDialog(), operation)
+        task.edit.setPlainText("Edited via double-click")
+        self.assertTrue(task.accept(), operation)
+        self.assertFalse(Gui.Control.activeDialog(), operation)
         self.assertEqual(list(note.LabelText), ["Edited via double-click"], operation)
 
         self.doc.openTransaction("Drag")
@@ -2006,9 +2120,10 @@ class TestReviewNotesGui(unittest.TestCase):
             "{} getSelection={!r}".format(operation, [o.Name for o in objs]),
         )
 
-    def test_gui_leader_terminates_on_floating_port(self):
-        operation = "Leader ends on floating port after drag/edit/zoom/camera"
+    def test_gui_leader_terminates_on_box_border(self):
+        operation = "Leader attaches to nearest box border after drag/edit/zoom/camera"
         _msg("  Test '{}'".format(operation))
+        import math
         import FreeCADGui as Gui
 
         data = CommandReviewNote.normalize_review_note_target(
@@ -2017,15 +2132,15 @@ class TestReviewNotesGui(unittest.TestCase):
         note = CommandReviewNote.create_review_note(
             self.assembly,
             data,
-            ["Port continuity"],
+            ["Border continuity"],
             text_offset=App.Vector(40, 0, 0),
             open_transaction=False,
         )
         self.assertIsNotNone(note.ViewObject, operation)
         self.assertTrue(hasattr(note.ViewObject, "LeaderEnd"), operation)
+        self.assertTrue(hasattr(note.ViewObject, "LeaderHalfExtent"), operation)
 
         def _flush():
-            # Process pending Coin camera sensors / redraws.
             try:
                 Gui.updateGui()
             except Exception:
@@ -2041,86 +2156,212 @@ class TestReviewNotesGui(unittest.TestCase):
             except Exception:
                 pass
 
-        def _assert_port_on_border(ctx):
+        def _assert_end_on_border(ctx, require_face_base=True):
             _flush()
             text = App.Vector(note.TextPosition)
             end = App.Vector(note.ViewObject.LeaderEnd)
-            # Must leave the text/image center — otherwise the line looks buried or missing.
+            he = App.Vector(note.ViewObject.LeaderHalfExtent)
+            hw, hh = float(he.x), float(he.y)
+            off = end - text
+            self.assertGreater(hw, 1e-6, "{} {}: halfW".format(operation, ctx))
+            self.assertGreater(hh, 1e-6, "{} {}: halfH".format(operation, ctx))
             self.assertFalse(
                 end.isEqual(text, 1e-4),
                 "{} {}: LeaderEnd must leave text center (end={} text={})".format(
                     operation, ctx, end, text
                 ),
             )
-            # Auto mode: port sits on the side facing the base, so end is closer to origin.
-            self.assertLess(
-                end.Length,
-                text.Length,
-                "{} {}: port must face the base (end={} text={})".format(
-                    operation, ctx, end, text
+            # Endpoint must land on the rectangle border in billboard UV:
+            # max(|u|/halfW, |v|/halfH) == 1 with the other component ≤ 1.
+            # With a default camera, billboard ≈ XY for assembly-local offsets.
+            nu = abs(off.x) / hw
+            nv = abs(off.y) / hh
+            self.assertAlmostEqual(
+                max(nu, nv),
+                1.0,
+                places=2,
+                msg="{} {}: end not on box border (off={} half=({}, {}) nu={} nv={})".format(
+                    operation, ctx, off, hw, hh, nu, nv
                 ),
             )
-            # No overshoot past the text center away from the base (would look disconnected).
-            # end should be between origin and text along the text ray for a +X offset.
-            self.assertGreater(
-                end.x,
-                0.0,
-                "{} {}: port still on the text side of the base".format(operation, ctx),
+            self.assertLessEqual(
+                min(nu, nv),
+                1.0 + 0.05,
+                "{} {}: end outside box (nu={} nv={})".format(operation, ctx, nu, nv),
             )
-            self.assertLess(
-                end.x,
-                text.x,
-                "{} {}: leader must not stop short of the box (gap)".format(operation, ctx),
+            # Offset length is between the nearer side and the corner.
+            self.assertGreaterEqual(
+                off.Length + 1e-3,
+                min(hw, hh),
+                "{} {}: leader stops inside the box (gap through text)".format(operation, ctx),
             )
+            self.assertLessEqual(
+                off.Length,
+                math.hypot(hw, hh) + 1e-3,
+                "{} {}: leader overshoots past the box corner".format(operation, ctx),
+            )
+            if require_face_base and text.Length > 5.0:
+                self.assertLess(
+                    end.Length,
+                    text.Length,
+                    "{} {}: border point must face the base (end={} text={})".format(
+                        operation, ctx, end, text
+                    ),
+                )
+                self.assertGreater(
+                    end.x,
+                    0.0,
+                    "{} {}: end still on the text side of the base".format(operation, ctx),
+                )
+                self.assertLess(
+                    end.x,
+                    text.x,
+                    "{} {}: leader must not stop short of the box (gap)".format(operation, ctx),
+                )
 
-        _assert_port_on_border("initial")
+        _assert_end_on_border("initial")
+        # +X default camera: attach on the left face at mid-height.
+        he0 = App.Vector(note.ViewObject.LeaderHalfExtent)
+        end0 = App.Vector(note.ViewObject.LeaderEnd)
+        text0 = App.Vector(note.TextPosition)
+        self.assertAlmostEqual(end0.x, text0.x - he0.x, places=2, msg=operation)
+        self.assertAlmostEqual(end0.y, text0.y, places=2, msg=operation)
+        # Half-extent must track the real image, not the old 0.5 mm floor.
+        self.assertGreater(he0.x, 0.5 + 1e-3, "{} halfW must exceed legacy 0.5 floor".format(operation))
 
-        # Drag-equivalent TextPosition edit.
         note.TextPosition = App.Vector(60, 10, 0)
-        _assert_port_on_border("after TextPosition")
+        _assert_end_on_border("after TextPosition")
 
-        # Editing text changes the image size → extents must refresh.
-        note.LabelText = ["Port continuity", "with extra lines", "to grow the box"]
-        _assert_port_on_border("after LabelText")
+        note.LabelText = ["Border continuity", "with extra lines", "to grow the box"]
+        _assert_end_on_border("after LabelText")
+        he1 = App.Vector(note.ViewObject.LeaderHalfExtent)
+        self.assertGreater(he1.y, he0.y, "{} taller text grows halfH".format(operation))
 
-        # Zoom / camera change must keep the port glued to the billboard border.
         view = Gui.ActiveDocument.ActiveView
         self.assertIsNotNone(view, operation)
         cam = view.getCameraNode()
         self.assertIsNotNone(cam, operation)
         before = App.Vector(note.ViewObject.LeaderEnd)
+        before_he = App.Vector(note.ViewObject.LeaderHalfExtent)
         try:
-            # Orthographic cameras expose height; perspective uses position.
             if hasattr(cam, "height"):
                 old_h = float(cam.height.getValue())
                 cam.height.setValue(old_h * 2.5)
             else:
                 pos = cam.position.getValue()
-                cam.position.setValue(pos[0], pos[1], pos[2] * 2.0 if abs(pos[2]) > 1e-3 else pos[2] + 200.0)
+                cam.position.setValue(
+                    pos[0],
+                    pos[1],
+                    pos[2] * 2.0 if abs(pos[2]) > 1e-3 else pos[2] + 200.0,
+                )
         except Exception as exc:
             self.fail("{} camera adjust failed: {}".format(operation, exc))
         _flush()
         after = App.Vector(note.ViewObject.LeaderEnd)
+        after_he = App.Vector(note.ViewObject.LeaderHalfExtent)
         self.assertFalse(
             after.isEqual(before, 1e-3),
             "{} zoom must recompute LeaderEnd (before={} after={})".format(
                 operation, before, after
             ),
         )
-        _assert_port_on_border("after zoom")
+        self.assertGreater(
+            after_he.x,
+            before_he.x * 1.5,
+            "{} zoom-out must enlarge world half-extents".format(operation),
+        )
+        _assert_end_on_border("after zoom")
 
-        # Rotate the camera — billboard axes change; port must still leave the center.
         try:
             from pivy import coin
 
             cam.orientation.setValue(coin.SbRotation(coin.SbVec3f(1, 0, 0), 0.4))
         except Exception:
-            # Fallback without pivy: nudge orientation via view API if available.
             try:
                 view.viewAxonometric()
             except Exception:
                 pass
-        _assert_port_on_border("after camera rotate")
+        _flush()
+        # After camera rotate, billboard axes leave XY — only require a non-center end
+        # whose offset length matches a border point for the current half-extents.
+        text = App.Vector(note.TextPosition)
+        end = App.Vector(note.ViewObject.LeaderEnd)
+        he = App.Vector(note.ViewObject.LeaderHalfExtent)
+        off = end - text
+        self.assertFalse(end.isEqual(text, 1e-4), "{} after rotate".format(operation))
+        self.assertGreaterEqual(off.Length + 1e-3, min(he.x, he.y), operation)
+        self.assertLessEqual(off.Length, math.hypot(he.x, he.y) + 1e-2, operation)
+
+    def test_gui_leader_border_attachment_varied_offsets(self):
+        operation = "Leader border attachment for diagonal/short/vertical offsets"
+        _msg("  Test '{}'".format(operation))
+        import math
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+
+        def _flush():
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if view:
+                    view.redraw()
+            except Exception:
+                pass
+
+        cases = [
+            ("diag", App.Vector(40, 30, 0)),
+            ("+Y", App.Vector(0, 45, 0)),
+            ("-X", App.Vector(-35, 0, 0)),
+            ("short", App.Vector(8, 0, 0)),
+            ("+Z", App.Vector(0, 0, 40)),
+        ]
+        for name, offset in cases:
+            note = CommandReviewNote.create_review_note(
+                self.assembly,
+                data,
+                ["Offset " + name],
+                text_offset=offset,
+                open_transaction=False,
+            )
+            _flush()
+            text = App.Vector(note.TextPosition)
+            end = App.Vector(note.ViewObject.LeaderEnd)
+            he = App.Vector(note.ViewObject.LeaderHalfExtent)
+            off = end - text
+            self.assertFalse(
+                end.isEqual(text, 1e-4),
+                "{} {}: buried at center".format(operation, name),
+            )
+            self.assertGreater(he.x, 1e-6, "{} {}".format(operation, name))
+            self.assertGreater(he.y, 1e-6, "{} {}".format(operation, name))
+            # Must reach the border — not stop inside the text (through-text gap).
+            self.assertGreaterEqual(
+                off.Length + 1e-3,
+                min(he.x, he.y),
+                "{} {}: stops inside box (off={} half=({},{}))".format(
+                    operation, name, off, he.x, he.y
+                ),
+            )
+            self.assertLessEqual(
+                off.Length,
+                math.hypot(he.x, he.y) + 1e-2,
+                "{} {}: overshoots box".format(operation, name),
+            )
+            if name in ("diag", "+Y", "-X", "short"):
+                nu = abs(off.x) / he.x
+                nv = abs(off.y) / he.y
+                self.assertAlmostEqual(
+                    max(nu, nv),
+                    1.0,
+                    places=2,
+                    msg="{} {}: not on border nu={} nv={}".format(operation, name, nu, nv),
+                )
 
     def test_gui_at_suggestion_ellipsis_narrow_dropdown(self):
         operation = "Narrow @ suggestion dropdown ellipsizes long paths"
@@ -2193,3 +2434,109 @@ class TestReviewNotesGui(unittest.TestCase):
             Gui.updateGui()
         except Exception:
             pass
+
+    def test_gui_modeless_editor_allows_interaction(self):
+        operation = "Modeless Review Note editor keeps FreeCAD interactive"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtWidgets
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        self.assertIsNotNone(data, operation)
+        original_sub = list(data["sub_list"])
+        original_anchor = App.Vector(data["local_anchor"])
+
+        # Extra component for later selection (must exist outside the editor transaction).
+        box2 = self.assembly.newObject("Part::Box", "Box2")
+        self.doc.recompute()
+
+        # Open create editor without committing yet.
+        task = CommandReviewNote.open_review_note_text_task(
+            assembly=self.assembly, target_data=data
+        )
+        self.assertIsNotNone(task, operation)
+        self.assertTrue(Gui.Control.activeDialog(), operation)
+        self.assertIs(CommandReviewNote.get_active_review_note_task(), task, operation)
+        self.assertTrue(task.isAllowedAlterSelection(), operation)
+        self.assertTrue(task.isAllowedAlterView(), operation)
+        self.assertTrue(task.isAllowedAlterDocument(), operation)
+
+        # Rotate / zoom while the editor remains open.
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation)
+        cam = view.getCameraNode()
+        self.assertIsNotNone(cam, operation)
+        try:
+            if hasattr(cam, "height"):
+                cam.height.setValue(float(cam.height.getValue()) * 1.4)
+            view.viewAxonometric()
+        except Exception as exc:
+            self.fail("{} camera interaction failed: {}".format(operation, exc))
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
+        self.assertTrue(Gui.Control.activeDialog(), "{} editor must stay open".format(operation))
+
+        # Select different geometry / tree objects — must not retarget the frozen create anchor.
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box.Face1")
+        self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
+        self.assertTrue(
+            task.target_data["local_anchor"].isEqual(original_anchor, 1e-9),
+            operation,
+        )
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.assembly)
+        self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
+
+        # Apply creates the note on the original Face6 anchor.
+        task.edit.setPlainText("Modeless @Box.Face1 mention")
+        task.clicked(QtWidgets.QDialogButtonBox.Apply)
+        note = task.note
+        self.assertIsNotNone(note, operation)
+        note_name = note.Name
+        self.assertEqual(list(note.Target[1]), original_sub, operation)
+        self.assertTrue(note.LocalAnchor.isEqual(original_anchor, 1e-9), operation)
+        self.assertEqual(list(note.LabelText), ["Modeless @Box.Face1 mention"], operation)
+
+        # Further selection must still leave the committed note's anchor alone.
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box2.Face6")
+        self.assertTrue(task._anchor_still_frozen(), operation)
+        self.assertEqual(list(note.Target[1]), original_sub, operation)
+
+        # Cancel discards the Apply (abort command).
+        self.assertTrue(task.reject(), operation)
+        self.assertFalse(Gui.Control.activeDialog(), operation)
+        self.assertIsNone(CommandReviewNote.get_active_review_note_task(), operation)
+        self.assertIsNone(self.doc.getObject(note_name), "{} Cancel must discard".format(operation))
+
+        # Edit path: open on existing note, interact, OK commits.
+        data2 = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note2 = CommandReviewNote.create_review_note(
+            self.assembly, data2, ["Before edit"], open_transaction=False
+        )
+        before_target = note2.Target
+        before_anchor = App.Vector(note2.LocalAnchor)
+
+        task2 = CommandReviewNote.open_review_note_text_task(note=note2)
+        self.assertTrue(Gui.Control.activeDialog(), operation)
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(box2)
+        try:
+            view.fitAll()
+        except Exception:
+            pass
+        self.assertTrue(task2._anchor_still_frozen(), operation)
+        task2.edit.setPlainText("After modeless OK")
+        self.assertTrue(task2.accept(), operation)
+        self.assertEqual(list(note2.LabelText), ["After modeless OK"], operation)
+        self.assertEqual(note2.Target[0], before_target[0], operation)
+        self.assertEqual(list(note2.Target[1]), list(before_target[1]), operation)
+        self.assertTrue(note2.LocalAnchor.isEqual(before_anchor, 1e-9), operation)
+        self.assertFalse(Gui.Control.activeDialog(), operation)

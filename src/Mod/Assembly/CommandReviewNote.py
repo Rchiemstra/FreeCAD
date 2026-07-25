@@ -70,8 +70,94 @@ if App.GuiUp:
             item.setData(path, QtCore.Qt.ToolTipRole)
             model.appendRow(item)
 
+    class ReviewNoteAtAwarePlainTextEdit(QtWidgets.QPlainTextEdit):
+        """Plain-text editor with @ref autocomplete (modeless-safe)."""
+
+        def __init__(self, parent=None, popup_width=280):
+            super().__init__(parent)
+            self._completer = None
+            self._model = None
+            self._popup_width = int(popup_width)
+
+        def set_at_completer(self, completer, model):
+            self._completer = completer
+            self._model = model
+            completer.setWidget(self)
+            completer.setCompletionMode(QtWidgets.QCompleter.UnfilteredPopupCompletion)
+            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            completer.setCompletionRole(QtCore.Qt.EditRole)
+            completer.setMaxVisibleItems(12)
+            popup = completer.popup()
+            popup.setItemDelegate(ReviewNoteAtSuggestionDelegate(popup))
+            popup.setUniformItemSizes(True)
+            popup.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            completer.activated.connect(self._insert_completion)
+
+        def _resolve_completion(self, completion):
+            popup = self._completer.popup() if self._completer else None
+            if popup is not None:
+                idx = popup.currentIndex()
+                if idx.isValid():
+                    full = idx.data(QtCore.Qt.UserRole) or idx.data(QtCore.Qt.EditRole)
+                    if full:
+                        return str(full)
+            return str(completion)
+
+        def _insert_completion(self, completion):
+            full = self._resolve_completion(completion)
+            cursor = self.textCursor()
+            end_pos = cursor.position()
+            text = self.toPlainText()
+            at_idx, _prefix = at_token_at_cursor(text, end_pos)
+            if at_idx is None:
+                return
+            cursor.beginEditBlock()
+            cursor.setPosition(at_idx)
+            cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
+            cursor.insertText("@" + full)
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+
+        def keyPressEvent(self, event):
+            popup = self._completer.popup() if self._completer else None
+            if popup is not None and popup.isVisible():
+                if event.key() in (
+                    QtCore.Qt.Key_Enter,
+                    QtCore.Qt.Key_Return,
+                    QtCore.Qt.Key_Escape,
+                    QtCore.Qt.Key_Tab,
+                    QtCore.Qt.Key_Backtab,
+                    QtCore.Qt.Key_Up,
+                    QtCore.Qt.Key_Down,
+                ):
+                    event.ignore()
+                    return
+            super().keyPressEvent(event)
+            self.refresh_at_completer()
+
+        def refresh_at_completer(self):
+            if self._completer is None or self._model is None:
+                return
+            cursor = self.textCursor()
+            text = self.toPlainText()
+            at_idx, prefix = at_token_at_cursor(text, cursor.position())
+            if at_idx is None:
+                self._completer.popup().hide()
+                return
+            suggestions = collect_review_note_at_suggestions(App.ActiveDocument, prefix)
+            if not suggestions:
+                self._completer.popup().hide()
+                return
+            fill_review_note_at_suggestion_model(self._model, suggestions)
+            cr = self.cursorRect()
+            popup = self._completer.popup()
+            cr.setWidth(self._popup_width)
+            popup.setFixedWidth(self._popup_width)
+            self._completer.complete(cr)
+
 else:
     ReviewNoteAtSuggestionDelegate = None
+    ReviewNoteAtAwarePlainTextEdit = None
 
     def fill_review_note_at_suggestion_model(model, suggestions):
         raise RuntimeError("Review Note @ suggestions require a GUI session")
@@ -171,9 +257,8 @@ def _is_at_suggestion_object(obj):
     return True
 
 
-def _shape_element_suggestions(obj, limit=60):
-    """Face/Edge/Vertex names from an object's shape (or linked shape)."""
-    names = []
+def _linked_shape(obj):
+    """Return the Shape used for @ref Face/Edge/Vertex suggestions, or None."""
     try:
         shape_obj = obj
         if hasattr(obj, "getLinkedObject"):
@@ -182,7 +267,19 @@ def _shape_element_suggestions(obj, limit=60):
                 shape_obj = linked
         shape = getattr(shape_obj, "Shape", None)
         if shape is None or shape.isNull():
-            return names
+            return None
+        return shape
+    except Exception:
+        return None
+
+
+def _shape_element_suggestions(obj, limit=60):
+    """Preview Face/Edge/Vertex names from an object's shape (capped for performance)."""
+    names = []
+    shape = _linked_shape(obj)
+    if shape is None:
+        return names
+    try:
         for i in range(1, min(len(shape.Faces), limit) + 1):
             names.append("Face{}".format(i))
         for i in range(1, min(len(shape.Edges), max(0, limit - len(names))) + 1):
@@ -192,6 +289,39 @@ def _shape_element_suggestions(obj, limit=60):
     except Exception:
         pass
     return names
+
+
+_EXACT_SHAPE_ELEMENT_RE = re.compile(r"^(Face|Edge|Vertex)(\d+)$", re.IGNORECASE)
+
+
+def _exact_shape_element_if_valid(obj, partial):
+    """If ``partial`` is FaceN/EdgeN/VertexN and that element exists, return canonical name.
+
+    Used so typed numbers beyond the preview limit (e.g. Face126) still autocomplete.
+    """
+    m = _EXACT_SHAPE_ELEMENT_RE.match(str(partial or ""))
+    if not m:
+        return None
+    kind = {"face": "Face", "edge": "Edge", "vertex": "Vertex"}[m.group(1).lower()]
+    try:
+        index = int(m.group(2))
+    except ValueError:
+        return None
+    if index < 1:
+        return None
+    shape = _linked_shape(obj)
+    if shape is None:
+        return None
+    try:
+        if kind == "Face" and index <= len(shape.Faces):
+            return "Face{}".format(index)
+        if kind == "Edge" and index <= len(shape.Edges):
+            return "Edge{}".format(index)
+        if kind == "Vertex" and index <= len(shape.Vertexes):
+            return "Vertex{}".format(index)
+    except Exception:
+        return None
+    return None
 
 
 def _child_name_suggestions(obj):
@@ -217,7 +347,8 @@ def collect_review_note_at_suggestions(doc, prefix=""):
 
     Examples:
       "" / "Bo" -> object Names
-      "Box." / "Box.Fa" -> Box.FaceN / children
+      "Box." / "Box.Fa" -> Box.FaceN / children (preview-capped)
+      "Box.Face126" -> exact Face126 when that subelement exists (beyond preview)
     """
     if doc is None:
         return []
@@ -270,8 +401,15 @@ def collect_review_note_at_suggestions(doc, prefix=""):
         if not partial_l or elem.lower().startswith(partial_l):
             suggestions.append(path_prefix + "." + elem)
 
+    # Typed FaceN/EdgeN/VertexN: validate that exact element even past the preview cap.
+    exact = _exact_shape_element_if_valid(cursor_obj, partial)
+    exact_path = (path_prefix + "." + exact) if exact else None
+
     seen = set()
     out = []
+    if exact_path:
+        out.append(exact_path)
+        seen.add(exact_path)
     for s in suggestions:
         if s in seen:
             continue
@@ -438,36 +576,29 @@ def review_note_perimeter_offset(port, half_w, half_h):
     bottom = right + 2.0 * w
     left = bottom + 2.0 * h
     if d <= right:
-        offset = App.Vector(w, h - d, 0.0)
-    elif d <= bottom:
-        offset = App.Vector(w - (d - right), -h, 0.0)
-    elif d <= left:
-        offset = App.Vector(-w, -h + (d - bottom), 0.0)
-    else:
-        offset = App.Vector(-w + (d - left), h, 0.0)
-    # Never leave the leader on a corner vertex — snap to the nearer side midpoint.
-    eps = 1e-4 * min(w, h)
-    if abs(abs(offset.x) - w) < eps and abs(abs(offset.y) - h) < eps:
-        if abs(offset.x) >= abs(offset.y):
-            offset = App.Vector(w if offset.x >= 0.0 else -w, 0.0, 0.0)
-        else:
-            offset = App.Vector(0.0, h if offset.y >= 0.0 else -h, 0.0)
-    return offset
+        return App.Vector(w, h - d, 0.0)
+    if d <= bottom:
+        return App.Vector(w - (d - right), -h, 0.0)
+    if d <= left:
+        return App.Vector(-w, -h + (d - bottom), 0.0)
+    return App.Vector(-w + (d - left), h, 0.0)
 
 
 def review_note_auto_boundary_endpoint(text_pos, half_w, half_h):
-    """Leader end at the midpoint of the box side facing the base (not a corner)."""
+    """Nearest point on the label rectangle border along the line toward the base."""
     w = max(1e-6, float(half_w))
     h = max(1e-6, float(half_h))
     text = App.Vector(text_pos)
     if text.Length < 1e-9:
         return App.Vector(-w, 0.0, 0.0)
     toward_base = text * (-1.0)
-    ax = abs(toward_base.x) / w
-    ay = abs(toward_base.y) / h
-    if ax >= ay:
-        return text + App.Vector(w if toward_base.x >= 0.0 else -w, 0.0, 0.0)
-    return text + App.Vector(0.0, h if toward_base.y >= 0.0 else -h, 0.0)
+    dir_xy = App.Vector(toward_base.x, toward_base.y, 0.0)
+    if dir_xy.Length < 1e-9:
+        return text + App.Vector(-w, 0.0, 0.0)
+    sx = (w / abs(dir_xy.x)) if abs(dir_xy.x) > 1e-12 else 1e12
+    sy = (h / abs(dir_xy.y)) if abs(dir_xy.y) > 1e-12 else 1e12
+    t = min(sx, sy)
+    return text + dir_xy * t
 
 
 def _is_joint_object(obj):
@@ -897,145 +1028,241 @@ def is_add_review_note_eligible(assembly, selection=None):
     return len(targets) == 1
 
 
-def _prompt_multiline_text(existing_lines=None):
-    if not App.GuiUp:
-        return existing_lines or ["Review note"]
-
-    doc = App.ActiveDocument
-    # Keep the popup readable on long nested paths; delegate ellipsizes to this width.
-    popup_width = 280
-
-    class _AtAwarePlainTextEdit(QtWidgets.QPlainTextEdit):
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self._completer = None
-            self._model = None
-
-        def set_at_completer(self, completer, model):
-            self._completer = completer
-            self._model = model
-            completer.setWidget(self)
-            completer.setCompletionMode(QtWidgets.QCompleter.UnfilteredPopupCompletion)
-            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
-            completer.setCompletionRole(QtCore.Qt.EditRole)
-            completer.setMaxVisibleItems(12)
-            popup = completer.popup()
-            popup.setItemDelegate(ReviewNoteAtSuggestionDelegate(popup))
-            popup.setUniformItemSizes(True)
-            popup.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-            completer.activated.connect(self._insert_completion)
-
-        def _resolve_completion(self, completion):
-            """Prefer the full path stored on the current popup row."""
-            popup = self._completer.popup() if self._completer else None
-            if popup is not None:
-                idx = popup.currentIndex()
-                if idx.isValid():
-                    full = idx.data(QtCore.Qt.UserRole) or idx.data(QtCore.Qt.EditRole)
-                    if full:
-                        return str(full)
-            return str(completion)
-
-        def _insert_completion(self, completion):
-            full = self._resolve_completion(completion)
-            cursor = self.textCursor()
-            end_pos = cursor.position()
-            text = self.toPlainText()
-            at_idx, _prefix = at_token_at_cursor(text, end_pos)
-            if at_idx is None:
-                return
-            cursor.beginEditBlock()
-            cursor.setPosition(at_idx)
-            cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
-            cursor.insertText("@" + full)
-            cursor.endEditBlock()
-            self.setTextCursor(cursor)
-
-        def keyPressEvent(self, event):
-            popup = self._completer.popup() if self._completer else None
-            if popup is not None and popup.isVisible():
-                if event.key() in (
-                    QtCore.Qt.Key_Enter,
-                    QtCore.Qt.Key_Return,
-                    QtCore.Qt.Key_Escape,
-                    QtCore.Qt.Key_Tab,
-                    QtCore.Qt.Key_Backtab,
-                    QtCore.Qt.Key_Up,
-                    QtCore.Qt.Key_Down,
-                ):
-                    event.ignore()
-                    return
-            super().keyPressEvent(event)
-            self.refresh_at_completer()
-
-        def refresh_at_completer(self):
-            if self._completer is None or self._model is None:
-                return
-            cursor = self.textCursor()
-            text = self.toPlainText()
-            at_idx, prefix = at_token_at_cursor(text, cursor.position())
-            if at_idx is None:
-                self._completer.popup().hide()
-                return
-            # Filter/search always uses complete paths (never the ellipsized labels).
-            suggestions = collect_review_note_at_suggestions(doc, prefix)
-            if not suggestions:
-                self._completer.popup().hide()
-                return
-            fill_review_note_at_suggestion_model(self._model, suggestions)
-            cr = self.cursorRect()
-            popup = self._completer.popup()
-            cr.setWidth(popup_width)
-            popup.setFixedWidth(popup_width)
-            self._completer.complete(cr)
-
-    dialog = QtWidgets.QDialog()
-    dialog.setWindowTitle(translate("Assembly", "Review Note"))
-    dialog.setMinimumWidth(420)
-    dialog.setMinimumHeight(260)
-
-    layout = QtWidgets.QVBoxLayout(dialog)
-    hint = QtWidgets.QLabel(
-        translate(
-            "Assembly",
-            "Enter review note text. Type @ to mention an object (e.g. @Box.Face1).",
-        )
-    )
-    hint.setWordWrap(True)
-    layout.addWidget(hint)
-
-    edit = _AtAwarePlainTextEdit(dialog)
-    edit.setPlaceholderText(translate("Assembly", "Review note"))
-    if existing_lines:
-        edit.setPlainText("\n".join(existing_lines))
-        cursor = edit.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        edit.setTextCursor(cursor)
-    layout.addWidget(edit)
-
-    model = QtGui.QStandardItemModel(dialog)
-    completer = QtWidgets.QCompleter(model, dialog)
-    edit.set_at_completer(completer, model)
-    edit.cursorPositionChanged.connect(edit.refresh_at_completer)
-
-    buttons = QtWidgets.QDialogButtonBox(
-        QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-    )
-    buttons.accepted.connect(dialog.accept)
-    buttons.rejected.connect(dialog.reject)
-    layout.addWidget(buttons)
-
-    edit.setFocus()
-    if dialog.exec_() != QtWidgets.QDialog.Accepted:
-        return None
-
-    text = edit.toPlainText()
-    lines = [line.rstrip() for line in text.splitlines()]
+def _normalize_label_lines(text):
+    """Split editor text into LabelText lines, or None if empty."""
+    lines = [line.rstrip() for line in str(text or "").splitlines()]
     if not any(line.strip() for line in lines):
         return None
     while lines and not lines[-1].strip():
         lines.pop()
     return lines
+
+
+_active_review_note_task = None
+
+
+def get_active_review_note_task():
+    """Return the open Review Note task panel, if any."""
+    return _active_review_note_task
+
+
+def _close_active_task_dialog():
+    if not App.GuiUp:
+        return
+    if not Gui.Control.activeDialog():
+        return
+    try:
+        task = Gui.Control.activeTaskDialog()
+        if task is not None and hasattr(task, "reject"):
+            task.reject()
+            return
+    except Exception:
+        pass
+    try:
+        Gui.Control.closeDialog()
+    except Exception:
+        pass
+
+
+class TaskAssemblyReviewNote:
+    """Modeless Task panel for creating/editing Review Note text.
+
+    View, tree, and selection stay interactive so users can rotate/zoom and pick
+    geometry for @mentions. The note's original anchor is frozen when the panel
+    opens and is never updated from later selection changes.
+    """
+
+    def __init__(self, note=None, assembly=None, target_data=None):
+        if not App.GuiUp:
+            raise RuntimeError("TaskAssemblyReviewNote requires a GUI session")
+
+        self.note = note
+        self.assembly = assembly
+        self.target_data = target_data
+        self._closed = False
+        self._anchor_snapshot = None
+
+        if note is not None:
+            self.assembly = note.getOwnerPart() or assembly
+            self._anchor_snapshot = {
+                "Target": note.Target,
+                "LocalAnchor": App.Vector(note.LocalAnchor),
+                "BasePosition": App.Vector(note.BasePosition),
+                "JointSide": note.JointSide,
+            }
+            existing = list(note.LabelText) if note.LabelText else []
+            command_name = translate("Assembly", "Edit Review Note")
+        else:
+            if assembly is None or target_data is None:
+                raise ValueError("Create mode requires assembly and target_data")
+            # Freeze the create-time anchor — later selection must not retarget.
+            self.target_data = {
+                "target_obj": target_data["target_obj"],
+                "sub_list": list(target_data.get("sub_list") or []),
+                "local_anchor": App.Vector(target_data["local_anchor"]),
+                "joint_side": target_data.get("joint_side", JOINT_SIDE_NONE),
+            }
+            existing = []
+            command_name = translate("Assembly", "Add Review Note")
+
+        self.form = QtWidgets.QWidget()
+        self.form.setWindowTitle(translate("Assembly", "Review Note"))
+        layout = QtWidgets.QVBoxLayout(self.form)
+
+        hint = QtWidgets.QLabel(
+            translate(
+                "Assembly",
+                "Edit the note text. You can rotate/zoom the view and select "
+                "geometry for @mentions. The note stays anchored to the original target.",
+            )
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.edit = ReviewNoteAtAwarePlainTextEdit(self.form, popup_width=280)
+        self.edit.setPlaceholderText(translate("Assembly", "Review note"))
+        self.edit.setMinimumHeight(160)
+        if existing:
+            self.edit.setPlainText("\n".join(existing))
+            cursor = self.edit.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.End)
+            self.edit.setTextCursor(cursor)
+        layout.addWidget(self.edit)
+
+        model = QtGui.QStandardItemModel(self.form)
+        completer = QtWidgets.QCompleter(model, self.form)
+        self.edit.set_at_completer(completer, model)
+        self.edit.cursorPositionChanged.connect(self.edit.refresh_at_completer)
+
+        Gui.ActiveDocument.openCommand(command_name)
+        self.edit.setFocus()
+
+    def getStandardButtons(self):
+        return (
+            QtWidgets.QDialogButtonBox.Ok
+            | QtWidgets.QDialogButtonBox.Apply
+            | QtWidgets.QDialogButtonBox.Cancel
+        )
+
+    def isAllowedAlterSelection(self):
+        return True
+
+    def isAllowedAlterView(self):
+        return True
+
+    def isAllowedAlterDocument(self):
+        return True
+
+    def needsFullSpace(self):
+        return False
+
+    def open(self):
+        pass
+
+    def _current_lines(self):
+        return _normalize_label_lines(self.edit.toPlainText())
+
+    def _anchor_still_frozen(self):
+        """True when Target/LocalAnchor were not changed by selection while open."""
+        if self.note is None:
+            return True
+        if self._anchor_snapshot is None:
+            return True
+        snap = self._anchor_snapshot
+        try:
+            cur_target, cur_subs = self.note.Target
+            snap_target, snap_subs = snap["Target"]
+            if cur_target != snap_target or list(cur_subs) != list(snap_subs):
+                return False
+            if not self.note.LocalAnchor.isEqual(snap["LocalAnchor"], 1e-9):
+                return False
+            if str(self.note.JointSide) != str(snap["JointSide"]):
+                return False
+        except Exception:
+            return False
+        return True
+
+    def apply_text(self):
+        """Commit current editor text to the note without closing the panel."""
+        lines = self._current_lines()
+        if lines is None:
+            return False
+
+        if self.note is None:
+            note = create_review_note(
+                self.assembly,
+                self.target_data,
+                lines,
+                open_transaction=False,
+            )
+            if note is None:
+                return False
+            self.note = note
+            self._anchor_snapshot = {
+                "Target": note.Target,
+                "LocalAnchor": App.Vector(note.LocalAnchor),
+                "BasePosition": App.Vector(note.BasePosition),
+                "JointSide": note.JointSide,
+            }
+        else:
+            self.note.LabelText = list(lines)
+
+        return self._anchor_still_frozen()
+
+    def clicked(self, button):
+        if button == QtWidgets.QDialogButtonBox.Apply:
+            self.apply_text()
+
+    def accept(self):
+        if not self.apply_text():
+            return False
+        try:
+            Gui.ActiveDocument.commitCommand()
+        except Exception:
+            pass
+        self._cleanup(close_dialog=True)
+        return True
+
+    def reject(self):
+        try:
+            Gui.ActiveDocument.abortCommand()
+        except Exception:
+            pass
+        self._cleanup(close_dialog=True)
+        return True
+
+    def _cleanup(self, close_dialog=False):
+        global _active_review_note_task
+        if self._closed:
+            if close_dialog and Gui.Control.activeDialog():
+                try:
+                    Gui.Control.closeDialog()
+                except Exception:
+                    pass
+            return
+        self._closed = True
+        if _active_review_note_task is self:
+            _active_review_note_task = None
+        if close_dialog and Gui.Control.activeDialog():
+            try:
+                Gui.Control.closeDialog()
+            except Exception:
+                pass
+
+
+def open_review_note_text_task(note=None, assembly=None, target_data=None):
+    """Show the modeless Review Note text Task panel and return it."""
+    global _active_review_note_task
+    if not App.GuiUp:
+        raise RuntimeError("open_review_note_text_task requires a GUI session")
+
+    _close_active_task_dialog()
+    panel = TaskAssemblyReviewNote(
+        note=note, assembly=assembly, target_data=target_data
+    )
+    _active_review_note_task = panel
+    Gui.Control.showDialog(panel)
+    return panel
 
 
 def _fallback_text_offset():
@@ -1158,10 +1385,10 @@ def edit_review_note(note, new_lines=None):
         return False
 
     if new_lines is None:
-        existing = list(note.LabelText) if note.LabelText else []
-        new_lines = _prompt_multiline_text(existing)
-        if new_lines is None:
+        if not App.GuiUp:
             return False
+        open_review_note_text_task(note=note)
+        return True
 
     if not any(line.strip() for line in new_lines):
         return False
@@ -1226,11 +1453,7 @@ class CommandAddReviewNote:
         if len(targets) != 1:
             return
 
-        lines = _prompt_multiline_text()
-        if lines is None:
-            return
-
-        create_review_note(owner, targets[0], lines)
+        open_review_note_text_task(assembly=owner, target_data=targets[0])
 
 
 class CommandEditReviewNote:

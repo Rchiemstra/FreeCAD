@@ -30,14 +30,9 @@
 #include <vector>
 
 
-class SoAnnotation;
 class SoCamera;
-class SoMaterial;
 class SoNodeSensor;
 class SoSensor;
-class SoSeparator;
-class SoSphere;
-class SoTranslation;
 class SoDragger;
 
 namespace AssemblyGui
@@ -51,15 +46,17 @@ public:
     ViewProviderReviewNote();
     ~ViewProviderReviewNote() override;
 
-    /// Leader endpoint relative to BasePosition (updated with the visible port).
+    /// Leader endpoint relative to BasePosition (nearest point on the text-box border).
     App::PropertyVector LeaderEnd;
+    /// Billboard half-extents (x=halfW, y=halfH) used for leader attachment, relative to TextPosition.
+    App::PropertyVector LeaderHalfExtent;
 
     QIcon getIcon() const override;
     bool doubleClicked() override;
     void attach(App::DocumentObject* obj) override;
     void updateData(const App::Property* prop) override;
 
-    /// Leader end relative to BasePosition (on the annotation box boundary).
+    /// Leader end relative to BasePosition (nearest border point toward the anchor).
     Base::Vector3d leaderEndpoint(const Base::Vector3d& textPosition) const override;
 
     /// Half-extents of the label box in annotation-local billboard units.
@@ -71,7 +68,7 @@ public:
     /// Map a UV offset from the text center to a perimeter parameter in [0,1].
     static double perimeterParam(const Base::Vector3d& offset, double halfW, double halfH);
 
-    /// Ray from textPos toward the base origin, clipped to the label rectangle (UV).
+    /// Nearest point on the label rectangle border along the line toward the base.
     static Base::Vector3d autoBoundaryEndpoint(
         const Base::Vector3d& textPos,
         double halfW,
@@ -102,9 +99,7 @@ private:
         bool valid = false;
     };
 
-    void refreshLeaderAndPort();
-    void setupPortHandle();
-    void updatePortHandle(const Base::Vector3d& textPos);
+    void refreshLeader();
     bool hitTestReference(SoDragger* drag, RefHit& out) const;
     void selectReference(const RefHit& hit) const;
 
@@ -117,23 +112,12 @@ private:
     void ensureCameraSensor();
     void detachCameraSensor();
 
-    static void portDragStartCallback(void* data, SoDragger* d);
-    static void portDragMotionCallback(void* data, SoDragger* d);
-    static void portDragFinishCallback(void* data, SoDragger* d);
     static void cameraSensorCallback(void* data, SoSensor* sensor);
     static void cameraSensorDeleteCallback(void* data, SoSensor* sensor);
 
     std::vector<RefHit> refHits;
-    SoAnnotation* portAnnotation = nullptr;
-    SoTranslation* portTranslation = nullptr;
-    SoSphere* portSphere = nullptr;
-    SoMaterial* portMaterial = nullptr;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
-    bool portDragging = false;
-    double pendingPort = -1.0;
-    Base::Vector3d portDragPlanePoint;
-    Base::Vector3d portDragPlaneNormal;
 };
 
 }  // namespace AssemblyGui
