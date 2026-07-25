@@ -1986,3 +1986,119 @@ class TestReviewNotesGui(unittest.TestCase):
             any(o.Name in ("Box", "Assembly") for o in objs),
             "{} getSelection={!r}".format(operation, [o.Name for o in objs]),
         )
+
+    def test_gui_leader_terminates_on_floating_port(self):
+        operation = "Leader ends on floating port after drag/edit/zoom/camera"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Port continuity"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+        self.assertTrue(hasattr(note.ViewObject, "LeaderEnd"), operation)
+
+        def _flush():
+            # Process pending Coin camera sensors / redraws.
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if view:
+                    view.redraw()
+            except Exception:
+                pass
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+
+        def _assert_port_on_border(ctx):
+            _flush()
+            text = App.Vector(note.TextPosition)
+            end = App.Vector(note.ViewObject.LeaderEnd)
+            # Must leave the text/image center — otherwise the line looks buried or missing.
+            self.assertFalse(
+                end.isEqual(text, 1e-4),
+                "{} {}: LeaderEnd must leave text center (end={} text={})".format(
+                    operation, ctx, end, text
+                ),
+            )
+            # Auto mode: port sits on the side facing the base, so end is closer to origin.
+            self.assertLess(
+                end.Length,
+                text.Length,
+                "{} {}: port must face the base (end={} text={})".format(
+                    operation, ctx, end, text
+                ),
+            )
+            # No overshoot past the text center away from the base (would look disconnected).
+            # end should be between origin and text along the text ray for a +X offset.
+            self.assertGreater(
+                end.x,
+                0.0,
+                "{} {}: port still on the text side of the base".format(operation, ctx),
+            )
+            self.assertLess(
+                end.x,
+                text.x,
+                "{} {}: leader must not stop short of the box (gap)".format(operation, ctx),
+            )
+
+        _assert_port_on_border("initial")
+
+        # Drag-equivalent TextPosition edit.
+        note.TextPosition = App.Vector(60, 10, 0)
+        _assert_port_on_border("after TextPosition")
+
+        # Editing text changes the image size → extents must refresh.
+        note.LabelText = ["Port continuity", "with extra lines", "to grow the box"]
+        _assert_port_on_border("after LabelText")
+
+        # Zoom / camera change must keep the port glued to the billboard border.
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation)
+        cam = view.getCameraNode()
+        self.assertIsNotNone(cam, operation)
+        before = App.Vector(note.ViewObject.LeaderEnd)
+        try:
+            # Orthographic cameras expose height; perspective uses position.
+            if hasattr(cam, "height"):
+                old_h = float(cam.height.getValue())
+                cam.height.setValue(old_h * 2.5)
+            else:
+                pos = cam.position.getValue()
+                cam.position.setValue(pos[0], pos[1], pos[2] * 2.0 if abs(pos[2]) > 1e-3 else pos[2] + 200.0)
+        except Exception as exc:
+            self.fail("{} camera adjust failed: {}".format(operation, exc))
+        _flush()
+        after = App.Vector(note.ViewObject.LeaderEnd)
+        self.assertFalse(
+            after.isEqual(before, 1e-3),
+            "{} zoom must recompute LeaderEnd (before={} after={})".format(
+                operation, before, after
+            ),
+        )
+        _assert_port_on_border("after zoom")
+
+        # Rotate the camera — billboard axes change; port must still leave the center.
+        try:
+            from pivy import coin
+
+            cam.orientation.setValue(coin.SbRotation(coin.SbVec3f(1, 0, 0), 0.4))
+        except Exception:
+            # Fallback without pivy: nudge orientation via view API if available.
+            try:
+                view.viewAxonometric()
+            except Exception:
+                pass
+        _assert_port_on_border("after camera rotate")
