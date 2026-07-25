@@ -78,6 +78,15 @@ if App.GuiUp:
             self._completer = None
             self._model = None
             self._popup_width = int(popup_width)
+            self._last_cursor_pos = 0
+            self.cursorPositionChanged.connect(self._remember_cursor_pos)
+
+        def _remember_cursor_pos(self):
+            self._last_cursor_pos = self.textCursor().position()
+
+        def focusOutEvent(self, event):
+            self._remember_cursor_pos()
+            super().focusOutEvent(event)
 
         def set_at_completer(self, completer, model):
             self._completer = completer
@@ -117,6 +126,43 @@ if App.GuiUp:
             cursor.insertText("@" + full)
             cursor.endEditBlock()
             self.setTextCursor(cursor)
+            self._remember_cursor_pos()
+
+        def insert_at_reference(self, path):
+            """Insert ``@path`` at the last remembered caret (3D-pick friendly).
+
+            Replaces an in-progress ``@`` token only when it is incomplete (does not
+            already end in FaceN/EdgeN/VertexN). Otherwise inserts a new reference
+            so successive 3D picks append rather than overwrite.
+            """
+            path = str(path or "").strip()
+            if not path:
+                return False
+            text = self.toPlainText()
+            pos = max(0, min(int(self._last_cursor_pos), len(text)))
+            cursor = self.textCursor()
+            at_idx, prefix = at_token_at_cursor(text, pos)
+            replace = False
+            if at_idx is not None:
+                parts = str(prefix or "").split(".")
+                last = parts[-1] if parts else ""
+                if not _SHAPE_ELEMENT_NAME_RE.match(last):
+                    replace = True
+            cursor.beginEditBlock()
+            if replace:
+                cursor.setPosition(at_idx)
+                cursor.setPosition(pos, QtGui.QTextCursor.KeepAnchor)
+                cursor.insertText("@" + path)
+            else:
+                insert = "@" + path
+                if pos > 0 and text[pos - 1] not in " \n\t":
+                    insert = " " + insert
+                cursor.setPosition(pos)
+                cursor.insertText(insert)
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+            self._remember_cursor_pos()
+            return True
 
         def keyPressEvent(self, event):
             popup = self._completer.popup() if self._completer else None
@@ -733,6 +779,30 @@ def _selection_path_names(root_obj, sub_name):
     return names
 
 
+_SHAPE_ELEMENT_NAME_RE = re.compile(r"^(Face|Edge|Vertex)(\d+)$", re.IGNORECASE)
+
+
+def review_note_at_path_from_selection(root_obj, sub_name=""):
+    """Build a full @ref path (without leading @) from a 3D selection.
+
+    Examples:
+      Box + ``Face6`` → ``Box.Face6``
+      Assembly + ``Box.Face6`` → ``Assembly.Box.Face6``
+
+    Returns ``None`` when the selection is not a Face/Edge/Vertex subelement.
+    """
+    names = _selection_path_names(root_obj, sub_name)
+    if len(names) < 2:
+        return None
+    last = names[-1]
+    m = _SHAPE_ELEMENT_NAME_RE.match(last)
+    if not m:
+        return None
+    kind = {"face": "Face", "edge": "Edge", "vertex": "Vertex"}[m.group(1).lower()]
+    names[-1] = "{}{}".format(kind, int(m.group(2)))
+    return ".".join(names)
+
+
 def _component_in_selection_path(root_obj, sub_name, component):
     """True when component.Name appears in the raw selection path (occurrence-preserving)."""
     if component is None:
@@ -1068,8 +1138,9 @@ class TaskAssemblyReviewNote:
     """Modeless Task panel for creating/editing Review Note text.
 
     View, tree, and selection stay interactive so users can rotate/zoom and pick
-    geometry for @mentions. The note's original anchor is frozen when the panel
-    opens and is never updated from later selection changes.
+    geometry for @mentions. Clicking a Face/Edge/Vertex inserts ``@ObjectPath…``
+    at the last text-caret position. The note's original anchor is frozen when
+    the panel opens and is never updated from later selection changes.
     """
 
     def __init__(self, note=None, assembly=None, target_data=None):
@@ -1081,6 +1152,8 @@ class TaskAssemblyReviewNote:
         self.target_data = target_data
         self._closed = False
         self._anchor_snapshot = None
+        self._selection_observer = False
+        self._inserting_selection = False
 
         if note is not None:
             self.assembly = note.getOwnerPart() or assembly
@@ -1127,6 +1200,7 @@ class TaskAssemblyReviewNote:
             cursor = self.edit.textCursor()
             cursor.movePosition(QtGui.QTextCursor.End)
             self.edit.setTextCursor(cursor)
+        self.edit._remember_cursor_pos()
         layout.addWidget(self.edit)
 
         model = QtGui.QStandardItemModel(self.form)
@@ -1135,6 +1209,11 @@ class TaskAssemblyReviewNote:
         self.edit.cursorPositionChanged.connect(self.edit.refresh_at_completer)
 
         Gui.ActiveDocument.openCommand(command_name)
+        try:
+            Gui.Selection.addObserver(self, Gui.Selection.ResolveMode.NoResolve)
+            self._selection_observer = True
+        except Exception:
+            self._selection_observer = False
         self.edit.setFocus()
 
     def getStandardButtons(self):
@@ -1158,6 +1237,40 @@ class TaskAssemblyReviewNote:
 
     def open(self):
         pass
+
+    def addSelection(self, doc_name, obj_name, sub_name, mouse_pos=None):
+        """Insert @ObjectPath.FaceN at the last caret; never retarget the note."""
+        if self._closed or self._inserting_selection:
+            return
+        path = self._at_path_from_pick(doc_name, obj_name, sub_name)
+        if not path:
+            return
+        self._inserting_selection = True
+        try:
+            self.edit.insert_at_reference(path)
+        finally:
+            self._inserting_selection = False
+
+    def setPreselection(self, doc_name, obj_name, sub_name):
+        pass
+
+    def removeSelection(self, doc_name, obj_name, sub_name, mouse_pos=None):
+        pass
+
+    def clearSelection(self, doc_name):
+        pass
+
+    def _at_path_from_pick(self, doc_name, obj_name, sub_name):
+        doc = App.getDocument(doc_name) if doc_name else App.ActiveDocument
+        if doc is None:
+            return None
+        obj = doc.getObject(obj_name)
+        if obj is None:
+            return None
+        tid = getattr(obj, "TypeId", "")
+        if tid in ("Assembly::ReviewNote", "Assembly::ReviewNoteGroup"):
+            return None
+        return review_note_at_path_from_selection(obj, sub_name)
 
     def _current_lines(self):
         return _normalize_label_lines(self.edit.toPlainText())
@@ -1233,6 +1346,12 @@ class TaskAssemblyReviewNote:
 
     def _cleanup(self, close_dialog=False):
         global _active_review_note_task
+        if self._selection_observer:
+            try:
+                Gui.Selection.removeObserver(self)
+            except Exception:
+                pass
+            self._selection_observer = False
         if self._closed:
             if close_dialog and Gui.Control.activeDialog():
                 try:
