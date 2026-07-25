@@ -35,6 +35,47 @@ if App.GuiUp:
     import FreeCADGui as Gui
     from PySide import QtCore, QtGui, QtWidgets
 
+    class ReviewNoteAtSuggestionDelegate(QtWidgets.QStyledItemDelegate):
+        """Paint middle-ellipsized @ref paths; tooltips keep the full path."""
+
+        def paint(self, painter, option, index):
+            full = index.data(QtCore.Qt.DisplayRole)
+            opt = QtWidgets.QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            if full:
+                opt.text = ellipsis_review_note_at_path_for_width(
+                    str(full), option.fontMetrics, option.rect.width()
+                )
+            widget = opt.widget
+            style = widget.style() if widget is not None else QtWidgets.QApplication.style()
+            style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, opt, painter, widget)
+
+        def helpEvent(self, event, view, option, index):
+            if event is not None and event.type() == QtCore.QEvent.ToolTip:
+                full = index.data(QtCore.Qt.ToolTipRole) or index.data(QtCore.Qt.UserRole)
+                if full:
+                    QtWidgets.QToolTip.showText(event.globalPos(), str(full), view)
+                    return True
+            return super().helpEvent(event, view, option, index)
+
+    def fill_review_note_at_suggestion_model(model, suggestions):
+        """Populate a QStandardItemModel with full paths (display shortened by delegate)."""
+        model.clear()
+        for full in suggestions or []:
+            path = str(full)
+            item = QtGui.QStandardItem(path)
+            item.setEditable(False)
+            item.setData(path, QtCore.Qt.EditRole)
+            item.setData(path, QtCore.Qt.UserRole)
+            item.setData(path, QtCore.Qt.ToolTipRole)
+            model.appendRow(item)
+
+else:
+    ReviewNoteAtSuggestionDelegate = None
+
+    def fill_review_note_at_suggestion_model(model, suggestions):
+        raise RuntimeError("Review Note @ suggestions require a GUI session")
+
 __title__ = "Assembly Command Review Note"
 __author__ = "The FreeCAD Project Association AISBL"
 __url__ = "https://www.freecad.org"
@@ -263,6 +304,115 @@ def at_token_at_cursor(text, pos):
             continue
         return None, None
     return None, None
+
+
+_AT_PATH_ELLIPSIS = "…"
+
+
+def _char_middle_ellipsis(text, max_chars):
+    """Character-level middle ellipsis (fallback when path segments cannot shrink)."""
+    text = str(text or "")
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    ell = _AT_PATH_ELLIPSIS
+    if max_chars <= len(ell):
+        return ell[:max_chars]
+    inner = max_chars - len(ell)
+    left = (inner + 1) // 2
+    right = inner - left
+    if right <= 0:
+        return text[:inner] + ell
+    return text[:left] + ell + text[-right:]
+
+
+def ellipsis_review_note_at_path(path, max_chars):
+    """Shorten a dotted @ref path for display with a middle ellipsis.
+
+    Keeps the leading object and the trailing object/subelement when possible,
+    e.g. ``AssemblyCase.…RightPocket.Face12``. Does not alter the real path used
+    for search or insertion.
+    """
+    path = str(path or "")
+    if max_chars <= 0:
+        return ""
+    if len(path) <= max_chars:
+        return path
+
+    parts = [p for p in path.split(".") if p]
+    if len(parts) < 2:
+        return _char_middle_ellipsis(path, max_chars)
+
+    head = parts[0]
+    # Prefer keeping the final two segments (object + Face/Edge/Vertex), then one.
+    for tail_count in (2, 1):
+        if len(parts) <= tail_count:
+            continue
+        # Need at least one omitted middle segment.
+        if len(parts) < tail_count + 2:
+            continue
+        tail = ".".join(parts[-tail_count:])
+        candidate = "{}.{}{}".format(head, _AT_PATH_ELLIPSIS, tail)
+        if len(candidate) <= max_chars:
+            return candidate
+
+    # Shrink the head if the preferred tails still overflow.
+    for tail_count in (2, 1):
+        if len(parts) < tail_count + 2:
+            continue
+        tail = ".".join(parts[-tail_count:])
+        # "{head}.…{tail}" — budget for head after fixed suffix.
+        suffix = ".{}{}".format(_AT_PATH_ELLIPSIS, tail)
+        if len(suffix) >= max_chars:
+            continue
+        head_budget = max_chars - len(suffix)
+        if head_budget <= 0:
+            continue
+        trimmed_head = head if len(head) <= head_budget else head[:head_budget]
+        if not trimmed_head:
+            continue
+        return trimmed_head + suffix
+
+    return _char_middle_ellipsis(path, max_chars)
+
+
+def ellipsis_review_note_at_path_for_width(path, font_metrics, width_px, padding=8):
+    """Width-aware display label for a full @ref path (pixels via QFontMetrics)."""
+    path = str(path or "")
+    avail = max(0, int(width_px) - int(padding))
+    if avail <= 0:
+        return _AT_PATH_ELLIPSIS
+
+    def _advance(text):
+        if hasattr(font_metrics, "horizontalAdvance"):
+            return int(font_metrics.horizontalAdvance(text))
+        return int(font_metrics.width(text))
+
+    if _advance(path) <= avail:
+        return path
+
+    lo, hi = 1, len(path)
+    best = _AT_PATH_ELLIPSIS
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        label = ellipsis_review_note_at_path(path, mid)
+        if _advance(label) <= avail:
+            best = label
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def apply_review_note_at_completion(text, cursor_pos, completion):
+    """Replace the @token at cursor with ``@`` + full completion path."""
+    text = str(text or "")
+    completion = str(completion or "")
+    at_idx, _prefix = at_token_at_cursor(text, cursor_pos)
+    if at_idx is None:
+        return text
+    return text[:at_idx] + "@" + completion + text[cursor_pos:]
 
 
 def review_note_label_half_extents(image_width, image_height, font_size=10.0):
@@ -752,6 +902,8 @@ def _prompt_multiline_text(existing_lines=None):
         return existing_lines or ["Review note"]
 
     doc = App.ActiveDocument
+    # Keep the popup readable on long nested paths; delegate ellipsizes to this width.
+    popup_width = 280
 
     class _AtAwarePlainTextEdit(QtWidgets.QPlainTextEdit):
         def __init__(self, parent=None):
@@ -765,11 +917,27 @@ def _prompt_multiline_text(existing_lines=None):
             completer.setWidget(self)
             completer.setCompletionMode(QtWidgets.QCompleter.UnfilteredPopupCompletion)
             completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            completer.setCompletionRole(QtCore.Qt.EditRole)
             completer.setMaxVisibleItems(12)
+            popup = completer.popup()
+            popup.setItemDelegate(ReviewNoteAtSuggestionDelegate(popup))
+            popup.setUniformItemSizes(True)
+            popup.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             completer.activated.connect(self._insert_completion)
 
+        def _resolve_completion(self, completion):
+            """Prefer the full path stored on the current popup row."""
+            popup = self._completer.popup() if self._completer else None
+            if popup is not None:
+                idx = popup.currentIndex()
+                if idx.isValid():
+                    full = idx.data(QtCore.Qt.UserRole) or idx.data(QtCore.Qt.EditRole)
+                    if full:
+                        return str(full)
+            return str(completion)
+
         def _insert_completion(self, completion):
-            completion = str(completion)
+            full = self._resolve_completion(completion)
             cursor = self.textCursor()
             end_pos = cursor.position()
             text = self.toPlainText()
@@ -779,7 +947,7 @@ def _prompt_multiline_text(existing_lines=None):
             cursor.beginEditBlock()
             cursor.setPosition(at_idx)
             cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
-            cursor.insertText("@" + completion)
+            cursor.insertText("@" + full)
             cursor.endEditBlock()
             self.setTextCursor(cursor)
 
@@ -809,17 +977,16 @@ def _prompt_multiline_text(existing_lines=None):
             if at_idx is None:
                 self._completer.popup().hide()
                 return
+            # Filter/search always uses complete paths (never the ellipsized labels).
             suggestions = collect_review_note_at_suggestions(doc, prefix)
             if not suggestions:
                 self._completer.popup().hide()
                 return
-            self._model.setStringList(suggestions)
+            fill_review_note_at_suggestion_model(self._model, suggestions)
             cr = self.cursorRect()
             popup = self._completer.popup()
-            cr.setWidth(
-                popup.sizeHintForColumn(0)
-                + popup.verticalScrollBar().sizeHint().width()
-            )
+            cr.setWidth(popup_width)
+            popup.setFixedWidth(popup_width)
             self._completer.complete(cr)
 
     dialog = QtWidgets.QDialog()
@@ -846,7 +1013,7 @@ def _prompt_multiline_text(existing_lines=None):
         edit.setTextCursor(cursor)
     layout.addWidget(edit)
 
-    model = QtCore.QStringListModel(dialog)
+    model = QtGui.QStandardItemModel(dialog)
     completer = QtWidgets.QCompleter(model, dialog)
     edit.set_at_completer(completer, model)
     edit.cursorPositionChanged.connect(edit.refresh_at_completer)

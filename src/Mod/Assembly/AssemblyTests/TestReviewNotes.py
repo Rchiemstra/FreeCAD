@@ -568,6 +568,25 @@ class TestReviewNotes(unittest.TestCase):
         after_dot = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "Box.")
         self.assertTrue(any(s == "Box.Face1" or s.startswith("Box.Face") for s in after_dot), operation)
 
+        long_path = "AssemblyCase.MidA.MidB.RightPocket.Face12"
+        shortened = CommandReviewNote.ellipsis_review_note_at_path(long_path, 32)
+        self.assertEqual(
+            shortened,
+            "AssemblyCase.…RightPocket.Face12",
+            operation,
+        )
+        self.assertNotIn("MidA", shortened, operation)
+        self.assertEqual(
+            CommandReviewNote.ellipsis_review_note_at_path("Box.Face1", 80),
+            "Box.Face1",
+            operation,
+        )
+        inserted = CommandReviewNote.apply_review_note_at_completion(
+            "See @As", 7, long_path
+        )
+        self.assertEqual(inserted, "See @" + long_path, operation)
+        self.assertNotIn("…", inserted, operation)
+
     def test_leader_port_undo_redo_and_boundary(self):
         operation = "LeaderPort auto/manual with undo/redo and boundary endpoint"
         _msg("  Test '{}'".format(operation))
@@ -2102,3 +2121,75 @@ class TestReviewNotesGui(unittest.TestCase):
             except Exception:
                 pass
         _assert_port_on_border("after camera rotate")
+
+    def test_gui_at_suggestion_ellipsis_narrow_dropdown(self):
+        operation = "Narrow @ suggestion dropdown ellipsizes long paths"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtCore, QtGui, QtWidgets
+
+        long_path = "AssemblyCase.MidA.MidB.RightPocket.Face12"
+        short_path = "Box.Face1"
+        # Search still returns complete paths.
+        # Build a narrow popup like the note dialog completer.
+        narrow_w = 180
+        model = QtGui.QStandardItemModel()
+        CommandReviewNote.fill_review_note_at_suggestion_model(
+            model, [long_path, short_path]
+        )
+        self.assertEqual(model.rowCount(), 2, operation)
+
+        idx0 = model.index(0, 0)
+        self.assertEqual(model.data(idx0, QtCore.Qt.EditRole), long_path, operation)
+        self.assertEqual(model.data(idx0, QtCore.Qt.UserRole), long_path, operation)
+        self.assertEqual(model.data(idx0, QtCore.Qt.ToolTipRole), long_path, operation)
+        self.assertEqual(model.data(idx0, QtCore.Qt.DisplayRole), long_path, operation)
+
+        view = QtWidgets.QListView()
+        view.setModel(model)
+        view.setItemDelegate(CommandReviewNote.ReviewNoteAtSuggestionDelegate(view))
+        view.setFixedWidth(narrow_w)
+        view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        view.show()
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
+
+        fm = view.fontMetrics()
+        painted = CommandReviewNote.ellipsis_review_note_at_path_for_width(
+            long_path, fm, narrow_w
+        )
+        self.assertIn("…", painted, operation)
+        self.assertTrue(painted.startswith("AssemblyCase"), operation)
+        self.assertTrue(
+            painted.endswith("Face12") or painted.endswith("RightPocket.Face12"),
+            "{} painted={!r}".format(operation, painted),
+        )
+        self.assertLess(len(painted), len(long_path), operation)
+        if hasattr(fm, "horizontalAdvance"):
+            self.assertLessEqual(fm.horizontalAdvance(painted), narrow_w, operation)
+        else:
+            self.assertLessEqual(fm.width(painted), narrow_w, operation)
+
+        # Short paths stay intact.
+        short_painted = CommandReviewNote.ellipsis_review_note_at_path_for_width(
+            short_path, fm, narrow_w
+        )
+        self.assertEqual(short_painted, short_path, operation)
+
+        # Selecting inserts the full unmodified reference.
+        draft = "Check @Assem"
+        cursor = len(draft)
+        inserted = CommandReviewNote.apply_review_note_at_completion(
+            draft, cursor, model.data(idx0, QtCore.Qt.EditRole)
+        )
+        self.assertEqual(inserted, "Check @" + long_path, operation)
+        self.assertNotIn("…", inserted, operation)
+
+        view.hide()
+        view.deleteLater()
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
