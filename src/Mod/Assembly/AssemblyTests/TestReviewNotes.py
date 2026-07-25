@@ -587,6 +587,28 @@ class TestReviewNotes(unittest.TestCase):
         self.assertEqual(inserted, "See @" + long_path, operation)
         self.assertNotIn("…", inserted, operation)
 
+        # Selection → @ref path helper (used by modeless face-click insert).
+        self.assertEqual(
+            CommandReviewNote.review_note_at_path_from_selection(self.box, "Face6"),
+            "Box.Face6",
+            operation,
+        )
+        self.assertEqual(
+            CommandReviewNote.review_note_at_path_from_selection(
+                self.assembly, "Box.Face6"
+            ),
+            "Assembly.Box.Face6",
+            operation,
+        )
+        self.assertIsNone(
+            CommandReviewNote.review_note_at_path_from_selection(self.box, ""),
+            operation,
+        )
+        self.assertIsNone(
+            CommandReviewNote.review_note_at_path_from_selection(self.assembly, "Box"),
+            operation,
+        )
+
     def test_at_suggestions_exact_subelement_beyond_preview_limit(self):
         operation = "@ suggestions offer Face126/Edge/Vertex beyond preview limit"
         _msg("  Test '{}'".format(operation))
@@ -2540,3 +2562,112 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertEqual(list(note2.Target[1]), list(before_target[1]), operation)
         self.assertTrue(note2.LocalAnchor.isEqual(before_anchor, 1e-9), operation)
         self.assertFalse(Gui.Control.activeDialog(), operation)
+
+    def test_gui_modeless_face_click_inserts_at_ref(self):
+        operation = "Modeless editor inserts @ObjectPath.FaceN from 3D face click"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtGui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        self.assertIsNotNone(data, operation)
+        original_sub = list(data["sub_list"])
+        original_anchor = App.Vector(data["local_anchor"])
+
+        box2 = self.assembly.newObject("Part::Box", "Box2")
+        self.doc.recompute()
+
+        task = CommandReviewNote.open_review_note_text_task(
+            assembly=self.assembly, target_data=data
+        )
+        self.assertIsNotNone(task, operation)
+        self.assertTrue(task._selection_observer, operation)
+
+        # Seed text and leave the caret between the words (last cursor before 3D pick).
+        task.edit.setPlainText("Check  here")
+        cursor = task.edit.textCursor()
+        cursor.setPosition(6)  # after "Check "
+        task.edit.setTextCursor(cursor)
+        task.edit._remember_cursor_pos()
+        # Simulate focus moving to the 3D view.
+        try:
+            task.edit.clearFocus()
+        except Exception:
+            pass
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box.Face1")
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
+
+        text = task.edit.toPlainText()
+        expected_path = CommandReviewNote.review_note_at_path_from_selection(
+            self.assembly, "Box.Face1"
+        )
+        self.assertEqual(expected_path, "Assembly.Box.Face1", operation)
+        self.assertIn("@" + expected_path, text, "{} text={!r}".format(operation, text))
+        self.assertTrue(text.startswith("Check @"), "{} text={!r}".format(operation, text))
+        self.assertTrue(text.endswith(" here") or " here" in text, operation)
+
+        # Original create anchor must stay frozen.
+        self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
+        self.assertTrue(
+            task.target_data["local_anchor"].isEqual(original_anchor, 1e-9),
+            operation,
+        )
+
+        # Second pick appends another ref at the updated caret.
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box2.Face6")
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
+        text2 = task.edit.toPlainText()
+        path2 = CommandReviewNote.review_note_at_path_from_selection(
+            self.assembly, "Box2.Face6"
+        )
+        self.assertIn("@" + path2, text2, "{} text={!r}".format(operation, text2))
+        self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
+
+        # OK commits text with inserted refs; Cancel path covered by sibling test.
+        self.assertTrue(task.accept(), operation)
+        note = task.note
+        self.assertIsNotNone(note, operation)
+        self.assertEqual(list(note.Target[1]), original_sub, operation)
+        self.assertTrue(note.LocalAnchor.isEqual(original_anchor, 1e-9), operation)
+        joined = "\n".join(list(note.LabelText))
+        self.assertIn("@" + expected_path, joined, operation)
+        self.assertIn("@" + path2, joined, operation)
+        self.assertFalse(Gui.Control.activeDialog(), operation)
+
+        # Edit mode: face click inserts without moving the existing note anchor.
+        before_target = note.Target
+        before_anchor = App.Vector(note.LocalAnchor)
+        task2 = CommandReviewNote.open_review_note_text_task(note=note)
+        task2.edit.setPlainText("Edit ")
+        cursor = task2.edit.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        task2.edit.setTextCursor(cursor)
+        task2.edit._remember_cursor_pos()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box2.Face2")
+        try:
+            Gui.updateGui()
+        except Exception:
+            pass
+        edit_path = CommandReviewNote.review_note_at_path_from_selection(
+            self.assembly, "Box2.Face2"
+        )
+        self.assertEqual(edit_path, "Assembly.Box2.Face2", operation)
+        self.assertIn("@" + edit_path, task2.edit.toPlainText(), operation)
+        self.assertTrue(task2._anchor_still_frozen(), operation)
+        self.assertEqual(note.Target[0], before_target[0], operation)
+        self.assertEqual(list(note.Target[1]), list(before_target[1]), operation)
+        self.assertTrue(note.LocalAnchor.isEqual(before_anchor, 1e-9), operation)
+        self.assertTrue(task2.reject(), operation)
+        self.assertEqual(list(note.LabelText), joined.split("\n"), operation)
