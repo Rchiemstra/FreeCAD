@@ -538,6 +538,36 @@ class TestReviewNotes(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_at_suggestions_and_cursor_token(self):
+        operation = "@ suggestions for objects/subelements and cursor token"
+        _msg("  Test '{}'".format(operation))
+
+        at_idx, prefix = CommandReviewNote.at_token_at_cursor("See @Bo", 7)
+        self.assertEqual(at_idx, 4, operation)
+        self.assertEqual(prefix, "Bo", operation)
+        at_idx, prefix = CommandReviewNote.at_token_at_cursor("See @", 5)
+        self.assertEqual(at_idx, 4, operation)
+        self.assertEqual(prefix, "", operation)
+        at_idx, prefix = CommandReviewNote.at_token_at_cursor("See @Box.Face", 13)
+        self.assertEqual(at_idx, 4, operation)
+        self.assertEqual(prefix, "Box.Face", operation)
+        at_idx, prefix = CommandReviewNote.at_token_at_cursor("plain text", 5)
+        self.assertIsNone(at_idx, operation)
+
+        names = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "")
+        self.assertIn("Box", names, operation)
+        self.assertNotIn("Joints", names, operation)
+
+        filtered = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "Bo")
+        self.assertIn("Box", filtered, operation)
+
+        faces = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "Box.Fa")
+        self.assertTrue(any(s.startswith("Box.Face") for s in faces), operation)
+        self.assertTrue(all(s.startswith("Box.") for s in faces), operation)
+
+        after_dot = CommandReviewNote.collect_review_note_at_suggestions(self.doc, "Box.")
+        self.assertTrue(any(s == "Box.Face1" or s.startswith("Box.Face") for s in after_dot), operation)
+
     def test_leader_port_undo_redo_and_boundary(self):
         operation = "LeaderPort auto/manual with undo/redo and boundary endpoint"
         _msg("  Test '{}'".format(operation))
@@ -562,10 +592,7 @@ class TestReviewNotes(unittest.TestCase):
 
         # Boundary endpoint must leave the text/image center for a non-trivial offset.
         half_w, half_h = CommandReviewNote.review_note_label_half_extents(120, 40, font_size=10)
-        # LeaderPort 0 maps to the start of the right edge (top-right).
-        end = CommandReviewNote.review_note_perimeter_offset(0.0, half_w, half_h)
-        self.assertGreater(end.x, 0.0, operation)
-        self.assertAlmostEqual(end.x, half_w, places=5, msg=operation)
+        # Auto mode attaches to the midpoint of the facing box side (not a corner).
         auto = CommandReviewNote.review_note_auto_boundary_endpoint(
             note.TextPosition, half_w, half_h
         )
@@ -573,6 +600,10 @@ class TestReviewNotes(unittest.TestCase):
             auto.isEqual(note.TextPosition, 1e-6),
             "{} auto endpoint must leave text center".format(operation),
         )
+        # TextOffset is +X → attach on the left face midpoint.
+        self.assertAlmostEqual(auto.y, note.TextPosition.y, places=5, msg=operation)
+        self.assertLess(auto.x, note.TextPosition.x, operation)
+        self.assertAlmostEqual(auto.x, note.TextPosition.x - half_w, places=5, msg=operation)
 
     # --- Attachment correctness regressions -----------------------------
 

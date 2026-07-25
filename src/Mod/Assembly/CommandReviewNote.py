@@ -33,7 +33,7 @@ import UtilsAssembly
 
 if App.GuiUp:
     import FreeCADGui as Gui
-    from PySide import QtWidgets
+    from PySide import QtCore, QtGui, QtWidgets
 
 __title__ = "Assembly Command Review Note"
 __author__ = "The FreeCAD Project Association AISBL"
@@ -105,6 +105,166 @@ def select_review_note_reference(doc, obj_name, sub_name=""):
     return True
 
 
+def _is_at_suggestion_object(obj):
+    """Objects that may appear in @ref autocomplete."""
+    if obj is None:
+        return False
+    tid = getattr(obj, "TypeId", "")
+    if tid in (
+        "Assembly::ReviewNote",
+        "Assembly::ReviewNoteGroup",
+        "Assembly::JointGroup",
+        "Assembly::BomGroup",
+        "App::Origin",
+        "App::Line",
+        "App::Plane",
+        "App::OriginFeature",
+    ):
+        return False
+    if obj.isDerivedFrom("App::DocumentObjectGroup") and not obj.isDerivedFrom("App::Part"):
+        return False
+    if obj.isDerivedFrom("App::LocalCoordinateSystem"):
+        return False
+    if obj.isDerivedFrom("App::DatumElement"):
+        return False
+    return True
+
+
+def _shape_element_suggestions(obj, limit=60):
+    """Face/Edge/Vertex names from an object's shape (or linked shape)."""
+    names = []
+    try:
+        shape_obj = obj
+        if hasattr(obj, "getLinkedObject"):
+            linked = obj.getLinkedObject(True)
+            if linked is not None:
+                shape_obj = linked
+        shape = getattr(shape_obj, "Shape", None)
+        if shape is None or shape.isNull():
+            return names
+        for i in range(1, min(len(shape.Faces), limit) + 1):
+            names.append("Face{}".format(i))
+        for i in range(1, min(len(shape.Edges), max(0, limit - len(names))) + 1):
+            names.append("Edge{}".format(i))
+        for i in range(1, min(len(shape.Vertexes), max(0, limit - len(names))) + 1):
+            names.append("Vertex{}".format(i))
+    except Exception:
+        pass
+    return names
+
+
+def _child_name_suggestions(obj):
+    """Direct child Names under Part/Link groups for nested @paths."""
+    children = []
+    try:
+        for child in list(getattr(obj, "Group", []) or []):
+            if _is_at_suggestion_object(child):
+                children.append(child.Name)
+        if getattr(obj, "TypeId", "") == "App::Link":
+            linked = obj.getLinkedObject(True) if hasattr(obj, "getLinkedObject") else None
+            if linked is not None and linked is not obj:
+                for child in list(getattr(linked, "Group", []) or []):
+                    if _is_at_suggestion_object(child) and child.Name not in children:
+                        children.append(child.Name)
+    except Exception:
+        pass
+    return children
+
+
+def collect_review_note_at_suggestions(doc, prefix=""):
+    """Return @ref completion candidates for the typed prefix (without leading @).
+
+    Examples:
+      "" / "Bo" -> object Names
+      "Box." / "Box.Fa" -> Box.FaceN / children
+    """
+    if doc is None:
+        return []
+    prefix = str(prefix or "")
+    max_items = 80
+
+    if "." not in prefix:
+        prefix_l = prefix.lower()
+        names = []
+        for obj in doc.Objects:
+            if not _is_at_suggestion_object(obj):
+                continue
+            name = obj.Name
+            if prefix_l:
+                label = getattr(obj, "Label", "") or ""
+                if not name.lower().startswith(prefix_l) and not label.lower().startswith(prefix_l):
+                    continue
+            names.append(name)
+        names.sort(key=lambda n: n.lower())
+        return names[:max_items]
+
+    parts = prefix.split(".")
+    root = parts[0]
+    obj = doc.getObject(root)
+    if obj is None or not _is_at_suggestion_object(obj):
+        return []
+
+    cursor_obj = obj
+    built = [root]
+    for seg in parts[1:-1]:
+        nxt = doc.getObject(seg)
+        if nxt is None or not _is_at_suggestion_object(nxt):
+            child_names = _child_name_suggestions(cursor_obj)
+            if seg not in child_names:
+                return []
+            nxt = doc.getObject(seg)
+            if nxt is None:
+                return []
+        cursor_obj = nxt
+        built.append(seg)
+
+    partial = parts[-1]
+    path_prefix = ".".join(built)
+    partial_l = partial.lower()
+    suggestions = []
+    for child_name in _child_name_suggestions(cursor_obj):
+        if not partial_l or child_name.lower().startswith(partial_l):
+            suggestions.append(path_prefix + "." + child_name)
+    for elem in _shape_element_suggestions(cursor_obj):
+        if not partial_l or elem.lower().startswith(partial_l):
+            suggestions.append(path_prefix + "." + elem)
+
+    seen = set()
+    out = []
+    for s in suggestions:
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def at_token_at_cursor(text, pos):
+    """If caret is inside a typed @ref, return (at_index, prefix_before_caret).
+
+    ``prefix`` is the text after ``@`` up to the caret (empty right after ``@``).
+    Returns ``(None, None)`` when the caret is not in an @ token.
+    """
+    text = str(text or "")
+    if pos < 0 or pos > len(text):
+        return None, None
+    i = pos - 1
+    while i >= 0:
+        ch = text[i]
+        if ch == "@":
+            prefix = text[i + 1 : pos]
+            if prefix == "" or re.match(r"^[A-Za-z_][\w.]*$", prefix):
+                return i, prefix
+            return None, None
+        if ch.isalnum() or ch in "_.":
+            i -= 1
+            continue
+        return None, None
+    return None, None
+
+
 def review_note_label_half_extents(image_width, image_height, font_size=10.0):
     """Approximate annotation-box half-extents in local units (matches Gui VP)."""
     mm_per_px = max(0.05, float(font_size) * 0.03)
@@ -128,43 +288,36 @@ def review_note_perimeter_offset(port, half_w, half_h):
     bottom = right + 2.0 * w
     left = bottom + 2.0 * h
     if d <= right:
-        return App.Vector(w, h - d, 0.0)
-    if d <= bottom:
-        return App.Vector(w - (d - right), -h, 0.0)
-    if d <= left:
-        return App.Vector(-w, -h + (d - bottom), 0.0)
-    return App.Vector(-w + (d - left), h, 0.0)
+        offset = App.Vector(w, h - d, 0.0)
+    elif d <= bottom:
+        offset = App.Vector(w - (d - right), -h, 0.0)
+    elif d <= left:
+        offset = App.Vector(-w, -h + (d - bottom), 0.0)
+    else:
+        offset = App.Vector(-w + (d - left), h, 0.0)
+    # Never leave the leader on a corner vertex — snap to the nearer side midpoint.
+    eps = 1e-4 * min(w, h)
+    if abs(abs(offset.x) - w) < eps and abs(abs(offset.y) - h) < eps:
+        if abs(offset.x) >= abs(offset.y):
+            offset = App.Vector(w if offset.x >= 0.0 else -w, 0.0, 0.0)
+        else:
+            offset = App.Vector(0.0, h if offset.y >= 0.0 else -h, 0.0)
+    return offset
 
 
 def review_note_auto_boundary_endpoint(text_pos, half_w, half_h):
-    """Leader end on the box boundary toward the base (origin)."""
-    import math
-
-    text = App.Vector(text_pos)
-    if text.Length < 1e-9:
-        return App.Vector(half_w, 0.0, 0.0)
-    toward_base = text * (-1.0)
-    # Same projection as Gui perimeterParam.
+    """Leader end at the midpoint of the box side facing the base (not a corner)."""
     w = max(1e-6, float(half_w))
     h = max(1e-6, float(half_h))
-    dirx, diry = toward_base.x, toward_base.y
-    if abs(dirx) < 1e-12 and abs(diry) < 1e-12:
-        dirx = w
-    sx = (w / abs(dirx)) if abs(dirx) > 1e-12 else 1e12
-    sy = (h / abs(diry)) if abs(diry) > 1e-12 else 1e12
-    t = min(sx, sy)
-    px, py = dirx * t, diry * t
-    peri = 2.0 * (2.0 * w + 2.0 * h)
-    if abs(px - w) < 1e-6:
-        dist = h - py
-    elif abs(py + h) < 1e-6:
-        dist = 2.0 * h + (w - px)
-    elif abs(px + w) < 1e-6:
-        dist = 2.0 * h + 2.0 * w + (py + h)
-    else:
-        dist = 2.0 * h + 2.0 * w + 2.0 * h + (px + w)
-    port = math.fmod(max(0.0, dist), peri) / peri
-    return text + review_note_perimeter_offset(port, half_w, half_h)
+    text = App.Vector(text_pos)
+    if text.Length < 1e-9:
+        return App.Vector(-w, 0.0, 0.0)
+    toward_base = text * (-1.0)
+    ax = abs(toward_base.x) / w
+    ay = abs(toward_base.y) / h
+    if ax >= ay:
+        return text + App.Vector(w if toward_base.x >= 0.0 else -w, 0.0, 0.0)
+    return text + App.Vector(0.0, h if toward_base.y >= 0.0 else -h, 0.0)
 
 
 def _is_joint_object(obj):
@@ -598,22 +751,121 @@ def _prompt_multiline_text(existing_lines=None):
     if not App.GuiUp:
         return existing_lines or ["Review note"]
 
-    dialog = QtWidgets.QInputDialog()
+    doc = App.ActiveDocument
+
+    class _AtAwarePlainTextEdit(QtWidgets.QPlainTextEdit):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._completer = None
+            self._model = None
+
+        def set_at_completer(self, completer, model):
+            self._completer = completer
+            self._model = model
+            completer.setWidget(self)
+            completer.setCompletionMode(QtWidgets.QCompleter.UnfilteredPopupCompletion)
+            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            completer.setMaxVisibleItems(12)
+            completer.activated.connect(self._insert_completion)
+
+        def _insert_completion(self, completion):
+            completion = str(completion)
+            cursor = self.textCursor()
+            end_pos = cursor.position()
+            text = self.toPlainText()
+            at_idx, _prefix = at_token_at_cursor(text, end_pos)
+            if at_idx is None:
+                return
+            cursor.beginEditBlock()
+            cursor.setPosition(at_idx)
+            cursor.setPosition(end_pos, QtGui.QTextCursor.KeepAnchor)
+            cursor.insertText("@" + completion)
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+
+        def keyPressEvent(self, event):
+            popup = self._completer.popup() if self._completer else None
+            if popup is not None and popup.isVisible():
+                if event.key() in (
+                    QtCore.Qt.Key_Enter,
+                    QtCore.Qt.Key_Return,
+                    QtCore.Qt.Key_Escape,
+                    QtCore.Qt.Key_Tab,
+                    QtCore.Qt.Key_Backtab,
+                    QtCore.Qt.Key_Up,
+                    QtCore.Qt.Key_Down,
+                ):
+                    event.ignore()
+                    return
+            super().keyPressEvent(event)
+            self.refresh_at_completer()
+
+        def refresh_at_completer(self):
+            if self._completer is None or self._model is None:
+                return
+            cursor = self.textCursor()
+            text = self.toPlainText()
+            at_idx, prefix = at_token_at_cursor(text, cursor.position())
+            if at_idx is None:
+                self._completer.popup().hide()
+                return
+            suggestions = collect_review_note_at_suggestions(doc, prefix)
+            if not suggestions:
+                self._completer.popup().hide()
+                return
+            self._model.setStringList(suggestions)
+            cr = self.cursorRect()
+            popup = self._completer.popup()
+            cr.setWidth(
+                popup.sizeHintForColumn(0)
+                + popup.verticalScrollBar().sizeHint().width()
+            )
+            self._completer.complete(cr)
+
+    dialog = QtWidgets.QDialog()
     dialog.setWindowTitle(translate("Assembly", "Review Note"))
-    dialog.setLabelText(translate("Assembly", "Enter review note text:"))
-    dialog.setInputMode(QtWidgets.QInputDialog.TextInput)
-    dialog.setOption(QtWidgets.QInputDialog.UsePlainTextEditForTextInput, True)
+    dialog.setMinimumWidth(420)
+    dialog.setMinimumHeight(260)
+
+    layout = QtWidgets.QVBoxLayout(dialog)
+    hint = QtWidgets.QLabel(
+        translate(
+            "Assembly",
+            "Enter review note text. Type @ to mention an object (e.g. @Box.Face1).",
+        )
+    )
+    hint.setWordWrap(True)
+    layout.addWidget(hint)
+
+    edit = _AtAwarePlainTextEdit(dialog)
+    edit.setPlaceholderText(translate("Assembly", "Review note"))
     if existing_lines:
-        dialog.setTextValue("\n".join(existing_lines))
-    ok = dialog.exec_()
-    if not ok:
+        edit.setPlainText("\n".join(existing_lines))
+        cursor = edit.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        edit.setTextCursor(cursor)
+    layout.addWidget(edit)
+
+    model = QtCore.QStringListModel(dialog)
+    completer = QtWidgets.QCompleter(model, dialog)
+    edit.set_at_completer(completer, model)
+    edit.cursorPositionChanged.connect(edit.refresh_at_completer)
+
+    buttons = QtWidgets.QDialogButtonBox(
+        QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+    )
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+
+    edit.setFocus()
+    if dialog.exec_() != QtWidgets.QDialog.Accepted:
         return None
-    text = dialog.textValue()
+
+    text = edit.toPlainText()
     lines = [line.rstrip() for line in text.splitlines()]
-    # Require at least one non-empty line.
     if not any(line.strip() for line in lines):
         return None
-    # Preserve internal blank lines but strip trailing empties.
     while lines and not lines[-1].strip():
         lines.pop()
     return lines

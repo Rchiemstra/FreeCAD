@@ -37,7 +37,7 @@
 #include <Inventor/events/SoEvent.h>
 #include <Inventor/nodes/SoAnnotation.h>
 #include <Inventor/nodes/SoCoordinate3.h>
-#include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoDrawStyle.h>
 #include <Inventor/nodes/SoPickStyle.h>
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoSphere.h>
@@ -202,16 +202,33 @@ Base::Vector3d ViewProviderReviewNote::perimeterOffset(double port, double halfW
     const double bottom = right + 2.0 * w;
     const double left = bottom + 2.0 * h;
 
+    Base::Vector3d offset;
     if (d <= right) {
-        return Base::Vector3d(w, h - d, 0.0);
+        offset = Base::Vector3d(w, h - d, 0.0);
     }
-    if (d <= bottom) {
-        return Base::Vector3d(w - (d - right), -h, 0.0);
+    else if (d <= bottom) {
+        offset = Base::Vector3d(w - (d - right), -h, 0.0);
     }
-    if (d <= left) {
-        return Base::Vector3d(-w, -h + (d - bottom), 0.0);
+    else if (d <= left) {
+        offset = Base::Vector3d(-w, -h + (d - bottom), 0.0);
     }
-    return Base::Vector3d(-w + (d - left), h, 0.0);
+    else {
+        offset = Base::Vector3d(-w + (d - left), h, 0.0);
+    }
+
+    // Never leave the leader on a corner vertex — snap to the nearer side midpoint.
+    const double eps = 1e-4 * std::min(w, h);
+    if (std::fabs(std::fabs(offset.x) - w) < eps && std::fabs(std::fabs(offset.y) - h) < eps) {
+        if (std::fabs(offset.x) >= std::fabs(offset.y)) {
+            offset.y = 0.0;
+            offset.x = (offset.x >= 0.0) ? w : -w;
+        }
+        else {
+            offset.x = 0.0;
+            offset.y = (offset.y >= 0.0) ? h : -h;
+        }
+    }
+    return offset;
 }
 
 double ViewProviderReviewNote::perimeterParam(
@@ -255,13 +272,19 @@ Base::Vector3d ViewProviderReviewNote::autoBoundaryEndpoint(
     double halfH
 )
 {
+    const double w = std::max(1e-6, halfW);
+    const double h = std::max(1e-6, halfH);
+    // Attach to the midpoint of the box side facing the anchor — never a corner.
     if (textPos.Length() < 1e-9) {
-        return Base::Vector3d(halfW, 0.0, 0.0);
+        return Base::Vector3d(-w, 0.0, 0.0);
     }
-    // Direction from text center toward the base (origin in base-local coords).
     const Base::Vector3d towardBase = textPos * (-1.0);
-    const double param = perimeterParam(towardBase, halfW, halfH);
-    return textPos + perimeterOffset(param, halfW, halfH);
+    const double ax = std::fabs(towardBase.x) / w;
+    const double ay = std::fabs(towardBase.y) / h;
+    if (ax >= ay) {
+        return textPos + Base::Vector3d(towardBase.x >= 0.0 ? w : -w, 0.0, 0.0);
+    }
+    return textPos + Base::Vector3d(0.0, towardBase.y >= 0.0 ? h : -h, 0.0);
 }
 
 Base::Vector3d ViewProviderReviewNote::leaderEndpoint(const Base::Vector3d& textPosition) const
@@ -524,14 +547,14 @@ void ViewProviderReviewNote::setupPortHandle()
     portAnnotation->addChild(pBaseTranslation);
 
     portTranslation = new SoTranslation();
+    // Invisible pick volume on the box side — no yellow orb; leader ends on the face.
     portSphere = new SoSphere();
     portSphere->radius = 1.2f;
-    auto* mat = new SoMaterial();
-    mat->diffuseColor.setValue(1.0f, 0.85f, 0.2f);
-    mat->emissiveColor.setValue(0.4f, 0.3f, 0.0f);
+    auto* drawStyle = new SoDrawStyle();
+    drawStyle->style = SoDrawStyle::INVISIBLE;
 
     auto* handle = new SoSeparator();
-    handle->addChild(mat);
+    handle->addChild(drawStyle);
     handle->addChild(portSphere);
 
     auto* dragger = new SoTranslate2Dragger();
