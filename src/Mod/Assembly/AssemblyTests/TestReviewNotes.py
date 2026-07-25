@@ -2385,6 +2385,146 @@ class TestReviewNotesGui(unittest.TestCase):
                     msg="{} {}: not on border nu={} nv={}".format(operation, name, nu, nv),
                 )
 
+    def test_gui_leader_no_snap_back_after_move_or_camera(self):
+        """Regression for drag flicker: LeaderEnd must not snap to a prior attachment.
+
+        The drag log (doc/review_note_drag_*.jsonl) showed LeaderEnd repeatedly
+        reverting to the pre-move value while TextPosition was still the old
+        committed position mid-interaction. After a move, camera refreshes must
+        keep the leader on the *current* text box — never the previous one.
+        """
+        operation = "LeaderEnd must not snap back after move/camera refresh"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["No flicker"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+
+        def _flush():
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if view:
+                    view.redraw()
+            except Exception:
+                pass
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+
+        def _leader():
+            _flush()
+            return App.Vector(note.ViewObject.LeaderEnd)
+
+        _flush()
+        pos_a = App.Vector(40, 0, 0)
+        note.TextPosition = pos_a
+        end_a = _leader()
+        self.assertFalse(end_a.isEqual(pos_a, 1e-4), operation)
+
+        # Move the note (drag-equivalent commit of a new TextPosition).
+        pos_b = App.Vector(70, 25, 0)
+        note.TextPosition = pos_b
+        end_b = _leader()
+        self.assertFalse(
+            end_b.isEqual(end_a, 1e-3),
+            "{} move must change LeaderEnd (a={} b={})".format(operation, end_a, end_b),
+        )
+        self.assertFalse(end_b.isEqual(pos_b, 1e-4), operation)
+        # Still attached toward the base relative to the new text center.
+        self.assertLess(end_b.Length, pos_b.Length, operation)
+
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation)
+        cam = view.getCameraNode()
+        self.assertIsNotNone(cam, operation)
+
+        # Burst of camera-driven leader refreshes — the old bug snapped back to end_a.
+        snap_backs = 0
+        samples = []
+        try:
+            if hasattr(cam, "height"):
+                base_h = float(cam.height.getValue())
+                for i in range(12):
+                    cam.height.setValue(base_h * (1.15 + 0.05 * (i % 3)))
+                    end = _leader()
+                    samples.append(end)
+                    if end.isEqual(end_a, 1e-3):
+                        snap_backs += 1
+            else:
+                pos = cam.position.getValue()
+                for i in range(12):
+                    z = pos[2] * (1.1 + 0.05 * (i % 3)) if abs(pos[2]) > 1e-3 else pos[2] + 50.0 * (i + 1)
+                    cam.position.setValue(pos[0], pos[1], z)
+                    end = _leader()
+                    samples.append(end)
+                    if end.isEqual(end_a, 1e-3):
+                        snap_backs += 1
+        except Exception as exc:
+            self.fail("{} camera burst failed: {}".format(operation, exc))
+
+        self.assertEqual(
+            snap_backs,
+            0,
+            "{} LeaderEnd snapped back to pre-move value {} times (end_a={}, samples[0]={}, samples[-1]={})".format(
+                operation,
+                snap_backs,
+                end_a,
+                samples[0] if samples else None,
+                samples[-1] if samples else None,
+            ),
+        )
+        # Every sample must stay associated with the *current* text box, not pos_a.
+        for i, end in enumerate(samples):
+            self.assertFalse(
+                end.isEqual(end_a, 1e-3),
+                "{} sample[{}] reverted to pre-move LeaderEnd".format(operation, i),
+            )
+            self.assertLess(
+                end.Length,
+                pos_b.Length + 1e-3,
+                "{} sample[{}] must face base from current text".format(operation, i),
+            )
+
+        # Second move + camera rotate must likewise never revive end_a / end_b-from-first-spot.
+        pos_c = App.Vector(-50, 10, 0)
+        note.TextPosition = pos_c
+        end_c = _leader()
+        self.assertFalse(end_c.isEqual(end_a, 1e-3), operation)
+        self.assertFalse(end_c.isEqual(end_b, 1e-3), operation)
+        try:
+            from pivy import coin
+
+            cam.orientation.setValue(coin.SbRotation(coin.SbVec3f(0, 1, 0), 0.35))
+        except Exception:
+            try:
+                view.viewAxonometric()
+            except Exception:
+                pass
+        for _ in range(6):
+            end = _leader()
+            self.assertFalse(
+                end.isEqual(end_a, 1e-3),
+                "{} post-rotate must not revive first LeaderEnd".format(operation),
+            )
+            self.assertFalse(
+                end.isEqual(end_b, 1e-3),
+                "{} post-rotate must not revive second LeaderEnd".format(operation),
+            )
+
     def test_gui_at_suggestion_ellipsis_narrow_dropdown(self):
         operation = "Narrow @ suggestion dropdown ellipsizes long paths"
         _msg("  Test '{}'".format(operation))
