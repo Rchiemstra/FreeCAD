@@ -35,6 +35,7 @@
 #include <Inventor/nodes/SoCamera.h>
 #include <Inventor/nodes/SoCoordinate3.h>
 #include <Inventor/nodes/SoImage.h>
+#include <Inventor/sensors/SoIdleSensor.h>
 #include <Inventor/sensors/SoNodeSensor.h>
 #include <Inventor/sensors/SoSensor.h>
 
@@ -101,6 +102,8 @@ ViewProviderReviewNote::ViewProviderReviewNote()
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
 {
+    syncLeaderConnection.disconnect();
+    detachIdleSensor();
     detachCameraSensor();
 }
 
@@ -149,26 +152,56 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
         pImageHitProxy->horAlignment = SoImage::CENTER;
         pImageHitProxy->vertAlignment = SoImage::HALF;
     }
+
+    syncLeaderConnection.disconnect();
+    if (obj && obj->isDerivedFrom(Assembly::ReviewNote::getClassTypeId())) {
+        auto* note = static_cast<Assembly::ReviewNote*>(obj);
+        // Runs from ReviewNote::onChanged(TextPosition) before document observers,
+        // so LeaderEnd is already published when TextPosition is sampled.
+        syncLeaderConnection = note->signalSyncLeaderVisual.connect(
+            [this](const Base::Vector3d& textPos) {
+                applyVisualFrame(textPos, /*updateTextTranslation*/ true);
+            }
+        );
+    }
+
     ensureCameraSensor();
     refreshLeader();
 }
 
 void ViewProviderReviewNote::updateData(const App::Property* prop)
 {
-    ViewProviderAnnotationLabel::updateData(prop);
-
     auto* note = getObject<Assembly::ReviewNote>();
     if (!note || !prop) {
+        ViewProviderAnnotationLabel::updateData(prop);
         return;
     }
 
     if (prop == &note->Resolved || prop == &note->AttachmentBroken || prop == &note->Target
         || prop == &note->JointSide || prop == &note->LabelText || prop == &note->BasePosition
-        || prop == &note->LocalAnchor) {
+        || prop == &note->TextPosition || prop == &note->LocalAnchor) {
         signalChangeIcon();
     }
 
-    if (prop == &note->TextPosition || prop == &note->BasePosition || prop == &note->LabelText) {
+    // TextPosition: skip base AnnotationLabel path (leader then translation) and
+    // publish one atomic frame instead. signalSyncLeaderVisual usually already
+    // published; refreshLeader is a cheap second apply with the same snapshot.
+    if (prop == &note->TextPosition) {
+        if (!applyingVisualFrame) {
+            ensureCameraSensor();
+            refreshLeader();
+        }
+        ViewProviderDocumentObject::updateData(prop);
+        return;
+    }
+
+    ViewProviderAnnotationLabel::updateData(prop);
+
+    if (applyingVisualFrame) {
+        return;
+    }
+
+    if (prop == &note->BasePosition || prop == &note->LabelText) {
         ensureCameraSensor();
         refreshLeader();
     }
@@ -177,27 +210,111 @@ void ViewProviderReviewNote::updateData(const App::Property* prop)
 void ViewProviderReviewNote::onChanged(const App::Property* prop)
 {
     ViewProviderAnnotationLabel::onChanged(prop);
+    if (applyingVisualFrame) {
+        return;
+    }
     if (prop == &FontSize || prop == &FontName || prop == &Frame || prop == &Justification
         || prop == &TextColor || prop == &BackgroundColor) {
         ensureCameraSensor();
-        refreshLeader();
+        scheduleVisualFrame();
     }
 }
 
 void ViewProviderReviewNote::setLeaderCoords(const Base::Vector3d& textPosition)
 {
-    // Always keep the Coin leader polyline in sync with the preview/drag position.
-    ViewProviderAnnotationLabel::setLeaderCoords(textPosition);
+    // Drag preview and property paths share one atomic apply: Coin line + LeaderEnd
+    // + optional text translation from the same position/camera snapshot.
+    applyVisualFrame(textPosition, /*updateTextTranslation*/ false);
+}
 
-    // While dragging, skip LeaderEnd/LeaderHalfExtent property writes — they notify
-    // observers and the camera sensor can race the drag preview, causing flicker.
-    if (dragState) {
+void ViewProviderReviewNote::applyVisualFrame(
+    const Base::Vector3d& textPosition,
+    bool updateTextTranslation
+)
+{
+    if (applyingVisualFrame) {
+        // Nested request while publishing a frame — coalesce to a follow-up idle.
+        visualFrameDirty = true;
         return;
     }
+    applyingVisualFrame = true;
+    visualFrameDirty = false;
 
+    // Compute endpoint once from current camera/billboard, then write Coin and
+    // properties together so no observer/render can see new text with a stale end.
+    // Order: text transform first, then leader geometry/properties (matches drag
+    // preview). Inverse order would briefly show a new leader on the old box.
+    struct Guard
+    {
+        bool& flag;
+        ViewProviderReviewNote* self;
+        ~Guard()
+        {
+            flag = false;
+            if (self->visualFrameDirty) {
+                self->scheduleVisualFrame();
+            }
+        }
+    } guard {applyingVisualFrame, this};
+
+    const Base::Vector3d end = leaderEndpoint(textPosition);
     const BillboardFrame frame = currentBillboardFrame(textPosition);
+
+    if (updateTextTranslation && pTextTranslation) {
+        pTextTranslation->translation.setValue(textPosition.x, textPosition.y, textPosition.z);
+    }
+    if (pCoords) {
+        pCoords->point.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
+        pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
+    }
+
     LeaderHalfExtent.setValue(Base::Vector3d(frame.halfW, frame.halfH, 0.0));
-    LeaderEnd.setValue(leaderEndpoint(textPosition));
+    LeaderEnd.setValue(end);
+}
+
+void ViewProviderReviewNote::scheduleVisualFrame()
+{
+    visualFrameDirty = true;
+    if (applyingVisualFrame) {
+        // applyVisualFrame's Guard will reschedule when the current publish ends.
+        return;
+    }
+    if (!idleSensor) {
+        idleSensor = new SoIdleSensor(idleSensorCallback, this);
+    }
+    if (!idleSensor->isScheduled()) {
+        visualFrameScheduled = true;
+        idleSensor->schedule();
+    }
+}
+
+void ViewProviderReviewNote::flushScheduledVisualFrame()
+{
+    visualFrameScheduled = false;
+    visualFrameDirty = false;
+    refreshLeader();
+}
+
+void ViewProviderReviewNote::idleSensorCallback(void* data, SoSensor*)
+{
+    auto* that = static_cast<ViewProviderReviewNote*>(data);
+    if (!that) {
+        return;
+    }
+    that->flushScheduledVisualFrame();
+}
+
+void ViewProviderReviewNote::detachIdleSensor()
+{
+    if (idleSensor) {
+        if (idleSensor->isScheduled()) {
+            idleSensor->unschedule();
+        }
+        delete idleSensor;
+        idleSensor = nullptr;
+    }
+    visualFrameScheduled = false;
+    visualFrameDirty = false;
 }
 
 void ViewProviderReviewNote::labelHalfExtents(double& halfW, double& halfH) const
@@ -692,16 +809,10 @@ bool ViewProviderReviewNote::acceptLabelDragStart(SoDragger* drag, DragState& st
 
 void ViewProviderReviewNote::onLabelDragFinished(const DragState& state)
 {
-    // dragState is already cleared by the base finish callback before this runs.
-    // Sync LeaderEnd/LeaderHalfExtent to the committed text box.
-    setLeaderCoords(state.currentTextPosition);
-    if (pTextTranslation) {
-        pTextTranslation->translation.setValue(
-            state.currentTextPosition.x,
-            state.currentTextPosition.y,
-            state.currentTextPosition.z
-        );
-    }
+    // Runs before TextPosition is committed. Publish Coin translation + LeaderEnd
+    // from the finished drag position so the TextPosition notification never
+    // exposes a new box with the previous leader endpoint.
+    applyVisualFrame(state.currentTextPosition, /*updateTextTranslation*/ true);
 }
 
 void ViewProviderReviewNote::refreshLeader()
@@ -713,17 +824,14 @@ void ViewProviderReviewNote::refreshLeader()
     ensureCameraSensor();
 
     // During an active label drag, TextPosition is not committed yet — use the
-    // preview position and never stomp pTextTranslation (owned by the dragger).
+    // preview position and keep pTextTranslation owned by the drag preview path
+    // (applyVisualFrame with updateTextTranslation=false).
     if (dragState) {
-        setLeaderCoords(dragState->currentTextPosition);
+        applyVisualFrame(dragState->currentTextPosition, /*updateTextTranslation*/ false);
         return;
     }
 
-    const Base::Vector3d textPos = note->TextPosition.getValue();
-    setLeaderCoords(textPos);
-    if (pTextTranslation) {
-        pTextTranslation->translation.setValue(textPos.x, textPos.y, textPos.z);
-    }
+    applyVisualFrame(note->TextPosition.getValue(), /*updateTextTranslation*/ true);
 }
 
 void ViewProviderReviewNote::detachCameraSensor()
@@ -767,11 +875,10 @@ void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
     if (!that) {
         return;
     }
-    // Camera sensors fire often during interaction; never fight an in-progress drag.
-    if (that->dragState) {
-        return;
-    }
-    that->refreshLeader();
+    // Coalesce camera-driven refreshes (and mid-drag camera moves) into one
+    // idle-time apply. If a frame is mid-publish, scheduleVisualFrame marks dirty
+    // so the apply Guard reschedules instead of dropping the camera update.
+    that->scheduleVisualFrame();
 }
 
 void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* sensor)
@@ -788,9 +895,7 @@ void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* se
         if (SoCamera* camera = viewer->getSoRenderManager()->getCamera()) {
             nodeSensor->attach(camera);
             that->attachedCamera = camera;
-            if (!that->dragState) {
-                that->refreshLeader();
-            }
+            that->scheduleVisualFrame();
             return;
         }
     }
