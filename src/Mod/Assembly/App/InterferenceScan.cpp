@@ -28,11 +28,13 @@
 #include <App/PropertyUnits.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
+#include <Base/Tools.h>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Precision.hxx>
 #include <cmath>
+#include <cctype>
 #include <Standard_Failure.hxx>
 
 namespace Assembly
@@ -713,6 +715,249 @@ std::vector<InterferenceLeaf> collectInterferenceLeaves(
     return leaves;
 }
 
+bool resolveInterferenceComponentOccurrence(
+    const App::DocumentObject* root,
+    App::DocumentObject* selObj,
+    const std::string& subName,
+    InterferenceComponentOccurrence& out
+)
+{
+    out = {};
+    if (!isInterferenceRoot(root) || !selObj || !root->isAttachedToDocument()) {
+        return false;
+    }
+
+    auto* rootPart = freecad_cast<const App::Part*>(root);
+    if (!rootPart) {
+        return false;
+    }
+
+    auto names = Base::Tools::splitSubName(subName);
+    if (selObj->getNameInDocument()) {
+        names.insert(names.begin(), selObj->getNameInDocument());
+    }
+
+    App::Document* doc = selObj->getDocument();
+    if (!doc) {
+        doc = root->getDocument();
+    }
+
+    std::size_t start = 0;
+    bool sawRoot = false;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i].empty() || !doc) {
+            continue;
+        }
+        App::DocumentObject* cur = doc->getObject(names[i].c_str());
+        if (!cur) {
+            continue;
+        }
+        if (cur->isLink()) {
+            if (auto* linked = cur->getLinkedObject()) {
+                if (linked->getDocument()) {
+                    doc = linked->getDocument();
+                }
+            }
+        }
+        if (cur == root) {
+            sawRoot = true;
+            start = i + 1;
+            doc = root->getDocument();
+            break;
+        }
+    }
+
+    if (!sawRoot) {
+        // Selection rooted at a descendant (e.g. tree-click on a nested feature).
+        // Map it to the first component occurrence directly under the root that contains it.
+        if (selObj == root) {
+            return false;
+        }
+        App::DocumentObject* owner = nullptr;
+        for (auto* child : childrenOf(const_cast<App::DocumentObject*>(root))) {
+            if (!child) {
+                continue;
+            }
+            if (child->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(child)
+                && !freecad_cast<AssemblyObject*>(child) && !freecad_cast<AssemblyLink*>(child)) {
+                for (auto* nested : childrenOf(child)) {
+                    if (!nested || isHelperOrNonPhysical(nested) || nested->isLinkGroup()) {
+                        continue;
+                    }
+                    if (nested == selObj) {
+                        owner = nested;
+                        break;
+                    }
+                    if (auto* part = freecad_cast<App::Part*>(nested)) {
+                        if (part->hasObject(selObj, true)) {
+                            owner = nested;
+                            break;
+                        }
+                    }
+                    if (auto* link = freecad_cast<App::Link*>(nested)) {
+                        if (link == selObj || link->getLinkedObject(true) == selObj) {
+                            owner = nested;
+                            break;
+                        }
+                    }
+                }
+                if (owner) {
+                    break;
+                }
+                continue;
+            }
+            if (child->isLinkGroup() || isHelperOrNonPhysical(child)) {
+                continue;
+            }
+            if (child == selObj) {
+                owner = child;
+                break;
+            }
+            if (auto* part = freecad_cast<App::Part*>(child)) {
+                if (part->hasObject(selObj, true)) {
+                    owner = child;
+                    break;
+                }
+            }
+            if (auto* link = freecad_cast<App::Link*>(child)) {
+                if (link == selObj || link->getLinkedObject(true) == selObj) {
+                    owner = child;
+                    break;
+                }
+            }
+            if (auto* asmLink = freecad_cast<AssemblyLink*>(child)) {
+                if (asmLink == selObj || asmLink->hasObject(selObj, true)) {
+                    owner = child;
+                    break;
+                }
+            }
+        }
+        if (!owner || !owner->getNameInDocument()) {
+            return false;
+        }
+        out.component = owner;
+        out.occurrencePrefix = std::string(owner->getNameInDocument()) + ".";
+        out.displayPath = owner->Label.getValue();
+        return true;
+    }
+
+    auto isDigits = [](const std::string& token) {
+        return !token.empty()
+            && std::all_of(token.begin(), token.end(), [](unsigned char ch) {
+                   return std::isdigit(ch) != 0;
+               });
+    };
+
+    App::DocumentObject* component = nullptr;
+    std::string prefix;
+    bool acceptArrayIndex = false;
+
+    for (std::size_t i = start; i < names.size(); ++i) {
+        const std::string& name = names[i];
+        if (name.empty()) {
+            continue;
+        }
+
+        if (component) {
+            if (acceptArrayIndex && isDigits(name)) {
+                prefix += name;
+                prefix += '.';
+                acceptArrayIndex = false;
+            }
+            break;
+        }
+
+        if (!doc) {
+            break;
+        }
+        App::DocumentObject* cur = doc->getObject(name.c_str());
+        if (!cur) {
+            continue;
+        }
+        if (cur->isLink()) {
+            if (auto* linked = cur->getLinkedObject()) {
+                if (linked->getDocument()) {
+                    doc = linked->getDocument();
+                }
+            }
+        }
+        if (cur->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(cur)
+            && !freecad_cast<AssemblyObject*>(cur) && !freecad_cast<AssemblyLink*>(cur)) {
+            continue;
+        }
+        if (cur->isLinkGroup()) {
+            continue;
+        }
+        if (isHelperOrNonPhysical(cur)) {
+            continue;
+        }
+
+        component = cur;
+        prefix = std::string(cur->getNameInDocument()) + ".";
+        acceptArrayIndex = freecad_cast<App::Link*>(cur) != nullptr;
+    }
+
+    if (!component || prefix.empty()) {
+        return false;
+    }
+
+    // Component must be a first-level (non-group) occurrence under the root.
+    bool direct = false;
+    for (auto* child : childrenOf(const_cast<App::DocumentObject*>(root))) {
+        if (!child) {
+            continue;
+        }
+        if (child->isDerivedFrom<App::DocumentObjectGroup>() && !freecad_cast<App::Part*>(child)
+            && !freecad_cast<AssemblyObject*>(child) && !freecad_cast<AssemblyLink*>(child)) {
+            for (auto* nested : childrenOf(child)) {
+                if (nested == component) {
+                    direct = true;
+                    break;
+                }
+            }
+            if (direct) {
+                break;
+            }
+            continue;
+        }
+        if (child->isLinkGroup()) {
+            continue;
+        }
+        if (child == component) {
+            direct = true;
+            break;
+        }
+    }
+    if (!direct) {
+        return false;
+    }
+
+    out.component = component;
+    out.occurrencePrefix = std::move(prefix);
+    out.displayPath = component->Label.getValue();
+    return true;
+}
+
+std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
+    const App::DocumentObject* root,
+    const std::string& occurrencePrefix,
+    bool includeHidden
+)
+{
+    std::vector<InterferenceLeaf> filtered;
+    if (occurrencePrefix.empty()) {
+        return filtered;
+    }
+    auto leaves = collectInterferenceLeaves(root, includeHidden);
+    filtered.reserve(leaves.size());
+    for (auto& leaf : leaves) {
+        if (leaf.occurrenceSubName.rfind(occurrencePrefix, 0) == 0) {
+            filtered.push_back(std::move(leaf));
+        }
+    }
+    return filtered;
+}
+
 std::vector<std::pair<std::size_t, std::size_t>> broadPhaseCandidatePairs(
     const std::vector<InterferenceLeaf>& leaves,
     double clearance,
@@ -898,6 +1143,222 @@ InterferenceScanResult runInterferenceScan(
     result.counts.clearPairs = static_cast<int>(allValidPairs > candidates.size()
                                                     ? allValidPairs - candidates.size()
                                                     : 0);
+
+    for (const auto& candidate : candidates) {
+        if (isCancelled(options)) {
+            result.cancelled = true;
+            return result;
+        }
+
+        const auto& leafA = result.leaves[candidate.first];
+        const auto& leafB = result.leaves[candidate.second];
+        if (!leafA.shapeValid || !leafB.shapeValid) {
+            ++current;
+            if (options.progress) {
+                options.progress(current, total);
+            }
+            continue;
+        }
+
+        InterferencePairResult pairResult;
+        pairResult.leafIndexA = candidate.first;
+        pairResult.leafIndexB = candidate.second;
+        pairResult.detection =
+            Part::classifyInterference(leafA.worldShape, leafB.worldShape, detection);
+
+        const bool sourcesExcluded =
+            isExcludedBySourceId(leafA.sourceId, leafB.sourceId, excluded);
+
+        switch (pairResult.detection.kind) {
+            case Part::InterferenceKind::Clear:
+                result.counts.clearPairs += 1;
+                break;
+            case Part::InterferenceKind::ClearanceViolation:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    result.counts.excludedViolations += 1;
+                }
+                else {
+                    result.counts.clearanceViolations += 1;
+                }
+                result.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Contact:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    result.counts.excludedViolations += 1;
+                }
+                else {
+                    result.counts.contacts += 1;
+                }
+                result.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Penetration:
+                pairResult.excluded = sourcesExcluded;
+                if (pairResult.excluded) {
+                    result.counts.excludedViolations += 1;
+                }
+                else {
+                    result.counts.penetrations += 1;
+                }
+                result.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::InvalidInput:
+                result.counts.invalidInputs += 1;
+                result.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Inconclusive:
+                result.counts.inconclusivePairs += 1;
+                result.pairs.push_back(pairResult);
+                break;
+            case Part::InterferenceKind::Cancelled:
+                result.cancelled = true;
+                return result;
+        }
+
+        ++current;
+        if (options.progress) {
+            options.progress(current, total);
+        }
+    }
+
+    result.complete = !result.cancelled && result.counts.invalidInputs == 0
+        && result.counts.inconclusivePairs == 0;
+    return result;
+}
+
+InterferenceScanResult runInterferenceScanBetweenLeafSets(
+    const std::vector<InterferenceLeaf>& leavesA,
+    const std::vector<InterferenceLeaf>& leavesB,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs
+)
+{
+    InterferenceScanResult result;
+    result.leaves.reserve(leavesA.size() + leavesB.size());
+    result.leaves.insert(result.leaves.end(), leavesA.begin(), leavesA.end());
+    result.leaves.insert(result.leaves.end(), leavesB.begin(), leavesB.end());
+
+    if (options.clearance < 0.0 || !std::isfinite(options.clearance)
+        || options.detectionOptions.linearTolerance < 0.0
+        || !std::isfinite(options.detectionOptions.linearTolerance)) {
+        result.complete = false;
+        result.counts.invalidInputs += 1;
+        InterferenceComponentIssue issue;
+        issue.diagnostic = "Clearance/tolerance must be finite and nonnegative";
+        result.componentIssues.push_back(issue);
+        return result;
+    }
+
+    std::set<std::pair<std::string, std::string>> excluded;
+    for (const auto& pair : excludedSourceIdPairs) {
+        auto canon = canonicalSourceIdPair(pair.first, pair.second);
+        if (canon.first.empty() || canon.second.empty()) {
+            continue;
+        }
+        excluded.insert(std::move(canon));
+    }
+
+    for (std::size_t i = 0; i < result.leaves.size(); ++i) {
+        auto& leaf = result.leaves[i];
+        if (!leaf.shapeValid) {
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic =
+                leaf.diagnostic.empty() ? "Invalid leaf geometry" : leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+            continue;
+        }
+        if (leaf.worldShape.IsNull()) {
+            leaf.shapeValid = false;
+            leaf.diagnostic = "Null world shape";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+            continue;
+        }
+        if (!leaf.worldBoundBox.IsValid()) {
+            try {
+                leaf.worldBoundBox = shapeBoundBox(leaf.worldShape);
+            }
+            catch (...) {
+                leaf.worldBoundBox = Base::BoundBox3d();
+            }
+        }
+        if (!leaf.worldBoundBox.IsValid()) {
+            leaf.shapeValid = false;
+            leaf.diagnostic = "Missing or invalid world bounds";
+            InterferenceComponentIssue issue;
+            issue.leafIndex = i;
+            issue.diagnostic = leaf.diagnostic;
+            result.componentIssues.push_back(issue);
+            result.counts.invalidInputs += 1;
+        }
+    }
+
+    if (isCancelled(options)) {
+        result.cancelled = true;
+        return result;
+    }
+
+    const double tolerance = options.detectionOptions.linearTolerance > 0.0
+        ? options.detectionOptions.linearTolerance
+        : Precision::Confusion();
+    const double margin = 0.5 * options.clearance + tolerance;
+    const std::size_t offsetB = leavesA.size();
+
+    std::vector<std::pair<std::size_t, std::size_t>> candidates;
+    std::size_t validA = 0;
+    std::size_t validB = 0;
+    for (std::size_t i = 0; i < leavesA.size(); ++i) {
+        if (result.leaves[i].shapeValid && !result.leaves[i].worldShape.IsNull()
+            && result.leaves[i].worldBoundBox.IsValid()) {
+            ++validA;
+        }
+    }
+    for (std::size_t j = 0; j < leavesB.size(); ++j) {
+        const std::size_t idx = offsetB + j;
+        if (result.leaves[idx].shapeValid && !result.leaves[idx].worldShape.IsNull()
+            && result.leaves[idx].worldBoundBox.IsValid()) {
+            ++validB;
+        }
+    }
+
+    for (std::size_t i = 0; i < leavesA.size(); ++i) {
+        if (!result.leaves[i].shapeValid || result.leaves[i].worldShape.IsNull()
+            || !result.leaves[i].worldBoundBox.IsValid()) {
+            continue;
+        }
+        Base::BoundBox3d boxA = result.leaves[i].worldBoundBox;
+        enlargeBoundBox(boxA, margin);
+        for (std::size_t j = 0; j < leavesB.size(); ++j) {
+            const std::size_t idx = offsetB + j;
+            if (!result.leaves[idx].shapeValid || result.leaves[idx].worldShape.IsNull()
+                || !result.leaves[idx].worldBoundBox.IsValid()) {
+                continue;
+            }
+            Base::BoundBox3d boxB = result.leaves[idx].worldBoundBox;
+            enlargeBoundBox(boxB, margin);
+            if (boxesOverlap(boxA, boxB)) {
+                candidates.emplace_back(i, idx);
+            }
+        }
+    }
+
+    const int total = static_cast<int>(candidates.size());
+    int current = 0;
+    const std::size_t allCrossPairs = validA * validB;
+    result.counts.clearPairs = static_cast<int>(
+        allCrossPairs > candidates.size() ? allCrossPairs - candidates.size() : 0
+    );
+
+    Part::InterferenceOptions detection = options.detectionOptions;
+    detection.clearance = options.clearance;
+    detection.cancelFlag = options.cancelFlag;
+    detection.skipGeometryValidation = true;
 
     for (const auto& candidate : candidates) {
         if (isCancelled(options)) {

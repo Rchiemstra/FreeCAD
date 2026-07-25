@@ -115,8 +115,24 @@ bool hasValidClosestPoints(const Part::InterferenceResult& detection)
 }  // namespace
 
 TaskInterferenceCheck::TaskInterferenceCheck(App::DocumentObject* host, QWidget* parent)
+    : TaskInterferenceCheck(host, {}, {}, parent)
+{}
+
+TaskInterferenceCheck::TaskInterferenceCheck(
+    App::DocumentObject* host,
+    const InterferenceComponentOccurrence& componentA,
+    const InterferenceComponentOccurrence& componentB,
+    QWidget* parent
+)
     : QWidget(parent)
     , host(host)
+    , selectedA(componentA)
+    , selectedB(componentB)
+    , selectedComponentsMode(
+          componentA.component != nullptr && componentB.component != nullptr
+          && !componentA.occurrencePrefix.empty() && !componentB.occurrencePrefix.empty()
+          && componentA.occurrencePrefix != componentB.occurrencePrefix
+      )
 {
     setupUi();
     connectDocumentSignals();
@@ -124,6 +140,14 @@ TaskInterferenceCheck::TaskInterferenceCheck(App::DocumentObject* host, QWidget*
     if (host) {
         clearanceSpin->setValue(
             Base::Quantity(Assembly::getInterferenceClearance(host), Base::Unit::Length)
+        );
+    }
+
+    if (selectedComponentsMode && statusLabel) {
+        statusLabel->setText(
+            tr("Ready. Run a scan between '%1' and '%2'.")
+                .arg(QString::fromStdString(selectedA.displayPath))
+                .arg(QString::fromStdString(selectedB.displayPath))
         );
     }
 
@@ -820,11 +844,29 @@ void TaskInterferenceCheck::onRun()
     rebuildTable();
 
     const bool includeHidden = includeHiddenCheck->isChecked();
-    auto leaves = collectInterferenceLeaves(host, includeHidden);
     auto excluded = currentExclusionSourceIds();
     auto cancel = handle.cancel;
     const auto generation = handle.generation;
     QPointer<TaskInterferenceCheck> self(this);
+
+    std::vector<InterferenceLeaf> leaves;
+    std::vector<InterferenceLeaf> leavesA;
+    std::vector<InterferenceLeaf> leavesB;
+    const bool betweenSelected = selectedComponentsMode;
+    if (betweenSelected) {
+        leavesA = collectInterferenceLeavesUnderPrefix(host, selectedA.occurrencePrefix, includeHidden);
+        leavesB = collectInterferenceLeavesUnderPrefix(host, selectedB.occurrencePrefix, includeHidden);
+        if (statusLabel) {
+            statusLabel->setText(
+                tr("Scanning selected components '%1' and '%2'…")
+                    .arg(QString::fromStdString(selectedA.displayPath))
+                    .arg(QString::fromStdString(selectedB.displayPath))
+            );
+        }
+    }
+    else {
+        leaves = collectInterferenceLeaves(host, includeHidden);
+    }
 
     auto* watcher = new QFutureWatcher<InterferenceScanResult>(this);
     connect(
@@ -847,6 +889,9 @@ void TaskInterferenceCheck::onRun()
 
     QFuture<InterferenceScanResult> future = QtConcurrent::run(
         [leaves = std::move(leaves),
+         leavesA = std::move(leavesA),
+         leavesB = std::move(leavesB),
+         betweenSelected,
          excluded = std::move(excluded),
          clearance,
          cancel,
@@ -872,6 +917,9 @@ void TaskInterferenceCheck::onRun()
                     Qt::QueuedConnection
                 );
             };
+            if (betweenSelected) {
+                return runInterferenceScanBetweenLeafSets(leavesA, leavesB, options, excluded);
+            }
             return runInterferenceScan(leaves, options, excluded);
         }
     );
@@ -1373,6 +1421,23 @@ TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(App::DocumentObject* ho
     taskbox = new Gui::TaskView::TaskBox(
         Gui::BitmapFactory().pixmap("Assembly_CheckInterference"),
         tr("Check Interference"),
+        true,
+        nullptr
+    );
+    taskbox->groupLayout()->addWidget(widget);
+    Content.push_back(taskbox);
+}
+
+TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(
+    App::DocumentObject* host,
+    const InterferenceComponentOccurrence& componentA,
+    const InterferenceComponentOccurrence& componentB
+)
+{
+    widget = new TaskInterferenceCheck(host, componentA, componentB);
+    taskbox = new Gui::TaskView::TaskBox(
+        Gui::BitmapFactory().pixmap("Assembly_CheckInterference"),
+        tr("Check Selected Components"),
         true,
         nullptr
     );

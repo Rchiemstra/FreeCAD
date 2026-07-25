@@ -861,6 +861,178 @@ TEST_F(InterferenceScanTest, clearancePropertyUndoRedoRoundTrip)
     EXPECT_DOUBLE_EQ(_assembly->getInterferenceClearance(), 7.0);
 }
 
+TEST_F(InterferenceScanTest, resolveSelectedComponentUsesFirstOccurrenceUnderRoot)
+{
+    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
+    auto* nested = _doc->addObject<App::Part>("CaseSnapWindowRightPocket");
+    auto* faceOwner = makeBox(_doc, "PocketBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    nested->addObject(faceOwner);
+    casePart->addObject(nested);
+
+    auto* spool = _doc->addObject<App::Part>("AssemblySpool");
+    auto* gear = makeBox(_doc, "Spool_GearTipRelief", Base::Vector3d(50, 0, 0), 10, 10, 10);
+    spool->addObject(gear);
+
+    _assembly->addObject(casePart);
+    _assembly->addObject(spool);
+    _doc->recompute();
+
+    Assembly::InterferenceComponentOccurrence caseOcc;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        "AssemblyCase.CaseSnapWindowRightPocket.PocketBox.",
+        caseOcc
+    ));
+    EXPECT_EQ(caseOcc.component, casePart);
+    EXPECT_EQ(caseOcc.occurrencePrefix, "AssemblyCase.");
+
+    Assembly::InterferenceComponentOccurrence spoolOcc;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        _assembly,
+        "AssemblySpool.Spool_GearTipRelief.",
+        spoolOcc
+    ));
+    EXPECT_EQ(spoolOcc.component, spool);
+    EXPECT_EQ(spoolOcc.occurrencePrefix, "AssemblySpool.");
+
+    // Selecting the nested feature object still resolves to the root-level component.
+    Assembly::InterferenceComponentOccurrence fromNested;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly,
+        faceOwner,
+        {},
+        fromNested
+    ));
+    EXPECT_EQ(fromNested.component, casePart);
+    EXPECT_EQ(fromNested.occurrencePrefix, "AssemblyCase.");
+}
+
+TEST_F(InterferenceScanTest, selectedComponentsScanIncludesNestedPartGeometry)
+{
+    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
+    casePart->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
+    auto* nested = _doc->addObject<App::Part>("NestedCase");
+    nested->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
+    auto* caseBox = makeBox(_doc, "CaseBox", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    nested->addObject(caseBox);
+    casePart->addObject(nested);
+
+    auto* spool = _doc->addObject<App::Part>("AssemblySpool");
+    spool->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    auto* spoolBox = makeBox(_doc, "SpoolBox", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    spool->addObject(spoolBox);
+
+    _assembly->addObject(casePart);
+    _assembly->addObject(spool);
+    _doc->recompute();
+
+    Assembly::InterferenceComponentOccurrence caseOcc;
+    Assembly::InterferenceComponentOccurrence spoolOcc;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, "AssemblyCase.NestedCase.CaseBox.", caseOcc
+    ));
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, "AssemblySpool.SpoolBox.", spoolOcc
+    ));
+
+    auto leavesA =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, caseOcc.occurrencePrefix, false);
+    auto leavesB =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, spoolOcc.occurrencePrefix, false);
+    ASSERT_EQ(leavesA.size(), 1u);
+    ASSERT_EQ(leavesB.size(), 1u);
+    EXPECT_NE(leavesA[0].occurrenceSubName.find("CaseBox"), std::string::npos);
+    EXPECT_NEAR(leavesA[0].worldBoundBox.MinX, 0.0, 1e-6);
+    EXPECT_NEAR(leavesB[0].worldBoundBox.MinX, 10.0, 1e-6);
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
+    ASSERT_TRUE(result.complete);
+    EXPECT_GE(result.counts.penetrations, 1);
+    ASSERT_FALSE(result.pairs.empty());
+    EXPECT_GE(result.pairs.front().detection.overlapVolume, 1.0);
+}
+
+TEST_F(InterferenceScanTest, selectedComponentsScanIncludesLinkedGeometry)
+{
+    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
+    auto* caseBox = makeBox(_doc, "CaseLocal", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    casePart->addObject(caseBox);
+
+    auto* source = makeBox(_doc, "SpoolSource", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    auto* link = freecad_cast<App::Link*>(_doc->addObject("App::Link", "AssemblySpool"));
+    ASSERT_NE(link, nullptr);
+    link->setLink(-1, source);
+    link->LinkPlacement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+
+    _assembly->addObject(casePart);
+    _assembly->addObject(link);
+    _doc->recompute();
+
+    Assembly::InterferenceComponentOccurrence caseOcc;
+    Assembly::InterferenceComponentOccurrence spoolOcc;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, "AssemblyCase.CaseLocal.", caseOcc
+    ));
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        _assembly, _assembly, "AssemblySpool.", spoolOcc
+    ));
+    EXPECT_EQ(spoolOcc.component, link);
+    EXPECT_EQ(spoolOcc.occurrencePrefix, "AssemblySpool.");
+
+    auto leavesA =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, caseOcc.occurrencePrefix, false);
+    auto leavesB =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, spoolOcc.occurrencePrefix, false);
+    ASSERT_EQ(leavesA.size(), 1u);
+    ASSERT_EQ(leavesB.size(), 1u);
+    EXPECT_EQ(leavesB[0].sourceId, std::string(_doc->getName()) + "#SpoolSource");
+    EXPECT_NEAR(leavesB[0].worldBoundBox.MinX, 10.0, 1e-6);
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
+    ASSERT_TRUE(result.complete);
+    EXPECT_GE(result.counts.penetrations, 1);
+}
+
+TEST_F(InterferenceScanTest, selectedComponentsScanDoesNotPairWithinSameComponent)
+{
+    auto* left = _doc->addObject<App::Part>("LeftComp");
+    auto* a = makeBox(_doc, "LeftA", Base::Vector3d(0, 0, 0), 10, 10, 10);
+    auto* b = makeBox(_doc, "LeftB", Base::Vector3d(5, 0, 0), 10, 10, 10);
+    left->addObject(a);
+    left->addObject(b);
+
+    auto* right = _doc->addObject<App::Part>("RightComp");
+    auto* c = makeBox(_doc, "RightC", Base::Vector3d(100, 0, 0), 10, 10, 10);
+    right->addObject(c);
+
+    _assembly->addObject(left);
+    _assembly->addObject(right);
+    _doc->recompute();
+
+    auto leavesA =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "LeftComp.", false);
+    auto leavesB =
+        Assembly::collectInterferenceLeavesUnderPrefix(_assembly, "RightComp.", false);
+    ASSERT_EQ(leavesA.size(), 2u);
+    ASSERT_EQ(leavesB.size(), 1u);
+
+    Assembly::InterferenceScanOptions options;
+    auto result = Assembly::runInterferenceScanBetweenLeafSets(leavesA, leavesB, options);
+    ASSERT_TRUE(result.complete);
+    EXPECT_EQ(result.counts.penetrations, 0);
+    EXPECT_EQ(result.counts.contacts, 0);
+    EXPECT_EQ(result.counts.clearanceViolations, 0);
+    // Intra-LeftComp overlap must not appear as a selected-components violation.
+    for (const auto& pair : result.pairs) {
+        EXPECT_TRUE(pair.leafIndexA < leavesA.size());
+        EXPECT_GE(pair.leafIndexB, leavesA.size());
+    }
+}
+
 TEST_F(InterferenceScanTest, plainPartRootCollectsNestedAndLinkedGeometry)
 {
     auto* root = _doc->addObject<App::Part>("PartRoot");

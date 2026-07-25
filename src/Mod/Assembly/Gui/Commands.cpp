@@ -83,6 +83,69 @@ static App::DocumentObject* getInterferenceHost()
     return nullptr;
 }
 
+static bool resolveTwoSelectedComponents(
+    App::DocumentObject* root,
+    InterferenceComponentOccurrence& first,
+    InterferenceComponentOccurrence& second
+)
+{
+    first = {};
+    second = {};
+    if (!root) {
+        return false;
+    }
+
+    auto selection = Gui::Selection().getSelectionEx(
+        "",
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+
+    std::vector<InterferenceComponentOccurrence> resolved;
+    for (auto& sel : selection) {
+        App::DocumentObject* obj = sel.getObject();
+        if (!obj) {
+            continue;
+        }
+        const auto subs = sel.getSubNames();
+        if (subs.empty()) {
+            InterferenceComponentOccurrence occ;
+            if (resolveInterferenceComponentOccurrence(root, obj, {}, occ)) {
+                resolved.push_back(std::move(occ));
+            }
+            continue;
+        }
+        for (const auto& sub : subs) {
+            InterferenceComponentOccurrence occ;
+            if (resolveInterferenceComponentOccurrence(root, obj, sub, occ)) {
+                resolved.push_back(std::move(occ));
+            }
+        }
+    }
+
+    // Keep first occurrence of each distinct prefix, in selection order.
+    std::vector<InterferenceComponentOccurrence> unique;
+    for (auto& occ : resolved) {
+        bool seen = false;
+        for (const auto& existing : unique) {
+            if (existing.occurrencePrefix == occ.occurrencePrefix) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            unique.push_back(std::move(occ));
+        }
+    }
+
+    if (unique.size() != 2) {
+        return false;
+    }
+    first = std::move(unique[0]);
+    second = std::move(unique[1]);
+    return true;
+}
+
 void selectObjects(const std::vector<App::DocumentObject*>& objectsToSelect)
 {
     if (objectsToSelect.empty()) {
@@ -420,6 +483,45 @@ bool CmdAssemblyCheckInterference::isActive()
 }
 
 
+DEF_STD_CMD_A(CmdAssemblyCheckSelectedComponents)
+
+CmdAssemblyCheckSelectedComponents::CmdAssemblyCheckSelectedComponents()
+    : Command("Assembly_CheckSelectedComponents")
+{
+    sAppModule = "Assembly";
+    sGroup = QT_TR_NOOP("Assembly");
+    sMenuText = QT_TR_NOOP("Check Selected Components");
+    sToolTipText = QT_TR_NOOP(
+        "Check interference between the two selected component occurrences under the active "
+        "part or assembly (selected faces are pick handles only)"
+    );
+    sWhatsThis = "Assembly_CheckSelectedComponents";
+    sStatusTip = sToolTipText;
+    sPixmap = "Assembly_CheckInterference";
+    eType = AlterDoc;
+}
+
+void CmdAssemblyCheckSelectedComponents::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    App::DocumentObject* host = getInterferenceHost();
+    InterferenceComponentOccurrence first;
+    InterferenceComponentOccurrence second;
+    if (!host || !resolveTwoSelectedComponents(host, first, second)) {
+        return;
+    }
+    Gui::Control().showDialog(new TaskInterferenceCheckDialog(host, first, second));
+}
+
+bool CmdAssemblyCheckSelectedComponents::isActive()
+{
+    App::DocumentObject* host = getInterferenceHost();
+    InterferenceComponentOccurrence first;
+    InterferenceComponentOccurrence second;
+    return host && resolveTwoSelectedComponents(host, first, second);
+}
+
+
 // ================================================================================
 // Command Creation
 // ================================================================================
@@ -435,4 +537,5 @@ void AssemblyGui::CreateAssemblyCommands()
     rcCmdMgr.addCommand(new CmdAssemblySelectComponentsWithDoFs());
     rcCmdMgr.addCommand(new CmdAssemblySelectJointsOfComponent());
     rcCmdMgr.addCommand(new CmdAssemblyCheckInterference());
+    rcCmdMgr.addCommand(new CmdAssemblyCheckSelectedComponents());
 }

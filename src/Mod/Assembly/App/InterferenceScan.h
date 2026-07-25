@@ -137,6 +137,44 @@ AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeaves(
     bool includeHidden
 );
 
+/**
+ * First component occurrence directly beneath an interference root.
+ * Selected faces/edges/vertices are pick handles only; the component is the first
+ * non-group object on the path under the root (e.g. AssemblyCase.….Face68 → AssemblyCase).
+ */
+struct InterferenceComponentOccurrence
+{
+    App::DocumentObject* component = nullptr;
+    /** Subname prefix relative to root, e.g. "AssemblyCase." or "Link.0.". */
+    std::string occurrencePrefix;
+    std::string displayPath;
+};
+
+AssemblyExport bool resolveInterferenceComponentOccurrence(
+    const App::DocumentObject* root,
+    App::DocumentObject* selObj,
+    const std::string& subName,
+    InterferenceComponentOccurrence& out
+);
+
+/** Leaves whose occurrenceSubName starts with the given prefix. */
+AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
+    const App::DocumentObject* root,
+    const std::string& occurrencePrefix,
+    bool includeHidden
+);
+
+/**
+ * Scan only across two leaf sets (A×B). Does not pair leaves within the same set.
+ * Used for Check Selected Components between two complete root-level occurrences.
+ */
+AssemblyExport InterferenceScanResult runInterferenceScanBetweenLeafSets(
+    const std::vector<InterferenceLeaf>& leavesA,
+    const std::vector<InterferenceLeaf>& leavesB,
+    const InterferenceScanOptions& options,
+    const std::vector<std::pair<std::string, std::string>>& excludedSourceIdPairs = {}
+);
+
 /** Deterministic sweep-and-prune candidate pairs (i < j). */
 AssemblyExport std::vector<std::pair<std::size_t, std::size_t>> broadPhaseCandidatePairs(
     const std::vector<InterferenceLeaf>& leaves,

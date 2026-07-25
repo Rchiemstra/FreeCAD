@@ -53,7 +53,16 @@ class AssemblyGuiExport TaskInterferenceCheck: public QWidget
     Q_OBJECT
 
 public:
-    explicit TaskInterferenceCheck(App::DocumentObject* host, QWidget* parent = nullptr);
+    explicit TaskInterferenceCheck(
+        App::DocumentObject* host,
+        QWidget* parent = nullptr
+    );
+    TaskInterferenceCheck(
+        App::DocumentObject* host,
+        const Assembly::InterferenceComponentOccurrence& componentA,
+        const Assembly::InterferenceComponentOccurrence& componentB,
+        QWidget* parent = nullptr
+    );
     ~TaskInterferenceCheck() override;
 
     bool accept();
@@ -157,6 +166,9 @@ private:
     QString formatPairVolume(const Part::InterferenceResult& detection) const;
 
     App::DocumentObject* host = nullptr;
+    Assembly::InterferenceComponentOccurrence selectedA;
+    Assembly::InterferenceComponentOccurrence selectedB;
+    bool selectedComponentsMode = false;
     Assembly::InterferenceScanSession session;
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
@@ -189,6 +201,11 @@ class AssemblyGuiExport TaskInterferenceCheckDialog: public Gui::TaskView::TaskD
 
 public:
     explicit TaskInterferenceCheckDialog(App::DocumentObject* host);
+    TaskInterferenceCheckDialog(
+        App::DocumentObject* host,
+        const Assembly::InterferenceComponentOccurrence& componentA,
+        const Assembly::InterferenceComponentOccurrence& componentB
+    );
     ~TaskInterferenceCheckDialog() override;
 
     QDialogButtonBox::StandardButtons getStandardButtons() const override

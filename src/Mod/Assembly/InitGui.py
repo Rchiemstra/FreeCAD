@@ -97,6 +97,7 @@ class AssemblyWorkbench(Workbench):
             "Assembly_LinkSelectLinked",
             "Assembly_ExportASMT",
             "Assembly_CheckInterference",
+            "Assembly_CheckSelectedComponents",
             "Assembly_SelectJointsOfComponent",
         ]
 
@@ -298,10 +299,13 @@ class AssemblyWorkbench(Workbench):
                 return UtilsAssembly.assembly_has_at_least_n_parts(1)
 
         class AssemblyInterferenceWatcher:
-            """Shows Check Interference for an active assembly or selected App::Part."""
+            """Shows interference tools for an active assembly or selected App::Part."""
 
             def __init__(self):
-                self.commands = ["Assembly_CheckInterference"]
+                self.commands = [
+                    "Assembly_CheckInterference",
+                    "Assembly_CheckSelectedComponents",
+                ]
                 self.title = translate("Assembly", "Interference")
 
             def shouldShow(self):
