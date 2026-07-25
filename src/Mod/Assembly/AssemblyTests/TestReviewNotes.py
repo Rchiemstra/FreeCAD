@@ -421,6 +421,7 @@ class TestReviewNotes(unittest.TestCase):
             open_transaction=False,
         )
         note.Resolved = True
+        note.LeaderPort = 0.25
         if note.ViewObject:
             note.ViewObject.Visibility = False
 
@@ -444,6 +445,7 @@ class TestReviewNotes(unittest.TestCase):
             self.assertTrue(note.LocalAnchor.isEqual(App.Vector(5, 10, 30), 1e-6))
             self.assertTrue(note.TextPosition.isEqual(App.Vector(12, 13, 14), 1e-6))
             self.assertTrue(note.Resolved)
+            self.assertAlmostEqual(note.LeaderPort, 0.25, places=5)
             if note.ViewObject:
                 self.assertFalse(
                     note.ViewObject.Visibility,
@@ -470,6 +472,107 @@ class TestReviewNotes(unittest.TestCase):
                 os.remove(path)
             except OSError:
                 pass
+
+    def test_text_references_parse_resolve_and_persist(self):
+        operation = "Parse/resolve @refs; persist in LabelText"
+        _msg("  Test '{}'".format(operation))
+
+        refs = CommandReviewNote.parse_review_note_references(
+            [
+                "See @Box.Face6 and @Box",
+                "Also @Missing.Face1",
+            ]
+        )
+        self.assertEqual(len(refs), 3, operation)
+        self.assertEqual(refs[0]["obj_name"], "Box", operation)
+        self.assertEqual(refs[0]["sub_name"], "Face6", operation)
+        self.assertEqual(refs[1]["obj_name"], "Box", operation)
+        self.assertEqual(refs[1]["sub_name"], "", operation)
+
+        obj, sub = CommandReviewNote.resolve_review_note_reference(
+            self.doc, "Box", "Face6"
+        )
+        self.assertEqual(obj, self.box, operation)
+        self.assertEqual(sub, "Face6", operation)
+        missing, _sub = CommandReviewNote.resolve_review_note_reference(
+            self.doc, "NoSuch", "Face1"
+        )
+        self.assertIsNone(missing, operation)
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Check @Box.Face6 before release"],
+            open_transaction=False,
+        )
+        self.assertIn("@Box.Face6", note.LabelText[0], operation)
+
+        fd, path = tempfile.mkstemp(suffix=".FCStd")
+        os.close(fd)
+        try:
+            self.doc.saveAs(path)
+            App.closeDocument(self.doc.Name)
+            loaded = App.openDocument(path)
+            self.doc = loaded
+            App.setActiveDocument(loaded.Name)
+            notes = [o for o in loaded.Objects if o.TypeId == "Assembly::ReviewNote"]
+            self.assertEqual(len(notes), 1, operation)
+            self.assertEqual(
+                list(notes[0].LabelText),
+                ["Check @Box.Face6 before release"],
+                operation,
+            )
+            loaded_refs = CommandReviewNote.parse_review_note_references(notes[0].LabelText)
+            self.assertEqual(len(loaded_refs), 1, operation)
+            self.assertEqual(loaded_refs[0]["full"], "Box.Face6", operation)
+        finally:
+            if App.ActiveDocument:
+                App.closeDocument(App.ActiveDocument.Name)
+            self.doc = App.newDocument(self.__class__.__name__)
+            App.setActiveDocument(self.doc.Name)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def test_leader_port_undo_redo_and_boundary(self):
+        operation = "LeaderPort auto/manual with undo/redo and boundary endpoint"
+        _msg("  Test '{}'".format(operation))
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Port"], text_offset=App.Vector(40, 0, 0), open_transaction=False
+        )
+        self.assertLess(note.LeaderPort, 0.0, "{} default auto".format(operation))
+
+        self.doc.openTransaction("Set leader port")
+        note.LeaderPort = 0.0
+        self.doc.commitTransaction()
+        self.assertAlmostEqual(note.LeaderPort, 0.0, places=5, msg=operation)
+
+        self.doc.undo()
+        self.assertLess(note.LeaderPort, 0.0, "{} undo to auto".format(operation))
+        self.doc.redo()
+        self.assertAlmostEqual(note.LeaderPort, 0.0, places=5, msg="{} redo".format(operation))
+
+        # Boundary endpoint must leave the text/image center for a non-trivial offset.
+        half_w, half_h = CommandReviewNote.review_note_label_half_extents(120, 40, font_size=10)
+        # LeaderPort 0 maps to the start of the right edge (top-right).
+        end = CommandReviewNote.review_note_perimeter_offset(0.0, half_w, half_h)
+        self.assertGreater(end.x, 0.0, operation)
+        self.assertAlmostEqual(end.x, half_w, places=5, msg=operation)
+        auto = CommandReviewNote.review_note_auto_boundary_endpoint(
+            note.TextPosition, half_w, half_h
+        )
+        self.assertFalse(
+            auto.isEqual(note.TextPosition, 1e-6),
+            "{} auto endpoint must leave text center".format(operation),
+        )
 
     # --- Attachment correctness regressions -----------------------------
 
@@ -1807,3 +1910,48 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertIsNotNone(group.Document, operation)
         self.assertIsNotNone(note.Document, operation)
         self.assertIn(note, group.Group, operation)
+
+    def test_gui_text_reference_selection(self):
+        operation = "GUI @ref selection highlights target geometry"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Inspect @Box.Face6"],
+            open_transaction=False,
+        )
+        self.assertIsNotNone(note, operation)
+        Gui.Selection.clearSelection()
+        self.assertTrue(
+            CommandReviewNote.select_review_note_reference(self.doc, "Box", "Face6"),
+            operation,
+        )
+        selected = Gui.Selection.getSelectionEx(self.doc.Name, 0)
+        self.assertGreaterEqual(len(selected), 1, operation)
+        # Inside an Assembly GeoFeatureGroup, selection may surface as Assembly + "Box.Face6".
+        face_hit = any(
+            (
+                s.Object.Name == "Box"
+                and (
+                    "Face6" in list(s.SubElementNames)
+                    or any(n.endswith("Face6") for n in list(s.SubElementNames))
+                )
+            )
+            or any(
+                n == "Box.Face6" or n.endswith(".Box.Face6") or n.endswith("Box.Face6")
+                for n in list(s.SubElementNames)
+            )
+            for s in selected
+        )
+        plain = [(s.Object.Name, list(s.SubElementNames)) for s in selected]
+        self.assertTrue(face_hit, "{} Face6 not in {!r}".format(operation, plain))
+        objs = Gui.Selection.getSelection()
+        self.assertTrue(
+            any(o.Name in ("Box", "Assembly") for o in objs),
+            "{} getSelection={!r}".format(operation, [o.Name for o in objs]),
+        )

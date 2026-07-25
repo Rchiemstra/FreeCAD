@@ -23,6 +23,8 @@
 
 """Assembly review-note commands and target normalization helpers."""
 
+import re
+
 import FreeCAD as App
 
 from PySide.QtCore import QT_TRANSLATE_NOOP
@@ -44,6 +46,125 @@ JOINT_SIDE_REF1 = "Reference1"
 JOINT_SIDE_REF2 = "Reference2"
 
 _SUPPORTED_SUB_PREFIXES = ("Face", "Edge", "Vertex")
+
+# @Object or @Object.Child.Face12 — same-document object + optional subpath.
+_REVIEW_NOTE_REF_RE = re.compile(r"@([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*)")
+
+
+def parse_review_note_references(lines):
+    """Parse @Object[.Sub...] spans from LabelText lines.
+
+    Returns a list of dicts with keys:
+      full, obj_name, sub_name, line, start, end, text
+    """
+    refs = []
+    for line_index, line in enumerate(lines or []):
+        text = str(line)
+        for match in _REVIEW_NOTE_REF_RE.finditer(text):
+            full = match.group(1)
+            parts = [p for p in full.split(".") if p]
+            if not parts:
+                continue
+            refs.append(
+                {
+                    "full": full,
+                    "obj_name": parts[0],
+                    "sub_name": ".".join(parts[1:]),
+                    "line": line_index,
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(0),
+                }
+            )
+    return refs
+
+
+def resolve_review_note_reference(doc, obj_name, sub_name=""):
+    """Resolve a same-document @ref to (object, sub_name) or (None, sub_name)."""
+    if doc is None or not obj_name:
+        return None, sub_name or ""
+    obj = doc.getObject(obj_name)
+    if obj is None:
+        return None, sub_name or ""
+    return obj, sub_name or ""
+
+
+def select_review_note_reference(doc, obj_name, sub_name=""):
+    """Clear selection and select the resolved @ref target. Returns True on success."""
+    if not App.GuiUp:
+        return False
+    obj, sub = resolve_review_note_reference(doc, obj_name, sub_name)
+    if obj is None:
+        return False
+    Gui.Selection.clearSelection()
+    if sub:
+        # Prefer object-rooted selection so the target (not a parent Part) is primary.
+        Gui.Selection.addSelection(obj, sub)
+    else:
+        Gui.Selection.addSelection(obj)
+    return True
+
+
+def review_note_label_half_extents(image_width, image_height, font_size=10.0):
+    """Approximate annotation-box half-extents in local units (matches Gui VP)."""
+    mm_per_px = max(0.05, float(font_size) * 0.03)
+    half_w = max(0.5, 0.5 * float(image_width) * mm_per_px)
+    half_h = max(0.5, 0.5 * float(image_height) * mm_per_px)
+    return half_w, half_h
+
+
+def review_note_perimeter_offset(port, half_w, half_h):
+    """Map LeaderPort in [0,1] to an offset from the text/image center."""
+    import math
+
+    w = max(1e-6, float(half_w))
+    h = max(1e-6, float(half_h))
+    peri = 2.0 * (2.0 * w + 2.0 * h)
+    d = math.fmod(float(port), 1.0)
+    if d < 0.0:
+        d += 1.0
+    d *= peri
+    right = 2.0 * h
+    bottom = right + 2.0 * w
+    left = bottom + 2.0 * h
+    if d <= right:
+        return App.Vector(w, h - d, 0.0)
+    if d <= bottom:
+        return App.Vector(w - (d - right), -h, 0.0)
+    if d <= left:
+        return App.Vector(-w, -h + (d - bottom), 0.0)
+    return App.Vector(-w + (d - left), h, 0.0)
+
+
+def review_note_auto_boundary_endpoint(text_pos, half_w, half_h):
+    """Leader end on the box boundary toward the base (origin)."""
+    import math
+
+    text = App.Vector(text_pos)
+    if text.Length < 1e-9:
+        return App.Vector(half_w, 0.0, 0.0)
+    toward_base = text * (-1.0)
+    # Same projection as Gui perimeterParam.
+    w = max(1e-6, float(half_w))
+    h = max(1e-6, float(half_h))
+    dirx, diry = toward_base.x, toward_base.y
+    if abs(dirx) < 1e-12 and abs(diry) < 1e-12:
+        dirx = w
+    sx = (w / abs(dirx)) if abs(dirx) > 1e-12 else 1e12
+    sy = (h / abs(diry)) if abs(diry) > 1e-12 else 1e12
+    t = min(sx, sy)
+    px, py = dirx * t, diry * t
+    peri = 2.0 * (2.0 * w + 2.0 * h)
+    if abs(px - w) < 1e-6:
+        dist = h - py
+    elif abs(py + h) < 1e-6:
+        dist = 2.0 * h + (w - px)
+    elif abs(px + w) < 1e-6:
+        dist = 2.0 * h + 2.0 * w + (py + h)
+    else:
+        dist = 2.0 * h + 2.0 * w + 2.0 * h + (px + w)
+    port = math.fmod(max(0.0, dist), peri) / peri
+    return text + review_note_perimeter_offset(port, half_w, half_h)
 
 
 def _is_joint_object(obj):
