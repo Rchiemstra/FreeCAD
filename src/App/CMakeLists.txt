@@ -211,6 +211,7 @@ SET(Document_CPP_SRCS
     GeometryJobManager.cpp
     DocumentRecomputeCoordinator.cpp
     DetachedDocumentArchive.cpp
+    GuiResponsivenessProbe.cpp
 )
 
 SET(Document_HPP_SRCS
@@ -266,6 +267,7 @@ SET(Document_HPP_SRCS
     GeometryJobManager.h
     DocumentRecomputeCoordinator.h
     DetachedDocumentArchive.h
+    GuiResponsivenessProbe.h
 )
 SET(Document_SRCS
     ${Document_CPP_SRCS}

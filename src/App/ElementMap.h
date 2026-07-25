@@ -36,6 +36,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <unordered_map>
 
 
 namespace Data
@@ -48,7 +49,7 @@ struct AppExport ElementMapArchiveContext
 {
     App::StringHasherRef hasher;
     std::unordered_map<const ElementMap*, uint32_t> mapToId;
-    std::vector<ElementMapPtr> idToMap;
+    std::unordered_map<uint32_t, ElementMapPtr> idToMap;
 };
 
 
@@ -114,6 +115,18 @@ public:
     void beforeSave(const ::App::StringHasherRef& hasherRef) const;
 
     /**
+     * Prepare this map for archive save using an explicit per-archive context
+     * instead of the process-global document save tables.
+     */
+    void beforeSave(ElementMapArchiveContext& ctx) const;
+
+    /// Snapshot recursive ElementMap `_id` values so freeze can restore them.
+    void snapshotArchiveIds(std::unordered_map<const ElementMap*, unsigned>& ids) const;
+
+    /// Restore `_id` values captured by snapshotArchiveIds().
+    void restoreArchiveIds(const std::unordered_map<const ElementMap*, unsigned>& ids) const;
+
+    /**
      * @brief Serialize this map.
      *
      * Serialize this map. Calls @c collectChildMaps to get @c childMapSet and
@@ -134,6 +147,11 @@ public:
      * @param[in,out] stream The stream to deserialize from.
      */
     ElementMapPtr restore(::App::StringHasherRef hasherRef, std::istream& stream);
+
+    /**
+     * Restore using an explicit per-archive context (no process-global tables).
+     */
+    ElementMapPtr restore(ElementMapArchiveContext& ctx, std::istream& stream);
 
     /**
      * @brief Add a sub-element name mapping.
@@ -331,11 +349,18 @@ private:
      * @param stream: stream to deserialize
      * @param childMaps: where all child element maps are stored
      * @param postfixes. where all postfixes are stored
+     * @param ctx: optional per-archive restore table; when null, process globals are used
      */
     ElementMapPtr restore(::App::StringHasherRef hasherRef,
                           std::istream& stream,
                           std::vector<ElementMapPtr>& childMaps,
-                          const std::vector<std::string>& postfixes);
+                          const std::vector<std::string>& postfixes,
+                          ElementMapArchiveContext* ctx = nullptr);
+
+    /** Top-level restore helper that can use either global or archive-local tables. */
+    ElementMapPtr restore(::App::StringHasherRef hasherRef,
+                          std::istream& stream,
+                          ElementMapArchiveContext* ctx);
 
     /** Associate the MappedName \c name with the IndexedName \c idx.
      * @param name: the name to add

@@ -105,6 +105,64 @@ void ElementMap::beforeSave(const ::App::StringHasherRef& hasherRef) const
     }
 }
 
+void ElementMap::beforeSave(ElementMapArchiveContext& ctx) const
+{
+    auto inserted = ctx.mapToId.emplace(this, 0);
+    if (inserted.second) {
+        inserted.first->second = static_cast<uint32_t>(ctx.mapToId.size());
+    }
+    this->_id = inserted.first->second;
+
+    for (auto& indexedName : this->indexedNames) {
+        for (const MappedNameRef& mappedName : indexedName.second.names) {
+            for (const MappedNameRef* ref = &mappedName; ref; ref = ref->next.get()) {
+                for (const ::App::StringIDRef& sid : ref->sids) {
+                    if (ctx.hasher && sid.isFromSameHasher(ctx.hasher)) {
+                        sid.mark();
+                    }
+                }
+            }
+        }
+        for (auto& childPair : indexedName.second.children) {
+            if (childPair.second.elementMap) {
+                childPair.second.elementMap->beforeSave(ctx);
+            }
+            for (auto& sid : childPair.second.sids) {
+                if (ctx.hasher && sid.isFromSameHasher(ctx.hasher)) {
+                    sid.mark();
+                }
+            }
+        }
+    }
+}
+
+void ElementMap::snapshotArchiveIds(std::unordered_map<const ElementMap*, unsigned>& ids) const
+{
+    ids.emplace(this, this->_id);
+    for (auto& indexedName : this->indexedNames) {
+        for (auto& childPair : indexedName.second.children) {
+            if (childPair.second.elementMap) {
+                childPair.second.elementMap->snapshotArchiveIds(ids);
+            }
+        }
+    }
+}
+
+void ElementMap::restoreArchiveIds(const std::unordered_map<const ElementMap*, unsigned>& ids) const
+{
+    auto it = ids.find(this);
+    if (it != ids.end()) {
+        this->_id = it->second;
+    }
+    for (auto& indexedName : this->indexedNames) {
+        for (auto& childPair : indexedName.second.children) {
+            if (childPair.second.elementMap) {
+                childPair.second.elementMap->restoreArchiveIds(ids);
+            }
+        }
+    }
+}
+
 void ElementMap::save(std::ostream& stream,
                       int index,
                       const std::map<const ElementMap*, int>& childMapSet,
@@ -236,6 +294,18 @@ void ElementMap::save(std::ostream& stream) const
 
 ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef, std::istream& stream)
 {
+    return restore(hasherRef, stream, nullptr);
+}
+
+ElementMapPtr ElementMap::restore(ElementMapArchiveContext& ctx, std::istream& stream)
+{
+    return restore(ctx.hasher, stream, &ctx);
+}
+
+ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef,
+                                  std::istream& stream,
+                                  ElementMapArchiveContext* ctx)
+{
     const char* msg = "Invalid element map";
 
     unsigned id = 0;
@@ -245,7 +315,7 @@ ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef, std::istream
         FC_THROWM(Base::RuntimeError, msg);  // NOLINT
     }
 
-    auto& map = _idToElementMap[id];
+    ElementMapPtr& map = ctx ? ctx->idToMap[static_cast<uint32_t>(id)] : _idToElementMap[id];
     if (map) {
         return map;
     }
@@ -266,16 +336,17 @@ ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef, std::istream
     childMaps.reserve(count - 1);
     for (int i = 0; i < count - 1; ++i) {
         childMaps.push_back(
-            std::make_shared<ElementMap>()->restore(hasherRef, stream, childMaps, postfixes));
+            std::make_shared<ElementMap>()->restore(hasherRef, stream, childMaps, postfixes, ctx));
     }
 
-    return restore(hasherRef, stream, childMaps, postfixes);
+    return restore(hasherRef, stream, childMaps, postfixes, ctx);
 }
 
 ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef,
                                   std::istream& stream,
                                   std::vector<ElementMapPtr>& childMaps,
-                                  const std::vector<std::string>& postfixes)
+                                  const std::vector<std::string>& postfixes,
+                                  ElementMapArchiveContext* ctx)
 {
     const char* msg = "Invalid element map";
     const int hexBase {16};
@@ -292,7 +363,7 @@ ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef,
         FC_THROWM(Base::RuntimeError, "Bad type count in element map, ignoring map");  // NOLINT
     }
 
-    auto& map = _idToElementMap[id];
+    ElementMapPtr& map = ctx ? ctx->idToMap[static_cast<uint32_t>(id)] : _idToElementMap[id];
     if (map) {
         while (tmp != "EndMap") {
             if (!std::getline(stream, tmp)) {
@@ -497,7 +568,10 @@ ElementMapPtr ElementMap::restore(::App::StringHasherRef hasherRef,
         FC_THROWM(Base::RuntimeError, "unexpected end of child element map");  // NOLINT
     }
 
-    return shared_from_this();
+    this->_id = id;
+    this->hasher = hasherRef;
+    map = shared_from_this();
+    return map;
 }
 
 MappedName ElementMap::addName(MappedName& name,

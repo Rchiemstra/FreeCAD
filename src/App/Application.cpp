@@ -231,7 +231,17 @@ bool documentCanRecomputeOnWorker(const Document& document)
         const auto recomputeObjects = Document::getDependencyList(recomputeRoots, Document::DepSort);
 
         return std::ranges::all_of(recomputeObjects, [](const DocumentObject* object) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
             return object && object->canRecomputeOnWorker();
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+#pragma GCC diagnostic pop
         });
     }
     catch (const Base::BadGraphError&) {
@@ -427,10 +437,16 @@ Application::~Application()
     // Signal the recompute worker thread to stop and join it.
     _stopRecomputeThread = true;
     _recomputeRequestAvailable.notify_all();
+    _recomputeStateChanged.notify_all();
 
     if (_recomputeThread.joinable()) {
         _recomputeThread.join();
     }
+
+    // Any deferred closes should already have been drained by the worker; clear
+    // defensively so Application teardown cannot leak Documents.
+    std::lock_guard<std::mutex> lock(_recomputeMutex);
+    _recomputePendingDestroy.clear();
 }
 
 void Application::setupPythonTypes()
@@ -708,11 +724,24 @@ bool Application::closeDocument(const char* name)
     if (_pActiveDoc == pos->second) {
         setActiveDocument(static_cast<Document*>(nullptr));
     }
-    const std::unique_ptr<Document> delDoc (pos->second);
+    Document* rawDoc = pos->second;
     DocMap.erase( pos );
-    DocFileMap.erase(Base::FileInfo(delDoc->FileName.getValue()).filePath());
+    DocFileMap.erase(Base::FileInfo(rawDoc->FileName.getValue()).filePath());
 
     _objCount = -1;
+
+    // If a legacy live-document worker is still recomputing this document, keep
+    // the Document alive until the worker finishes. Close must not block.
+    std::unique_ptr<Document> delDoc;
+    {
+        std::lock_guard<std::mutex> lock(_recomputeMutex);
+        if (_recomputeDocumentsInProgress.contains(documentName)) {
+            _recomputePendingDestroy[documentName] = std::unique_ptr<Document>(rawDoc);
+        }
+        else {
+            delDoc.reset(rawDoc);
+        }
+    }
 
     // Trigger observers after removing the document from the internal map.
     signalDeletedDocument();
@@ -842,9 +871,25 @@ bool Application::isFineGrainedRecomputeEnabled()
 
 bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 {
-    // Live document objects and live documents must NEVER be recomputed on a raw background thread.
-    // Detached operations use GeometryJobManager and DocumentRecomputeCoordinator instead.
-    return false;
+    // Deny-by-default: only objects that explicitly opt in via canRecomputeOnWorker()
+    // may run on the legacy live-document recompute worker. Detached geometry work
+    // uses GeometryJobManager / DocumentRecomputeCoordinator instead.
+    if (DocumentObject* documentObject = req.resolveDocumentObject()) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+        return documentObject->canRecomputeOnWorker();
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+#pragma GCC diagnostic pop
+    }
+
+    Document* document = req.resolveDocument();
+    return !document || documentCanRecomputeOnWorker(*document);
 }
 
 
@@ -887,13 +932,9 @@ void Application::cancelRecomputeRequestsForDocument(const std::string& document
         return;
     }
 
-    std::unique_lock<std::mutex> lock(_recomputeMutex);
-    _recomputeStateChanged.wait(lock, [this, &documentName] {
-        return !_recomputeDocumentsInProgress.contains(documentName);
-    });
-
-    // Cancellation runs on document-close boundaries, so a linear scan keeps
-    // the queue simple without affecting the steady-state worker path.
+    std::lock_guard<std::mutex> lock(_recomputeMutex);
+    // Non-blocking: never wait for an in-flight legacy worker. Document close
+    // defers destruction via _recomputePendingDestroy when needed.
     std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
         return requestTargetsDocument(request, documentName);
     });
@@ -2324,6 +2365,7 @@ void Application::initTypes()
     App::FeatureTestPlacement      ::init();
     App::FeatureTestAttribute      ::init();
     App::FeatureTestAsyncBlocker   ::init();
+    App::FeatureTestDetached       ::init();
 
     // Feature class
     App::FeaturePython             ::init();
@@ -3228,11 +3270,20 @@ void Application::recomputeWorker()
                 request.callback(request, result);
             }
 
+            std::unique_ptr<Document> doomed;
             lock.lock();
             if (!request.documentName.empty()) {
                 _recomputeDocumentsInProgress.erase(request.documentName);
+                auto pending = _recomputePendingDestroy.find(request.documentName);
+                if (pending != _recomputePendingDestroy.end()) {
+                    doomed = std::move(pending->second);
+                    _recomputePendingDestroy.erase(pending);
+                }
                 _recomputeStateChanged.notify_all();
             }
+            lock.unlock();
+            doomed.reset();
+            lock.lock();
         }
     }
 }

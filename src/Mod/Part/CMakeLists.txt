@@ -15,6 +15,7 @@ set(Part_Scripts
     MakeBottle.py
     PartEnums.py
     TestPartApp.py
+    GeometryWorker.py
 )
 
 if(BUILD_GUI)

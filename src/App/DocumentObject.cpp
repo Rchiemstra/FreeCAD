@@ -220,6 +220,7 @@ void DocumentObject::touch(bool noRecompute)
     }
     StatusBits.set(ObjectStatus::Touch);
     if (_pDoc) {
+        _pDoc->advanceModelGeneration();
         _pDoc->signalTouchedObject(*this);
     }
 }
@@ -1876,6 +1877,9 @@ ObjectRevisionToken DocumentObject::getRevisionToken() const
     token.internalName = getNameInDocument() ? getNameInDocument() : "";
     token.objectId = getID();
     token.type = getTypeId();
+    if (_pDoc) {
+        token.documentIncarnation = _pDoc->getRuntimeIncarnation();
+    }
     return token;
 }
 

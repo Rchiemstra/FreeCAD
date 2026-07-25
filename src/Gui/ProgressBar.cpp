@@ -30,6 +30,7 @@
 #include <QTime>
 #include <QTimer>
 #include <QWindow>
+#include <algorithm>
 
 
 #include "ProgressBar.h"
@@ -386,6 +387,70 @@ void SequencerBar::abort()
     throw exc;
 }
 
+void SequencerBar::setGeometryJobProgress(double fraction, const QString& text)
+{
+    if (!d->bar) {
+        return;
+    }
+
+    const int value = std::clamp(static_cast<int>(fraction * 1000.0), 0, 1000);
+    QThread* currentThread = QThread::currentThread();
+    QThread* thr = d->bar->thread();
+
+    // Geometry progress must be visible within ~250 ms and must not depend on
+    // the legacy sequencer running state or the 2 s delayedShow gate.
+    auto apply = [this, value, text]() {
+        d->bar->setMinimumDuration(0);
+        d->bar->setRangeEx(0, 1000);
+        d->bar->setValueEx(value);
+        if (!text.isEmpty()) {
+            getMainWindow()->showMessage(text);
+        }
+        d->bar->showGeometryProgress();
+    };
+
+    if (thr != currentThread) {
+        QMetaObject::invokeMethod(d->bar, "setMinimumDuration", Qt::QueuedConnection, Q_ARG(int, 0));
+        QMetaObject::invokeMethod(d->bar, "setRangeEx", Qt::QueuedConnection, Q_ARG(int, 0), Q_ARG(int, 1000));
+        QMetaObject::invokeMethod(d->bar, "setValueEx", Qt::QueuedConnection, Q_ARG(int, value));
+        if (!text.isEmpty()) {
+            QMetaObject::invokeMethod(
+                getMainWindow(),
+                "showMessage",
+                Qt::QueuedConnection,
+                Q_ARG(QString, text));
+        }
+        QMetaObject::invokeMethod(d->bar, "showGeometryProgress", Qt::QueuedConnection);
+    }
+    else {
+        apply();
+    }
+}
+
+void SequencerBar::clearGeometryJobProgress()
+{
+    if (!d->bar) {
+        return;
+    }
+
+    QThread* currentThread = QThread::currentThread();
+    QThread* thr = d->bar->thread();
+    if (thr != currentThread) {
+        QMetaObject::invokeMethod(d->bar, "resetEx", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(d->bar, "aboutToHide", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            getMainWindow(),
+            "showMessage",
+            Qt::QueuedConnection,
+            Q_ARG(QString, QString()));
+    }
+    else {
+        d->bar->resetEx();
+        d->bar->aboutToHide();
+        getMainWindow()->showMessage(QString());
+    }
+}
+
 void SequencerBar::setText(const char* pszTxt)
 {
     QThread* currentThread = QThread::currentThread();
@@ -524,6 +589,18 @@ void ProgressBar::setMinimumDuration(int ms)
     }
 
     d->minimumDuration = ms;
+}
+
+void ProgressBar::showGeometryProgress()
+{
+    d->delayShowTimer->stop();
+    if (!isVisible() && !sequencer->wasCanceled()) {
+        show();
+    }
+#ifdef QT_WINEXTRAS_LIB
+    setupTaskBarProgress();
+    m_taskbarProgress->show();
+#endif
 }
 
 void ProgressBar::aboutToShow()

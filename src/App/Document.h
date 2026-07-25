@@ -300,6 +300,7 @@ public:
     uint64_t getRuntimeIncarnation() const;
     uint64_t getModelGeneration() const;
     void advanceModelGeneration();
+    void advanceModelGeneration(bool invalidatePendingJobs);
 
     DocumentRecomputeCoordinator& getRecomputeCoordinator();
     const DocumentRecomputeCoordinator& getRecomputeCoordinator() const;

@@ -32,6 +32,10 @@
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/Unit.h>
+
+#include <atomic>
+#include <fstream>
+#include <memory>
 #include <CXX/Objects.hxx>
 
 #include "FeatureTest.h"
@@ -429,9 +433,137 @@ void FeatureTestAsyncBlocker::releaseBlocker()
 DocumentObjectExecReturn* FeatureTestAsyncBlocker::execute()
 {
     auto& state = getAsyncBlockerState();
+    // Document::recompute holds the GIL for the full call. Release it while
+    // this test blocker waits so closeDocument (signals / Python teardown)
+    // cannot deadlock against the worker.
+    Base::PyGILStateRelease gilRelease;
     std::unique_lock<std::mutex> lock(state.mutex);
     state.started = true;
     state.changed.notify_all();
     state.changed.wait(lock, [&state] { return state.proceed; });
+    return StdReturn;
+}
+
+namespace
+{
+
+struct DetachedTestHooks
+{
+    std::atomic<bool> failNextCommit {false};
+    std::atomic<int> commitCount {0};
+};
+
+DetachedTestHooks& detachedHooks()
+{
+    static DetachedTestHooks hooks;
+    return hooks;
+}
+
+class DetachedEchoTask: public App::DetachedGeometryTask
+{
+public:
+    explicit DetachedEchoTask(int value)
+        : _value(value)
+    {
+    }
+
+    std::string operationType() const override
+    {
+        return "test.detached.echo";
+    }
+
+    uint32_t codecVersion() const override
+    {
+        return 1;
+    }
+
+    std::string parameterDigest() const override
+    {
+        return "value=" + std::to_string(_value);
+    }
+
+    App::GeometryOperationTraits traits() const override
+    {
+        App::GeometryOperationTraits t;
+        t.allowInProcess = true;
+        t.supportsInProcess = true;
+        t.operationName = "test.detached.echo";
+        return t;
+    }
+
+    App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override
+    {
+        App::DetachedGeometryResult result;
+        ctx.reportProgress(1.0, "test.detached.echo");
+        result.success = true;
+        result.resultArchivePath = ctx.tempDir() + "/echo.ok";
+        {
+            std::ofstream ofs(result.resultArchivePath, std::ios::binary);
+            ofs << _value;
+        }
+        return result;
+    }
+
+    void writeArchive(App::GeometryArchiveWriter&) const override {}
+
+private:
+    int _value {0};
+};
+
+} // namespace
+
+PROPERTY_SOURCE(App::FeatureTestDetached, App::DocumentObject)
+
+FeatureTestDetached::FeatureTestDetached()
+{
+    ADD_PROPERTY(Value, (1));
+    ADD_PROPERTY(CommittedValue, (0));
+}
+
+FeatureTestDetached::~FeatureTestDetached() = default;
+
+DocumentObjectExecReturn* FeatureTestDetached::execute()
+{
+    return StdReturn;
+}
+
+void FeatureTestDetached::resetTestHooks()
+{
+    detachedHooks().failNextCommit = false;
+    detachedHooks().commitCount = 0;
+}
+
+void FeatureTestDetached::setFailNextCommit(bool fail)
+{
+    detachedHooks().failNextCommit = fail;
+}
+
+int FeatureTestDetached::commitCount()
+{
+    return detachedHooks().commitCount.load();
+}
+
+std::optional<PreparedDetachedRecompute>
+FeatureTestDetached::prepareDetachedRecompute(const SnapshotContext& ctx) const
+{
+    PreparedDetachedRecompute prep;
+    prep.spec.document = ctx.docToken;
+    prep.spec.target = ctx.objToken;
+    prep.spec.backend = GeometryBackend::VerifiedInProcess;
+    prep.spec.task = std::make_shared<DetachedEchoTask>(Value.getValue());
+    prep.inputFingerprint = makeGeometryInputFingerprint(prep.spec.task.get());
+    return prep;
+}
+
+DocumentObjectExecReturn*
+FeatureTestDetached::commitDetachedRecompute(const DetachedGeometryResult& result, CommitContext& ctx)
+{
+    (void)result;
+    (void)ctx;
+    if (detachedHooks().failNextCommit.exchange(false)) {
+        return new DocumentObjectExecReturn("ForcedCommitFailure", this);
+    }
+    ++detachedHooks().commitCount;
+    CommittedValue.setValue(Value.getValue());
     return StdReturn;
 }

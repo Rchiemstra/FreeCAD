@@ -108,6 +108,13 @@ public:
 
     void checkAbort() override;
 
+    /**
+     * Event-driven geometry-job progress without qApp->processEvents().
+     * Updates the status bar progress via queued Qt events only.
+     */
+    void setGeometryJobProgress(double fraction, const QString& text);
+    void clearGeometryJobProgress();
+
 protected:
     /** Construction */
     SequencerBar();
@@ -176,6 +183,8 @@ public Q_SLOTS:
     /** Sets the time that must pass before the progress bar appears to \a ms.
      */
     void setMinimumDuration(int ms);
+    /** Show immediately for detached geometry jobs (no sequencer / 2s delay). */
+    void showGeometryProgress();
 
 public:
     bool canAbort() const;
