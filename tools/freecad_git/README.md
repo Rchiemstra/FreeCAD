@@ -46,7 +46,28 @@ freecad-git check path/to/Model.FCStd
 freecad-git check --all
 freecad-git validate path/to/Model.FCStd.git.json
 freecad-git diagnostics path/to/Model.FCStd
+freecad-git restore-review-notes path/to/Model.FCStd.git.json
 freecad-git --version
+```
+
+## Assembly Review Notes
+
+`Assembly::ReviewNote` and `Assembly::ReviewNoteGroup` are exported with group
+ownership, multiline `LabelText`, `@` target links, local anchors, text
+positions, leader port, resolved state, visibility, and annotation display
+properties (`view`).
+
+To recreate notes from a sidecar into an open FreeCAD document:
+
+```bash
+freecad-git restore-review-notes path/to/Model.FCStd.git.json
+```
+
+Or from Python:
+
+```python
+from freecad_git.restore import restore_review_notes_from_file
+restore_review_notes_from_file(App.ActiveDocument, "Model.FCStd.git.json")
 ```
 
 ## Developer Workflow
