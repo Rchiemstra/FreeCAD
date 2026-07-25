@@ -161,9 +161,8 @@ class AssemblyWorkbench(Workbench):
 
         # Add Review Note for View context when exactly one supported target exists
         # under the nearest owning App::Part (or active AssemblyObject).
-        owner = CommandReviewNote.find_review_note_owner(selection=selection)
-        if recipient == "View" and CommandReviewNote.is_add_review_note_eligible(
-            owner, selection
+        if recipient == "View" and CommandReviewNote.is_add_review_note_task_eligible(
+            selection
         ):
             self.appendContextMenu("", ["Assembly_AddReviewNote"])
 
@@ -315,6 +314,24 @@ class AssemblyWorkbench(Workbench):
                 joints = UtilsAssembly.getJointsOfType(self.assembly, joint_types)
                 return len(joints) > 0
 
+        class AssemblyReviewNoteWatcher:
+            """Shows 'Add Review Note' for a single supported selection.
+
+            Visible even when the owning Assembly is inactive — activating the
+            command activates that Assembly and preserves the selection.
+            Hidden for unsupported targets or multi-selection.
+            """
+
+            def __init__(self):
+                self.commands = ["Assembly_AddReviewNote"]
+                self.title = translate("Assembly", "Review")
+                self.icon = "Assembly_ReviewNote"
+
+            def shouldShow(self):
+                import CommandReviewNote
+
+                return CommandReviewNote.is_add_review_note_task_eligible()
+
         watchers = [
             AssemblyCreateWatcher(),
             AssemblyActivateWatcher(),
@@ -323,6 +340,7 @@ class AssemblyWorkbench(Workbench):
             AssemblyJointsWatcher(),
             AssemblyToolsWatcher(),
             AssemblySimulationWatcher(),
+            AssemblyReviewNoteWatcher(),
         ]
         FreeCADGui.Control.addTaskWatcher(watchers)
 
