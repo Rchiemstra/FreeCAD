@@ -24,7 +24,9 @@
 
 #include <Base/Interpreter.h>
 
-#include "ViewProviderReviewNote.h"
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+# include "ViewProviderReviewNoteTestHarness.h"
+#endif
 
 
 namespace AssemblyGui
@@ -35,6 +37,9 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyGui")
     {
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+        // Private test harness bindings — only compiled for developer/test builds.
+        // Production AssemblyGui does not expose deliberate fault-injection APIs.
         add_varargs_method(
             "resetReviewNoteTestHooks",
             &Module::resetReviewNoteTestHooks,
@@ -43,33 +48,35 @@ public:
         add_varargs_method(
             "setReviewNoteTestInjectThrowAfterCoords",
             &Module::setReviewNoteTestInjectThrowAfterCoords,
-            "setReviewNoteTestInjectThrowAfterCoords(count)"
+            "setReviewNoteTestInjectThrowAfterCoords(count) — test harness only"
         );
         add_varargs_method(
             "setReviewNoteTestInjectNestedCamera",
             &Module::setReviewNoteTestInjectNestedCamera,
-            "setReviewNoteTestInjectNestedCamera(count)"
+            "setReviewNoteTestInjectNestedCamera(count) — test harness only"
         );
         add_varargs_method(
             "reviewNoteTestNestedDirtyMarkedCount",
             &Module::reviewNoteTestNestedDirtyMarkedCount,
-            "reviewNoteTestNestedDirtyMarkedCount() -> int"
+            "reviewNoteTestNestedDirtyMarkedCount() -> int — test harness only"
         );
         add_varargs_method(
             "reviewNoteTestApplyExceptionsCaughtCount",
             &Module::reviewNoteTestApplyExceptionsCaughtCount,
-            "reviewNoteTestApplyExceptionsCaughtCount() -> int"
+            "reviewNoteTestApplyExceptionsCaughtCount() -> int — test harness only"
         );
+#endif
         initialize("This module is the Assembly module.");  // register with Python
     }
 
 private:
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
     Py::Object resetReviewNoteTestHooks(const Py::Tuple& args)
     {
         if (!PyArg_ParseTuple(args.ptr(), "")) {
             throw Py::Exception();
         }
-        ViewProviderReviewNote::resetTestHooks();
+        ReviewNoteTestHarness::reset();
         return Py::None();
     }
 
@@ -79,7 +86,7 @@ private:
         if (!PyArg_ParseTuple(args.ptr(), "i", &count)) {
             throw Py::Exception();
         }
-        ViewProviderReviewNote::setTestInjectThrowAfterCoords(count);
+        ReviewNoteTestHarness::setInjectThrowAfterCoords(count);
         return Py::None();
     }
 
@@ -89,7 +96,7 @@ private:
         if (!PyArg_ParseTuple(args.ptr(), "i", &count)) {
             throw Py::Exception();
         }
-        ViewProviderReviewNote::setTestInjectNestedCamera(count);
+        ReviewNoteTestHarness::setInjectNestedCamera(count);
         return Py::None();
     }
 
@@ -98,7 +105,7 @@ private:
         if (!PyArg_ParseTuple(args.ptr(), "")) {
             throw Py::Exception();
         }
-        return Py::Long(ViewProviderReviewNote::testNestedDirtyMarkedCount());
+        return Py::Long(ReviewNoteTestHarness::nestedDirtyMarkedCount());
     }
 
     Py::Object reviewNoteTestApplyExceptionsCaughtCount(const Py::Tuple& args)
@@ -106,8 +113,9 @@ private:
         if (!PyArg_ParseTuple(args.ptr(), "")) {
             throw Py::Exception();
         }
-        return Py::Long(ViewProviderReviewNote::testApplyExceptionsCaughtCount());
+        return Py::Long(ReviewNoteTestHarness::applyExceptionsCaughtCount());
     }
+#endif
 };
 
 PyObject* initModule()

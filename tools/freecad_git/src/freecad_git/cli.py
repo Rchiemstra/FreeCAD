@@ -191,36 +191,50 @@ def cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def cmd_restore_review_notes(args: argparse.Namespace) -> int:
-    """Restore Review Notes from a sidecar into an open FreeCAD document via FreeCADCmd."""
-    from .restore import restore_review_notes_from_file
+    """Restore Review Notes into an explicit .FCStd opened in this FreeCAD process.
+
+    Must be run under FreeCAD / FreeCADCmd. A standalone console cannot see a
+    document open in another FreeCAD process — pass ``--fcstd`` so this process
+    opens, restores, saves in-place, and closes that file.
+    """
+    from .restore import RestoreError, restore_review_notes_into_fcstd
 
     try:
-        import FreeCAD as App
+        import FreeCAD  # noqa: F401
     except ImportError:
-        print("error: FreeCAD is required for restore-review-notes", file=sys.stderr)
+        print(
+            "error: FreeCAD is required for restore-review-notes\n"
+            "Run under FreeCADCmd, for example:\n"
+            "  FreeCADCmd -c \"import sys; from freecad_git.cli import main; "
+            "sys.exit(main(['restore-review-notes', 'Model.FCStd.git.json', "
+            "'--fcstd', 'Model.FCStd']))\"",
+            file=sys.stderr,
+        )
         return EXIT_GENERAL_FAILURE
 
     sidecar = Path(args.sidecar)
-    if args.document:
-        doc = App.getDocument(args.document)
-        if doc is None:
-            print(f"error: document not found: {args.document}", file=sys.stderr)
-            return EXIT_GENERAL_FAILURE
-    else:
-        doc = App.ActiveDocument
-        if doc is None:
-            print("error: no active FreeCAD document", file=sys.stderr)
-            return EXIT_GENERAL_FAILURE
+    fcstd = Path(args.fcstd)
+    try:
+        result = restore_review_notes_into_fcstd(
+            sidecar,
+            fcstd,
+            replace_existing=bool(args.replace_existing),
+            save=not bool(args.no_save),
+            close=not bool(args.keep_open),
+        )
+    except RestoreError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_GENERAL_FAILURE
 
-    result = restore_review_notes_from_file(
-        doc, sidecar, replace_existing=bool(args.replace_existing)
-    )
     print(
-        "Restored review notes: groups={groups} notes={notes}".format(
+        "Restored review notes into {fcstd}: groups={groups} notes={notes}".format(
+            fcstd=result.get("fcstd", fcstd),
             groups=",".join(result["groups"]) or "-",
             notes=",".join(result["notes"]) or "-",
         )
     )
+    if not args.no_save:
+        print(f"Saved in-place: {fcstd}")
     return EXIT_SUCCESS
 
 
@@ -256,17 +270,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     restore_p = sub.add_parser(
         "restore-review-notes",
-        help="Recreate Assembly Review Notes from a .FCStd.git.json sidecar (requires FreeCAD)",
+        help=(
+            "Open a .FCStd in this FreeCAD process, recreate Assembly Review Notes "
+            "from a sidecar, save in-place, and close (requires FreeCAD/FreeCADCmd)"
+        ),
     )
     restore_p.add_argument("sidecar", help="Path to .FCStd.git.json")
     restore_p.add_argument(
-        "--document",
-        help="FreeCAD document name (default: active document)",
+        "--fcstd",
+        required=True,
+        help=(
+            "Destination .FCStd to open in this process. Restored notes are saved "
+            "back to this path (in-place overwrite) unless --no-save is set."
+        ),
     )
     restore_p.add_argument(
         "--replace-existing",
         action="store_true",
-        help="Remove existing ReviewNote/ReviewNoteGroup objects named in the sidecar first",
+        help=(
+            "Replace same-named Assembly::ReviewNote / Assembly::ReviewNoteGroup "
+            "objects only. Wrong-type name collisions abort before any mutation."
+        ),
+    )
+    restore_p.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Restore into the opened document without saving the .FCStd",
+    )
+    restore_p.add_argument(
+        "--keep-open",
+        action="store_true",
+        help="Leave the document open after restore (default: close safely)",
     )
     restore_p.set_defaults(func=cmd_restore_review_notes)
 
