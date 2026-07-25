@@ -1144,6 +1144,111 @@ def is_add_review_note_eligible(assembly, selection=None):
     return len(targets) == 1
 
 
+def is_add_review_note_task_eligible(selection=None):
+    """True when the Assembly Tasks panel should offer Add Review Note.
+
+    Uses the same eligibility as the command/context menu: exactly one supported
+    component, Face/Edge/Vertex, or joint under a resolvable owner Part/Assembly.
+    The owning Assembly does not need to be active yet.
+
+    When ``selection`` is omitted, reads the live GUI selection (requires GuiUp).
+    """
+    if selection is None:
+        if not App.GuiUp:
+            return False
+        selection = Gui.Selection.getSelectionEx("*", 0)
+    if not selection:
+        return False
+    owner = find_review_note_owner(selection=selection)
+    return is_add_review_note_eligible(owner, selection)
+
+
+def _snapshot_selection(selection=None):
+    """Capture selection as (doc, obj, sub, optional pick) tuples for restore."""
+    if not App.GuiUp:
+        return []
+    if selection is None:
+        selection = Gui.Selection.getSelectionEx("*", 0)
+    snap = []
+    for sel in selection or []:
+        obj = getattr(sel, "Object", None)
+        if obj is None:
+            continue
+        doc_name = obj.Document.Name
+        obj_name = obj.Name
+        subs = list(sel.SubElementNames) if sel.SubElementNames else [""]
+        picks = []
+        if hasattr(sel, "PickedPoints") and sel.PickedPoints:
+            picks = [App.Vector(p) for p in sel.PickedPoints]
+        snap.append((doc_name, obj_name, subs, picks))
+    return snap
+
+
+def _restore_selection(snap):
+    """Restore a selection snapshot produced by ``_snapshot_selection``."""
+    if not App.GuiUp:
+        return
+    Gui.Selection.clearSelection()
+    for doc_name, obj_name, subs, picks in snap or []:
+        for i, sub in enumerate(subs):
+            try:
+                if picks and i < len(picks):
+                    p = picks[i]
+                    Gui.Selection.addSelection(
+                        doc_name, obj_name, sub or "", p.x, p.y, p.z
+                    )
+                else:
+                    Gui.Selection.addSelection(doc_name, obj_name, sub or "")
+            except Exception:
+                try:
+                    Gui.Selection.addSelection(doc_name, obj_name, sub or "")
+                except Exception:
+                    pass
+
+
+def ensure_review_note_owner_active(owner, selection=None):
+    """Activate ``owner`` if it is an inactive AssemblyObject; preserve selection.
+
+    Returns the owner (unchanged for non-Assembly Parts). Selection is snapshotted
+    before ``setEdit`` and restored afterward because assembly activation can clear
+    or reshape the current selection.
+    """
+    if owner is None or not App.GuiUp:
+        return owner
+    if not owner.isDerivedFrom("Assembly::AssemblyObject"):
+        return owner
+
+    active = None
+    try:
+        active = UtilsAssembly.activeAssembly()
+    except Exception:
+        active = None
+    if active is owner:
+        return owner
+
+    snap = _snapshot_selection(selection)
+    try:
+        Gui.ActiveDocument.setEdit(owner)
+    except Exception:
+        try:
+            if owner.ViewObject:
+                Gui.ActiveDocument.setEdit(owner.ViewObject)
+        except Exception:
+            pass
+
+    try:
+        Gui.updateGui()
+    except Exception:
+        pass
+
+    _restore_selection(snap)
+    try:
+        Gui.updateGui()
+    except Exception:
+        pass
+    return owner
+
+
 def _normalize_label_lines(text):
     """Split editor text into LabelText lines, or None if empty."""
     lines = [line.rstrip() for line in str(text or "").splitlines()]
@@ -1604,17 +1709,24 @@ class CommandAddReviewNote:
         }
 
     def IsActive(self):
-        owner = find_review_note_owner()
-        if owner is None:
-            return False
-        return is_add_review_note_eligible(owner)
+        return is_add_review_note_task_eligible()
 
     def Activated(self):
-        owner = find_review_note_owner()
+        selection = Gui.Selection.getSelectionEx("*", 0)
+        owner = find_review_note_owner(selection=selection)
         if owner is None:
             return
 
-        targets = collect_review_note_targets(owner)
+        # Tasks / context may offer the action while the owning Assembly is
+        # inactive — activate it first and keep the user's selection.
+        owner = ensure_review_note_owner_active(owner, selection=selection)
+        selection = Gui.Selection.getSelectionEx("*", 0)
+        owner = find_review_note_owner(selection=selection) or owner
+
+        if not is_add_review_note_eligible(owner, selection):
+            return
+
+        targets = collect_review_note_targets(owner, selection)
         if len(targets) != 1:
             return
 

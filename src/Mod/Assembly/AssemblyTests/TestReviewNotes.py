@@ -161,6 +161,25 @@ class TestReviewNotes(unittest.TestCase):
         # No assembly.
         self.assertFalse(CommandReviewNote.is_add_review_note_eligible(None, sel_one))
 
+        # Tasks-panel eligibility mirrors command rules (no live GUI selection needed).
+        self.assertTrue(
+            CommandReviewNote.is_add_review_note_task_eligible(sel_one),
+            "{} tasks eligible for single face".format(operation),
+        )
+        self.assertFalse(
+            CommandReviewNote.is_add_review_note_task_eligible(sel_multi),
+            "{} tasks hidden for multi selection".format(operation),
+        )
+        self.assertFalse(
+            CommandReviewNote.is_add_review_note_task_eligible([]),
+            "{} tasks hidden for empty selection".format(operation),
+        )
+        sel_outside = [_FakeSel(other, ["Face1"])]
+        self.assertFalse(
+            CommandReviewNote.is_add_review_note_task_eligible(sel_outside),
+            "{} tasks hidden for unsupported outside box".format(operation),
+        )
+
     # --- creation / group / tracking ---------------------------------
 
     def test_lazy_group_and_create_note(self):
@@ -1900,6 +1919,206 @@ class TestReviewNotesGui(unittest.TestCase):
                 [(s.Object.Name, list(s.SubElementNames)) for s in sel],
             ),
         )
+
+    def test_gui_tasks_add_review_note_selection_and_activation(self):
+        """Tasks panel Add Review Note: selection gating + inactive Assembly activation."""
+        operation = "Tasks Add Review Note selection and Assembly activation"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        import UtilsAssembly
+
+        def _flush():
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+
+        def _subs():
+            return [
+                (s.Object.Name, list(s.SubElementNames))
+                for s in Gui.Selection.getSelectionEx("*", 0)
+            ]
+
+        # Watcher is registered on Assembly workbench activation.
+        wb = Gui.activeWorkbench()
+        self.assertTrue(
+            hasattr(wb, "setWatchers") or wb.__class__.__name__ == "AssemblyWorkbench",
+            "{} expected Assembly workbench".format(operation),
+        )
+        try:
+            Gui.Control.clearTaskWatcher()
+            if hasattr(wb, "setWatchers"):
+                wb.setWatchers()
+        except Exception as exc:
+            self.fail("{} failed to (re)install task watchers: {}".format(operation, exc))
+
+        # --- Positive: Face / Edge / Vertex / component ---
+        for sub in ("Box.Face6", "Box.Edge1", "Box.Vertex1", "Box"):
+            Gui.Selection.clearSelection()
+            Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, sub)
+            _flush()
+            self.assertTrue(
+                CommandReviewNote.is_add_review_note_task_eligible(),
+                "{} tasks eligible for {!r}".format(operation, sub),
+            )
+            self.assertTrue(
+                CommandReviewNote.CommandAddReviewNote().IsActive(),
+                "{} command active for {!r}".format(operation, sub),
+            )
+
+        # --- Positive: joint ---
+        box2 = self.assembly.newObject("Part::Box", "Box2")
+        self.doc.recompute()
+        joint = self.jointgroup.newObject("App::FeaturePython", "Joint")
+        JointObject.Joint(joint, 0)
+        joint.Reference1 = [self.box, ["Face6", "Vertex7"]]
+        joint.Reference2 = [box2, ["Face6", "Vertex7"]]
+        joint.Placement1 = App.Placement(App.Vector(5, 10, 30), App.Rotation())
+        joint.Placement2 = App.Placement(App.Vector(5, 10, 0), App.Rotation())
+        self.doc.recompute()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(joint)
+        _flush()
+        self.assertTrue(
+            CommandReviewNote.is_add_review_note_task_eligible(),
+            "{} tasks eligible for joint".format(operation),
+        )
+
+        # --- Negative: multi selection ---
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box.Face6")
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box2.Face6")
+        _flush()
+        self.assertFalse(
+            CommandReviewNote.is_add_review_note_task_eligible(),
+            "{} tasks hidden for multi selection {}".format(operation, _subs()),
+        )
+
+        # --- Negative: unsupported outside geometry ---
+        outside = self.doc.addObject("Part::Box", "Outside")
+        self.doc.recompute()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(outside)
+        _flush()
+        self.assertFalse(
+            CommandReviewNote.is_add_review_note_task_eligible(),
+            "{} tasks hidden for outside component".format(operation),
+        )
+
+        # --- Activation: inactive owning Assembly, selection preserved ---
+        try:
+            Gui.ActiveDocument.resetEdit()
+        except Exception:
+            pass
+        _flush()
+        self.assertIsNone(
+            UtilsAssembly.activeAssembly(),
+            "{} assembly must be inactive before activation test".format(operation),
+        )
+
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box.Face6")
+        _flush()
+        self.assertTrue(
+            CommandReviewNote.is_add_review_note_task_eligible(),
+            "{} tasks still eligible while Assembly inactive".format(operation),
+        )
+        before = _subs()
+        self.assertEqual(before, [("Assembly", ["Box.Face6"])], operation)
+
+        owner = CommandReviewNote.find_review_note_owner()
+        self.assertEqual(owner, self.assembly, operation)
+        CommandReviewNote.ensure_review_note_owner_active(owner)
+        _flush()
+
+        self.assertEqual(
+            UtilsAssembly.activeAssembly(),
+            self.assembly,
+            "{} owning Assembly must become active".format(operation),
+        )
+        after = _subs()
+        self.assertEqual(
+            after,
+            before,
+            "{} selection must be preserved after activation (before={} after={})".format(
+                operation, before, after
+            ),
+        )
+        self.assertTrue(
+            CommandReviewNote.is_add_review_note_eligible(self.assembly),
+            "{} still eligible after activation".format(operation),
+        )
+
+        # Full command path: deactivate again, run Activated, selection + active assembly.
+        try:
+            Gui.Control.closeDialog()
+        except Exception:
+            pass
+        try:
+            Gui.ActiveDocument.resetEdit()
+        except Exception:
+            pass
+        _flush()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box.Edge2")
+        _flush()
+        before_cmd = _subs()
+        self.assertIsNone(UtilsAssembly.activeAssembly(), operation)
+
+        Gui.runCommand("Assembly_AddReviewNote")
+        _flush()
+        self.assertEqual(
+            UtilsAssembly.activeAssembly(),
+            self.assembly,
+            "{} Activated must activate owning Assembly".format(operation),
+        )
+        self.assertEqual(
+            _subs(),
+            before_cmd,
+            "{} Activated must preserve selection".format(operation),
+        )
+        # Modeless review-note task should be open after a successful Add.
+        task = CommandReviewNote.get_active_review_note_task()
+        self.assertIsNotNone(task, "{} task panel should open".format(operation))
+        try:
+            if task is not None and hasattr(task, "reject"):
+                task.reject()
+        except Exception:
+            pass
+        try:
+            Gui.Control.closeDialog()
+        except Exception:
+            pass
+
+        # --- Negative: second Assembly selected while another is active ---
+        asm2 = self.doc.addObject("Assembly::AssemblyObject", "AssemblyTwo")
+        box_b = asm2.newObject("Part::Box", "BoxB")
+        box_b.Length = 5
+        self.doc.recompute()
+        # Keep self.assembly active; select a face under asm2.
+        try:
+            Gui.ActiveDocument.setEdit(self.assembly)
+        except Exception:
+            pass
+        _flush()
+        Gui.Selection.clearSelection()
+        Gui.Selection.addSelection(self.doc.Name, asm2.Name, "BoxB.Face6")
+        _flush()
+        self.assertTrue(
+            CommandReviewNote.is_add_review_note_task_eligible(),
+            "{} eligible for inactive sibling Assembly selection".format(operation),
+        )
+        owner2 = CommandReviewNote.find_review_note_owner()
+        self.assertEqual(owner2, asm2, operation)
+        before2 = _subs()
+        CommandReviewNote.ensure_review_note_owner_active(owner2)
+        _flush()
+        self.assertEqual(
+            UtilsAssembly.activeAssembly(),
+            asm2,
+            "{} must switch active Assembly to the selection owner".format(operation),
+        )
+        self.assertEqual(_subs(), before2, "{} sibling activation preserves selection".format(operation))
 
     def test_gui_double_click_edit_visibility_icons_leader(self):
         operation = "Double-click edit, visibility, icons, leader"
