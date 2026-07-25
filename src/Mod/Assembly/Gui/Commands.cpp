@@ -62,27 +62,6 @@ static AssemblyObject* getActiveAssembly()
     return nullptr;
 }
 
-/** Active assembly, else a selected App::Part interference root (e.g. plain Part). */
-static App::DocumentObject* getInterferenceHost()
-{
-    if (auto* assembly = getActiveAssembly()) {
-        return assembly;
-    }
-
-    auto selection = Gui::Selection().getSelectionEx(
-        "",
-        App::DocumentObject::getClassTypeId(),
-        Gui::ResolveMode::NoResolve
-    );
-    for (auto& sel : selection) {
-        App::DocumentObject* obj = sel.getObject();
-        if (isInterferenceRoot(obj)) {
-            return obj;
-        }
-    }
-    return nullptr;
-}
-
 static std::vector<InterferenceSelectionHandle> currentInterferenceSelectionHandles()
 {
     std::vector<InterferenceSelectionHandle> handles;
@@ -106,6 +85,15 @@ static std::vector<InterferenceSelectionHandle> currentInterferenceSelectionHand
         }
     }
     return handles;
+}
+
+/** Active assembly, else a selected App::Part interference root (e.g. plain Part).
+ * Explicit selection-backed roots take priority over unrelated edit-mode assemblies.
+ */
+static App::DocumentObject* getInterferenceHost()
+{
+    const auto handles = currentInterferenceSelectionHandles();
+    return resolveInterferenceHostFromHandles(handles, getActiveAssembly());
 }
 
 static bool resolveTwoSelectedComponents(

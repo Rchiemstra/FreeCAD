@@ -22,6 +22,7 @@
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/ElementNamingUtils.h>
 #include <App/GeoFeature.h>
 #include <App/GroupExtension.h>
 #include <App/Link.h>
@@ -31,6 +32,7 @@
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Tools.h>
+#include <algorithm>
 #include <functional>
 #include <Mod/Part/App/BodyBase.h>
 #include <Mod/Part/App/PartFeature.h>
@@ -881,7 +883,8 @@ bool resolveInterferenceComponentOccurrence(
         return false;
     }
 
-    auto names = Base::Tools::splitSubName(subName);
+    const std::string normalizedSub = normalizeInterferenceSubName(selObj, subName);
+    auto names = Base::Tools::splitSubName(normalizedSub);
     if (selObj->getNameInDocument()) {
         names.insert(names.begin(), selObj->getNameInDocument());
     }
@@ -1505,6 +1508,98 @@ InterferenceComponentScanSnapshot prepareInterferenceComponentScanSnapshot(
         snap.componentIndexOfLeaf[li] = best;
     }
     return snap;
+}
+
+std::string normalizeInterferenceSubName(App::DocumentObject* obj, const std::string& subName)
+{
+    if (subName.empty()) {
+        return subName;
+    }
+
+    std::string candidate;
+    if (obj) {
+        App::ElementNamePair elementName;
+        App::GeoFeature::resolveElement(obj, subName.c_str(), elementName, /*append=*/true);
+        candidate = elementName.oldName;
+    }
+
+    // Reject missing-element markers or residual mapped tokens; fall back to
+    // deterministic Data::oldElementName stripping (UtilsAssembly-compatible).
+    const char* element = candidate.empty() ? nullptr : Data::findElementName(candidate.c_str());
+    const bool unusable = candidate.empty()
+        || candidate.find(Data::MISSING_PREFIX) != std::string::npos
+        || (element && Data::isMappedElement(element));
+    if (unusable) {
+        candidate = Data::oldElementName(subName.c_str());
+    }
+    else {
+        const std::string stripped = Data::oldElementName(candidate.c_str());
+        if (!stripped.empty()) {
+            candidate = stripped;
+        }
+    }
+    return candidate.empty() ? subName : candidate;
+}
+
+App::DocumentObject* resolveInterferenceHostFromHandles(
+    const std::vector<InterferenceSelectionHandle>& handles,
+    App::DocumentObject* editModeAssemblyOrNull
+)
+{
+    // Selection-backed interference roots (SelectionEx object with subelement picks).
+    std::vector<App::DocumentObject*> selectionRoots;
+    for (const auto& handle : handles) {
+        if (!handle.object || handle.subName.empty() || !isInterferenceRoot(handle.object)) {
+            continue;
+        }
+        if (std::find(selectionRoots.begin(), selectionRoots.end(), handle.object)
+            == selectionRoots.end()) {
+            selectionRoots.push_back(handle.object);
+        }
+    }
+
+    auto handlesForRoot = [&](App::DocumentObject* root) {
+        std::vector<InterferenceSelectionHandle> scoped;
+        for (const auto& handle : handles) {
+            if (handle.object == root) {
+                scoped.push_back(handle);
+            }
+        }
+        return scoped;
+    };
+
+    // Prefer a selection root that yields an exact selected-pair scope.
+    for (auto* root : selectionRoots) {
+        const auto scope = resolveInterferenceSelectionScope(root, handlesForRoot(root));
+        if (scope.mode == InterferenceScanScopeMode::SelectedPair) {
+            return root;
+        }
+    }
+
+    // Any selection root that owns at least one resolvable subelement pick.
+    for (auto* root : selectionRoots) {
+        for (const auto& handle : handlesForRoot(root)) {
+            InterferenceComponentOccurrence occ;
+            if (resolveInterferenceComponentOccurrence(root, handle.object, handle.subName, occ)) {
+                return root;
+            }
+        }
+        // Explicit picks under this root still identify it as the host even if
+        // occurrence resolution is incomplete (e.g. mid-edit geometry).
+        return root;
+    }
+
+    if (editModeAssemblyOrNull && isInterferenceRoot(editModeAssemblyOrNull)) {
+        return editModeAssemblyOrNull;
+    }
+
+    // Whole-object selection of an interference root.
+    for (const auto& handle : handles) {
+        if (handle.object && handle.subName.empty() && isInterferenceRoot(handle.object)) {
+            return handle.object;
+        }
+    }
+    return nullptr;
 }
 
 InterferenceSelectionScope resolveInterferenceSelectionScope(

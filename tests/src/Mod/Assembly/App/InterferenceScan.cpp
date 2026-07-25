@@ -1500,6 +1500,77 @@ TEST_F(InterferenceScanTest, selectionCardinalityExactTwoSubelements)
     EXPECT_EQ(wholes.subelementHandleCount, 0);
 }
 
+TEST_F(InterferenceScanTest, selectionExTnpPathsPreferSharedRootOverUnrelatedEditAssembly)
+{
+    // Mimic FreeCAD consolidating two face picks into one SelectionEx object
+    // (the real assembly) with TNP-encoded SubElementNames, while an unrelated
+    // assembly remains in edit mode.
+    auto* unrelatedEdit = _doc->addObject<Assembly::AssemblyObject>("UnrelatedEditAssembly");
+    ASSERT_NE(unrelatedEdit, nullptr);
+
+    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
+    auto* caseBox = makeBox(_doc, "CaseSnapWindowRightPocket", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    casePart->addObject(caseBox);
+
+    auto* spoolPart = _doc->addObject<App::Part>("AssemblySpool");
+    spoolPart->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    auto* spoolBox = makeBox(_doc, "Spool_GearTipRelief", Base::Vector3d(0, 0, 0), 20, 20, 20);
+    spoolPart->addObject(spoolBox);
+
+    _assembly->addObject(casePart);
+    _assembly->addObject(spoolPart);
+    _doc->recompute();
+
+    // Encoded mapped-element token between feature and FaceN (ELEMENT_MAP_PREFIX ';').
+    const std::string tnpCase =
+        "AssemblyCase.CaseSnapWindowRightPocket.;#a:1;:G0;XTR;:Hc94:8,F.Face1";
+    const std::string tnpSpool =
+        "AssemblySpool.Spool_GearTipRelief.;#b:2;:G0;XTR;:Hd12:8,F.Face1";
+
+    EXPECT_EQ(
+        Assembly::normalizeInterferenceSubName(_assembly, tnpCase),
+        "AssemblyCase.CaseSnapWindowRightPocket.Face1"
+    );
+    EXPECT_EQ(
+        Assembly::normalizeInterferenceSubName(_assembly, tnpSpool),
+        "AssemblySpool.Spool_GearTipRelief.Face1"
+    );
+
+    // One SelectionEx root (= _assembly) with two encoded subelement paths.
+    std::vector<Assembly::InterferenceSelectionHandle> handles {
+        {_assembly, tnpCase},
+        {_assembly, tnpSpool}
+    };
+
+    auto* host =
+        Assembly::resolveInterferenceHostFromHandles(handles, unrelatedEdit);
+    ASSERT_EQ(host, _assembly);
+    EXPECT_NE(host, unrelatedEdit);
+
+    const auto scope = Assembly::resolveInterferenceSelectionScope(host, handles);
+    EXPECT_EQ(scope.mode, Assembly::InterferenceScanScopeMode::SelectedPair);
+    EXPECT_EQ(scope.subelementHandleCount, 2);
+    EXPECT_EQ(scope.distinctOccurrenceCount, 2);
+    EXPECT_EQ(scope.first.occurrencePrefix, "AssemblyCase.");
+    EXPECT_EQ(scope.second.occurrencePrefix, "AssemblySpool.");
+
+    Assembly::InterferenceComponentOccurrence occ;
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        host,
+        _assembly,
+        tnpCase,
+        occ
+    ));
+    EXPECT_EQ(occ.occurrencePrefix, "AssemblyCase.");
+    ASSERT_TRUE(Assembly::resolveInterferenceComponentOccurrence(
+        host,
+        _assembly,
+        tnpSpool,
+        occ
+    ));
+    EXPECT_EQ(occ.occurrencePrefix, "AssemblySpool.");
+}
+
 TEST_F(InterferenceScanTest, selectedPairAndAllVisibleAgreeOnTwoComponentPenetration)
 {
     auto* casePart = _doc->addObject<App::Part>("AssemblyCase");

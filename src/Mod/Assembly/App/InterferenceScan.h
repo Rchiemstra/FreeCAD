@@ -228,6 +228,25 @@ struct InterferenceSelectionScope
 };
 
 /**
+ * Normalize a possibly TNP-encoded selection subname to an old-style path
+ * (e.g. Part.Body.;#…F.Face6 → Part.Body.Face6), matching UtilsAssembly.getComponentReference.
+ */
+AssemblyExport std::string normalizeInterferenceSubName(
+    App::DocumentObject* obj,
+    const std::string& subName
+);
+
+/**
+ * Choose an interference host from selection handles, preferring an explicit
+ * selection-backed App::Part/Assembly root over an unrelated edit-mode assembly.
+ * When two subelement picks share one interference root, that root is returned.
+ */
+AssemblyExport App::DocumentObject* resolveInterferenceHostFromHandles(
+    const std::vector<InterferenceSelectionHandle>& handles,
+    App::DocumentObject* editModeAssemblyOrNull = nullptr
+);
+
+/**
  * Exactly two non-empty subelement handles that resolve to two distinct occurrences
  * → SelectedPair. Any other cardinality or resolution → AllComponents.
  */
