@@ -186,7 +186,15 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
 
 void ViewProviderReviewNote::setLeaderCoords(const Base::Vector3d& textPosition)
 {
+    // Always keep the Coin leader polyline in sync with the preview/drag position.
     ViewProviderAnnotationLabel::setLeaderCoords(textPosition);
+
+    // While dragging, skip LeaderEnd/LeaderHalfExtent property writes — they notify
+    // observers and the camera sensor can race the drag preview, causing flicker.
+    if (dragState) {
+        return;
+    }
+
     const BillboardFrame frame = currentBillboardFrame(textPosition);
     LeaderHalfExtent.setValue(Base::Vector3d(frame.halfW, frame.halfH, 0.0));
     LeaderEnd.setValue(leaderEndpoint(textPosition));
@@ -654,6 +662,13 @@ bool ViewProviderReviewNote::acceptLabelDragStart(SoDragger* drag, DragState& st
     return true;
 }
 
+void ViewProviderReviewNote::onLabelDragFinished(const DragState& state)
+{
+    (void)state;
+    // Sync LeaderEnd/LeaderHalfExtent after TextPosition is committed.
+    refreshLeader();
+}
+
 void ViewProviderReviewNote::refreshLeader()
 {
     auto* note = getObject<Assembly::ReviewNote>();
@@ -661,6 +676,14 @@ void ViewProviderReviewNote::refreshLeader()
         return;
     }
     ensureCameraSensor();
+
+    // During an active label drag, TextPosition is not committed yet — use the
+    // preview position and never stomp pTextTranslation (owned by the dragger).
+    if (dragState) {
+        setLeaderCoords(dragState->currentTextPosition);
+        return;
+    }
+
     const Base::Vector3d textPos = note->TextPosition.getValue();
     setLeaderCoords(textPos);
     if (pTextTranslation) {
@@ -709,6 +732,10 @@ void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
     if (!that) {
         return;
     }
+    // Camera sensors fire often during interaction; never fight an in-progress drag.
+    if (that->dragState) {
+        return;
+    }
     that->refreshLeader();
 }
 
@@ -726,7 +753,9 @@ void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* se
         if (SoCamera* camera = viewer->getSoRenderManager()->getCamera()) {
             nodeSensor->attach(camera);
             that->attachedCamera = camera;
-            that->refreshLeader();
+            if (!that->dragState) {
+                that->refreshLeader();
+            }
             return;
         }
     }

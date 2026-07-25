@@ -102,6 +102,7 @@ private:
     void refreshLeader();
     bool hitTestReference(SoDragger* drag, RefHit& out) const;
     void selectReference(const RefHit& hit) const;
+    void onLabelDragFinished(const DragState& state) override;
 
     BillboardFrame currentBillboardFrame(const Base::Vector3d& textPosition) const;
     Base::Vector3d billboardOffsetToLocal(const Base::Vector3d& uvOffset, const BillboardFrame& frame)
