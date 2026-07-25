@@ -23,6 +23,8 @@
 #include <memory>
 #include <string>
 
+#include <exception>
+
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/FeaturePythonPyImp.h>
@@ -31,6 +33,8 @@
 #include <App/Link.h>
 #include <App/Part.h>
 #include <App/PropertyGeo.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Placement.h>
 #include <Base/Tools.h>
 #include <fastsignals/signal.h>
@@ -597,8 +601,30 @@ void ReviewNote::onChanged(const App::Property* prop)
         // no sampled frame can observe a new text box with a stale LeaderEnd.
         // Skip while restoring: the view provider refresh on attach/drawImage owns
         // the first correct frame once the label image and camera exist.
+        // FastSignals does not catch slot exceptions; contain any escape so the
+        // App::AnnotationLabel::onChanged path below always runs.
         if (!isRestoring()) {
-            signalSyncLeaderVisual(TextPosition.getValue());
+            try {
+                signalSyncLeaderVisual(TextPosition.getValue());
+            }
+            catch (const Base::Exception& e) {
+                Base::Console().error(
+                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: %s\n",
+                    e.what()
+                );
+            }
+            catch (const std::exception& e) {
+                Base::Console().error(
+                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: %s\n",
+                    e.what()
+                );
+            }
+            catch (...) {
+                Base::Console().error(
+                    "Assembly::ReviewNote: signalSyncLeaderVisual failed "
+                    "(unknown exception)\n"
+                );
+            }
         }
     }
 

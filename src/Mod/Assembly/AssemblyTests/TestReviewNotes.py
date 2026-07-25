@@ -817,6 +817,18 @@ class TestReviewNotes(unittest.TestCase):
 
         # --- Negative: inflated half-extents (old FontSize×bitmap fallback) ---
         half_inflated = App.Vector(70.0, 50.0, 0.0)
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            text_ok, end_ok, half_inflated
+        )
+        self.assertFalse(ok, "{} must reject inflated half-extents".format(operation))
+        self.assertIn("inflated", reason, operation)
+
+        # Compact controls from review_note_drag_camera_20260725_060019.jsonl
+        for seq in (758, 793, 872):
+            self.assertTrue(
+                CommandReviewNote.review_note_log_seq_is_stale_pattern(seq),
+                "{} must flag log seq {}".format(operation, seq),
+            )
         end_inflated = text_orbit + App.Vector(-70.0, 0.0, 0.0)
         ok, reason = CommandReviewNote.review_note_leader_glue_status(
             text_orbit, end_inflated, half_inflated
@@ -2845,6 +2857,11 @@ class TestReviewNotesGui(unittest.TestCase):
             ),
             "{} detector must flag log seq-758 style frames".format(operation),
         )
+        for seq in (758, 793, 872):
+            self.assertTrue(
+                CommandReviewNote.review_note_log_seq_is_stale_pattern(seq),
+                "{} detector must flag log seq {}".format(operation, seq),
+            )
 
     def test_gui_leader_no_snap_back_after_move_or_camera(self):
         """Regression for drag flicker: LeaderEnd must not snap to a prior attachment.
@@ -3414,3 +3431,557 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertTrue(note.LocalAnchor.isEqual(before_anchor, 1e-9), operation)
         self.assertTrue(task2.reject(), operation)
         self.assertEqual(list(note.LabelText), joined.split("\n"), operation)
+
+    def test_gui_camera_oneshot_updates_before_nonidle_redraw(self):
+        """Finding A: frame OneShot (redrawPri-1) must publish before redraw in non-idle queue.
+
+        Quarter's redrawshot only queues Qt paint; to observe the Coin priority boundary we
+        schedule a OneShot at the render-manager redraw priority that calls rm.render().
+        Samples are captured during processDelayQueue(false), not after a later corrective
+        redraw. A frame priority of redrawPri+1 must fail this test.
+        """
+        operation = "Camera OneShot publishes before non-idle redraw"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from pivy import coin
+        from pivy.coin import SbRotation, SbVec3f
+        from PySide import QtCore
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["OneShot camera"],
+            text_offset=App.Vector(55, 40, 0),
+            open_transaction=False,
+        )
+        vo = note.ViewObject
+        Gui.updateGui()
+        view = Gui.ActiveDocument.ActiveView
+        cam = view.getCameraNode()
+        viewer = view.getViewer()
+        sm = coin.SoDB.getSensorManager()
+        rm = viewer.getSoRenderManager()
+        redraw_pri = int(rm.getRedrawPriority())
+        self.assertEqual(
+            redraw_pri,
+            int(coin.SoRenderManager.getDefaultRedrawPriority()),
+            "{} unexpected redraw priority {!r}".format(operation, redraw_pri),
+        )
+
+        # Flush initial state; do not sample across this bootstrap.
+        sm.processDelayQueue(0)
+        Gui.updateGui()
+        end0 = App.Vector(vo.LeaderEnd)
+        half0 = App.Vector(vo.LeaderHalfExtent)
+
+        samples = []
+
+        def prerender_cb(*_args):
+            samples.append(
+                (
+                    App.Vector(vo.LeaderEnd),
+                    App.Vector(vo.LeaderHalfExtent),
+                    App.Vector(note.TextPosition),
+                )
+            )
+
+        def redraw_boundary(_data, _sensor):
+            # Stand-in for redrawshot traversal: Quarter only queues QWidget paint.
+            rm.render()
+
+        root = viewer.getSceneGraph()
+        cb_node = coin.SoCallback()
+        cb_node.setCallback(prerender_cb)
+        root.insertChild(cb_node, 0)
+        old_orient = cam.orientation.getValue()
+        old_height = float(cam.height.getValue())
+        redraw_shot = None
+        try:
+            # Clear before mutation so every sample is from the critical queue pass.
+            samples[:] = []
+            cam.orientation.setValue(old_orient * SbRotation(SbVec3f(0.4, 0.7, 0.3), 1.1))
+            cam.height.setValue(old_height * 0.35)
+            redraw_shot = coin.SoOneShotSensor(redraw_boundary, None)
+            redraw_shot.setPriority(redraw_pri)
+            redraw_shot.schedule()
+            # Critical: no Gui.updateGui() / view.redraw() before evaluating samples.
+            sm.processDelayQueue(0)
+
+            self.assertGreater(
+                len(samples),
+                0,
+                "{} expected prerender samples inside processDelayQueue(false); "
+                "redraw_pri={}".format(operation, redraw_pri),
+            )
+
+            end_after = App.Vector(vo.LeaderEnd)
+            half_after = App.Vector(vo.LeaderHalfExtent)
+            self.assertFalse(
+                end_after.isEqual(end0, 1e-4) and half_after.isEqual(half0, 1e-4),
+                "{} non-idle queue left LeaderEnd/half stale".format(operation),
+            )
+
+            right, up = CommandReviewNote.review_note_camera_billboard_axes(cam)
+            ok_final, expected_final, dist_final = (
+                CommandReviewNote.review_note_leader_matches_camera_oracle(
+                    note.TextPosition, end_after, half_after, right, up
+                )
+            )
+            self.assertTrue(
+                ok_final,
+                "{} post-queue oracle failed dist={} expected={} got={}".format(
+                    operation, dist_final, expected_final, end_after
+                ),
+            )
+
+            stale = []
+            max_dist = 0.0
+            for i, (e, h, tpos) in enumerate(samples):
+                matches_old = e.isEqual(end0, 1e-4) and h.isEqual(half0, 1e-4)
+                # Samples must already match the post-queue published frame (frame
+                # sensor ran before this redraw). redrawPri+1 leaves the old frame.
+                matches_final = e.isEqual(end_after, 1e-4) and h.isEqual(half_after, 1e-4)
+                ok, expected, dist = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                    tpos, e, h, right, up
+                )
+                max_dist = max(max_dist, float(dist))
+                if matches_old or (not matches_final) or (not ok):
+                    stale.append(
+                        {
+                            "i": i,
+                            "matches_old": matches_old,
+                            "matches_final": matches_final,
+                            "ok": ok,
+                            "dist": dist,
+                            "end": e,
+                            "half": h,
+                            "expected": expected,
+                        }
+                    )
+            self.assertEqual(
+                stale,
+                [],
+                "{} critical prerender stale (n={}, max_dist={:.6f}): {}".format(
+                    operation, len(samples), max_dist, stale
+                ),
+            )
+
+            # Busy camera stream longer than Coin's ~1/12s delay timeout.
+            busy_stale = []
+            t0 = QtCore.QTime.currentTime()
+            while t0.msecsTo(QtCore.QTime.currentTime()) < 200:
+                samples[:] = []
+                cur = cam.orientation.getValue()
+                cam.orientation.setValue(cur * SbRotation(SbVec3f(0.1, 0.8, 0.2), 0.08))
+                shot = coin.SoOneShotSensor(redraw_boundary, None)
+                shot.setPriority(redraw_pri)
+                shot.schedule()
+                sm.processDelayQueue(0)
+                end_b = App.Vector(vo.LeaderEnd)
+                half_b = App.Vector(vo.LeaderHalfExtent)
+                right_b, up_b = CommandReviewNote.review_note_camera_billboard_axes(cam)
+                ok_b, _, _ = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                    note.TextPosition, end_b, half_b, right_b, up_b
+                )
+                if not ok_b:
+                    busy_stale.append(("props", end_b, half_b))
+                for e, h, tpos in samples:
+                    ok_s, _, dist_s = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                        tpos, e, h, right_b, up_b
+                    )
+                    if (not ok_s) or (not e.isEqual(end_b, 1e-4)) or (not h.isEqual(half_b, 1e-4)):
+                        busy_stale.append(("sample", dist_s, e, h, end_b, half_b))
+                if shot.isScheduled():
+                    shot.unschedule()
+            self.assertEqual(
+                busy_stale,
+                [],
+                "{} busy-orbit stale frames: {}".format(operation, busy_stale),
+            )
+        finally:
+            if redraw_shot is not None and redraw_shot.isScheduled():
+                redraw_shot.unschedule()
+            cam.orientation.setValue(old_orient)
+            cam.height.setValue(old_height)
+            try:
+                root.removeChild(cb_node)
+            except Exception:
+                pass
+
+    def test_gui_sync_exception_does_not_break_app_onchange(self):
+        """Finding B: GUI sync exceptions must not abort App TextPosition onChanged."""
+        operation = "Contained leader-sync exception keeps App notifications"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        import AssemblyGui
+        from pivy import coin
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Fault inject"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        vo = note.ViewObject
+        Gui.updateGui()
+        AssemblyGui.resetReviewNoteTestHooks()
+
+        observed = []
+
+        class _Obs:
+            def slotChangedObject(self, obj, prop):
+                if obj is note and prop == "TextPosition":
+                    observed.append(App.Vector(note.TextPosition))
+
+        obs = _Obs()
+        App.addDocumentObserver(obs)
+        try:
+            AssemblyGui.setReviewNoteTestInjectThrowAfterCoords(1)
+            self.doc.openTransaction("rn-fault")
+            note.TextPosition = App.Vector(50, 12, 0)
+            self.doc.commitTransaction()
+            self.assertGreaterEqual(
+                AssemblyGui.reviewNoteTestApplyExceptionsCaughtCount(),
+                1,
+                "{} expected contained GUI exception".format(operation),
+            )
+            self.assertEqual(
+                len(observed), 1, "{} DocumentObject notification missing".format(operation)
+            )
+            self.assertTrue(
+                App.Vector(note.TextPosition).isEqual(App.Vector(50, 12, 0), 1e-9),
+                operation,
+            )
+
+            coin.SoDB.getSensorManager().processDelayQueue(0)
+            coin.SoDB.getSensorManager().processDelayQueue(1)
+            Gui.updateGui()
+
+            AssemblyGui.resetReviewNoteTestHooks()
+            note.TextPosition = App.Vector(60, -8, 1)
+            Gui.updateGui()
+            coin.SoDB.getSensorManager().processDelayQueue(0)
+            text = App.Vector(note.TextPosition)
+            end = App.Vector(vo.LeaderEnd)
+            half = App.Vector(vo.LeaderHalfExtent)
+            ok, reason = CommandReviewNote.review_note_leader_glue_status(text, end, half)
+            self.assertTrue(ok, "{} post-fault glue failed: {}".format(operation, reason))
+            cam = Gui.ActiveDocument.ActiveView.getCameraNode()
+            right, up = CommandReviewNote.review_note_camera_billboard_axes(cam)
+            ok2, expected, dist = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                text, end, half, right, up
+            )
+            self.assertTrue(
+                ok2,
+                "{} post-fault oracle dist={} expected={}".format(operation, dist, expected),
+            )
+
+            self.doc.undo()
+            Gui.updateGui()
+            self.doc.redo()
+            Gui.updateGui()
+        finally:
+            App.removeDocumentObserver(obs)
+            AssemblyGui.resetReviewNoteTestHooks()
+
+    def test_gui_nested_camera_during_apply_marks_dirty(self):
+        """Nested camera from LeaderHalfExtent observer must mark dirty + follow-up frame."""
+        operation = "Nested dirty branch during applyVisualFrame"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        import AssemblyGui
+        from pivy import coin
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Nested dirty"],
+            text_offset=App.Vector(45, 20, 0),
+            open_transaction=False,
+        )
+        vo = note.ViewObject
+        Gui.updateGui()
+        AssemblyGui.resetReviewNoteTestHooks()
+        AssemblyGui.setReviewNoteTestInjectNestedCamera(1)
+        before = AssemblyGui.reviewNoteTestNestedDirtyMarkedCount()
+        note.TextPosition = App.Vector(48, 25, 2)
+        after = AssemblyGui.reviewNoteTestNestedDirtyMarkedCount()
+        self.assertGreater(
+            after,
+            before,
+            "{} nested dirty branch did not run (before={}, after={})".format(
+                operation, before, after
+            ),
+        )
+        coin.SoDB.getSensorManager().processDelayQueue(0)
+        Gui.updateGui()
+        cam = Gui.ActiveDocument.ActiveView.getCameraNode()
+        right, up = CommandReviewNote.review_note_camera_billboard_axes(cam)
+        ok, expected, dist = CommandReviewNote.review_note_leader_matches_camera_oracle(
+            note.TextPosition, vo.LeaderEnd, vo.LeaderHalfExtent, right, up
+        )
+        self.assertTrue(
+            ok,
+            "{} follow-up frame oracle dist={} expected={}".format(operation, dist, expected),
+        )
+        AssemblyGui.resetReviewNoteTestHooks()
+
+    def test_gui_sodrag_stream_keeps_text_and_leader_atomic(self):
+        """Real SoDragger press/move/release must keep translation and LeaderEnd together."""
+        operation = "SoDragger stream atomic text+leader"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from pivy import coin
+        from pivy.coin import SbRotation, SbVec3f
+        from PySide import QtCore, QtGui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Drag stream"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        vo = note.ViewObject
+        Gui.updateGui()
+        view = Gui.ActiveDocument.ActiveView
+        viewer = view.getViewer()
+        cam = view.getCameraNode()
+        from PySide import QtCore, QtGui, QtWidgets
+
+        graphics_view = view.graphicsView()
+        gl = graphics_view.viewport()
+        self.assertIsNotNone(gl, "{} no 3D viewport for mouse synthesis".format(operation))
+
+        base = App.Vector(note.BasePosition)
+        text0 = App.Vector(note.TextPosition)
+        world0 = base + text0
+        try:
+            px, py = view.getPointOnViewport(world0)
+        except Exception:
+            px, py = view.getPointOnScreen(world0)
+        _, height = view.getSize()
+        scale = float(gl.devicePixelRatioF()) if hasattr(gl, "devicePixelRatioF") else 1.0
+        sx = int(round(float(px) / scale))
+        sy = int(round((float(height) - float(py) - 1.0) / scale))
+
+        finish_samples = []
+
+        class _Obs:
+            def slotChangedObject(self, obj, prop):
+                if obj is note and prop == "TextPosition":
+                    finish_samples.append(
+                        (App.Vector(note.TextPosition), App.Vector(vo.LeaderEnd))
+                    )
+
+        def _send_mouse(etype, x, y, button, buttons):
+            local = QtCore.QPoint(int(x), int(y))
+            global_pos = gl.mapToGlobal(local)
+            QtGui.QCursor.setPos(global_pos)
+            try:
+                ev = QtGui.QMouseEvent(
+                    etype, local, global_pos, button, buttons, QtCore.Qt.NoModifier
+                )
+            except TypeError:
+                ev = QtGui.QMouseEvent(
+                    etype,
+                    QtCore.QPointF(local),
+                    global_pos,
+                    button,
+                    buttons,
+                    QtCore.Qt.NoModifier,
+                )
+            QtWidgets.QApplication.instance().sendEvent(gl, ev)
+
+        obs = _Obs()
+        App.addDocumentObserver(obs)
+        old_orient = cam.orientation.getValue()
+        try:
+            _send_mouse(
+                QtCore.QEvent.MouseButtonPress, sx, sy, QtCore.Qt.LeftButton, QtCore.Qt.LeftButton
+            )
+            QtCore.QCoreApplication.instance().processEvents()
+            for i in range(12):
+                _send_mouse(
+                    QtCore.QEvent.MouseMove,
+                    sx + 8 * (i + 1),
+                    sy - 5 * (i + 1),
+                    QtCore.Qt.NoButton,
+                    QtCore.Qt.LeftButton,
+                )
+                if i == 5:
+                    cam.orientation.setValue(
+                        cam.orientation.getValue() * SbRotation(SbVec3f(0, 1, 0), 0.15)
+                    )
+                view.redraw()
+                QtCore.QCoreApplication.instance().processEvents(
+                    QtCore.QEventLoop.ExcludeUserInputEvents
+                )
+            _send_mouse(
+                QtCore.QEvent.MouseButtonRelease,
+                sx + 96,
+                sy - 60,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoButton,
+            )
+            Gui.updateGui()
+            coin.SoDB.getSensorManager().processDelayQueue(0)
+            Gui.updateGui()
+
+            self.assertGreaterEqual(
+                len(finish_samples), 1, "{} no TextPosition on release".format(operation)
+            )
+            text_f, end_f = finish_samples[-1]
+            ok, reason = CommandReviewNote.review_note_leader_glue_status(
+                text_f, end_f, vo.LeaderHalfExtent
+            )
+            self.assertTrue(ok, "{} release notification unglued: {}".format(operation, reason))
+            self.assertFalse(
+                App.Vector(note.TextPosition).isEqual(text0, 1e-2),
+                "{} TextPosition did not move via SoDragger".format(operation),
+            )
+            right, up = CommandReviewNote.review_note_camera_billboard_axes(cam)
+            ok2, expected, dist = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                note.TextPosition, vo.LeaderEnd, vo.LeaderHalfExtent, right, up
+            )
+            self.assertTrue(
+                ok2,
+                "{} final oracle dist={} expected={}".format(operation, dist, expected),
+            )
+        finally:
+            cam.orientation.setValue(old_orient)
+            App.removeDocumentObserver(obs)
+
+    def test_gui_restore_and_undo_keep_leader_oracle(self):
+        """Save/reopen and TextPosition undo/redo keep TextPosition/LeaderEnd oracle-glued."""
+        operation = "Restore and undo/redo keep leader oracle"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        import tempfile
+        import os
+        from pivy import coin
+        from pivy.coin import SbRotation, SbVec3f
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Persist"],
+            text_offset=App.Vector(42, 18, -1),
+            open_transaction=False,
+        )
+        vo = note.ViewObject
+        Gui.updateGui()
+        view = Gui.ActiveDocument.ActiveView
+        cam = view.getCameraNode()
+        cam.orientation.setValue(
+            cam.orientation.getValue() * SbRotation(SbVec3f(0.3, 0.5, 0.2), 0.7)
+        )
+        Gui.updateGui()
+
+        path = None
+        doc_name = self.doc.Name
+        try:
+            fd, path = tempfile.mkstemp(suffix=".FCStd")
+            os.close(fd)
+            self.doc.saveAs(path)
+            App.closeDocument(doc_name)
+            App.open(path)
+            self.doc = App.ActiveDocument
+            Gui.ActiveDocument = Gui.getDocument(self.doc.Name)
+            Gui.activateWorkbench("AssemblyWorkbench")
+            notes = [o for o in self.doc.Objects if o.TypeId == "Assembly::ReviewNote"]
+            self.assertEqual(len(notes), 1, operation)
+            note = notes[0]
+            vo = note.ViewObject
+            view = Gui.ActiveDocument.ActiveView
+            cam = view.getCameraNode()
+            samples = []
+
+            def prerender_cb(*_args):
+                samples.append(
+                    (
+                        App.Vector(note.TextPosition),
+                        App.Vector(vo.LeaderEnd),
+                        App.Vector(vo.LeaderHalfExtent),
+                    )
+                )
+
+            viewer = view.getViewer()
+            root = viewer.getSceneGraph()
+            cb_node = coin.SoCallback()
+            cb_node.setCallback(prerender_cb)
+            root.insertChild(cb_node, 0)
+            try:
+                coin.SoDB.getSensorManager().processDelayQueue(0)
+                view.redraw()
+                from PySide import QtCore
+
+                QtCore.QCoreApplication.instance().processEvents(
+                    QtCore.QEventLoop.ExcludeUserInputEvents
+                )
+                if samples:
+                    text, end, half = samples[0]
+                else:
+                    text = App.Vector(note.TextPosition)
+                    end = App.Vector(vo.LeaderEnd)
+                    half = App.Vector(vo.LeaderHalfExtent)
+                right, up = CommandReviewNote.review_note_camera_billboard_axes(cam)
+                ok, expected, dist = CommandReviewNote.review_note_leader_matches_camera_oracle(
+                    text, end, half, right, up
+                )
+                self.assertTrue(
+                    ok,
+                    "{} first restore frame oracle dist={} expected={}".format(
+                        operation, dist, expected
+                    ),
+                )
+            finally:
+                try:
+                    root.removeChild(cb_node)
+                except Exception:
+                    pass
+
+            before = App.Vector(note.TextPosition)
+            before_end = App.Vector(vo.LeaderEnd)
+            self.doc.openTransaction("rn-move")
+            note.TextPosition = App.Vector(55, -10, 2)
+            self.doc.commitTransaction()
+            Gui.updateGui()
+            mid = App.Vector(note.TextPosition)
+            self.doc.undo()
+            Gui.updateGui()
+            self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-6), operation)
+            ok, reason = CommandReviewNote.review_note_leader_glue_status(
+                note.TextPosition, vo.LeaderEnd, vo.LeaderHalfExtent
+            )
+            self.assertTrue(ok, "{} after undo: {}".format(operation, reason))
+            self.doc.redo()
+            Gui.updateGui()
+            self.assertTrue(App.Vector(note.TextPosition).isEqual(mid, 1e-6), operation)
+            ok, reason = CommandReviewNote.review_note_leader_glue_status(
+                note.TextPosition, vo.LeaderEnd, vo.LeaderHalfExtent
+            )
+            self.assertTrue(ok, "{} after redo: {}".format(operation, reason))
+            self.assertFalse(App.Vector(vo.LeaderEnd).isEqual(before_end, 1e-3), operation)
+        finally:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass

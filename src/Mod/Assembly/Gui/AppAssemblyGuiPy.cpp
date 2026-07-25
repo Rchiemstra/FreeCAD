@@ -24,6 +24,8 @@
 
 #include <Base/Interpreter.h>
 
+#include "ViewProviderReviewNote.h"
+
 
 namespace AssemblyGui
 {
@@ -33,7 +35,78 @@ public:
     Module()
         : Py::ExtensionModule<Module>("AssemblyGui")
     {
+        add_varargs_method(
+            "resetReviewNoteTestHooks",
+            &Module::resetReviewNoteTestHooks,
+            "resetReviewNoteTestHooks() — clear ViewProviderReviewNote test injectors"
+        );
+        add_varargs_method(
+            "setReviewNoteTestInjectThrowAfterCoords",
+            &Module::setReviewNoteTestInjectThrowAfterCoords,
+            "setReviewNoteTestInjectThrowAfterCoords(count)"
+        );
+        add_varargs_method(
+            "setReviewNoteTestInjectNestedCamera",
+            &Module::setReviewNoteTestInjectNestedCamera,
+            "setReviewNoteTestInjectNestedCamera(count)"
+        );
+        add_varargs_method(
+            "reviewNoteTestNestedDirtyMarkedCount",
+            &Module::reviewNoteTestNestedDirtyMarkedCount,
+            "reviewNoteTestNestedDirtyMarkedCount() -> int"
+        );
+        add_varargs_method(
+            "reviewNoteTestApplyExceptionsCaughtCount",
+            &Module::reviewNoteTestApplyExceptionsCaughtCount,
+            "reviewNoteTestApplyExceptionsCaughtCount() -> int"
+        );
         initialize("This module is the Assembly module.");  // register with Python
+    }
+
+private:
+    Py::Object resetReviewNoteTestHooks(const Py::Tuple& args)
+    {
+        if (!PyArg_ParseTuple(args.ptr(), "")) {
+            throw Py::Exception();
+        }
+        ViewProviderReviewNote::resetTestHooks();
+        return Py::None();
+    }
+
+    Py::Object setReviewNoteTestInjectThrowAfterCoords(const Py::Tuple& args)
+    {
+        int count = 0;
+        if (!PyArg_ParseTuple(args.ptr(), "i", &count)) {
+            throw Py::Exception();
+        }
+        ViewProviderReviewNote::setTestInjectThrowAfterCoords(count);
+        return Py::None();
+    }
+
+    Py::Object setReviewNoteTestInjectNestedCamera(const Py::Tuple& args)
+    {
+        int count = 0;
+        if (!PyArg_ParseTuple(args.ptr(), "i", &count)) {
+            throw Py::Exception();
+        }
+        ViewProviderReviewNote::setTestInjectNestedCamera(count);
+        return Py::None();
+    }
+
+    Py::Object reviewNoteTestNestedDirtyMarkedCount(const Py::Tuple& args)
+    {
+        if (!PyArg_ParseTuple(args.ptr(), "")) {
+            throw Py::Exception();
+        }
+        return Py::Long(ViewProviderReviewNote::testNestedDirtyMarkedCount());
+    }
+
+    Py::Object reviewNoteTestApplyExceptionsCaughtCount(const Py::Tuple& args)
+    {
+        if (!PyArg_ParseTuple(args.ptr(), "")) {
+            throw Py::Exception();
+        }
+        return Py::Long(ViewProviderReviewNote::testApplyExceptionsCaughtCount());
     }
 };
 
