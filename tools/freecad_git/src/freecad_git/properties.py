@@ -255,7 +255,7 @@ def _parse_property_value(
                     "subelement": parsed["subelements"][0],
                     "subelements": parsed["subelements"],
                 }
-            return {"type": "link", "target": parsed["object"]}
+            return {"type": "link", "target": parsed["object"]} if parsed["object"] else None
         return None
 
     if prop_type in _LINK_TYPES or _child(elements, "Link") is not None:
@@ -512,7 +512,12 @@ def parse_object_properties(
             continue
 
         if isinstance(value, dict) and value.get("type") == "link":
-            local_links.append(value["target"])
+            # Keep named link properties (e.g. ReviewNote Target whole-object) in
+            # properties while still recording the dependency in local_links.
+            if value.get("target"):
+                local_links.append(value["target"])
+            props = result.setdefault("properties", {})
+            props[name] = value
             continue
 
         if isinstance(value, dict) and value.get("type") == "link_list":

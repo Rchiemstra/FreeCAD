@@ -77,13 +77,6 @@ public:
         double halfH
     );
 
-    /// Test-only hooks (AssemblyGui Python module). Not for production callers.
-    static void resetTestHooks();
-    static void setTestInjectThrowAfterCoords(int count);
-    static void setTestInjectNestedCamera(int count);
-    static int testNestedDirtyMarkedCount();
-    static int testApplyExceptionsCaughtCount();
-
 protected:
     void onChanged(const App::Property* prop) override;
     Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const override;
@@ -150,11 +143,6 @@ private:
     bool visualFrameScheduled = false;
     bool visualFrameDirty = false;
     fastsignals::scoped_connection syncLeaderConnection;
-
-    static int testInjectThrowAfterCoords;
-    static int testInjectNestedCamera;
-    static int testNestedDirtyMarked;
-    static int testApplyExceptionsCaught;
 };
 
 }  // namespace AssemblyGui

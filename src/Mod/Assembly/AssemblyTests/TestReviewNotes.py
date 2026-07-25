@@ -3619,6 +3619,12 @@ class TestReviewNotesGui(unittest.TestCase):
         import AssemblyGui
         from pivy import coin
 
+        if not hasattr(AssemblyGui, "setReviewNoteTestInjectThrowAfterCoords"):
+            self.fail(
+                "{} requires ASSEMBLY_ENABLE_TEST_HOOKS "
+                "(build with ENABLE_DEVELOPER_TESTS=ON)".format(operation)
+            )
+
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
         )
@@ -3698,6 +3704,12 @@ class TestReviewNotesGui(unittest.TestCase):
         import FreeCADGui as Gui
         import AssemblyGui
         from pivy import coin
+
+        if not hasattr(AssemblyGui, "setReviewNoteTestInjectNestedCamera"):
+            self.fail(
+                "{} requires ASSEMBLY_ENABLE_TEST_HOOKS "
+                "(build with ENABLE_DEVELOPER_TESTS=ON)".format(operation)
+            )
 
         data = CommandReviewNote.normalize_review_note_target(
             self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)

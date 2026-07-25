@@ -46,6 +46,7 @@ GUI_DOCUMENT_XML = load_xml_fixture("gui_document.xml")
 CUSTOM_PROPERTY_DOCUMENT_XML = load_xml_fixture("custom_property_document.xml")
 REVIEW_NOTE_DOCUMENT_XML = load_xml_fixture("review_note_document.xml")
 REVIEW_NOTE_GUI_DOCUMENT_XML = load_xml_fixture("review_note_gui_document.xml")
+REVIEW_NOTE_WHOLE_TARGET_DOCUMENT_XML = load_xml_fixture("review_note_whole_target_document.xml")
 
 
 def write_fixture(
@@ -75,6 +76,11 @@ def build_all_fixtures(fixtures_dir: Path) -> None:
     write_fixture(
         fixtures_dir / "review_note.FCStd",
         REVIEW_NOTE_DOCUMENT_XML,
+        REVIEW_NOTE_GUI_DOCUMENT_XML,
+    )
+    write_fixture(
+        fixtures_dir / "review_note_whole_target.FCStd",
+        REVIEW_NOTE_WHOLE_TARGET_DOCUMENT_XML,
         REVIEW_NOTE_GUI_DOCUMENT_XML,
     )
     write_fixture(

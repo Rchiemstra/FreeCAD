@@ -64,6 +64,7 @@
 #include <Mod/Assembly/App/ReviewNote.h>
 
 #include "ViewProviderReviewNote.h"
+#include "ViewProviderReviewNoteTestHarness.h"
 
 using namespace AssemblyGui;
 
@@ -101,39 +102,6 @@ const std::regex& refRegex()
 }
 
 }  // namespace
-
-int ViewProviderReviewNote::testInjectThrowAfterCoords = 0;
-int ViewProviderReviewNote::testInjectNestedCamera = 0;
-int ViewProviderReviewNote::testNestedDirtyMarked = 0;
-int ViewProviderReviewNote::testApplyExceptionsCaught = 0;
-
-void ViewProviderReviewNote::resetTestHooks()
-{
-    testInjectThrowAfterCoords = 0;
-    testInjectNestedCamera = 0;
-    testNestedDirtyMarked = 0;
-    testApplyExceptionsCaught = 0;
-}
-
-void ViewProviderReviewNote::setTestInjectThrowAfterCoords(int count)
-{
-    testInjectThrowAfterCoords = count;
-}
-
-void ViewProviderReviewNote::setTestInjectNestedCamera(int count)
-{
-    testInjectNestedCamera = count;
-}
-
-int ViewProviderReviewNote::testNestedDirtyMarkedCount()
-{
-    return testNestedDirtyMarked;
-}
-
-int ViewProviderReviewNote::testApplyExceptionsCaughtCount()
-{
-    return testApplyExceptionsCaught;
-}
 
 PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNote, Gui::ViewProviderAnnotationLabel)
 
@@ -226,7 +194,9 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
                     applyVisualFrame(textPos, /*updateTextTranslation*/ true);
                 }
                 catch (const Base::Exception& e) {
-                    ++testApplyExceptionsCaught;
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+                    ++ReviewNoteTestHarness::applyExceptionsCaught;
+#endif
                     Base::Console().error(
                         "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
                         e.what()
@@ -235,7 +205,9 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
                     scheduleVisualFrame();
                 }
                 catch (const std::exception& e) {
-                    ++testApplyExceptionsCaught;
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+                    ++ReviewNoteTestHarness::applyExceptionsCaught;
+#endif
                     Base::Console().error(
                         "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
                         e.what()
@@ -244,7 +216,9 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
                     scheduleVisualFrame();
                 }
                 catch (...) {
-                    ++testApplyExceptionsCaught;
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+                    ++ReviewNoteTestHarness::applyExceptionsCaught;
+#endif
                     Base::Console().error(
                         "AssemblyGui::ViewProviderReviewNote: leader sync failed "
                         "(unknown exception)\n"
@@ -302,16 +276,18 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
 {
     ViewProviderAnnotationLabel::onChanged(prop);
 
-    // Test-only one-shot: observe LeaderHalfExtent during an in-flight apply and
+    // Test-build only: observe LeaderHalfExtent during an in-flight apply and
     // mutate the camera so scheduleVisualFrame marks the nested dirty branch.
-    if (prop == &LeaderHalfExtent && testInjectNestedCamera > 0 && applyingVisualFrame
-        && attachedCamera) {
-        --testInjectNestedCamera;
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+    if (prop == &LeaderHalfExtent && ReviewNoteTestHarness::injectNestedCamera > 0
+        && applyingVisualFrame && attachedCamera) {
+        --ReviewNoteTestHarness::injectNestedCamera;
         const SbRotation cur = attachedCamera->orientation.getValue();
         attachedCamera->orientation.setValue(
             cur * SbRotation(SbVec3f(0.2f, 0.9f, 0.1f), 0.45f)
         );
     }
+#endif
 
     if (applyingVisualFrame) {
         return;
@@ -371,13 +347,15 @@ void ViewProviderReviewNote::applyVisualFrame(
         pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
     }
 
-    // Test-only fault injection: throw after Coin writes, before LeaderEnd publishes.
-    if (testInjectThrowAfterCoords > 0) {
-        --testInjectThrowAfterCoords;
+    // Test-build only: throw after Coin writes, before LeaderEnd publishes.
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+    if (ReviewNoteTestHarness::injectThrowAfterCoords > 0) {
+        --ReviewNoteTestHarness::injectThrowAfterCoords;
         throw Base::RuntimeError(
             "ReviewNote test inject: throw after translation/pCoords before LeaderEnd"
         );
     }
+#endif
 
     LeaderHalfExtent.setValue(Base::Vector3d(frame.halfW, frame.halfH, 0.0));
     LeaderEnd.setValue(end);
@@ -388,7 +366,9 @@ void ViewProviderReviewNote::scheduleVisualFrame()
     visualFrameDirty = true;
     if (applyingVisualFrame) {
         // applyVisualFrame's Guard will reschedule when the current publish ends.
-        ++testNestedDirtyMarked;
+#ifdef ASSEMBLY_ENABLE_TEST_HOOKS
+        ++ReviewNoteTestHarness::nestedDirtyMarked;
+#endif
         return;
     }
     if (!frameSensor) {
