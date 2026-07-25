@@ -83,6 +83,8 @@
 #include "GuiApplication.h"
 #include "GuiInitScript.h"
 #include "GuiTestScript.h"
+#include "GeometryWorkerProcess.h"
+#include "GeometryProgressController.h"
 #include "InputHintPy.h"
 #include "LinkViewPy.h"
 #include "MainWindow.h"
@@ -530,6 +532,8 @@ Application::Application(bool GUIenabled)
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
         App::MainThreadSignalConfig::setHooks(&qtIsMainThread, &qtInvokeOnMain);
+        Gui::GeometryWorkerProcess::installManagerBackend();
+        Gui::GeometryProgressController::installManagerHooks();
 
         // NOLINTBEGIN
         App::GetApplication().signalNewDocument.connect(

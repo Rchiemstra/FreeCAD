@@ -111,6 +111,11 @@ public:
     short mustExecute() const override;
     /// recalculate the Feature
     DocumentObjectExecReturn* execute() override;
+    /// Explicit worker opt-in for App async-recompute regression tests.
+    bool canRecomputeOnWorker() const override
+    {
+        return true;
+    }
     /// returns the type name of the ViewProvider
     // Hint: Probably it makes sense to have a view provider for unittests (e.g.
     // Gui::ViewProviderTest)
@@ -237,5 +242,31 @@ public:
     static void releaseBlocker();
 };
 
+/**
+ * Test object with a detached prepare/commit adapter for coordinator fence tests.
+ */
+class AppExport FeatureTestDetached: public DocumentObject
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestDetached);
+
+public:
+    FeatureTestDetached();
+    ~FeatureTestDetached() override;
+
+    App::PropertyInteger Value;
+    App::PropertyInteger CommittedValue;
+
+    DocumentObjectExecReturn* execute() override;
+    bool canRecomputeOnWorker() const override { return false; }
+
+    std::optional<PreparedDetachedRecompute>
+    prepareDetachedRecompute(const SnapshotContext& ctx) const override;
+    DocumentObjectExecReturn*
+    commitDetachedRecompute(const DetachedGeometryResult& result, CommitContext& ctx) override;
+
+    static void resetTestHooks();
+    static void setFailNextCommit(bool fail);
+    static int commitCount();
+};
 
 }  // namespace App

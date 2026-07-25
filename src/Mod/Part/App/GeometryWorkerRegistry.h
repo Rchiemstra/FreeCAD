@@ -21,6 +21,8 @@ public:
     static GeometryWorkerRegistry& instance();
 
     void registerOperation(const std::string& name, TaskFactory factory);
+    /// Register built-in Part::Boolean / Fillet / Sweep factories (idempotent allowlist).
+    void registerBuiltins();
     std::shared_ptr<App::DetachedGeometryTask> createTask(const std::string& name) const;
     bool isOperationAllowed(const std::string& name) const;
 

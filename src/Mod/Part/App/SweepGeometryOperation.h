@@ -22,6 +22,7 @@ public:
 
     std::string operationType() const override { return "Part::Sweep"; }
     uint32_t codecVersion() const override { return 1; }
+    std::string parameterDigest() const override;
     App::GeometryOperationTraits traits() const override;
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;

@@ -26,6 +26,9 @@
 
 #include <bitset>
 #include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <QByteArray>
 #include <QVector>
@@ -619,6 +622,35 @@ private:
 };
 
 
+/** Serializable exact-ID hasher entry for cross-process geometry archives. */
+struct AppExport StringHasherClosureEntry
+{
+    long id {0};
+    uint32_t flags {0};
+    QByteArray data;
+    QByteArray postfix;
+    std::vector<long> relatedIds;
+};
+
+/** Exact-ID hasher closure plus high-water / revision / threshold metadata. */
+struct AppExport StringHasherClosure
+{
+    uint64_t highWaterId {0};
+    uint64_t revision {0};
+    /// Hasher length threshold used when Option::Hashable was applied; restored on merge.
+    int threshold {0};
+    std::vector<StringHasherClosureEntry> entries;
+};
+
+/** Result of applying an exact-ID hasher closure onto a canonical hasher. */
+struct AppExport StringHasherMergeResult
+{
+    bool success {false};
+    std::string errorCode;
+    std::string errorMessage;
+    size_t appendedCount {0};
+};
+
 /// \brief A bidirectional map  of strings and their integer identifier.
 ///
 /// Maps an arbitrary text string to a unique integer ID, maintaining a reference-counted shared
@@ -735,6 +767,12 @@ public:
     /// Size of the hash table
     size_t size() const;
 
+    /// Highest numeric StringID currently stored (0 if empty).
+    long getLastID() const
+    {
+        return lastID();
+    }
+
     /// Return the number of hashes that are used by others
     size_t count() const;
 
@@ -766,6 +804,51 @@ public:
     /// Compact string storage by eliminating unused strings from the table.
     void compact();
 
+    /// Monotonic revision used by exact-ID hasher-delta merge across processes.
+    uint64_t getRevision() const
+    {
+        return _revision;
+    }
+
+    /// Advance the revision after a successful document-side hasher mutation.
+    void advanceRevision()
+    {
+        ++_revision;
+    }
+
+    void setRevision(uint64_t revision)
+    {
+        _revision = revision;
+    }
+
+    /**
+     * Capture a serializable exact-ID closure of hasher entries.
+     * When @p markedOnly is true, only marked/persistent IDs are included
+     * (typical after ElementMap::beforeSave).
+     */
+    StringHasherClosure captureClosure(bool markedOnly = true) const;
+
+    /**
+     * Apply an exact-ID hasher closure onto this hasher.
+     * Existing IDs must match byte-for-byte; missing IDs are appended with the
+     * same numeric ID. Revision mismatches and content collisions reject.
+     * On failure, no IDs from this call are left appended (validate-then-commit).
+     * Duplicate IDs inside the closure are rejected before mutation.
+     * When highWaterId is set, entry IDs above it are rejected and the hasher's
+     * reserved high-water is raised so later allocations skip the gap.
+     */
+    StringHasherMergeResult mergeExactClosure(const StringHasherClosure& closure,
+                                              uint64_t expectedRevision);
+
+    /// Raise the reserved high-water ID used by lastID()/new allocations.
+    void reserveHighWater(uint64_t highWaterId);
+
+    /// Snapshot Marked flags for every ID (used to restore after archive freeze).
+    std::unordered_map<long, bool> snapshotMarks() const;
+
+    /// Restore Marked flags previously captured by snapshotMarks().
+    void restoreMarks(const std::unordered_map<long, bool>& marks) const;
+
     class HashMap;
     friend class StringID;
 
@@ -780,6 +863,8 @@ private:
     std::unique_ptr<HashMap>
         _hashes;  ///< Bidirectional map of StringID and its index (a long int).
     mutable std::string _filename;
+    uint64_t _revision {0};
+    long _reservedHighWater {0};
 };
 }  // namespace App
 

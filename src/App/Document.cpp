@@ -224,6 +224,7 @@ bool Document::undo(const int id)
         }
     }
 
+    advanceModelGeneration();
     signalUndo(*this);  // now signal the undo
     signalBecameStable(*this);
 
@@ -277,6 +278,7 @@ bool Document::redo(const int id)
         }
     }
 
+    advanceModelGeneration();
     signalRedo(*this);
     signalBecameStable(*this);
     return true;
@@ -1064,6 +1066,16 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
+
+    // Invalidate incarnation-scoped jobs before object teardown; never wait for workers.
+    if (d->recomputeCoordinator) {
+        d->recomputeCoordinator->onDocumentClosed();
+    }
+    else {
+        GeometryJobManager::instance().invalidateDocument(getRevisionToken(), CancelReason::DocumentClosed);
+    }
+    // Poison incarnation so late callbacks cannot match a recycled document pointer/name.
+    d->runtimeIncarnation = 0;
 
     DocumentMutationAuthority::instance().forgetDocument(*this);
 
@@ -3507,6 +3519,10 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
         d->activeObject = pcObject;
         signalActivatedObject(*pcObject);
     }
+
+    if (!d->StatusBits.test(Restoring) && !d->rollback) {
+        advanceModelGeneration();
+    }
 }
 
 bool Document::containsObject(const DocumentObject* pcObject) const
@@ -3606,6 +3622,12 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
 
     // Mark the object as about to be removed
     pcObject->setStatus(ObjectStatus::Remove, true);
+    if (d->recomputeCoordinator) {
+        d->recomputeCoordinator->onObjectRemoved(pcObject->getID());
+    }
+    if (!d->rollback && !d->StatusBits.test(Restoring)) {
+        advanceModelGeneration();
+    }
     if (!d->undoing && !d->rollback) {
         pcObject->unsetupObject();
     }
@@ -4181,11 +4203,19 @@ uint64_t Document::getModelGeneration() const
 
 void Document::advanceModelGeneration()
 {
+    advanceModelGeneration(true);
+}
+
+void Document::advanceModelGeneration(bool invalidatePendingJobs)
+{
     if (d->isCommittingGeometryJob) {
         return;
     }
     d->modelGeneration++;
-    GeometryJobManager::instance().invalidateDocument(getRevisionToken(), CancelReason::NewGeneration);
+    if (invalidatePendingJobs) {
+        GeometryJobManager::instance().invalidateDocument(getRevisionToken(),
+                                                          CancelReason::NewGeneration);
+    }
 }
 
 DocumentRecomputeCoordinator& Document::getRecomputeCoordinator()

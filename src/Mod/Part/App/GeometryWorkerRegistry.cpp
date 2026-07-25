@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "GeometryWorkerRegistry.h"
+#include "BooleanGeometryOperation.h"
+#include "FilletGeometryOperation.h"
+#include "SweepGeometryOperation.h"
 #include <algorithm>
 
 namespace Part
@@ -14,7 +17,23 @@ GeometryWorkerRegistry& GeometryWorkerRegistry::instance()
 
 void GeometryWorkerRegistry::registerOperation(const std::string& name, TaskFactory factory)
 {
-    _factories[name] = factory;
+    _factories[name] = std::move(factory);
+}
+
+void GeometryWorkerRegistry::registerBuiltins()
+{
+    // Factories return empty-parameter stubs; the worker decodes request payloads
+    // into typed ops in a later protocol slice. Registration establishes the
+    // allowlist of trusted operation names for FreeCADCmd.
+    registerOperation("Part::Boolean", []() {
+        return std::shared_ptr<App::DetachedGeometryTask>(new BooleanGeometryOperation());
+    });
+    registerOperation("Part::Fillet", []() {
+        return std::shared_ptr<App::DetachedGeometryTask>(new FilletGeometryOperation());
+    });
+    registerOperation("Part::Sweep", []() {
+        return std::shared_ptr<App::DetachedGeometryTask>(new SweepGeometryOperation());
+    });
 }
 
 std::shared_ptr<App::DetachedGeometryTask> GeometryWorkerRegistry::createTask(const std::string& name) const

@@ -347,6 +347,71 @@ Visual behavior:
 
 ## 4. Phased implementation and migration
 
+### Verified implementation baseline — 2026-07-24 read-only review
+
+This baseline records implementation gates discovered by review; it does not relax any acceptance
+requirement above.
+
+- No phase is complete. Phase 1 currently has type/state scaffolding, but
+  `GeometryJobManager::submit()` does not execute either backend, `GeometryWorkerProcess` and
+  `GeometryProgressController` are disconnected, and no feature implements the detached recompute
+  contract.
+- The transition away from the old live-document worker is not safe yet:
+  `canRecomputeRequestOnWorker()` is hard-coded false while queued requests run synchronously.
+  Existing `AsyncRecomputeTest` coverage therefore includes one assertion failure and one blocking
+  test. This baseline regression must be fixed before Phase 1 can close.
+- `Document.recomputeAsync()` with its normal empty object list currently schedules no targets, and
+  multi-target sessions self-invalidate after the first commit advances the shared generation.
+  Full/dirty target expansion and dependency-ordered commit semantics are mandatory Phase 1 gates.
+- Phase 2 is not a usable transport. The current bundle capture drops the `ElementMap`, does not
+  serialize the hasher ID closure, uses global `ElementMap` save/restore state, and accepts unbounded
+  archive lengths. The worker script is not copied or installed, the registry has no built-in
+  registrations, task serializers are empty, and successful process artifacts are deleted before
+  queued decode or commit.
+- Phase 3 files and scheduling pipeline are absent; GUI-thread `BRepMesh_IncrementalMesh` and
+  synchronous preview tessellation remain. Phase 4 operation classes are unconnected stubs, Phase 5
+  has only a target-name archive stub, and Phase 6 switches, metrics, and qualification gates are
+  absent.
+- Implementation order is locked: restore the full Docker App regression baseline and complete a
+  safe end-to-end Phase 1 job lifecycle first; then qualify lossless, bounded cross-process naming
+  transport in Phase 2. Do not migrate commands or enable any rollout path before those gates pass.
+
+### Verified implementation update — 2026-07-24 follow-up review
+
+This follow-up records later implementation work and newly verified gates. It does not relax the
+acceptance contract or mark a phase complete.
+
+- Narrow scaffold regressions are fixed: empty/`forceAll` coordinator requests expand targets,
+  targets run sequentially, terminal states are monotonic, object invalidation is
+  document-incarnation scoped, and the focused App tests pass. The old live-document recompute
+  worker and synchronous GUI fallback remain, however, and no production object implements the
+  detached prepare/commit contract. Phase 1 therefore still has no usable production recompute
+  path.
+- The in-process manager path is not a qualified allowlist implementation. A global Boolean plus a
+  task-declared trait can enable any operation, each submission creates an unbounded thread, and a
+  queued GUI-thread terminal callback can observe its result only after the worker has already
+  deleted the result workspace. FreeCADCmd submission remains disconnected.
+- Coordinator commit still lacks the complete job/object/input fences, an atomic transaction,
+  bounded graph/snapshot/commit slices, and failure-aware generation advancement. Different-purpose
+  requests can be dropped, and the coalescing field is not honored by the manager.
+- FCG1 v3 now has bounded sections, authenticated metadata/payloads, an explicit per-archive
+  `ElementMap` restore context, and exact-ID closure serialization. These are real improvements, but
+  Phase 2 is not lossless: the captured high-water ID is serialized but never seeds the private
+  hasher, production hasher revisions never advance, malformed duplicate closure IDs can still
+  produce a partial merge, and operation outputs use raw `TopoShape` construction instead of mapped
+  OCC-history paths.
+- `FrozenTopoShapeBundle` is not yet an immutable geometry snapshot: `TopoShape` assignment shares
+  the underlying OCC shape, and archive writing mutates map archive IDs and private hasher marks
+  through a `const` bundle. Source-state restoration is not exception-safe around every
+  `beforeSave()`/`save()` call.
+- The trusted script is now copied and installed and the Python entry point exists, but the worker
+  registry has no built-in registrations, task serializers are empty, request inputs are not
+  decoded, cooperative cancel is not consumed by the child, and parent protocol/result validation
+  remains incomplete.
+- Phase 3 remains absent, Phase 4 operation classes remain disconnected and naming-lossy, Phase 5
+  routing/compatibility remains absent, and Phase 6 qualification/rollout gates remain absent. The
+  locked implementation order above still applies.
+
 ### Phase 1 — Guardrails and scheduler foundation
 
 - Add document UUID/incarnation/generation tracking, thread-affinity assertions, `GeometryJobManager`, `DocumentRecomputeCoordinator`, handles, progress state, coalescing, deadlines, and cancellation.

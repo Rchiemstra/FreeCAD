@@ -1051,6 +1051,8 @@ private:
     std::mutex _recomputeMutex;
     std::deque<RecomputeRequest> _recomputeRequests;
     std::set<std::string> _recomputeDocumentsInProgress;
+    /// Documents removed from DocMap while a legacy worker recompute is still running.
+    std::map<std::string, std::unique_ptr<Document>> _recomputePendingDestroy;
     std::condition_variable _recomputeRequestAvailable;
     std::condition_variable _recomputeStateChanged;
     // Separate from the mutex-protected queue state so shutdown can request a
@@ -1061,8 +1063,7 @@ private:
     void recomputeWorker();
     // Helper to notify the worker thread when new requests are available
     void notifyRecomputeWorker();
-    // Drop queued requests for a document and wait for any active recompute of
-    // that document to finish before closing it
+    // Drop queued requests for a document without waiting for an in-flight recompute.
     void cancelRecomputeRequestsForDocument(const std::string& documentName);
 
     bool _isRestoring{false};

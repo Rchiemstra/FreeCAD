@@ -32,6 +32,7 @@ struct AppExport ObjectRevisionToken
     std::string internalName;
     long objectId {0};
     Base::Type type;
+    uint64_t documentIncarnation {0};
 };
 
 enum class GeometryJobPurpose
@@ -160,6 +161,11 @@ public:
     virtual ~DetachedGeometryTask() = default;
     virtual std::string operationType() const = 0;
     virtual uint32_t codecVersion() const = 0;
+    /// Stable digest of typed parameters for join/coalesce identity.
+    virtual std::string parameterDigest() const
+    {
+        return {};
+    }
     virtual GeometryOperationTraits traits() const = 0;
     virtual DetachedGeometryResult run(GeometryWorkerContext& ctx) const = 0;
     virtual void writeArchive(GeometryArchiveWriter& writer) const = 0;
@@ -198,6 +204,8 @@ class DocumentObject;
 struct AppExport PreparedDetachedRecompute
 {
     GeometryJobSpec spec;
+    /// Stable fingerprint of inputs captured at prepare/snapshot time.
+    std::string inputFingerprint;
 };
 
 struct AppExport SnapshotContext
@@ -207,6 +215,21 @@ struct AppExport SnapshotContext
     GeometryJobId jobId {0};
 };
 
+/**
+ * Fences checked before applying a detached geometry result. All fields must
+ * still match the live document/object at commit time.
+ */
+struct AppExport CommitFence
+{
+    GeometryJobId jobId {0};
+    long objectId {0};
+    std::string objectName;
+    Base::Type objectType;
+    uint64_t runtimeIncarnation {0};
+    uint64_t modelGeneration {0};
+    std::string inputFingerprint;
+};
+
 struct AppExport CommitContext
 {
     DocumentRevisionToken docToken;
@@ -214,6 +237,7 @@ struct AppExport CommitContext
     GeometryJobId jobId {0};
     uint64_t modelGeneration {0};
     DetachedGeometryResult result;
+    CommitFence fence;
 };
 
 class AppExport GeometryCommitScope
@@ -222,9 +246,28 @@ public:
     explicit GeometryCommitScope(Document* doc, DocumentObject* obj = nullptr);
     ~GeometryCommitScope();
 
+    /// Call only after a successful commitDetachedRecompute; otherwise generation is not advanced.
+    void markSucceeded();
+
 private:
     Document* _doc {nullptr};
     DocumentObject* _obj {nullptr};
+    bool _succeeded {false};
 };
+
+/// Build an input fingerprint from a task (operationType|codecVersion|parameterDigest).
+AppExport std::string makeGeometryInputFingerprint(const DetachedGeometryTask* task);
+
+/// True when live document/object still match the fence captured at submit.
+AppExport bool commitFenceMatches(const CommitFence& fence,
+                                  const Document& doc,
+                                  const DocumentObject& obj,
+                                  GeometryJobId jobId);
+
+/**
+ * True when @p relativePath is a safe workspace-relative result path:
+ * non-empty, not absolute, and without ".." traversal segments.
+ */
+AppExport bool isTrustedRelativeResultPath(const std::string& relativePath);
 
 } // namespace App
