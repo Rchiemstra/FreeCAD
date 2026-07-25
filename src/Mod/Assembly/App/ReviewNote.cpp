@@ -486,7 +486,7 @@ ReviewNote::ReviewNote()
         (-1.0),
         "ReviewNote",
         App::Prop_None,
-        "Leader attachment on the annotation box perimeter [0,1]; negative means auto"
+        "Legacy LeaderPort [0,1] kept for FCStd/undo; display always nearest-border auto-attach"
     );
 
     BasePosition.setStatus(App::Property::Output, false);

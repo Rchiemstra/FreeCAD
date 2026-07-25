@@ -27,22 +27,14 @@
 #include <QPen>
 #include <QObject>
 
-#include <Inventor/SbLine.h>
-#include <Inventor/SbPlane.h>
 #include <Inventor/SbVec2s.h>
 #include <Inventor/SbViewVolume.h>
 #include <Inventor/SbViewportRegion.h>
 #include <Inventor/draggers/SoDragger.h>
-#include <Inventor/draggers/SoTranslate2Dragger.h>
 #include <Inventor/events/SoEvent.h>
-#include <Inventor/nodes/SoAnnotation.h>
 #include <Inventor/nodes/SoCamera.h>
 #include <Inventor/nodes/SoCoordinate3.h>
-#include <Inventor/nodes/SoMaterial.h>
-#include <Inventor/nodes/SoPickStyle.h>
-#include <Inventor/nodes/SoSeparator.h>
-#include <Inventor/nodes/SoSphere.h>
-#include <Inventor/nodes/SoTranslation.h>
+#include <Inventor/nodes/SoImage.h>
 #include <Inventor/sensors/SoNodeSensor.h>
 #include <Inventor/sensors/SoSensor.h>
 
@@ -80,35 +72,6 @@ const std::regex& refRegex()
     return re;
 }
 
-bool projectPointerToPlane(
-    SoDragger& drag,
-    const Base::Vector3d& planePoint,
-    const Base::Vector3d& planeNormal,
-    Base::Vector3d& intersection
-)
-{
-    const SoEvent* event = drag.getEvent();
-    if (!event) {
-        return false;
-    }
-
-    SbViewVolume viewVolume = drag.getViewVolume();
-    SbLine pointerLine;
-    viewVolume.projectPointToLine(event->getNormalizedPosition(drag.getViewportRegion()), pointerLine);
-
-    SbVec3f point;
-    const SbPlane dragPlane(
-        Base::convertTo<SbVec3f>(planeNormal),
-        Base::convertTo<SbVec3f>(planePoint)
-    );
-    if (!dragPlane.intersect(pointerLine, point)) {
-        return false;
-    }
-
-    intersection = Base::convertTo<Base::Vector3d>(point);
-    return true;
-}
-
 }  // namespace
 
 PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNote, Gui::ViewProviderAnnotationLabel)
@@ -120,19 +83,25 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         (Base::Vector3d()),
         "ReviewNote",
         App::Prop_Hidden,
-        "Leader endpoint relative to BasePosition (matches the floating port)"
+        "Leader endpoint relative to BasePosition (nearest text-box border point)"
     );
     LeaderEnd.setStatus(App::Property::Output, true);
     LeaderEnd.setStatus(App::Property::ReadOnly, true);
+
+    ADD_PROPERTY_TYPE(
+        LeaderHalfExtent,
+        (Base::Vector3d(0.5, 0.5, 0.0)),
+        "ReviewNote",
+        App::Prop_Hidden,
+        "Billboard half-extents (x=halfW, y=halfH) of the text box used for leader attachment"
+    );
+    LeaderHalfExtent.setStatus(App::Property::Output, true);
+    LeaderHalfExtent.setStatus(App::Property::ReadOnly, true);
 }
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
 {
     detachCameraSensor();
-    if (portAnnotation) {
-        portAnnotation->unref();
-        portAnnotation = nullptr;
-    }
 }
 
 QIcon ViewProviderReviewNote::getIcon() const
@@ -170,9 +139,18 @@ bool ViewProviderReviewNote::doubleClicked()
 void ViewProviderReviewNote::attach(App::DocumentObject* obj)
 {
     ViewProviderAnnotationLabel::attach(obj);
-    setupPortHandle();
+    // Coin SoImage defaults to LEFT/BOTTOM. Center the label on TextPosition so the
+    // leader attaches to the visible box border (and @ref hit-tests stay consistent).
+    if (pImage) {
+        pImage->horAlignment = SoImage::CENTER;
+        pImage->vertAlignment = SoImage::HALF;
+    }
+    if (pImageHitProxy) {
+        pImageHitProxy->horAlignment = SoImage::CENTER;
+        pImageHitProxy->vertAlignment = SoImage::HALF;
+    }
     ensureCameraSensor();
-    refreshLeaderAndPort();
+    refreshLeader();
 }
 
 void ViewProviderReviewNote::updateData(const App::Property* prop)
@@ -190,12 +168,9 @@ void ViewProviderReviewNote::updateData(const App::Property* prop)
         signalChangeIcon();
     }
 
-    if (prop == &note->TextPosition || prop == &note->BasePosition || prop == &note->LeaderPort
-        || prop == &note->LabelText) {
-        if (!portDragging) {
-            ensureCameraSensor();
-            refreshLeaderAndPort();
-        }
+    if (prop == &note->TextPosition || prop == &note->BasePosition || prop == &note->LabelText) {
+        ensureCameraSensor();
+        refreshLeader();
     }
 }
 
@@ -204,17 +179,16 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
     ViewProviderAnnotationLabel::onChanged(prop);
     if (prop == &FontSize || prop == &FontName || prop == &Frame || prop == &Justification
         || prop == &TextColor || prop == &BackgroundColor) {
-        if (!portDragging) {
-            ensureCameraSensor();
-            refreshLeaderAndPort();
-        }
+        ensureCameraSensor();
+        refreshLeader();
     }
 }
 
 void ViewProviderReviewNote::setLeaderCoords(const Base::Vector3d& textPosition)
 {
     ViewProviderAnnotationLabel::setLeaderCoords(textPosition);
-    updatePortHandle(textPosition);
+    const BillboardFrame frame = currentBillboardFrame(textPosition);
+    LeaderHalfExtent.setValue(Base::Vector3d(frame.halfW, frame.halfH, 0.0));
     LeaderEnd.setValue(leaderEndpoint(textPosition));
 }
 
@@ -255,19 +229,6 @@ Base::Vector3d ViewProviderReviewNote::perimeterOffset(double port, double halfW
     }
     else {
         offset = Base::Vector3d(-w + (d - left), h, 0.0);
-    }
-
-    // Never leave the leader on a corner vertex — snap to the nearer side midpoint.
-    const double eps = 1e-4 * std::min(w, h);
-    if (std::fabs(std::fabs(offset.x) - w) < eps && std::fabs(std::fabs(offset.y) - h) < eps) {
-        if (std::fabs(offset.x) >= std::fabs(offset.y)) {
-            offset.y = 0.0;
-            offset.x = (offset.x >= 0.0) ? w : -w;
-        }
-        else {
-            offset.x = 0.0;
-            offset.y = (offset.y >= 0.0) ? h : -h;
-        }
     }
     return offset;
 }
@@ -312,18 +273,22 @@ Base::Vector3d ViewProviderReviewNote::autoBoundaryEndpoint(
     double halfH
 )
 {
+    // Nearest border point on the axis-aligned box along the line toward the base.
+    // That is the exit point of the leader from the text box — no gap, no through-text.
     const double w = std::max(1e-6, halfW);
     const double h = std::max(1e-6, halfH);
     if (textPos.Length() < 1e-9) {
         return Base::Vector3d(-w, 0.0, 0.0);
     }
     const Base::Vector3d towardBase = textPos * (-1.0);
-    const double ax = std::fabs(towardBase.x) / w;
-    const double ay = std::fabs(towardBase.y) / h;
-    if (ax >= ay) {
-        return textPos + Base::Vector3d(towardBase.x >= 0.0 ? w : -w, 0.0, 0.0);
+    Base::Vector3d dir(towardBase.x, towardBase.y, 0.0);
+    if (dir.Length() < 1e-9) {
+        return textPos + Base::Vector3d(-w, 0.0, 0.0);
     }
-    return textPos + Base::Vector3d(0.0, towardBase.y >= 0.0 ? h : -h, 0.0);
+    const double sx = (std::fabs(dir.x) > 1e-12) ? (w / std::fabs(dir.x)) : 1e12;
+    const double sy = (std::fabs(dir.y) > 1e-12) ? (h / std::fabs(dir.y)) : 1e12;
+    const double t = std::min(sx, sy);
+    return textPos + dir * t;
 }
 
 Base::Vector3d ViewProviderReviewNote::billboardOffsetToLocal(
@@ -337,29 +302,21 @@ Base::Vector3d ViewProviderReviewNote::billboardOffsetToLocal(
 Base::Vector3d ViewProviderReviewNote::leaderEndpoint(const Base::Vector3d& textPosition) const
 {
     const BillboardFrame frame = currentBillboardFrame(textPosition);
-    auto* note = getObject<Assembly::ReviewNote>();
+    const double w = frame.halfW;
+    const double h = frame.halfH;
 
-    Base::Vector3d uv;
-    if (!note || note->LeaderPort.getValue() < 0.0) {
-        // Auto: side midpoint facing the base, in billboard UV, then mapped to local.
-        const Base::Vector3d towardBase = textPosition * (-1.0);
-        const double tu = towardBase * frame.right;
-        const double tv = towardBase * frame.up;
-        const double w = frame.halfW;
-        const double h = frame.halfH;
-        if (std::fabs(tu) / w >= std::fabs(tv) / h) {
-            uv = Base::Vector3d(tu >= 0.0 ? w : -w, 0.0, 0.0);
-        }
-        else {
-            uv = Base::Vector3d(0.0, tv >= 0.0 ? h : -h, 0.0);
-        }
-        if (textPosition.Length() < 1e-9) {
-            uv = Base::Vector3d(-w, 0.0, 0.0);
-        }
+    // Project the anchor direction into the billboard plane, then clip to the box border.
+    const Base::Vector3d towardBase = textPosition * (-1.0);
+    double tu = towardBase * frame.right;
+    double tv = towardBase * frame.up;
+    if (std::fabs(tu) < 1e-12 && std::fabs(tv) < 1e-12) {
+        tu = -1.0;
+        tv = 0.0;
     }
-    else {
-        uv = perimeterOffset(note->LeaderPort.getValue(), frame.halfW, frame.halfH);
-    }
+    const double sx = (std::fabs(tu) > 1e-12) ? (w / std::fabs(tu)) : 1e12;
+    const double sy = (std::fabs(tv) > 1e-12) ? (h / std::fabs(tv)) : 1e12;
+    const double t = std::min(sx, sy);
+    const Base::Vector3d uv(tu * t, tv * t, 0.0);
     return textPosition + billboardOffsetToLocal(uv, frame);
 }
 
@@ -445,14 +402,22 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
 
     double worldPerPixel = 0.0;
     if (screenWorldPerPixel(textWorld, worldPerPixel) && labelImageWidth > 0 && labelImageHeight > 0) {
-        frame.halfW = std::max(0.5, 0.5 * static_cast<double>(labelImageWidth) * worldPerPixel);
-        frame.halfH = std::max(0.5, 0.5 * static_cast<double>(labelImageHeight) * worldPerPixel);
+        // Exact screen-pixel mapping — do not floor to 0.5 mm (that overshoots the
+        // visible border when zoomed out and makes the leader look disconnected).
+        frame.halfW = std::max(1e-6, 0.5 * static_cast<double>(labelImageWidth) * worldPerPixel);
+        frame.halfH = std::max(1e-6, 0.5 * static_cast<double>(labelImageHeight) * worldPerPixel);
         frame.valid = true;
     }
     else {
         const double mmPerPx = std::max(0.05, FontSize.getValue() * 0.03);
-        frame.halfW = std::max(0.5, 0.5 * static_cast<double>(std::max(1, labelImageWidth)) * mmPerPx);
-        frame.halfH = std::max(0.5, 0.5 * static_cast<double>(std::max(1, labelImageHeight)) * mmPerPx);
+        frame.halfW = std::max(
+            1e-6,
+            0.5 * static_cast<double>(std::max(1, labelImageWidth)) * mmPerPx
+        );
+        frame.halfH = std::max(
+            1e-6,
+            0.5 * static_cast<double>(std::max(1, labelImageHeight)) * mmPerPx
+        );
     }
 
     const Gui::View3DInventorViewer* viewer = getActiveViewer();
@@ -610,7 +575,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
     Gui::BitmapFactory().convert(hitProxy, sfHitProxy);
     pImageHitProxy->image = sfHitProxy;
 
-    refreshLeaderAndPort();
+    refreshLeader();
 }
 
 bool ViewProviderReviewNote::hitTestReference(SoDragger* drag, RefHit& out) const
@@ -689,68 +654,7 @@ bool ViewProviderReviewNote::acceptLabelDragStart(SoDragger* drag, DragState& st
     return true;
 }
 
-void ViewProviderReviewNote::setupPortHandle()
-{
-    if (portAnnotation) {
-        return;
-    }
-
-    portAnnotation = new SoAnnotation();
-    portAnnotation->ref();
-
-    auto* pick = new SoPickStyle();
-    pick->style = SoPickStyle::SHAPE_ON_TOP;
-    portAnnotation->addChild(pick);
-
-    // Port lives under the same base translation as the leader.
-    portAnnotation->addChild(pBaseTranslation);
-
-    portTranslation = new SoTranslation();
-    portSphere = new SoSphere();
-    portSphere->radius = 1.0f;
-    portMaterial = new SoMaterial();
-    portMaterial->diffuseColor.setValue(0.95f, 0.95f, 0.95f);
-    portMaterial->emissiveColor.setValue(0.35f, 0.55f, 0.95f);
-    portMaterial->specularColor.setValue(0.4f, 0.4f, 0.4f);
-
-    auto* handle = new SoSeparator();
-    handle->addChild(portMaterial);
-    handle->addChild(portSphere);
-
-    auto* dragger = new SoTranslate2Dragger();
-    dragger->setPart("translator", handle);
-    dragger->setPart("xAxisFeedback", new SoSeparator());
-    dragger->setPart("yAxisFeedback", new SoSeparator());
-    dragger->addStartCallback(portDragStartCallback, this);
-    dragger->addMotionCallback(portDragMotionCallback, this);
-    dragger->addFinishCallback(portDragFinishCallback, this);
-
-    auto* manipSep = new SoSeparator();
-    manipSep->addChild(portTranslation);
-    manipSep->addChild(dragger);
-    portAnnotation->addChild(manipSep);
-
-    pcRoot->addChild(portAnnotation);
-}
-
-void ViewProviderReviewNote::updatePortHandle(const Base::Vector3d& textPos)
-{
-    if (!portTranslation) {
-        return;
-    }
-    const Base::Vector3d end = leaderEndpoint(textPos);
-    portTranslation->translation.setValue(end.x, end.y, end.z);
-
-    const BillboardFrame frame = currentBillboardFrame(textPos);
-    const float radius = static_cast<float>(
-        std::clamp(0.12 * std::min(frame.halfW, frame.halfH), 0.35, 2.5)
-    );
-    if (portSphere) {
-        portSphere->radius = radius;
-    }
-}
-
-void ViewProviderReviewNote::refreshLeaderAndPort()
+void ViewProviderReviewNote::refreshLeader()
 {
     auto* note = getObject<Assembly::ReviewNote>();
     if (!note) {
@@ -802,10 +706,10 @@ void ViewProviderReviewNote::ensureCameraSensor()
 void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
 {
     auto* that = static_cast<ViewProviderReviewNote*>(data);
-    if (!that || that->portDragging) {
+    if (!that) {
         return;
     }
-    that->refreshLeaderAndPort();
+    that->refreshLeader();
 }
 
 void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* sensor)
@@ -822,73 +726,8 @@ void ViewProviderReviewNote::cameraSensorDeleteCallback(void* data, SoSensor* se
         if (SoCamera* camera = viewer->getSoRenderManager()->getCamera()) {
             nodeSensor->attach(camera);
             that->attachedCamera = camera;
-            that->refreshLeaderAndPort();
+            that->refreshLeader();
             return;
         }
     }
-}
-
-void ViewProviderReviewNote::portDragStartCallback(void* data, SoDragger* drag)
-{
-    auto* that = static_cast<ViewProviderReviewNote*>(data);
-    that->portDragging = true;
-    that->pendingPort = -1.0;
-    that->portDragPlanePoint = Base::convertTo<Base::Vector3d>(drag->getWorldStartingPoint());
-    that->portDragPlaneNormal = Base::convertTo<Base::Vector3d>(
-        drag->getViewVolume().getProjectionDirection()
-    );
-    Gui::Application::Instance->activeDocument()->openCommand(
-        QT_TRANSLATE_NOOP("Command", "Move Review Note Leader Port")
-    );
-}
-
-void ViewProviderReviewNote::portDragMotionCallback(void* data, SoDragger* drag)
-{
-    auto* that = static_cast<ViewProviderReviewNote*>(data);
-    if (!that->portDragging) {
-        return;
-    }
-    auto* note = that->getObject<Assembly::ReviewNote>();
-    if (!note) {
-        return;
-    }
-
-    Base::Vector3d pointerWorld;
-    if (!projectPointerToPlane(
-            *drag,
-            that->portDragPlanePoint,
-            that->portDragPlaneNormal,
-            pointerWorld
-        )) {
-        return;
-    }
-
-    const Base::Vector3d pointerLocal = that->worldToAnnotationPoint(pointerWorld);
-    const Base::Vector3d textPos = note->TextPosition.getValue();
-    const Base::Vector3d basePos = note->BasePosition.getValue();
-    const Base::Vector3d offset = pointerLocal - (basePos + textPos);
-
-    const BillboardFrame frame = that->currentBillboardFrame(textPos);
-    const Base::Vector3d uv(offset * frame.right, offset * frame.up, 0.0);
-    that->pendingPort = perimeterParam(uv, frame.halfW, frame.halfH);
-    const Base::Vector3d uvEnd = perimeterOffset(that->pendingPort, frame.halfW, frame.halfH);
-    const Base::Vector3d end = textPos + that->billboardOffsetToLocal(uvEnd, frame);
-    that->pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
-    if (that->portTranslation) {
-        that->portTranslation->translation.setValue(end.x, end.y, end.z);
-    }
-    that->LeaderEnd.setValue(end);
-}
-
-void ViewProviderReviewNote::portDragFinishCallback(void* data, SoDragger*)
-{
-    auto* that = static_cast<ViewProviderReviewNote*>(data);
-    auto* note = that->getObject<Assembly::ReviewNote>();
-    if (note && that->pendingPort >= 0.0) {
-        note->LeaderPort.setValue(that->pendingPort);
-    }
-    that->portDragging = false;
-    that->pendingPort = -1.0;
-    that->refreshLeaderAndPort();
-    Gui::Application::Instance->activeDocument()->commitCommand();
 }
