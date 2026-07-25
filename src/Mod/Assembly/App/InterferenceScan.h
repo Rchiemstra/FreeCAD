@@ -158,7 +158,12 @@ AssemblyExport bool resolveInterferenceComponentOccurrence(
     InterferenceComponentOccurrence& out
 );
 
-/** Leaves whose occurrenceSubName starts with the given prefix. */
+/** Leaves under an occurrence prefix relative to root.
+ * Traverses only that occurrence branch when the prefix resolves to a concrete
+ * object path (preferred). Digit/array tokens fall back to one full collect +
+ * filter. Selected-pair callers must pass includeHidden=true so explicitly
+ * selected hidden occurrences still contribute leaves.
+ */
 AssemblyExport std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
     const App::DocumentObject* root,
     const std::string& occurrencePrefix,
@@ -221,9 +226,9 @@ struct InterferenceSelectionScope
     InterferenceScanScopeMode mode = InterferenceScanScopeMode::AllComponents;
     InterferenceComponentOccurrence first;
     InterferenceComponentOccurrence second;
-    /** Count of non-empty subName handles (literal subelement picks). */
+    /** Count of pair endpoints: whole-object (empty subName) and subelement picks. */
     int subelementHandleCount = 0;
-    /** Distinct resolved occurrence prefixes among those handles. */
+    /** Distinct resolved occurrence prefixes among those endpoints. */
     int distinctOccurrenceCount = 0;
 };
 
@@ -240,10 +245,15 @@ AssemblyExport std::string normalizeInterferenceSubName(
  * Choose an interference host from selection handles.
  *
  * An unrelated edit-mode assembly is overridden only by an exact global selected
- * pair: exactly two non-empty subelement handles on the same interference root
- * that resolve to two distinct occurrence prefixes. Otherwise a valid edit-mode
- * assembly remains the host. With no edit-mode assembly, selected
- * App::Part/Assembly roots (including whole-object picks) can still host scans.
+ * pair: exactly two endpoints (whole-object or subelement) that share one
+ * interference root (same document as the edit assembly when one is present) and
+ * resolve to two distinct occurrence prefixes. Whole-object tree picks of child
+ * components resolve the common App::Part/Assembly ancestor as host. Otherwise a
+ * valid edit-mode assembly remains the host for all-components scans. With no
+ * edit-mode assembly, selected App::Part/Assembly roots can still host scans.
+ *
+ * Check Selected Components must use SelectedPair only; an invalid/ambiguous
+ * selection leaves that command inactive (no all-components fallback).
  */
 AssemblyExport App::DocumentObject* resolveInterferenceHostFromHandles(
     const std::vector<InterferenceSelectionHandle>& handles,
@@ -251,8 +261,31 @@ AssemblyExport App::DocumentObject* resolveInterferenceHostFromHandles(
 );
 
 /**
- * Exactly two non-empty subelement handles that resolve to two distinct occurrences
- * → SelectedPair. Any other cardinality or resolution → AllComponents.
+ * Resolve an exact selected-pair request for Check Selected Components.
+ * Valid only when exactly two endpoints share one interference root and resolve
+ * to two distinct occurrences. Never falls back to an all-components host.
+ */
+struct InterferenceSelectedPairRequest
+{
+    App::DocumentObject* host = nullptr;
+    InterferenceComponentOccurrence first;
+    InterferenceComponentOccurrence second;
+    bool valid() const
+    {
+        return host && !first.occurrencePrefix.empty() && !second.occurrencePrefix.empty()
+            && first.occurrencePrefix != second.occurrencePrefix;
+    }
+};
+
+AssemblyExport InterferenceSelectedPairRequest resolveInterferenceSelectedPairRequest(
+    const std::vector<InterferenceSelectionHandle>& handles,
+    App::DocumentObject* editModeAssemblyOrNull = nullptr
+);
+
+/**
+ * Exactly two pair endpoints (whole-object or subelement) that resolve to two
+ * distinct occurrences → SelectedPair. Any other cardinality or resolution →
+ * AllComponents. A third whole-object or subelement endpoint disables SelectedPair.
  */
 AssemblyExport InterferenceSelectionScope resolveInterferenceSelectionScope(
     const App::DocumentObject* root,

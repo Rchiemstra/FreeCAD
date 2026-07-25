@@ -180,6 +180,11 @@ void TaskInterferenceCheck::setupUi()
     controls->addWidget(new QLabel(tr("Clearance:"), this));
     controls->addWidget(clearanceSpin);
     includeHiddenCheck = new QCheckBox(tr("Include hidden"), this);
+    includeHiddenCheck->setToolTip(
+        tr("Include hidden components when scanning all occurrences. "
+           "Disabled for selected-pair checks, which always scan both selected "
+           "components even if they are hidden.")
+    );
     showExcludedCheck = new QCheckBox(tr("Show excluded"), this);
     controls->addWidget(includeHiddenCheck);
     controls->addWidget(showExcludedCheck);
@@ -427,6 +432,16 @@ bool TaskInterferenceCheck::testIsSelectedPairMode() const
     return selectedComponentsMode;
 }
 
+bool TaskInterferenceCheck::testIsIncludeHiddenEnabled() const
+{
+    return includeHiddenCheck && includeHiddenCheck->isEnabled();
+}
+
+int TaskInterferenceCheck::testPenetrationCount() const
+{
+    return lastResult.counts.penetrations;
+}
+
 void TaskInterferenceCheck::testRefreshScanScope()
 {
     refreshScanScope();
@@ -657,7 +672,8 @@ void TaskInterferenceCheck::setScanControlsEnabled(bool enabled)
         clearanceSpin->setEnabled(enabled);
     }
     if (includeHiddenCheck) {
-        includeHiddenCheck->setEnabled(enabled);
+        // Selected-pair mode keeps Include hidden disabled even while idle.
+        includeHiddenCheck->setEnabled(enabled && !selectedComponentsMode);
     }
     if (runButton) {
         runButton->setEnabled(enabled);
@@ -925,6 +941,14 @@ void TaskInterferenceCheck::refreshScanScope()
     }
 
     if (selectedComponentsMode) {
+        if (includeHiddenCheck) {
+            includeHiddenCheck->setEnabled(false);
+            includeHiddenCheck->setToolTip(
+                tr("Include hidden applies only to all-components scans. "
+                   "Selected-pair checks always include both selected components, "
+                   "even when hidden.")
+            );
+        }
         scopeLabel->setText(
             tr("Scan scope: selected pair — '%1' ↔ '%2' (faces are pick handles; complete "
                "occurrences including nested solids).")
@@ -935,6 +959,15 @@ void TaskInterferenceCheck::refreshScanScope()
             statusLabel->setText(tr("Ready to check the selected component pair."));
         }
         return;
+    }
+
+    if (includeHiddenCheck) {
+        includeHiddenCheck->setEnabled(true);
+        includeHiddenCheck->setToolTip(
+            tr("Include hidden components when scanning all occurrences. "
+               "Disabled for selected-pair checks, which always scan both selected "
+               "components even if they are hidden.")
+        );
     }
 
     const auto components = listInterferenceComponentOccurrences(host, includeHidden);
@@ -1057,45 +1090,67 @@ void TaskInterferenceCheck::onRun()
         return;
     }
 
-    // Snapshot DocumentObject-backed geometry on this thread before the worker.
-    // Optional test barrier runs mid-preparation (after occurrence listing).
-    auto snapshot = prepareInterferenceComponentScanSnapshot(
-        host,
-        includeHidden,
-        prepOptions,
-        testPreparationBarrierFn
-    );
-    preparingScan = false;
-    if (!host || !host->isAttachedToDocument() || snapshot.cancelled
-        || (cancel && cancel->load(std::memory_order_relaxed))) {
-        // finishScan clears busy; false means cancelled/stale — still clean up UI.
-        (void)session.finishScan(generation);
-        discardResults();
-        cancelButton->setEnabled(false);
-        setScanControlsEnabled(host != nullptr);
-        if (statusLabel) {
-            statusLabel->setText(tr("Scan cancelled."));
-        }
-        if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
-            selectionDirtyWhileBusy = false;
-            refreshScanScope();
-        }
-        return;
-    }
-
     const bool betweenSelected = selectedComponentsMode;
     std::vector<InterferenceLeaf> leavesA;
     std::vector<InterferenceLeaf> leavesB;
     InterferenceComponentScanSnapshot acrossSnapshot;
+
+    auto prepCancelled = [&]() {
+        return cancel && cancel->load(std::memory_order_relaxed);
+    };
+
     if (betweenSelected) {
-        for (std::size_t i = 0; i < snapshot.leaves.size(); ++i) {
-            const auto& leaf = snapshot.leaves[i];
-            if (leaf.occurrenceSubName.rfind(selectedA.occurrencePrefix, 0) == 0) {
-                leavesA.push_back(leaf);
+        // Explicitly selected occurrences always contribute geometry, including
+        // when hidden. Traverse only each selected branch (includeHidden=true).
+        if (testPreparationBarrierFn) {
+            testPreparationBarrierFn();
+        }
+        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+            preparingScan = false;
+            (void)session.finishScan(generation);
+            discardResults();
+            cancelButton->setEnabled(false);
+            setScanControlsEnabled(host != nullptr);
+            if (statusLabel) {
+                statusLabel->setText(tr("Scan cancelled."));
             }
-            else if (leaf.occurrenceSubName.rfind(selectedB.occurrencePrefix, 0) == 0) {
-                leavesB.push_back(leaf);
+            if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+                selectionDirtyWhileBusy = false;
+                refreshScanScope();
             }
+            return;
+        }
+        leavesA = collectInterferenceLeavesUnderPrefix(
+            host,
+            selectedA.occurrencePrefix,
+            /*includeHidden=*/true
+        );
+        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+            preparingScan = false;
+            (void)session.finishScan(generation);
+            discardResults();
+            cancelButton->setEnabled(false);
+            setScanControlsEnabled(host != nullptr);
+            if (statusLabel) {
+                statusLabel->setText(tr("Scan cancelled."));
+            }
+            return;
+        }
+        leavesB = collectInterferenceLeavesUnderPrefix(
+            host,
+            selectedB.occurrencePrefix,
+            /*includeHidden=*/true
+        );
+        preparingScan = false;
+        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+            (void)session.finishScan(generation);
+            discardResults();
+            cancelButton->setEnabled(false);
+            setScanControlsEnabled(host != nullptr);
+            if (statusLabel) {
+                statusLabel->setText(tr("Scan cancelled."));
+            }
+            return;
         }
         if (statusLabel) {
             statusLabel->setText(
@@ -1106,6 +1161,30 @@ void TaskInterferenceCheck::onRun()
         }
     }
     else {
+        // Snapshot DocumentObject-backed geometry on this thread before the worker.
+        // Optional test barrier runs mid-preparation (after occurrence listing).
+        auto snapshot = prepareInterferenceComponentScanSnapshot(
+            host,
+            includeHidden,
+            prepOptions,
+            testPreparationBarrierFn
+        );
+        preparingScan = false;
+        if (!host || !host->isAttachedToDocument() || snapshot.cancelled
+            || (cancel && cancel->load(std::memory_order_relaxed))) {
+            (void)session.finishScan(generation);
+            discardResults();
+            cancelButton->setEnabled(false);
+            setScanControlsEnabled(host != nullptr);
+            if (statusLabel) {
+                statusLabel->setText(tr("Scan cancelled."));
+            }
+            if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+                selectionDirtyWhileBusy = false;
+                refreshScanScope();
+            }
+            return;
+        }
         acrossSnapshot = std::move(snapshot);
         if (statusLabel) {
             statusLabel->setText(tr("Scanning all applicable component occurrences…"));

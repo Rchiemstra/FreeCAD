@@ -1140,10 +1140,71 @@ std::vector<InterferenceLeaf> collectInterferenceLeavesUnderPrefix(
 )
 {
     std::vector<InterferenceLeaf> filtered;
-    if (occurrencePrefix.empty()) {
+    if (!isInterferenceRoot(root) || occurrencePrefix.empty() || !root->isAttachedToDocument()) {
         return filtered;
     }
-    auto leaves = collectInterferenceLeaves(root, includeHidden);
+
+    auto* mutableRoot = const_cast<App::DocumentObject*>(root);
+    App::Document* doc = root->getDocument();
+    if (!doc) {
+        return filtered;
+    }
+
+    auto names = Base::Tools::splitSubName(occurrencePrefix);
+    std::vector<App::DocumentObject*> branchPath;
+    bool hasArrayToken = false;
+    for (const auto& name : names) {
+        if (name.empty()) {
+            continue;
+        }
+        if (isDigitsToken(name)) {
+            hasArrayToken = true;
+            break;
+        }
+        App::DocumentObject* cur = doc->getObject(name.c_str());
+        if (!cur) {
+            return filtered;
+        }
+        branchPath.push_back(cur);
+    }
+
+    // Array element prefixes: one full collect + filter (documented fallback).
+    if (hasArrayToken || branchPath.empty()) {
+        auto leaves = collectInterferenceLeaves(root, includeHidden);
+        filtered.reserve(leaves.size());
+        for (auto& leaf : leaves) {
+            if (leaf.occurrenceSubName.rfind(occurrencePrefix, 0) == 0) {
+                filtered.push_back(std::move(leaf));
+            }
+        }
+        return filtered;
+    }
+
+    // Prefix-scoped: traverse only the selected occurrence branch.
+    App::DocumentObject* startObj = branchPath.back();
+    branchPath.pop_back();
+    std::vector<App::DocumentObject*> visibilityPath {mutableRoot};
+    for (auto* obj : branchPath) {
+        visibilityPath.push_back(obj);
+    }
+
+    std::unordered_set<App::DocumentObject*> visiting;
+    visiting.insert(mutableRoot);
+    for (auto* obj : branchPath) {
+        visiting.insert(obj);
+    }
+
+    std::vector<InterferenceLeaf> leaves;
+    collectRecursively(
+        root,
+        startObj,
+        branchPath,
+        visibilityPath,
+        includeHidden,
+        visiting,
+        leaves
+    );
+
     filtered.reserve(leaves.size());
     for (auto& leaf : leaves) {
         if (leaf.occurrenceSubName.rfind(occurrencePrefix, 0) == 0) {
@@ -1546,28 +1607,69 @@ App::DocumentObject* resolveInterferenceHostFromHandles(
     App::DocumentObject* editModeAssemblyOrNull
 )
 {
-    // Global pair-host gate: count every non-empty subelement handle, including
-    // those under other roots, so filtered per-root scopes cannot hide extras.
-    std::vector<const InterferenceSelectionHandle*> subHandles;
-    subHandles.reserve(handles.size());
+    // Every whole-object or subelement selection with a live object is an endpoint.
+    std::vector<const InterferenceSelectionHandle*> endpoints;
+    endpoints.reserve(handles.size());
     for (const auto& handle : handles) {
-        if (!handle.object || handle.subName.empty()) {
+        if (!handle.object || !handle.object->isAttachedToDocument()) {
             continue;
         }
-        subHandles.push_back(&handle);
+        endpoints.push_back(&handle);
     }
 
-    if (subHandles.size() == 2 && subHandles[0]->object == subHandles[1]->object) {
-        App::DocumentObject* root = subHandles[0]->object;
-        if (isInterferenceRoot(root) && root->isAttachedToDocument()) {
-            // Use the shared scope resolver on the full handle list so empty
-            // whole-object entries do not invent extra subelement cardinality.
-            const auto scope = resolveInterferenceSelectionScope(root, handles);
-            if (scope.mode == InterferenceScanScopeMode::SelectedPair
-                && scope.subelementHandleCount == 2
-                && scope.distinctOccurrenceCount == 2) {
-                return root;
+    auto candidateRootsFor = [](App::DocumentObject* obj) {
+        std::vector<App::DocumentObject*> roots;
+        if (!obj || !obj->isAttachedToDocument()) {
+            return roots;
+        }
+        if (isInterferenceRoot(obj)) {
+            roots.push_back(obj);
+        }
+        for (const auto& parent : obj->getParents()) {
+            if (parent.first && isInterferenceRoot(parent.first)
+                && parent.first->isAttachedToDocument()) {
+                roots.push_back(parent.first);
             }
+        }
+        return roots;
+    };
+
+    auto sameDocAsEdit = [&](App::DocumentObject* root) {
+        return !editModeAssemblyOrNull || !editModeAssemblyOrNull->getDocument()
+            || (root->getDocument() == editModeAssemblyOrNull->getDocument());
+    };
+
+    // Exact two endpoints: try a shared interference root (may be a common ancestor).
+    if (endpoints.size() == 2) {
+        const auto& ha = *endpoints[0];
+        const auto& hb = *endpoints[1];
+        auto rootsA = candidateRootsFor(ha.object);
+        auto rootsB = candidateRootsFor(hb.object);
+
+        App::DocumentObject* bestRoot = nullptr;
+        int bestDepth = -1;
+        for (auto* root : rootsA) {
+            if (!root || !sameDocAsEdit(root)) {
+                continue;
+            }
+            if (std::find(rootsB.begin(), rootsB.end(), root) == rootsB.end()) {
+                continue;
+            }
+            const auto scope = resolveInterferenceSelectionScope(root, handles);
+            if (scope.mode != InterferenceScanScopeMode::SelectedPair
+                || scope.subelementHandleCount != 2
+                || scope.distinctOccurrenceCount != 2) {
+                continue;
+            }
+            // Prefer the deepest common root (most parents).
+            const int depth = static_cast<int>(root->getParents().size());
+            if (depth > bestDepth) {
+                bestDepth = depth;
+                bestRoot = root;
+            }
+        }
+        if (bestRoot) {
+            return bestRoot;
         }
     }
 
@@ -1592,6 +1694,43 @@ App::DocumentObject* resolveInterferenceHostFromHandles(
     return nullptr;
 }
 
+InterferenceSelectedPairRequest resolveInterferenceSelectedPairRequest(
+    const std::vector<InterferenceSelectionHandle>& handles,
+    App::DocumentObject* editModeAssemblyOrNull
+)
+{
+    InterferenceSelectedPairRequest request;
+    // Reuse host resolution's pair gate, then require SelectedPair on that host.
+    // Do not accept an edit-mode / all-components fallback host.
+    std::vector<const InterferenceSelectionHandle*> endpoints;
+    for (const auto& handle : handles) {
+        if (!handle.object || !handle.object->isAttachedToDocument()) {
+            continue;
+        }
+        endpoints.push_back(&handle);
+    }
+    if (endpoints.size() != 2) {
+        return request;
+    }
+
+    auto* host = resolveInterferenceHostFromHandles(handles, editModeAssemblyOrNull);
+    if (!host) {
+        return request;
+    }
+    // If host came from edit/all-components fallback, scope will not be SelectedPair
+    // when endpoints belong to another root — still verify explicitly.
+    const auto scope = resolveInterferenceSelectionScope(host, handles);
+    if (scope.mode != InterferenceScanScopeMode::SelectedPair
+        || scope.subelementHandleCount != 2
+        || scope.distinctOccurrenceCount != 2) {
+        return request;
+    }
+    request.host = host;
+    request.first = scope.first;
+    request.second = scope.second;
+    return request;
+}
+
 InterferenceSelectionScope resolveInterferenceSelectionScope(
     const App::DocumentObject* root,
     const std::vector<InterferenceSelectionHandle>& handles
@@ -1604,13 +1743,10 @@ InterferenceSelectionScope resolveInterferenceSelectionScope(
 
     std::vector<InterferenceComponentOccurrence> resolved;
     for (const auto& handle : handles) {
-        if (!handle.object) {
+        if (!handle.object || !handle.object->isAttachedToDocument()) {
             continue;
         }
-        // Literal subelement requirement: empty subName is whole-object, not a handle.
-        if (handle.subName.empty()) {
-            continue;
-        }
+        // Whole-object and subelement picks both count as pair endpoints.
         scope.subelementHandleCount += 1;
         InterferenceComponentOccurrence occ;
         if (resolveInterferenceComponentOccurrence(root, handle.object, handle.subName, occ)) {

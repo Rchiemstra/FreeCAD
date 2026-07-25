@@ -96,21 +96,12 @@ static App::DocumentObject* getInterferenceHost()
     return resolveInterferenceHostFromHandles(handles, getActiveAssembly());
 }
 
-static bool resolveTwoSelectedComponents(
-    App::DocumentObject* root,
-    InterferenceComponentOccurrence& first,
-    InterferenceComponentOccurrence& second
-)
+static InterferenceSelectedPairRequest currentSelectedPairRequest()
 {
-    first = {};
-    second = {};
-    const auto scope = resolveInterferenceSelectionScope(root, currentInterferenceSelectionHandles());
-    if (scope.mode != InterferenceScanScopeMode::SelectedPair) {
-        return false;
-    }
-    first = scope.first;
-    second = scope.second;
-    return true;
+    return resolveInterferenceSelectedPairRequest(
+        currentInterferenceSelectionHandles(),
+        getActiveAssembly()
+    );
 }
 
 void selectObjects(const std::vector<App::DocumentObject*>& objectsToSelect)
@@ -473,21 +464,18 @@ CmdAssemblyCheckSelectedComponents::CmdAssemblyCheckSelectedComponents()
 void CmdAssemblyCheckSelectedComponents::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    App::DocumentObject* host = getInterferenceHost();
-    InterferenceComponentOccurrence first;
-    InterferenceComponentOccurrence second;
-    if (!host || !resolveTwoSelectedComponents(host, first, second)) {
+    const auto request = currentSelectedPairRequest();
+    if (!request.valid()) {
         return;
     }
-    Gui::Control().showDialog(new TaskInterferenceCheckDialog(host, first, second));
+    Gui::Control().showDialog(
+        new TaskInterferenceCheckDialog(request.host, request.first, request.second)
+    );
 }
 
 bool CmdAssemblyCheckSelectedComponents::isActive()
 {
-    App::DocumentObject* host = getInterferenceHost();
-    InterferenceComponentOccurrence first;
-    InterferenceComponentOccurrence second;
-    return host && resolveTwoSelectedComponents(host, first, second);
+    return currentSelectedPairRequest().valid();
 }
 
 

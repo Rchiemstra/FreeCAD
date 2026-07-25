@@ -118,6 +118,8 @@ public:
     bool testHasHost() const;
     QString testScopeText() const;
     bool testIsSelectedPairMode() const;
+    bool testIsIncludeHiddenEnabled() const;
+    int testPenetrationCount() const;
     void testRefreshScanScope();
     /**
      * Headless-safe stand-in for Gui::Selection: feeds the same handle list

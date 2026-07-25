@@ -12,6 +12,9 @@
 #include <TopLoc_Location.hxx>
 
 #include <QApplication>
+#include <QEventLoop>
+#include <QTimer>
+#include <QtGlobal>
 
 #include <App/Document.h>
 #include <App/Part.h>
@@ -310,8 +313,14 @@ TEST_F(TaskInterferenceCheckTest, selectionCardinalityDrivesScopeMode)
     task.testRefreshScanScope();
     EXPECT_FALSE(task.testIsSelectedPairMode());
 
-    // Whole-object selections are not subelement handles.
+    // Whole-object tree selections of two distinct components are SelectedPair.
     task.testSetSelectionHandles({{partA, {}}, {partB, {}}});
+    task.testRefreshScanScope();
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_FALSE(task.testIsIncludeHiddenEnabled());
+
+    // A third whole-object endpoint disables selected-pair mode.
+    task.testSetSelectionHandles({{partA, {}}, {partB, {}}, {partC, {}}});
     task.testRefreshScanScope();
     EXPECT_FALSE(task.testIsSelectedPairMode());
 
@@ -579,6 +588,103 @@ TEST_F(TaskInterferenceCheckTest, previewAttachesAndDetachesFromSceneGraph)
     EXPECT_EQ(task.testPreviewIndexInScene(scene), -1);
 
     scene->unref();
+}
+
+TEST_F(TaskInterferenceCheckTest, commandPathWholeObjectHiddenPairFindsPenetration)
+{
+    // Command-path seam for Assembly_CheckSelectedComponents:
+    // whole-object tree handles (identical to SelectionEx with empty subNames) →
+    // resolveInterferenceSelectedPairRequest (same gate as command isActive/activated) →
+    // TaskInterferenceCheck(host, first, second) as activated() constructs the dialog.
+    // Gui::Selection::addSelection is not used here: it requires Gui::Application::macroManager
+    // which this headless AssemblyGui_tests_run binary does not bootstrap.
+    auto* casePart = _doc->addObject<App::Part>("AssemblyCase");
+    auto* caseBox = _doc->addObject<Part::Box>("CaseBox");
+    caseBox->Length.setValue(20);
+    caseBox->Width.setValue(20);
+    caseBox->Height.setValue(20);
+    casePart->addObject(caseBox);
+    casePart->Visibility.setValue(false);
+
+    auto* spool = _doc->addObject<App::Part>("AssemblySpool");
+    spool->Placement.setValue(Base::Placement(Base::Vector3d(10, 0, 0), Base::Rotation()));
+    auto* spoolBox = _doc->addObject<Part::Box>("SpoolBox");
+    spoolBox->Length.setValue(20);
+    spoolBox->Width.setValue(20);
+    spoolBox->Height.setValue(20);
+    spool->addObject(spoolBox);
+
+    auto* gear = _doc->addObject<App::Part>("GearMeshAssembly");
+    auto* gearBox = _doc->addObject<Part::Box>("GearBox");
+    gearBox->Length.setValue(5);
+    gearBox->Width.setValue(5);
+    gearBox->Height.setValue(5);
+    gear->Placement.setValue(Base::Placement(Base::Vector3d(100, 0, 0), Base::Rotation()));
+    gear->addObject(gearBox);
+
+    _assembly->addObject(casePart);
+    _assembly->addObject(spool);
+    _assembly->addObject(gear);
+    _doc->recompute();
+
+    // Whole-object SelectionEx handles (empty subName), as produced by tree Ctrl-select.
+    std::vector<Assembly::InterferenceSelectionHandle> handles {
+        {casePart, {}},
+        {spool, {}}
+    };
+
+    auto request = Assembly::resolveInterferenceSelectedPairRequest(handles, _assembly);
+    ASSERT_TRUE(request.valid()) << "Check Selected Components must be active";
+    EXPECT_EQ(request.host, _assembly);
+    EXPECT_TRUE(
+        (request.first.occurrencePrefix == "AssemblyCase."
+         && request.second.occurrencePrefix == "AssemblySpool.")
+        || (request.first.occurrencePrefix == "AssemblySpool."
+            && request.second.occurrencePrefix == "AssemblyCase.")
+    );
+
+    // Third whole-object endpoint must keep the command inactive (no all-components fallback).
+    {
+        auto invalid = Assembly::resolveInterferenceSelectedPairRequest(
+            {{casePart, {}}, {spool, {}}, {gear, {}}},
+            _assembly
+        );
+        EXPECT_FALSE(invalid.valid());
+    }
+
+    AssemblyGui::TaskInterferenceCheck task(request.host, request.first, request.second);
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(task.testScopeText().contains(QStringLiteral("selected pair"), Qt::CaseInsensitive));
+    EXPECT_TRUE(
+        task.testScopeText().contains(QStringLiteral("Case"), Qt::CaseInsensitive)
+        || task.testScopeText().contains(QStringLiteral("AssemblyCase"))
+    );
+    EXPECT_FALSE(task.testIsIncludeHiddenEnabled());
+
+    task.testSetIncludeHidden(false);
+    task.testRunScan();
+
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.start(60000);
+    while (task.isScanning() && timeout.isActive()) {
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+    for (int i = 0; i < 50 && !task.hasResults() && !task.isScanning(); ++i) {
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_GE(task.testPenetrationCount(), 1);
+    EXPECT_FALSE(casePart->Visibility.getValue());
+
+    for (std::size_t i = 0; i < task.testResultPairCount(); ++i) {
+        EXPECT_FALSE(task.testTableCellText(static_cast<int>(i), 1)
+                         .contains(QStringLiteral("GearMesh"), Qt::CaseInsensitive));
+        EXPECT_FALSE(task.testTableCellText(static_cast<int>(i), 2)
+                         .contains(QStringLiteral("GearMesh"), Qt::CaseInsensitive));
+    }
 }
 
 int main(int argc, char** argv)
