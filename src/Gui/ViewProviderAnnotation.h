@@ -135,7 +135,8 @@ protected:
     virtual void onLabelDragFinished(const DragState& state);
 
     void previewTextPosition(DragState& state, const Base::Vector3d& textPosition);
-    void setLeaderCoords(const Base::Vector3d& textPosition);
+    /** Update leader polyline for the given text position (override to sync handles). */
+    virtual void setLeaderCoords(const Base::Vector3d& textPosition);
 
     SoCoordinate3* pCoords;
     SoImage* pImage;
