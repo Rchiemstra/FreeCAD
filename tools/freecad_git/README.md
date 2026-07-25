@@ -49,6 +49,44 @@ freecad-git diagnostics path/to/Model.FCStd
 freecad-git --version
 ```
 
+## Assembly Review Notes
+
+`Assembly::ReviewNote` and `Assembly::ReviewNoteGroup` are exported with group
+ownership, multiline `LabelText`, `@` target links (including whole-object
+targets with an empty subelement), local anchors, text positions, leader port,
+resolved state, visibility, and annotation display properties (`view`).
+
+### Restoring notes (FreeCAD / FreeCADCmd only)
+
+A standalone `freecad-git` console process **cannot** see a document open in
+another FreeCAD GUI. Restore must open an explicit destination `.FCStd` in the
+**current** FreeCAD process, recreate notes, save in-place, and close.
+
+In-place overwrite: `--fcstd` is opened, notes are written into that document,
+and the same file is saved unless `--no-save` is passed. The sidecar JSON is
+never modified. `--replace-existing` removes same-named
+`Assembly::ReviewNote` / `Assembly::ReviewNoteGroup` objects only; a wrong-type
+name collision aborts before any mutation.
+
+```bash
+# Preferred: FreeCADCmd opens the destination, restores, saves, closes
+FreeCADCmd -c "import sys; from freecad_git.cli import main; sys.exit(main([
+  'restore-review-notes', 'Model.FCStd.git.json', '--fcstd', 'Model.FCStd',
+  '--replace-existing']))"
+```
+
+From Python inside an already-running FreeCAD / FreeCADCmd session:
+
+```python
+from freecad_git.restore import restore_review_notes_into_fcstd, restore_review_notes_from_file
+
+# Open → restore → save in-place → close
+restore_review_notes_into_fcstd("Model.FCStd.git.json", "Model.FCStd", replace_existing=True)
+
+# Or restore into a document already open in *this* process
+restore_review_notes_from_file(App.ActiveDocument, "Model.FCStd.git.json")
+```
+
 ## Developer Workflow
 
 ```text

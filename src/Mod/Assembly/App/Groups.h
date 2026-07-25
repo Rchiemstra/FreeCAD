@@ -124,4 +124,22 @@ public:
     }
 };
 
+
+class AssemblyExport ReviewNoteGroup: public App::DocumentObjectGroup
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(Assembly::ReviewNoteGroup);
+
+public:
+    ReviewNoteGroup() = default;
+    ~ReviewNoteGroup() override = default;
+
+    PyObject* getPyObject() override;
+
+    /// returns the type name of the ViewProvider
+    const char* getViewProviderName() const override
+    {
+        return "AssemblyGui::ViewProviderReviewNoteGroup";
+    }
+};
+
 }  // namespace Assembly

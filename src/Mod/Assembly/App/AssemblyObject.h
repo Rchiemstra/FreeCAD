@@ -88,6 +88,7 @@ public:
 
     App::DocumentObjectExecReturn* execute() override;
     void onChanged(const App::Property* prop) override;
+    void unsetupObject() override;
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
     and redraw the joints Args : enableRedo : This store initial positions to enable undo while
     being in an active transaction (joint creation).*/

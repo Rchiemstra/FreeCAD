@@ -31,6 +31,7 @@
 #include "ViewProviderAssemblyLink.h"
 #include "ViewProviderBom.h"
 #include "ViewProviderGroups.h"
+#include "ViewProviderReviewNote.h"
 
 namespace AssemblyGui
 {
@@ -67,6 +68,8 @@ PyMOD_INIT_FUNC(AssemblyGui)
     AssemblyGui::ViewProviderViewGroup::init();
     AssemblyGui::ViewProviderSimulationGroup::init();
     AssemblyGui::ViewProviderSnapshotGroup::init();
+    AssemblyGui::ViewProviderReviewNoteGroup::init();
+    AssemblyGui::ViewProviderReviewNote::init();
 
     PyMOD_Return(mod);
 }

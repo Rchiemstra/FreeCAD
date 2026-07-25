@@ -74,6 +74,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSimulation
         import CommandCreateSnapshot
         import CommandCreateBom
+        import CommandReviewNote
         import Preferences
 
         FreeCADGui.addLanguagePath(":/translations")
@@ -139,13 +140,34 @@ class AssemblyWorkbench(Workbench):
 
     def ContextMenu(self, recipient):
         import UtilsAssembly
+        import CommandReviewNote
 
-        assembly = UtilsAssembly.activeAssembly()
-        if assembly is None:
-            return
+        # Edit / resolve when a review note is selected (tree or view), even if
+        # no Assembly is currently active.
+        notes = [
+            obj
+            for obj in Gui.Selection.getSelection()
+            if obj.isDerivedFrom("Assembly::ReviewNote")
+        ]
+        if len(notes) == 1:
+            self.appendContextMenu(
+                "",
+                ["Assembly_EditReviewNote", "Assembly_ToggleResolveReviewNote"],
+            )
 
         selection = Gui.Selection.getSelectionEx("*", 0)
         if not selection:
+            return
+
+        # Add Review Note for View context when exactly one supported target exists
+        # under the nearest owning App::Part (or active AssemblyObject).
+        if recipient == "View" and CommandReviewNote.is_add_review_note_task_eligible(
+            selection
+        ):
+            self.appendContextMenu("", ["Assembly_AddReviewNote"])
+
+        assembly = UtilsAssembly.activeAssembly()
+        if assembly is None:
             return
 
         for sel in selection:
@@ -292,6 +314,24 @@ class AssemblyWorkbench(Workbench):
                 joints = UtilsAssembly.getJointsOfType(self.assembly, joint_types)
                 return len(joints) > 0
 
+        class AssemblyReviewNoteWatcher:
+            """Shows 'Add Review Note' for a single supported selection.
+
+            Visible even when the owning Assembly is inactive — activating the
+            command activates that Assembly and preserves the selection.
+            Hidden for unsupported targets or multi-selection.
+            """
+
+            def __init__(self):
+                self.commands = ["Assembly_AddReviewNote"]
+                self.title = translate("Assembly", "Review")
+                self.icon = "Assembly_ReviewNote"
+
+            def shouldShow(self):
+                import CommandReviewNote
+
+                return CommandReviewNote.is_add_review_note_task_eligible()
+
         watchers = [
             AssemblyCreateWatcher(),
             AssemblyActivateWatcher(),
@@ -300,6 +340,7 @@ class AssemblyWorkbench(Workbench):
             AssemblyJointsWatcher(),
             AssemblyToolsWatcher(),
             AssemblySimulationWatcher(),
+            AssemblyReviewNoteWatcher(),
         ]
         FreeCADGui.Control.addTaskWatcher(watchers)
 

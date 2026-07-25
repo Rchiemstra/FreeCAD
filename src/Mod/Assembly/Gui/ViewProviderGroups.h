@@ -116,4 +116,18 @@ public:
     QIcon getIcon() const override;
 };
 
+class AssemblyGuiExport ViewProviderReviewNoteGroup: public ViewProviderGroupBase
+{
+    PROPERTY_HEADER_WITH_OVERRIDE(AssemblyGui::ViewProviderReviewNoteGroup);
+
+public:
+    ViewProviderReviewNoteGroup() = default;
+    ~ViewProviderReviewNoteGroup() override = default;
+
+    QIcon getIcon() const override;
+
+    /// Allow deleting an empty group; block deletion when notes are present.
+    bool onDelete(const std::vector<std::string>& subNames) override;
+};
+
 }  // namespace AssemblyGui

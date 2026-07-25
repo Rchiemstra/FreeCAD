@@ -53,6 +53,10 @@ SET(AssemblyGui_SRCS_Module
     ViewProviderBom.h
     ViewProviderGroups.cpp
     ViewProviderGroups.h
+    ViewProviderReviewNote.cpp
+    ViewProviderReviewNote.h
+    ViewProviderReviewNoteTestHarness.cpp
+    ViewProviderReviewNoteTestHarness.h
     ${Assembly_QRC_SRCS}
 )
 
@@ -88,6 +92,10 @@ target_include_directories(
 if(WIN32)
     target_compile_definitions(AssemblyGui PRIVATE _USE_MATH_DEFINES)
 endif(WIN32)
+
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(AssemblyGui PRIVATE ASSEMBLY_ENABLE_TEST_HOOKS=1)
+endif()
 
 target_link_libraries(AssemblyGui ${AssemblyGui_LIBS})
 if (FREECAD_WARN_ERROR)

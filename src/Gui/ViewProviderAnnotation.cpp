@@ -475,7 +475,7 @@ void ViewProviderAnnotationLabel::updateData(const App::Property* prop)
     }
     else if (prop->is<App::PropertyVector>() && strcmp(prop->getName(), "TextPosition") == 0) {
         Base::Vector3d v = static_cast<const App::PropertyVector*>(prop)->getValue();
-        pCoords->point.set1Value(1, SbVec3f(v.x, v.y, v.z));
+        setLeaderCoords(v);
         pTextTranslation->translation.setValue(v.x, v.y, v.z);
     }
 
@@ -490,18 +490,23 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
     if (auto* obj = that->getObject<App::AnnotationLabel>()) {
         const Base::Vector3d basePosition = obj->BasePosition.getValue();
         const Base::Vector3d startTextPosition = obj->TextPosition.getValue();
-        const Base::Vector3d pickedPoint = Base::convertTo<Base::Vector3d>(
+        const Base::Vector3d pickedWorld = Base::convertTo<Base::Vector3d>(
             drag->getWorldStartingPoint()
         );
+        const Base::Vector3d pickedLocal = that->worldToAnnotationPoint(pickedWorld);
 
         DragState state;
         state.basePosition = basePosition;
         state.currentTextPosition = startTextPosition;
-        state.pickOffset = pickedPoint - (basePosition + startTextPosition);
-        state.planePoint = pickedPoint;
+        state.pickOffset = pickedLocal - (basePosition + startTextPosition);
+        // Keep the drag plane in world space for pointer intersection.
+        state.planePoint = pickedWorld;
         state.planeNormal = Base::convertTo<Base::Vector3d>(
             drag->getViewVolume().getProjectionDirection()
         );
+        if (!that->acceptLabelDragStart(drag, state)) {
+            return;
+        }
         that->dragState = state;
     }
 
@@ -514,11 +519,17 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
 void ViewProviderAnnotationLabel::dragFinishCallback(void* data, SoDragger*)
 {
     auto that = static_cast<ViewProviderAnnotationLabel*>(data);
-    if (that->dragState) {
-        if (auto* obj = that->getObject<App::AnnotationLabel>()) {
-            obj->TextPosition.setValue(that->dragState->currentTextPosition);
-        }
-        that->dragState.reset();
+    if (!that->dragState) {
+        return;
+    }
+    // Sync derived visual state (e.g. Review Note LeaderEnd) from the finished
+    // drag position *before* TextPosition notifies observers. Otherwise a frame
+    // can show the new text box with the previous leader endpoint.
+    const DragState finished = *that->dragState;
+    that->dragState.reset();
+    that->onLabelDragFinished(finished);
+    if (auto* obj = that->getObject<App::AnnotationLabel>()) {
+        obj->TextPosition.setValue(finished.currentTextPosition);
     }
 
     // This is called when a manipulator has done manipulating
@@ -533,17 +544,50 @@ void ViewProviderAnnotationLabel::dragMotionCallback(void* data, SoDragger* drag
     }
 
     DragState& state = *that->dragState;
-    Base::Vector3d pointerPosition;
-    if (projectPointerToPlane(*drag, state.planePoint, state.planeNormal, pointerPosition)) {
-        that->previewTextPosition(state, pointerPosition - state.pickOffset - state.basePosition);
+    Base::Vector3d pointerWorld;
+    if (projectPointerToPlane(*drag, state.planePoint, state.planeNormal, pointerWorld)) {
+        const Base::Vector3d pointerLocal = that->worldToAnnotationPoint(pointerWorld);
+        that->previewTextPosition(
+            state, pointerLocal - state.pickOffset - state.basePosition
+        );
     }
 }
 
 void ViewProviderAnnotationLabel::previewTextPosition(DragState& state, const Base::Vector3d& textPosition)
 {
     state.currentTextPosition = textPosition;
-    pCoords->point.set1Value(1, SbVec3f(textPosition.x, textPosition.y, textPosition.z));
-    pTextTranslation->translation.setValue(textPosition.x, textPosition.y, textPosition.z);
+    // Translation and leader must update from the same drag position before the
+    // next redraw. Subclasses that override setLeaderCoords (Review Note) publish
+    // LeaderEnd here as well so property observers never see a split frame.
+    if (pTextTranslation) {
+        pTextTranslation->translation.setValue(textPosition.x, textPosition.y, textPosition.z);
+    }
+    setLeaderCoords(textPosition);
+}
+
+void ViewProviderAnnotationLabel::setLeaderCoords(const Base::Vector3d& textPosition)
+{
+    const Base::Vector3d end = leaderEndpoint(textPosition);
+    pCoords->point.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
+    pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
+}
+
+Base::Vector3d ViewProviderAnnotationLabel::leaderEndpoint(const Base::Vector3d& textPosition) const
+{
+    return textPosition;
+}
+
+bool ViewProviderAnnotationLabel::acceptLabelDragStart(SoDragger*, DragState&)
+{
+    return true;
+}
+
+void ViewProviderAnnotationLabel::onLabelDragFinished(const DragState&)
+{}
+
+Base::Vector3d ViewProviderAnnotationLabel::worldToAnnotationPoint(const Base::Vector3d& world) const
+{
+    return world;
 }
 
 void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)
@@ -551,6 +595,8 @@ void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)
     if (s.empty()) {
         pImage->image = SoSFImage();
         pImageHitProxy->image = SoSFImage();
+        labelImageWidth = 0;
+        labelImageHeight = 0;
         this->hide();
         return;
     }
@@ -608,6 +654,9 @@ void ViewProviderAnnotationLabel::drawImage(const std::vector<std::string>& s)
     painter.setFont(font);
     painter.drawText(textPadding, textPadding, w, h, align, text);
     painter.end();
+
+    labelImageWidth = image.width();
+    labelImageHeight = image.height();
 
     SoSFImage sfimage;
     Gui::BitmapFactory().convert(image, sfimage);

@@ -23,6 +23,7 @@
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectGroup.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 
@@ -36,6 +37,7 @@ PROPERTY_SOURCE(AssemblyGui::ViewProviderJointGroup, AssemblyGui::ViewProviderGr
 PROPERTY_SOURCE(AssemblyGui::ViewProviderSimulationGroup, AssemblyGui::ViewProviderGroupBase)
 PROPERTY_SOURCE(AssemblyGui::ViewProviderSnapshotGroup, AssemblyGui::ViewProviderGroupBase)
 PROPERTY_SOURCE(AssemblyGui::ViewProviderViewGroup, AssemblyGui::ViewProviderGroupBase)
+PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNoteGroup, AssemblyGui::ViewProviderGroupBase)
 
 QIcon ViewProviderBomGroup::getIcon() const
 {
@@ -60,4 +62,22 @@ QIcon ViewProviderSnapshotGroup::getIcon() const
 QIcon ViewProviderViewGroup::getIcon() const
 {
     return Gui::BitmapFactory().pixmap("Assembly_ExplodedViewGroup.svg");
+}
+
+QIcon ViewProviderReviewNoteGroup::getIcon() const
+{
+    return Gui::BitmapFactory().pixmap("Assembly_ReviewNoteGroup.svg");
+}
+
+bool ViewProviderReviewNoteGroup::onDelete(const std::vector<std::string>& subNames)
+{
+    auto* group = freecad_cast<App::DocumentObjectGroup*>(getObject());
+    if (!group) {
+        return false;
+    }
+    // Keep populated groups protected so notes cannot be bulk-deleted accidentally.
+    if (!group->Group.getValues().empty()) {
+        return false;
+    }
+    return ViewProviderGroupBase::onDelete(subNames);
 }

@@ -31,6 +31,7 @@
 #include <App/Datums.h>
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/GroupExtension.h>
 #include <App/FeaturePythonPyImp.h>
 #include <App/Link.h>
 #include <App/PropertyPythonObject.h>
@@ -82,6 +83,7 @@
 #include "AssemblyObjectPy.h"
 #include "AssemblyUtils.h"
 #include "Groups.h"
+#include "ReviewNote.h"
 
 FC_LOG_LEVEL_INIT("Assembly", true, true, true)
 
@@ -113,6 +115,41 @@ AssemblyObject::AssemblyObject()
 }
 
 AssemblyObject::~AssemblyObject() = default;
+
+void AssemblyObject::unsetupObject()
+{
+    ReviewNote::revokeAssemblyObserver(this);
+
+    // App/MCP deletion path: mirror GUI onDelete cleanup for assembly-owned groups.
+    if (auto* doc = getDocument()) {
+        std::vector<App::DocumentObject*> groupsToRemove;
+        for (auto* obj : getOutList()) {
+            if (!obj) {
+                continue;
+            }
+            if (obj->isDerivedFrom(JointGroup::getClassTypeId())
+                || obj->isDerivedFrom(ViewGroup::getClassTypeId())
+                || obj->isDerivedFrom(BomGroup::getClassTypeId())
+                || obj->isDerivedFrom(ReviewNoteGroup::getClassTypeId())) {
+                groupsToRemove.push_back(obj);
+            }
+        }
+        for (auto* groupObj : groupsToRemove) {
+            if (!groupObj || !groupObj->isAttachedToDocument()) {
+                continue;
+            }
+            if (auto* group = groupObj->getExtensionByType<App::GroupExtension>(true)) {
+                group->removeObjectsFromDocument();
+            }
+            const char* name = groupObj->getNameInDocument();
+            if (name) {
+                doc->removeObject(name);
+            }
+        }
+    }
+
+    App::Part::unsetupObject();
+}
 
 PyObject* AssemblyObject::getPyObject()
 {

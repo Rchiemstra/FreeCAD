@@ -701,6 +701,21 @@ def getSnapshotGroup(assembly):
     return snapshot_group
 
 
+def getReviewNoteGroup(assembly):
+    note_group = None
+
+    for obj in assembly.OutList:
+        if obj.TypeId == "Assembly::ReviewNoteGroup":
+            note_group = obj
+            break
+
+    if not note_group:
+        note_group = assembly.newObject("Assembly::ReviewNoteGroup", "ReviewNotes")
+        note_group.Label = "Review Notes"
+
+    return note_group
+
+
 def isAssemblyGrounded():
     assembly = activeAssembly()
     if not assembly:
