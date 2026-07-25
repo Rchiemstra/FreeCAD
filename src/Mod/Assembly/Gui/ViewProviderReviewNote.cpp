@@ -20,6 +20,8 @@
 #include <cmath>
 #include <regex>
 
+#include <exception>
+
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
@@ -27,21 +29,26 @@
 #include <QPen>
 #include <QObject>
 
+#include <Inventor/SbRotation.h>
 #include <Inventor/SbVec2s.h>
+#include <Inventor/SbVec3f.h>
 #include <Inventor/SbViewVolume.h>
 #include <Inventor/SbViewportRegion.h>
+#include <Inventor/SoRenderManager.h>
 #include <Inventor/draggers/SoDragger.h>
 #include <Inventor/events/SoEvent.h>
 #include <Inventor/nodes/SoCamera.h>
 #include <Inventor/nodes/SoCoordinate3.h>
 #include <Inventor/nodes/SoImage.h>
-#include <Inventor/sensors/SoIdleSensor.h>
+#include <Inventor/sensors/SoOneShotSensor.h>
 #include <Inventor/sensors/SoNodeSensor.h>
 #include <Inventor/sensors/SoSensor.h>
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/GeoFeature.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Placement.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -67,6 +74,26 @@ constexpr int TextPadding = 5;
 constexpr qreal FrameWidth = 2.0;
 constexpr qreal CornerRadius = 5.0;
 
+/// Coin delay-queue sensors sort ascending and processDelayQueue pops index 0, so a
+/// *lower numeric* priority runs earlier. Redraw OneShot is typically 10000; the
+/// visual-frame sensor must be redrawPri-1 (e.g. 9999) so LeaderEnd publishes before
+/// that redraw. Priority 0 is reserved for immediate sensors (camera NodeSensor).
+uint32_t visualFrameSensorPriority(const ViewProviderReviewNote* self)
+{
+    uint32_t redrawPri = SoRenderManager::getDefaultRedrawPriority();
+    if (self) {
+        if (const Gui::View3DInventorViewer* viewer = self->getActiveViewer()) {
+            if (SoRenderManager* rm = viewer->getSoRenderManager()) {
+                redrawPri = rm->getRedrawPriority();
+            }
+        }
+    }
+    if (redrawPri <= 1) {
+        return 1;
+    }
+    return redrawPri - 1;
+}
+
 const std::regex& refRegex()
 {
     static const std::regex re(R"(@([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)*))");
@@ -74,6 +101,39 @@ const std::regex& refRegex()
 }
 
 }  // namespace
+
+int ViewProviderReviewNote::testInjectThrowAfterCoords = 0;
+int ViewProviderReviewNote::testInjectNestedCamera = 0;
+int ViewProviderReviewNote::testNestedDirtyMarked = 0;
+int ViewProviderReviewNote::testApplyExceptionsCaught = 0;
+
+void ViewProviderReviewNote::resetTestHooks()
+{
+    testInjectThrowAfterCoords = 0;
+    testInjectNestedCamera = 0;
+    testNestedDirtyMarked = 0;
+    testApplyExceptionsCaught = 0;
+}
+
+void ViewProviderReviewNote::setTestInjectThrowAfterCoords(int count)
+{
+    testInjectThrowAfterCoords = count;
+}
+
+void ViewProviderReviewNote::setTestInjectNestedCamera(int count)
+{
+    testInjectNestedCamera = count;
+}
+
+int ViewProviderReviewNote::testNestedDirtyMarkedCount()
+{
+    return testNestedDirtyMarked;
+}
+
+int ViewProviderReviewNote::testApplyExceptionsCaughtCount()
+{
+    return testApplyExceptionsCaught;
+}
 
 PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNote, Gui::ViewProviderAnnotationLabel)
 
@@ -103,7 +163,7 @@ ViewProviderReviewNote::ViewProviderReviewNote()
 ViewProviderReviewNote::~ViewProviderReviewNote()
 {
     syncLeaderConnection.disconnect();
-    detachIdleSensor();
+    detachFrameSensor();
     detachCameraSensor();
 }
 
@@ -158,9 +218,40 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
         auto* note = static_cast<Assembly::ReviewNote*>(obj);
         // Runs from ReviewNote::onChanged(TextPosition) before document observers,
         // so LeaderEnd is already published when TextPosition is sampled.
+        // FastSignals does not catch slot exceptions; contain them so App::onChanged
+        // still runs, then schedule a clean retry.
         syncLeaderConnection = note->signalSyncLeaderVisual.connect(
             [this](const Base::Vector3d& textPos) {
-                applyVisualFrame(textPos, /*updateTextTranslation*/ true);
+                try {
+                    applyVisualFrame(textPos, /*updateTextTranslation*/ true);
+                }
+                catch (const Base::Exception& e) {
+                    ++testApplyExceptionsCaught;
+                    Base::Console().error(
+                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
+                        e.what()
+                    );
+                    visualFrameDirty = true;
+                    scheduleVisualFrame();
+                }
+                catch (const std::exception& e) {
+                    ++testApplyExceptionsCaught;
+                    Base::Console().error(
+                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
+                        e.what()
+                    );
+                    visualFrameDirty = true;
+                    scheduleVisualFrame();
+                }
+                catch (...) {
+                    ++testApplyExceptionsCaught;
+                    Base::Console().error(
+                        "AssemblyGui::ViewProviderReviewNote: leader sync failed "
+                        "(unknown exception)\n"
+                    );
+                    visualFrameDirty = true;
+                    scheduleVisualFrame();
+                }
             }
         );
     }
@@ -210,6 +301,18 @@ void ViewProviderReviewNote::updateData(const App::Property* prop)
 void ViewProviderReviewNote::onChanged(const App::Property* prop)
 {
     ViewProviderAnnotationLabel::onChanged(prop);
+
+    // Test-only one-shot: observe LeaderHalfExtent during an in-flight apply and
+    // mutate the camera so scheduleVisualFrame marks the nested dirty branch.
+    if (prop == &LeaderHalfExtent && testInjectNestedCamera > 0 && applyingVisualFrame
+        && attachedCamera) {
+        --testInjectNestedCamera;
+        const SbRotation cur = attachedCamera->orientation.getValue();
+        attachedCamera->orientation.setValue(
+            cur * SbRotation(SbVec3f(0.2f, 0.9f, 0.1f), 0.45f)
+        );
+    }
+
     if (applyingVisualFrame) {
         return;
     }
@@ -268,6 +371,14 @@ void ViewProviderReviewNote::applyVisualFrame(
         pCoords->point.set1Value(1, SbVec3f(end.x, end.y, end.z));
     }
 
+    // Test-only fault injection: throw after Coin writes, before LeaderEnd publishes.
+    if (testInjectThrowAfterCoords > 0) {
+        --testInjectThrowAfterCoords;
+        throw Base::RuntimeError(
+            "ReviewNote test inject: throw after translation/pCoords before LeaderEnd"
+        );
+    }
+
     LeaderHalfExtent.setValue(Base::Vector3d(frame.halfW, frame.halfH, 0.0));
     LeaderEnd.setValue(end);
 }
@@ -277,14 +388,17 @@ void ViewProviderReviewNote::scheduleVisualFrame()
     visualFrameDirty = true;
     if (applyingVisualFrame) {
         // applyVisualFrame's Guard will reschedule when the current publish ends.
+        ++testNestedDirtyMarked;
         return;
     }
-    if (!idleSensor) {
-        idleSensor = new SoIdleSensor(idleSensorCallback, this);
+    if (!frameSensor) {
+        frameSensor = new SoOneShotSensor(frameSensorCallback, this);
     }
-    if (!idleSensor->isScheduled()) {
+    // Re-apply each schedule: active render-manager redraw priority can change.
+    frameSensor->setPriority(visualFrameSensorPriority(this));
+    if (!frameSensor->isScheduled()) {
         visualFrameScheduled = true;
-        idleSensor->schedule();
+        frameSensor->schedule();
     }
 }
 
@@ -295,7 +409,7 @@ void ViewProviderReviewNote::flushScheduledVisualFrame()
     refreshLeader();
 }
 
-void ViewProviderReviewNote::idleSensorCallback(void* data, SoSensor*)
+void ViewProviderReviewNote::frameSensorCallback(void* data, SoSensor*)
 {
     auto* that = static_cast<ViewProviderReviewNote*>(data);
     if (!that) {
@@ -304,14 +418,14 @@ void ViewProviderReviewNote::idleSensorCallback(void* data, SoSensor*)
     that->flushScheduledVisualFrame();
 }
 
-void ViewProviderReviewNote::detachIdleSensor()
+void ViewProviderReviewNote::detachFrameSensor()
 {
-    if (idleSensor) {
-        if (idleSensor->isScheduled()) {
-            idleSensor->unschedule();
+    if (frameSensor) {
+        if (frameSensor->isScheduled()) {
+            frameSensor->unschedule();
         }
-        delete idleSensor;
-        idleSensor = nullptr;
+        delete frameSensor;
+        frameSensor = nullptr;
     }
     visualFrameScheduled = false;
     visualFrameDirty = false;
@@ -861,6 +975,9 @@ void ViewProviderReviewNote::ensureCameraSensor()
     if (!cameraSensor) {
         cameraSensor = new SoNodeSensor(cameraSensorCallback, this);
         cameraSensor->setDeleteCallback(cameraSensorDeleteCallback, this);
+        // Immediate: nested camera mutations during applyVisualFrame mark dirty in
+        // the same stack, so the Guard can reschedule a follow-up frame.
+        cameraSensor->setPriority(0);
     }
     else {
         cameraSensor->detach();
@@ -875,9 +992,9 @@ void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)
     if (!that) {
         return;
     }
-    // Coalesce camera-driven refreshes (and mid-drag camera moves) into one
-    // idle-time apply. If a frame is mid-publish, scheduleVisualFrame marks dirty
-    // so the apply Guard reschedules instead of dropping the camera update.
+    // Coalesce camera-driven refreshes into one OneShot at redrawPri-1 so it
+    // runs on the non-idle delay path before the redraw sensor (redrawPri).
+    // Mid-apply calls mark dirty only.
     that->scheduleVisualFrame();
 }
 

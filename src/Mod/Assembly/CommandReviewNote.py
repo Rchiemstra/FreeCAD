@@ -710,6 +710,150 @@ def review_note_drag_frame_has_stale_leader(
     return e.isEqual(pe, float(end_stuck_eps))
 
 
+def review_note_drag_frame_leader_on_previous_text(
+    prev_text, text, end, near_prev_eps=3.0, far_cur_eps=10.0, text_move_eps=5.0
+):
+    """True when LeaderEnd sits on the previous text box while TextPosition jumped away.
+
+    Matches log seq 793: new TextPosition, LeaderEnd still near the prior text center.
+    """
+    pt = App.Vector(prev_text)
+    t = App.Vector(text)
+    e = App.Vector(end)
+    if (t - pt).Length < float(text_move_eps):
+        return False
+    return (e - pt).Length <= float(near_prev_eps) and (e - t).Length >= float(far_cur_eps)
+
+
+def review_note_drag_frame_attachment_inflated(
+    prev_text, prev_end, text, end, grow=2.5, text_move_eps=5.0
+):
+    """True when the leader length jumps far beyond the previous attachment scale.
+
+    Matches log seq 872: text moved and LeaderEnd is much farther from the new
+    text than the prior glued length (stale half-extents / camera scale).
+    """
+    pt = App.Vector(prev_text)
+    pe = App.Vector(prev_end)
+    t = App.Vector(text)
+    e = App.Vector(end)
+    if (t - pt).Length < float(text_move_eps):
+        return False
+    prev_d = (pe - pt).Length
+    cur_d = (e - t).Length
+    if prev_d <= 1e-6:
+        return False
+    return cur_d > prev_d * float(grow)
+
+
+def review_note_expected_billboard_leader_end(text_pos, half_w, half_h, right, up):
+    """Expected LeaderEnd from billboard axes + half-extents (matches C++ leaderEndpoint)."""
+    text = App.Vector(text_pos)
+    r = App.Vector(right)
+    u = App.Vector(up)
+    if r.Length > 1e-12:
+        r.normalize()
+    if u.Length > 1e-12:
+        u = u - r * u.dot(r)
+        if u.Length > 1e-12:
+            u.normalize()
+    w = max(1e-6, abs(float(half_w)))
+    h = max(1e-6, abs(float(half_h)))
+    toward = text * (-1.0)
+    tu = toward.dot(r)
+    tv = toward.dot(u)
+    if abs(tu) < 1e-12 and abs(tv) < 1e-12:
+        tu = -1.0
+        tv = 0.0
+    sx = (w / abs(tu)) if abs(tu) > 1e-12 else 1e12
+    sy = (h / abs(tv)) if abs(tv) > 1e-12 else 1e12
+    t = min(sx, sy)
+    return text + r * (tu * t) + u * (tv * t)
+
+
+def review_note_camera_billboard_axes(camera):
+    """Return (right, up) annotation-space axes from a Coin camera orientation."""
+    orient = camera.orientation.getValue()
+    right = coin_sbvec3f_to_vector(orient.multVec(coin_vec(1, 0, 0)))
+    up = coin_sbvec3f_to_vector(orient.multVec(coin_vec(0, 1, 0)))
+    if right.Length > 1e-12:
+        right.normalize()
+    up = up - right * up.dot(right)
+    if up.Length > 1e-12:
+        up.normalize()
+    else:
+        up = App.Vector(0, 1, 0)
+    return right, up
+
+
+def coin_vec(x, y, z):
+    from pivy import coin
+
+    return coin.SbVec3f(float(x), float(y), float(z))
+
+
+def coin_sbvec3f_to_vector(v):
+    return App.Vector(float(v[0]), float(v[1]), float(v[2]))
+
+
+def review_note_leader_matches_camera_oracle(
+    text_pos, leader_end, half_extent, right, up, tol=None
+):
+    """Compare LeaderEnd to the billboard-plane oracle; returns (ok, expected, dist)."""
+    half = App.Vector(half_extent)
+    expected = review_note_expected_billboard_leader_end(
+        text_pos, half.x, half.y, right, up
+    )
+    end = App.Vector(leader_end)
+    dist = (end - expected).Length
+    if tol is None:
+        # Fraction of half-diagonal: orientation errors show up well before glue_status fails.
+        # Floor allows tiny floating/billboard quantization after restore/camera settle.
+        import math
+
+        tol = max(0.25, 0.1 * math.sqrt(half.x * half.x + half.y * half.y))
+    return dist <= float(tol), expected, dist
+
+
+# Compact controls from doc/review_note_drag_camera_20260725_060019.jsonl
+REVIEW_NOTE_STALE_LOG_FRAMES = {
+    758: {
+        "prev_text": (-29.2559573, -19.497089, 3.5219309),
+        "prev_end": (-22.6380635, -15.1457539, 2.4130597),
+        "text": (-10.1824519, 10.1597943, -3.261522),
+        "end": (-22.6380635, -15.1457539, 2.4130597),
+    },
+    793: {
+        "prev_text": (-10.1824519, 10.1597943, -3.261522),
+        "prev_end": (-22.6380635, -15.1457539, 2.4130597),
+        "text": (-41.8245227, -22.5394855, 4.5334137),
+        "end": (-9.186594, 9.1338865, -3.0761028),
+    },
+    872: {
+        "prev_text": (17.9771455, -5.5185047, -0.8127167),
+        "prev_end": (16.3903098, -5.0578424, -0.8620826),
+        "text": (11.9871686, 17.5152935, -5.4625761),
+        "end": (8.2092916, 11.9235073, -4.1781599),
+    },
+}
+
+
+def review_note_log_seq_is_stale_pattern(seq):
+    """Return True when the compact log control for ``seq`` matches a stale detector."""
+    frame = REVIEW_NOTE_STALE_LOG_FRAMES[int(seq)]
+    prev_t = App.Vector(*frame["prev_text"])
+    prev_e = App.Vector(*frame["prev_end"])
+    text = App.Vector(*frame["text"])
+    end = App.Vector(*frame["end"])
+    if int(seq) == 758:
+        return review_note_drag_frame_has_stale_leader(prev_t, prev_e, text, end)
+    if int(seq) == 793:
+        return review_note_drag_frame_leader_on_previous_text(prev_t, text, end)
+    if int(seq) == 872:
+        return review_note_drag_frame_attachment_inflated(prev_t, prev_e, text, end)
+    raise KeyError("unsupported log seq {}".format(seq))
+
+
 def _is_joint_object(obj):
     if obj is None:
         return False

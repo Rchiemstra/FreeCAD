@@ -33,7 +33,7 @@
 
 class SoCamera;
 class SoNodeSensor;
-class SoIdleSensor;
+class SoOneShotSensor;
 class SoSensor;
 class SoDragger;
 
@@ -77,6 +77,13 @@ public:
         double halfH
     );
 
+    /// Test-only hooks (AssemblyGui Python module). Not for production callers.
+    static void resetTestHooks();
+    static void setTestInjectThrowAfterCoords(int count);
+    static void setTestInjectNestedCamera(int count);
+    static int testNestedDirtyMarkedCount();
+    static int testApplyExceptionsCaughtCount();
+
 protected:
     void onChanged(const App::Property* prop) override;
     Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const override;
@@ -118,16 +125,19 @@ private:
     bool screenWorldPerPixel(const Base::Vector3d& textWorld, double& worldPerPixel) const;
     void ensureCameraSensor();
     void detachCameraSensor();
-    void detachIdleSensor();
+    void detachFrameSensor();
 
     static void cameraSensorCallback(void* data, SoSensor* sensor);
     static void cameraSensorDeleteCallback(void* data, SoSensor* sensor);
-    static void idleSensorCallback(void* data, SoSensor* sensor);
+    static void frameSensorCallback(void* data, SoSensor* sensor);
 
     std::vector<RefHit> refHits;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
-    SoIdleSensor* idleSensor = nullptr;
+    /// Coalesced visual refresh. SoOneShotSensor (not SoIdleSensor) so Quarter's
+    /// processDelayQueue(false) still runs it. Priority is redrawPri-1 (lower
+    /// numeric = earlier); redraw OneShot is typically 10000.
+    SoOneShotSensor* frameSensor = nullptr;
     /// Last camera-derived half-extents. Reused when a transient viewer/camera
     /// lookup fails so we never fall back to FontSize*bitmap (looks detached).
     mutable double lastHalfW = 0.5;
@@ -140,6 +150,11 @@ private:
     bool visualFrameScheduled = false;
     bool visualFrameDirty = false;
     fastsignals::scoped_connection syncLeaderConnection;
+
+    static int testInjectThrowAfterCoords;
+    static int testInjectNestedCamera;
+    static int testNestedDirtyMarked;
+    static int testApplyExceptionsCaught;
 };
 
 }  // namespace AssemblyGui
