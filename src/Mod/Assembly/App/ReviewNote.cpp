@@ -592,6 +592,15 @@ void ReviewNote::onChanged(const App::Property* prop)
             refreshBasePosition();
         }
     }
+    else if (prop == &TextPosition) {
+        // Publish leader sync before DocumentObject observers see TextPosition so
+        // no sampled frame can observe a new text box with a stale LeaderEnd.
+        // Skip while restoring: the view provider refresh on attach/drawImage owns
+        // the first correct frame once the label image and camera exist.
+        if (!isRestoring()) {
+            signalSyncLeaderVisual(TextPosition.getValue());
+        }
+    }
 
     App::AnnotationLabel::onChanged(prop);
 }

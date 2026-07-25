@@ -28,6 +28,8 @@
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/PropertyGeo.h>
+#include <Base/Vector3D.h>
+#include <fastsignals/signal.h>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
 
@@ -91,6 +93,10 @@ public:
 
     /// First non-whitespace LabelText line (for tree display); empty clears Label.
     std::string firstTextLine() const;
+
+    /// Fired from onChanged(TextPosition) *before* document observers run, so the
+    /// ViewProvider can publish LeaderEnd atomically with the new text position.
+    fastsignals::signal<void(const Base::Vector3d&)> signalSyncLeaderVisual;
 
     /// Ensure observers for every note owner in the document.
     static void ensureDocumentObserver(App::Document* doc);

@@ -24,6 +24,7 @@
 #include <Base/Placement.h>
 #include <Base/Vector3D.h>
 #include <Gui/ViewProviderAnnotation.h>
+#include <fastsignals/signal.h>
 
 #include <QRect>
 #include <string>
@@ -32,6 +33,7 @@
 
 class SoCamera;
 class SoNodeSensor;
+class SoIdleSensor;
 class SoSensor;
 class SoDragger;
 
@@ -100,6 +102,10 @@ private:
     };
 
     void refreshLeader();
+    /// Apply text translation + leader endpoint from one position/camera snapshot.
+    void applyVisualFrame(const Base::Vector3d& textPosition, bool updateTextTranslation);
+    void scheduleVisualFrame();
+    void flushScheduledVisualFrame();
     bool hitTestReference(SoDragger* drag, RefHit& out) const;
     void selectReference(const RefHit& hit) const;
     void onLabelDragFinished(const DragState& state) override;
@@ -112,19 +118,28 @@ private:
     bool screenWorldPerPixel(const Base::Vector3d& textWorld, double& worldPerPixel) const;
     void ensureCameraSensor();
     void detachCameraSensor();
+    void detachIdleSensor();
 
     static void cameraSensorCallback(void* data, SoSensor* sensor);
     static void cameraSensorDeleteCallback(void* data, SoSensor* sensor);
+    static void idleSensorCallback(void* data, SoSensor* sensor);
 
     std::vector<RefHit> refHits;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
+    SoIdleSensor* idleSensor = nullptr;
     /// Last camera-derived half-extents. Reused when a transient viewer/camera
     /// lookup fails so we never fall back to FontSize*bitmap (looks detached).
     mutable double lastHalfW = 0.5;
     mutable double lastHalfH = 0.5;
     mutable bool hasLastHalfExtent = false;
     mutable int lastViewportWidthPx = 0;
+    /// Re-entrancy / coalesce guards: drag, property, and camera callbacks share
+    /// one applyVisualFrame path so a frame never shows new text + stale leader.
+    bool applyingVisualFrame = false;
+    bool visualFrameScheduled = false;
+    bool visualFrameDirty = false;
+    fastsignals::scoped_connection syncLeaderConnection;
 };
 
 }  // namespace AssemblyGui

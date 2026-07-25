@@ -2691,6 +2691,161 @@ class TestReviewNotesGui(unittest.TestCase):
                     msg="{} {}: not on border nu={} nv={}".format(operation, name, nu, nv),
                 )
 
+    def test_gui_leader_no_stale_endpoint_on_text_move_frames(self):
+        """No drag/commit frame may show a new TextPosition with a stale LeaderEnd.
+
+        Regression for doc/review_note_drag_camera_20260725_060019.jsonl: property
+        samples where text jumped while LeaderEnd stayed on the previous attachment.
+        Text-box transform and leader endpoint must update atomically from the same
+        position (and survive coalesced camera refreshes) before the next redraw.
+        """
+        operation = "No rendered frame with new text and stale LeaderEnd"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Atomic drag frames"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+        vo = note.ViewObject
+
+        def _flush():
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if view:
+                    view.redraw()
+            except Exception:
+                pass
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+
+        frames = []
+        stale_frames = []
+        ungleaned = []
+
+        class _Obs:
+            def slotChangedObject(self, obj, prop):
+                if obj is None or prop != "TextPosition":
+                    return
+                if getattr(obj, "Name", None) != note.Name:
+                    return
+                text = App.Vector(note.TextPosition)
+                end = App.Vector(vo.LeaderEnd)
+                half = App.Vector(vo.LeaderHalfExtent)
+                # At the TextPosition notification, LeaderEnd must already match.
+                ok, reason = CommandReviewNote.review_note_leader_glue_status(
+                    text, end, half
+                )
+                sample = (text, end, half, reason)
+                if frames:
+                    prev_text, prev_end = frames[-1][0], frames[-1][1]
+                    if CommandReviewNote.review_note_drag_frame_has_stale_leader(
+                        prev_text, prev_end, text, end
+                    ):
+                        stale_frames.append(
+                            (prev_text, prev_end, text, end, "stale_vs_prev")
+                        )
+                frames.append(sample)
+                if not ok:
+                    ungleaned.append(sample)
+
+        obs = _Obs()
+        App.addDocumentObserver(obs)
+        try:
+            _flush()
+            path = [
+                App.Vector(40, 0, 0),
+                App.Vector(55, 8, 0),
+                App.Vector(70, 25, 0),
+                App.Vector(35, 40, -2),
+                App.Vector(-10, 18, 3),
+                App.Vector(-30, -5, 1),
+                App.Vector(12, -22, 0),
+                App.Vector(48, -12, 4),
+                App.Vector(20, 15, -1),
+            ]
+            view = Gui.ActiveDocument.ActiveView
+            cam = view.getCameraNode() if view else None
+            base_h = None
+            if cam is not None and hasattr(cam, "height"):
+                base_h = float(cam.height.getValue())
+
+            for i, pos in enumerate(path):
+                note.TextPosition = pos
+                # Interleave camera changes so coalesced idle refreshes compete
+                # with property updates the way the drag/camera log did.
+                if cam is not None and base_h is not None and i % 2 == 1:
+                    try:
+                        import pivy.coin as coin
+
+                        cam.height.setValue(base_h * (0.85 + 0.1 * (i % 4)))
+                        cam.orientation.setValue(
+                            coin.SbRotation(coin.SbVec3f(0.15, 1, 0.05), 0.12 * i)
+                        )
+                    except Exception:
+                        cam.height.setValue(base_h * (1.0 + 0.05 * i))
+                _flush()
+                # Post-redraw sample must also stay glued (covers idle camera flush).
+                text = App.Vector(note.TextPosition)
+                end = App.Vector(vo.LeaderEnd)
+                half = App.Vector(vo.LeaderHalfExtent)
+                if frames:
+                    prev_text, prev_end = frames[-1][0], frames[-1][1]
+                    if CommandReviewNote.review_note_drag_frame_has_stale_leader(
+                        prev_text, prev_end, text, end
+                    ):
+                        if not text.isEqual(prev_text, 1e-4):
+                            stale_frames.append(
+                                (prev_text, prev_end, text, end, "post_flush")
+                            )
+                ok, reason = CommandReviewNote.review_note_leader_glue_status(
+                    text, end, half
+                )
+                self.assertTrue(
+                    ok,
+                    "{} post-flush[{}] {}".format(operation, i, reason),
+                )
+        finally:
+            App.removeDocumentObserver(obs)
+
+        self.assertGreaterEqual(len(frames), len(path), operation)
+        self.assertEqual(
+            stale_frames,
+            [],
+            "{} stale text/leader frames: {!r}".format(operation, stale_frames),
+        )
+        self.assertEqual(
+            ungleaned,
+            [],
+            "{} TextPosition notifications with unglued LeaderEnd: {!r}".format(
+                operation, ungleaned
+            ),
+        )
+
+        # Negative control: the jsonl stuck pattern must still be detected.
+        self.assertTrue(
+            CommandReviewNote.review_note_drag_frame_has_stale_leader(
+                App.Vector(-29.26, -19.5, 3.52),
+                App.Vector(-22.64, -15.15, 2.41),
+                App.Vector(-10.18, 10.16, -3.26),
+                App.Vector(-22.64, -15.15, 2.41),
+            ),
+            "{} detector must flag log seq-758 style frames".format(operation),
+        )
+
     def test_gui_leader_no_snap_back_after_move_or_camera(self):
         """Regression for drag flicker: LeaderEnd must not snap to a prior attachment.
 

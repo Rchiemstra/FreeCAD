@@ -693,6 +693,23 @@ def review_note_leader_is_stuck_after_move(old_end, new_text, new_end, min_move=
     return end.isEqual(old, 1e-2)
 
 
+def review_note_drag_frame_has_stale_leader(
+    prev_text, prev_end, text, end, text_move_eps=0.5, end_stuck_eps=1e-2
+):
+    """True for a rendered/sampled frame with new text but previous leader end.
+
+    Matches review_note_drag_camera_*.jsonl frames where TextPosition advanced
+    while LeaderEnd remained on the prior attachment.
+    """
+    pt = App.Vector(prev_text)
+    pe = App.Vector(prev_end)
+    t = App.Vector(text)
+    e = App.Vector(end)
+    if (t - pt).Length < float(text_move_eps):
+        return False
+    return e.isEqual(pe, float(end_stuck_eps))
+
+
 def _is_joint_object(obj):
     if obj is None:
         return False

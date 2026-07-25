@@ -131,7 +131,12 @@ protected:
     /** Return false to cancel label drag (e.g. clickable @ref hit). */
     virtual bool acceptLabelDragStart(SoDragger* drag, DragState& state);
 
-    /** Called after a completed label drag commits TextPosition. */
+    /** Called after a completed label drag, before TextPosition is committed.
+
+        Subclasses must sync any derived leader/visual properties from
+        ``state.currentTextPosition`` here so observers of TextPosition never
+        see a new text box with a stale leader endpoint.
+     */
     virtual void onLabelDragFinished(const DragState& state);
 
     void previewTextPosition(DragState& state, const Base::Vector3d& textPosition);
