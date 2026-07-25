@@ -24,6 +24,7 @@
 """Tests for Assembly review notes: eligibility, normalization, tracking, persistence."""
 
 import os
+import math
 import tempfile
 import unittest
 
@@ -757,6 +758,92 @@ class TestReviewNotes(unittest.TestCase):
         self.assertAlmostEqual(left.x, -30.0 + half_w, places=5, msg=operation)
         origin = CommandReviewNote.review_note_auto_boundary_endpoint(App.Vector(), half_w, half_h)
         self.assertAlmostEqual(origin.x, -half_w, places=5, msg=operation)
+
+    def test_leader_glue_status_rejects_detached_stuck_and_inflated(self):
+        """Negative coverage for review_note_drag_camera_*.jsonl failure modes.
+
+        Happy-path GUI tests alone are not enough — explicitly assert that stuck,
+        detached, collapsed, and inflated-half samples are *rejected*.
+        """
+        operation = "Leader glue status must reject known-bad samples"
+        _msg("  Test '{}'".format(operation))
+
+        # --- Positive control: on-border endpoint with modest half-extents ---
+        text_ok = App.Vector(40, 0, 0)
+        half_ok = App.Vector(2.0, 1.5, 0.0)
+        end_ok = CommandReviewNote.review_note_auto_boundary_endpoint(
+            text_ok, half_ok.x, half_ok.y
+        )
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            text_ok, end_ok, half_ok
+        )
+        self.assertTrue(ok, "{} positive control failed: {}".format(operation, reason))
+
+        # --- Negative: collapsed onto text center ---
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            text_ok, text_ok, half_ok
+        )
+        self.assertFalse(ok, "{} must reject collapsed leader".format(operation))
+        self.assertIn("collapsed", reason, operation)
+
+        # --- Negative: detached orbit sample (log seq~407, dist≈74) ---
+        text_orbit = App.Vector(25.07, 1.28, 29.73)
+        end_far = App.Vector(-7.54, 5.94, -37.03)
+        half_small = App.Vector(2.2, 1.5, 0.0)
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            text_orbit, end_far, half_small
+        )
+        self.assertFalse(ok, "{} must reject detached orbit leader".format(operation))
+        self.assertIn("detached", reason, operation)
+
+        # --- Negative: inflated half-extents (old FontSize×bitmap fallback) ---
+        half_inflated = App.Vector(70.0, 50.0, 0.0)
+        end_inflated = text_orbit + App.Vector(-70.0, 0.0, 0.0)
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            text_orbit, end_inflated, half_inflated
+        )
+        self.assertFalse(ok, "{} must reject inflated half-extents".format(operation))
+        self.assertIn("inflated", reason, operation)
+
+        # --- Negative: stuck LeaderEnd after TextPosition commit (log seq 758) ---
+        old_end = App.Vector(-22.64, -15.15, 2.41)
+        new_text = App.Vector(-10.18, 10.16, -3.26)
+        stuck_end = App.Vector(-22.64, -15.15, 2.41)
+        self.assertTrue(
+            CommandReviewNote.review_note_leader_is_stuck_after_move(
+                old_end, new_text, stuck_end
+            ),
+            "{} must detect stuck pre-move LeaderEnd".format(operation),
+        )
+        # Same geometry after a proper re-glue must not be flagged stuck.
+        glued_end = CommandReviewNote.review_note_auto_boundary_endpoint(
+            new_text, half_ok.x, half_ok.y
+        )
+        self.assertFalse(
+            CommandReviewNote.review_note_leader_is_stuck_after_move(
+                old_end, new_text, glued_end
+            ),
+            "{} re-glued endpoint must not look stuck".format(operation),
+        )
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            new_text, stuck_end, half_small
+        )
+        self.assertFalse(
+            ok,
+            "{} stuck sample must also fail glue status ({})".format(operation, reason),
+        )
+
+        # --- Negative: second move with stale end (log seq 793, dist≈46) ---
+        ok, reason = CommandReviewNote.review_note_leader_glue_status(
+            App.Vector(-41.82, -22.54, 4.53),
+            App.Vector(-9.19, 9.13, -3.08),
+            half_small,
+        )
+        self.assertFalse(
+            ok, "{} must reject stale LeaderEnd after second move".format(operation)
+        )
+        self.assertIn("detached", reason, operation)
+
     # --- Attachment correctness regressions -----------------------------
 
     def test_reject_assembly_lcs_origin_group_targets(self):
@@ -2524,6 +2611,148 @@ class TestReviewNotesGui(unittest.TestCase):
                 end.isEqual(end_b, 1e-3),
                 "{} post-rotate must not revive second LeaderEnd".format(operation),
             )
+
+    def test_gui_leader_stays_glued_after_move_and_camera_orbit(self):
+        """Regression for doc/review_note_drag_camera_*.jsonl stuck/detached leaders.
+
+        After a TextPosition commit, LeaderEnd must attach to the *new* box (not the
+        previous endpoint). During camera orbit/zoom, |LeaderEnd-TextPosition| must
+        stay on the billboard border — never jump to the old FontSize*bitmap fallback
+        (tens of units past the visible box).
+        """
+        operation = "Leader must stay glued after move and camera orbit"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Glue check"],
+            text_offset=App.Vector(40, 0, 0),
+            open_transaction=False,
+        )
+        self.assertIsNotNone(note.ViewObject, operation)
+
+        def _flush():
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if view:
+                    view.redraw()
+            except Exception:
+                pass
+            try:
+                Gui.updateGui()
+            except Exception:
+                pass
+
+        def _assert_glued(label):
+            _flush()
+            text = App.Vector(note.TextPosition)
+            end = App.Vector(note.ViewObject.LeaderEnd)
+            half = App.Vector(note.ViewObject.LeaderHalfExtent)
+            ok, reason = CommandReviewNote.review_note_leader_glue_status(text, end, half)
+            self.assertTrue(
+                ok,
+                "{} {}: {}".format(operation, label, reason),
+            )
+            return end
+
+        _flush()
+        pos_a = App.Vector(40, 0, 0)
+        note.TextPosition = pos_a
+        end_a = _assert_glued("initial")
+
+        pos_b = App.Vector(-30, 20, 5)
+        note.TextPosition = pos_b
+        end_b = _assert_glued("after move")
+        self.assertFalse(
+            end_b.isEqual(end_a, 1e-3),
+            "{} move must update LeaderEnd (was {})".format(operation, end_a),
+        )
+        # Negative check on the live note: the pre-move endpoint must look stuck
+        # relative to the new text (proves the detector would catch the jsonl bug).
+        self.assertTrue(
+            CommandReviewNote.review_note_leader_is_stuck_after_move(
+                end_a, pos_b, end_a
+            ),
+            "{} synthetic stuck(end_a) must be detected after move".format(operation),
+        )
+        self.assertFalse(
+            CommandReviewNote.review_note_leader_is_stuck_after_move(
+                end_a, pos_b, end_b
+            ),
+            "{} live LeaderEnd after move must not be stuck".format(operation),
+        )
+        bad_ok, bad_reason = CommandReviewNote.review_note_leader_glue_status(
+            pos_b, end_a, App.Vector(note.ViewObject.LeaderHalfExtent)
+        )
+        self.assertFalse(
+            bad_ok,
+            "{} pre-move LeaderEnd at new text must fail glue ({})".format(
+                operation, bad_reason
+            ),
+        )
+        # Must not remain stuck on the pre-move endpoint while text is elsewhere.
+        self.assertGreater(
+            (end_a - App.Vector(note.TextPosition)).Length,
+            5.0,
+            "{} old LeaderEnd must not sit near the new text".format(operation),
+        )
+
+        view = Gui.ActiveDocument.ActiveView
+        self.assertIsNotNone(view, operation)
+        cam = view.getCameraNode()
+        self.assertIsNotNone(cam, operation)
+
+        try:
+            import pivy.coin as coin
+
+            if hasattr(cam, "height"):
+                base_h = float(cam.height.getValue())
+                for i in range(16):
+                    cam.height.setValue(base_h * (0.7 + 0.08 * (i % 5)))
+                    cam.orientation.setValue(
+                        coin.SbRotation(coin.SbVec3f(0.2, 1, 0.1), 0.15 * i)
+                    )
+                    _assert_glued("orbit[{}]".format(i))
+            else:
+                pos = cam.position.getValue()
+                for i in range(16):
+                    cam.position.setValue(pos[0], pos[1], pos[2] + 20.0 * (i + 1))
+                    cam.orientation.setValue(
+                        coin.SbRotation(coin.SbVec3f(0, 1, 0), 0.2 * i)
+                    )
+                    _assert_glued("orbit[{}]".format(i))
+        except Exception as exc:
+            self.fail("{} camera orbit failed: {}".format(operation, exc))
+
+        # Final move after orbit must still glue and not revive end_a.
+        pos_c = App.Vector(15, -25, -2)
+        note.TextPosition = pos_c
+        end_c = _assert_glued("after orbit move")
+        self.assertFalse(end_c.isEqual(end_a, 1e-3), operation)
+        self.assertFalse(end_c.isEqual(end_b, 1e-3), operation)
+        # Negative: resurrecting end_a against pos_c must fail both detectors.
+        self.assertTrue(
+            CommandReviewNote.review_note_leader_is_stuck_after_move(
+                end_a, pos_c, end_a
+            ),
+            operation,
+        )
+        resurrect_ok, resurrect_reason = CommandReviewNote.review_note_leader_glue_status(
+            pos_c, end_a, App.Vector(note.ViewObject.LeaderHalfExtent)
+        )
+        self.assertFalse(
+            resurrect_ok,
+            "{} resurrected end_a must fail glue ({})".format(operation, resurrect_reason),
+        )
 
     def test_gui_at_suggestion_ellipsis_narrow_dropdown(self):
         operation = "Narrow @ suggestion dropdown ellipsizes long paths"

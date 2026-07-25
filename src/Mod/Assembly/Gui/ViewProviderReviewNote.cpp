@@ -375,29 +375,31 @@ bool ViewProviderReviewNote::screenWorldPerPixel(
 ) const
 {
     const Gui::View3DInventorViewer* viewer = getActiveViewer();
-    if (!viewer) {
-        return false;
+    SoCamera* camera = attachedCamera;
+    int vpWidth = lastViewportWidthPx;
+    float aspect = 1.0f;
+
+    if (viewer && viewer->getSoRenderManager()) {
+        SoRenderManager* rm = viewer->getSoRenderManager();
+        if (!camera) {
+            camera = rm->getCamera();
+        }
+        const SbViewportRegion& vp = rm->getViewportRegion();
+        const SbVec2s vpSize = vp.getViewportSizePixels();
+        if (vpSize[0] > 0) {
+            vpWidth = vpSize[0];
+            aspect = vp.getViewportAspectRatio();
+        }
     }
-    SoRenderManager* rm = viewer->getSoRenderManager();
-    if (!rm) {
-        return false;
-    }
-    SoCamera* camera = rm->getCamera();
-    if (!camera) {
+
+    if (!camera || vpWidth <= 0) {
         return false;
     }
 
-    const SbViewportRegion& vp = rm->getViewportRegion();
-    const SbVec2s vpSize = vp.getViewportSizePixels();
-    if (vpSize[0] <= 0) {
-        return false;
-    }
-
-    const float aspect = vp.getViewportAspectRatio();
     const SbViewVolume volume = camera->getViewVolume(aspect);
     // Coin: getWorldToScreenScale(..., 1) ≈ near-plane width in world units; / width → world/px.
     const float scale = volume.getWorldToScreenScale(Base::convertTo<SbVec3f>(textWorld), 1.0f);
-    worldPerPixel = static_cast<double>(scale) / static_cast<double>(vpSize[0]);
+    worldPerPixel = static_cast<double>(scale) / static_cast<double>(vpWidth);
     return worldPerPixel > 1e-12;
 }
 
@@ -415,22 +417,48 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
         frame.halfW = std::max(1e-6, 0.5 * static_cast<double>(labelImageWidth) * worldPerPixel);
         frame.halfH = std::max(1e-6, 0.5 * static_cast<double>(labelImageHeight) * worldPerPixel);
         frame.valid = true;
+        // Cache for transient viewer/camera lookup failures during orbit sensors.
+        lastHalfW = frame.halfW;
+        lastHalfH = frame.halfH;
+        hasLastHalfExtent = true;
+        if (const Gui::View3DInventorViewer* viewer = getActiveViewer()) {
+            if (viewer->getSoRenderManager()) {
+                const SbVec2s vpSize =
+                    viewer->getSoRenderManager()->getViewportRegion().getViewportSizePixels();
+                if (vpSize[0] > 0) {
+                    lastViewportWidthPx = vpSize[0];
+                }
+            }
+        }
+    }
+    else if (hasLastHalfExtent) {
+        // Prefer last good camera scale over FontSize*bitmap — that fallback was ~5–10×
+        // too large and made the leader look detached from the screen-space box.
+        frame.halfW = lastHalfW;
+        frame.halfH = lastHalfH;
     }
     else {
-        const double mmPerPx = std::max(0.05, FontSize.getValue() * 0.03);
-        frame.halfW = std::max(
-            1e-6,
-            0.5 * static_cast<double>(std::max(1, labelImageWidth)) * mmPerPx
-        );
-        frame.halfH = std::max(
-            1e-6,
-            0.5 * static_cast<double>(std::max(1, labelImageHeight)) * mmPerPx
-        );
+        // Cold start only: font-sized box, not full bitmap × bogus mm/px.
+        const double h = std::max(1e-6, FontSize.getValue() * 0.25);
+        frame.halfH = h;
+        if (labelImageWidth > 0 && labelImageHeight > 0) {
+            frame.halfW = h * static_cast<double>(labelImageWidth)
+                / static_cast<double>(labelImageHeight);
+        }
+        else {
+            frame.halfW = h * 1.6;
+        }
     }
 
-    const Gui::View3DInventorViewer* viewer = getActiveViewer();
-    if (viewer && viewer->getSoRenderManager() && viewer->getSoRenderManager()->getCamera()) {
-        SoCamera* camera = viewer->getSoRenderManager()->getCamera();
+    // Prefer the sensor-attached camera during orbit so axes stay in sync with scale.
+    SoCamera* camera = attachedCamera;
+    if (!camera) {
+        const Gui::View3DInventorViewer* viewer = getActiveViewer();
+        if (viewer && viewer->getSoRenderManager()) {
+            camera = viewer->getSoRenderManager()->getCamera();
+        }
+    }
+    if (camera) {
         SbRotation orient = camera->orientation.getValue();
         SbVec3f right(1.0f, 0.0f, 0.0f);
         SbVec3f up(0.0f, 1.0f, 0.0f);
@@ -664,9 +692,16 @@ bool ViewProviderReviewNote::acceptLabelDragStart(SoDragger* drag, DragState& st
 
 void ViewProviderReviewNote::onLabelDragFinished(const DragState& state)
 {
-    (void)state;
-    // Sync LeaderEnd/LeaderHalfExtent after TextPosition is committed.
-    refreshLeader();
+    // dragState is already cleared by the base finish callback before this runs.
+    // Sync LeaderEnd/LeaderHalfExtent to the committed text box.
+    setLeaderCoords(state.currentTextPosition);
+    if (pTextTranslation) {
+        pTextTranslation->translation.setValue(
+            state.currentTextPosition.x,
+            state.currentTextPosition.y,
+            state.currentTextPosition.z
+        );
+    }
 }
 
 void ViewProviderReviewNote::refreshLeader()

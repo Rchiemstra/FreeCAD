@@ -647,6 +647,52 @@ def review_note_auto_boundary_endpoint(text_pos, half_w, half_h):
     return text + dir_xy * t
 
 
+def review_note_leader_glue_status(text_pos, leader_end, half_extent, max_half=40.0):
+    """Check whether a leader endpoint is still glued to the text box.
+
+    Returns ``(ok, reason)``. ``ok`` is True only when the endpoint leaves the
+    text center, stays within the billboard half-diagonal, and half-extents are
+    not inflated like the old FontSize×bitmap fallback.
+
+    Negative cases (stuck/detached logs) must return ``ok=False`` — used by tests
+    so regressions are not only covered by happy-path asserts.
+    """
+    import math
+
+    text = App.Vector(text_pos)
+    end = App.Vector(leader_end)
+    half = App.Vector(half_extent)
+    dist = (end - text).Length
+    max_h = max(abs(half.x), abs(half.y), 0.0)
+    if dist <= 1e-6:
+        return False, "collapsed: LeaderEnd equals text center"
+    limit = math.sqrt(half.x * half.x + half.y * half.y) * 1.25 + 1e-3
+    if dist > limit:
+        return False, "detached: dist={:.3f} exceeds half-diagonal limit={:.3f}".format(
+            dist, limit
+        )
+    if max_h >= float(max_half):
+        return False, "inflated: half-extent {:.3f} >= max_half {:.3f}".format(
+            max_h, float(max_half)
+        )
+    return True, "glued"
+
+
+def review_note_leader_is_stuck_after_move(old_end, new_text, new_end, min_move=5.0):
+    """True when TextPosition moved but LeaderEnd stayed on the previous endpoint.
+
+    Matches the drag-finish race in review_note_drag_camera_*.jsonl where
+    LeaderEnd remained at the pre-move attachment after TextPosition committed.
+    """
+    old = App.Vector(old_end)
+    text = App.Vector(new_text)
+    end = App.Vector(new_end)
+    if (text - old).Length < float(min_move):
+        return False
+    # Stuck: new end still equals the old end while text has moved away.
+    return end.isEqual(old, 1e-2)
+
+
 def _is_joint_object(obj):
     if obj is None:
         return False

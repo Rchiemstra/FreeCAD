@@ -119,6 +119,12 @@ private:
     std::vector<RefHit> refHits;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
+    /// Last camera-derived half-extents. Reused when a transient viewer/camera
+    /// lookup fails so we never fall back to FontSize*bitmap (looks detached).
+    mutable double lastHalfW = 0.5;
+    mutable double lastHalfH = 0.5;
+    mutable bool hasLastHalfExtent = false;
+    mutable int lastViewportWidthPx = 0;
 };
 
 }  // namespace AssemblyGui

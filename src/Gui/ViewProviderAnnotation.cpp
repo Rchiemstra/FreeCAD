@@ -522,11 +522,15 @@ void ViewProviderAnnotationLabel::dragFinishCallback(void* data, SoDragger*)
     if (!that->dragState) {
         return;
     }
+    // Copy then clear dragState before subclass finish hooks. Review Note skips
+    // LeaderEnd property writes while dragState is set; if finish ran first,
+    // the leader stayed stuck on the pre-drag endpoint (detached from the box).
+    const DragState finished = *that->dragState;
     if (auto* obj = that->getObject<App::AnnotationLabel>()) {
-        obj->TextPosition.setValue(that->dragState->currentTextPosition);
+        obj->TextPosition.setValue(finished.currentTextPosition);
     }
-    that->onLabelDragFinished(*that->dragState);
     that->dragState.reset();
+    that->onLabelDragFinished(finished);
 
     // This is called when a manipulator has done manipulating
     Gui::Application::Instance->activeDocument()->commitCommand();
