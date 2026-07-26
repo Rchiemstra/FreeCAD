@@ -24,6 +24,8 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QCryptographicHash>
 #include <QTemporaryDir>
 #include <QByteArray>
 #include <algorithm>
@@ -1526,6 +1528,470 @@ TEST_F(NonBlockingGeometryTest, BooleanCodecRejectsBadRequestBeforeOcc)
                    bad.value(QStringLiteral("baseSize")).toVariant().toLongLong() + 1);
         expectReject(bad, "OperandSizeMismatch");
     }
+}
+
+TEST_F(NonBlockingGeometryTest, FilletCodecRoundTripPreservesOperandsAndEdges)
+{
+    BRepPrimAPI_MakeBox box(10.0, 10.0, 10.0);
+    App::StringHasherRef hasher(new App::StringHasher);
+    Part::TopoShape shape(box.Shape(), /*tag=*/1, hasher);
+
+    {
+        auto map = std::make_shared<Data::ElementMap>();
+        map->hasher = hasher;
+        shape.resetElementMap(map);
+        Data::IndexedName edge1("Edge", 1);
+        App::StringIDRef sid = hasher->getID(QByteArray("SeedEdgeA"));
+        ASSERT_TRUE(sid);
+        Data::MappedName mapped(sid);
+        Data::ElementIDRefs sids;
+        sids.push_back(sid);
+        map->setElementName(edge1, mapped, shape.Tag, &sids);
+    }
+
+    Part::FrozenTopoShapeBundle base = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(base.valid);
+    ASSERT_TRUE(base.hasher);
+    ASSERT_TRUE(base.elementMap);
+    EXPECT_GE(base.elementMap->size(), 1u);
+
+    std::vector<Part::FilletEdgeSpec> edges;
+    edges.push_back({0, 1.0, 2.5});
+    edges.push_back({1, 0.75, 1.25});
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/fillet_codec");
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::FilletGeometryOperation op(base, edges);
+    ASSERT_TRUE(op.writeArchive(workspace).success);
+    ASSERT_TRUE(workspace.publishRequestJson());
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/base.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/request.json")));
+
+    QFile reqFile(workDir + QStringLiteral("/request.json"));
+    ASSERT_TRUE(reqFile.open(QIODevice::ReadOnly));
+    const QJsonObject published = QJsonDocument::fromJson(reqFile.readAll()).object();
+    reqFile.close();
+
+    EXPECT_EQ(published.value(QStringLiteral("operationType")).toString(), QStringLiteral("Part::Fillet"));
+    EXPECT_EQ(published.value(QStringLiteral("codecVersion")).toInt(), 1);
+    EXPECT_EQ(published.value(QStringLiteral("basePath")).toString(), QStringLiteral("base.fcg"));
+    const QString baseAbs = workDir + QStringLiteral("/base.fcg");
+    const qint64 stagedSize = QFileInfo(baseAbs).size();
+    EXPECT_EQ(published.value(QStringLiteral("baseSize")).toVariant().toLongLong(), stagedSize);
+    QFile baseFile(baseAbs);
+    ASSERT_TRUE(baseFile.open(QIODevice::ReadOnly));
+    const QByteArray stagedDigest =
+        QCryptographicHash::hash(baseFile.readAll(), QCryptographicHash::Sha256).toHex();
+    baseFile.close();
+    EXPECT_EQ(published.value(QStringLiteral("baseSha256")).toString().toLower(),
+              QString::fromLatin1(stagedDigest));
+    const QJsonArray publishedEdges = published.value(QStringLiteral("edges")).toArray();
+    ASSERT_EQ(publishedEdges.size(), 2);
+    EXPECT_EQ(publishedEdges.at(0).toObject().value(QStringLiteral("edgeIndex")).toInt(), 0);
+    EXPECT_DOUBLE_EQ(publishedEdges.at(0).toObject().value(QStringLiteral("startRadius")).toDouble(), 1.0);
+    EXPECT_DOUBLE_EQ(publishedEdges.at(0).toObject().value(QStringLiteral("endRadius")).toDouble(), 2.5);
+    EXPECT_EQ(publishedEdges.at(1).toObject().value(QStringLiteral("edgeIndex")).toInt(), 1);
+    EXPECT_DOUBLE_EQ(publishedEdges.at(1).toObject().value(QStringLiteral("startRadius")).toDouble(), 0.75);
+    EXPECT_DOUBLE_EQ(publishedEdges.at(1).toObject().value(QStringLiteral("endRadius")).toDouble(), 1.25);
+
+    std::string errorCode;
+    std::string errorMessage;
+    auto decoded = Part::FilletGeometryOperation::decodeFromRequest(
+        published, workDir, errorCode, errorMessage);
+    ASSERT_TRUE(decoded) << errorCode << ": " << errorMessage;
+    const Part::FrozenTopoShapeBundle& decodedBase = decoded->baseBundle();
+    EXPECT_TRUE(decodedBase.valid);
+    EXPECT_FALSE(decodedBase.shape.isNull());
+    ASSERT_TRUE(decodedBase.hasher);
+    ASSERT_TRUE(decodedBase.elementMap);
+    EXPECT_GT(decodedBase.elementMap->size(), 0u);
+    EXPECT_EQ(static_cast<App::StringHasher*>(decodedBase.shape.Hasher),
+              static_cast<App::StringHasher*>(decodedBase.hasher));
+    ASSERT_EQ(decoded->edgeSpecs().size(), 2u);
+    EXPECT_EQ(decoded->edgeSpecs()[0].edgeIndex, 0u);
+    EXPECT_DOUBLE_EQ(decoded->edgeSpecs()[0].startRadius, 1.0);
+    EXPECT_DOUBLE_EQ(decoded->edgeSpecs()[0].endRadius, 2.5);
+    EXPECT_EQ(decoded->edgeSpecs()[1].edgeIndex, 1u);
+    EXPECT_DOUBLE_EQ(decoded->edgeSpecs()[1].startRadius, 0.75);
+    EXPECT_DOUBLE_EQ(decoded->edgeSpecs()[1].endRadius, 1.25);
+    EXPECT_FALSE(QFileInfo::exists(workDir + QStringLiteral("/result.fcg")));
+}
+
+TEST_F(NonBlockingGeometryTest, FilletCodecRejectsBadRequestBeforeOcc)
+{
+    BRepPrimAPI_MakeBox box(10.0, 10.0, 10.0);
+    App::StringHasherRef hasher(new App::StringHasher);
+    Part::TopoShape shape(box.Shape(), /*tag=*/1, hasher);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = hasher;
+    shape.resetElementMap(map);
+    Part::FrozenTopoShapeBundle base = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(base.valid);
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/fillet_reject");
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::FilletGeometryOperation op(base, {{0, 1.0, 1.0}});
+    ASSERT_TRUE(op.writeArchive(workspace).success);
+    ASSERT_TRUE(workspace.publishRequestJson());
+
+    QFile reqFile(workDir + QStringLiteral("/request.json"));
+    ASSERT_TRUE(reqFile.open(QIODevice::ReadOnly));
+    QJsonObject good = QJsonDocument::fromJson(reqFile.readAll()).object();
+    reqFile.close();
+
+    const auto makeValidEdge = []() {
+        QJsonObject edge;
+        edge.insert(QStringLiteral("edgeIndex"), 0);
+        edge.insert(QStringLiteral("startRadius"), 1.0);
+        edge.insert(QStringLiteral("endRadius"), 1.0);
+        return edge;
+    };
+
+    auto expectReject = [&](const QJsonObject& bad,
+                            const char* expectedCode,
+                            const QString& decodeDir = QString()) {
+        const QString dir = decodeDir.isEmpty() ? workDir : decodeDir;
+        std::string errorCode;
+        std::string errorMessage;
+        auto decoded = Part::FilletGeometryOperation::decodeFromRequest(bad, dir, errorCode, errorMessage);
+        EXPECT_FALSE(decoded) << expectedCode;
+        EXPECT_EQ(errorCode, expectedCode) << errorMessage;
+        EXPECT_FALSE(QFileInfo::exists(dir + QStringLiteral("/result.fcg")));
+    };
+
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("basePath"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("operationType"), QStringLiteral("Part::Boolean"));
+        expectReject(bad, "UnsupportedOperation");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 99);
+        expectReject(bad, "UnsupportedCodecVersion");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), QStringLiteral("1"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 1.5);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), -1);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), -2147483649.0);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 4294967296.0);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 4294967295.0);
+        expectReject(bad, "UnsupportedCodecVersion");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("/tmp/escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("../escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("missing.fcg"));
+        expectReject(bad, "MissingOperandArchive");
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("baseSize"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"), QStringLiteral("100"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"), 1.5);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"), -1);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"), 9223372036854775808.0);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        const qint64 maxSection =
+            static_cast<qint64>(App::GeometryRequestWorkspace::maxWorkspaceSectionBytes());
+        bad.insert(QStringLiteral("baseSize"), static_cast<double>(maxSection) + 1.0);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"),
+                   bad.value(QStringLiteral("baseSize")).toVariant().toLongLong() + 1);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        QString sha = bad.value(QStringLiteral("baseSha256")).toString();
+        sha[0] = (sha[0] == QLatin1Char('a')) ? QLatin1Char('b') : QLatin1Char('a');
+        bad.insert(QStringLiteral("baseSha256"), sha);
+        expectReject(bad, "OperandDigestMismatch");
+    }
+    {
+        const QString corruptDir = _tempDir->path() + QStringLiteral("/fillet_corrupt");
+        QDir().mkpath(corruptDir);
+        const QString corruptPath = corruptDir + QStringLiteral("/base.fcg");
+        ASSERT_TRUE(QFile::copy(workDir + QStringLiteral("/base.fcg"), corruptPath));
+        {
+            std::ofstream ofs(corruptPath.toStdString(), std::ios::binary | std::ios::app);
+            ofs << "TRAIL";
+        }
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("base.fcg"));
+        bad.insert(QStringLiteral("baseSize"), static_cast<qint64>(QFileInfo(corruptPath).size()));
+        bad.insert(QStringLiteral("baseSha256"),
+                   QString::fromStdString(
+                       Part::TopoShapeArchive::calculateSha256File(corruptPath.toStdString())));
+        expectReject(bad, "OperandDecodeFailed", corruptDir);
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("edges"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("edges"), QStringLiteral("not-an-array"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("edges"), QJsonArray());
+        expectReject(bad, "EmptyEdges");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        edges.append(QStringLiteral("not-an-object"));
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.remove(QStringLiteral("edgeIndex"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("edgeIndex"), QStringLiteral("0"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("edgeIndex"), 1.5);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("edgeIndex"), -1);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidEdgeIndex");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("edgeIndex"), 4294967296.0);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("edgeIndex"), 999);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidEdgeIndex");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        edges.append(makeValidEdge());
+        edges.append(makeValidEdge());
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "DuplicateEdgeIndex");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.remove(QStringLiteral("startRadius"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("startRadius"), QStringLiteral("1"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("startRadius"), QJsonValue::Null);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("startRadius"), 0.0);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidRadius");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("startRadius"), -1.0);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidRadius");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.remove(QStringLiteral("endRadius"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("endRadius"), QStringLiteral("1"));
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("endRadius"), QJsonValue::Null);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("endRadius"), 0.0);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidRadius");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray edges;
+        QJsonObject edge = makeValidEdge();
+        edge.insert(QStringLiteral("endRadius"), -2.0);
+        edges.append(edge);
+        bad.insert(QStringLiteral("edges"), edges);
+        expectReject(bad, "InvalidRadius");
+    }
+}
+
+TEST_F(NonBlockingGeometryTest, FilletCodecStagingFailureDoesNotPublish)
+{
+    BRepPrimAPI_MakeBox box(5.0, 5.0, 5.0);
+    Part::TopoShape shape(box.Shape());
+    Part::FrozenTopoShapeBundle base = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(base.valid);
+    Part::FilletGeometryOperation op(base, {{0, 1.0, 1.0}});
+
+    struct StubArchiveWriter : App::GeometryArchiveWriter
+    {
+        void writeSection(const std::string&, const std::vector<uint8_t>&) override
+        {
+        }
+        void writeString(const std::string&, const std::string&) override
+        {
+        }
+        void writeBytes(const std::string&, const uint8_t*, size_t) override
+        {
+        }
+    };
+    StubArchiveWriter stub;
+    const auto writeResult = op.writeArchive(stub);
+    EXPECT_FALSE(writeResult.success);
+    EXPECT_EQ(writeResult.errorCode, "UnsupportedArchiveWriter");
+
+    const QString blockedWs = _tempDir->path() + QStringLiteral("/fillet_stage_blocked");
+    QDir().mkpath(blockedWs);
+    QDir().mkpath(blockedWs + QStringLiteral("/base.fcg"));
+    App::GeometryRequestWorkspace blocked(blockedWs);
+    EXPECT_FALSE(blocked.hasFailed());
+    const auto blockedWrite = op.writeArchive(blocked);
+    EXPECT_FALSE(blockedWrite.success);
+    EXPECT_TRUE(blocked.hasFailed());
+    EXPECT_FALSE(blocked.publishRequestJson());
+    EXPECT_FALSE(QFileInfo::exists(blockedWs + QStringLiteral("/request.json")));
 }
 
 TEST_F(NonBlockingGeometryTest, ReadArchiveRejectsTrailingDataWithoutPublishing)

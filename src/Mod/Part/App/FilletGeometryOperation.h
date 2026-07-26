@@ -6,6 +6,8 @@
 #include <App/GeometryJob.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
 
+#include <QJsonObject>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,6 +36,22 @@ public:
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;
     App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter& writer) const override;
+
+    /// Decode a typed Fillet request from workspace-relative archives.
+    static std::shared_ptr<FilletGeometryOperation>
+    decodeFromRequest(const QJsonObject& request,
+                      const QString& workspaceDir,
+                      std::string& errorCode,
+                      std::string& errorMessage);
+
+    const FrozenTopoShapeBundle& baseBundle() const
+    {
+        return _base;
+    }
+    const std::vector<FilletEdgeSpec>& edgeSpecs() const
+    {
+        return _edges;
+    }
 
 private:
     FrozenTopoShapeBundle _base;
