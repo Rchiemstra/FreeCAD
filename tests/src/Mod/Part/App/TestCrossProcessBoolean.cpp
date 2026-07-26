@@ -11,6 +11,7 @@
 #include <App/MappedName.h>
 #include <App/StringHasher.h>
 #include <Mod/Part/App/BooleanGeometryOperation.h>
+#include <Mod/Part/App/FilletGeometryOperation.h>
 #include <Mod/Part/App/PartFeature.h>
 #include <Mod/Part/App/PropertyTopoShape.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
@@ -166,6 +167,33 @@ WorkerTranscript runGeometryWorker(const QString& cmdPath,
         proc.waitForFinished(5000);
     }
     return parseWorkerTranscript(out.stdoutBytes, out.exitCode, out.stderrBytes);
+}
+
+bool transcriptHasProgressPhase(const QByteArray& stdoutBytes, const QString& phase)
+{
+    const QString text = QString::fromUtf8(stdoutBytes);
+    for (const QString& line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (!line.startsWith(QStringLiteral("FCGEO/1 "))) {
+            continue;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(line.mid(8).toUtf8());
+        if (!doc.isObject()) {
+            continue;
+        }
+        const QJsonObject obj = doc.object();
+        if (obj.value(QStringLiteral("type")).toString() != QStringLiteral("progress")) {
+            continue;
+        }
+        if (obj.value(QStringLiteral("phase")).toString() == phase) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int countTranscriptType(const WorkerTranscript& transcript, const QString& type)
+{
+    return std::count(transcript.types.begin(), transcript.types.end(), type);
 }
 
 /// FreeCADCmd with no request path (exercises Python wrapper missing-arg handling).
@@ -399,6 +427,140 @@ void assertMappedBooleanResult(const Part::FrozenTopoShapeBundle& out,
         }
         EXPECT_GE(sharedRefs, 2);
     }
+}
+
+struct MappedFilletBox
+{
+    Part::FrozenTopoShapeBundle base;
+    long hashedId {0};
+    QByteArray longName;
+    QByteArray seedName;
+    int threshold {16};
+};
+
+MappedFilletBox makeMappedFilletBox()
+{
+    MappedFilletBox out;
+    out.threshold = 16;
+    out.longName = QByteArray("MappedEdgeNameThatDefinitelyExceedsTheSmallHashThresholdXX");
+    out.seedName = QByteArray("FilletCrossProcessSeedEdge");
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(out.threshold);
+
+    BRepPrimAPI_MakeBox box(10.0, 10.0, 10.0);
+    Part::TopoShape shape(box.Shape(), /*tag=*/1, hasher);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = hasher;
+
+    App::StringIDRef seedSid = hasher->getID(out.seedName);
+    if (!seedSid) {
+        return {};
+    }
+    Data::MappedName seedMapped(seedSid);
+    Data::ElementIDRefs seedSids;
+    seedSids.push_back(seedSid);
+    map->setElementName(Data::IndexedName("Edge", 1), seedMapped, shape.Tag, &seedSids);
+    seedSid.mark();
+
+    App::StringIDRef longSid = hasher->getID(out.longName, App::StringHasher::Option::Hashable);
+    if (!longSid || !longSid.isHashed()) {
+        return {};
+    }
+    out.hashedId = longSid.value();
+    Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+    Data::ElementIDRefs longSids;
+    longSids.push_back(longSid);
+    map->setElementName(Data::IndexedName("Edge", 2), longMapped, shape.Tag, &longSids);
+    longSid.mark();
+
+    shape.resetElementMap(map);
+    out.base = Part::TopoShapeArchive::createBundle(shape);
+    return out;
+}
+
+void assertMappedFilletResult(const Part::FrozenTopoShapeBundle& out,
+                              long hashedId,
+                              const QByteArray& longName,
+                              const QByteArray& seedName,
+                              int expectedThreshold)
+{
+    ASSERT_TRUE(out.valid);
+    ASSERT_FALSE(out.shape.isNull());
+    ASSERT_TRUE(out.elementMap);
+    ASSERT_TRUE(out.hasher);
+    EXPECT_GT(out.elementMap->size(), 0u);
+    EXPECT_FALSE(out.hasherSnapshot.entries.empty());
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.shape.Hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+    EXPECT_EQ(out.hasher->getThreshold(), expectedThreshold);
+    EXPECT_TRUE(allMapsUseHasher(out.elementMap, out.hasher));
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.elementMap->hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+
+    auto again = out.hasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), hashedId);
+    EXPECT_TRUE(again.isHashed());
+
+    auto seedSid = out.hasher->getID(seedName);
+    ASSERT_TRUE(seedSid);
+    EXPECT_TRUE(seedSid.isFromSameHasher(out.hasher));
+    EXPECT_TRUE(out.hasher->getID(seedSid.value()));
+
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(out.shape.getShape(), props);
+    EXPECT_GT(props.Mass(), 900.0);
+    EXPECT_LT(props.Mass(), 1100.0);
+
+    std::function<void(const Data::ElementMapPtr&)> assertSidsResolve =
+        [&](const Data::ElementMapPtr& em) {
+            if (!em) {
+                return;
+            }
+            EXPECT_EQ(static_cast<App::StringHasher*>(em->hasher),
+                      static_cast<App::StringHasher*>(out.hasher));
+            for (const auto& el : em->getAll()) {
+                Data::ElementIDRefs sids;
+                auto mapped = em->find(el.index, &sids);
+                for (const auto& ref : sids) {
+                    ASSERT_TRUE(ref);
+                    EXPECT_TRUE(ref.isFromSameHasher(out.hasher));
+                    EXPECT_TRUE(out.hasher->getID(ref.value()));
+                }
+                if (mapped) {
+                    out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long, long) {
+                        return true;
+                    });
+                }
+            }
+            for (const auto& child : em->getChildElements()) {
+                assertSidsResolve(child.elementMap);
+            }
+        };
+    assertSidsResolve(out.elementMap);
+
+    bool sawSourceTag = false;
+    bool historyWalked = false;
+    for (const auto& el : out.elementMap->getAll()) {
+        Data::ElementIDRefs sids;
+        auto mapped = out.elementMap->find(el.index, &sids);
+        if (!mapped) {
+            continue;
+        }
+        out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long tag, long) {
+            if (tag == 1) {
+                sawSourceTag = true;
+            }
+            return true;
+        });
+        const std::string mappedText = mapped.toString();
+        if (!mappedText.empty()) {
+            historyWalked = true;
+        }
+    }
+    EXPECT_TRUE(historyWalked);
+    EXPECT_TRUE(sawSourceTag);
 }
 
 } // namespace
@@ -1122,4 +1284,204 @@ TEST_F(CrossProcessBooleanTest, IrreconcilableOperandHasherCollisionFailsBeforeO
     EXPECT_NE(transcript.exitCode, 0);
     EXPECT_FALSE(transcript.errorObj.isEmpty());
     EXPECT_FALSE(QFileInfo::exists(workDir + QStringLiteral("/result.fcg")));
+}
+
+class CrossProcessFilletTest : public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+        if (!QCoreApplication::instance()) {
+            static int argc = 1;
+            static char arg0[] = "Part_tests_run";
+            static char* argv[] = {arg0, nullptr};
+            new QCoreApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        _tempDir = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(_tempDir->isValid());
+        _cmdPath = findFreeCADCmd();
+        _scriptPath = findGeometryWorkerPy();
+        ASSERT_FALSE(_cmdPath.isEmpty())
+            << "FreeCADCmd is required; cross-process test must not fall back to in-process task.run()";
+        ASSERT_FALSE(_scriptPath.isEmpty())
+            << "GeometryWorker.py is required; cross-process test must not fall back to in-process task.run()";
+    }
+
+    std::unique_ptr<QTemporaryDir> _tempDir;
+    QString _cmdPath;
+    QString _scriptPath;
+};
+
+TEST_F(CrossProcessFilletTest, RealFreeCADCmdMappedFilletRoundTrip)
+{
+    try {
+        const MappedFilletBox mapped = makeMappedFilletBox();
+        ASSERT_TRUE(mapped.base.valid) << mapped.base.errorCode;
+        ASSERT_TRUE(mapped.base.elementMap);
+        EXPECT_GT(mapped.base.elementMap->size(), 0u);
+
+        constexpr App::GeometryJobId kJobId = 25;
+        std::string jobWire;
+        ASSERT_TRUE(App::formatGeometryJobId(kJobId, jobWire));
+        const QString launchedJobIdWire = QString::fromStdString(jobWire);
+        ASSERT_FALSE(launchedJobIdWire.isEmpty());
+
+        const QString workDir = _tempDir->path() + QStringLiteral("/fillet_job");
+        App::GeometryRequestWorkspace workspace(workDir);
+        Part::FilletGeometryOperation op(mapped.base, {{0, 1.0, 1.0}});
+        workspace.requestObject().insert(QStringLiteral("jobId"), launchedJobIdWire);
+        ASSERT_TRUE(op.writeArchive(workspace).success);
+        ASSERT_TRUE(workspace.publishRequestJson());
+        ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/base.fcg")));
+        ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/request.json")));
+
+        // Must launch a real FreeCADCmd child — never call op.run() or GeometryWorker::runWorkerProcess().
+        const WorkerTranscript transcript = runGeometryWorker(_cmdPath,
+                                                              _scriptPath,
+                                                              workDir + QStringLiteral("/request.json"),
+                                                              workDir,
+                                                              launchedJobIdWire);
+        ASSERT_EQ(transcript.exitCode, 0)
+            << "stdout:\n"
+            << transcript.stdoutBytes.constData() << "\nstderr:\n"
+            << transcript.stderrBytes.constData();
+        ASSERT_FALSE(transcript.types.isEmpty())
+            << "stdout:\n"
+            << transcript.stdoutBytes.constData() << "\nstderr:\n"
+            << transcript.stderrBytes.constData();
+
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("hello")), 1);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("result")), 1);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("error")), 0);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("result"))
+                      + countTranscriptType(transcript, QStringLiteral("error")),
+                  1);
+        EXPECT_EQ(transcript.types.front(), QStringLiteral("hello"));
+        EXPECT_NE(std::find(transcript.types.begin(),
+                            transcript.types.end(),
+                            QStringLiteral("progress")),
+                  transcript.types.end());
+        EXPECT_TRUE(transcriptHasProgressPhase(transcript.stdoutBytes, QStringLiteral("fillet.compute")));
+        EXPECT_EQ(transcript.types.back(), QStringLiteral("result"));
+
+        EXPECT_EQ(transcript.resultObj.value(QStringLiteral("jobId")).toString(), launchedJobIdWire);
+
+        const QString relPath = transcript.resultObj.value(QStringLiteral("path")).toString();
+        EXPECT_EQ(relPath, QStringLiteral("result.fcg"));
+        const qint64 claimedSize =
+            transcript.resultObj.value(QStringLiteral("size")).toVariant().toLongLong();
+        const QString claimedSha =
+            transcript.resultObj.value(QStringLiteral("sha256")).toString().toLower();
+        const QString absResult = QDir(workDir).filePath(relPath);
+        ASSERT_TRUE(QFileInfo::exists(absResult));
+        EXPECT_EQ(QFileInfo(absResult).size(), claimedSize);
+        {
+            QFile f(absResult);
+            ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+            const QByteArray digest =
+                QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex();
+            EXPECT_EQ(QString::fromLatin1(digest), claimedSha);
+        }
+
+        Part::FilletGeometryOperation filletOp(mapped.base, {{0, 1.0, 1.0}});
+        const App::DetachedGeometryResult decoded = filletOp.decodeResultArchive(absResult.toStdString());
+        ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
+        Part::FrozenTopoShapeBundle recovered;
+        ASSERT_TRUE(Part::TopoShapeArchive::readArchive(absResult.toStdString(), recovered));
+        assertMappedFilletResult(recovered,
+                                 mapped.hashedId,
+                                 mapped.longName,
+                                 mapped.seedName,
+                                 mapped.threshold);
+    }
+    catch (const Base::Exception& e) {
+        FAIL() << "Base::Exception: " << e.what();
+    }
+    catch (const Standard_Failure& e) {
+        FAIL() << "OCC: " << (e.GetMessageString() ? e.GetMessageString() : "unknown");
+    }
+    catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
+
+TEST_F(CrossProcessFilletTest, RecoveryAfterBadFilletRequestThenValid)
+{
+    const MappedFilletBox mapped = makeMappedFilletBox();
+    ASSERT_TRUE(mapped.base.valid);
+
+    constexpr App::GeometryJobId kJobId = 26;
+    std::string jobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(kJobId, jobWire));
+    const QString launchedJobIdWire = QString::fromStdString(jobWire);
+
+    const QString badDir = _tempDir->path() + QStringLiteral("/fillet_bad");
+    {
+        App::GeometryRequestWorkspace workspace(badDir);
+        Part::FilletGeometryOperation op(mapped.base, {{0, 1.0, 1.0}});
+        workspace.requestObject().insert(QStringLiteral("jobId"), launchedJobIdWire);
+        ASSERT_TRUE(op.writeArchive(workspace).success);
+        ASSERT_TRUE(workspace.publishRequestJson());
+        QFile::remove(badDir + QStringLiteral("/base.fcg"));
+    }
+
+    const WorkerTranscript bad = runGeometryWorker(_cmdPath,
+                                                   _scriptPath,
+                                                   badDir + QStringLiteral("/request.json"),
+                                                   badDir,
+                                                   launchedJobIdWire);
+    EXPECT_NE(bad.exitCode, 0);
+    ASSERT_FALSE(bad.types.isEmpty());
+    EXPECT_EQ(bad.types.front(), QStringLiteral("hello"));
+    EXPECT_EQ(bad.types.back(), QStringLiteral("error"));
+    EXPECT_EQ(countTranscriptType(bad, QStringLiteral("error")), 1);
+    EXPECT_EQ(countTranscriptType(bad, QStringLiteral("result")), 0);
+    EXPECT_EQ(countTranscriptType(bad, QStringLiteral("error"))
+                  + countTranscriptType(bad, QStringLiteral("result")),
+              1);
+    EXPECT_EQ(bad.errorObj.value(QStringLiteral("jobId")).toString(), launchedJobIdWire);
+    EXPECT_EQ(bad.errorObj.value(QStringLiteral("code")).toString(),
+              QStringLiteral("MissingOperandArchive"));
+    EXPECT_TRUE(bad.resultObj.isEmpty());
+    EXPECT_FALSE(QFileInfo::exists(badDir + QStringLiteral("/result.fcg")));
+    EXPECT_FALSE(transcriptHasProgressPhase(bad.stdoutBytes, QStringLiteral("fillet.compute")));
+
+    const QString goodDir = _tempDir->path() + QStringLiteral("/fillet_good");
+    {
+        App::GeometryRequestWorkspace workspace(goodDir);
+        Part::FilletGeometryOperation op(mapped.base, {{0, 1.0, 1.0}});
+        workspace.requestObject().insert(QStringLiteral("jobId"), launchedJobIdWire);
+        ASSERT_TRUE(op.writeArchive(workspace).success);
+        ASSERT_TRUE(workspace.publishRequestJson());
+    }
+
+    const WorkerTranscript good = runGeometryWorker(_cmdPath,
+                                                  _scriptPath,
+                                                  goodDir + QStringLiteral("/request.json"),
+                                                  goodDir,
+                                                  launchedJobIdWire);
+    ASSERT_EQ(good.exitCode, 0) << good.stdoutBytes.constData();
+    EXPECT_EQ(good.types.front(), QStringLiteral("hello"));
+    EXPECT_EQ(good.types.back(), QStringLiteral("result"));
+    EXPECT_EQ(good.resultObj.value(QStringLiteral("jobId")).toString(), launchedJobIdWire);
+    const QString resultPath = QDir(goodDir).filePath(QStringLiteral("result.fcg"));
+    ASSERT_TRUE(QFileInfo::exists(resultPath));
+
+    Part::FilletGeometryOperation filletOp(mapped.base, {{0, 1.0, 1.0}});
+    const App::DetachedGeometryResult decoded = filletOp.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), recovered));
+    assertMappedFilletResult(recovered,
+                             mapped.hashedId,
+                             mapped.longName,
+                             mapped.seedName,
+                             mapped.threshold);
 }
