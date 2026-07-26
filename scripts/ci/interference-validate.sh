@@ -168,6 +168,24 @@ echo "ASSEMBLYGUI_TEST_EXIT:${GUI_RC}" | tee -a "${LOG}/steps.log"
 tail -n 80 "${LOG}/TaskInterferenceCheck.log" | tee -a "${LOG}/steps.log"
 test "${GUI_RC}" -eq 0
 
+echo "== AssemblyGui Xvfb lifecycle test ==" | tee -a "${LOG}/steps.log"
+if [ ! -x /usr/bin/xvfb-run ]; then
+  echo "ASSEMBLYGUI_XVFB_TEST_EXIT:127" | tee -a "${LOG}/steps.log"
+  echo "FATAL: mandatory /usr/bin/xvfb-run is missing or not executable" | tee -a "${LOG}/steps.log"
+  exit 1
+fi
+set +e
+export QT_QPA_PLATFORM=xcb
+export QT_PLUGIN_PATH="/usr/lib/x86_64-linux-gnu/qt6/plugins:${QT_PLUGIN_PATH:-}"
+/usr/bin/xvfb-run -a /data/build/tests/AssemblyGui_tests_run \
+  --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState \
+  >"${LOG}/TaskInterferenceCheckXvfb.log" 2>&1
+XVFB_GUI_RC=$?
+set -e
+echo "ASSEMBLYGUI_XVFB_TEST_EXIT:${XVFB_GUI_RC}" | tee -a "${LOG}/steps.log"
+tail -n 80 "${LOG}/TaskInterferenceCheckXvfb.log" | tee -a "${LOG}/steps.log"
+test "${XVFB_GUI_RC}" -eq 0
+
 echo ALL_MANDATORY_PASSED | tee -a "${LOG}/steps.log"
 EOS
 

@@ -248,12 +248,11 @@ The implementation’s own validation remains insufficient and not fully reprodu
 - Inaccurate/incomplete: the validator description overstates provenance, `PROGRESS.md:48` documents a persistent incremental volume rather than the script’s current default, and `PROGRESS.md:61` claims `dd` plus non-zero verification that the script does not implement.
 - The admitted lack of GUI/Xvfb tests and most remaining matrix items (`PROGRESS.md:57-60`) is accurate, but the issue list omits the confirmed false negatives and GUI defects above.
 
-## Next step
+## Next steps for the coding agent
 
-1. **P0 — eliminate late-generation result corruption.** *(App/session + task early-return done and Docker-validated; Xvfb GUI regression still missing.)* In `TaskInterferenceCheck` / `InterferenceScanSession`, every generation mismatch returns before status/control/result mutation. Still needed: a real Assembly GUI test that starts A, starts and completes B, then completes A and proves B’s UI state is unchanged under Docker/Xvfb.
-2. **P0 — remove scan false negatives and define input/result invariants.** *(Done and Docker-validated for the three reproduced cases.)* Negative/non-finite tolerance rejected; invalid bounds rebuilt or demoted; collapsed link arrays collected; invalid/inconclusive scans incomplete.
-3. **P0 — correct preview and teardown/staleness behavior.** *(Code done; Xvfb checks still missing.)* Preview transform restored after `setupCoinGeometry`; source triangulation protected by shape copy; involved documents + `PlacementList`/`ScaleList` watched; Manage Exclusions guarded/closed on teardown; sentinel distances/markers suppressed; Exclude/Restore gated. Still needed: Docker/Xvfb checks for placed/nested previews, linked-document changes/closure, modal deletion, and source appearance.
-4. **P1 — complete metadata and task-panel semantics.** *(Partial: detached cross-doc XLink identity now survives add/indexed-remove; Manage Exclusions uses indexed remove + identity labels.)* Still open: FCStd round-trip of detached exclusions, same-doc deleted-endpoint identity (core `breakLink` clears names), quantity-aware clearance editor, detailed eligibility, status icons/translations.
-5. **P1 — finish the planned regression matrix and provenance.** *(App portion partially done: Body Tip, rigid/flexible AssemblyLink, visibility/Include hidden, clearance undo/redo Docker-validated.)* Still missing: cycles, real in-operation cancellation, GUI lifecycle Xvfb paths. Update `scripts/ci/interference-validate.sh` for `PartTestData`, full suites + Xvfb, disposable volumes, and complete provenance. Only then refresh `doc/PROGRESS.md` with exact results.
-
-The implementing agent’s concrete next action is to add AssemblyGui Xvfb regressions for B-then-A UI non-mutation and preview/teardown (items 1 and 3 remaining GUI proof). Do not claim P0 GUI complete until those Xvfb checks pass. In parallel-safe App work: FCStd round-trip for detached exclusion identity.
+1. Add Xvfb tests for placed/nested previews, linked-document changes or closure, dialog teardown, and unchanged source appearance.
+2. Test exclusion identity through an FCStd cross-document round trip and same-document endpoint deletion.
+3. Finish the task UI: quantity-aware clearance, eligibility details, status icons, and translations.
+4. Cover cycles and real mid-scan cancellation.
+5. Extend CI with `PartTestData`, full App/GUI Xvfb suites, disposable volumes, and exact provenance.
+6. Update `doc/PROGRESS.md` only after these tests pass. Do not claim P0 GUI complete before then.
