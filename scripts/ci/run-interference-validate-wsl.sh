@@ -150,7 +150,7 @@ export QT_QPA_PLATFORM=xcb
 export ASSEMBLYGUI_REQUIRE_XCB=1
 export QT_PLUGIN_PATH="/usr/lib/x86_64-linux-gnu/qt6/plugins:${QT_PLUGIN_PATH:-}"
 /usr/bin/xvfb-run -a /data/build/tests/AssemblyGui_tests_run \
-  --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState:TaskInterferenceCheckTest.placedLeafPreviewRestoresWorldTransform \
+  --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState:TaskInterferenceCheckTest.placedLeafPreviewRestoresWorldTransform:TaskInterferenceCheckTest.documentCloseDiscardsResultsAndClosesManageExclusions \
   >"${LOG}/TaskInterferenceCheckXvfb.log" 2>&1
 XVFB_GUI_RC=$?
 set -e
