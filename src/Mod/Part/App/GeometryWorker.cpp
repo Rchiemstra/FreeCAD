@@ -2,6 +2,7 @@
 
 #include "GeometryWorker.h"
 #include "BooleanGeometryOperation.h"
+#include "FilletGeometryOperation.h"
 #include "GeometryWorkerRegistry.h"
 #include "TopoShapeArchive.h"
 
@@ -239,10 +240,26 @@ int GeometryWorker::runWorkerProcess(const std::string& requestJsonPath)
             return 2;
         }
     }
-    else {
-        // Fillet/Sweep remain allowlisted stubs until their codecs land.
+    else if (operationType == QStringLiteral("Part::Fillet")) {
+        std::string errorCode;
+        std::string errorMessage;
+        task = FilletGeometryOperation::decodeFromRequest(obj, tempDir, errorCode, errorMessage);
+        if (!task) {
+            emitError(errorCode.empty() ? "fillet_decode_failed" : errorCode,
+                      errorMessage.empty() ? "Failed to decode Part::Fillet request" : errorMessage,
+                      jobId);
+            return 2;
+        }
+    }
+    else if (operationType == QStringLiteral("Part::Sweep")) {
         emitError("codec_not_implemented",
-                  "Typed decode is only implemented for Part::Boolean in this slice",
+                  "Typed decode is not implemented for Part::Sweep in this slice",
+                  jobId);
+        return 2;
+    }
+    else {
+        emitError("codec_not_implemented",
+                  "Typed decode is not implemented for this operation in this slice",
                   jobId);
         return 2;
     }

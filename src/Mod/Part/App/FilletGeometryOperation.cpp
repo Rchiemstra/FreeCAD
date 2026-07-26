@@ -388,6 +388,56 @@ FilletGeometryOperation::writeArchive(App::GeometryArchiveWriter& writer) const
     return out;
 }
 
+App::DetachedGeometryResult
+FilletGeometryOperation::decodeResultArchive(const std::string& absolutePath) const
+{
+    App::DetachedGeometryResult result;
+    result.resultArchivePath = absolutePath;
+
+    Part::FrozenTopoShapeBundle candidate;
+    candidate.valid = false;
+    if (!TopoShapeArchive::readArchive(absolutePath, candidate) || !candidate.valid) {
+        result.success = false;
+        result.errorCode = candidate.errorCode.empty() ? "ResultDecodeFailed" : candidate.errorCode;
+        result.errorMessage = "FCG1 Fillet result failed structural decode";
+        return result;
+    }
+    if (candidate.shape.isNull()) {
+        result.success = false;
+        result.errorCode = "NullResultShape";
+        result.errorMessage = "Decoded Fillet result shape is null";
+        return result;
+    }
+    if (!candidate.hasher) {
+        result.success = false;
+        result.errorCode = "MissingResultHasher";
+        result.errorMessage = "Mapped Fillet result requires a hasher";
+        return result;
+    }
+    if (!candidate.elementMap || candidate.elementMap->size() == 0) {
+        result.success = false;
+        result.errorCode = "MissingResultElementMap";
+        result.errorMessage = "Mapped Fillet result requires a non-empty ElementMap";
+        return result;
+    }
+    if (candidate.hasherSnapshot.entries.empty()) {
+        result.success = false;
+        result.errorCode = "MissingResultHasherClosure";
+        result.errorMessage = "Mapped Fillet result requires a hasher closure";
+        return result;
+    }
+    if (static_cast<App::StringHasher*>(candidate.shape.Hasher)
+        != static_cast<App::StringHasher*>(candidate.hasher)) {
+        result.success = false;
+        result.errorCode = "ResultHasherMismatch";
+        result.errorMessage = "Decoded shape hasher does not match bundle hasher";
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
 std::shared_ptr<FilletGeometryOperation>
 FilletGeometryOperation::decodeFromRequest(const QJsonObject& request,
                                            const QString& workspaceDir,

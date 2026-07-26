@@ -6,6 +6,8 @@
 #include <Mod/Part/App/FilletGeometryOperation.h>
 #include <Mod/Part/App/SweepGeometryOperation.h>
 #include <Mod/Part/App/GeometryWorkerRegistry.h>
+#include <Mod/Part/App/GeometryWorker.h>
+#include <App/GeometryJob.h>
 #include <App/ElementMap.h>
 #include <App/GeometryJobManager.h>
 #include <App/GeometryRequestWorkspace.h>
@@ -1992,6 +1994,176 @@ TEST_F(NonBlockingGeometryTest, FilletCodecStagingFailureDoesNotPublish)
     EXPECT_TRUE(blocked.hasFailed());
     EXPECT_FALSE(blocked.publishRequestJson());
     EXPECT_FALSE(QFileInfo::exists(blockedWs + QStringLiteral("/request.json")));
+}
+
+namespace
+{
+
+Part::FrozenTopoShapeBundle makeMappedBoxBundleForFillet()
+{
+    BRepPrimAPI_MakeBox box(10.0, 10.0, 10.0);
+    App::StringHasherRef hasher(new App::StringHasher);
+    Part::TopoShape shape(box.Shape(), /*tag=*/1, hasher);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = hasher;
+    shape.resetElementMap(map);
+    Data::IndexedName edge1("Edge", 1);
+    App::StringIDRef sid = hasher->getID(QByteArray("FilletWorkerSeedEdge"));
+    if (!sid) {
+        return {};
+    }
+    Data::MappedName mapped(sid);
+    Data::ElementIDRefs sids;
+    sids.push_back(sid);
+    map->setElementName(edge1, mapped, shape.Tag, &sids);
+    sid.mark();
+    Part::FrozenTopoShapeBundle base = Part::TopoShapeArchive::createBundle(shape);
+    EXPECT_TRUE(base.valid);
+    return base;
+}
+
+bool publishFilletWorkerRequest(const QString& workDir,
+                                const Part::FrozenTopoShapeBundle& base,
+                                App::GeometryJobId jobId)
+{
+    std::string jobWire;
+    if (!App::formatGeometryJobId(jobId, jobWire)) {
+        return false;
+    }
+    App::GeometryRequestWorkspace workspace(workDir);
+    workspace.requestObject().insert(QStringLiteral("jobId"), QString::fromStdString(jobWire));
+    Part::FilletGeometryOperation op(base, {{0, 1.0, 1.0}});
+    if (!op.writeArchive(workspace).success) {
+        return false;
+    }
+    return workspace.publishRequestJson();
+}
+
+} // namespace
+
+TEST_F(NonBlockingGeometryTest, FilletWorkerProcessProducesMappedResult)
+{
+    Part::GeometryWorkerRegistry::instance().registerBuiltins();
+    const Part::FrozenTopoShapeBundle base = makeMappedBoxBundleForFillet();
+    ASSERT_TRUE(base.valid);
+    ASSERT_TRUE(base.elementMap);
+    EXPECT_GT(base.elementMap->size(), 0u);
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/fillet_worker_ok");
+    constexpr App::GeometryJobId kJobId = 25;
+    ASSERT_TRUE(publishFilletWorkerRequest(workDir, base, kJobId));
+    const QString requestPath = workDir + QStringLiteral("/request.json");
+    ASSERT_TRUE(QFileInfo::exists(requestPath));
+
+    const int exitCode =
+        Part::GeometryWorker::runWorkerProcess(requestPath.toStdString());
+    EXPECT_EQ(exitCode, 0);
+
+    const QString resultPath = workDir + QStringLiteral("/result.fcg");
+    ASSERT_TRUE(QFileInfo::exists(resultPath));
+
+    Part::FilletGeometryOperation filletOp(base, {{0, 1.0, 1.0}});
+    const App::DetachedGeometryResult decoded =
+        filletOp.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
+    Part::FrozenTopoShapeBundle outBundle;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), outBundle));
+    EXPECT_TRUE(outBundle.valid);
+    EXPECT_FALSE(outBundle.shape.isNull());
+    ASSERT_TRUE(outBundle.hasher);
+    ASSERT_TRUE(outBundle.elementMap);
+    EXPECT_GT(outBundle.elementMap->size(), 0u);
+    EXPECT_FALSE(outBundle.hasherSnapshot.entries.empty());
+    EXPECT_EQ(static_cast<App::StringHasher*>(outBundle.shape.Hasher),
+              static_cast<App::StringHasher*>(outBundle.hasher));
+    EXPECT_EQ(outBundle.elementMap->hasher, outBundle.hasher);
+}
+
+TEST_F(NonBlockingGeometryTest, FilletWorkerProcessRecoveryAfterBadRequest)
+{
+    Part::GeometryWorkerRegistry::instance().registerBuiltins();
+    const Part::FrozenTopoShapeBundle base = makeMappedBoxBundleForFillet();
+    constexpr App::GeometryJobId kJobId = 26;
+    std::string jobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(kJobId, jobWire));
+
+    const QString badDir = _tempDir->path() + QStringLiteral("/fillet_worker_bad");
+    ASSERT_TRUE(publishFilletWorkerRequest(badDir, base, kJobId));
+    ASSERT_TRUE(QFile::remove(badDir + QStringLiteral("/base.fcg")));
+
+    const int badExit =
+        Part::GeometryWorker::runWorkerProcess((badDir + QStringLiteral("/request.json")).toStdString());
+    EXPECT_EQ(badExit, 2);
+    EXPECT_FALSE(QFileInfo::exists(badDir + QStringLiteral("/result.fcg")));
+
+    const QString goodDir = _tempDir->path() + QStringLiteral("/fillet_worker_good");
+    ASSERT_TRUE(publishFilletWorkerRequest(goodDir, base, kJobId));
+    const int goodExit =
+        Part::GeometryWorker::runWorkerProcess((goodDir + QStringLiteral("/request.json")).toStdString());
+    ASSERT_EQ(goodExit, 0);
+    const QString resultPath = goodDir + QStringLiteral("/result.fcg");
+    ASSERT_TRUE(QFileInfo::exists(resultPath));
+
+    Part::FilletGeometryOperation filletOp(base, {{0, 1.0, 1.0}});
+    const App::DetachedGeometryResult decoded =
+        filletOp.decodeResultArchive(resultPath.toStdString());
+    EXPECT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+}
+
+TEST_F(NonBlockingGeometryTest, FilletResultDecodeRejectsBadArchives)
+{
+    const Part::FrozenTopoShapeBundle base = makeMappedBoxBundleForFillet();
+    Part::FilletGeometryOperation filletOp(base, {{0, 1.0, 1.0}});
+    TestWorkerContext ctx(_tempDir->path().toStdString());
+    const App::DetachedGeometryResult runResult = filletOp.run(ctx);
+    ASSERT_TRUE(runResult.success) << runResult.errorCode;
+    const std::string goodPath = runResult.resultArchivePath;
+    ASSERT_FALSE(goodPath.empty());
+    ASSERT_TRUE(filletOp.decodeResultArchive(goodPath).success);
+
+    const std::string corruptPath = (_tempDir->path() + QStringLiteral("/fillet_corrupt_result.fcg")).toStdString();
+    {
+        QFile in(QString::fromStdString(goodPath));
+        ASSERT_TRUE(in.open(QIODevice::ReadOnly));
+        const QByteArray bytes = in.readAll();
+        in.close();
+        QFile out(QString::fromStdString(corruptPath));
+        ASSERT_TRUE(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        out.write(bytes);
+        out.write("TRAIL");
+        out.close();
+    }
+    {
+        const App::DetachedGeometryResult bad = filletOp.decodeResultArchive(corruptPath);
+        EXPECT_FALSE(bad.success);
+        EXPECT_EQ(bad.errorCode, "ResultDecodeFailed");
+        EXPECT_NE(bad.errorMessage.find("Fillet"), std::string::npos);
+    }
+
+    const std::string unmappedPath =
+        (_tempDir->path() + QStringLiteral("/fillet_unmapped_result.fcg")).toStdString();
+    {
+        BRepPrimAPI_MakeBox box(5.0, 5.0, 5.0);
+        Part::TopoShape plain(box.Shape());
+        Part::FrozenTopoShapeBundle plainBundle = Part::TopoShapeArchive::createBundle(plain);
+        ASSERT_TRUE(plainBundle.valid);
+        ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(plainBundle, unmappedPath));
+    }
+    {
+        const App::DetachedGeometryResult bad = filletOp.decodeResultArchive(unmappedPath);
+        EXPECT_FALSE(bad.success);
+        EXPECT_EQ(bad.errorCode, "MissingResultElementMap");
+        EXPECT_NE(bad.errorMessage.find("Fillet"), std::string::npos);
+    }
+
+    const std::string missingPath =
+        (_tempDir->path() + QStringLiteral("/fillet_missing_result.fcg")).toStdString();
+    {
+        const App::DetachedGeometryResult bad = filletOp.decodeResultArchive(missingPath);
+        EXPECT_FALSE(bad.success);
+        EXPECT_FALSE(bad.errorCode.empty());
+    }
 }
 
 TEST_F(NonBlockingGeometryTest, ReadArchiveRejectsTrailingDataWithoutPublishing)

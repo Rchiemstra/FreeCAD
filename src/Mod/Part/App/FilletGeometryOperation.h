@@ -36,6 +36,7 @@ public:
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;
     App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter& writer) const override;
+    App::DetachedGeometryResult decodeResultArchive(const std::string& absolutePath) const override;
 
     /// Decode a typed Fillet request from workspace-relative archives.
     static std::shared_ptr<FilletGeometryOperation>
