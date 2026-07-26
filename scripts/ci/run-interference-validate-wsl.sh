@@ -1,38 +1,22 @@
 #!/usr/bin/env bash
-# Finite, isolated interference-detection validation.
-# Fresh --rm container each run; does not touch running FreeCAD/MCP instances.
-# Unique disposable volume per run; records dirty-worktree manifest + image digest.
+# Robust WSL entrypoint: file-based container script (no fragile host heredoc).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE="${INTERFERENCE_CI_IMAGE:-127.0.0.1:5001/freecad-ci-deps:24.04}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 VOLUME="freecad-interference-validate-${STAMP}"
-HOST_LOG_DIR="${INTERFERENCE_CI_HOST_LOG_DIR:-${ROOT}/build/interference-ci/logs/${STAMP}}"
+HOST_LOG_DIR="${INTERFERENCE_CI_HOST_LOG_DIR:-/tmp/freecad-interference-validate-logs}"
+SEED_VOLUME="${INTERFERENCE_CI_SEED_VOLUME:-freecad-interference-validate-data}"
+SOURCE_REV="${INTERFERENCE_CI_SOURCE_REV:-unknown}"
+DIRTY="${INTERFERENCE_CI_DIRTY:-1}"
+MANIFEST_SHA="${INTERFERENCE_CI_MANIFEST_SHA:-skipped}"
+
+rm -rf "${HOST_LOG_DIR}"
 mkdir -p "${HOST_LOG_DIR}"
 
-SOURCE_REV="${INTERFERENCE_CI_SOURCE_REV:-$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)}"
-DIRTY="${INTERFERENCE_CI_DIRTY:-$(git -C "${ROOT}" status --porcelain 2>/dev/null | wc -l | tr -d ' ')}"
 IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE}" 2>/dev/null \
   || docker image inspect --format '{{.Id}}' "${IMAGE}")"
-if [[ -n "${INTERFERENCE_CI_MANIFEST_SHA:-}" ]]; then
-  MANIFEST_SHA="${INTERFERENCE_CI_MANIFEST_SHA}"
-else
-  MANIFEST_SHA="$(
-    (cd "${ROOT}" && find src/Mod/Part/App/InterferenceDetection.* \
-      src/Mod/Assembly/App/InterferenceScan.* \
-      src/Mod/Assembly/App/InterferenceScanSession.* \
-      src/Mod/Assembly/App/AssemblyObject.* \
-      src/Mod/Assembly/Gui/TaskInterferenceCheck.* \
-      tests/src/Mod/Part/App/InterferenceDetection.cpp \
-      tests/src/Mod/Assembly/App/InterferenceScan.cpp \
-      tests/src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp \
-      scripts/ci/interference-validate.sh \
-      -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')
-  )"
-fi
-
-SEED_VOLUME="${INTERFERENCE_CI_SEED_VOLUME:-}"
 
 cat > "${HOST_LOG_DIR}/meta.txt" <<EOF
 stamp=${STAMP}
@@ -43,7 +27,6 @@ image_digest=${IMAGE_DIGEST}
 volume=${VOLUME}
 seed_volume=${SEED_VOLUME}
 relevant_manifest_sha256=${MANIFEST_SHA}
-invocation=docker run --rm --network=none -v ROOT:/src:ro -v HOST_LOG:/out -v VOLUME:/data IMAGE
 EOF
 
 cleanup() {
@@ -61,19 +44,7 @@ if [[ -n "${SEED_VOLUME}" ]]; then
     bash -lc 'if [ -f /seed/build/CMakeCache.txt ]; then cp -a /seed/build /data/; cp -a /seed/ccache /data/ 2>/dev/null || true; echo SEEDED; else echo NO_SEED; fi'
 fi
 
-echo "Running isolated validation (stamp=${STAMP}, volume=${VOLUME})..."
-
-docker run --rm --network=none \
-  --name "freecad-interference-validate-${STAMP}" \
-  --mount "type=bind,src=${ROOT},dst=/src,readonly" \
-  --mount "type=bind,src=${HOST_LOG_DIR},dst=/out" \
-  --mount "type=volume,src=${VOLUME},dst=/data" \
-  -e SOURCE_REV="${SOURCE_REV}" \
-  -e IMAGE="${IMAGE}" \
-  -e IMAGE_DIGEST="${IMAGE_DIGEST}" \
-  -e MANIFEST_SHA="${MANIFEST_SHA}" \
-  "${IMAGE}" \
-  bash -s <<'EOS'
+cat > "${HOST_LOG_DIR}/container.sh" <<'EOS'
 set -euo pipefail
 LOG=/out
 mkdir -p /data/logs /data/ccache /data/src /data/build
@@ -170,5 +141,18 @@ test "${GUI_RC}" -eq 0
 
 echo ALL_MANDATORY_PASSED | tee -a "${LOG}/steps.log"
 EOS
+
+echo "Running isolated validation (stamp=${STAMP}, volume=${VOLUME})..."
+docker run --rm --network=none \
+  --name "freecad-interference-validate-${STAMP}" \
+  --mount "type=bind,src=${ROOT},dst=/src,readonly" \
+  --mount "type=bind,src=${HOST_LOG_DIR},dst=/out" \
+  --mount "type=volume,src=${VOLUME},dst=/data" \
+  -e SOURCE_REV="${SOURCE_REV}" \
+  -e IMAGE="${IMAGE}" \
+  -e IMAGE_DIGEST="${IMAGE_DIGEST}" \
+  -e MANIFEST_SHA="${MANIFEST_SHA}" \
+  "${IMAGE}" \
+  bash /out/container.sh
 
 echo "Validation OK. Logs: ${HOST_LOG_DIR}"

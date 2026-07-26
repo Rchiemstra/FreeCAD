@@ -4,6 +4,7 @@
 #ifndef _PreComp_
 # include <BRepBuilderAPI_Copy.hxx>
 # include <QCheckBox>
+# include <QComboBox>
 # include <QDialog>
 # include <QDialogButtonBox>
 # include <QHBoxLayout>
@@ -34,6 +35,7 @@
 #include <App/DocumentObject.h>
 #include <App/Property.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
 #include <Gui/Application.h>
@@ -52,10 +54,13 @@
 #include <Mod/Part/Gui/ViewProviderExt.h>
 #include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
 
+#include <QComboBox>
 #include <QFutureWatcher>
 #include <QMetaObject>
 #include <cmath>
 #include <functional>
+#include <algorithm>
+#include <Mod/Spreadsheet/App/Sheet.h>
 
 using namespace Assembly;
 using namespace AssemblyGui;
@@ -75,12 +80,29 @@ QString kindText(Part::InterferenceKind kind, bool excluded)
             return QObject::tr("Contact");
         case Part::InterferenceKind::ClearanceViolation:
             return QObject::tr("Clearance");
+        case Part::InterferenceKind::Clear:
+            return QObject::tr("Clear");
         case Part::InterferenceKind::InvalidInput:
             return QObject::tr("Invalid");
         case Part::InterferenceKind::Inconclusive:
             return QObject::tr("Inconclusive");
         default:
             return QObject::tr("Other");
+    }
+}
+
+QString issueKindText(Assembly::InterferenceComponentIssue::Kind kind)
+{
+    switch (kind) {
+        case Assembly::InterferenceComponentIssue::Kind::InvalidLeaf:
+            return QObject::tr("Invalid geometry");
+        case Assembly::InterferenceComponentIssue::Kind::InvalidRule:
+            return QObject::tr("Invalid rule");
+        case Assembly::InterferenceComponentIssue::Kind::FaceEnumerationCapped:
+            return QObject::tr("Face enumeration capped");
+        case Assembly::InterferenceComponentIssue::Kind::Other:
+        default:
+            return QObject::tr("Diagnostic");
     }
 }
 
@@ -144,6 +166,7 @@ TaskInterferenceCheck::TaskInterferenceCheck(
             Base::Quantity(Assembly::getInterferenceClearance(host), Base::Unit::Length)
         );
     }
+    refreshClearanceSheetUi();
 
     refreshScanScope();
     attachPreviewToViewer();
@@ -186,10 +209,30 @@ void TaskInterferenceCheck::setupUi()
            "components even if they are hidden.")
     );
     showExcludedCheck = new QCheckBox(tr("Show excluded"), this);
+    showClearFaceChecks = new QCheckBox(tr("Show clear face checks"), this);
+    showClearFaceChecks->setToolTip(
+        tr("Include Clear face-pair evaluations under each component pair. "
+           "Off by default; App results always retain Clear hits.")
+    );
     controls->addWidget(includeHiddenCheck);
     controls->addWidget(showExcludedCheck);
+    controls->addWidget(showClearFaceChecks);
     controls->addStretch();
     layout->addLayout(controls);
+
+    auto* sheetRow = new QHBoxLayout;
+    sheetRow->addWidget(new QLabel(tr("Clearance sheet:"), this));
+    clearanceSheetCombo = new QComboBox(this);
+    clearanceSheetCombo->setMinimumWidth(160);
+    clearanceSheetCombo->setToolTip(
+        tr("Optional spreadsheet of face-specific design clearances. "
+           "Assembly clearance is the fallback when no * default row is present.")
+    );
+    sheetRow->addWidget(clearanceSheetCombo, 1);
+    clearanceSheetLabel = new QLabel(tr("Fallback spin when no * row."), this);
+    clearanceSheetLabel->setWordWrap(true);
+    sheetRow->addWidget(clearanceSheetLabel, 1);
+    layout->addLayout(sheetRow);
 
     auto* buttons = new QHBoxLayout;
     runButton = new QPushButton(tr("Run"), this);
@@ -211,9 +254,16 @@ void TaskInterferenceCheck::setupUi()
     summaryLabel->setWordWrap(true);
     layout->addWidget(summaryLabel);
 
-    resultsTable = new QTableWidget(0, 5, this);
+    resultsTable = new QTableWidget(0, 8, this);
     resultsTable->setHorizontalHeaderLabels(
-        {tr("Status"), tr("Occurrence A"), tr("Occurrence B"), tr("Min clearance"), tr("Overlap volume")}
+        {tr("Status"),
+         tr("Occurrence A"),
+         tr("Occurrence B"),
+         tr("Min clearance"),
+         tr("Overlap volume"),
+         tr("Applied clearance"),
+         tr("Faces"),
+         tr("Rule")}
     );
     resultsTable->horizontalHeader()->setStretchLastSection(true);
     resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -229,6 +279,12 @@ void TaskInterferenceCheck::setupUi()
     connect(manageExclusionsButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onManageExclusions);
     connect(showExcludedCheck, &QCheckBox::toggled, this, &TaskInterferenceCheck::onShowExcludedToggled);
     connect(
+        showClearFaceChecks,
+        &QCheckBox::toggled,
+        this,
+        &TaskInterferenceCheck::onShowClearFaceChecksToggled
+    );
+    connect(
         includeHiddenCheck,
         &QCheckBox::toggled,
         this,
@@ -243,6 +299,12 @@ void TaskInterferenceCheck::setupUi()
                 markStale("Clearance changed");
             }
         }
+    );
+    connect(
+        clearanceSheetCombo,
+        qOverload<int>(&QComboBox::currentIndexChanged),
+        this,
+        &TaskInterferenceCheck::onClearanceSheetChanged
     );
     connect(
         resultsTable,
@@ -278,6 +340,11 @@ bool TaskInterferenceCheck::isSelectPairEnabled() const
 bool TaskInterferenceCheck::isExcludePairEnabled() const
 {
     return excludeButton && excludeButton->isEnabled();
+}
+
+bool TaskInterferenceCheck::testIsRestorePairEnabled() const
+{
+    return restoreButton && restoreButton->isEnabled();
 }
 
 void TaskInterferenceCheck::testDeliverScanFinished(
@@ -331,6 +398,145 @@ void TaskInterferenceCheck::testSetClearanceQuantity(const Base::Quantity& quant
 {
     if (clearanceSpin) {
         clearanceSpin->setValue(quantity);
+    }
+}
+
+QString TaskInterferenceCheck::testClearanceSheetLabel() const
+{
+    return clearanceSheetLabel ? clearanceSheetLabel->text() : QString();
+}
+
+void TaskInterferenceCheck::testRefreshClearanceSheetUi()
+{
+    refreshClearanceSheetUi();
+}
+
+void TaskInterferenceCheck::testSetShowClearFaceChecks(bool enabled)
+{
+    if (showClearFaceChecks) {
+        showClearFaceChecks->setChecked(enabled);
+    }
+}
+
+bool TaskInterferenceCheck::testShowClearFaceChecks() const
+{
+    return showClearFaceChecks && showClearFaceChecks->isChecked();
+}
+
+void TaskInterferenceCheck::testSetShowExcluded(bool enabled)
+{
+    if (showExcludedCheck) {
+        showExcludedCheck->setChecked(enabled);
+    }
+}
+
+bool TaskInterferenceCheck::testShowExcluded() const
+{
+    return showExcludedCheck && showExcludedCheck->isChecked();
+}
+
+void TaskInterferenceCheck::testSelectClearanceSheetByName(const QString& objectName)
+{
+    if (!clearanceSheetCombo) {
+        return;
+    }
+    for (int i = 0; i < clearanceSheetCombo->count(); ++i) {
+        if (clearanceSheetCombo->itemData(i).toString() == objectName) {
+            updatingClearanceSheetUi = true;
+            clearanceSheetCombo->setCurrentIndex(i);
+            updatingClearanceSheetUi = false;
+            onClearanceSheetChanged(i);
+            return;
+        }
+    }
+}
+
+void TaskInterferenceCheck::testRebuildTable()
+{
+    rebuildTable();
+}
+
+void TaskInterferenceCheck::refreshClearanceSheetUi()
+{
+    if (!clearanceSheetCombo) {
+        return;
+    }
+    updatingClearanceSheetUi = true;
+    clearanceSheetCombo->clear();
+    clearanceSheetCombo->addItem(tr("(none)"), QString());
+
+    App::Document* doc = host ? host->getDocument() : nullptr;
+    App::DocumentObject* linked = host ? Assembly::getInterferenceClearanceSheet(host) : nullptr;
+    int selectIndex = 0;
+    if (doc) {
+        for (App::DocumentObject* obj : doc->getObjects()) {
+            auto* sheet = freecad_cast<Spreadsheet::Sheet*>(obj);
+            if (!sheet || !sheet->getNameInDocument()) {
+                continue;
+            }
+            const QString label = QString::fromUtf8(sheet->Label.getValue());
+            const QString name = QString::fromUtf8(sheet->getNameInDocument());
+            clearanceSheetCombo->addItem(QStringLiteral("%1 (%2)").arg(label, name), name);
+            if (sheet == linked) {
+                selectIndex = clearanceSheetCombo->count() - 1;
+            }
+        }
+    }
+    clearanceSheetCombo->setCurrentIndex(selectIndex);
+    if (clearanceSheetLabel) {
+        if (linked && linked->getNameInDocument()) {
+            clearanceSheetLabel->setText(
+                tr("Using sheet \"%1\". Assembly clearance is fallback without a * row.")
+                    .arg(QString::fromUtf8(linked->Label.getValue()))
+            );
+        }
+        else {
+            clearanceSheetLabel->setText(
+                tr("No clearance sheet linked. Assembly clearance applies globally.")
+            );
+        }
+    }
+    updatingClearanceSheetUi = false;
+}
+
+void TaskInterferenceCheck::onClearanceSheetChanged(int index)
+{
+    if (updatingClearanceSheetUi || !host || !clearanceSheetCombo) {
+        return;
+    }
+    const QString name = clearanceSheetCombo->itemData(index).toString();
+    App::DocumentObject* sheet = nullptr;
+    if (!name.isEmpty() && host->getDocument()) {
+        sheet = host->getDocument()->getObject(name.toUtf8().constData());
+    }
+    App::DocumentObject* current = Assembly::getInterferenceClearanceSheet(host);
+    if (sheet == current) {
+        return;
+    }
+    try {
+        if (auto* guiDoc = hostGuiDocument()) {
+            guiDoc->openCommand("Set interference clearance sheet");
+            Assembly::setInterferenceClearanceSheet(host, sheet);
+            guiDoc->commitCommand();
+        }
+        else if (App::Document* doc = host->getDocument()) {
+            doc->openTransaction("Set interference clearance sheet");
+            Assembly::setInterferenceClearanceSheet(host, sheet);
+            doc->commitTransaction();
+        }
+        else {
+            Assembly::setInterferenceClearanceSheet(host, sheet);
+        }
+    }
+    catch (const Base::Exception& exc) {
+        Base::Console().warning("Interference clearance sheet: %s\n", exc.what());
+        refreshClearanceSheetUi();
+        return;
+    }
+    connectDocumentSignals();
+    refreshClearanceSheetUi();
+    if (hasResults()) {
+        markStale("Clearance sheet changed");
     }
 }
 
@@ -671,6 +877,9 @@ void TaskInterferenceCheck::setScanControlsEnabled(bool enabled)
     if (clearanceSpin) {
         clearanceSpin->setEnabled(enabled);
     }
+    if (clearanceSheetCombo) {
+        clearanceSheetCombo->setEnabled(enabled);
+    }
     if (includeHiddenCheck) {
         // Selected-pair mode keeps Include hidden disabled even while idle.
         includeHiddenCheck->setEnabled(enabled && !selectedComponentsMode);
@@ -693,7 +902,13 @@ void TaskInterferenceCheck::updateRowActionState()
     bool canRestore = false;
     if (hasPair) {
         const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
-        canExclude = !pair.excluded && isViolationKind(pair.detection.kind);
+        bool hasUnsuppressedViolation = isViolationKind(pair.detection.kind) && !pair.excluded;
+        for (const auto& hit : pair.faceHits) {
+            if (isViolationKind(hit.classification) && !hit.suppressedByExclusion) {
+                hasUnsuppressedViolation = true;
+            }
+        }
+        canExclude = !pair.excluded && hasUnsuppressedViolation;
         canRestore = pair.excluded;
     }
     if (selectPairButton) {
@@ -728,6 +943,13 @@ int TaskInterferenceCheck::currentPairIndex() const
 
 bool TaskInterferenceCheck::isResultAffectingProperty(const App::Property& prop) const
 {
+    if (host) {
+        if (auto* sheet = Assembly::getInterferenceClearanceSheet(host)) {
+            if (prop.getContainer() == sheet) {
+                return true;
+            }
+        }
+    }
     const char* name = prop.getName();
     if (!name) {
         return false;
@@ -740,6 +962,7 @@ bool TaskInterferenceCheck::isResultAffectingProperty(const App::Property& prop)
         || std::strcmp(name, "ScaleList") == 0 || std::strcmp(name, "Scale") == 0
         || std::strcmp(name, "ScaleVector") == 0 || std::strcmp(name, "Shape") == 0
         || std::strcmp(name, "Tip") == 0 || std::strcmp(name, "InterferenceClearance") == 0
+        || std::strcmp(name, "InterferenceClearanceSheet") == 0
         || std::strcmp(name, "InterferenceExcludedSources") == 0;
 }
 
@@ -783,8 +1006,9 @@ void TaskInterferenceCheck::closeManageExclusionsDialog()
 
 void TaskInterferenceCheck::connectDocumentSignals()
 {
-    connections.clear();
-    watchedDocuments.clear();
+    // Always disconnect first. Clearing the connection vector without disconnect
+    // would leave orphaned slots that use-after-free on later document changes.
+    disconnectDocumentSignals();
     if (!host || !host->getDocument()) {
         return;
     }
@@ -806,6 +1030,10 @@ void TaskInterferenceCheck::connectDocumentSignals()
                     return;
                 }
                 if (&obj == host || watchedDocuments.count(obj.getDocument()) != 0) {
+                    const char* name = prop.getName();
+                    if (name && std::strcmp(name, "InterferenceClearanceSheet") == 0) {
+                        refreshClearanceSheetUi();
+                    }
                     markStale("Object change");
                 }
             }
@@ -1141,8 +1369,8 @@ void TaskInterferenceCheck::onRun()
             selectedB.occurrencePrefix,
             /*includeHidden=*/true
         );
-        preparingScan = false;
         if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+            preparingScan = false;
             (void)session.finishScan(generation);
             discardResults();
             cancelButton->setEnabled(false);
@@ -1152,6 +1380,23 @@ void TaskInterferenceCheck::onRun()
             }
             return;
         }
+        std::vector<InterferenceLeaf> preparedPairLeaves;
+        preparedPairLeaves.reserve(leavesA.size() + leavesB.size());
+        preparedPairLeaves.insert(
+            preparedPairLeaves.end(),
+            leavesA.begin(),
+            leavesA.end()
+        );
+        preparedPairLeaves.insert(
+            preparedPairLeaves.end(),
+            leavesB.begin(),
+            leavesB.end()
+        );
+        prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
+            host,
+            &preparedPairLeaves
+        );
+        preparingScan = false;
         if (statusLabel) {
             statusLabel->setText(
                 tr("Scanning selected components '%1' and '%2'…")
@@ -1186,6 +1431,10 @@ void TaskInterferenceCheck::onRun()
             return;
         }
         acrossSnapshot = std::move(snapshot);
+        prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
+            host,
+            &acrossSnapshot.leaves
+        );
         if (statusLabel) {
             statusLabel->setText(tr("Scanning all applicable component occurrences…"));
         }
@@ -1222,11 +1471,13 @@ void TaskInterferenceCheck::onRun()
          betweenSelected,
          excluded = std::move(excluded),
          clearance,
+         clearanceRules = prepOptions.clearanceRules,
          cancel,
          self,
          generation]() mutable {
             InterferenceScanOptions options;
             options.clearance = clearance;
+            options.clearanceRules = std::move(clearanceRules);
             options.cancelFlag = cancel.get();
             options.detectionOptions.clearance = clearance;
             options.detectionOptions.cancelFlag = cancel.get();
@@ -1331,18 +1582,103 @@ void TaskInterferenceCheck::onScanFinished(
 void TaskInterferenceCheck::rebuildTable()
 {
     resultsTable->setRowCount(0);
-    const bool showExcluded = showExcludedCheck->isChecked();
+    const bool showExcluded = showExcludedCheck && showExcludedCheck->isChecked();
+    const bool showClear = showClearFaceChecks && showClearFaceChecks->isChecked();
+
+    auto ruleKindText = [this](Assembly::InterferenceClearanceRuleKind kind) -> QString {
+        switch (kind) {
+            case Assembly::InterferenceClearanceRuleKind::ExactPair:
+                return tr("Exact pair");
+            case Assembly::InterferenceClearanceRuleKind::MaxIndividual:
+                return tr("Max face");
+            case Assembly::InterferenceClearanceRuleKind::DefaultStar:
+                return tr("Default *");
+            case Assembly::InterferenceClearanceRuleKind::Unresolved:
+                return tr("Unresolved");
+            case Assembly::InterferenceClearanceRuleKind::AssemblyGlobal:
+            default:
+                return tr("Assembly");
+        }
+    };
+
     for (std::size_t i = 0; i < lastResult.pairs.size(); ++i) {
         const auto& pair = lastResult.pairs[i];
-        if (pair.excluded && !showExcluded) {
+
+        const bool solidInvalidOrInconclusive =
+            pair.detection.kind == Part::InterferenceKind::InvalidInput
+            || pair.detection.kind == Part::InterferenceKind::Inconclusive;
+        const bool solidPenetration = pair.detection.kind == Part::InterferenceKind::Penetration;
+
+        std::vector<const Assembly::InterferenceFaceHit*> visibleHits;
+        bool hasVisibleUnknown = solidInvalidOrInconclusive;
+        bool hasVisibleViolation = false;
+        for (const auto& hit : pair.faceHits) {
+            if (hit.classification == Part::InterferenceKind::Clear && !showClear) {
+                continue;
+            }
+            if (hit.suppressedByExclusion && !showExcluded) {
+                continue;
+            }
+            if (hit.classification == Part::InterferenceKind::InvalidInput
+                || hit.classification == Part::InterferenceKind::Inconclusive) {
+                hasVisibleUnknown = true;
+            }
+            if (isViolationKind(hit.classification) && !hit.suppressedByExclusion) {
+                hasVisibleViolation = true;
+            }
+            if (hit.suppressedByExclusion && showExcluded) {
+                hasVisibleViolation = true;
+            }
+            visibleHits.push_back(&hit);
+        }
+
+        const bool solidReportable = solidInvalidOrInconclusive
+            || (solidPenetration && (!pair.excluded || showExcluded))
+            || (pair.faceHits.empty()
+                && (pair.detection.kind == Part::InterferenceKind::ClearanceViolation
+                    || pair.detection.kind == Part::InterferenceKind::Contact)
+                && (!pair.excluded || showExcluded));
+
+        // Excluded-only violation pairs stay hidden unless Show excluded.
+        if (!solidReportable && visibleHits.empty()) {
             continue;
         }
-        if (pair.detection.kind == Part::InterferenceKind::Clear) {
+        if (pair.excluded && !showExcluded && !hasVisibleUnknown && !hasVisibleViolation
+            && !solidInvalidOrInconclusive) {
             continue;
         }
+
         const int row = resultsTable->rowCount();
         resultsTable->insertRow(row);
-        auto* statusItem = new QTableWidgetItem(kindText(pair.detection.kind, pair.excluded));
+
+        // Never label Invalid/Inconclusive details as Excluded just because another
+        // hit in the same pair is exclusion-suppressed.
+        QString status;
+        if (hasVisibleUnknown) {
+            if (pair.detection.kind == Part::InterferenceKind::InvalidInput
+                || std::any_of(
+                       pair.faceHits.begin(),
+                       pair.faceHits.end(),
+                       [](const Assembly::InterferenceFaceHit& h) {
+                           return h.classification == Part::InterferenceKind::InvalidInput;
+                       })) {
+                status = kindText(Part::InterferenceKind::InvalidInput, false);
+            }
+            else {
+                status = kindText(Part::InterferenceKind::Inconclusive, false);
+            }
+        }
+        else if (pair.excluded && showExcluded && !hasVisibleViolation) {
+            status = kindText(pair.detection.kind, true);
+        }
+        else if (pair.excluded && showExcluded && hasVisibleViolation && !hasVisibleUnknown) {
+            status = kindText(pair.detection.kind, true);
+        }
+        else {
+            status = kindText(pair.detection.kind, false);
+        }
+
+        auto* statusItem = new QTableWidgetItem(status);
         statusItem->setData(Qt::UserRole, static_cast<int>(i));
         resultsTable->setItem(row, 0, statusItem);
         resultsTable->setItem(
@@ -1357,22 +1693,90 @@ void TaskInterferenceCheck::rebuildTable()
         );
         resultsTable->setItem(row, 3, new QTableWidgetItem(formatPairDistance(pair.detection)));
         resultsTable->setItem(row, 4, new QTableWidgetItem(formatPairVolume(pair.detection)));
+
+        QStringList appliedParts;
+        QStringList faceParts;
+        QStringList ruleParts;
+        if (pair.detection.kind == Part::InterferenceKind::Penetration) {
+            appliedParts << tr("n/a");
+        }
+        for (const auto* hit : visibleHits) {
+            appliedParts << formatLength(hit->appliedClearance);
+            QString hitStatus = kindText(hit->classification, hit->suppressedByExclusion);
+            faceParts << QStringLiteral("[%1] %2 ↔ %3")
+                             .arg(hitStatus)
+                             .arg(QString::fromStdString(hit->facePathA))
+                             .arg(QString::fromStdString(hit->facePathB));
+            QString rule = ruleKindText(hit->ruleKind);
+            QStringList provenance;
+            const std::size_t n = hit->sourceRows.size();
+            for (std::size_t ri = 0; ri < n; ++ri) {
+                QString part = QStringLiteral("row %1").arg(hit->sourceRows[ri]);
+                const QString comment =
+                    ri < hit->sourceComments.size()
+                    ? QString::fromStdString(hit->sourceComments[ri])
+                    : QString();
+                if (!comment.isEmpty()) {
+                    part += QStringLiteral(": %1").arg(comment);
+                }
+                provenance << part;
+            }
+            if (!provenance.isEmpty()) {
+                rule += QStringLiteral(" (%1)").arg(provenance.join(QStringLiteral("; ")));
+            }
+            ruleParts << rule;
+        }
+        if (!pair.faceEnumerationDiagnostic.empty()) {
+            ruleParts << QString::fromStdString(pair.faceEnumerationDiagnostic);
+        }
+
+        resultsTable->setItem(
+            row,
+            5,
+            new QTableWidgetItem(appliedParts.isEmpty() ? QStringLiteral("—") : appliedParts.join(QStringLiteral("\n")))
+        );
+        resultsTable->setItem(
+            row,
+            6,
+            new QTableWidgetItem(faceParts.isEmpty() ? QString() : faceParts.join(QStringLiteral("\n")))
+        );
+        resultsTable->setItem(
+            row,
+            7,
+            new QTableWidgetItem(ruleParts.isEmpty() ? QString() : ruleParts.join(QStringLiteral("\n")))
+        );
     }
 
     for (const auto& issue : lastResult.componentIssues) {
         const int row = resultsTable->rowCount();
         resultsTable->insertRow(row);
-        auto* statusItem = new QTableWidgetItem(tr("Invalid leaf"));
+        auto* statusItem = new QTableWidgetItem(issueKindText(issue.kind));
         statusItem->setData(Qt::UserRole, -1);
         resultsTable->setItem(row, 0, statusItem);
         resultsTable->setItem(
             row,
             1,
-            new QTableWidgetItem(QString::fromStdString(lastResult.leaves[issue.leafIndex].displayPath))
+            new QTableWidgetItem(
+                issue.leafIndex < lastResult.leaves.size()
+                    ? QString::fromStdString(lastResult.leaves[issue.leafIndex].displayPath)
+                    : QString()
+            )
         );
-        resultsTable->setItem(row, 2, new QTableWidgetItem(QString()));
+        resultsTable->setItem(
+            row,
+            2,
+            new QTableWidgetItem(
+                issue.leafIndexB != static_cast<std::size_t>(-1)
+                        && issue.leafIndexB < lastResult.leaves.size()
+                    ? QString::fromStdString(lastResult.leaves[issue.leafIndexB].displayPath)
+                    : QString()
+            )
+        );
         resultsTable->setItem(row, 3, new QTableWidgetItem(QString()));
-        resultsTable->setItem(row, 4, new QTableWidgetItem(QString::fromStdString(issue.diagnostic)));
+        resultsTable->setItem(row, 4, new QTableWidgetItem(QString()));
+        resultsTable->setItem(row, 5, new QTableWidgetItem(QString()));
+        resultsTable->setItem(row, 6, new QTableWidgetItem(QString()));
+        resultsTable->setItem(row, 7, new QTableWidgetItem(QString::fromStdString(issue.diagnostic)));
     }
     updateRowActionState();
 }
@@ -1381,18 +1785,25 @@ void TaskInterferenceCheck::updateSummary()
 {
     const auto& c = lastResult.counts;
     summaryLabel->setText(
-        tr("Penetrations: %1 | Contacts: %2 | Clearance: %3 | Excluded: %4 | Invalid: %5 | "
-           "Inconclusive: %6")
+        tr("Penetrations: %1 | Contacts: %2 | Clearance: %3 | Excluded: %4 | Invalid geom: %5 | "
+           "Invalid rules: %6 | Inconclusive: %7 | Clear faces: %8")
             .arg(c.penetrations)
             .arg(c.contacts)
             .arg(c.clearanceViolations)
             .arg(c.excludedViolations)
             .arg(c.invalidInputs)
+            .arg(c.invalidRules)
             .arg(c.inconclusivePairs)
+            .arg(c.clearFaceHits)
     );
 }
 
 void TaskInterferenceCheck::onShowExcludedToggled(bool)
+{
+    rebuildTable();
+}
+
+void TaskInterferenceCheck::onShowClearFaceChecksToggled(bool)
 {
     rebuildTable();
 }

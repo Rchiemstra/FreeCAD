@@ -23,6 +23,7 @@
 #include <fastsignals/connection.h>
 
 class QCheckBox;
+class QComboBox;
 class QDialog;
 class QLabel;
 class QPushButton;
@@ -101,6 +102,15 @@ public:
     Base::Unit testClearanceUnit() const;
     double testClearanceRawMm() const;
     void testSetClearanceQuantity(const Base::Quantity& quantity);
+    QString testClearanceSheetLabel() const;
+    void testRefreshClearanceSheetUi();
+    void testSetShowClearFaceChecks(bool enabled);
+    bool testShowClearFaceChecks() const;
+    void testSetShowExcluded(bool enabled);
+    bool testShowExcluded() const;
+    void testSelectClearanceSheetByName(const QString& objectName);
+    void testRebuildTable();
+    bool testIsRestorePairEnabled() const;
 
     /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
     void testEnsureDetachedPreviewRoot();
@@ -150,14 +160,17 @@ private Q_SLOTS:
     void onRestorePair();
     void onManageExclusions();
     void onShowExcludedToggled(bool checked);
+    void onShowClearFaceChecksToggled(bool checked);
     void onIncludeHiddenToggled(bool checked);
     void onRowChanged();
     void onScanFinished(std::uint64_t generation, const Assembly::InterferenceScanResult& result);
     void onScanProgress(int current, int total);
     void onSelectionChanged();
+    void onClearanceSheetChanged(int index);
 
 private:
     void setupUi();
+    void refreshClearanceSheetUi();
     void refreshScanScope();
     void attachPreviewToViewer();
     /** Create previewRoot and add it to scene; optional viewer/view for live teardown hooks. */
@@ -204,12 +217,16 @@ private:
     bool preparingScan = false;
     Assembly::InterferenceScanSession session;
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
+    QComboBox* clearanceSheetCombo = nullptr;
+    QLabel* clearanceSheetLabel = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
     QCheckBox* showExcludedCheck = nullptr;
+    QCheckBox* showClearFaceChecks = nullptr;
     QLabel* summaryLabel = nullptr;
     QLabel* scopeLabel = nullptr;
     QLabel* statusLabel = nullptr;
     QLabel* progressLabel = nullptr;
+    bool updatingClearanceSheetUi = false;
     QTableWidget* resultsTable = nullptr;
     QPushButton* runButton = nullptr;
     QPushButton* cancelButton = nullptr;

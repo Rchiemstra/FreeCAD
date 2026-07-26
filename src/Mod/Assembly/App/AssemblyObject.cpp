@@ -120,6 +120,13 @@ AssemblyObject::AssemblyObject()
         "Minimum clearance for interference checks (0 still reports contact/penetration)"
     );
     ADD_PROPERTY_TYPE(
+        InterferenceClearanceSheet,
+        (nullptr),
+        "Interference",
+        (App::PropertyType)(App::Prop_NoRecompute),
+        "Optional spreadsheet of face-specific design clearances"
+    );
+    ADD_PROPERTY_TYPE(
         InterferenceExcludedSources,
         (nullptr),
         "Interference",
@@ -2257,6 +2264,16 @@ double AssemblyObject::getInterferenceClearance() const
 void AssemblyObject::setInterferenceClearance(double clearanceMm)
 {
     Assembly::setInterferenceClearance(this, clearanceMm);
+}
+
+App::DocumentObject* AssemblyObject::getInterferenceClearanceSheet() const
+{
+    return Assembly::getInterferenceClearanceSheet(this);
+}
+
+void AssemblyObject::setInterferenceClearanceSheet(App::DocumentObject* sheetOrNull)
+{
+    Assembly::setInterferenceClearanceSheet(this, sheetOrNull);
 }
 
 std::vector<InterferenceExclusionRule> AssemblyObject::getInterferenceExclusionRules() const

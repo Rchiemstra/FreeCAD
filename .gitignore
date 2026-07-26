@@ -54,10 +54,10 @@ ui_*.h
 /build/
 /cmake-build*/
 /conda/environment.yml
-/doc/
-!/doc/
 /doc/*
+!/doc/
 !/doc/freecad-git-sidecar-strategy.md
+!/doc/interference_detection_plan.md
 /lib/
 /src/Tools/offlinedoc/*.txt
 /src/Tools/offlinedoc/localwiki/

@@ -92,12 +92,16 @@ public:
     }
 
     App::PropertyLength InterferenceClearance;
+    /** Optional Spreadsheet::Sheet of face-specific design clearances. */
+    App::PropertyLink InterferenceClearanceSheet;
     /** Hidden alternating source-definition endpoints for excluded unordered pairs. */
     App::PropertyXLinkSubList InterferenceExcludedSources;
 
     /** Minimum clearance used by interference checks (nonnegative length). */
     double getInterferenceClearance() const;
     void setInterferenceClearance(double clearanceMm);
+    App::DocumentObject* getInterferenceClearanceSheet() const;
+    void setInterferenceClearanceSheet(App::DocumentObject* sheetOrNull);
 
     std::vector<InterferenceExclusionRule> getInterferenceExclusionRules() const;
     bool hasInterferenceExclusion(

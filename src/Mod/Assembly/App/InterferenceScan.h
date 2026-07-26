@@ -39,6 +39,14 @@ struct InterferenceExclusionRule
     std::string diagnostic;
 };
 
+/** Cached face geometry for a leaf (worker-built; immutable for the scan). */
+struct InterferenceCachedFace
+{
+    int index = 0;
+    TopoDS_Shape face;
+    Base::BoundBox3d box;
+};
+
 /** Immutable snapshot of one physical leaf occurrence (safe for worker threads). */
 struct InterferenceLeaf
 {
@@ -52,31 +60,155 @@ struct InterferenceLeaf
     bool visible = true;
     bool shapeValid = true;
     std::string diagnostic;
+    /** Filled once on the worker; reused for face×face enumeration. */
+    mutable std::vector<InterferenceCachedFace> cachedFaces;
+    mutable bool facesCached = false;
 };
 
+enum class InterferenceClearanceRuleKind
+{
+    ExactPair,
+    MaxIndividual,
+    DefaultStar,
+    AssemblyGlobal,
+    Unresolved
+};
+
+/** One immutable spreadsheet design-clearance rule (worker-safe). */
+struct InterferenceClearanceRule
+{
+    bool enabled = true;
+    /** Normalized face path, or "*" for default. */
+    std::string faceA;
+    /** Empty → single-face rule; set → exact unordered face-pair override. */
+    std::string faceB;
+    double clearanceMm = 0.0;
+    int spreadsheetRow = 0;
+    std::string comment;
+    bool valid = true;
+    std::string diagnostic;
+};
+
+struct InterferenceClearanceLookup
+{
+    double clearanceMm = 0.0;
+    InterferenceClearanceRuleKind kind = InterferenceClearanceRuleKind::AssemblyGlobal;
+    /** All contributing spreadsheet rows (1-based); may be two for MaxIndividual. */
+    std::vector<int> sourceRows;
+    std::vector<std::string> sourceComments;
+    std::string diagnostic;
+};
+
+/** Deterministic counters for clearance spreadsheet parsing (unit tests). */
+struct InterferenceClearanceSheetParseStats
+{
+    /** Times listInterferenceStructuralLeafSites ran (no shape extraction). */
+    int structuralOccurrenceTraversalPasses = 0;
+    /** Times collectInterferenceLeaves ran during spreadsheet parsing (should stay 0). */
+    int hostLeafCollectionPasses = 0;
+    /** Per-occurrence world-shape resolutions while validating referenced faces. */
+    int leafShapeExtractions = 0;
+    /** TopExp::MapShapes face-index passes during parsing (one per extracted occurrence). */
+    int faceEnumerationPasses = 0;
+    /** First-time host face validation for a referenced occurrence path. */
+    int lazyOccurrenceValidations = 0;
+    /** Reused prepared-leaf or cached occurrence validation results. */
+    int occurrenceValidationCacheHits = 0;
+};
+
+/** Immutable snapshot of spreadsheet design-clearance rules. */
+struct InterferenceClearanceRuleTable
+{
+    std::vector<InterferenceClearanceRule> rules;
+    /**
+     * Max enabled spreadsheet Tolerance (face / pair / *). Host clearance is
+     * combined at scan time via conservativeMaxDesignClearance().
+     */
+    double maxEnabledClearance = 0.0;
+    bool hasDefaultStar = false;
+    double defaultStarClearance = 0.0;
+    std::vector<std::string> diagnostics;
+    /** Number of enabled invalid rules (+ header failures). Counted once per rule. */
+    int invalidRuleCount = 0;
+};
+
+/** Face-level clearance evaluation under a component pair (includes Clear). */
+struct InterferenceFaceHit
+{
+    std::string facePathA;
+    std::string facePathB;
+    double distance = -1.0;
+    double appliedClearance = 0.0;
+    Part::InterferenceKind classification = Part::InterferenceKind::Inconclusive;
+    InterferenceClearanceRuleKind ruleKind = InterferenceClearanceRuleKind::AssemblyGlobal;
+    std::vector<int> sourceRows;
+    std::vector<std::string> sourceComments;
+    std::string diagnostic;
+    /**
+     * True when this hit is a Penetration/Contact/ClearanceViolation that is
+     * suppressed by a source-pair exclusion. InvalidInput / Inconclusive never
+     * set this; they stay visible by default even on mixed excluded pairs.
+     */
+    bool suppressedByExclusion = false;
+};
+
+/**
+ * One component/leaf pair result. Face-specific clearance checks live in
+ * faceHits; solid penetration is never multiplied by intersecting faces.
+ */
 struct InterferencePairResult
 {
     std::size_t leafIndexA = 0;
     std::size_t leafIndexB = 0;
+    /** Component-level solid classification (Penetration / Clear / …). */
     Part::InterferenceResult detection;
+    /**
+     * True when the pair has at least one exclusion-suppressed violation.
+     * Does not imply InvalidInput/Inconclusive details are hidden.
+     */
     bool excluded = false;
+    /** Face evaluations including Clear (App/tests); GUI filters Clear by default. */
+    std::vector<InterferenceFaceHit> faceHits;
+    /** Optional note when face-pair candidates were capped. */
+    std::string faceEnumerationDiagnostic;
 };
 
 struct InterferenceComponentIssue
 {
+    enum class Kind
+    {
+        InvalidLeaf,
+        InvalidRule,
+        FaceEnumerationCapped,
+        Other
+    };
+    Kind kind = Kind::Other;
     std::size_t leafIndex = 0;
+    /** Second leaf for pair-scoped diagnostics; npos when unused. */
+    std::size_t leafIndexB = static_cast<std::size_t>(-1);
     std::string diagnostic;
 };
 
 struct InterferenceScanCounts
 {
+    /** Penetrating component/leaf pairs. */
     int penetrations = 0;
+    /** Face interactions classified Contact. */
     int contacts = 0;
+    /** Face-pair clearance violations. */
     int clearanceViolations = 0;
+    /** Excluded component pairs that would otherwise be reportable. */
     int excludedViolations = 0;
+    /** Malformed / unresolved spreadsheet rules. */
+    int invalidRules = 0;
+    /** Invalid leaf/geometry inputs. */
     int invalidInputs = 0;
+    /** Unclassifiable component or face evaluations. */
     int inconclusivePairs = 0;
+    /** Component pairs with no reportable issue (incl. broad-phase clears). */
     int clearPairs = 0;
+    /** Face evaluations classified Clear. */
+    int clearFaceHits = 0;
 };
 
 struct InterferenceScanResult
@@ -89,13 +221,34 @@ struct InterferenceScanResult
     bool complete = false;
 };
 
+/**
+ * Test hook payload: when pointed from InterferenceScanOptions::solidOverride,
+ * replaces whole-solid OCCT classification.
+ */
+struct InterferenceSolidOverride
+{
+    Part::InterferenceResult result;
+};
+
 struct InterferenceScanOptions
 {
     double clearance = 0.0;
     bool includeHidden = false;
+    /** Optional immutable spreadsheet design-clearance rules (caller-thread snapshot). */
+    InterferenceClearanceRuleTable clearanceRules;
     Part::InterferenceOptions detectionOptions;
     const std::atomic<bool>* cancelFlag = nullptr;
     std::function<void(int current, int total)> progress;
+    /**
+     * Soft cap on face×face candidates evaluated per leaf pair. Oversized sets
+     * evaluate a deterministic nearest-AABB subset and emit a visible diagnostic.
+     */
+    std::size_t maxFacePairCandidates = 10000;
+    /**
+     * Test hook: when non-null, replaces whole-solid OCCT classification so
+     * solid-Inconclusive aggregation can be exercised without flaky OCCT failures.
+     */
+    const InterferenceSolidOverride* solidOverride = nullptr;
 };
 
 /**
@@ -107,6 +260,54 @@ AssemblyExport bool isInterferenceRoot(const App::DocumentObject* obj);
 /** Clearance / exclusion metadata for AssemblyObject (static props) or App::Part (dynamic). */
 AssemblyExport double getInterferenceClearance(const App::DocumentObject* host);
 AssemblyExport void setInterferenceClearance(App::DocumentObject* host, double clearanceMm);
+AssemblyExport App::DocumentObject* getInterferenceClearanceSheet(const App::DocumentObject* host);
+AssemblyExport void setInterferenceClearanceSheet(
+    App::DocumentObject* host,
+    App::DocumentObject* sheetOrNull
+);
+/** Parse spreadsheet design-clearance rules (caller thread; DocumentObject-safe). */
+AssemblyExport InterferenceClearanceRuleTable snapshotInterferenceClearanceRules(
+    const App::DocumentObject* host,
+    const std::vector<InterferenceLeaf>* preparedLeaves = nullptr
+);
+/** Build a rule table from an explicit Spreadsheet::Sheet (or null → empty).
+ * Parsing is host-independent until enabled rules require occurrence/FaceN checks.
+ * Host validation uses a lightweight occurrence traversal plus lazy per-occurrence
+ * shape extraction (optionally reusing preparedLeaves from scan preparation).
+ * Hostless parsing is structural-only (FaceN syntax / * rules).
+ */
+AssemblyExport InterferenceClearanceRuleTable parseInterferenceClearanceSheet(
+    const App::DocumentObject* sheetOrNull,
+    const App::DocumentObject* hostOrNull = nullptr,
+    InterferenceClearanceSheetParseStats* parseStats = nullptr,
+    const std::vector<InterferenceLeaf>* preparedLeaves = nullptr
+);
+AssemblyExport InterferenceClearanceLookup lookupInterferenceClearance(
+    const InterferenceClearanceRuleTable& table,
+    const std::string& facePathA,
+    const std::string& facePathB,
+    double assemblyClearanceMm
+);
+/**
+ * Conservative max design clearance for broad-phase / face AABB probe:
+ * max(enabled sheet rules, * default if present, host clearance when reachable).
+ * Host is reachable when no enabled * default covers unmatched faces.
+ */
+AssemblyExport double conservativeMaxDesignClearance(
+    const InterferenceClearanceRuleTable& table,
+    double hostClearanceMm
+);
+/**
+ * Deterministic aggregation of whole-solid classification with face-hit outcomes.
+ * A solid-level Inconclusive is never downgraded to Clear, Contact, or
+ * ClearanceViolation (face hits remain available for diagnostics/counts).
+ */
+AssemblyExport Part::InterferenceResult finalizeInterferencePairDetection(
+    const Part::InterferenceResult& solid,
+    const std::vector<InterferenceFaceHit>& faceHits,
+    bool faceEnumerationCapped,
+    const std::string& faceEnumerationDiagnostic
+);
 AssemblyExport std::vector<InterferenceExclusionRule>
 getInterferenceExclusionRules(const App::DocumentObject* host);
 AssemblyExport bool hasInterferenceExclusion(
