@@ -168,7 +168,7 @@ echo "ASSEMBLYGUI_TEST_EXIT:${GUI_RC}" | tee -a "${LOG}/steps.log"
 tail -n 80 "${LOG}/TaskInterferenceCheck.log" | tee -a "${LOG}/steps.log"
 test "${GUI_RC}" -eq 0
 
-echo "== AssemblyGui Xvfb lifecycle test ==" | tee -a "${LOG}/steps.log"
+echo "== AssemblyGui Xvfb lifecycle/preview tests ==" | tee -a "${LOG}/steps.log"
 if [ ! -x /usr/bin/xvfb-run ]; then
   echo "ASSEMBLYGUI_XVFB_TEST_EXIT:127" | tee -a "${LOG}/steps.log"
   echo "FATAL: mandatory /usr/bin/xvfb-run is missing or not executable" | tee -a "${LOG}/steps.log"
@@ -179,7 +179,7 @@ export QT_QPA_PLATFORM=xcb
 export ASSEMBLYGUI_REQUIRE_XCB=1
 export QT_PLUGIN_PATH="/usr/lib/x86_64-linux-gnu/qt6/plugins:${QT_PLUGIN_PATH:-}"
 /usr/bin/xvfb-run -a /data/build/tests/AssemblyGui_tests_run \
-  --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState \
+  --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState:TaskInterferenceCheckTest.placedLeafPreviewRestoresWorldTransform \
   >"${LOG}/TaskInterferenceCheckXvfb.log" 2>&1
 XVFB_GUI_RC=$?
 set -e
