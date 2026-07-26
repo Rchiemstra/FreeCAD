@@ -912,6 +912,10 @@ IndexedName ElementMap::find(const MappedName& name, ElementIDRefs* sids) const
             return IndexedName();
         }
 
+        if (!it.value().childMap) {
+            return IndexedName();
+        }
+
         const auto& child = *it.value().childMap;
         IndexedName res;
 
@@ -1086,7 +1090,12 @@ MappedNameRef& ElementMap::mappedRef(const IndexedName& idx)
 
 bool ElementMap::hasChildElementMap() const
 {
-    return !childElements.empty();
+    for (auto it = childElements.constBegin(); it != childElements.constEnd(); ++it) {
+        if (it->childMap) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void ElementMap::hashChildMaps(long masterTag)
@@ -1365,6 +1374,15 @@ void ElementMap::addChildElements(long masterTag, const std::vector<MappedChildE
         entry->childMap = &insertedChild;
         childElementSize += insertedChild.count;
     }
+
+    for (auto it = childElements.begin(); it != childElements.end();) {
+        if (!it->childMap) {
+            it = childElements.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
 }
 
 std::vector<ElementMap::MappedChildElements> ElementMap::getChildElements() const
@@ -1372,6 +1390,9 @@ std::vector<ElementMap::MappedChildElements> ElementMap::getChildElements() cons
     std::vector<MappedChildElements> res;
     res.reserve(this->childElements.size());
     for (auto& childElement : this->childElements) {
+        if (!childElement.childMap) {
+            continue;
+        }
         res.push_back(*childElement.childMap);
     }
     return res;
@@ -1385,6 +1406,9 @@ std::vector<MappedElement> ElementMap::getAll() const
         ret.emplace_back(mappedName.first, mappedName.second);
     }
     for (auto& childElement : this->childElements) {
+        if (!childElement.childMap) {
+            continue;
+        }
         auto& child = *childElement.childMap;
         IndexedName idx(child.indexedName);
         idx.setIndex(idx.getIndex() + child.offset);

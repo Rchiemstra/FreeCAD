@@ -336,7 +336,12 @@ public:
         return result;
     }
 
-    void writeArchive(App::GeometryArchiveWriter&) const override {}
+    App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter&) const override
+    {
+        App::GeometryArchiveWriteResult out;
+        out.success = true;
+        return out;
+    }
 
 private:
     std::chrono::milliseconds _duration;
@@ -1076,4 +1081,31 @@ TEST(GuiResponsivenessProbeTest, ScopedCallbackRecordsDuration)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     EXPECT_GE(App::GuiResponsivenessProbe::instance().maxCallbackDurationMs(), 0.0);
+}
+
+TEST(GeometryJobTest, GeometryJobIdWireMaxUint64)
+{
+    std::string encoded;
+    ASSERT_TRUE(App::formatGeometryJobId(App::kMaxGeometryJobIdWire, encoded));
+    EXPECT_EQ(encoded, "18446744073709551615");
+    App::GeometryJobId parsed = 0;
+    std::string code;
+    std::string message;
+    ASSERT_TRUE(App::parseGeometryJobId(encoded, parsed, code, message)) << code << ": " << message;
+    EXPECT_EQ(parsed, App::kMaxGeometryJobIdWire);
+}
+
+TEST(GeometryJobTest, GeometryJobIdWireRejectsMalformed)
+{
+    App::GeometryJobId parsed = 0;
+    std::string code;
+    std::string message;
+    EXPECT_FALSE(App::parseGeometryJobId("", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("0", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("-1", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("+1", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("01", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("1.5", parsed, code, message));
+    EXPECT_FALSE(App::parseGeometryJobId("18446744073709551616", parsed, code, message));
+    EXPECT_FALSE(App::formatGeometryJobId(0, code));
 }

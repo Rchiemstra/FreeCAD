@@ -26,7 +26,7 @@ public:
     App::GeometryOperationTraits traits() const override;
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;
-    void writeArchive(App::GeometryArchiveWriter& writer) const override;
+    App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter& writer) const override;
 
 private:
     FrozenTopoShapeBundle _spine;

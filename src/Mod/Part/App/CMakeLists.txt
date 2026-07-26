@@ -654,6 +654,10 @@ if (MSVC)
     target_compile_options(Part PRIVATE /wd4251 /wd4275)
 endif()
 
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(Part PRIVATE FC_TOPOSHape_ARCHIVE_TEST_SEAMS=1)
+endif()
+
 if (FREECAD_WARN_ERROR)
     target_compile_warn_error(Part)
 endif()

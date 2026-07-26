@@ -7,8 +7,12 @@
 #include <App/StringHasherPy.h>
 #include <App/StringIDPy.h>
 
+#include <Base/Reader.h>
+#include <Base/Writer.h>
+
 #include <QCryptographicHash>
 #include <array>
+#include <sstream>
 
 class StringIDTest: public ::testing::Test
 {
@@ -1157,18 +1161,200 @@ TEST_F(StringHasherTest, Restore)  // NOLINT
     // Assert
 }
 
-TEST_F(StringHasherTest, SaveDocFile)  // NOLINT
+TEST_F(StringHasherTest, SaveDocFileHashableDigestRoundTrip)  // NOLINT
 {
-    // Arrange
-    // Act
-    // Assert
+    // Hashed SID digests are raw SHA-1 octets; persistence must base64-encode them.
+    Hasher()->setThreshold(8);
+    const QByteArray longName(
+        "MappedFaceNameThatDefinitelyExceedsTheSmallHashThresholdXX");
+    auto original = Hasher()->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(original);
+    ASSERT_TRUE(original.isHashed());
+    original.mark();
+
+    Base::StringWriter writer;
+    Hasher()->SaveDocFile(writer);
+    const std::string blob = writer.getString();
+    ASSERT_NE(blob.find("StringTableStart"), std::string::npos);
+
+    App::StringHasherRef restored(new App::StringHasher);
+    {
+        std::istringstream input(blob);
+        Base::Reader reader(input, "StringHasher.Table.txt", 0);
+        restored->RestoreDocFile(reader);
+    }
+
+    EXPECT_EQ(restored->getThreshold(), 0);  // threshold is XML-side; DocFile restores entries only
+    auto byId = restored->getID(original.value());
+    ASSERT_TRUE(byId);
+    EXPECT_TRUE(byId.isHashed());
+    EXPECT_EQ(byId.deref().data(), original.deref().data());
+
+    restored->setThreshold(8);
+    auto byHashable = restored->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(byHashable);
+    EXPECT_EQ(byHashable.value(), original.value());
+    EXPECT_TRUE(byHashable.isHashed());
 }
 
-TEST_F(StringHasherTest, RestoreDocFile)  // NOLINT
+TEST_F(StringHasherTest, SaveDocFileHashableDigestWithEmbeddedNul)  // NOLINT
 {
-    // Arrange
-    // Act
-    // Assert
+    // Persist a hashed SID whose digest contains an embedded NUL and verify lossless restore.
+    App::StringHasherClosure closure;
+    closure.highWaterId = 7;
+    closure.revision = 0;
+    closure.threshold = 4;
+    QByteArray digest(20, char(0x5A));
+    digest[0] = '\0';
+    digest[3] = '\0';
+    digest[7] = '\0';
+    App::StringHasherClosureEntry entry;
+    entry.id = 7;
+    entry.flags = static_cast<uint32_t>(App::StringID::Flag::Hashed);
+    entry.data = digest;
+    closure.entries.push_back(entry);
+    auto merge = Hasher()->materializeExactClosure(closure);
+    ASSERT_TRUE(merge.success) << merge.errorCode << ": " << merge.errorMessage;
+    auto stored = Hasher()->getID(7);
+    ASSERT_TRUE(stored);
+    stored.mark();
+
+    Base::StringWriter writer;
+    Hasher()->SaveDocFile(writer);
+
+    App::StringHasherRef restored(new App::StringHasher);
+    {
+        std::istringstream input(writer.getString());
+        Base::Reader reader(input, "StringHasher.Table.txt", 0);
+        restored->RestoreDocFile(reader);
+    }
+    auto again = restored->getID(7);
+    ASSERT_TRUE(again);
+    EXPECT_TRUE(again.isHashed());
+    EXPECT_EQ(again.deref().data(), digest);
+    EXPECT_EQ(again.deref().data().size(), 20);
+}
+
+TEST_F(StringHasherTest, SaveDocFileBinaryPayloadRoundTrip)  // NOLINT
+{
+    QByteArray binary;
+    binary.append('A');
+    binary.append('\0');
+    binary.append('B');
+    binary.append('\0');
+    binary.append(char(0xff));
+    auto sid = Hasher()->getID(binary, App::StringHasher::Option::Binary);
+    ASSERT_TRUE(sid);
+    ASSERT_TRUE(sid.isBinary());
+    ASSERT_FALSE(sid.isHashed());
+    sid.mark();
+
+    Base::StringWriter writer;
+    Hasher()->SaveDocFile(writer);
+
+    App::StringHasherRef restored(new App::StringHasher);
+    {
+        std::istringstream input(writer.getString());
+        Base::Reader reader(input, "StringHasher.Table.txt", 0);
+        restored->RestoreDocFile(reader);
+    }
+    auto again = restored->getID(sid.value());
+    ASSERT_TRUE(again);
+    EXPECT_TRUE(again.isBinary());
+    EXPECT_FALSE(again.isHashed());
+    EXPECT_EQ(again.deref().data(), binary);
+}
+
+TEST_F(StringHasherTest, PythonHashableLongText)  // NOLINT
+{
+    Hasher()->setThreshold(8);
+    const std::string longName =
+        "MappedFaceNameThatDefinitelyExceedsTheSmallHashThresholdXX";
+    Py::Object py(Hasher()->getPyObject(), true);
+    auto* hasherPy = static_cast<App::StringHasherPy*>(py.ptr());
+    Py::Tuple args(3);
+    args.setItem(0, Py::String(longName));
+    args.setItem(1, Py::False());
+    args.setItem(2, Py::True());
+    PyObject* raw = hasherPy->getID(args.ptr());
+    ASSERT_TRUE(raw);
+    Py::Object sidObj(raw, true);
+    ASSERT_TRUE(PyObject_TypeCheck(sidObj.ptr(), &App::StringIDPy::Type));
+    auto* sidPy = static_cast<App::StringIDPy*>(sidObj.ptr());
+    EXPECT_TRUE(static_cast<bool>(sidPy->getIsHashed()));
+    const long firstId = static_cast<long>(sidPy->getValue());
+
+    PyObject* raw2 = hasherPy->getID(args.ptr());
+    ASSERT_TRUE(raw2);
+    Py::Object sidObj2(raw2, true);
+    EXPECT_EQ(static_cast<long>(static_cast<App::StringIDPy*>(sidObj2.ptr())->getValue()),
+              firstId);
+}
+
+TEST_F(StringHasherTest, PythonBase64BinaryDefaultNotHashed)  // NOLINT
+{
+    Hasher()->setThreshold(1);  // would hash if Hashable were implied
+    QByteArray payload;
+    payload.append('x');
+    payload.append('\0');
+    payload.append('y');
+    const QByteArray b64 = payload.toBase64();
+    Py::Object py(Hasher()->getPyObject(), true);
+    auto* hasherPy = static_cast<App::StringHasherPy*>(py.ptr());
+    Py::Tuple args(2);
+    args.setItem(0, Py::String(std::string(b64.constData(), b64.size())));
+    args.setItem(1, Py::True());  // base64=True, hashable defaults False
+    PyObject* raw = hasherPy->getID(args.ptr());
+    ASSERT_TRUE(raw);
+    Py::Object sidObj(raw, true);
+    auto* sidPy = static_cast<App::StringIDPy*>(sidObj.ptr());
+    EXPECT_TRUE(static_cast<bool>(sidPy->getIsBinary()));
+    EXPECT_FALSE(static_cast<bool>(sidPy->getIsHashed()));
+    EXPECT_EQ(sidPy->getStringIDPtr()->data(), payload);
+}
+
+TEST_F(StringHasherTest, PythonBase64PlusHashableCombined)  // NOLINT
+{
+    Hasher()->setThreshold(2);
+    QByteArray payload("abcdef");  // longer than threshold
+    const QByteArray b64 = payload.toBase64();
+    Py::Object py(Hasher()->getPyObject(), true);
+    auto* hasherPy = static_cast<App::StringHasherPy*>(py.ptr());
+    Py::Tuple args(3);
+    args.setItem(0, Py::String(std::string(b64.constData(), b64.size())));
+    args.setItem(1, Py::True());
+    args.setItem(2, Py::True());
+    PyObject* raw = hasherPy->getID(args.ptr());
+    ASSERT_TRUE(raw);
+    Py::Object sidObj(raw, true);
+    auto* sidPy = static_cast<App::StringIDPy*>(sidObj.ptr());
+    EXPECT_TRUE(static_cast<bool>(sidPy->getIsBinary()));
+    EXPECT_TRUE(static_cast<bool>(sidPy->getIsHashed()));
+}
+
+TEST_F(StringHasherTest, PythonMalformedBase64Raises)  // NOLINT
+{
+    Py::Object py(Hasher()->getPyObject(), true);
+    auto* hasherPy = static_cast<App::StringHasherPy*>(py.ptr());
+    Py::Tuple args(2);
+    args.setItem(0, Py::String("!!!!not-base64!!!!"));
+    args.setItem(1, Py::True());
+    PyObject* raw = hasherPy->getID(args.ptr());
+    EXPECT_EQ(raw, nullptr);
+    EXPECT_TRUE(PyErr_Occurred());
+    PyErr_Clear();
+}
+
+TEST_F(StringHasherTest, PythonWrongArgTypeRaises)  // NOLINT
+{
+    Py::Object py(Hasher()->getPyObject(), true);
+    auto* hasherPy = static_cast<App::StringHasherPy*>(py.ptr());
+    Py::Tuple args(1);
+    args.setItem(0, Py::Float(1.5));
+    PyObject* raw = hasherPy->getID(args.ptr());
+    EXPECT_EQ(raw, nullptr);
+    EXPECT_TRUE(PyErr_Occurred());
+    PyErr_Clear();
 }
 
 TEST_F(StringHasherTest, setPersistenceFileName)  // NOLINT

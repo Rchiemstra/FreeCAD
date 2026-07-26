@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -109,6 +110,24 @@ struct AppExport GeometryJobKey
 
 using GeometryJobId = uint64_t;
 
+/// Maximum GeometryJobId representable on the FCGEO/1 wire (canonical decimal string).
+inline constexpr GeometryJobId kMaxGeometryJobIdWire = std::numeric_limits<GeometryJobId>::max();
+
+/**
+ * Encode a nonzero GeometryJobId as a canonical decimal string for JSON.
+ * Returns false for zero (job ids must be nonzero on the wire).
+ */
+AppExport bool formatGeometryJobId(GeometryJobId id, std::string& out);
+
+/**
+ * Parse a canonical decimal GeometryJobId string (full uint64_t domain).
+ * Rejects empty, signed, non-decimal, leading zeros, overflow, and zero.
+ */
+AppExport bool parseGeometryJobId(const std::string& text,
+                                  GeometryJobId& out,
+                                  std::string& errorCode,
+                                  std::string& errorMessage);
+
 struct AppExport GeometryOperationTraits
 {
     bool allowInProcess {false};
@@ -135,6 +154,13 @@ struct AppExport DetachedGeometryResult
     std::string errorCode;
     std::string errorMessage;
     double executionTimeSeconds {0.0};
+};
+
+struct AppExport GeometryArchiveWriteResult
+{
+    bool success {false};
+    std::string errorCode;
+    std::string errorMessage;
 };
 
 class AppExport GeometryArchiveWriter
@@ -168,7 +194,23 @@ public:
     }
     virtual GeometryOperationTraits traits() const = 0;
     virtual DetachedGeometryResult run(GeometryWorkerContext& ctx) const = 0;
-    virtual void writeArchive(GeometryArchiveWriter& writer) const = 0;
+    /// Stage typed request inputs under @p writer. Must not leave a successful
+    /// publication path when returning failure.
+    virtual GeometryArchiveWriteResult writeArchive(GeometryArchiveWriter& writer) const = 0;
+    /**
+     * Parent-side structural decode of a trusted child result archive.
+     * Default rejects; codecs override. Must decode into a local candidate and
+     * publish only after every check succeeds. Never reconstructs history from BREP.
+     */
+    virtual DetachedGeometryResult decodeResultArchive(const std::string& absolutePath) const
+    {
+        DetachedGeometryResult result;
+        result.success = false;
+        result.errorCode = "CodecDecodeNotImplemented";
+        result.errorMessage = "Task does not implement parent-side result decoding";
+        result.resultArchivePath = absolutePath;
+        return result;
+    }
 };
 
 struct AppExport GeometryJobSpec

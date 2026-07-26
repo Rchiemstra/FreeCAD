@@ -18,6 +18,7 @@ add_executable(Gui_tests_run
         View3DInventorViewer.cpp
         WindowLayout.cpp
         SelectionTest.cpp
+        TestGeometryWorkerProcess.cpp
 )
 
 # Qt tests
@@ -27,4 +28,5 @@ target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main
     FreeCADApp
     FreeCADGui
+    Part
 )

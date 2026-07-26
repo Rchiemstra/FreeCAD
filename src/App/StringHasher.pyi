@@ -20,14 +20,14 @@ class StringHasher(BaseClass):
     """
 
     @overload
-    def getID(self, txt: str, base64: bool = False, /) -> Any:
+    def getID(self, txt: str, base64: bool = False, hashable: bool = False, /) -> Any:
         ...
 
     @overload
-    def getID(self, id: int, base64: bool = False, /) -> Any:
+    def getID(self, id: int, index: int = 0, /) -> Any:
         ...
 
-    def getID(self, arg: Any, base64: bool = False, /) -> Any:
+    def getID(self, arg: Any, base64: bool = False, hashable: bool = False, /) -> Any:
         """
         If the input is text, return a StringID object that is unique within this hasher. This
         StringID object is reference counted. The hasher may only save hash ID's that are used.
@@ -35,7 +35,12 @@ class StringHasher(BaseClass):
         If the input is an integer, then the hasher will try to find the StringID object stored
         with the same integer value.
 
-        base64: indicate if the input 'txt' is base64 encoded binary data
+        base64=False, hashable=False: store plaintext (existing default text behaviour).
+        base64=False, hashable=True: Option::Hashable (long text above Threshold becomes IsHashed).
+        base64=True, hashable=False: Option::Binary only; decoded bytes keep full length/NULs;
+                                     default is IsBinary and not IsHashed.
+        base64=True, hashable=True: Option::Binary | Option::Hashable.
+        Malformed base64 raises ValueError (AbortOnBase64DecodingErrors).
         """
         ...
 

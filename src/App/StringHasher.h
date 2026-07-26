@@ -829,13 +829,18 @@ public:
     StringHasherClosure captureClosure(bool markedOnly = true) const;
 
     /**
-     * Apply an exact-ID hasher closure onto this hasher.
+     * Bootstrap a fresh (empty) hasher from an authenticated closure.
+     * Sets threshold/revision/high-water only after every entry validates.
+     * Rejects if this hasher is not empty.
+     */
+    StringHasherMergeResult materializeExactClosure(const StringHasherClosure& closure);
+
+    /**
+     * Apply an exact-ID hasher delta onto a populated (canonical) hasher.
      * Existing IDs must match byte-for-byte; missing IDs are appended with the
-     * same numeric ID. Revision mismatches and content collisions reject.
-     * On failure, no IDs from this call are left appended (validate-then-commit).
-     * Duplicate IDs inside the closure are rejected before mutation.
-     * When highWaterId is set, entry IDs above it are rejected and the hasher's
-     * reserved high-water is raised so later allocations skip the gap.
+     * same numeric ID. Does not mutate threshold. Revision must be compatible.
+     * Value-identity collisions (same data/postfix under a different ID) reject.
+     * On failure, no IDs/threshold/revision/high-water from this call remain applied.
      */
     StringHasherMergeResult mergeExactClosure(const StringHasherClosure& closure,
                                               uint64_t expectedRevision);
@@ -848,6 +853,11 @@ public:
 
     /// Restore Marked flags previously captured by snapshotMarks().
     void restoreMarks(const std::unordered_map<long, bool>& marks) const;
+
+private:
+    StringHasherMergeResult commitExactClosure(const StringHasherClosure& closure,
+                                               bool bootstrap,
+                                               uint64_t expectedRevision);
 
     class HashMap;
     friend class StringID;

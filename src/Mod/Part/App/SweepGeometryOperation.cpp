@@ -188,9 +188,13 @@ App::DetachedGeometryResult SweepGeometryOperation::run(App::GeometryWorkerConte
     return result;
 }
 
-void SweepGeometryOperation::writeArchive(App::GeometryArchiveWriter& writer) const
+App::GeometryArchiveWriteResult
+SweepGeometryOperation::writeArchive(App::GeometryArchiveWriter& writer) const
 {
     (void)writer;
+    App::GeometryArchiveWriteResult out;
+    out.success = true; // Typed Sweep codec not yet implemented; no operands to stage.
+    return out;
 }
 
 } // namespace Part

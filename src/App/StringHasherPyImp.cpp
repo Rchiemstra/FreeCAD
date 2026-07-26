@@ -94,18 +94,44 @@ PyObject* StringHasherPy::getID(PyObject* args)
     PyErr_Clear();
     PyObject* value = nullptr;
     PyObject* base64 = Py_False;
-    if (PyArg_ParseTuple(args, "O!|O!", &PyUnicode_Type, &value, &PyBool_Type, &base64)) {
+    PyObject* hashable = Py_False;
+    // (txt [, base64=False [, hashable=False]])
+    // base64=True always marks Option::Binary. hashable is never implied by base64.
+    if (PyArg_ParseTuple(args,
+                         "O!|O!O!",
+                         &PyUnicode_Type,
+                         &value,
+                         &PyBool_Type,
+                         &base64,
+                         &PyBool_Type,
+                         &hashable)) {
         PY_TRY
         {
-            std::string txt = PyUnicode_AsUTF8(value);
-            QByteArray data;
+            Py_ssize_t rawLen = 0;
+            const char* raw = PyUnicode_AsUTF8AndSize(value, &rawLen);
+            if (!raw) {
+                return nullptr;
+            }
             StringIDRef sid;
             if (PyObject_IsTrue(base64)) {
-                data = QByteArray::fromBase64(QByteArray::fromRawData(txt.c_str(), txt.size()));
-                sid = getStringHasherPtr()->getID(data, true);
+                QByteArray encoded = QByteArray::fromRawData(raw, static_cast<int>(rawLen));
+                QByteArray data =
+                    QByteArray::fromBase64(encoded, QByteArray::AbortOnBase64DecodingErrors);
+                if (data.isNull() && !encoded.isEmpty()) {
+                    PyErr_SetString(PyExc_ValueError, "Malformed base64 input");
+                    return nullptr;
+                }
+                StringHasher::Options options = StringHasher::Option::Binary;
+                if (PyObject_IsTrue(hashable)) {
+                    options |= StringHasher::Option::Hashable;
+                }
+                sid = getStringHasherPtr()->getID(data, options);
             }
             else {
-                sid = getStringHasherPtr()->getID(txt.c_str(), txt.size());
+                sid = getStringHasherPtr()->getID(
+                    raw,
+                    static_cast<int>(rawLen),
+                    PyObject_IsTrue(hashable));
             }
 
             return sid.getPyObject();
@@ -114,8 +140,8 @@ PyObject* StringHasherPy::getID(PyObject* args)
     }
 
     PyErr_SetString(PyExc_TypeError,
-                    "Positive integer and optional integer or "
-                    "string and optional boolean is required");
+                    "Positive integer and optional index, or "
+                    "string and optional base64/hashable booleans are required");
     return nullptr;
 }
 
