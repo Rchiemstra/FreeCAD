@@ -209,6 +209,7 @@ SET(Document_CPP_SRCS
     License.h
     GeometryJob.cpp
     GeometryJobManager.cpp
+    GeometryRequestWorkspace.cpp
     DocumentRecomputeCoordinator.cpp
     DetachedDocumentArchive.cpp
     GuiResponsivenessProbe.cpp
@@ -265,6 +266,7 @@ SET(Document_HPP_SRCS
     Link.h
     GeometryJob.h
     GeometryJobManager.h
+    GeometryRequestWorkspace.h
     DocumentRecomputeCoordinator.h
     DetachedDocumentArchive.h
     GuiResponsivenessProbe.h

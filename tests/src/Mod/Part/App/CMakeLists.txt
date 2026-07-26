@@ -29,6 +29,7 @@ add_executable(Part_tests_run
         TopoShapeExpansion.cpp
         TopoShapeMakeElementRefine.cpp
         TopoShapeMakeShapeWithElementMap.cpp
+        TestCrossProcessBoolean.cpp
         TestNonBlockingGeometry.cpp
         TopoShapeMapper.cpp
 
@@ -49,3 +50,7 @@ fc_target_copy_resource(PartTestData
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_BINARY_DIR}/tests
         ${PartTestData_Files})
+
+if(ENABLE_DEVELOPER_TESTS)
+    target_compile_definitions(Part_tests_run PRIVATE FC_TOPOSHape_ARCHIVE_TEST_SEAMS=1)
+endif()

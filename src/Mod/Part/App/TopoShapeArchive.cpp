@@ -10,13 +10,20 @@
 #include <fstream>
 #include <filesystem>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
+#include <atomic>
+#include <stdexcept>
 
 namespace Part
 {
 
 namespace
 {
+
+#ifdef FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+std::atomic<bool> g_testForceClosureCaptureFailure {false};
+#endif
 
 bool writeBytes(std::ostream& out, const void* data, size_t size)
 {
@@ -115,7 +122,9 @@ bool readHasherClosure(std::istream& in, App::StringHasherClosure& closure)
         if (!readExact(in, &id, sizeof(id)) || !readExact(in, &flags, sizeof(flags))) {
             return false;
         }
-        entry.id = static_cast<long>(id);
+        if (!TopoShapeArchive::int64ToLongChecked(id, entry.id)) {
+            return false;
+        }
         entry.flags = flags;
         if (!readQByteArray(in, entry.data) || !readQByteArray(in, entry.postfix)) {
             return false;
@@ -130,7 +139,11 @@ bool readHasherClosure(std::istream& in, App::StringHasherClosure& closure)
             if (!readExact(in, &rid, sizeof(rid))) {
                 return false;
             }
-            entry.relatedIds.push_back(static_cast<long>(rid));
+            long related = 0;
+            if (!TopoShapeArchive::int64ToLongChecked(rid, related)) {
+                return false;
+            }
+            entry.relatedIds.push_back(related);
         }
         closure.entries.push_back(std::move(entry));
     }
@@ -149,6 +162,23 @@ void appendBytes(std::vector<uint8_t>& dest, const std::string& data)
 }
 
 } // namespace
+
+bool TopoShapeArchive::int64ToLongChecked(int64_t value, long& out)
+{
+    if (value < static_cast<int64_t>(std::numeric_limits<long>::min())
+        || value > static_cast<int64_t>(std::numeric_limits<long>::max())) {
+        return false;
+    }
+    out = static_cast<long>(value);
+    return true;
+}
+
+#ifdef FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+void TopoShapeArchive::setTestForceClosureCaptureFailure(bool enabled)
+{
+    g_testForceClosureCaptureFailure.store(enabled);
+}
+#endif
 
 TopoShapeArchive::TopoShapeArchive() = default;
 TopoShapeArchive::~TopoShapeArchive() = default;
@@ -217,7 +247,7 @@ FrozenTopoShapeBundle TopoShapeArchive::createBundle(const TopoShape& shape)
     App::StringHasherRef privateHasher(new App::StringHasher);
     if (!bundle.hasherSnapshot.entries.empty()) {
         auto merged =
-            privateHasher->mergeExactClosure(bundle.hasherSnapshot, /*expectedRevision=*/0);
+            privateHasher->materializeExactClosure(bundle.hasherSnapshot);
         if (!merged.success) {
             restoreLiveState();
             bundle.valid = false;
@@ -230,6 +260,12 @@ FrozenTopoShapeBundle TopoShapeArchive::createBundle(const TopoShape& shape)
         }
     }
     else if (bundle.hasherSnapshot.highWaterId != 0) {
+        if (bundle.hasherSnapshot.highWaterId
+            > static_cast<uint64_t>(std::numeric_limits<long>::max())) {
+            bundle.valid = false;
+            bundle.errorCode = "HighWaterOutOfRange";
+            return bundle;
+        }
         privateHasher->reserveHighWater(bundle.hasherSnapshot.highWaterId);
     }
     if (sourceHasher) {
@@ -390,15 +426,33 @@ bool TopoShapeArchive::writeArchive(const FrozenTopoShapeBundle& bundle, const s
     }
 
     // 5. StringHasher high-water + revision + threshold + exact-ID closure
-    uint64_t highWaterId = bundle.hasherSnapshot.highWaterId;
-    uint64_t revision = bundle.hasherSnapshot.revision;
-    int32_t threshold = bundle.hasherSnapshot.threshold;
+    App::StringHasherClosure closureForWrite = bundle.hasherSnapshot;
+    if (writeHasher) {
+        try {
+#ifdef FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+            if (g_testForceClosureCaptureFailure.load()) {
+                throw std::runtime_error("test forced closure capture failure");
+            }
+#endif
+            closureForWrite = writeHasher->captureClosure(/*markedOnly=*/true);
+            closureForWrite.revision = writeHasher->getRevision();
+            closureForWrite.highWaterId = static_cast<uint64_t>(writeHasher->getLastID());
+            closureForWrite.threshold = writeHasher->getThreshold();
+        }
+        catch (...) {
+            restoreWriteState();
+            return false;
+        }
+    }
+    uint64_t highWaterId = closureForWrite.highWaterId;
+    uint64_t revision = closureForWrite.revision;
+    int32_t threshold = closureForWrite.threshold;
     payloadStream.write(reinterpret_cast<const char*>(&highWaterId), sizeof(highWaterId));
     payloadStream.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
     payloadStream.write(reinterpret_cast<const char*>(&threshold), sizeof(threshold));
 
     std::ostringstream hasherStream(std::ios::binary);
-    if (!writeHasherClosure(hasherStream, bundle.hasherSnapshot)) {
+    if (!writeHasherClosure(hasherStream, closureForWrite)) {
         restoreWriteState();
         return false;
     }
@@ -470,6 +524,9 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         return false;
     }
 
+    FrozenTopoShapeBundle candidate;
+    candidate.valid = false;
+
     char magic[4];
     if (!readExact(ifs, magic, 4) || std::string(magic, 4) != "FCG1") {
         return false;
@@ -507,6 +564,10 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
     if (!readExact(ifs, &highWaterId, sizeof(highWaterId))) {
         return false;
     }
+    if (highWaterId > static_cast<uint64_t>(std::numeric_limits<long>::max())) {
+        Base::Console().log("TopoShapeArchive: highWaterId exceeds long range\n");
+        return false;
+    }
 
     uint64_t revision = 0;
     if (version >= 2) {
@@ -518,6 +579,9 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
     int32_t threshold = 0;
     if (version >= 4) {
         if (!readExact(ifs, &threshold, sizeof(threshold))) {
+            return false;
+        }
+        if (threshold < 0) {
             return false;
         }
     }
@@ -543,7 +607,15 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         return false;
     }
 
-    // Verify integrity before any OCC materialization.
+    // Reject trailing data after the authenticated archive.
+    if (ifs.peek() != std::char_traits<char>::eof()) {
+        char junk = 0;
+        if (ifs.read(&junk, 1) && ifs.gcount() > 0) {
+            Base::Console().log("TopoShapeArchive: trailing data after checksum\n");
+            return false;
+        }
+    }
+
     std::vector<uint8_t> digestInput;
     if (version >= 3) {
         appendBytes(digestInput, &version, sizeof(version));
@@ -558,7 +630,6 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         appendBytes(digestInput, hasherData);
     }
     else {
-        // Legacy v1/v2 digests covered only geometry + map payloads.
         appendBytes(digestInput, shapeData);
         appendBytes(digestInput, mapData);
     }
@@ -567,26 +638,25 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         return false;
     }
 
-    outBundle = FrozenTopoShapeBundle {};
-    outBundle.shapeTag = tag;
-    outBundle.hasherSnapshot.highWaterId = highWaterId;
-    outBundle.hasherSnapshot.revision = revision;
-    outBundle.hasherSnapshot.threshold = threshold;
+    candidate.shapeTag = tag;
+    candidate.hasherSnapshot.highWaterId = highWaterId;
+    candidate.hasherSnapshot.revision = revision;
+    candidate.hasherSnapshot.threshold = threshold;
 
     if (version >= 3 && !hasherData.empty()) {
         std::istringstream hasherStream(hasherData, std::ios::binary);
-        if (!readHasherClosure(hasherStream, outBundle.hasherSnapshot)) {
+        if (!readHasherClosure(hasherStream, candidate.hasherSnapshot)) {
             Base::Console().log("TopoShapeArchive: hasher closure decode failed\n");
             return false;
         }
-        outBundle.hasherSnapshot.highWaterId = highWaterId;
-        outBundle.hasherSnapshot.revision = revision;
-        outBundle.hasherSnapshot.threshold = threshold;
+        candidate.hasherSnapshot.highWaterId = highWaterId;
+        candidate.hasherSnapshot.revision = revision;
+        candidate.hasherSnapshot.threshold = threshold;
     }
 
     App::StringHasherRef privateHasher(new App::StringHasher);
-    if (!outBundle.hasherSnapshot.entries.empty()) {
-        auto merged = privateHasher->mergeExactClosure(outBundle.hasherSnapshot, /*expectedRevision=*/0);
+    if (!candidate.hasherSnapshot.entries.empty()) {
+        auto merged = privateHasher->materializeExactClosure(candidate.hasherSnapshot);
         if (!merged.success) {
             Base::Console().log("TopoShapeArchive: hasher materialize failed (%s)\n",
                                 merged.errorCode.c_str());
@@ -594,24 +664,32 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         }
     }
     else if (highWaterId != 0) {
+        if (highWaterId > static_cast<uint64_t>(std::numeric_limits<long>::max())) {
+            Base::Console().log("TopoShapeArchive: highWaterId exceeds long range\n");
+            return false;
+        }
         privateHasher->reserveHighWater(highWaterId);
+        privateHasher->setThreshold(threshold);
+        privateHasher->setRevision(revision);
     }
-    privateHasher->setThreshold(outBundle.hasherSnapshot.threshold);
-    privateHasher->setRevision(revision);
-    outBundle.hasher = privateHasher;
+    else {
+        privateHasher->setThreshold(threshold);
+        privateHasher->setRevision(revision);
+    }
+    candidate.hasher = privateHasher;
 
     if (shapeLen > 0) {
         try {
             std::istringstream shapeStream(shapeData, std::ios::binary);
-            outBundle.shape.importBinary(shapeStream);
-            outBundle.shape.Tag = tag;
+            candidate.shape.importBinary(shapeStream);
+            candidate.shape.Tag = tag;
         }
         catch (...) {
             Base::Console().log("TopoShapeArchive: BREP import failed after checksum OK\n");
             return false;
         }
     }
-    outBundle.shape.Hasher = privateHasher;
+    candidate.shape.Hasher = privateHasher;
 
     if (mapLen > 0) {
         try {
@@ -619,8 +697,12 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
             ctx.hasher = privateHasher;
             std::istringstream mapStream(mapData, std::ios::binary);
             auto restored = std::make_shared<Data::ElementMap>();
-            outBundle.elementMap = restored->restore(ctx, mapStream);
-            outBundle.shape.resetElementMap(outBundle.elementMap);
+            candidate.elementMap = restored->restore(ctx, mapStream);
+            if (!candidate.elementMap) {
+                Base::Console().log("TopoShapeArchive: ElementMap restore returned null\n");
+                return false;
+            }
+            candidate.shape.resetElementMap(candidate.elementMap);
         }
         catch (...) {
             Base::Console().log("TopoShapeArchive: ElementMap restore failed\n");
@@ -628,6 +710,8 @@ bool TopoShapeArchive::readArchive(const std::string& filePath, FrozenTopoShapeB
         }
     }
 
+    candidate.valid = true;
+    outBundle = std::move(candidate);
     return true;
 }
 
@@ -674,6 +758,219 @@ std::string TopoShapeArchive::calculateSha256(const std::vector<uint8_t>& data)
 #endif
     }
     return hasher.result().toHex().toStdString();
+}
+
+std::string TopoShapeArchive::calculateSha256File(const std::string& path)
+{
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.is_open()) {
+        return {};
+    }
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(ifs)),
+                              std::istreambuf_iterator<char>());
+    return calculateSha256(data);
+}
+
+bool TopoShapeArchive::rebindBundleToHasher(FrozenTopoShapeBundle& bundle,
+                                            App::StringHasherRef hasher)
+{
+    if (!hasher || !bundle.valid) {
+        return false;
+    }
+    if (!bundle.elementMap) {
+        bundle.hasher = hasher;
+        bundle.shape.Hasher = hasher;
+        return true;
+    }
+
+    // Snapshot source marks/map IDs so force-mark + save cannot leak into inputs.
+    const App::StringHasherRef sourceHasher = bundle.hasher;
+    std::unordered_map<long, bool> savedMarks;
+    std::unordered_map<const Data::ElementMap*, unsigned> savedMapIds;
+    if (sourceHasher) {
+        savedMarks = sourceHasher->snapshotMarks();
+    }
+    bundle.elementMap->snapshotArchiveIds(savedMapIds);
+
+    auto restoreSourceState = [&]() {
+        if (bundle.elementMap && !savedMapIds.empty()) {
+            bundle.elementMap->restoreArchiveIds(savedMapIds);
+        }
+        if (sourceHasher && !savedMarks.empty()) {
+            sourceHasher->restoreMarks(savedMarks);
+        }
+    };
+
+    auto forceMark = [](const Data::ElementMapPtr& map, auto&& self) -> void {
+        if (!map) {
+            return;
+        }
+        for (const auto& child : map->getChildElements()) {
+            for (auto& sid : child.sids) {
+                sid.mark();
+            }
+            self(child.elementMap, self);
+        }
+        for (const auto& el : map->getAll()) {
+            Data::ElementIDRefs sids;
+            (void)map->find(el.index, &sids);
+            for (auto& sid : sids) {
+                sid.mark();
+            }
+        }
+    };
+
+    auto collectSidValues = [](const Data::ElementMapPtr& map, auto&& self, std::vector<long>& out) {
+        if (!map) {
+            return;
+        }
+        for (const auto& child : map->getChildElements()) {
+            for (const auto& sid : child.sids) {
+                if (sid) {
+                    out.push_back(sid.value());
+                }
+            }
+            self(child.elementMap, self, out);
+        }
+        for (const auto& el : map->getAll()) {
+            Data::ElementIDRefs sids;
+            (void)map->find(el.index, &sids);
+            for (const auto& sid : sids) {
+                if (sid) {
+                    out.push_back(sid.value());
+                }
+            }
+        }
+    };
+
+    auto allSidsResolve = [](const Data::ElementMapPtr& map,
+                             const App::StringHasherRef& target,
+                             auto&& self) -> bool {
+        if (!map) {
+            return true;
+        }
+        if (static_cast<App::StringHasher*>(map->hasher)
+            != static_cast<App::StringHasher*>(target)) {
+            return false;
+        }
+        for (const auto& child : map->getChildElements()) {
+            for (const auto& sid : child.sids) {
+                if (!sid || !sid.isFromSameHasher(target) || !target->getID(sid.value())) {
+                    return false;
+                }
+            }
+            if (!self(child.elementMap, target, self)) {
+                return false;
+            }
+        }
+        for (const auto& el : map->getAll()) {
+            Data::ElementIDRefs sids;
+            (void)map->find(el.index, &sids);
+            for (const auto& sid : sids) {
+                if (!sid || !sid.isFromSameHasher(target) || !target->getID(sid.value())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    try {
+        // Match writeArchive: assign archive IDs then force-mark every referenced SID.
+        if (sourceHasher) {
+            sourceHasher->clearMarks();
+        }
+        Data::ElementMapArchiveContext saveCtx;
+        saveCtx.hasher = sourceHasher;
+        bundle.elementMap->beforeSave(saveCtx);
+        forceMark(bundle.elementMap, forceMark);
+
+        std::vector<long> requiredSids;
+        collectSidValues(bundle.elementMap, collectSidValues, requiredSids);
+        for (long id : requiredSids) {
+            if (!hasher->getID(id)) {
+                restoreSourceState();
+                return false;
+            }
+        }
+
+        std::ostringstream mapStream(std::ios::binary);
+        bundle.elementMap->save(mapStream);
+        restoreSourceState();
+
+        Data::ElementMapArchiveContext restoreCtx;
+        restoreCtx.hasher = hasher;
+        std::istringstream mapIn(mapStream.str(), std::ios::binary);
+        auto restored = std::make_shared<Data::ElementMap>();
+        auto rebound = restored->restore(restoreCtx, mapIn);
+        if (!rebound || !allSidsResolve(rebound, hasher, allSidsResolve)) {
+            restoreSourceState();
+            return false;
+        }
+        // Publish only after validation succeeds.
+        bundle.elementMap = rebound;
+        bundle.hasher = hasher;
+        bundle.shape.Hasher = hasher;
+        bundle.shape.resetElementMap(bundle.elementMap);
+        return true;
+    }
+    catch (...) {
+        restoreSourceState();
+        return false;
+    }
+}
+
+bool TopoShapeArchive::materializeOperandsOntoSharedHasher(const FrozenTopoShapeBundle& baseIn,
+                                                           const FrozenTopoShapeBundle& toolIn,
+                                                           App::StringHasherRef workerHasher,
+                                                           FrozenTopoShapeBundle& baseOut,
+                                                           FrozenTopoShapeBundle& toolOut,
+                                                           std::string& errorCode,
+                                                           std::string& errorMessage)
+{
+    errorCode.clear();
+    errorMessage.clear();
+    if (!workerHasher) {
+        errorCode = "NullHasher";
+        errorMessage = "Shared worker hasher is null";
+        return false;
+    }
+    if (!baseIn.valid || !toolIn.valid) {
+        errorCode = "InvalidOperand";
+        errorMessage = "Boolean operand bundle is invalid";
+        return false;
+    }
+
+    auto matBase = workerHasher->materializeExactClosure(baseIn.hasherSnapshot);
+    if (!matBase.success) {
+        errorCode = matBase.errorCode.empty() ? "BaseHasherMaterializeFailed" : matBase.errorCode;
+        errorMessage = matBase.errorMessage.empty() ? "Failed to materialize base hasher closure"
+                                                    : matBase.errorMessage;
+        return false;
+    }
+    auto mergeTool = workerHasher->mergeExactClosure(toolIn.hasherSnapshot,
+                                                     /*expectedRevision=*/0);
+    if (!mergeTool.success) {
+        errorCode = mergeTool.errorCode.empty() ? "ToolHasherMergeFailed" : mergeTool.errorCode;
+        errorMessage = mergeTool.errorMessage.empty()
+            ? "Failed to merge tool hasher closure onto shared worker hasher"
+            : mergeTool.errorMessage;
+        return false;
+    }
+
+    baseOut = baseIn;
+    toolOut = toolIn;
+    if (!rebindBundleToHasher(baseOut, workerHasher)) {
+        errorCode = "BaseRebindFailed";
+        errorMessage = "Failed to rebind base ElementMap onto shared worker hasher";
+        return false;
+    }
+    if (!rebindBundleToHasher(toolOut, workerHasher)) {
+        errorCode = "ToolRebindFailed";
+        errorMessage = "Failed to rebind tool ElementMap onto shared worker hasher";
+        return false;
+    }
+    return true;
 }
 
 HasherDeltaMergeResult TopoShapeArchive::mergeHasherDelta(App::StringHasherRef hasher,

@@ -504,7 +504,12 @@ public:
         return result;
     }
 
-    void writeArchive(App::GeometryArchiveWriter&) const override {}
+    App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter&) const override
+    {
+        App::GeometryArchiveWriteResult out;
+        out.success = true;
+        return out;
+    }
 
 private:
     int _value {0};

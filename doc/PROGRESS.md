@@ -6,21 +6,23 @@ The 2026-07-24 follow-up read-only implementation review verdict remains **FAIL*
 detached geometry. Substantial Priority 1–3 scaffolding is now in place (commit fences, non-blocking
 close, FreeCADCmd dispatch, archive deep-copy/repeat-write, builtin registry, geometry progress
 show path, hasher revision advance on commit, trusted relative result path/size/digest checks,
-Unix process-group cancel, progress-controller manager hooks), but the working tree still lacks
-installed-tree FreeCADCmd protocol qualification, typed codecs/request decode, Windows Job Object
-cancel, retained-success janitor, production prepare/commit adapters, and Phases 3–6. No rollout
-path is ready to enable.
+Unix process-group cancel, progress-controller manager hooks, atomic hasher merge, typed
+`Part::Boolean` codec, and real FreeCADCmd mapped Boolean qualification), but the working tree still
+lacks Fillet/Sweep codecs, Windows Job Object cancel, retained-success janitor, production
+prepare/commit adapters, and Phases 3–6. No rollout path is ready to enable. Phase 2 is **not**
+complete.
 
 | Phase | Plan focus | Actual status |
 |---|---|---|
 | 1 | Guardrails and scheduler foundation | Mostly scaffolded; fences/transactions/failure-aware generation/slice budget/non-blocking close/FreeCADCmd cancel covered. 30 s acceptance heartbeat and non-cooperative shutdown recovery still incomplete |
-| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep, hasher revision advance/reject, nested/shared child maps, long hashed names (FCG1 v4 threshold). Cross-process/FCStd reopen still incomplete |
+| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep (in-process), hasher revision/atomic merge, nested/shared child maps, long hashed names (FCG1 v4), typed Boolean codec, parent `GeometryWorkerProcess` protocol+decode gates, real FreeCADCmd mapped Boolean + semantic FCStd reopen. Fillet/Sweep codecs and broader protocol fuzz still open |
 | 3 | Non-blocking visual pipeline | Not started; GUI-thread tessellation remains. Progress controller is hooked to the manager; 250 ms GUI visibility harness still missing |
 | 4 | Native geometry migrations | Unconnected ops (mapped + registry allowlisted) without feature/task-panel adapters |
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker `freecad-nbgeom-step21`: **33/33 App**, **25/25 Part**):
+Verified narrow positives (focused Docker validation: **35/35 App**, **44/44 Part**,
+**3/3 CrossProcessBooleanTest**, **16/16 GeometryWorkerProcessTest**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
   failure-aware generation (no advance on failed commit) with `FeatureTestDetached`.
@@ -35,10 +37,15 @@ Verified narrow positives (focused Docker `freecad-nbgeom-step21`: **33/33 App**
 - Geometry progress show bypasses 2 s sequencer delay (`showGeometryProgress`); manager progress/
   state listeners wire `GeometryProgressController`.
 - Trusted relative result path + size/digest/jobId checks; Unix process-group terminate/kill.
+- Atomic `materializeExactClosure` / `mergeExactClosure` (threshold/revision/value-ID uniqueness +
+  rollback); typed Boolean request codec; operands rebound onto one worker hasher.
+- Parent-controlled `Gui::GeometryWorkerProcess` mapped Boolean (real FreeCADCmd): fail-closed
+  FCGEO/1 protocol, task-aware FCG1 decode before `ReadyToCommit`, explicit serialize failure
+  channel, digest-correct malformed FCG rejected, FCStd second-process naming/SID/history reopen.
 
 Those positives are scaffolding checks, not phase acceptance. No production Part/PartDesign feature
-implements prepare/commit; FreeCADCmd still lacks typed codecs, installed-tree smoke, and Windows
-Job Object cancel; Phases 3–6 are untouched.
+implements prepare/commit; Fillet/Sweep still lack typed codecs; Windows Job Object cancel and
+installed-tree smoke beyond the Docker build tree remain open; Phases 3–6 are untouched.
 
 
 ## Implementation history
@@ -279,18 +286,18 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 1. **Priority 1 residuals:** 30-second OCC/serialization heartbeat acceptance workload;
    non-cooperative deadline/shutdown recovery; `Document::recompute` GIL hold during long work.
-2. **Priority 2 residuals:** cross-process mapped Boolean/Fillet/Sweep; FCStd save/reopen.
-3. **Priority 3 residuals:** typed codecs + request input decode; Windows Job Object cancel;
-   retained-success cleanup janitor; installed-tree FreeCADCmd smoke; hang/crash/OOM protocol;
+2. **Priority 2 residuals:** typed Fillet/Sweep codecs + FreeCADCmd qualification; broader
+   hang/crash/OOM/rename recovery matrix; installed-tree smoke outside the Docker build tree.
+3. **Priority 3 residuals:** Windows Job Object cancel; retained-success cleanup janitor;
    250 ms geometry-progress visibility harness (controller is wired; GUI timing test still open).
 4. **Priority 4 (blocked until 1–3):** production prepare/commit adapters, `Std_Refresh` routing,
    Phases 3–6 (visual pipeline, feature migrations, compatibility, qualification).
 
 Concrete next action for the implementing agent:
 
-- Cross-process mapped Boolean (or Fillet/Sweep) through FreeCADCmd with ElementMap/hasher delta
-  commit, plus a Docker test that fails when history is dropped. Keep production feature adapters
-  disabled.
+- Typed `Part::Fillet` (or Sweep) codec through FreeCADCmd with the same mapped-name/FCStd
+  qualification bar as Boolean. Keep production feature adapters and rollout flags disabled.
+  Do not mark Phase 2 complete.
 
 ## Implementation log (continued)
 
@@ -811,5 +818,176 @@ Concrete next action for the implementing agent:
     adapters remain open.
 * Next step:
   - See revised `## Next step` above.
+
+### Step 22 — Lossless cross-process mapped Part::Boolean (FreeCADCmd)
+
+* Completed work:
+  - Hardened `materializeExactClosure` (fresh bootstrap) vs `mergeExactClosure` (canonical):
+    validate-then-commit; threshold must match on canonical merge; preflight ID + `(data,postfix)`
+    uniqueness; rollback inserts/threshold/revision/high-water on unexpected insert failure.
+  - `App::GeometryRequestWorkspace` stages archives via `.tmp` rename and publishes `request.json`
+    last; `GeometryWorkerProcess` calls `task->writeArchive` before publish.
+  - Typed Boolean codec v1 (`writeArchive` / `decodeFromRequest`) with size/SHA-256, trusted
+    relative paths, codec/operation/BooleanType checks, and shared-hasher operand rebind.
+  - Worker emits control lines via `QJsonDocument`; parent requires hello-before-progress/result,
+    single terminal, trusted path/size/digest; `readArchive` is output-atomic.
+  - `GeometryWorker.py` invokes `main()` under FreeCAD `runFile` (`__name__` ≠ `__main__`) and
+    resolves request path via `--pass`.
+  - Real FreeCADCmd tests: mapped Boolean round-trip, FCStd second-process reopen, recovery after
+    bad request, irreconcilable hasher threshold collision before OCC. No in-process `task.run()`
+    fallback for cross-process qualification.
+* Files changed (representative):
+  - `src/App/StringHasher.{h,cpp}`, `GeometryRequestWorkspace.{h,cpp}`, `CMakeLists.txt`
+  - `src/Mod/Part/App/{BooleanGeometryOperation,TopoShapeArchive,GeometryWorker,GeometryWorkerRegistry}.*`
+  - `src/Mod/Part/GeometryWorker.py`
+  - `src/Gui/GeometryWorkerProcess.{h,cpp}`
+  - `tests/src/Mod/Part/App/{TestNonBlockingGeometry,TestCrossProcessBoolean}.cpp`
+  - `doc/PROGRESS.md`
+* Tests or validation performed (Docker `freecad-nbgeom-bool-final`, `/code/build_docker`):
+  - `ninja FreeCADApp Part FreeCADCmd PartScripts App_tests_run Part_tests_run FreeCADGui`
+  - App filter `GeometryJobTest.*:GuiResponsivenessProbeTest.*:AsyncRecomputeTest.*` → **33/33 PASSED**
+  - Part filter `NonBlockingGeometryTest.*:CrossProcessBooleanTest.*` → **37/37 PASSED**
+    (34 NonBlocking + 3 CrossProcess; includes real FreeCADCmd + FCStd reopen)
+* Remaining gaps (do not mark Phase 2 complete):
+  - **P1:** 30 s heartbeat acceptance; non-cooperative shutdown recovery; GIL hold.
+  - **P2:** Fillet/Sweep typed codecs + FreeCADCmd qualification; broader crash/rename recovery;
+    install-tree smoke beyond build_docker.
+  - **P3:** Windows Job Object; retained-success janitor; 250 ms GUI progress harness.
+  - **P4:** production Part/PartDesign adapters / rollout (blocked).
+* Next step:
+  - See revised `## Next step` above.
+
+### Step 23 — Decode-before-ReadyToCommit + parent GeometryWorkerProcess qualification
+
+* Completed work:
+  - Task-aware result decode: `DetachedGeometryTask::decodeResultArchive`; Boolean uses bounded
+    `TopoShapeArchive` structural decode; parent transitions `Decoding` → `ReadyToCommit` only
+    after success; digest-correct malformed FCG never reaches ReadyToCommit/Completed.
+  - Fail-closed `GeometryWorkerProcess` FCGEO/1: single hello first with required protocol/version;
+    strict JSON types for progress/result/error/jobId; protocol-failed latch (no recovery from a
+    later valid-looking result); completion uses explicit protocol state instead of error-code
+    string exclusion lists.
+  - Explicit `GeometryArchiveWriteResult` from `writeArchive`; staging failure blocks
+    `request.json`, launches no child, returns `RequestSerializeFailed`; no Boolean-specific
+    file-existence inference.
+  - NUL-safe hasher value-key identity for closure preflight; `rebindBundleToHasher` snapshot/
+    restore of SID marks and map archive IDs (source unchanged on success and failure).
+  - Hashed SID FCStd persistence: `saveStream` base64-encodes hashed/binary payloads (restore
+    already expected base64); fixes digest corruption that broke Hashable plaintext re-resolve.
+  - Python `StringHasher.getID(txt, base64=False, hashable=False)` exposes Option::Hashable.
+  - Gui integration tests exercise real `GeometryWorkerProcess` + FreeCADCmd; CrossProcess FCStd
+    reopen asserts threshold, Hashable SID, map reachability, SID resolution, and source-tag
+    history (`:H1:`/`:H2:` / recursive `getElementHistory`).
+* Files changed (representative):
+  - `src/App/{GeometryJob.h,GeometryRequestWorkspace.*,StringHasher.*,StringHasherPyImp.cpp}`
+  - `src/Gui/GeometryWorkerProcess.{h,cpp}`
+  - `src/Mod/Part/App/{BooleanGeometryOperation.*,TopoShapeArchive.cpp}`
+  - `tests/src/Gui/TestGeometryWorkerProcess.cpp`, `tests/src/Gui/CMakeLists.txt`
+  - `tests/src/Mod/Part/App/{TestCrossProcessBoolean,TestNonBlockingGeometry}.cpp`
+  - `tests/src/App/StringHasher.cpp`
+  - `doc/PROGRESS.md`
+* Tests or validation performed (Docker `/code/build_docker`):
+  - `ninja FreeCADApp Part FreeCADCmd PartScripts FreeCADGui App_tests_run Part_tests_run Gui_tests_run`
+  - App `GeometryJobTest.*:GuiResponsivenessProbeTest.*:AsyncRecomputeTest.*` → **33/33 PASSED**
+  - App `StringHasherTest.SaveDocFile*` → **2/2 PASSED**
+  - Part `NonBlockingGeometryTest.*` → **37/37 PASSED**
+  - Part `CrossProcessBooleanTest.*` → **3/3 PASSED** (child QProcess + FCStd semantic reopen)
+  - Gui `GeometryWorkerProcessTest.*` → **7/7 PASSED** (protocol fail-closed, malformed-FCG
+    reject before ReadyToCommit, **parent-controlled real FreeCADCmd** → ReadyToCommit)
+* Remaining gaps (do not mark Phase 2 complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** Fillet/Sweep codecs; broader crash/rename; install-tree smoke.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - See revised `## Next step` above.
+
+### Step 24 — Boolean/FCStd/protocol closeout (wire + side-effect safety)
+
+* Completed work:
+  - Corrected Python `StringHasher.getID` base64/binary/hashable contract: `base64=True` always
+    sets `Option::Binary`; `hashable` is never implied; malformed base64 raises `ValueError`.
+  - FCGEO/1 `jobId` is a canonical decimal JSON string covering the full `uint64_t` domain
+    (max `18446744073709551615`); parent and worker parse/validate strictly. Optional
+    `executionTime` must be finite, non-negative, and ≤ 86400 when present. Error terminals
+    require non-empty code/message and matching `jobId`.
+  - `GeometryRequestWorkspace` clears stale `request.json` on construct/failure; `writeBytes`
+    accepts null+size0, rejects null+size>0 and oversized sections. Manager-path serialize
+    failure surfaces `RequestSerializeFailed` (monotonic terminal; no child launch). Callback
+    coverage in `ManagerPathRequestSerializeFailedNoLaunch` is **late registration only** (after
+    the job is already terminal), not early registration while launch is blocked.
+  - Rebind success/failure tests assert source marks, archive IDs, hasher metadata, and shared
+    child pointer identity (`sharedRefs >= 2`). FCStd same-process reopen asserts hasher
+    ownership, recursive map/SID closure, hashed SID map reference, and history tags.
+  - `TopoShapeArchive` range-checks int64→long and rejects `highWaterId > LONG_MAX` without
+    mutating the caller's bundle; `writeArchive` captures marked closure from the live hasher
+    after rebind; `ElementMap::getChildElements` skips null child-map slots.
+  - Nested/shared rebind + repeat-write side-effect checks live in
+    `NestedAndSharedChildMapsSurviveArchiveRoundTrip`.
+
+### Step 24 correction — bad-path closeout (2026-07-26)
+
+* Root-cause fixes (verified in code):
+  1. **JSON `size` parsing:** `requireJsonInt64` rejects with an exclusive 2^63 bound and
+     enforces the trusted 512 MiB maximum before any `qint64` cast; protocol failures latch
+     (`ProtocolResultSizeInt64OverflowFailsClosed`, `ProtocolResultSizeNullWrongJsonType`,
+     `ProtocolResultSizeHugeExponentFailsClosed`).
+  2. **Stale workspace cleanup:** `clearPublishedRequest` / `clearStagedFile` / `writeFileAtomic`
+     fail closed when an existing path cannot be removed or replaced; Boolean no longer issues
+     unchecked `QFile::remove` for operands/request; `markFailed` uses best-effort request
+     removal only (no recursive failure overwrite).
+  3. **Staging bounds:** `stageFileAtomic` checks source size before streaming (chunked copy,
+     no `readAll()` up to 512 MiB).
+  4. **Live closure capture:** removed stale `hasherSnapshot` fallback on capture failure;
+     `setTestForceClosureCaptureFailure` restores marks/IDs and leaves no published `.tmp`; the
+     fault seam is declaration/definition guarded and compiled only with
+     `ENABLE_DEVELOPER_TESTS`.
+  5. **`ElementMap` null slots:** `getAll`/`find`/`hasChildElementMap` null-safe; orphan
+     `childElements` entries pruned after `addChildElements`.
+  6. **Cross-process recovery test:** bad Boolean request carries jobId `42`; worker returns
+     `MissingOperandArchive` with matching terminal `jobId` (not `missing_job_id`).
+  7. **Early worker errors:** parent sets `FCGEO_LAUNCHED_JOB_ID` for child processes so
+     pre-parse failures still emit a matching `jobId` when launched from `GeometryWorkerProcess`
+     (`CrossProcessBooleanTest.EarlyWorkerErrorIncludesLaunchedJobId`,
+     `PythonMissingArgHonorsLaunchedJobId`). The missing-argument test invokes real FreeCADCmd
+     without a request; the missing-binding test runs an isolated copy of the Python wrapper with
+     a stub `Part` module. Former probe filenames are ordinary request paths, covered by
+     `ProbeRequestFilenamesAreOrdinaryPaths`. Request `jobId` must match the launched ID before
+     workspace/OCC work (`job_id_mismatch`).
+  8. **LP64 honesty:** single `TopoShapeArchive::int64ToLongChecked` implementation used by FCG1
+     decode and unit tests; FCG1 decode narrowing integration tests **skip** on LP64
+     (Docker x86_64 `127.0.0.1:5001/freecad-ci-deps:24.04`); `highWaterId > LONG_MAX` rejection
+     still runs on LP64.
+  9. **Workspace ownership:** documented idempotent manager/worker cleanup; serialize failures
+     keep `RequestSerializeFailed` (manager does not overwrite with `ProcessStartFailed`).
+
+* Tests or validation performed (Docker `127.0.0.1:5001/freecad-ci-deps:24.04`, LP64 `/code/build_docker`,
+  GCC 13.3, Qt 6.11.1, Debug):
+  - Incremental Ninja build of `FreeCADApp Part FreeCADCmd PartScripts FreeCADGui App_tests_run
+    Part_tests_run Gui_tests_run` against the CMake-qualified `/code/build_docker` graph → success
+  - App `GeometryJobTest.*:GuiResponsivenessProbeTest.*:AsyncRecomputeTest.*` → **35/35 PASSED**
+  - App `StringHasherTest.SaveDocFile*:StringHasherTest.*Python*` → **8/8 PASSED**
+  - App `GeometryRequestWorkspaceTest.*` → **5/5 PASSED**
+  - Part `NonBlockingGeometryTest.*:CrossProcessBooleanTest.*:TopoShapeArchiveInt64ToLongTest.*`
+    → **51 PASSED**, **4 SKIPPED** (LP64 narrowing decode; not falsely passed)
+  - Gui `GeometryWorkerProcessTest.*` → **25/25 PASSED**
+  - Part `NestedAndSharedChildMapsSurviveArchiveRoundTrip` ×20 in one deterministic
+    `QT_HASH_SEED=0` process plus five fresh default-randomized processes → **120/120 PASSED**
+  - Part `CrossProcessBooleanTest.RecoveryAfterBadRequestThenValidBoolean` → **PASSED**
+    (`MissingOperandArchive`, hello-first, single error terminal, no `result.fcg`, then good path)
+  - Part `CrossProcessBooleanTest.EarlyWorkerErrorIncludesLaunchedJobId` → **PASSED**
+    (`request_file_not_found` with matching `jobId` from `FCGEO_LAUNCHED_JOB_ID`)
+  - UBSan float-cast-overflow demo: **not run** (`FREECAD_USE_SANITIZER_UBSAN=OFF` in this tree)
+  - `git diff --ignore-cr-at-eol --check` on Step 24 correction sources → clean (no conflict markers)
+  - `tools/mcp/freecad-mcp` → untouched; **no git commit** on this closeout
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** Fillet/Sweep codecs; broader crash/rename; install-tree smoke; LLP64/32-bit-long
+    decode qualification on a non-LP64 builder.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Continue Phase 2 bad-path hardening / Fillet-Sweep codecs per `doc/PLAN.md` (not started here).
 
 ---

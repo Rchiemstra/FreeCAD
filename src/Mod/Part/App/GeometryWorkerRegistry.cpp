@@ -22,9 +22,9 @@ void GeometryWorkerRegistry::registerOperation(const std::string& name, TaskFact
 
 void GeometryWorkerRegistry::registerBuiltins()
 {
-    // Factories return empty-parameter stubs; the worker decodes request payloads
-    // into typed ops in a later protocol slice. Registration establishes the
-    // allowlist of trusted operation names for FreeCADCmd.
+    // Factories return empty-parameter stubs for allowlist membership only.
+    // FreeCADCmd typed decode goes through BooleanGeometryOperation::decodeFromRequest
+    // (version-aware). Empty default tasks must never execute OCC.
     registerOperation("Part::Boolean", []() {
         return std::shared_ptr<App::DetachedGeometryTask>(new BooleanGeometryOperation());
     });

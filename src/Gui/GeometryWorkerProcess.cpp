@@ -3,6 +3,7 @@
 #include "GeometryWorkerProcess.h"
 #include <App/Application.h>
 #include <App/GeometryJobManager.h>
+#include <App/GeometryRequestWorkspace.h>
 #include <App/MainThreadSignal.h>
 #include <Base/Console.h>
 
@@ -13,20 +14,149 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
+#include <QJsonValue>
 #include <QStandardPaths>
 
+#include <cmath>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 
 namespace
 {
 constexpr qint64 kMaxTrustedResultBytes = 512LL * 1024 * 1024;
+constexpr int kMaxPhaseChars = 256;
+constexpr int kMaxErrorCodeChars = 128;
+constexpr int kMaxErrorMessageChars = 4096;
+constexpr int kSha256HexLen = 64;
+/// executionTime is optional; when present it must be finite, >= 0, and <= 24h.
+constexpr double kMaxExecutionTimeSeconds = 86400.0;
 
 bool pathHasParentTraversal(const QString& relativePath)
 {
     const QStringList parts = QDir::fromNativeSeparators(relativePath).split('/', Qt::SkipEmptyParts);
     return parts.contains(QStringLiteral(".."));
 }
+
+bool isFiniteUnitInterval(double value)
+{
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+bool isHex64(const QString& value)
+{
+    if (value.size() != kSha256HexLen) {
+        return false;
+    }
+    for (QChar ch : value) {
+        if (!ch.isDigit() && (ch < QLatin1Char('a') || ch > QLatin1Char('f'))
+            && (ch < QLatin1Char('A') || ch > QLatin1Char('F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool requireJsonString(const QJsonObject& obj,
+                       const char* key,
+                       QString& out,
+                       int maxLen,
+                       std::string& errorCode,
+                       std::string& errorMessage)
+{
+    if (!obj.contains(QString::fromLatin1(key))) {
+        errorCode = "MissingJsonField";
+        errorMessage = std::string(key) + " is required";
+        return false;
+    }
+    const QJsonValue v = obj.value(QString::fromLatin1(key));
+    if (!v.isString()) {
+        errorCode = "WrongJsonType";
+        errorMessage = std::string(key) + " must be a JSON string";
+        return false;
+    }
+    out = v.toString();
+    if (maxLen > 0 && out.size() > maxLen) {
+        errorCode = "OversizedJsonString";
+        errorMessage = std::string(key) + " exceeds the configured maximum length";
+        return false;
+    }
+    return true;
+}
+
+bool requireJsonInt64(const QJsonObject& obj,
+                      const char* key,
+                      qint64& out,
+                      std::string& errorCode,
+                      std::string& errorMessage,
+                      qint64 maxInclusive = std::numeric_limits<qint64>::max())
+{
+    if (!obj.contains(QString::fromLatin1(key))) {
+        errorCode = "MissingJsonField";
+        errorMessage = std::string(key) + " is required";
+        return false;
+    }
+    const QJsonValue v = obj.value(QString::fromLatin1(key));
+    if (!v.isDouble()) {
+        errorCode = "WrongJsonType";
+        errorMessage = std::string(key) + " must be a JSON number";
+        return false;
+    }
+    const double d = v.toDouble();
+    if (!std::isfinite(d) || std::floor(d) != d) {
+        errorCode = "WrongJsonType";
+        errorMessage = std::string(key) + " must be an integer";
+        return false;
+    }
+    // JSON integers above 2^63-1 are representable as doubles but not as qint64.
+    constexpr double kInt64ExclusiveMax = 9223372036854775808.0;
+    constexpr double kInt64Min = -9223372036854775808.0;
+    if (d < kInt64Min || d >= kInt64ExclusiveMax) {
+        errorCode = "OutOfRangeJsonNumber";
+        errorMessage = std::string(key) + " is out of int64 range";
+        return false;
+    }
+    if (d > static_cast<double>(maxInclusive)) {
+        errorCode = "OutOfRangeJsonNumber";
+        errorMessage = std::string(key) + " exceeds the trusted maximum";
+        return false;
+    }
+    out = static_cast<qint64>(d);
+    if (static_cast<double>(out) != d) {
+        errorCode = "OutOfRangeJsonNumber";
+        errorMessage = std::string(key) + " cannot be represented exactly as int64";
+        return false;
+    }
+    return true;
+}
+
+bool requireJsonNumber(const QJsonObject& obj,
+                       const char* key,
+                       double& out,
+                       std::string& errorCode,
+                       std::string& errorMessage)
+{
+    if (!obj.contains(QString::fromLatin1(key))) {
+        errorCode = "MissingJsonField";
+        errorMessage = std::string(key) + " is required";
+        return false;
+    }
+    const QJsonValue v = obj.value(QString::fromLatin1(key));
+    if (!v.isDouble()) {
+        errorCode = "WrongJsonType";
+        errorMessage = std::string(key) + " must be a JSON number";
+        return false;
+    }
+    out = v.toDouble();
+    if (!std::isfinite(out)) {
+        errorCode = "WrongJsonType";
+        errorMessage = std::string(key) + " must be finite";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 #if defined(Q_OS_WIN)
@@ -57,15 +187,10 @@ GeometryWorkerProcess::GeometryWorkerProcess(QObject* parent)
 
 GeometryWorkerProcess::~GeometryWorkerProcess()
 {
-    // Never block the GUI thread with waitForFinished().
-    // Disconnect signals first so late process events cannot re-enter this object.
     if (_process) {
         disconnect(_process, nullptr, this, nullptr);
         if (_process->state() != QProcess::NotRunning) {
             _process->kill();
-            // Detach ownership: Qt will delete the QProcess with this QObject parent,
-            // but we do not wait here. Workspace cleanup is deferred to a later janitor pass
-            // when the process is known to have exited.
             _retainWorkspaceOnDestroy = true;
         }
     }
@@ -87,6 +212,28 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec)
     return startJob(spec, QString());
 }
 
+void GeometryWorkerProcess::prepareIdleJob(const App::GeometryJobSpec& spec,
+                                           const QString& workspaceDir)
+{
+    _spec = spec;
+    _cancelling = false;
+    _cancelPhase = 0;
+    _result = {};
+    _claimedResultPath.clear();
+    _claimedSha256.clear();
+    _claimedResultSize = -1;
+    _resultMessageSeen = false;
+    _helloSeen = false;
+    _terminalSeen = false;
+    _protocolFailed = false;
+    _errorTerminalSeen = false;
+    _finishedHandled = false;
+    _state = App::GeometryJobState::Running;
+    _tempDir = workspaceDir;
+    QDir().mkpath(_tempDir);
+    _retainWorkspaceOnDestroy = true;
+}
+
 bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QString& workspaceDir)
 {
     _spec = spec;
@@ -97,8 +244,12 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
     _claimedSha256.clear();
     _claimedResultSize = -1;
     _resultMessageSeen = false;
+    _helloSeen = false;
+    _terminalSeen = false;
+    _protocolFailed = false;
+    _errorTerminalSeen = false;
+    _finishedHandled = false;
     _state = App::GeometryJobState::Running;
-    // Manager-owned workspaces must outlive successful results until releaseJobArtifacts().
     _retainWorkspaceOnDestroy = !workspaceDir.isEmpty();
 
     if (!workspaceDir.isEmpty()) {
@@ -106,7 +257,6 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
         QDir().mkpath(_tempDir);
     }
     else {
-        // Set up workspace directory under UserCache
         QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
         if (cacheDir.isEmpty()) {
             cacheDir = QDir::tempPath();
@@ -115,44 +265,94 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
         QDir().mkpath(_tempDir);
     }
 
-    // Write request.json
-    QJsonObject reqObj;
-    reqObj["jobId"] = static_cast<qint64>(_spec.id);
-    reqObj["documentIncarnation"] = static_cast<qint64>(_spec.document.runtimeIncarnation);
-    reqObj["modelGeneration"] = static_cast<qint64>(_spec.document.modelGeneration);
-    reqObj["targetObjectId"] = static_cast<qint64>(_spec.target.objectId);
-    reqObj["targetObjectName"] = QString::fromStdString(_spec.target.internalName);
-    if (_spec.task) {
-        reqObj["operationType"] = QString::fromStdString(_spec.task->operationType());
-        reqObj["codecVersion"] = static_cast<qint64>(_spec.task->codecVersion());
+    App::GeometryRequestWorkspace workspace(_tempDir);
+    auto& reqObj = workspace.requestObject();
+    std::string jobIdWire;
+    if (!App::formatGeometryJobId(_spec.id, jobIdWire)) {
+        _state = App::GeometryJobState::Failed;
+        _result.success = false;
+        _result.errorCode = "InvalidJobId";
+        _result.errorMessage = "Launched GeometryJobId must be nonzero";
+        return false;
     }
-    reqObj["tempDir"] = _tempDir;
-    // Child must report a workspace-relative result path; never trust absolute child paths.
-    reqObj["resultPath"] = QStringLiteral("result.fcg");
-
-    // Write request.json atomically: request.json.tmp → request.json
-    QString reqPath = _tempDir + "/request.json";
-    QString reqTmpPath = reqPath + ".tmp";
-    {
-        QFile reqFile(reqTmpPath);
-        if (!reqFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    reqObj.insert(QStringLiteral("jobId"), QString::fromStdString(jobIdWire));
+    reqObj.insert(QStringLiteral("documentIncarnation"),
+                   QString::number(_spec.document.runtimeIncarnation));
+    reqObj.insert(QStringLiteral("modelGeneration"),
+                   QString::number(_spec.document.modelGeneration));
+    reqObj.insert(QStringLiteral("targetObjectId"),
+                   QString::number(static_cast<qulonglong>(_spec.target.objectId)));
+    reqObj.insert(QStringLiteral("targetObjectName"),
+                   QString::fromStdString(_spec.target.internalName));
+    if (_spec.task) {
+        reqObj.insert(QStringLiteral("operationType"),
+                      QString::fromStdString(_spec.task->operationType()));
+        reqObj.insert(QStringLiteral("codecVersion"),
+                      static_cast<qint64>(_spec.task->codecVersion()));
+        // Drop any stale publication before staging (reused manager workspaces).
+        if (!workspace.clearPublishedRequest()) {
+            _state = App::GeometryJobState::Failed;
+            _result.success = false;
+            _result.errorCode = workspace.failureCode().empty() ? "StaleRequestCleanupFailed"
+                                                                : workspace.failureCode();
+            _result.errorMessage = workspace.failureMessage().empty()
+                ? "Failed to remove stale request.json before staging"
+                : workspace.failureMessage();
             return false;
         }
-        QJsonDocument doc(reqObj);
-        reqFile.write(doc.toJson());
-        reqFile.close();
+        const App::GeometryArchiveWriteResult staged = _spec.task->writeArchive(workspace);
+        if (!staged.success || workspace.hasFailed()) {
+            workspace.removePublishedRequestBestEffort();
+            _state = App::GeometryJobState::Failed;
+            _result.success = false;
+            _result.errorCode = !staged.errorCode.empty()
+                ? staged.errorCode
+                : (workspace.failureCode().empty() ? "RequestSerializeFailed"
+                                                   : workspace.failureCode());
+            _result.errorMessage = !staged.errorMessage.empty()
+                ? staged.errorMessage
+                : (workspace.failureMessage().empty()
+                       ? "Task writeArchive failed before request publication"
+                       : workspace.failureMessage());
+            if (_result.errorCode.empty()) {
+                _result.errorCode = "RequestSerializeFailed";
+            }
+            return false;
+        }
     }
-    QFile::remove(reqPath);
-    if (!QFile::rename(reqTmpPath, reqPath)) {
+    reqObj.insert(QStringLiteral("tempDir"), _tempDir);
+    reqObj.insert(QStringLiteral("resultPath"), QStringLiteral("result.fcg"));
+    if (_spec.deadline.time_since_epoch().count() != 0) {
+        const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 _spec.deadline.time_since_epoch())
+                                 .count();
+        reqObj.insert(QStringLiteral("deadlineEpochMs"), static_cast<qint64>(epochMs));
+    }
+
+    if (!workspace.publishRequestJson()) {
+        _state = App::GeometryJobState::Failed;
+        _result.success = false;
+        _result.errorCode = workspace.failureCode().empty() ? "RequestPublishFailed"
+                                                            : workspace.failureCode();
+        _result.errorMessage = workspace.failureMessage().empty()
+            ? "Failed to atomically publish request.json"
+            : workspace.failureMessage();
         return false;
     }
 
-    // Determine FreeCADCmd executable and GeometryWorker.py script path
+    const QString reqPath = _tempDir + QStringLiteral("/request.json");
+
     QString appDir = QCoreApplication::applicationDirPath();
     QString cmdPath = appDir + "/FreeCADCmd";
 #if defined(Q_OS_WIN)
     cmdPath += ".exe";
 #endif
+    if (!QFileInfo::exists(cmdPath)) {
+        cmdPath = appDir + QStringLiteral("/../bin/FreeCADCmd");
+#if defined(Q_OS_WIN)
+        cmdPath += QStringLiteral(".exe");
+#endif
+    }
     if (!QFileInfo::exists(cmdPath)) {
         cmdPath = QCoreApplication::applicationFilePath();
     }
@@ -163,14 +363,17 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
     }
 
     QStringList args;
-    args << "--safe-mode" << scriptPath << reqPath;
+    args << "--safe-mode" << scriptPath << "--pass" << reqPath;
 
     _process->setWorkingDirectory(_tempDir);
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("FCGEO_LAUNCHED_JOB_ID"), QString::fromStdString(jobIdWire));
+        _process->setProcessEnvironment(env);
+    }
 #if defined(Q_OS_UNIX)
-    // Put the child in its own process group so cancel can kill the whole tree.
     _process->setChildProcessModifier([]() {
         if (::setpgid(0, 0) != 0) {
-            // Best-effort; launch still proceeds if setpgid fails.
         }
     });
 #endif
@@ -183,13 +386,13 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
         return false;
     }
 
-    // Calculate deadline duration
     auto now = std::chrono::steady_clock::now();
     if (_spec.deadline > now) {
         auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(_spec.deadline - now);
         _deadlineTimer->start(static_cast<int>(dur.count()));
-    } else {
-        _deadlineTimer->start(120000); // Default 120s
+    }
+    else {
+        _deadlineTimer->start(120000);
     }
 
     return true;
@@ -205,12 +408,10 @@ void GeometryWorkerProcess::cancelJob(App::CancelReason /*reason*/)
     _cancelPhase = 1;
     _state = App::GeometryJobState::Cancelling;
 
-    // 1. Cooperative cancel signal over process stdin
     if (_process && _process->state() != QProcess::NotRunning) {
         _process->write("FCGEO/1 {\"type\":\"cancel\"}\n");
     }
 
-    // 2. Schedule QProcess::terminate after 250 ms
     _cancelTimer->start(250);
 }
 
@@ -231,9 +432,9 @@ void GeometryWorkerProcess::onCooperativeCancelTimeout()
             _process->terminate();
 #endif
         }
-        // 3. Schedule process-group / process kill after another 750 ms (total 1 sec)
         _cancelTimer->start(750);
-    } else if (_cancelPhase == 2) {
+    }
+    else if (_cancelPhase == 2) {
         _cancelTimer->stop();
         if (_process && _process->state() != QProcess::NotRunning) {
 #if defined(Q_OS_UNIX)
@@ -259,7 +460,7 @@ bool GeometryWorkerProcess::isRunning() const
 void GeometryWorkerProcess::onReadyReadStdout()
 {
     _stdoutBuffer += QString::fromUtf8(_process->readAllStandardOutput());
-    int idx;
+    int idx = 0;
     while ((idx = _stdoutBuffer.indexOf('\n')) != -1) {
         QString line = _stdoutBuffer.left(idx).trimmed();
         _stdoutBuffer.remove(0, idx + 1);
@@ -269,50 +470,226 @@ void GeometryWorkerProcess::onReadyReadStdout()
 
 void GeometryWorkerProcess::onReadyReadStderr()
 {
-    QByteArray errData = _process->readAllStandardError();
+    (void)_process->readAllStandardError();
+}
+
+void GeometryWorkerProcess::injectStdoutLine(const QString& line)
+{
+    processLine(line);
+}
+
+void GeometryWorkerProcess::injectProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    onProcessFinished(exitCode, exitStatus);
+}
+
+void GeometryWorkerProcess::markProtocolFailed(const std::string& errorCode,
+                                               const std::string& errorMessage)
+{
+    _protocolFailed = true;
+    _result.success = false;
+    _result.errorCode = errorCode;
+    _result.errorMessage = errorMessage;
 }
 
 void GeometryWorkerProcess::processLine(const QString& line)
 {
-    if (!line.startsWith("FCGEO/1 ")) {
+    if (!line.startsWith(QStringLiteral("FCGEO/1 "))) {
         return;
     }
 
-    QString jsonStr = line.mid(8);
-    QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8());
-    if (!doc.isObject()) {
+    if (_protocolFailed) {
         return;
     }
 
-    QJsonObject obj = doc.object();
-    QString type = obj["type"].toString();
+    if (_terminalSeen) {
+        markProtocolFailed("PostTerminalMessage",
+                           "Worker emitted a control message after a terminal result/error");
+        return;
+    }
 
-    if (type == "progress") {
-        double fraction = obj["fraction"].toDouble();
-        QString phase = obj["phase"].toString();
-        Q_EMIT progressUpdated(fraction, phase);
-    } else if (type == "result") {
-        // Defer path/size/digest trust checks until the process exits normally.
-        _resultMessageSeen = true;
-        _claimedResultPath = obj.value(QStringLiteral("path")).toString();
-        _claimedResultSize = obj.value(QStringLiteral("size")).toVariant().toLongLong();
-        _claimedSha256 = obj.value(QStringLiteral("sha256")).toString().trimmed().toLower();
-        _result.executionTimeSeconds = obj.value(QStringLiteral("executionTime")).toDouble();
-        if (obj.contains(QStringLiteral("jobId"))) {
-            const auto reportedJobId = static_cast<App::GeometryJobId>(
-                obj.value(QStringLiteral("jobId")).toVariant().toULongLong());
-            if (reportedJobId != 0 && reportedJobId != _spec.id) {
-                _resultMessageSeen = false;
-                _result.success = false;
-                _result.errorCode = "JobIdMismatch";
-                _result.errorMessage = "Result jobId does not match the launched job";
-            }
+    const QString jsonStr = line.mid(8);
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        markProtocolFailed("MalformedControlJson", "Worker control line is not valid JSON");
+        return;
+    }
+
+    const QJsonObject obj = doc.object();
+    std::string errorCode;
+    std::string errorMessage;
+    QString type;
+    if (!requireJsonString(obj, "type", type, 64, errorCode, errorMessage)) {
+        markProtocolFailed(errorCode, errorMessage);
+        return;
+    }
+
+    if (type == QStringLiteral("hello")) {
+        if (_helloSeen) {
+            markProtocolFailed("DuplicateHello", "Worker emitted more than one hello");
+            return;
         }
-    } else if (type == "error") {
-        _result.success = false;
-        _result.errorCode = obj["code"].toString().toStdString();
-        _result.errorMessage = obj["message"].toString().toStdString();
+        QString protocol;
+        QString version;
+        if (!requireJsonString(obj, "protocol", protocol, 32, errorCode, errorMessage)
+            || !requireJsonString(obj, "version", version, 32, errorCode, errorMessage)) {
+            markProtocolFailed(errorCode, errorMessage);
+            return;
+        }
+        if (protocol != QStringLiteral("FCGEO/1")) {
+            markProtocolFailed("ProtocolMismatch", "Worker hello protocol is unsupported");
+            return;
+        }
+        if (version != QStringLiteral("1.0")) {
+            markProtocolFailed("ProtocolVersionMismatch",
+                               "Worker hello version is unsupported");
+            return;
+        }
+        _helloSeen = true;
+        return;
     }
+
+    if (!_helloSeen) {
+        markProtocolFailed("MissingHello",
+                           "Worker emitted progress/result/error before hello");
+        return;
+    }
+
+    if (type == QStringLiteral("progress")) {
+        double fraction = 0.0;
+        QString phase;
+        if (!requireJsonNumber(obj, "fraction", fraction, errorCode, errorMessage)
+            || !requireJsonString(obj, "phase", phase, kMaxPhaseChars, errorCode, errorMessage)) {
+            markProtocolFailed(errorCode, errorMessage);
+            return;
+        }
+        if (!isFiniteUnitInterval(fraction)) {
+            markProtocolFailed("InvalidProgressFraction",
+                               "progress.fraction must be finite and in [0, 1]");
+            return;
+        }
+        Q_EMIT progressUpdated(fraction, phase);
+        return;
+    }
+
+    if (type == QStringLiteral("result")) {
+        if (_resultMessageSeen || _errorTerminalSeen) {
+            markProtocolFailed("DuplicateTerminal",
+                               "Worker emitted more than one terminal result/error");
+            _terminalSeen = true;
+            return;
+        }
+
+        QString path;
+        QString sha;
+        QString jobIdText;
+        qint64 size = -1;
+        if (!requireJsonString(obj, "path", path, 512, errorCode, errorMessage)
+            || !requireJsonInt64(obj, "size", size, errorCode, errorMessage, kMaxTrustedResultBytes)
+            || !requireJsonString(obj, "sha256", sha, kSha256HexLen, errorCode, errorMessage)
+            || !requireJsonString(obj, "jobId", jobIdText, 32, errorCode, errorMessage)) {
+            markProtocolFailed(errorCode, errorMessage);
+            _terminalSeen = true;
+            return;
+        }
+        App::GeometryJobId jobId = 0;
+        if (!App::parseGeometryJobId(jobIdText.toStdString(), jobId, errorCode, errorMessage)
+            || jobId != _spec.id) {
+            markProtocolFailed(errorCode.empty() ? "JobIdMismatch" : errorCode,
+                               errorMessage.empty()
+                                   ? "Result jobId does not match the launched job"
+                                   : errorMessage);
+            _terminalSeen = true;
+            return;
+        }
+        sha = sha.trimmed().toLower();
+        if (!isHex64(sha)) {
+            markProtocolFailed("InvalidResultDigest",
+                               "Result sha256 must be a 64-character hexadecimal string");
+            _terminalSeen = true;
+            return;
+        }
+        if (size < 0 || size > kMaxTrustedResultBytes) {
+            markProtocolFailed("InvalidResultSize",
+                               "Result size is negative or exceeds the trusted maximum");
+            _terminalSeen = true;
+            return;
+        }
+
+        if (obj.contains(QStringLiteral("executionTime"))) {
+            double execTime = 0.0;
+            if (!requireJsonNumber(obj, "executionTime", execTime, errorCode, errorMessage)) {
+                markProtocolFailed(errorCode, errorMessage);
+                _terminalSeen = true;
+                return;
+            }
+            if (!(std::isfinite(execTime) && execTime >= 0.0
+                  && execTime <= kMaxExecutionTimeSeconds)) {
+                markProtocolFailed("InvalidExecutionTime",
+                                   "executionTime must be finite, non-negative, and <= 86400");
+                _terminalSeen = true;
+                return;
+            }
+            _result.executionTimeSeconds = execTime;
+        }
+
+        _resultMessageSeen = true;
+        _terminalSeen = true;
+        _claimedResultPath = path;
+        _claimedResultSize = size;
+        _claimedSha256 = sha;
+        return;
+    }
+
+    if (type == QStringLiteral("error")) {
+        if (_resultMessageSeen || _errorTerminalSeen) {
+            markProtocolFailed("DuplicateTerminal",
+                               "Worker emitted more than one terminal result/error");
+            _terminalSeen = true;
+            return;
+        }
+        QString code;
+        QString message;
+        QString jobIdText;
+        if (!requireJsonString(obj, "code", code, kMaxErrorCodeChars, errorCode, errorMessage)
+            || !requireJsonString(obj,
+                                  "message",
+                                  message,
+                                  kMaxErrorMessageChars,
+                                  errorCode,
+                                  errorMessage)
+            || !requireJsonString(obj, "jobId", jobIdText, 32, errorCode, errorMessage)) {
+            markProtocolFailed(errorCode, errorMessage);
+            _terminalSeen = true;
+            return;
+        }
+        if (code.trimmed().isEmpty() || message.trimmed().isEmpty()) {
+            markProtocolFailed("EmptyErrorTerminal",
+                               "error.code and error.message must be non-empty");
+            _terminalSeen = true;
+            return;
+        }
+        App::GeometryJobId jobId = 0;
+        if (!App::parseGeometryJobId(jobIdText.toStdString(), jobId, errorCode, errorMessage)
+            || jobId != _spec.id) {
+            markProtocolFailed(errorCode.empty() ? "JobIdMismatch" : errorCode,
+                               errorMessage.empty()
+                                   ? "Error jobId does not match the launched job"
+                                   : errorMessage);
+            _terminalSeen = true;
+            return;
+        }
+        _errorTerminalSeen = true;
+        _terminalSeen = true;
+        _result.success = false;
+        _result.errorCode = code.toStdString();
+        _result.errorMessage = message.toStdString();
+        return;
+    }
+
+    markProtocolFailed("UnknownControlType",
+                       "Worker emitted an unsupported control message type");
 }
 
 bool GeometryWorkerProcess::acceptTrustedResult(const QString& relativePath,
@@ -368,7 +745,7 @@ bool GeometryWorkerProcess::acceptTrustedResult(const QString& relativePath,
         return false;
     }
     const QByteArray digest =
-        QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex();
+        QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex().toLower();
     file.close();
 
     if (claimedSha256.isEmpty()) {
@@ -385,6 +762,25 @@ bool GeometryWorkerProcess::acceptTrustedResult(const QString& relativePath,
     }
 
     _result.resultArchivePath = absolutePath.toStdString();
+    return true;
+}
+
+bool GeometryWorkerProcess::decodeTrustedResult(std::string& errorCode, std::string& errorMessage)
+{
+    if (!_spec.task) {
+        errorCode = "MissingTask";
+        errorMessage = "Cannot decode result without a typed DetachedGeometryTask";
+        return false;
+    }
+    _state = App::GeometryJobState::Decoding;
+    const App::DetachedGeometryResult decoded =
+        _spec.task->decodeResultArchive(_result.resultArchivePath);
+    if (!decoded.success) {
+        errorCode = decoded.errorCode.empty() ? "ResultDecodeFailed" : decoded.errorCode;
+        errorMessage = decoded.errorMessage.empty() ? "Task-aware result decode failed"
+                                                    : decoded.errorMessage;
+        return false;
+    }
     return true;
 }
 
@@ -412,6 +808,10 @@ void GeometryWorkerProcess::onTimeout()
 
 void GeometryWorkerProcess::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
+    if (_finishedHandled) {
+        return;
+    }
+    _finishedHandled = true;
     _deadlineTimer->stop();
     _cancelTimer->stop();
 
@@ -420,14 +820,20 @@ void GeometryWorkerProcess::onProcessFinished(int exitCode, QProcess::ExitStatus
         _result.success = false;
         _result.errorCode = "Cancelled";
         _result.errorMessage = "Job was cancelled";
-    } else if (exitStatus == QProcess::CrashExit) {
+    }
+    else if (exitStatus == QProcess::CrashExit) {
         _state = App::GeometryJobState::Crashed;
         _result.success = false;
         _result.errorCode = "Crashed";
-        _result.errorMessage = QString("Worker process crashed with exit code %1").arg(exitCode).toStdString();
-    } else if (_resultMessageSeen && exitCode == 0
-               && _result.errorCode != "JobIdMismatch") {
-        // Trust only workspace-relative path + size + digest; never absolute child paths.
+        _result.errorMessage =
+            QString("Worker process crashed with exit code %1").arg(exitCode).toStdString();
+    }
+    else if (_protocolFailed) {
+        _state = App::GeometryJobState::Failed;
+        _result.success = false;
+        // errorCode/message already set by markProtocolFailed
+    }
+    else if (_resultMessageSeen && exitCode == 0 && _helloSeen && !_errorTerminalSeen) {
         std::string errorCode;
         std::string errorMessage;
         if (!acceptTrustedResult(_claimedResultPath,
@@ -440,29 +846,45 @@ void GeometryWorkerProcess::onProcessFinished(int exitCode, QProcess::ExitStatus
             _result.errorCode = errorCode;
             _result.errorMessage = errorMessage;
         }
+        else if (!decodeTrustedResult(errorCode, errorMessage)) {
+            _state = App::GeometryJobState::Failed;
+            _result.success = false;
+            _result.errorCode = errorCode;
+            _result.errorMessage = errorMessage;
+        }
         else {
             _result.success = true;
             _state = App::GeometryJobState::ReadyToCommit;
         }
-    } else if (_resultMessageSeen && exitCode != 0) {
+    }
+    else if (_resultMessageSeen && exitCode != 0) {
         _state = App::GeometryJobState::Failed;
         _result.success = false;
         _result.errorCode = "NonZeroExitAfterResult";
         _result.errorMessage =
             QString("Worker emitted result but exited with code %1").arg(exitCode).toStdString();
-    } else if (_state != App::GeometryJobState::TimedOut) {
+    }
+    else if (_errorTerminalSeen && exitCode != 0) {
         _state = App::GeometryJobState::Failed;
+        _result.success = false;
+        // Keep child error code/message.
+    }
+    else if (_state != App::GeometryJobState::TimedOut) {
+        _state = App::GeometryJobState::Failed;
+        _result.success = false;
         if (_result.errorCode.empty()) {
-            _result.success = false;
-            _result.errorCode = "MissingResult";
-            _result.errorMessage = "Worker exited without a trusted result message";
+            if (!_helloSeen) {
+                _result.errorCode = "MissingHello";
+                _result.errorMessage = "Worker exited without a valid hello message";
+            }
+            else {
+                _result.errorCode = "MissingTerminal";
+                _result.errorMessage = "Worker exited without a trusted terminal result/error";
+            }
         }
     }
 
     Q_EMIT jobFinished(_spec.id, _state, _result);
-    // Retain successful result artifacts until decode/commit consumes them.
-    // Manager-owned workspaces are never deleted here (releaseJobArtifacts owns cleanup).
-    // Clean failed/cancelled/crashed local (non-manager) workspaces promptly.
     if (_state != App::GeometryJobState::ReadyToCommit && !_retainWorkspaceOnDestroy) {
         cleanupWorkspace();
     }
@@ -517,8 +939,7 @@ bool launchForManager(const App::GeometryProcessLaunchRequest& req)
                 }
                 App::GeometryJobState deliver = state;
                 if (deliver == App::GeometryJobState::ReadyToCommit) {
-                    // Commit fencing still lands in a later step; expose success as Completed
-                    // so coordinator observers can observe terminal delivery.
+                    // Decode already succeeded; expose Completed until commit fencing lands.
                     deliver = App::GeometryJobState::Completed;
                 }
                 App::GeometryJobManager::instance().setJobState(id, deliver, result);
@@ -535,6 +956,19 @@ bool launchForManager(const App::GeometryProcessLaunchRequest& req)
             {
                 std::lock_guard<std::mutex> lock(workerMapMutex());
                 workerMap().erase(req.id);
+            }
+            // startJob already emitted Failed when serialization/publish fails.
+            if (worker->state() != App::GeometryJobState::Failed) {
+                App::DetachedGeometryResult fail;
+                fail.success = false;
+                fail.errorCode = "ProcessStartFailed";
+                fail.errorMessage = "GeometryWorkerProcess failed to start";
+                App::GeometryJobManager::instance().setJobState(
+                    req.id, App::GeometryJobState::Failed, fail);
+            }
+            else {
+                App::GeometryJobManager::instance().setJobState(
+                    req.id, worker->state(), worker->result());
             }
             worker->deleteLater();
             return false;

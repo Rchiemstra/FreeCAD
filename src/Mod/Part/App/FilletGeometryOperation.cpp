@@ -176,9 +176,13 @@ App::DetachedGeometryResult FilletGeometryOperation::run(App::GeometryWorkerCont
     return result;
 }
 
-void FilletGeometryOperation::writeArchive(App::GeometryArchiveWriter& writer) const
+App::GeometryArchiveWriteResult
+FilletGeometryOperation::writeArchive(App::GeometryArchiveWriter& writer) const
 {
     (void)writer;
+    App::GeometryArchiveWriteResult out;
+    out.success = true; // Typed Fillet codec not yet implemented; no operands to stage.
+    return out;
 }
 
 } // namespace Part

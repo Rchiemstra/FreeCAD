@@ -85,7 +85,34 @@ public:
     static HasherDeltaMergeResult commitHasherDelta(App::StringHasherRef hasher,
                                                     const StringHasherSnapshot& delta);
 
+    /**
+     * Rebind @p bundle's ElementMap/SIDs onto @p hasher by save/restore clone.
+     * Caller must already have materialized/merged @p bundle.hasherSnapshot into @p hasher.
+     */
+    static bool rebindBundleToHasher(FrozenTopoShapeBundle& bundle, App::StringHasherRef hasher);
+
+    /**
+     * Merge authenticated base/tool closures into one fresh worker hasher and rebind both
+     * operands so every map/SID/TopoShape::Hasher refers to that same hasher.
+     */
+    static bool materializeOperandsOntoSharedHasher(const FrozenTopoShapeBundle& baseIn,
+                                                    const FrozenTopoShapeBundle& toolIn,
+                                                    App::StringHasherRef workerHasher,
+                                                    FrozenTopoShapeBundle& baseOut,
+                                                    FrozenTopoShapeBundle& toolOut,
+                                                    std::string& errorCode,
+                                                    std::string& errorMessage);
+
     static std::string calculateSha256(const std::vector<uint8_t>& data);
+    static std::string calculateSha256File(const std::string& path);
+
+    /// Checked int64 → long narrowing used by FCG1 hasher closure decode.
+    static bool int64ToLongChecked(int64_t value, long& out);
+
+#ifdef FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+    /// Test-only: force live closure capture failure inside writeArchive.
+    static void setTestForceClosureCaptureFailure(bool enabled);
+#endif
 };
 
 } // namespace Part

@@ -25,8 +25,12 @@
 #include <QHash>
 #include <algorithm>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <unordered_set>
+#include <unordered_map>
+#include <map>
+#include <string>
 
 #include <Base/Console.h>
 #include <Base/Reader.h>
@@ -598,10 +602,17 @@ void StringHasher::saveStream(std::ostream& stream) const
             stream << '\n';
         }
         else {
-            // Reaching here means the string may contain space and newlines
-            // We rely on OutputStream (i.e. textStreamWrapper) to save the string.
+            // Hashed/binary payloads are raw octets and must round-trip as base64;
+            // restoreStreamNew() always decodes them with fromBase64(). Plaintext may
+            // contain spaces/newlines, so we rely on TextOutputStream for both cases.
             stream << ' ';
-            textStreamWrapper << d._data.constData();
+            if (d.isHashed() || d.isBinary()) {
+                const QByteArray encoded = d._data.toBase64();
+                textStreamWrapper << std::string(encoded.constData(), encoded.size());
+            }
+            else {
+                textStreamWrapper << std::string(d._data.constData(), d._data.size());
+            }
         }
     }
 }
@@ -932,25 +943,53 @@ void StringHasher::restoreMarks(const std::unordered_map<long, bool>& marks) con
     }
 }
 
+StringHasherMergeResult StringHasher::materializeExactClosure(const StringHasherClosure& closure)
+{
+    StringHasherMergeResult result;
+    if (size() != 0 || _revision != 0 || _reservedHighWater != 0) {
+        result.errorCode = "HasherNotEmpty";
+        result.errorMessage = "materializeExactClosure requires a fresh empty hasher";
+        return result;
+    }
+    if (closure.threshold < 0) {
+        result.errorCode = "InvalidThreshold";
+        result.errorMessage = "Hasher threshold metadata must be non-negative";
+        return result;
+    }
+    return commitExactClosure(closure, /*bootstrap=*/true, /*expectedRevision=*/0);
+}
+
 StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosure& closure,
                                                         uint64_t expectedRevision)
 {
     StringHasherMergeResult result;
-    // When expectedRevision is 0, compare against this hasher's live revision so a
-    // stale snapshot cannot merge after the document hasher has advanced.
-    // A fresh hasher still at revision 0 may bootstrap any closure revision
-    // (createBundle / private clone path).
+    if (closure.threshold < 0) {
+        result.errorCode = "InvalidThreshold";
+        result.errorMessage = "Hasher threshold metadata must be non-negative";
+        return result;
+    }
+    // Canonical document merge: worker must not silently change hashing policy.
+    if (closure.threshold != getThreshold()) {
+        result.errorCode = "ThresholdMismatch";
+        result.errorMessage = "Hasher threshold does not match the canonical document hasher";
+        return result;
+    }
+
     const uint64_t expected = (expectedRevision != 0) ? expectedRevision : _revision;
     if (expected != 0 && closure.revision != 0 && closure.revision != expected) {
         result.errorCode = "RevisionMismatch";
         result.errorMessage = "Hasher revision does not match expected document revision";
         return result;
     }
+    return commitExactClosure(closure, /*bootstrap=*/false, expected);
+}
 
-    // Restore hashing policy before inserts so subsequent Hashable lookups match.
-    setThreshold(closure.threshold);
+StringHasherMergeResult StringHasher::commitExactClosure(const StringHasherClosure& closure,
+                                                         bool bootstrap,
+                                                         uint64_t /*expectedRevision*/)
+{
+    StringHasherMergeResult result;
 
-    // Related IDs must already exist; process ascending by numeric ID.
     std::vector<const StringHasherClosureEntry*> ordered;
     ordered.reserve(closure.entries.size());
     for (const auto& entry : closure.entries) {
@@ -961,29 +1000,39 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
         return a->id < b->id;
     });
 
-    // Reject duplicate IDs inside the closure before any mutation.
+    // Preflight uniqueness: numeric ID and value identity (data, postfix).
     std::unordered_set<long> seenIds;
     seenIds.reserve(ordered.size());
-    for (const auto* entryPtr : ordered) {
-        if (!seenIds.insert(entryPtr->id).second) {
-            result.errorCode = "DuplicateId";
-            result.errorMessage = "Closure contains duplicate StringID values";
-            return result;
+    struct ValueIdentity
+    {
+        QByteArray data;
+        QByteArray postfix;
+        bool operator==(const ValueIdentity& other) const
+        {
+            return data == other.data && postfix == other.postfix;
         }
-        if (closure.highWaterId != 0
-            && entryPtr->id > 0
-            && static_cast<uint64_t>(entryPtr->id) > closure.highWaterId) {
-            result.errorCode = "IdAboveHighWater";
-            result.errorMessage = "Closure contains a StringID above the authenticated high-water";
-            return result;
+    };
+    struct ValueIdentityHash
+    {
+        size_t operator()(const ValueIdentity& value) const noexcept
+        {
+            // Length-prefixed mix so embedded NULs cannot alias distinct pairs.
+            size_t h = std::hash<int>{}(value.data.size());
+            h ^= std::hash<int>{}(value.postfix.size()) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            const auto mixBytes = [&h](const QByteArray& bytes) {
+                for (int i = 0; i < bytes.size(); ++i) {
+                    h ^= static_cast<unsigned char>(bytes.at(i))
+                        + 0x9e3779b9 + (h << 6) + (h >> 2);
+                }
+            };
+            mixBytes(value.data);
+            mixBytes(value.postfix);
+            return h;
         }
-    }
+    };
+    std::unordered_map<ValueIdentity, long, ValueIdentityHash> valueToId;
+    valueToId.reserve(ordered.size());
 
-    std::unordered_set<long> pendingIds = seenIds;
-
-    // Phase 1: validate only. Do not mutate the hasher until every entry is accepted.
-    std::vector<const StringHasherClosureEntry*> toInsert;
-    toInsert.reserve(ordered.size());
     for (const auto* entryPtr : ordered) {
         const auto& entry = *entryPtr;
         if (entry.id <= 0) {
@@ -991,6 +1040,36 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
             result.errorMessage = "Closure contains a non-positive StringID";
             return result;
         }
+        if (!seenIds.insert(entry.id).second) {
+            result.errorCode = "DuplicateId";
+            result.errorMessage = "Closure contains duplicate StringID values";
+            return result;
+        }
+        if (closure.highWaterId != 0
+            && static_cast<uint64_t>(entry.id) > closure.highWaterId) {
+            result.errorCode = "IdAboveHighWater";
+            result.errorMessage = "Closure contains a StringID above the authenticated high-water";
+            return result;
+        }
+        const ValueIdentity key {entry.data, entry.postfix};
+        auto vit = valueToId.find(key);
+        if (vit == valueToId.end()) {
+            valueToId.emplace(key, entry.id);
+        }
+        else if (vit->second != entry.id) {
+            result.errorCode = "ValueCollision";
+            result.errorMessage =
+                "Closure assigns the same data/postfix to different StringID values";
+            return result;
+        }
+    }
+
+    std::unordered_set<long> pendingIds = seenIds;
+    std::vector<const StringHasherClosureEntry*> toInsert;
+    toInsert.reserve(ordered.size());
+
+    for (const auto* entryPtr : ordered) {
+        const auto& entry = *entryPtr;
 
         auto existing = getID(entry.id);
         if (existing) {
@@ -1018,11 +1097,28 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
             continue;
         }
 
+        // Value already owned by a different ID on the canonical hasher.
+        {
+            StringID probe(0, entry.data, static_cast<StringID::Flag>(entry.flags));
+            probe._postfix = entry.postfix;
+            auto lit = _hashes->left.find(&probe);
+            if (lit != _hashes->left.end() && lit->first && lit->first->value() != entry.id) {
+                result.errorCode = "ValueCollision";
+                result.errorMessage =
+                    "Exact-ID hasher delta reassigns an existing value under a different ID";
+                return result;
+            }
+        }
+
         for (long relatedId : entry.relatedIds) {
+            if (relatedId <= 0) {
+                result.errorCode = "InvalidRelatedId";
+                result.errorMessage = "Closure references a non-positive related StringID";
+                return result;
+            }
             if (getID(relatedId)) {
                 continue;
             }
-            // Related IDs may appear earlier in this same ordered closure.
             if (relatedId < entry.id && pendingIds.count(relatedId) != 0U) {
                 continue;
             }
@@ -1033,7 +1129,37 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
         toInsert.push_back(entryPtr);
     }
 
-    // Phase 2: commit inserts only after full validation.
+    // Commit phase. Track mutations for rollback if insert fails unexpectedly.
+    const int thresholdBefore = getThreshold();
+    const uint64_t revisionBefore = _revision;
+    const long highWaterBefore = _reservedHighWater;
+    std::vector<long> insertedIds;
+    insertedIds.reserve(toInsert.size());
+
+    auto rollback = [&]() {
+        for (long id : insertedIds) {
+            auto it = _hashes->right.find(id);
+            if (it == _hashes->right.end()) {
+                continue;
+            }
+            StringID* sid = it->second;
+            _hashes->right.erase(it);
+            if (sid) {
+                _hashes->left.erase(sid);
+                sid->_hasher = nullptr;
+                sid->unref();
+            }
+        }
+        insertedIds.clear();
+        _hashes->Threshold = thresholdBefore;
+        _revision = revisionBefore;
+        _reservedHighWater = highWaterBefore;
+    };
+
+    if (bootstrap) {
+        _hashes->Threshold = closure.threshold;
+    }
+
     for (const auto* entryPtr : toInsert) {
         const auto& entry = *entryPtr;
         QVector<StringIDRef> related;
@@ -1041,9 +1167,10 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
         for (long relatedId : entry.relatedIds) {
             auto sid = getID(relatedId);
             if (!sid) {
+                rollback();
                 result.errorCode = "InsertFailed";
                 result.errorMessage = "Related StringID disappeared during exact-ID commit";
-                result.success = false;
+                result.appendedCount = 0;
                 return result;
             }
             related.push_back(sid);
@@ -1055,18 +1182,20 @@ StringHasherMergeResult StringHasher::mergeExactClosure(const StringHasherClosur
         sid._sid->_sids = related;
         auto* inserted = insert(sid);
         if (!inserted || inserted != sid._sid) {
+            rollback();
             result.errorCode = "InsertFailed";
             result.errorMessage = "Failed to insert exact-ID StringID into hasher";
-            result.success = false;
+            result.appendedCount = 0;
             return result;
         }
+        insertedIds.push_back(entry.id);
         ++result.appendedCount;
     }
 
     if (closure.highWaterId != 0) {
         reserveHighWater(closure.highWaterId);
     }
-    if (closure.revision != 0) {
+    if (bootstrap && closure.revision != 0) {
         _revision = closure.revision;
     }
     result.success = true;

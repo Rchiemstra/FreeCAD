@@ -5,8 +5,74 @@
 #include "DocumentObject.h"
 #include "StringHasher.h"
 
+#include <charconv>
+#include <system_error>
+
 namespace App
 {
+
+bool formatGeometryJobId(GeometryJobId id, std::string& out)
+{
+    if (id == 0) {
+        out.clear();
+        return false;
+    }
+    out = std::to_string(id);
+    return true;
+}
+
+bool parseGeometryJobId(const std::string& text,
+                        GeometryJobId& out,
+                        std::string& errorCode,
+                        std::string& errorMessage)
+{
+    out = 0;
+    if (text.empty()) {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId must be a non-empty canonical decimal string";
+        return false;
+    }
+    if (text[0] == '+' || text[0] == '-') {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId must not be signed";
+        return false;
+    }
+    for (char ch : text) {
+        if (ch < '0' || ch > '9') {
+            errorCode = "InvalidJobId";
+            errorMessage = "jobId must be a decimal digit string";
+            return false;
+        }
+    }
+    if (text.size() > 1 && text[0] == '0') {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId must not have leading zeros";
+        return false;
+    }
+
+    GeometryJobId value = 0;
+    const auto* begin = text.data();
+    const auto* end = text.data() + text.size();
+    const auto result = std::from_chars(begin, end, value);
+    if (result.ec != std::errc {} || result.ptr != end) {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId overflows uint64_t or is not a canonical decimal";
+        return false;
+    }
+    if (value == 0) {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId must be nonzero";
+        return false;
+    }
+    // Reject non-canonical forms that from_chars accepted (defensive).
+    if (std::to_string(value) != text) {
+        errorCode = "InvalidJobId";
+        errorMessage = "jobId is not in canonical decimal form";
+        return false;
+    }
+    out = value;
+    return true;
+}
 
 std::string makeGeometryInputFingerprint(const DetachedGeometryTask* task)
 {

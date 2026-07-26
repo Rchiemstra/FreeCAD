@@ -6,6 +6,8 @@
 #include <App/GeometryJob.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
 
+#include <QJsonObject>
+
 #include <memory>
 #include <string>
 
@@ -33,7 +35,28 @@ public:
     App::GeometryOperationTraits traits() const override;
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;
-    void writeArchive(App::GeometryArchiveWriter& writer) const override;
+    App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter& writer) const override;
+    App::DetachedGeometryResult decodeResultArchive(const std::string& absolutePath) const override;
+
+    /// Decode a typed Boolean request from workspace-relative archives.
+    static std::shared_ptr<BooleanGeometryOperation>
+    decodeFromRequest(const QJsonObject& request,
+                      const QString& workspaceDir,
+                      std::string& errorCode,
+                      std::string& errorMessage);
+
+    BooleanType booleanType() const
+    {
+        return _type;
+    }
+    const FrozenTopoShapeBundle& baseBundle() const
+    {
+        return _base;
+    }
+    const FrozenTopoShapeBundle& toolBundle() const
+    {
+        return _tool;
+    }
 
 private:
     BooleanType _type {BooleanType::Fuse};

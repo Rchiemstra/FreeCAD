@@ -12,6 +12,7 @@ add_executable(App_tests_run
         DocumentObject.cpp
         DocumentObserver.cpp
         TestGeometryJob.cpp
+        TestGeometryRequestWorkspace.cpp
         Expression.cpp
 
         ExpressionParser.cpp

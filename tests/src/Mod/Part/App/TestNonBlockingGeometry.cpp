@@ -8,6 +8,7 @@
 #include <Mod/Part/App/GeometryWorkerRegistry.h>
 #include <App/ElementMap.h>
 #include <App/GeometryJobManager.h>
+#include <App/GeometryRequestWorkspace.h>
 #include <App/IndexedName.h>
 #include <App/MappedName.h>
 #include <App/StringHasher.h>
@@ -19,12 +20,18 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <gp_Pnt.hxx>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <QByteArray>
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <unordered_map>
 
 class NonBlockingGeometryTest : public ::testing::Test
 {
@@ -435,6 +442,156 @@ TEST_F(NonBlockingGeometryTest, NestedAndSharedChildMapsSurviveArchiveRoundTrip)
     }
     EXPECT_GE(outSharedRefs, 2);
     EXPECT_GE(outOtherRefs, 1);
+
+    // Rebind onto a fresh worker hasher must not mutate the source/bundle snapshots.
+    const auto sourceMarksBefore = hasher->snapshotMarks();
+    const auto bundleMarksBefore = inBundle.hasher->snapshotMarks();
+    std::unordered_map<const Data::ElementMap*, unsigned> archiveIdsBefore;
+    inBundle.elementMap->snapshotArchiveIds(archiveIdsBefore);
+    const size_t sourceSizeBefore = hasher->size();
+    const uint64_t sourceRevisionBefore = hasher->getRevision();
+    const int sourceThresholdBefore = hasher->getThreshold();
+    const long sourceHighWaterBefore = hasher->getLastID();
+
+    App::StringHasherRef worker(new App::StringHasher);
+    ASSERT_TRUE(worker->materializeExactClosure(inBundle.hasherSnapshot).success);
+    Part::FrozenTopoShapeBundle rebound = inBundle;
+    ASSERT_TRUE(Part::TopoShapeArchive::rebindBundleToHasher(rebound, worker));
+    EXPECT_EQ(static_cast<App::StringHasher*>(rebound.hasher), static_cast<App::StringHasher*>(worker));
+
+    auto reboundChildren = rebound.elementMap->getChildElements();
+    EXPECT_EQ(reboundChildren.size(), midChildren.size());
+
+    Data::ElementMap* reboundShared = nullptr;
+    Data::ElementMap* reboundOther = nullptr;
+    int reboundSharedRefs = 0;
+    int reboundOtherRefs = 0;
+    for (const auto& child : reboundChildren) {
+        ASSERT_TRUE(child.elementMap) << "rebound child map pointer must be restored";
+        Data::ElementIDRefs sids;
+        auto name = child.elementMap->find(Data::IndexedName("Edge", 1), &sids);
+        ASSERT_TRUE(name);
+        ASSERT_FALSE(sids.empty());
+        for (const auto& sidRef : sids) {
+            EXPECT_TRUE(sidRef.isFromSameHasher(worker))
+                << "rebound SID must reference the worker hasher";
+            const App::StringIDRef resolved = worker->getID(sidRef.value());
+            ASSERT_TRUE(resolved) << "rebound SID must resolve from worker hasher";
+            EXPECT_EQ(resolved.value(), sidRef.value());
+        }
+        const std::string text = sids.front().dataToText();
+        if (text.find("SharedEdge") != std::string::npos) {
+            if (!reboundShared) {
+                reboundShared = child.elementMap.get();
+            }
+            EXPECT_EQ(child.elementMap.get(), reboundShared)
+                << "shared child map must remain a single instance after rebind";
+            if (child.elementMap.get() == reboundShared) {
+                ++reboundSharedRefs;
+            }
+            EXPECT_EQ(child.elementMap->find(Data::IndexedName("Edge", 6), &sids).toString().empty(),
+                      false);
+            EXPECT_NE(sids.front().dataToText().find("SharedEdge"), std::string::npos);
+        }
+        else if (text.find("OtherEdge") != std::string::npos) {
+            if (!reboundOther) {
+                reboundOther = child.elementMap.get();
+            }
+            ++reboundOtherRefs;
+            EXPECT_NE(child.elementMap.get(), reboundShared)
+                << "OtherEdge child must not alias SharedEdge map";
+        }
+    }
+    ASSERT_NE(reboundShared, nullptr);
+    ASSERT_NE(reboundOther, nullptr);
+    EXPECT_NE(reboundShared, reboundOther);
+    EXPECT_GE(reboundSharedRefs, 2);
+    EXPECT_GE(reboundOtherRefs, 1);
+
+    const std::string rebindArchive = (_tempDir->path() + "/child_maps_rebound.fcg").toStdString();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(rebound, rebindArchive));
+    ASSERT_TRUE(Part::TopoShapeArchive::rebindBundleToHasher(rebound, worker));
+    const std::string rebindArchive2 = (_tempDir->path() + "/child_maps_rebound2.fcg").toStdString();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(rebound, rebindArchive2));
+
+    QFile reboundFile(QString::fromStdString(rebindArchive));
+    ASSERT_TRUE(reboundFile.open(QIODevice::ReadOnly));
+    const QByteArray reboundBytes = reboundFile.readAll();
+    reboundFile.close();
+    QFile reboundFile2(QString::fromStdString(rebindArchive2));
+    ASSERT_TRUE(reboundFile2.open(QIODevice::ReadOnly));
+    const QByteArray reboundBytes2 = reboundFile2.readAll();
+    reboundFile2.close();
+    EXPECT_EQ(reboundBytes, reboundBytes2)
+        << "repeat archive write after rebind must be byte-identical";
+
+    EXPECT_EQ(inBundle.hasher->snapshotMarks(), bundleMarksBefore);
+    EXPECT_EQ(hasher->snapshotMarks(), sourceMarksBefore);
+    std::unordered_map<const Data::ElementMap*, unsigned> archiveIdsAfter;
+    inBundle.elementMap->snapshotArchiveIds(archiveIdsAfter);
+    EXPECT_EQ(archiveIdsAfter, archiveIdsBefore);
+    EXPECT_EQ(hasher->size(), sourceSizeBefore);
+    EXPECT_EQ(hasher->getRevision(), sourceRevisionBefore);
+    EXPECT_EQ(hasher->getThreshold(), sourceThresholdBefore);
+    EXPECT_EQ(hasher->getLastID(), sourceHighWaterBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, DuplicatedSharedChildLeavesFailIdentityAssertion)
+{
+    App::StringHasherRef hasher(new App::StringHasher);
+    auto makeLeaf = [&](const char* label, long tag) {
+        auto leaf = std::make_shared<Data::ElementMap>();
+        leaf->hasher = hasher;
+        for (int i = 1; i <= 6; ++i) {
+            Data::IndexedName edge("Edge", i);
+            App::StringIDRef sid =
+                hasher->getID(QByteArray(label) + QByteArray::number(i));
+            if (!sid) {
+                return Data::ElementMapPtr {};
+            }
+            Data::MappedName mapped(sid);
+            Data::ElementIDRefs sids;
+            sids.push_back(sid);
+            leaf->setElementName(edge, mapped, tag, &sids);
+            sid.mark();
+        }
+        return leaf;
+    };
+
+    auto sharedLeafA = makeLeaf("SharedEdge", 11);
+    auto sharedLeafB = makeLeaf("SharedEdge", 11);
+    ASSERT_TRUE(sharedLeafA);
+    ASSERT_TRUE(sharedLeafB);
+    EXPECT_NE(sharedLeafA.get(), sharedLeafB.get())
+        << "bad-path setup must use distinct ElementMap instances";
+
+    auto parent = std::make_shared<Data::ElementMap>();
+    parent->hasher = hasher;
+    Data::ElementIDRefs emptySids;
+    parent->addChildElements(
+        30,
+        {{Data::IndexedName("Face", 1), 6, 0, 11, sharedLeafA, QByteArray("sharedAxxxx"), emptySids},
+         {Data::IndexedName("Face", 7), 6, 0, 11, sharedLeafB, QByteArray("sharedBxxxx"), emptySids}});
+
+    int sharedRefs = 0;
+    Data::ElementMap* firstShared = nullptr;
+    for (const auto& child : parent->getChildElements()) {
+        ASSERT_TRUE(child.elementMap);
+        Data::ElementIDRefs sids;
+        ASSERT_TRUE(child.elementMap->find(Data::IndexedName("Edge", 1), &sids));
+        ASSERT_FALSE(sids.empty());
+        if (sids.front().dataToText().find("SharedEdge") == std::string::npos) {
+            continue;
+        }
+        if (!firstShared) {
+            firstShared = child.elementMap.get();
+        }
+        if (child.elementMap.get() == firstShared) {
+            ++sharedRefs;
+        }
+    }
+    EXPECT_LT(sharedRefs, 2)
+        << "duplicated SharedEdge leaves must not satisfy shared identity (>=2 same pointer)";
 }
 
 TEST_F(NonBlockingGeometryTest, LongHashedNameSurvivesArchiveRoundTrip)
@@ -645,7 +802,201 @@ TEST_F(NonBlockingGeometryTest, OversizedSectionRejected)
     }
 
     Part::FrozenTopoShapeBundle outBundle;
+    outBundle.valid = true;
+    outBundle.shapeTag = 42;
     EXPECT_FALSE(Part::TopoShapeArchive::readArchive(archivePath, outBundle));
+    // Failure must leave the caller's bundle untouched (candidate-only decode).
+    EXPECT_TRUE(outBundle.valid);
+    EXPECT_EQ(outBundle.shapeTag, 42);
+}
+
+TEST_F(NonBlockingGeometryTest, HighWaterOutOfRangeRejected)
+{
+    std::string archivePath = (_tempDir->path() + "/hiwater.fcg").toStdString();
+    {
+        std::ofstream ofs(archivePath, std::ios::binary);
+        ASSERT_TRUE(ofs.is_open());
+        ofs.write("FCG1", 4);
+        uint32_t version = 4;
+        ofs.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        long tag = 1;
+        ofs.write(reinterpret_cast<const char*>(&tag), sizeof(tag));
+        uint32_t zero = 0;
+        ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));  // shapeLen
+        ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));  // mapLen
+        uint64_t highWater =
+            static_cast<uint64_t>(std::numeric_limits<long>::max()) + 1ull;
+        ofs.write(reinterpret_cast<const char*>(&highWater), sizeof(highWater));
+        uint64_t revision = 0;
+        ofs.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
+        int32_t threshold = 0;
+        ofs.write(reinterpret_cast<const char*>(&threshold), sizeof(threshold));
+        ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));  // hasherLen
+        // checksum length + empty checksum — decode fails earlier on highWater.
+        ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    }
+    Part::FrozenTopoShapeBundle outBundle;
+    outBundle.shapeTag = 7;
+    EXPECT_FALSE(Part::TopoShapeArchive::readArchive(archivePath, outBundle));
+    EXPECT_EQ(outBundle.shapeTag, 7);
+}
+
+TEST_F(NonBlockingGeometryTest, HasherClosureEntryIdOutOfRangeUsesNarrowingGuard)
+{
+    if (sizeof(long) >= 8) {
+        GTEST_SKIP() << "LP64: FCG1 entry-id decode narrowing is only observable when long is 32-bit";
+    }
+    const int64_t badId =
+        static_cast<int64_t>(static_cast<uint64_t>(std::numeric_limits<long>::max()) + 1ull);
+    long ignored = 0;
+    ASSERT_FALSE(Part::TopoShapeArchive::int64ToLongChecked(badId, ignored));
+    std::ostringstream hasherBlob;
+    const uint32_t count = 1;
+    const uint32_t flags = 0;
+    const uint32_t zero = 0;
+    hasherBlob.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    hasherBlob.write(reinterpret_cast<const char*>(&badId), sizeof(badId));
+    hasherBlob.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+    hasherBlob.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    hasherBlob.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    hasherBlob.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+
+    const uint32_t version = 4;
+    const long tag = 1;
+    const std::string shapeData;
+    const std::string mapData;
+    const uint64_t highWater = 0;
+    const uint64_t revision = 0;
+    const int32_t threshold = 0;
+    const std::string& hasherData = hasherBlob.str();
+
+    std::vector<uint8_t> digestInput;
+    const auto appendBytes = [&digestInput](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        digestInput.insert(digestInput.end(), bytes, bytes + size);
+    };
+    appendBytes(&version, sizeof(version));
+    appendBytes(&tag, sizeof(tag));
+    appendBytes(shapeData.data(), shapeData.size());
+    appendBytes(mapData.data(), mapData.size());
+    appendBytes(&highWater, sizeof(highWater));
+    appendBytes(&revision, sizeof(revision));
+    appendBytes(&threshold, sizeof(threshold));
+    appendBytes(hasherData.data(), hasherData.size());
+    const std::string checksum = Part::TopoShapeArchive::calculateSha256(digestInput);
+
+    const std::string archivePath = (_tempDir->path() + "/bad_entry_id.fcg").toStdString();
+    {
+        std::ofstream ofs(archivePath, std::ios::binary);
+        ASSERT_TRUE(ofs.is_open());
+        const uint32_t shapeLen = 0;
+        const uint32_t mapLen = 0;
+        const uint32_t hasherLen = static_cast<uint32_t>(hasherData.size());
+        const uint32_t checksumLen = static_cast<uint32_t>(checksum.size());
+        ofs.write("FCG1", 4);
+        ofs.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ofs.write(reinterpret_cast<const char*>(&tag), sizeof(tag));
+        ofs.write(reinterpret_cast<const char*>(&shapeLen), sizeof(shapeLen));
+        ofs.write(reinterpret_cast<const char*>(&mapLen), sizeof(mapLen));
+        ofs.write(reinterpret_cast<const char*>(&highWater), sizeof(highWater));
+        ofs.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
+        ofs.write(reinterpret_cast<const char*>(&threshold), sizeof(threshold));
+        ofs.write(reinterpret_cast<const char*>(&hasherLen), sizeof(hasherLen));
+        ofs.write(hasherData.data(), static_cast<std::streamsize>(hasherLen));
+        ofs.write(reinterpret_cast<const char*>(&checksumLen), sizeof(checksumLen));
+        ofs.write(checksum.data(), static_cast<std::streamsize>(checksumLen));
+    }
+
+    App::StringHasherRef canonical(new App::StringHasher);
+    canonical->getID(QByteArray("KeepMe"));
+    const size_t sizeBefore = canonical->size();
+
+    Part::FrozenTopoShapeBundle outBundle;
+    outBundle.valid = true;
+    outBundle.shapeTag = 42;
+    outBundle.hasher = canonical;
+    outBundle.shape.Hasher = canonical;
+    EXPECT_FALSE(Part::TopoShapeArchive::readArchive(archivePath, outBundle));
+    EXPECT_TRUE(outBundle.valid);
+    EXPECT_EQ(outBundle.shapeTag, 42);
+    EXPECT_EQ(static_cast<App::StringHasher*>(outBundle.hasher), static_cast<App::StringHasher*>(canonical));
+    EXPECT_EQ(canonical->size(), sizeBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, HasherClosureRelatedIdOutOfRangeUsesNarrowingGuard)
+{
+    if (sizeof(long) >= 8) {
+        GTEST_SKIP() << "LP64: related-id decode narrowing is only observable when long is 32-bit";
+    }
+    const int64_t entryId = 1;
+    const int64_t badRelated =
+        static_cast<int64_t>(static_cast<uint64_t>(std::numeric_limits<long>::max()) + 1ull);
+    long ignored = 0;
+    ASSERT_FALSE(Part::TopoShapeArchive::int64ToLongChecked(badRelated, ignored));
+    std::ostringstream hasherBlob;
+    const uint32_t count = 1;
+    const uint32_t flags = 0;
+    const uint32_t zero = 0;
+    const uint32_t relatedCount = 1;
+    hasherBlob.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    hasherBlob.write(reinterpret_cast<const char*>(&entryId), sizeof(entryId));
+    hasherBlob.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+    hasherBlob.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    hasherBlob.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    hasherBlob.write(reinterpret_cast<const char*>(&relatedCount), sizeof(relatedCount));
+    hasherBlob.write(reinterpret_cast<const char*>(&badRelated), sizeof(badRelated));
+
+    const uint32_t version = 4;
+    const long tag = 1;
+    const std::string shapeData;
+    const std::string mapData;
+    const uint64_t highWater = 0;
+    const uint64_t revision = 0;
+    const int32_t threshold = 0;
+    const std::string& hasherData = hasherBlob.str();
+
+    std::vector<uint8_t> digestInput;
+    const auto appendBytes = [&digestInput](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        digestInput.insert(digestInput.end(), bytes, bytes + size);
+    };
+    appendBytes(&version, sizeof(version));
+    appendBytes(&tag, sizeof(tag));
+    appendBytes(shapeData.data(), shapeData.size());
+    appendBytes(mapData.data(), mapData.size());
+    appendBytes(&highWater, sizeof(highWater));
+    appendBytes(&revision, sizeof(revision));
+    appendBytes(&threshold, sizeof(threshold));
+    appendBytes(hasherData.data(), hasherData.size());
+    const std::string checksum = Part::TopoShapeArchive::calculateSha256(digestInput);
+
+    const std::string archivePath = (_tempDir->path() + "/bad_related_id.fcg").toStdString();
+    {
+        std::ofstream ofs(archivePath, std::ios::binary);
+        ASSERT_TRUE(ofs.is_open());
+        const uint32_t shapeLen = 0;
+        const uint32_t mapLen = 0;
+        const uint32_t hasherLen = static_cast<uint32_t>(hasherData.size());
+        const uint32_t checksumLen = static_cast<uint32_t>(checksum.size());
+        ofs.write("FCG1", 4);
+        ofs.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        ofs.write(reinterpret_cast<const char*>(&tag), sizeof(tag));
+        ofs.write(reinterpret_cast<const char*>(&shapeLen), sizeof(shapeLen));
+        ofs.write(reinterpret_cast<const char*>(&mapLen), sizeof(mapLen));
+        ofs.write(reinterpret_cast<const char*>(&highWater), sizeof(highWater));
+        ofs.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
+        ofs.write(reinterpret_cast<const char*>(&threshold), sizeof(threshold));
+        ofs.write(reinterpret_cast<const char*>(&hasherLen), sizeof(hasherLen));
+        ofs.write(hasherData.data(), static_cast<std::streamsize>(hasherLen));
+        ofs.write(reinterpret_cast<const char*>(&checksumLen), sizeof(checksumLen));
+        ofs.write(checksum.data(), static_cast<std::streamsize>(checksumLen));
+    }
+
+    Part::FrozenTopoShapeBundle outBundle;
+    outBundle.valid = true;
+    outBundle.shapeTag = 9;
+    EXPECT_FALSE(Part::TopoShapeArchive::readArchive(archivePath, outBundle));
+    EXPECT_EQ(outBundle.shapeTag, 9);
 }
 
 TEST_F(NonBlockingGeometryTest, BooleanDifferentOperandsHaveDistinctDigests)
@@ -878,4 +1229,594 @@ TEST_F(NonBlockingGeometryTest, SweepPreservesMappedElementHistory)
     EXPECT_GE(outBundle.shape.getElementMapSize(false), 1u);
     EXPECT_GE(outBundle.elementMap->size(), 10u);
     EXPECT_FALSE(outBundle.hasherSnapshot.entries.empty());
+}
+
+namespace
+{
+
+void captureHasherSnapshot(const App::StringHasherRef& hasher,
+                           size_t& size,
+                           long& lastId,
+                           uint64_t& revision,
+                           int& threshold,
+                           uint64_t& highWater,
+                           std::unordered_map<long, bool>& marks)
+{
+    size = hasher->size();
+    lastId = hasher->getLastID();
+    revision = hasher->getRevision();
+    threshold = hasher->getThreshold();
+    highWater = static_cast<uint64_t>(hasher->getLastID());
+    marks = hasher->snapshotMarks();
+}
+
+} // namespace
+
+TEST_F(NonBlockingGeometryTest, ExactHasherMaterializeFromV4Closure)
+{
+    App::StringHasherRef source(new App::StringHasher);
+    source->setThreshold(12);
+    auto sidA = source->getID(QByteArray("ShortName"));
+    auto sidB = source->getID(QByteArray("ThisNameIsLongEnoughToHash"),
+                              App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(sidA);
+    ASSERT_TRUE(sidB);
+    ASSERT_TRUE(sidB.isHashed());
+    sidA.mark();
+    sidB.mark();
+    source->advanceRevision();
+    source->advanceRevision();
+
+    App::StringHasherClosure closure = source->captureClosure(/*markedOnly=*/true);
+    EXPECT_EQ(closure.threshold, 12);
+    EXPECT_EQ(closure.revision, 2u);
+    ASSERT_GE(closure.entries.size(), 2u);
+
+    App::StringHasherRef fresh(new App::StringHasher);
+    auto mat = fresh->materializeExactClosure(closure);
+    ASSERT_TRUE(mat.success) << mat.errorCode << ": " << mat.errorMessage;
+    EXPECT_EQ(fresh->getThreshold(), 12);
+    EXPECT_EQ(fresh->getRevision(), 2u);
+    EXPECT_EQ(fresh->getLastID(), source->getLastID());
+    EXPECT_TRUE(fresh->getID(sidA.value()));
+    EXPECT_TRUE(fresh->getID(sidB.value()));
+    EXPECT_EQ(fresh->getID(sidA.value()).dataToText(), std::string("ShortName"));
+    auto again = fresh->getID(QByteArray("ThisNameIsLongEnoughToHash"),
+                              App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), sidB.value());
+    EXPECT_TRUE(again.isHashed());
+}
+
+TEST_F(NonBlockingGeometryTest, ExactHasherCompatibleDeltaAppend)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    canonical->setThreshold(8);
+    auto keep = canonical->getID(QByteArray("Keep"));
+    ASSERT_TRUE(keep);
+    keep.mark();
+    canonical->advanceRevision();
+
+    App::StringHasherRef worker(new App::StringHasher);
+    ASSERT_TRUE(worker->materializeExactClosure(canonical->captureClosure(false)).success);
+    auto extra = worker->getID(QByteArray("AppendOK"));
+    ASSERT_TRUE(extra);
+    EXPECT_FALSE(extra.isHashed());
+    extra.mark();
+
+    App::StringHasherClosure delta = worker->captureClosure(false);
+    delta.revision = canonical->getRevision();
+    const size_t sizeBefore = canonical->size();
+    auto merged = canonical->mergeExactClosure(delta, canonical->getRevision());
+    ASSERT_TRUE(merged.success) << merged.errorCode;
+    EXPECT_GE(merged.appendedCount, 1u);
+    EXPECT_GT(canonical->size(), sizeBefore);
+    EXPECT_EQ(canonical->getThreshold(), 8);
+    EXPECT_TRUE(canonical->getID(extra.value()));
+    EXPECT_EQ(canonical->getID(extra.value()).dataToText(), std::string("AppendOK"));
+}
+
+TEST_F(NonBlockingGeometryTest, HasherThresholdMismatchLeavesCanonicalUnchanged)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    canonical->setThreshold(10);
+    auto keep = canonical->getID(QByteArray("Stable"));
+    ASSERT_TRUE(keep);
+    size_t size = 0;
+    long lastId = 0;
+    uint64_t revision = 0;
+    int threshold = 0;
+    uint64_t highWater = 0;
+    std::unordered_map<long, bool> marks;
+    captureHasherSnapshot(canonical, size, lastId, revision, threshold, highWater, marks);
+
+    App::StringHasherClosure delta;
+    delta.threshold = 20;
+    delta.revision = revision;
+    delta.entries.push_back({keep.value() + 1, 0u, QByteArray("WouldAppend"), QByteArray(), {}});
+    delta.entries.push_back({keep.value(), 0u, QByteArray("Collision"), QByteArray(), {}});
+
+    auto merged = canonical->mergeExactClosure(delta, revision);
+    EXPECT_FALSE(merged.success);
+    EXPECT_EQ(merged.errorCode, "ThresholdMismatch");
+    EXPECT_EQ(canonical->size(), size);
+    EXPECT_EQ(canonical->getLastID(), lastId);
+    EXPECT_EQ(canonical->getRevision(), revision);
+    EXPECT_EQ(canonical->getThreshold(), 10);
+    EXPECT_FALSE(canonical->getID(keep.value() + 1));
+}
+
+TEST_F(NonBlockingGeometryTest, HasherValueReassignedUnderDifferentIdRejected)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    auto existing = canonical->getID(QByteArray("SameValue"));
+    ASSERT_TRUE(existing);
+    const size_t sizeBefore = canonical->size();
+    const int thresholdBefore = canonical->getThreshold();
+    const long lastBefore = canonical->getLastID();
+    const uint64_t revBefore = canonical->getRevision();
+
+    App::StringHasherClosure delta;
+    delta.threshold = canonical->getThreshold();
+    delta.entries.push_back(
+        {existing.value() + 5, 0u, QByteArray("SameValue"), QByteArray(), {}});
+
+    auto merged = canonical->mergeExactClosure(delta, 0);
+    EXPECT_FALSE(merged.success);
+    EXPECT_EQ(merged.errorCode, "ValueCollision");
+    EXPECT_EQ(canonical->size(), sizeBefore);
+    EXPECT_EQ(canonical->getThreshold(), thresholdBefore);
+    EXPECT_EQ(canonical->getLastID(), lastBefore);
+    EXPECT_EQ(canonical->getRevision(), revBefore);
+    EXPECT_FALSE(canonical->getID(existing.value() + 5));
+}
+
+TEST_F(NonBlockingGeometryTest, HasherClosureInternalValueCollisionRejectedAtomically)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    auto keep = canonical->getID(QByteArray("KeepOriginal"));
+    ASSERT_TRUE(keep);
+    const size_t sizeBefore = canonical->size();
+    const long lastBefore = canonical->getLastID();
+
+    App::StringHasherClosure delta;
+    delta.threshold = 0;
+    delta.entries.push_back(
+        {keep.value() + 10, 0u, QByteArray("WouldAppend"), QByteArray(), {}});
+    delta.entries.push_back(
+        {keep.value() + 11, 0u, QByteArray("DupValue"), QByteArray(), {}});
+    delta.entries.push_back(
+        {keep.value() + 12, 0u, QByteArray("DupValue"), QByteArray(), {}});
+
+    auto merged = canonical->mergeExactClosure(delta, 0);
+    EXPECT_FALSE(merged.success);
+    EXPECT_EQ(merged.errorCode, "ValueCollision");
+    EXPECT_EQ(merged.appendedCount, 0u);
+    EXPECT_EQ(canonical->size(), sizeBefore);
+    EXPECT_EQ(canonical->getLastID(), lastBefore);
+    EXPECT_FALSE(canonical->getID(keep.value() + 10));
+}
+
+TEST_F(NonBlockingGeometryTest, HasherRejectsMissingRelatedAndForwardRelation)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    const size_t sizeBefore = canonical->size();
+
+    App::StringHasherClosure missingRelated;
+    missingRelated.threshold = 0;
+    missingRelated.entries.push_back(
+        {5, 0u, QByteArray("NeedsRelated"), QByteArray(), {99}});
+    auto m1 = canonical->mergeExactClosure(missingRelated, 0);
+    EXPECT_FALSE(m1.success);
+    EXPECT_EQ(m1.errorCode, "MissingRelatedId");
+    EXPECT_EQ(canonical->size(), sizeBefore);
+
+    App::StringHasherClosure forward;
+    forward.threshold = 0;
+    forward.entries.push_back({3, 0u, QByteArray("Owner"), QByteArray(), {8}});
+    forward.entries.push_back({8, 0u, QByteArray("LaterRelated"), QByteArray(), {}});
+    auto m2 = canonical->mergeExactClosure(forward, 0);
+    EXPECT_FALSE(m2.success);
+    EXPECT_EQ(m2.errorCode, "MissingRelatedId");
+    EXPECT_EQ(canonical->size(), sizeBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, HasherRejectsNegativeThresholdAndStaleRevision)
+{
+    App::StringHasherRef canonical(new App::StringHasher);
+    canonical->advanceRevision();
+    const int thresholdBefore = canonical->getThreshold();
+    const uint64_t revBefore = canonical->getRevision();
+    const size_t sizeBefore = canonical->size();
+
+    App::StringHasherClosure badThreshold;
+    badThreshold.threshold = -1;
+    badThreshold.entries.push_back({1, 0u, QByteArray("X"), QByteArray(), {}});
+    auto m1 = canonical->mergeExactClosure(badThreshold, 0);
+    EXPECT_FALSE(m1.success);
+    EXPECT_EQ(m1.errorCode, "InvalidThreshold");
+    EXPECT_EQ(canonical->getThreshold(), thresholdBefore);
+    EXPECT_EQ(canonical->size(), sizeBefore);
+
+    App::StringHasherClosure stale;
+    stale.threshold = thresholdBefore;
+    stale.revision = revBefore + 10;
+    stale.entries.push_back({1, 0u, QByteArray("X"), QByteArray(), {}});
+    auto m2 = canonical->mergeExactClosure(stale, revBefore);
+    EXPECT_FALSE(m2.success);
+    EXPECT_EQ(m2.errorCode, "RevisionMismatch");
+    EXPECT_EQ(canonical->getRevision(), revBefore);
+    EXPECT_EQ(canonical->size(), sizeBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, BooleanCodecRejectsBadRequestBeforeOcc)
+{
+    App::StringHasherRef hasher(new App::StringHasher);
+    BRepPrimAPI_MakeBox box1(10.0, 10.0, 10.0);
+    BRepPrimAPI_MakeBox box2(gp_Pnt(5, 5, 5), 10.0, 10.0, 10.0);
+    Part::TopoShape s1(box1.Shape(), 1, hasher);
+    Part::TopoShape s2(box2.Shape(), 2, hasher);
+    auto b1 = Part::TopoShapeArchive::createBundle(s1);
+    auto b2 = Part::TopoShapeArchive::createBundle(s2);
+    ASSERT_TRUE(b1.valid && b2.valid);
+
+    App::GeometryRequestWorkspace workspace(_tempDir->path());
+    Part::BooleanGeometryOperation op(Part::BooleanType::Fuse, b1, b2);
+    ASSERT_TRUE(op.writeArchive(workspace).success);
+    ASSERT_TRUE(workspace.publishRequestJson());
+
+    QFile reqFile(_tempDir->path() + QStringLiteral("/request.json"));
+    ASSERT_TRUE(reqFile.open(QIODevice::ReadOnly));
+    QJsonObject good = QJsonDocument::fromJson(reqFile.readAll()).object();
+    reqFile.close();
+
+    auto expectReject = [&](QJsonObject bad, const char* expectedCode) {
+        std::string errorCode;
+        std::string errorMessage;
+        auto decoded = Part::BooleanGeometryOperation::decodeFromRequest(
+            bad, _tempDir->path(), errorCode, errorMessage);
+        EXPECT_FALSE(decoded) << expectedCode;
+        EXPECT_EQ(errorCode, expectedCode) << errorMessage;
+        EXPECT_FALSE(QFileInfo::exists(_tempDir->path() + QStringLiteral("/result.fcg")));
+    };
+
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("basePath"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("booleanType"), QStringLiteral("NotAType"));
+        expectReject(bad, "UnknownBooleanType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("operationType"), QStringLiteral("Part::Fillet"));
+        expectReject(bad, "UnsupportedOperation");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 99);
+        expectReject(bad, "UnsupportedCodecVersion");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), QStringLiteral("1"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("/tmp/escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("basePath"), QStringLiteral("../escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("toolPath"), bad.value(QStringLiteral("basePath")));
+        expectReject(bad, "DuplicateOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("baseSize"),
+                   bad.value(QStringLiteral("baseSize")).toVariant().toLongLong() + 1);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+}
+
+TEST_F(NonBlockingGeometryTest, ReadArchiveRejectsTrailingDataWithoutPublishing)
+{
+    BRepPrimAPI_MakeBox mkBox(5.0, 5.0, 5.0);
+    Part::TopoShape shape(mkBox.Shape());
+    auto bundle = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(bundle.valid);
+    const std::string path = (_tempDir->path() + "/trail.fcg").toStdString();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(bundle, path));
+    {
+        std::ofstream ofs(path, std::ios::binary | std::ios::app);
+        ofs << "TRAILING";
+    }
+    Part::FrozenTopoShapeBundle out;
+    out.valid = false;
+    out.shapeTag = 0;
+    EXPECT_FALSE(Part::TopoShapeArchive::readArchive(path, out));
+    // Failure must not publish a candidate into the caller's bundle.
+    EXPECT_FALSE(out.valid);
+    EXPECT_EQ(out.shapeTag, 0);
+    EXPECT_TRUE(out.shape.isNull());
+    EXPECT_FALSE(out.elementMap);
+}
+
+TEST_F(NonBlockingGeometryTest, HasherEmbeddedNulValueKeysAreDistinct)
+{
+    App::StringHasherRef hasher(new App::StringHasher);
+    App::StringHasherClosure closure;
+    closure.threshold = 0;
+    // Distinct pairs that collide under data+NUL+postfix concatenation.
+    QByteArray dataA("ab");
+    dataA.append('\0');
+    dataA.append('c');
+    QByteArray postfixA("d");
+    QByteArray dataB("ab");
+    QByteArray postfixB;
+    postfixB.append('c');
+    postfixB.append('\0');
+    postfixB.append('d');
+    // dataA+"\\0"+postfixA == "ab\\0c\\0d" == dataB+"\\0"+postfixB
+    closure.entries.push_back({1, 0u, dataA, postfixA, {}});
+    closure.entries.push_back({2, 0u, dataB, postfixB, {}});
+
+    auto merged = hasher->materializeExactClosure(closure);
+    ASSERT_TRUE(merged.success) << merged.errorCode << ": " << merged.errorMessage;
+    EXPECT_TRUE(hasher->getID(1));
+    EXPECT_TRUE(hasher->getID(2));
+    EXPECT_NE(hasher->getID(1).dataToText(), hasher->getID(2).dataToText());
+}
+
+TEST_F(NonBlockingGeometryTest, HasherIdenticalBinaryValueUnderDifferentIdsRejected)
+{
+    App::StringHasherRef hasher(new App::StringHasher);
+    const size_t sizeBefore = hasher->size();
+    App::StringHasherClosure closure;
+    closure.threshold = 0;
+    QByteArray data("x");
+    data.append('\0');
+    data.append('y');
+    QByteArray postfix("z");
+    closure.entries.push_back({1, 0u, data, postfix, {}});
+    closure.entries.push_back({2, 0u, data, postfix, {}});
+    auto merged = hasher->mergeExactClosure(closure, 0);
+    EXPECT_FALSE(merged.success);
+    EXPECT_EQ(merged.errorCode, "ValueCollision");
+    EXPECT_EQ(hasher->size(), sizeBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, RebindBundleLeavesSourceMarksUnchanged)
+{
+    App::StringHasherRef source(new App::StringHasher);
+    BRepPrimAPI_MakeBox mkBox(4.0, 4.0, 4.0);
+    Part::TopoShape shape(mkBox.Shape(), /*tag=*/7, source);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = source;
+    App::StringIDRef sid = source->getID(QByteArray("MarkProbe"));
+    Data::MappedName mapped(sid);
+    Data::ElementIDRefs sids;
+    sids.push_back(sid);
+    map->setElementName(Data::IndexedName("Face", 1), mapped, shape.Tag, &sids);
+    sid.mark();
+    shape.resetElementMap(map);
+
+    auto bundle = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(bundle.valid);
+    ASSERT_TRUE(bundle.elementMap);
+    ASSERT_TRUE(bundle.hasher);
+
+    const auto sourceMarksBefore = source->snapshotMarks();
+    const auto bundleMarksBefore = bundle.hasher->snapshotMarks();
+    std::unordered_map<const Data::ElementMap*, unsigned> idsBefore;
+    bundle.elementMap->snapshotArchiveIds(idsBefore);
+
+    App::StringHasherRef shared(new App::StringHasher);
+    ASSERT_TRUE(shared->materializeExactClosure(bundle.hasherSnapshot).success);
+    Part::FrozenTopoShapeBundle rebound = bundle;
+    ASSERT_TRUE(Part::TopoShapeArchive::rebindBundleToHasher(rebound, shared));
+
+    EXPECT_EQ(bundle.hasher->snapshotMarks(), bundleMarksBefore);
+    EXPECT_EQ(source->snapshotMarks(), sourceMarksBefore);
+    std::unordered_map<const Data::ElementMap*, unsigned> idsAfter;
+    bundle.elementMap->snapshotArchiveIds(idsAfter);
+    EXPECT_EQ(idsAfter, idsBefore);
+    EXPECT_TRUE(sid.isMarked());
+
+    const std::string path1 = (_tempDir->path() + "/rebind1.fcg").toStdString();
+    const std::string path2 = (_tempDir->path() + "/rebind2.fcg").toStdString();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(rebound, path1));
+    ASSERT_TRUE(Part::TopoShapeArchive::rebindBundleToHasher(rebound, shared));
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(rebound, path2));
+    EXPECT_EQ(bundle.hasher->snapshotMarks(), bundleMarksBefore);
+    EXPECT_EQ(source->snapshotMarks(), sourceMarksBefore);
+}
+
+TEST_F(NonBlockingGeometryTest, RebindFailureRestoresSourceState)
+{
+    App::StringHasherRef source(new App::StringHasher);
+    BRepPrimAPI_MakeBox mkBox(3.0, 3.0, 3.0);
+    Part::TopoShape shape(mkBox.Shape(), /*tag=*/5, source);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = source;
+    App::StringIDRef sid = source->getID(QByteArray("FailRebindSid"));
+    Data::MappedName mapped(sid);
+    Data::ElementIDRefs sids;
+    sids.push_back(sid);
+    map->setElementName(Data::IndexedName("Face", 1), mapped, shape.Tag, &sids);
+    sid.mark();
+    shape.resetElementMap(map);
+
+    auto bundle = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(bundle.valid);
+    auto marksBefore = bundle.hasher->snapshotMarks();
+    std::unordered_map<const Data::ElementMap*, unsigned> idsBefore;
+    bundle.elementMap->snapshotArchiveIds(idsBefore);
+    const auto* sourceMapPtr = bundle.elementMap.get();
+    const auto* sourceHasherPtr = static_cast<App::StringHasher*>(bundle.hasher);
+
+    // Target hasher deliberately missing required SIDs (empty) → rebind restore fails.
+    App::StringHasherRef emptyTarget(new App::StringHasher);
+    Part::FrozenTopoShapeBundle attempted = bundle;
+    EXPECT_FALSE(Part::TopoShapeArchive::rebindBundleToHasher(attempted, emptyTarget));
+
+    EXPECT_EQ(bundle.elementMap.get(), sourceMapPtr);
+    EXPECT_EQ(static_cast<App::StringHasher*>(bundle.hasher), sourceHasherPtr);
+    EXPECT_EQ(bundle.hasher->snapshotMarks(), marksBefore);
+    std::unordered_map<const Data::ElementMap*, unsigned> idsAfter;
+    bundle.elementMap->snapshotArchiveIds(idsAfter);
+    EXPECT_EQ(idsAfter, idsBefore);
+    EXPECT_TRUE(sid.isMarked());
+    // Failed rebind must not publish a rebound map onto the caller's source bundle.
+    EXPECT_EQ(static_cast<App::StringHasher*>(bundle.shape.Hasher), sourceHasherPtr);
+}
+
+TEST(TopoShapeArchiveInt64ToLongTest, RejectsValueBelowLongMin)
+{
+    if constexpr (sizeof(long) >= sizeof(int64_t)) {
+        GTEST_SKIP() << "LP64: long and int64 share the same lower bound; narrowing is not observable";
+    }
+    else {
+        long out = 0;
+        const int64_t below = static_cast<int64_t>(std::numeric_limits<long>::min()) - 1;
+        EXPECT_FALSE(Part::TopoShapeArchive::int64ToLongChecked(below, out));
+    }
+}
+
+TEST(TopoShapeArchiveInt64ToLongTest, RejectsValueAboveLongMax)
+{
+    if constexpr (sizeof(long) >= sizeof(int64_t)) {
+        GTEST_SKIP() << "LP64: long and int64 share the same upper bound; narrowing is not observable";
+    }
+    else {
+        long out = 0;
+        const int64_t above = static_cast<int64_t>(std::numeric_limits<long>::max()) + 1;
+        EXPECT_FALSE(Part::TopoShapeArchive::int64ToLongChecked(above, out));
+    }
+}
+
+TEST(TopoShapeArchiveInt64ToLongTest, AcceptsLongMax)
+{
+    long out = 0;
+    const int64_t atMax = static_cast<int64_t>(std::numeric_limits<long>::max());
+    EXPECT_TRUE(Part::TopoShapeArchive::int64ToLongChecked(atMax, out));
+    EXPECT_EQ(out, std::numeric_limits<long>::max());
+}
+
+#ifdef FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+
+namespace
+{
+
+struct ForceClosureCaptureFailureGuard
+{
+    ForceClosureCaptureFailureGuard()
+    {
+        Part::TopoShapeArchive::setTestForceClosureCaptureFailure(true);
+    }
+    ~ForceClosureCaptureFailureGuard()
+    {
+        Part::TopoShapeArchive::setTestForceClosureCaptureFailure(false);
+    }
+};
+
+} // namespace
+
+TEST_F(NonBlockingGeometryTest, LiveClosureCaptureFailureDoesNotPublishArchive)
+{
+    App::StringHasherRef source(new App::StringHasher);
+    BRepPrimAPI_MakeBox mkBox(2.0, 2.0, 2.0);
+    Part::TopoShape shape(mkBox.Shape(), 1, source);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = source;
+    App::StringIDRef sid = source->getID(QByteArray("LiveMark"));
+    Data::MappedName mapped(sid);
+    Data::ElementIDRefs sids;
+    sids.push_back(sid);
+    map->setElementName(Data::IndexedName("Face", 1), mapped, shape.Tag, &sids);
+    sid.mark();
+    shape.resetElementMap(map);
+
+    auto bundle = Part::TopoShapeArchive::createBundle(shape);
+    ASSERT_TRUE(bundle.valid);
+    const auto marksBefore = bundle.hasher->snapshotMarks();
+    std::unordered_map<const Data::ElementMap*, unsigned> idsBefore;
+    bundle.elementMap->snapshotArchiveIds(idsBefore);
+
+    const std::string dest = (_tempDir->path() + "/live_closure.fcg").toStdString();
+    const std::string seed = (_tempDir->path() + "/seed.fcg").toStdString();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(bundle, seed));
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(bundle, dest));
+
+    QFile destBefore(QString::fromStdString(dest));
+    ASSERT_TRUE(destBefore.open(QIODevice::ReadOnly));
+    const QByteArray destBytesBefore = destBefore.readAll();
+    destBefore.close();
+
+    {
+        ForceClosureCaptureFailureGuard guard;
+        EXPECT_FALSE(Part::TopoShapeArchive::writeArchive(bundle, dest));
+    }
+
+    EXPECT_FALSE(QFileInfo::exists(QString::fromStdString(dest + ".tmp")));
+    EXPECT_EQ(bundle.hasher->snapshotMarks(), marksBefore);
+    std::unordered_map<const Data::ElementMap*, unsigned> idsAfter;
+    bundle.elementMap->snapshotArchiveIds(idsAfter);
+    EXPECT_EQ(idsAfter, idsBefore);
+
+    QFile destAfter(QString::fromStdString(dest));
+    ASSERT_TRUE(destAfter.open(QIODevice::ReadOnly));
+    EXPECT_EQ(destAfter.readAll(), destBytesBefore)
+        << "failed capture must leave existing destination byte-identical";
+
+    QFile seedFile(QString::fromStdString(seed));
+    ASSERT_TRUE(seedFile.open(QIODevice::ReadOnly));
+    const QByteArray seedBytes = seedFile.readAll();
+    seedFile.close();
+    ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(bundle, dest));
+    QFile outFile(QString::fromStdString(dest));
+    ASSERT_TRUE(outFile.open(QIODevice::ReadOnly));
+    EXPECT_EQ(outFile.readAll(), seedBytes);
+}
+
+#endif // FC_TOPOSHape_ARCHIVE_TEST_SEAMS
+
+TEST_F(NonBlockingGeometryTest, DuplicateChildInsertionDoesNotCrashReaders)
+{
+    App::StringHasherRef hasher(new App::StringHasher);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = hasher;
+    auto leaf = std::make_shared<Data::ElementMap>();
+    leaf->hasher = hasher;
+    Data::ElementIDRefs empty;
+    const Data::ElementMap::MappedChildElements child {Data::IndexedName("Face", 1),
+                                                      6,
+                                                      0,
+                                                      1,
+                                                      leaf,
+                                                      QByteArray("dupChild"),
+                                                      empty};
+    map->addChildElements(1, {child, child});
+    EXPECT_NO_THROW({
+        (void)map->getChildElements();
+        (void)map->getAll();
+    });
+    App::StringHasherRef shared(new App::StringHasher);
+    Part::FrozenTopoShapeBundle bundle;
+    bundle.valid = true;
+    bundle.elementMap = map;
+    bundle.hasher = hasher;
+    bundle.shapeTag = 1;
+    EXPECT_NO_THROW({
+        Part::TopoShapeArchive::rebindBundleToHasher(bundle, shared);
+    });
 }
