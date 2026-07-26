@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-# Headless/offscreen AssemblyGui lifecycle tests (QT_QPA_PLATFORM=offscreen).
+# AssemblyGui TaskInterferenceCheck lifecycle tests (default QT_QPA_PLATFORM=offscreen;
+# CI also runs one case under Xvfb with QT_QPA_PLATFORM=xcb).
 # These prove TaskInterferenceCheck generation policy without a live 3D view.
 add_executable(AssemblyGui_tests_run
     TaskInterferenceCheck.cpp

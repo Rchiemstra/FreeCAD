@@ -147,6 +147,7 @@ if [ ! -x /usr/bin/xvfb-run ]; then
 fi
 set +e
 export QT_QPA_PLATFORM=xcb
+export ASSEMBLYGUI_REQUIRE_XCB=1
 export QT_PLUGIN_PATH="/usr/lib/x86_64-linux-gnu/qt6/plugins:${QT_PLUGIN_PATH:-}"
 /usr/bin/xvfb-run -a /data/build/tests/AssemblyGui_tests_run \
   --gtest_filter=TaskInterferenceCheckTest.bThenALateFinishDoesNotMutateNewerUiState \

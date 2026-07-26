@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -101,6 +102,13 @@ Assembly::InterferenceScanResult makePlacedPenetrationResult()
     return result;
 }
 
+void ensureDefaultOffscreenQtPlatform()
+{
+    if (qgetenv("QT_QPA_PLATFORM").isEmpty()) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+}
+
 }  // namespace
 
 class TaskInterferenceCheckTest: public ::testing::Test
@@ -108,7 +116,7 @@ class TaskInterferenceCheckTest: public ::testing::Test
 protected:
     static void SetUpTestSuite()
     {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        ensureDefaultOffscreenQtPlatform();
         static int argc = 1;
         static char arg0[] = "AssemblyGui_tests_run";
         static char* argv[] = {arg0, nullptr};
@@ -163,6 +171,14 @@ protected:
 
 TEST_F(TaskInterferenceCheckTest, bThenALateFinishDoesNotMutateNewerUiState)
 {
+    if (qgetenv("ASSEMBLYGUI_REQUIRE_XCB") == QByteArray("1")) {
+        ASSERT_TRUE(QApplication::instance());
+        const QString platform = QApplication::platformName();
+        ASSERT_EQ(platform, QStringLiteral("xcb"))
+            << "QT_QPA_PLATFORM=" << qgetenv("QT_QPA_PLATFORM").constData();
+        std::cerr << "ASSEMBLYGUI_PLATFORM_GUARD_OK platform=" << qPrintable(platform) << '\n';
+    }
+
     AssemblyGui::TaskInterferenceCheck task(_assembly);
 
     auto& session = task.scanSession();
@@ -1324,7 +1340,7 @@ TEST_F(TaskInterferenceCheckTest, clearanceSheetSelectionSupportsUndoRedo)
 
 int main(int argc, char** argv)
 {
-    qputenv("QT_QPA_PLATFORM", "offscreen");
+    ensureDefaultOffscreenQtPlatform();
     ::testing::InitGoogleTest(&argc, argv);
     const int result = RUN_ALL_TESTS();
     // Skip static FreeCAD/Qt destructors that SIGSEGV after offscreen QApplication.
