@@ -6,6 +6,8 @@
 #include <App/GeometryJob.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
 
+#include <QJsonObject>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +29,27 @@ public:
 
     App::DetachedGeometryResult run(App::GeometryWorkerContext& ctx) const override;
     App::GeometryArchiveWriteResult writeArchive(App::GeometryArchiveWriter& writer) const override;
+    App::DetachedGeometryResult decodeResultArchive(const std::string& absolutePath) const override;
+
+    /// Decode a typed Sweep request from workspace-relative archives.
+    static std::shared_ptr<SweepGeometryOperation>
+    decodeFromRequest(const QJsonObject& request,
+                      const QString& workspaceDir,
+                      std::string& errorCode,
+                      std::string& errorMessage);
+
+    const FrozenTopoShapeBundle& spineBundle() const
+    {
+        return _spine;
+    }
+    const std::vector<FrozenTopoShapeBundle>& profileBundles() const
+    {
+        return _profiles;
+    }
+    bool isSolid() const
+    {
+        return _isSolid;
+    }
 
 private:
     FrozenTopoShapeBundle _spine;
