@@ -1941,7 +1941,7 @@ void TaskInterferenceCheck::onSelectPair()
     }
 }
 
-ExcludePairCommandResult tryExcludeInterferencePairInCommand(
+ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
     Gui::Document* guiDocument,
     App::DocumentObject* host,
     App::DocumentObject* sourceA,
@@ -2000,6 +2000,35 @@ bool TaskInterferenceCheck::testExecuteExcludePairCommand(
     QString* errorOut
 )
 {
+    const auto result =
+        tryExcludeInterferencePairInCommand(guiDocument, host, sourceA, sourceB);
+    if (errorOut) {
+        *errorOut = result.errorMessage;
+    }
+    return result.success;
+}
+
+bool TaskInterferenceCheck::testExecuteExcludePairForSelectedRow(
+    Gui::Document* guiDocument,
+    QString* errorOut
+)
+{
+    const int pairIndex = currentPairIndex();
+    if (pairIndex < 0 || !host) {
+        if (errorOut) {
+            *errorOut = tr("No interference pair selected.");
+        }
+        return false;
+    }
+    const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
+    auto* sourceA = resolveSourceId(lastResult.leaves[pair.leafIndexA].sourceId);
+    auto* sourceB = resolveSourceId(lastResult.leaves[pair.leafIndexB].sourceId);
+    if (!sourceA || !sourceB) {
+        if (errorOut) {
+            *errorOut = tr("Could not resolve selected interference source pair.");
+        }
+        return false;
+    }
     const auto result =
         tryExcludeInterferencePairInCommand(guiDocument, host, sourceA, sourceB);
     if (errorOut) {

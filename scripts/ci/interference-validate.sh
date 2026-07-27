@@ -94,6 +94,7 @@ rm -rf /data/src
 mkdir -p /data/src
 tar -C /src \
   --exclude='./build' \
+  --exclude='./build_docker' \
   --exclude='./.git/objects' \
   --exclude='./.git/modules' \
   --exclude='./tools/mcp' \

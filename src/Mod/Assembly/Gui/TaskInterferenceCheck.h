@@ -141,6 +141,15 @@ public:
         QString* errorOut = nullptr
     );
 
+    /**
+     * Same resolution path as onExcludePair() (selected row + resolveSourceId), without the
+     * confirmation dialog. Does not rescan.
+     */
+    bool testExecuteExcludePairForSelectedRow(
+        Gui::Document* guiDocument,
+        QString* errorOut = nullptr
+    );
+
     /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
     void testEnsureDetachedPreviewRoot();
     bool testHasPreviewRoot() const;

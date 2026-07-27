@@ -8,7 +8,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <memory>
 #include <string>
 #include <utility>
 
@@ -1658,7 +1657,7 @@ TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperAbortsOnUnsavedExterna
     _assembly->addInterferenceExclusion(seedA, seedB);
     const std::string xmlBefore = exclusionPropertyXml(_assembly);
 
-    ScopedExternalDocument other("asmGuiExclOther", "asmGuiExclOtherUser");
+    ScopedExternalDocument other("zzz_asmGuiExclOther", "zzz_asmGuiExclOtherUser");
     auto* local = _doc->addObject<App::DocumentObject>("App::Feature", "GuiLocalA");
     auto* remote = other.doc()->addObject<App::DocumentObject>("App::Feature", "GuiRemoteZ");
     ASSERT_NE(local, nullptr);
@@ -1682,7 +1681,7 @@ TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperAbortsOnUnsavedExterna
 
     const auto undoBefore = _doc->getAvailableUndoNames();
     QString error;
-    EXPECT_FALSE(task.testExecuteExcludePairCommand(local, remote, guiDoc, &error));
+    EXPECT_FALSE(task.testExecuteExcludePairForSelectedRow(guiDoc, &error));
     EXPECT_FALSE(error.isEmpty());
     EXPECT_NE(error.indexOf(QStringLiteral("Linked document not saved")), -1) << error.toStdString();
     EXPECT_FALSE(guiDoc->hasPendingCommand());

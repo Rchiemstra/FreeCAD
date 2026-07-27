@@ -309,7 +309,7 @@ TEST_F(InterferenceScanTest, failedExclusionWithUnsavedExternalSecondRestoresPro
     _assembly->addInterferenceExclusion(seedA, seedB);
     const std::string xmlBefore = exclusionPropertyXml(_assembly);
 
-    ScopedExternalDocument other("asmExclUnsavedOther", "asmExclUnsavedOtherUser");
+    ScopedExternalDocument other("zzz_asmExclUnsavedOther", "zzz_asmExclUnsavedOtherUser");
     ASSERT_NE(other.doc(), nullptr);
     auto* local = _doc->addObject<App::DocumentObject>("App::Feature", "LocalPairA");
     auto* remote = other.doc()->addObject<App::DocumentObject>("App::Feature", "RemotePairZ");
