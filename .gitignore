@@ -52,6 +52,7 @@ ui_*.h
 /bin/
 /build-*/
 /build/
+/build_docker/
 /cmake-build*/
 /conda/environment.yml
 /doc/*
