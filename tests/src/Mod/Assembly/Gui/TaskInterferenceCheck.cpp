@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -586,6 +588,105 @@ TEST_F(TaskInterferenceCheckTest, documentCloseDiscardsResultsAndClosesManageExc
     EXPECT_FALSE(task.testManageExclusionsOpen());
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("Document closed"), Qt::CaseInsensitive)
                 || task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, linkedDocumentCloseMarksResultsStaleAndClosesManageExclusions)
+{
+    const std::string linkedDocName =
+        App::GetApplication().getUniqueDocumentName("asmGuiLinkedExt");
+    const std::string unrelatedDocName =
+        App::GetApplication().getUniqueDocumentName("asmGuiUnrelated");
+
+    const std::string ownerPath = std::string("/tmp/") + _docName + "_linkedDocClose.FCStd";
+    const std::string linkedPath =
+        std::string("/tmp/") + linkedDocName + "_linkedDocClose.FCStd";
+
+    App::Document* linkedDoc = nullptr;
+    App::Document* unrelatedDoc = nullptr;
+
+    auto cleanupExtraDocumentsAndFiles = [&]() {
+        if (unrelatedDoc && App::GetApplication().getDocument(unrelatedDocName.c_str())) {
+            App::GetApplication().closeDocument(unrelatedDocName.c_str());
+        }
+        unrelatedDoc = nullptr;
+        if (linkedDoc && App::GetApplication().getDocument(linkedDocName.c_str())) {
+            App::GetApplication().closeDocument(linkedDocName.c_str());
+        }
+        linkedDoc = nullptr;
+        std::remove(ownerPath.c_str());
+        std::remove(linkedPath.c_str());
+    };
+
+    struct LinkedDocCloseCleanup
+    {
+        std::function<void()> cleanup;
+        ~LinkedDocCloseCleanup()
+        {
+            if (cleanup) {
+                cleanup();
+            }
+        }
+    } linkedDocCloseCleanup {cleanupExtraDocumentsAndFiles};
+
+    linkedDoc = App::GetApplication().newDocument(
+        linkedDocName.c_str(),
+        "asmGuiLinkedExtUser");
+    auto* foreignPart = linkedDoc->addObject<App::Part>("LinkedForeignPart");
+    auto* linkedBox = linkedDoc->addObject<Part::Box>("LinkedPhysicalBox");
+    linkedBox->Length.setValue(10);
+    linkedBox->Width.setValue(10);
+    linkedBox->Height.setValue(10);
+    foreignPart->addObject(linkedBox);
+    linkedDoc->recompute();
+
+    _doc->FileName.setValue(ownerPath.c_str());
+    linkedDoc->FileName.setValue(linkedPath.c_str());
+    ASSERT_TRUE(_doc->save()) << "Failed to save owner at " << ownerPath;
+    ASSERT_TRUE(linkedDoc->save()) << "Failed to save linked document at " << linkedPath;
+
+    auto* extLink = freecad_cast<App::Link*>(_doc->addObject("App::Link", "LinkedExtPart"));
+    extLink->setLink(-1, foreignPart);
+    _assembly->addObject(extLink);
+    _doc->recompute();
+
+    unrelatedDoc = App::GetApplication().newDocument(
+        unrelatedDocName.c_str(),
+        "asmGuiUnrelatedUser");
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makeResult(1, "LinkedClose"));
+    ASSERT_TRUE(task.hasResults());
+
+    task.testOpenManageExclusions();
+    QApplication::processEvents();
+    ASSERT_TRUE(task.testManageExclusionsOpen());
+    ASSERT_TRUE(task.testHasHost());
+
+    App::GetApplication().closeDocument(unrelatedDocName.c_str());
+    unrelatedDoc = nullptr;
+    QApplication::processEvents();
+
+    EXPECT_TRUE(task.testHasHost());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_TRUE(task.testManageExclusionsOpen());
+    EXPECT_FALSE(task.testStatusText().contains(
+        QStringLiteral("Linked document closed"),
+        Qt::CaseInsensitive));
+
+    App::GetApplication().closeDocument(linkedDocName.c_str());
+    linkedDoc = nullptr;
+    QApplication::processEvents();
+
+    ASSERT_NE(_doc, nullptr);
+    EXPECT_TRUE(App::GetApplication().getDocument(_docName.c_str()) != nullptr);
+    EXPECT_TRUE(task.testHasHost());
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_FALSE(task.testManageExclusionsOpen());
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("Linked document closed"), Qt::CaseInsensitive)
+        || task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
 }
 
 TEST_F(TaskInterferenceCheckTest, previewAttachesAndDetachesFromSceneGraph)
