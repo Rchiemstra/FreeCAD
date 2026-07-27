@@ -29,6 +29,7 @@ from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStalenes
 from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
 from AssemblyTests.TestWebotsExport import TestWebotsExport
 from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
+from AssemblyTests.TestSimulationExport import TestSimulationExport
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
@@ -38,3 +39,4 @@ True if TestOverlayIconsAndOrigin else False
 True if TestWebotsExport else False
 True if TestReviewNotes else False
 True if TestReviewNotesGui else False
+True if TestSimulationExport else False

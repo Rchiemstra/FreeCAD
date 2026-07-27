@@ -64,6 +64,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestOverlayIconsAndOrigin.py
     AssemblyTests/TestWebotsExport.py
     AssemblyTests/TestReviewNotes.py
+    AssemblyTests/TestSimulationExport.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
 )

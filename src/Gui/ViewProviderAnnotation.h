@@ -27,7 +27,6 @@
 #include <App/PropertyUnits.h>
 #include <Base/Vector3D.h>
 #include <optional>
-#include "SoTextLabel.h"
 
 class SoFont;
 class SoText2;
@@ -42,6 +41,8 @@ class SoDragger;
 
 namespace Gui
 {
+
+class TranslateManip;
 
 class GuiExport ViewProviderAnnotation: public ViewProviderDocumentObject
 {

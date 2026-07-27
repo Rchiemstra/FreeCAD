@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   # Automatic triggers disabled on FreeCAD-start branch:
   # release:
-  #   types: [created]
+  #   types: [published]
   # schedule:
   #  - cron: "0 0 * * 3"
 
