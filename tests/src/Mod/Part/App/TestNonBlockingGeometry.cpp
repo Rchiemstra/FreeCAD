@@ -1959,6 +1959,625 @@ TEST_F(NonBlockingGeometryTest, FilletCodecRejectsBadRequestBeforeOcc)
     }
 }
 
+namespace
+{
+
+TopoDS_Wire makeRectWire(double width, double height)
+{
+    const auto e1 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(width, 0.0, 0.0)).Edge();
+    const auto e2 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, 0.0, 0.0), gp_Pnt(width, height, 0.0)).Edge();
+    const auto e3 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, height, 0.0), gp_Pnt(0.0, height, 0.0)).Edge();
+    const auto e4 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, height, 0.0), gp_Pnt(0.0, 0.0, 0.0)).Edge();
+    return BRepBuilderAPI_MakeWire(e1, e2, e3, e4).Wire();
+}
+
+TopoDS_Shape makeProfileBoxShape(double width, double height, double depth)
+{
+    return BRepPrimAPI_MakeBox(width, height, depth).Shape();
+}
+
+void expectMatchingGeometryFingerprint(const Part::FrozenTopoShapeBundle& expected,
+                                       const Part::FrozenTopoShapeBundle& actual)
+{
+    const std::string expectedFp = Part::TopoShapeArchive::fingerprintBundle(expected);
+    const std::string actualFp = Part::TopoShapeArchive::fingerprintBundle(actual);
+    const auto bbPos = expectedFp.find(";bb=");
+    ASSERT_NE(bbPos, std::string::npos);
+    EXPECT_EQ(actualFp.substr(bbPos), expectedFp.substr(bbPos));
+}
+
+void assertElementMapUsesHasher(const Data::ElementMapPtr& map, const App::StringHasherRef& hasher)
+{
+    ASSERT_TRUE(map);
+    EXPECT_EQ(static_cast<App::StringHasher*>(map->hasher),
+              static_cast<App::StringHasher*>(hasher));
+    for (const auto& child : map->getChildElements()) {
+        for (const auto& sid : child.sids) {
+            EXPECT_TRUE(sid.isFromSameHasher(hasher));
+            const App::StringIDRef resolved = hasher->getID(sid.value());
+            ASSERT_TRUE(resolved) << "child SID must resolve from shared hasher";
+            EXPECT_EQ(resolved.value(), sid.value());
+        }
+        if (child.elementMap) {
+            assertElementMapUsesHasher(child.elementMap, hasher);
+        }
+    }
+    for (const auto& el : map->getAll()) {
+        Data::ElementIDRefs sids;
+        (void)map->find(el.index, &sids);
+        for (const auto& sid : sids) {
+            EXPECT_TRUE(sid.isFromSameHasher(hasher));
+            const App::StringIDRef resolved = hasher->getID(sid.value());
+            ASSERT_TRUE(resolved) << "mapped SID must resolve from shared hasher";
+            EXPECT_EQ(resolved.value(), sid.value());
+        }
+    }
+}
+
+void assertSweepBundleMapsAndSids(const Part::FrozenTopoShapeBundle& bundle,
+                                  const App::StringHasherRef& hasher)
+{
+    ASSERT_TRUE(bundle.hasher);
+    EXPECT_EQ(static_cast<App::StringHasher*>(bundle.hasher),
+              static_cast<App::StringHasher*>(hasher));
+    EXPECT_EQ(static_cast<App::StringHasher*>(bundle.shape.Hasher),
+              static_cast<App::StringHasher*>(hasher));
+    assertElementMapUsesHasher(bundle.elementMap, hasher);
+}
+
+bool makeSweepCodecOperandBundles(Part::FrozenTopoShapeBundle& spineOut,
+                                  Part::FrozenTopoShapeBundle& profile0Out,
+                                  Part::FrozenTopoShapeBundle& profile1Out,
+                                  long* originalLongSidValueOut = nullptr)
+{
+    const auto spineEdge =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(0.0, 0.0, 8.0)).Edge();
+    const TopoDS_Wire spineWire = BRepBuilderAPI_MakeWire(spineEdge).Wire();
+    const TopoDS_Shape profileShape0Solid = makeProfileBoxShape(5.0, 5.0, 1.0);
+    const TopoDS_Shape profileShape1Solid = makeProfileBoxShape(3.0, 4.0, 1.0);
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(8);
+    hasher->advanceRevision();
+
+    Part::TopoShape spineShape(spineWire, /*tag=*/1, hasher);
+    Part::TopoShape profileShape0(profileShape0Solid, /*tag=*/2, hasher);
+    Part::TopoShape profileShape1(profileShape1Solid, /*tag=*/3, hasher);
+
+    auto spineMap = std::make_shared<Data::ElementMap>();
+    spineMap->hasher = hasher;
+    spineShape.resetElementMap(spineMap);
+
+    auto profileMap0 = std::make_shared<Data::ElementMap>();
+    profileMap0->hasher = hasher;
+    profileShape0.resetElementMap(profileMap0);
+    auto profileMap1 = std::make_shared<Data::ElementMap>();
+    profileMap1->hasher = hasher;
+    profileShape1.resetElementMap(profileMap1);
+
+    Data::IndexedName spineEdgeName("Edge", 1);
+    App::StringIDRef spineSeed = hasher->getID(QByteArray("SpineEd"));
+    if (!spineSeed) {
+        return false;
+    }
+    Data::MappedName spineMapped(QByteArray::fromStdString(spineSeed.toString()));
+    Data::ElementIDRefs spineSids;
+    spineSids.push_back(spineSeed);
+    spineMap->setElementName(spineEdgeName, spineMapped, spineShape.Tag, &spineSids);
+    spineSeed.mark();
+
+    Data::IndexedName profileEdge0("Edge", 1);
+    if (originalLongSidValueOut) {
+        const QByteArray longName(
+            "SweepProfileWithAVeryLongTopologicalNameThatExceedsTheHasherThreshold");
+        if (static_cast<size_t>(longName.size())
+            <= static_cast<size_t>(hasher->getThreshold())) {
+            return false;
+        }
+        App::StringIDRef longSid = hasher->getID(longName, App::StringHasher::Option::Hashable);
+        if (!longSid || !longSid.isHashed()) {
+            return false;
+        }
+        *originalLongSidValueOut = longSid.value();
+        Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+        Data::ElementIDRefs longSids;
+        longSids.push_back(longSid);
+        profileMap0->setElementName(profileEdge0, longMapped, profileShape0.Tag, &longSids);
+        longSid.mark();
+    }
+    else {
+        App::StringIDRef profileSeed0 = hasher->getID(QByteArray("Prof0Ed"));
+        if (!profileSeed0) {
+            return false;
+        }
+        Data::MappedName profileMapped0(QByteArray::fromStdString(profileSeed0.toString()));
+        Data::ElementIDRefs profileSids0;
+        profileSids0.push_back(profileSeed0);
+        profileMap0->setElementName(profileEdge0, profileMapped0, profileShape0.Tag, &profileSids0);
+        profileSeed0.mark();
+    }
+
+    Data::IndexedName profileEdge1("Edge", 1);
+    App::StringIDRef profileSeed1 = hasher->getID(QByteArray("Prof1Ed"));
+    if (!profileSeed1) {
+        return false;
+    }
+    Data::MappedName profileMapped1(QByteArray::fromStdString(profileSeed1.toString()));
+    Data::ElementIDRefs profileSids1;
+    profileSids1.push_back(profileSeed1);
+    profileMap1->setElementName(profileEdge1, profileMapped1, profileShape1.Tag, &profileSids1);
+    profileSeed1.mark();
+
+    spineOut = Part::TopoShapeArchive::createBundle(spineShape);
+    profile0Out = Part::TopoShapeArchive::createBundle(profileShape0);
+    profile1Out = Part::TopoShapeArchive::createBundle(profileShape1);
+    return spineOut.valid && profile0Out.valid && profile1Out.valid;
+}
+
+} // namespace
+
+TEST_F(NonBlockingGeometryTest, SweepCodecRoundTripPreservesOperandsProfilesAndFlags)
+{
+    Part::FrozenTopoShapeBundle spineBundle;
+    Part::FrozenTopoShapeBundle profileBundle0;
+    Part::FrozenTopoShapeBundle profileBundle1;
+    long originalLongSidValue = 0;
+    ASSERT_TRUE(makeSweepCodecOperandBundles(
+        spineBundle, profileBundle0, profileBundle1, &originalLongSidValue));
+
+    const QByteArray longName(
+        "SweepProfileWithAVeryLongTopologicalNameThatExceedsTheHasherThreshold");
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/sweep_codec");
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::SweepGeometryOperation op(spineBundle, {profileBundle0, profileBundle1}, /*isSolid=*/true);
+    ASSERT_TRUE(op.writeArchive(workspace).success);
+    ASSERT_TRUE(workspace.publishRequestJson());
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/spine.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/profile-0.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/profile-1.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(workDir + QStringLiteral("/request.json")));
+
+    QFile reqFile(workDir + QStringLiteral("/request.json"));
+    ASSERT_TRUE(reqFile.open(QIODevice::ReadOnly));
+    const QJsonObject published = QJsonDocument::fromJson(reqFile.readAll()).object();
+    reqFile.close();
+
+    EXPECT_EQ(published.value(QStringLiteral("operationType")).toString(), QStringLiteral("Part::Sweep"));
+    EXPECT_EQ(published.value(QStringLiteral("codecVersion")).toInt(), 1);
+    EXPECT_TRUE(published.value(QStringLiteral("isSolid")).toBool());
+    EXPECT_EQ(published.value(QStringLiteral("spinePath")).toString(), QStringLiteral("spine.fcg"));
+    const QJsonArray publishedProfiles = published.value(QStringLiteral("profiles")).toArray();
+    ASSERT_EQ(publishedProfiles.size(), 2);
+    EXPECT_EQ(publishedProfiles.at(0).toObject().value(QStringLiteral("path")).toString(),
+              QStringLiteral("profile-0.fcg"));
+    EXPECT_EQ(publishedProfiles.at(1).toObject().value(QStringLiteral("path")).toString(),
+              QStringLiteral("profile-1.fcg"));
+
+    std::string errorCode;
+    std::string errorMessage;
+    auto decoded = Part::SweepGeometryOperation::decodeFromRequest(
+        published, workDir, errorCode, errorMessage);
+    ASSERT_TRUE(decoded) << errorCode << ": " << errorMessage;
+
+    expectMatchingGeometryFingerprint(spineBundle, decoded->spineBundle());
+    ASSERT_EQ(decoded->profileBundles().size(), 2u);
+    expectMatchingGeometryFingerprint(profileBundle0, decoded->profileBundles()[0]);
+    expectMatchingGeometryFingerprint(profileBundle1, decoded->profileBundles()[1]);
+    EXPECT_TRUE(decoded->isSolid());
+
+    App::StringHasherRef sharedHasher(decoded->spineBundle().hasher);
+    assertSweepBundleMapsAndSids(decoded->spineBundle(), sharedHasher);
+    for (const Part::FrozenTopoShapeBundle& profile : decoded->profileBundles()) {
+        assertSweepBundleMapsAndSids(profile, sharedHasher);
+    }
+
+    Data::ElementIDRefs profile0Sids;
+    const Data::IndexedName profile0EdgeName("Edge", 1);
+    ASSERT_TRUE(decoded->profileBundles()[0].elementMap->find(profile0EdgeName, &profile0Sids));
+    ASSERT_FALSE(profile0Sids.empty());
+    EXPECT_TRUE(profile0Sids.front().isHashed());
+    auto again = sharedHasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), originalLongSidValue);
+    EXPECT_EQ(profile0Sids.front().value(), originalLongSidValue);
+
+    EXPECT_FALSE(QFileInfo::exists(workDir + QStringLiteral("/result.fcg")));
+}
+
+TEST_F(NonBlockingGeometryTest, SweepCodecRejectsBadRequestBeforeOcc)
+{
+    Part::FrozenTopoShapeBundle spineBundle;
+    Part::FrozenTopoShapeBundle profileBundle0;
+    Part::FrozenTopoShapeBundle profileBundle1;
+    ASSERT_TRUE(makeSweepCodecOperandBundles(spineBundle, profileBundle0, profileBundle1));
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/sweep_reject");
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::SweepGeometryOperation op(spineBundle, {profileBundle0, profileBundle1}, /*isSolid=*/false);
+    ASSERT_TRUE(op.writeArchive(workspace).success);
+    ASSERT_TRUE(workspace.publishRequestJson());
+
+    QFile reqFile(workDir + QStringLiteral("/request.json"));
+    ASSERT_TRUE(reqFile.open(QIODevice::ReadOnly));
+    QJsonObject good = QJsonDocument::fromJson(reqFile.readAll()).object();
+    reqFile.close();
+
+    const auto makeValidProfile = [&](const QString& path) {
+        QJsonObject profile;
+        profile.insert(QStringLiteral("path"), path);
+        profile.insert(QStringLiteral("size"),
+                       static_cast<qint64>(QFileInfo(workDir + QStringLiteral("/") + path).size()));
+        profile.insert(QStringLiteral("sha256"),
+                       QString::fromStdString(
+                           Part::TopoShapeArchive::calculateSha256File(
+                               (workDir + QStringLiteral("/") + path).toStdString())));
+        return profile;
+    };
+
+    auto expectReject = [&](const QJsonObject& bad,
+                            const char* expectedCode,
+                            const QString& decodeDir = QString()) {
+        const QString dir = decodeDir.isEmpty() ? workDir : decodeDir;
+        std::string errorCode;
+        std::string errorMessage;
+        auto decoded = Part::SweepGeometryOperation::decodeFromRequest(bad, dir, errorCode, errorMessage);
+        EXPECT_FALSE(decoded) << expectedCode;
+        EXPECT_EQ(errorCode, expectedCode) << errorMessage;
+        EXPECT_FALSE(QFileInfo::exists(dir + QStringLiteral("/result.fcg")));
+    };
+
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("operationType"), QStringLiteral("Part::Boolean"));
+        expectReject(bad, "UnsupportedOperation");
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("codecVersion"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), QStringLiteral("1"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 99);
+        expectReject(bad, "UnsupportedCodecVersion");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), -1);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 4294967296.0);
+        expectReject(bad, "OutOfRangeJsonNumber");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("codecVersion"), 4294967295.0);
+        expectReject(bad, "UnsupportedCodecVersion");
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("isSolid"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("isSolid"), 1);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("isSolid"), QStringLiteral("true"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("isSolid"), QJsonValue::Null);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("profiles"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("profiles"), QStringLiteral("not-an-array"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("profiles"), QJsonArray());
+        expectReject(bad, "EmptyProfiles");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        profiles.append(QStringLiteral("not-an-object"));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spinePath"), QStringLiteral("/tmp/escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spinePath"), QStringLiteral("../escape.fcg"));
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        profiles.append(makeValidProfile(QStringLiteral("profile-0.fcg")));
+        profiles.append(makeValidProfile(QStringLiteral("profile-0.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "DuplicateOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        profiles.append(makeValidProfile(QStringLiteral("spine.fcg")));
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "DuplicateOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject aliasSpine = makeValidProfile(QStringLiteral("spine.fcg"));
+        aliasSpine.insert(QStringLiteral("path"), QStringLiteral("./spine.fcg"));
+        profiles.append(aliasSpine);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "DuplicateOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spinePath"), QStringLiteral("missing.fcg"));
+        expectReject(bad, "MissingOperandArchive");
+    }
+    {
+        QJsonObject bad = good;
+        bad.remove(QStringLiteral("spineSize"));
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spineSize"), QStringLiteral("100"));
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spineSize"), 1.5);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spineSize"), -1);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spineSize"),
+                   bad.value(QStringLiteral("spineSize")).toVariant().toLongLong() + 1);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        QString sha = bad.value(QStringLiteral("spineSha256")).toString();
+        sha[0] = (sha[0] == QLatin1Char('a')) ? QLatin1Char('b') : QLatin1Char('a');
+        bad.insert(QStringLiteral("spineSha256"), sha);
+        expectReject(bad, "OperandDigestMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        QString sha = profile.value(QStringLiteral("sha256")).toString();
+        sha[0] = (sha[0] == QLatin1Char('a')) ? QLatin1Char('b') : QLatin1Char('a');
+        profile.insert(QStringLiteral("sha256"), sha);
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "OperandDigestMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.remove(QStringLiteral("path"));
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.insert(QStringLiteral("path"), QStringLiteral("../profile-0.fcg"));
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "UntrustedOperandPath");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.remove(QStringLiteral("size"));
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "MissingJsonField");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.insert(QStringLiteral("size"), 1.5);
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.insert(QStringLiteral("size"), -1);
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "OperandSizeMismatch");
+    }
+    {
+        QJsonObject bad = good;
+        QJsonArray profiles;
+        QJsonObject profile = makeValidProfile(QStringLiteral("profile-0.fcg"));
+        profile.remove(QStringLiteral("sha256"));
+        profiles.append(profile);
+        profiles.append(makeValidProfile(QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "WrongJsonType");
+    }
+    {
+        const QString corruptDir = _tempDir->path() + QStringLiteral("/sweep_corrupt");
+        QDir().mkpath(corruptDir);
+        const QString corruptSpinePath = corruptDir + QStringLiteral("/spine.fcg");
+        ASSERT_TRUE(QFile::copy(workDir + QStringLiteral("/spine.fcg"), corruptSpinePath));
+        {
+            std::ofstream ofs(corruptSpinePath.toStdString(), std::ios::binary | std::ios::app);
+            ofs << "TRAIL";
+        }
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spinePath"), QStringLiteral("spine.fcg"));
+        bad.insert(QStringLiteral("spineSize"), static_cast<qint64>(QFileInfo(corruptSpinePath).size()));
+        bad.insert(QStringLiteral("spineSha256"),
+                   QString::fromStdString(
+                       Part::TopoShapeArchive::calculateSha256File(corruptSpinePath.toStdString())));
+        expectReject(bad, "OperandDecodeFailed", corruptDir);
+    }
+    {
+        const QString mismatchDir = _tempDir->path() + QStringLiteral("/sweep_threshold");
+        QDir().mkpath(mismatchDir);
+        ASSERT_TRUE(
+            QFile::copy(workDir + QStringLiteral("/spine.fcg"), mismatchDir + QStringLiteral("/spine.fcg")));
+        ASSERT_TRUE(QFile::copy(workDir + QStringLiteral("/profile-0.fcg"),
+                                mismatchDir + QStringLiteral("/profile-0.fcg")));
+
+        Part::FrozenTopoShapeBundle mismatchedProfileBundle;
+        const std::string sourceProfile1 =
+            (workDir + QStringLiteral("/profile-1.fcg")).toStdString();
+        ASSERT_TRUE(
+            Part::TopoShapeArchive::readArchive(sourceProfile1, mismatchedProfileBundle));
+        ASSERT_TRUE(mismatchedProfileBundle.valid);
+        mismatchedProfileBundle.hasherSnapshot.threshold = 20;
+        if (mismatchedProfileBundle.hasher) {
+            mismatchedProfileBundle.hasher->setThreshold(20);
+        }
+        const QString mismatchedProfilePath = mismatchDir + QStringLiteral("/profile-1.fcg");
+        ASSERT_TRUE(Part::TopoShapeArchive::writeArchive(mismatchedProfileBundle,
+                                                         mismatchedProfilePath.toStdString()));
+
+        const auto makeValidProfileInDir = [&](const QString& dir, const QString& path) {
+            QJsonObject profile;
+            profile.insert(QStringLiteral("path"), path);
+            const QString abs = dir + QStringLiteral("/") + path;
+            profile.insert(QStringLiteral("size"), static_cast<qint64>(QFileInfo(abs).size()));
+            profile.insert(QStringLiteral("sha256"),
+                           QString::fromStdString(
+                               Part::TopoShapeArchive::calculateSha256File(abs.toStdString())));
+            return profile;
+        };
+
+        QJsonObject bad = good;
+        bad.insert(QStringLiteral("spinePath"), QStringLiteral("spine.fcg"));
+        bad.insert(QStringLiteral("spineSize"),
+                   static_cast<qint64>(
+                       QFileInfo(mismatchDir + QStringLiteral("/spine.fcg")).size()));
+        bad.insert(QStringLiteral("spineSha256"),
+                   QString::fromStdString(Part::TopoShapeArchive::calculateSha256File(
+                       (mismatchDir + QStringLiteral("/spine.fcg")).toStdString())));
+        QJsonArray profiles;
+        profiles.append(makeValidProfileInDir(mismatchDir, QStringLiteral("profile-0.fcg")));
+        profiles.append(makeValidProfileInDir(mismatchDir, QStringLiteral("profile-1.fcg")));
+        bad.insert(QStringLiteral("profiles"), profiles);
+        expectReject(bad, "ThresholdMismatch", mismatchDir);
+    }
+}
+
+TEST_F(NonBlockingGeometryTest, SweepCodecStagingFailureDoesNotPublish)
+{
+    Part::FrozenTopoShapeBundle spineBundle;
+    Part::FrozenTopoShapeBundle profileBundle0;
+    Part::FrozenTopoShapeBundle profileBundle1;
+    ASSERT_TRUE(makeSweepCodecOperandBundles(spineBundle, profileBundle0, profileBundle1));
+    Part::SweepGeometryOperation op(spineBundle, {profileBundle0, profileBundle1}, /*isSolid=*/false);
+
+    struct StubArchiveWriter : App::GeometryArchiveWriter
+    {
+        void writeSection(const std::string&, const std::vector<uint8_t>&) override
+        {
+        }
+        void writeString(const std::string&, const std::string&) override
+        {
+        }
+        void writeBytes(const std::string&, const uint8_t*, size_t) override
+        {
+        }
+    };
+    StubArchiveWriter stub;
+    const auto stubWrite = op.writeArchive(stub);
+    EXPECT_FALSE(stubWrite.success);
+    EXPECT_EQ(stubWrite.errorCode, "UnsupportedArchiveWriter");
+
+    const QString blockedWs = _tempDir->path() + QStringLiteral("/sweep_stage_blocked");
+    QDir().mkpath(blockedWs);
+    QFile staleFile(blockedWs + QStringLiteral("/profile-1.fcg"));
+    ASSERT_TRUE(staleFile.open(QIODevice::WriteOnly));
+    staleFile.write("stale-operand");
+    staleFile.close();
+    ASSERT_TRUE(QDir().mkpath(blockedWs + QStringLiteral("/profile-1.fcg.tmp")));
+
+    App::GeometryRequestWorkspace blocked(blockedWs);
+    EXPECT_FALSE(blocked.hasFailed());
+    const auto blockedWrite = op.writeArchive(blocked);
+    EXPECT_FALSE(blockedWrite.success);
+    EXPECT_TRUE(blocked.hasFailed());
+    EXPECT_FALSE(blocked.publishRequestJson());
+    EXPECT_FALSE(QFileInfo::exists(blockedWs + QStringLiteral("/request.json")));
+    EXPECT_FALSE(QFileInfo::exists(blockedWs + QStringLiteral("/profile-1.fcg")))
+        << "stale profile-1.fcg must be cleared and not accepted after failed staging";
+
+    const QString reuseWs = _tempDir->path() + QStringLiteral("/sweep_reuse_empty");
+    App::GeometryRequestWorkspace reuse(reuseWs);
+    ASSERT_TRUE(op.writeArchive(reuse).success);
+    ASSERT_TRUE(reuse.publishRequestJson());
+    ASSERT_TRUE(QFileInfo::exists(reuseWs + QStringLiteral("/request.json")));
+
+    Part::SweepGeometryOperation emptyProfilesOp(spineBundle, {});
+    const auto emptyWrite = emptyProfilesOp.writeArchive(reuse);
+    EXPECT_FALSE(emptyWrite.success);
+    EXPECT_EQ(emptyWrite.errorCode, "NoProfiles");
+    EXPECT_TRUE(reuse.hasFailed());
+    EXPECT_FALSE(reuse.publishRequestJson());
+    EXPECT_FALSE(QFileInfo::exists(reuseWs + QStringLiteral("/request.json")));
+}
+
 TEST_F(NonBlockingGeometryTest, FilletCodecStagingFailureDoesNotPublish)
 {
     BRepPrimAPI_MakeBox box(5.0, 5.0, 5.0);
