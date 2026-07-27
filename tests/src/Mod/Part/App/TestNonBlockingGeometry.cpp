@@ -32,6 +32,7 @@
 #include <QByteArray>
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1962,19 +1963,6 @@ TEST_F(NonBlockingGeometryTest, FilletCodecRejectsBadRequestBeforeOcc)
 namespace
 {
 
-TopoDS_Wire makeRectWire(double width, double height)
-{
-    const auto e1 =
-        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(width, 0.0, 0.0)).Edge();
-    const auto e2 =
-        BRepBuilderAPI_MakeEdge(gp_Pnt(width, 0.0, 0.0), gp_Pnt(width, height, 0.0)).Edge();
-    const auto e3 =
-        BRepBuilderAPI_MakeEdge(gp_Pnt(width, height, 0.0), gp_Pnt(0.0, height, 0.0)).Edge();
-    const auto e4 =
-        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, height, 0.0), gp_Pnt(0.0, 0.0, 0.0)).Edge();
-    return BRepBuilderAPI_MakeWire(e1, e2, e3, e4).Wire();
-}
-
 TopoDS_Shape makeProfileBoxShape(double width, double height, double depth)
 {
     return BRepPrimAPI_MakeBox(width, height, depth).Shape();
@@ -2018,6 +2006,8 @@ void assertElementMapUsesHasher(const Data::ElementMapPtr& map, const App::Strin
     }
 }
 
+// Validates shared hasher wiring and SID resolution across the bundle ElementMap
+// (including child maps). Does not assert mapped-history source tags.
 void assertSweepBundleMapsAndSids(const Part::FrozenTopoShapeBundle& bundle,
                                   const App::StringHasherRef& hasher)
 {
@@ -2027,6 +2017,51 @@ void assertSweepBundleMapsAndSids(const Part::FrozenTopoShapeBundle& bundle,
     EXPECT_EQ(static_cast<App::StringHasher*>(bundle.shape.Hasher),
               static_cast<App::StringHasher*>(hasher));
     assertElementMapUsesHasher(bundle.elementMap, hasher);
+}
+
+struct SweepMappedHistoryTraceResult
+{
+    bool historyCallbackRan {false};
+    bool sawExpectedSourceTag {false};
+    bool sawSpineTag {false};
+    bool sawProfileTag {false};
+};
+
+SweepMappedHistoryTraceResult traceSweepResultMappedHistory(
+    const Part::FrozenTopoShapeBundle& outBundle)
+{
+    SweepMappedHistoryTraceResult result;
+    std::function<void(const Data::ElementMapPtr&)> walkMap =
+        [&](const Data::ElementMapPtr& em) {
+            if (!em) {
+                return;
+            }
+            for (const auto& el : em->getAll()) {
+                Data::ElementIDRefs sids;
+                auto mapped = em->find(el.index, &sids);
+                if (!mapped) {
+                    continue;
+                }
+                outBundle.shape.traceElement(
+                    mapped, [&](const Data::MappedName&, int, long tag, long) {
+                        result.historyCallbackRan = true;
+                        if (tag == 1) {
+                            result.sawSpineTag = true;
+                            result.sawExpectedSourceTag = true;
+                        }
+                        if (tag == 2) {
+                            result.sawProfileTag = true;
+                            result.sawExpectedSourceTag = true;
+                        }
+                        return true;
+                    });
+            }
+            for (const auto& child : em->getChildElements()) {
+                walkMap(child.elementMap);
+            }
+        };
+    walkMap(outBundle.elementMap);
+    return result;
 }
 
 bool makeSweepCodecOperandBundles(Part::FrozenTopoShapeBundle& spineOut,
@@ -2727,6 +2762,287 @@ TEST_F(NonBlockingGeometryTest, FilletWorkerProcessRecoveryAfterBadRequest)
     Part::FilletGeometryOperation filletOp(base, {{0, 1.0, 1.0}});
     const App::DetachedGeometryResult decoded =
         filletOp.decodeResultArchive(resultPath.toStdString());
+    EXPECT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+}
+
+namespace
+{
+
+TopoDS_Wire makeVerticalSpineWire()
+{
+    const auto spineEdge =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(0.0, 0.0, 8.0)).Edge();
+    return BRepBuilderAPI_MakeWire(spineEdge).Wire();
+}
+
+TopoDS_Wire makeRectProfileWire(double width, double height)
+{
+    const auto e1 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(width, 0.0, 0.0)).Edge();
+    const auto e2 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, 0.0, 0.0), gp_Pnt(width, height, 0.0)).Edge();
+    const auto e3 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, height, 0.0), gp_Pnt(0.0, height, 0.0)).Edge();
+    const auto e4 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, height, 0.0), gp_Pnt(0.0, 0.0, 0.0)).Edge();
+    return BRepBuilderAPI_MakeWire(e1, e2, e3, e4).Wire();
+}
+
+bool makeSweepWorkerOperandBundles(Part::FrozenTopoShapeBundle& spineOut,
+                                   Part::FrozenTopoShapeBundle& profileOut,
+                                   long* originalLongSidValueOut = nullptr)
+{
+    const TopoDS_Wire spineWire = makeVerticalSpineWire();
+    const TopoDS_Wire profileWire = makeRectProfileWire(5.0, 5.0);
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(8);
+    hasher->advanceRevision();
+
+    Part::TopoShape spineShape(spineWire, /*tag=*/1, hasher);
+    Part::TopoShape profileShape(profileWire, /*tag=*/2, hasher);
+
+    auto spineMap = std::make_shared<Data::ElementMap>();
+    spineMap->hasher = hasher;
+    spineShape.resetElementMap(spineMap);
+
+    auto profileMap = std::make_shared<Data::ElementMap>();
+    profileMap->hasher = hasher;
+    profileShape.resetElementMap(profileMap);
+
+    Data::IndexedName spineEdgeName("Edge", 1);
+    App::StringIDRef spineSeed = hasher->getID(QByteArray("SpineEd"));
+    if (!spineSeed) {
+        return false;
+    }
+    Data::MappedName spineMapped(QByteArray::fromStdString(spineSeed.toString()));
+    Data::ElementIDRefs spineSids;
+    spineSids.push_back(spineSeed);
+    spineMap->setElementName(spineEdgeName, spineMapped, spineShape.Tag, &spineSids);
+    spineSeed.mark();
+
+    Data::IndexedName profileEdge0("Edge", 1);
+    if (originalLongSidValueOut) {
+        const QByteArray longName(
+            "SweepProfileWithAVeryLongTopologicalNameThatExceedsTheHasherThreshold");
+        if (static_cast<size_t>(longName.size())
+            <= static_cast<size_t>(hasher->getThreshold())) {
+            return false;
+        }
+        App::StringIDRef longSid = hasher->getID(longName, App::StringHasher::Option::Hashable);
+        if (!longSid || !longSid.isHashed()) {
+            return false;
+        }
+        *originalLongSidValueOut = longSid.value();
+        Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+        Data::ElementIDRefs longSids;
+        longSids.push_back(longSid);
+        profileMap->setElementName(profileEdge0, longMapped, profileShape.Tag, &longSids);
+        longSid.mark();
+    }
+    else {
+        App::StringIDRef profileSeed0 = hasher->getID(QByteArray("Prof0Ed"));
+        if (!profileSeed0) {
+            return false;
+        }
+        Data::MappedName profileMapped0(QByteArray::fromStdString(profileSeed0.toString()));
+        Data::ElementIDRefs profileSids0;
+        profileSids0.push_back(profileSeed0);
+        profileMap->setElementName(profileEdge0, profileMapped0, profileShape.Tag, &profileSids0);
+        profileSeed0.mark();
+    }
+
+    spineOut = Part::TopoShapeArchive::createBundle(spineShape);
+    profileOut = Part::TopoShapeArchive::createBundle(profileShape);
+    return spineOut.valid && profileOut.valid;
+}
+
+bool publishSweepWorkerRequest(const QString& workDir,
+                              const Part::FrozenTopoShapeBundle& spine,
+                              const std::vector<Part::FrozenTopoShapeBundle>& profiles,
+                              bool isSolid,
+                              App::GeometryJobId jobId)
+{
+    std::string jobWire;
+    if (!App::formatGeometryJobId(jobId, jobWire)) {
+        return false;
+    }
+    App::GeometryRequestWorkspace workspace(workDir);
+    workspace.requestObject().insert(QStringLiteral("jobId"), QString::fromStdString(jobWire));
+    Part::SweepGeometryOperation op(spine, profiles, isSolid);
+    if (!op.writeArchive(workspace).success) {
+        return false;
+    }
+    return workspace.publishRequestJson();
+}
+
+struct WorkerProcessTranscript
+{
+    QStringList types;
+    QStringList progressPhases;
+    QJsonObject resultObj;
+    QJsonObject errorObj;
+};
+
+WorkerProcessTranscript parseWorkerProcessStdout(const std::string& stdoutText)
+{
+    WorkerProcessTranscript out;
+    const QString text = QString::fromStdString(stdoutText);
+    for (const QString& line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (!line.startsWith(QStringLiteral("FCGEO/1 "))) {
+            continue;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(line.mid(8).toUtf8());
+        if (!doc.isObject()) {
+            continue;
+        }
+        const QJsonObject obj = doc.object();
+        const QString type = obj.value(QStringLiteral("type")).toString();
+        out.types.push_back(type);
+        if (type == QStringLiteral("progress")) {
+            out.progressPhases.push_back(obj.value(QStringLiteral("phase")).toString());
+        }
+        else if (type == QStringLiteral("result")) {
+            out.resultObj = obj;
+        }
+        else if (type == QStringLiteral("error")) {
+            out.errorObj = obj;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_F(NonBlockingGeometryTest, SweepWorkerProcessProducesMappedResult)
+{
+    Part::GeometryWorkerRegistry::instance().registerBuiltins();
+    Part::FrozenTopoShapeBundle spineBundle;
+    Part::FrozenTopoShapeBundle profileBundle;
+    long originalLongSidValue = 0;
+    ASSERT_TRUE(makeSweepWorkerOperandBundles(
+        spineBundle, profileBundle, &originalLongSidValue));
+    const QByteArray longName(
+        "SweepProfileWithAVeryLongTopologicalNameThatExceedsTheHasherThreshold");
+
+    const QString workDir = _tempDir->path() + QStringLiteral("/sweep_worker_ok");
+    constexpr App::GeometryJobId kJobId = 27;
+    ASSERT_TRUE(publishSweepWorkerRequest(workDir,
+                                          spineBundle,
+                                          {profileBundle},
+                                          /*isSolid=*/false,
+                                          kJobId));
+    const QString requestPath = workDir + QStringLiteral("/request.json");
+    ASSERT_TRUE(QFileInfo::exists(requestPath));
+
+    const int exitCode = Part::GeometryWorker::runWorkerProcess(requestPath.toStdString());
+    EXPECT_EQ(exitCode, 0);
+
+    const QString resultPath = workDir + QStringLiteral("/result.fcg");
+    ASSERT_TRUE(QFileInfo::exists(resultPath));
+
+    Part::SweepGeometryOperation sweepOp(spineBundle,
+                                         {profileBundle},
+                                         /*isSolid=*/false);
+    const App::DetachedGeometryResult decoded =
+        sweepOp.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
+    Part::FrozenTopoShapeBundle outBundle;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), outBundle));
+    EXPECT_TRUE(outBundle.valid);
+    EXPECT_FALSE(outBundle.shape.isNull());
+    ASSERT_TRUE(outBundle.elementMap) << "mapped sweep must archive a non-null ElementMap";
+    EXPECT_GT(outBundle.elementMap->size(), 0u);
+    ASSERT_TRUE(outBundle.hasher);
+    EXPECT_FALSE(outBundle.hasherSnapshot.entries.empty());
+    EXPECT_EQ(static_cast<App::StringHasher*>(outBundle.shape.Hasher),
+              static_cast<App::StringHasher*>(outBundle.hasher));
+    EXPECT_EQ(outBundle.elementMap->hasher, outBundle.hasher);
+
+    // Long Hashable SID resolves to its original ID from the recovered hasher closure.
+    auto again = outBundle.hasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again) << "long Hashable SID must resolve from recovered hasher";
+    EXPECT_EQ(again.value(), originalLongSidValue);
+
+    assertSweepBundleMapsAndSids(outBundle, outBundle.hasher);
+
+    const SweepMappedHistoryTraceResult mappedHistory =
+        traceSweepResultMappedHistory(outBundle);
+    EXPECT_TRUE(mappedHistory.historyCallbackRan)
+        << "traceElement callback must run for at least one mapped output element";
+    EXPECT_TRUE(mappedHistory.sawExpectedSourceTag)
+        << "mapped history must reference spine tag 1 or profile tag 2";
+
+    // Result was published only under result.fcg: no stale temp artifacts remain.
+    EXPECT_FALSE(QFileInfo::exists(workDir + QStringLiteral("/result.fcg.tmp")));
+    EXPECT_FALSE(QFileInfo::exists(workDir + QStringLiteral("/sweep_result.fcg")));
+}
+
+TEST_F(NonBlockingGeometryTest, SweepWorkerProcessRecoveryAfterBadRequest)
+{
+    Part::GeometryWorkerRegistry::instance().registerBuiltins();
+    Part::FrozenTopoShapeBundle spineBundle;
+    Part::FrozenTopoShapeBundle profileBundle;
+    ASSERT_TRUE(makeSweepWorkerOperandBundles(spineBundle, profileBundle));
+    constexpr App::GeometryJobId kJobId = 28;
+    std::string jobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(kJobId, jobWire));
+
+    // Bad path: publish a valid request, then remove profile-0.fcg before invoking
+    // the worker. Decode must fail with MissingOperandArchive and must not invoke
+    // sweep.compute or emit a result terminal.
+    const QString badDir = _tempDir->path() + QStringLiteral("/sweep_worker_bad");
+    ASSERT_TRUE(publishSweepWorkerRequest(badDir,
+                                          spineBundle,
+                                          {profileBundle},
+                                          /*isSolid=*/false,
+                                          kJobId));
+    ASSERT_TRUE(QFile::remove(badDir + QStringLiteral("/profile-0.fcg")));
+
+    testing::internal::CaptureStdout();
+    const int badExit =
+        Part::GeometryWorker::runWorkerProcess((badDir + QStringLiteral("/request.json")).toStdString());
+    const std::string captured = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(badExit, 2);
+    EXPECT_FALSE(QFileInfo::exists(badDir + QStringLiteral("/result.fcg")));
+
+    const WorkerProcessTranscript transcript = parseWorkerProcessStdout(captured);
+    ASSERT_FALSE(transcript.types.empty());
+    EXPECT_EQ(transcript.types.front(), QStringLiteral("hello"));
+    EXPECT_EQ(std::count(transcript.types.begin(),
+                         transcript.types.end(),
+                         QStringLiteral("error")),
+              1);
+    EXPECT_EQ(transcript.errorObj.value(QStringLiteral("code")).toString(),
+              QStringLiteral("MissingOperandArchive"));
+    EXPECT_EQ(transcript.errorObj.value(QStringLiteral("jobId")).toString(),
+              QString::fromStdString(jobWire));
+    EXPECT_EQ(std::count(transcript.types.begin(),
+                         transcript.types.end(),
+                         QStringLiteral("result")),
+              0);
+    EXPECT_FALSE(transcript.progressPhases.contains(QStringLiteral("sweep.compute")));
+
+    // Recovery: in a fresh workspace, publish the same valid mapped Sweep request
+    // and invoke the worker again. The worker must produce a mapped result.
+    const QString goodDir = _tempDir->path() + QStringLiteral("/sweep_worker_good");
+    ASSERT_TRUE(publishSweepWorkerRequest(goodDir,
+                                          spineBundle,
+                                          {profileBundle},
+                                          /*isSolid=*/false,
+                                          kJobId));
+    const int goodExit =
+        Part::GeometryWorker::runWorkerProcess((goodDir + QStringLiteral("/request.json")).toStdString());
+    ASSERT_EQ(goodExit, 0);
+    const QString resultPath = goodDir + QStringLiteral("/result.fcg");
+    ASSERT_TRUE(QFileInfo::exists(resultPath));
+
+    Part::SweepGeometryOperation sweepOp(spineBundle,
+                                         {profileBundle},
+                                         /*isSolid=*/false);
+    const App::DetachedGeometryResult decoded =
+        sweepOp.decodeResultArchive(resultPath.toStdString());
     EXPECT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
 }
 
