@@ -12,10 +12,13 @@
 #include <App/MappedName.h>
 #include <App/StringHasher.h>
 #include <Mod/Part/App/BooleanGeometryOperation.h>
+#include <Mod/Part/App/FilletGeometryOperation.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
 #include <src/App/InitApplication.h>
 
+#include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <GProp_GProps.hxx>
 #include <gp_Pnt.hxx>
 
 #include <QCoreApplication>
@@ -28,6 +31,7 @@
 #include <QTemporaryDir>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -135,6 +139,184 @@ std::shared_ptr<Part::BooleanGeometryOperation> makeMappedBooleanTask(int thresh
     auto b1 = Part::TopoShapeArchive::createBundle(shape1);
     auto b2 = Part::TopoShapeArchive::createBundle(shape2);
     return std::make_shared<Part::BooleanGeometryOperation>(Part::BooleanType::Fuse, b1, b2);
+}
+
+struct MappedFilletBox
+{
+    Part::FrozenTopoShapeBundle base;
+    long hashedId {0};
+    QByteArray longName;
+    QByteArray seedName;
+    int threshold {16};
+};
+
+MappedFilletBox makeMappedFilletBox()
+{
+    MappedFilletBox out;
+    out.threshold = 16;
+    out.longName = QByteArray("MappedEdgeNameThatDefinitelyExceedsTheSmallHashThresholdXX");
+    out.seedName = QByteArray("FilletCrossProcessSeedEdge");
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(out.threshold);
+
+    BRepPrimAPI_MakeBox box(10.0, 10.0, 10.0);
+    Part::TopoShape shape(box.Shape(), /*tag=*/1, hasher);
+    auto map = std::make_shared<Data::ElementMap>();
+    map->hasher = hasher;
+
+    App::StringIDRef seedSid = hasher->getID(out.seedName);
+    if (!seedSid) {
+        return {};
+    }
+    Data::MappedName seedMapped(seedSid);
+    Data::ElementIDRefs seedSids;
+    seedSids.push_back(seedSid);
+    map->setElementName(Data::IndexedName("Edge", 1), seedMapped, shape.Tag, &seedSids);
+    seedSid.mark();
+
+    App::StringIDRef longSid = hasher->getID(out.longName, App::StringHasher::Option::Hashable);
+    if (!longSid || !longSid.isHashed()) {
+        return {};
+    }
+    out.hashedId = longSid.value();
+    Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+    Data::ElementIDRefs longSids;
+    longSids.push_back(longSid);
+    map->setElementName(Data::IndexedName("Edge", 2), longMapped, shape.Tag, &longSids);
+    longSid.mark();
+
+    shape.resetElementMap(map);
+    out.base = Part::TopoShapeArchive::createBundle(shape);
+    return out;
+}
+
+bool allMapsUseHasher(const Data::ElementMapPtr& map, const App::StringHasherRef& hasher)
+{
+    if (!map) {
+        return true;
+    }
+    if (static_cast<App::StringHasher*>(map->hasher)
+        != static_cast<App::StringHasher*>(hasher)) {
+        return false;
+    }
+    for (const auto& child : map->getChildElements()) {
+        for (const auto& sid : child.sids) {
+            if (!sid.isFromSameHasher(hasher)) {
+                return false;
+            }
+        }
+        if (!allMapsUseHasher(child.elementMap, hasher)) {
+            return false;
+        }
+    }
+    for (const auto& el : map->getAll()) {
+        Data::ElementIDRefs sids;
+        (void)map->find(el.index, &sids);
+        for (const auto& sid : sids) {
+            if (!sid.isFromSameHasher(hasher)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void assertMappedFilletResult(const Part::FrozenTopoShapeBundle& out,
+                              long hashedId,
+                              const QByteArray& longName,
+                              const QByteArray& seedName,
+                              int expectedThreshold)
+{
+    ASSERT_TRUE(out.valid);
+    ASSERT_FALSE(out.shape.isNull());
+    ASSERT_TRUE(out.elementMap);
+    ASSERT_TRUE(out.hasher);
+    EXPECT_GT(out.elementMap->size(), 0u);
+    EXPECT_FALSE(out.hasherSnapshot.entries.empty());
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.shape.Hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+    EXPECT_EQ(out.hasher->getThreshold(), expectedThreshold);
+    EXPECT_TRUE(allMapsUseHasher(out.elementMap, out.hasher));
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.elementMap->hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+
+    auto again = out.hasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), hashedId);
+    EXPECT_TRUE(again.isHashed());
+
+    auto seedSid = out.hasher->getID(seedName);
+    ASSERT_TRUE(seedSid);
+    EXPECT_TRUE(seedSid.isFromSameHasher(out.hasher));
+    EXPECT_TRUE(out.hasher->getID(seedSid.value()));
+
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(out.shape.getShape(), props);
+    EXPECT_GT(props.Mass(), 900.0);
+    EXPECT_LT(props.Mass(), 1100.0);
+
+    std::function<void(const Data::ElementMapPtr&)> assertSidsResolve =
+        [&](const Data::ElementMapPtr& em) {
+            if (!em) {
+                return;
+            }
+            EXPECT_EQ(static_cast<App::StringHasher*>(em->hasher),
+                      static_cast<App::StringHasher*>(out.hasher));
+            for (const auto& el : em->getAll()) {
+                Data::ElementIDRefs sids;
+                auto mapped = em->find(el.index, &sids);
+                for (const auto& ref : sids) {
+                    ASSERT_TRUE(ref);
+                    EXPECT_TRUE(ref.isFromSameHasher(out.hasher));
+                    EXPECT_TRUE(out.hasher->getID(ref.value()));
+                }
+                if (mapped) {
+                    out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long, long) {
+                        return true;
+                    });
+                }
+            }
+            for (const auto& child : em->getChildElements()) {
+                assertSidsResolve(child.elementMap);
+            }
+        };
+    assertSidsResolve(out.elementMap);
+
+    bool sawSourceTag = false;
+    bool historyWalked = false;
+    for (const auto& el : out.elementMap->getAll()) {
+        Data::ElementIDRefs sids;
+        auto mapped = out.elementMap->find(el.index, &sids);
+        if (!mapped) {
+            continue;
+        }
+        out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long tag, long) {
+            if (tag == 1) {
+                sawSourceTag = true;
+            }
+            return true;
+        });
+        const std::string mappedText = mapped.toString();
+        if (!mappedText.empty()) {
+            historyWalked = true;
+        }
+    }
+    EXPECT_TRUE(historyWalked);
+    EXPECT_TRUE(sawSourceTag);
+}
+
+std::shared_ptr<Part::FilletGeometryOperation> makeMappedFilletTask(MappedFilletBox* boxOut = nullptr)
+{
+    const MappedFilletBox mapped = makeMappedFilletBox();
+    if (boxOut) {
+        *boxOut = mapped;
+    }
+    if (!mapped.base.valid) {
+        return {};
+    }
+    return std::make_shared<Part::FilletGeometryOperation>(mapped.base,
+                                                           std::vector<Part::FilletEdgeSpec>{{0, 1.0, 1.0}});
 }
 
 QString helloLine()
@@ -479,6 +661,182 @@ TEST_F(GeometryWorkerProcessTest, ParentControlledRealFreeCADCmdMappedBoolean)
 
     // Consumer releases workspace explicitly.
     QDir(proc.workspaceDir()).removeRecursively();
+}
+
+TEST_F(GeometryWorkerProcessTest, ParentControlledRealFreeCADCmdMappedFillet)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    MappedFilletBox mapped;
+    auto task = makeMappedFilletTask(&mapped);
+    ASSERT_TRUE(task);
+    ASSERT_TRUE(mapped.base.valid);
+    ASSERT_TRUE(mapped.base.elementMap);
+    EXPECT_GT(mapped.base.elementMap->size(), 0u);
+
+    App::GeometryJobSpec spec;
+    spec.id = 43;
+    spec.task = task;
+    spec.backend = App::GeometryBackend::FreeCADCmd;
+    spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess proc;
+    std::atomic<int> callbacks {0};
+    bool finished = false;
+    App::GeometryJobState terminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult terminalResult;
+    QObject::connect(&proc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &proc,
+                     [&](App::GeometryJobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++callbacks;
+                         finished = true;
+                         terminal = state;
+                         terminalResult = result;
+                     });
+
+    ASSERT_TRUE(proc.startJob(spec, _tempDir->path() + QStringLiteral("/parent_fillet_job")));
+    ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/request.json")));
+    ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/base.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/tool.fcg")));
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop, &QEventLoop::quit);
+    timeout.start(180000);
+    if (!finished) {
+        loop.exec();
+    }
+
+    ASSERT_TRUE(finished) << "GeometryWorkerProcess did not finish";
+    EXPECT_EQ(callbacks.load(), 1);
+    EXPECT_FALSE(proc.protocolFailed());
+    EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit) << terminalResult.errorCode << ": "
+                                                              << terminalResult.errorMessage;
+    EXPECT_TRUE(terminalResult.success);
+    ASSERT_FALSE(terminalResult.resultArchivePath.empty());
+    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(terminalResult.resultArchivePath)));
+    EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir()));
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(terminalResult.resultArchivePath, recovered));
+    assertMappedFilletResult(recovered,
+                             mapped.hashedId,
+                             mapped.longName,
+                             mapped.seedName,
+                             mapped.threshold);
+
+    QDir(proc.workspaceDir()).removeRecursively();
+}
+
+TEST_F(GeometryWorkerProcessTest, ParentControlledFilletEmptyEdgesFailsBeforeOcc)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    const MappedFilletBox mapped = makeMappedFilletBox();
+    ASSERT_TRUE(mapped.base.valid);
+    ASSERT_TRUE(mapped.base.elementMap);
+    EXPECT_GT(mapped.base.elementMap->size(), 0u);
+
+    auto badTask =
+        std::make_shared<Part::FilletGeometryOperation>(mapped.base, std::vector<Part::FilletEdgeSpec> {});
+
+    App::GeometryJobSpec badSpec;
+    badSpec.id = 44;
+    badSpec.task = badTask;
+    badSpec.backend = App::GeometryBackend::FreeCADCmd;
+    badSpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess badProc;
+    std::atomic<int> badCallbacks {0};
+    bool badFinished = false;
+    App::GeometryJobState badTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult badResult;
+    QString badWorkspace;
+    QObject::connect(&badProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &badProc,
+                     [&](App::GeometryJobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++badCallbacks;
+                         badFinished = true;
+                         badTerminal = state;
+                         badResult = result;
+                         badWorkspace = badProc.workspaceDir();
+                     });
+
+    ASSERT_TRUE(badProc.startJob(badSpec, _tempDir->path() + QStringLiteral("/parent_fillet_bad")));
+    ASSERT_TRUE(QFileInfo::exists(badProc.workspaceDir() + QStringLiteral("/request.json")));
+    ASSERT_TRUE(QFileInfo::exists(badProc.workspaceDir() + QStringLiteral("/base.fcg")));
+
+    QEventLoop badLoop;
+    QTimer badTimeout;
+    badTimeout.setSingleShot(true);
+    QObject::connect(&badTimeout, &QTimer::timeout, &badLoop, &QEventLoop::quit);
+    QObject::connect(&badProc, &Gui::GeometryWorkerProcess::jobFinished, &badLoop, &QEventLoop::quit);
+    badTimeout.start(180000);
+    if (!badFinished) {
+        badLoop.exec();
+    }
+
+    ASSERT_TRUE(badFinished);
+    EXPECT_EQ(badCallbacks.load(), 1);
+    EXPECT_FALSE(badProc.protocolFailed()) << badResult.errorCode;
+    EXPECT_EQ(badTerminal, App::GeometryJobState::Failed);
+    EXPECT_EQ(badResult.errorCode, "EmptyEdges");
+    EXPECT_NE(badTerminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_NE(badTerminal, App::GeometryJobState::Completed);
+    EXPECT_FALSE(badResult.success);
+    EXPECT_TRUE(badResult.resultArchivePath.empty());
+    if (!badWorkspace.isEmpty()) {
+        EXPECT_FALSE(QFileInfo::exists(badWorkspace + QStringLiteral("/result.fcg")));
+    }
+
+    auto goodTask = std::make_shared<Part::FilletGeometryOperation>(
+        mapped.base, std::vector<Part::FilletEdgeSpec> {{0, 1.0, 1.0}});
+    App::GeometryJobSpec goodSpec;
+    goodSpec.id = 45;
+    goodSpec.task = goodTask;
+    goodSpec.backend = App::GeometryBackend::FreeCADCmd;
+    goodSpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess goodProc;
+    std::atomic<int> goodCallbacks {0};
+    bool goodFinished = false;
+    App::GeometryJobState goodTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult goodResult;
+    QObject::connect(&goodProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &goodProc,
+                     [&](App::GeometryJobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++goodCallbacks;
+                         goodFinished = true;
+                         goodTerminal = state;
+                         goodResult = result;
+                     });
+
+    ASSERT_TRUE(goodProc.startJob(goodSpec, _tempDir->path() + QStringLiteral("/parent_fillet_good")));
+    QEventLoop goodLoop;
+    QTimer goodTimeout;
+    goodTimeout.setSingleShot(true);
+    QObject::connect(&goodTimeout, &QTimer::timeout, &goodLoop, &QEventLoop::quit);
+    QObject::connect(&goodProc, &Gui::GeometryWorkerProcess::jobFinished, &goodLoop, &QEventLoop::quit);
+    goodTimeout.start(180000);
+    if (!goodFinished) {
+        goodLoop.exec();
+    }
+
+    ASSERT_TRUE(goodFinished);
+    EXPECT_EQ(goodCallbacks.load(), 1);
+    EXPECT_EQ(goodTerminal, App::GeometryJobState::ReadyToCommit) << goodResult.errorCode;
+    EXPECT_TRUE(goodResult.success);
+    QDir(goodProc.workspaceDir()).removeRecursively();
 }
 
 namespace
