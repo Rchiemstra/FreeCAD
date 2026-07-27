@@ -7,22 +7,24 @@ detached geometry. Substantial Priority 1–3 scaffolding is now in place (commi
 close, FreeCADCmd dispatch, archive deep-copy/repeat-write, builtin registry, geometry progress
 show path, hasher revision advance on commit, trusted relative result path/size/digest checks,
 Unix process-group cancel, progress-controller manager hooks, atomic hasher merge, typed
-`Part::Boolean` codec, and real FreeCADCmd mapped Boolean qualification), but the working tree still
-lacks Fillet/Sweep codecs, Windows Job Object cancel, retained-success janitor, production
+`Part::Boolean` codec, typed `Part::Fillet` codec with FreeCADCmd + parent `GeometryWorkerProcess`
+qualification, and real FreeCADCmd mapped Boolean qualification), but the working tree still
+lacks Sweep codec, Windows Job Object cancel, retained-success janitor, production
 prepare/commit adapters, and Phases 3–6. No rollout path is ready to enable. Phase 2 is **not**
 complete.
 
 | Phase | Plan focus | Actual status |
 |---|---|---|
 | 1 | Guardrails and scheduler foundation | Mostly scaffolded; fences/transactions/failure-aware generation/slice budget/non-blocking close/FreeCADCmd cancel covered. 30 s acceptance heartbeat and non-cooperative shutdown recovery still incomplete |
-| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep (in-process), hasher revision/atomic merge, nested/shared child maps, long hashed names (FCG1 v4), typed Boolean codec, parent `GeometryWorkerProcess` protocol+decode gates, real FreeCADCmd mapped Boolean + semantic FCStd reopen. Fillet/Sweep codecs and broader protocol fuzz still open |
+| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep (in-process), hasher revision/atomic merge, nested/shared child maps, long hashed names (FCG1 v4), typed Boolean/Fillet codecs, parent `GeometryWorkerProcess` protocol+decode gates, and real FreeCADCmd mapped Boolean/Fillet. Boolean additionally has semantic FCStd reopen qualification. Sweep codec and broader protocol fuzz still open |
 | 3 | Non-blocking visual pipeline | Not started; GUI-thread tessellation remains. Progress controller is hooked to the manager; 250 ms GUI visibility harness still missing |
 | 4 | Native geometry migrations | Unconnected ops (mapped + registry allowlisted) without feature/task-panel adapters |
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker validation: **35/35 App**, **44/44 Part**,
-**3/3 CrossProcessBooleanTest**, **16/16 GeometryWorkerProcessTest**):
+Verified narrow positives (focused Docker validation across Steps 24–25: **35/35 App**,
+**48 passed + 2 LP64 skips NonBlockingGeometryTest**, **8/8 CrossProcessBooleanTest**,
+**2/2 CrossProcessFilletTest**, **27/27 GeometryWorkerProcessTest**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
   failure-aware generation (no advance on failed commit) with `FeatureTestDetached`.
@@ -38,13 +40,14 @@ Verified narrow positives (focused Docker validation: **35/35 App**, **44/44 Par
   state listeners wire `GeometryProgressController`.
 - Trusted relative result path + size/digest/jobId checks; Unix process-group terminate/kill.
 - Atomic `materializeExactClosure` / `mergeExactClosure` (threshold/revision/value-ID uniqueness +
-  rollback); typed Boolean request codec; operands rebound onto one worker hasher.
-- Parent-controlled `Gui::GeometryWorkerProcess` mapped Boolean (real FreeCADCmd): fail-closed
+  rollback); typed Boolean/Fillet request codecs; operands rebound onto one worker hasher.
+- Parent-controlled `Gui::GeometryWorkerProcess` mapped Boolean/Fillet (real FreeCADCmd): fail-closed
   FCGEO/1 protocol, task-aware FCG1 decode before `ReadyToCommit`, explicit serialize failure
-  channel, digest-correct malformed FCG rejected, FCStd second-process naming/SID/history reopen.
+  channel, and digest-correct malformed FCG rejection. Boolean additionally has FCStd
+  second-process naming/SID/history reopen qualification.
 
 Those positives are scaffolding checks, not phase acceptance. No production Part/PartDesign feature
-implements prepare/commit; Fillet/Sweep still lack typed codecs; Windows Job Object cancel and
+implements prepare/commit; Sweep still lacks a typed codec; Windows Job Object cancel and
 installed-tree smoke beyond the Docker build tree remain open; Phases 3–6 are untouched.
 
 
@@ -286,7 +289,7 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 1. **Priority 1 residuals:** 30-second OCC/serialization heartbeat acceptance workload;
    non-cooperative deadline/shutdown recovery; `Document::recompute` GIL hold during long work.
-2. **Priority 2 residuals:** typed Fillet/Sweep codecs + FreeCADCmd qualification; broader
+2. **Priority 2 residuals:** typed Sweep codec + FreeCADCmd/parent qualification; broader
    hang/crash/OOM/rename recovery matrix; installed-tree smoke outside the Docker build tree.
 3. **Priority 3 residuals:** Windows Job Object cancel; retained-success cleanup janitor;
    250 ms geometry-progress visibility harness (controller is wired; GUI timing test still open).
@@ -295,9 +298,10 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 Concrete next action for the implementing agent:
 
-- Typed `Part::Fillet` (or Sweep) codec through FreeCADCmd with the same mapped-name/FCStd
-  qualification bar as Boolean. Keep production feature adapters and rollout flags disabled.
-  Do not mark Phase 2 complete.
+- Typed `Part::Sweep` codec through FreeCADCmd and parent `GeometryWorkerProcess` with the mapped-name
+  qualification bar established for Boolean/Fillet and the FCStd reopen bar established for
+  Boolean. Keep production feature adapters and rollout flags disabled. Do not mark Phase 2
+  complete.
 
 ## Implementation log (continued)
 
@@ -988,6 +992,32 @@ Concrete next action for the implementing agent:
   - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
   - **P4:** production adapters/rollout (blocked).
 * Next step:
-  - Continue Phase 2 bad-path hardening / Fillet-Sweep codecs per `doc/PLAN.md` (not started here).
+  - See revised `## Next step` above.
+
+### Step 25 — Typed Fillet codec and FreeCADCmd qualification (Tasks 25A–25D)
+
+* **25A (codec):** `Part::Fillet` typed request/result codec (`FilletGeometryOperation::writeArchive`,
+  `decodeFromRequest`, `decodeResultArchive`); `NonBlockingGeometryTest` codec matrix including
+  `EmptyEdges` reject before OCC (`f98cf9758f`).
+* **25B (dispatch):** `GeometryWorker.cpp` / `GeometryWorker.py` dispatch typed `Part::Fillet`
+  through the trusted registry (`ff076fed57`).
+* **25C (cross-process):** `CrossProcessFilletTest.RealFreeCADCmdMappedFilletRoundTrip` and
+  `RecoveryAfterBadFilletRequestThenValid` — real FreeCADCmd + `GeometryWorker.py`, mapped
+  ElementMap/hasher/SID/history assertions (`f6b814778d`).
+* **25D (parent-controlled):** `GeometryWorkerProcessTest.ParentControlledRealFreeCADCmdMappedFillet`
+  and `ParentControlledFilletEmptyEdgesFailsBeforeOcc` — launch only via
+  `GeometryWorkerProcess::startJob()` (no `operation.run()`, no direct `QProcess`); happy path
+  retains workspace + `ReadyToCommit` decode; bad path `EmptyEdges` after hello with recovery
+  launch in a fresh workspace.
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** Fillet semantic FCStd reopen; Sweep codec + FreeCADCmd/parent/FCStd qualification;
+    broader crash/rename; install-tree smoke; LLP64/32-bit-long decode qualification on a non-LP64
+    builder.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Typed `Part::Sweep` per `## Next step` above.
 
 ---
