@@ -1487,6 +1487,12 @@ public:
     /** Always append a new entry (allows null). Unlike addValue, does not merge by object. */
     void append(DocumentObject* obj);
 
+    /**
+     * Append two new list entries as one pair. On success exactly two endpoints are added.
+     * On any exception only the newly appended suffix is erased; existing entries are untouched.
+     */
+    void appendPair(DocumentObject* first, DocumentObject* second);
+
     /** Append a deep copy of an existing XLink entry (preserves detached file/object identity). */
     void addLink(const PropertyXLinkSub& link);
 

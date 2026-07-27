@@ -17,13 +17,17 @@
 #include <cstdio>
 #include <sstream>
 #include <algorithm>
+#include <memory>
 #include <tuple>
+#include <utility>
 
 #include <App/Document.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/Link.h>
 #include <App/Part.h>
+#include <App/PropertyLinks.h>
 #include <App/Range.h>
+#include <Base/Writer.h>
 #include <Base/Interpreter.h>
 #include <Base/Placement.h>
 #include <Mod/Assembly/App/AssemblyLink.h>
@@ -87,6 +91,76 @@ std::pair<std::string, std::string> canonicalIds(const std::string& a, const std
 {
     return (a <= b) ? std::make_pair(a, b) : std::make_pair(b, a);
 }
+
+std::string objectSourceId(const App::DocumentObject* obj)
+{
+    if (!obj || !obj->isAttachedToDocument()) {
+        return {};
+    }
+    return std::string(obj->getDocument()->getName()) + "#" + obj->getNameInDocument();
+}
+
+std::string exclusionPropertyXml(Assembly::AssemblyObject* assembly)
+{
+    auto* prop = assembly->getPropertyByName("InterferenceExcludedSources");
+    if (!prop) {
+        return {};
+    }
+    Base::StringWriter writer;
+    prop->Save(writer);
+    return writer.getString();
+}
+
+class ScopedExternalDocument
+{
+public:
+    ScopedExternalDocument(const char* userName, const char* label)
+    {
+        _name = App::GetApplication().getUniqueDocumentName(userName);
+        _doc = App::GetApplication().newDocument(_name.c_str(), label);
+    }
+
+    ~ScopedExternalDocument()
+    {
+        if (_doc && App::GetApplication().getDocument(_name.c_str())) {
+            App::GetApplication().closeDocument(_name.c_str());
+        }
+    }
+
+    App::Document* doc() const
+    {
+        return _doc;
+    }
+
+    const std::string& name() const
+    {
+        return _name;
+    }
+
+private:
+    std::string _name;
+    App::Document* _doc {};
+};
+
+class ScopedSavedOwnerPath
+{
+public:
+    void assign(App::Document* doc, std::string path)
+    {
+        _path = std::move(path);
+        doc->FileName.setValue(_path.c_str());
+    }
+
+    ~ScopedSavedOwnerPath()
+    {
+        if (!_path.empty()) {
+            std::remove(_path.c_str());
+        }
+    }
+
+private:
+    std::string _path;
+};
 
 }  // namespace
 
@@ -185,6 +259,121 @@ TEST_F(InterferenceScanTest, clearanceAndExclusionPropertiesPersistBasics)
 
     _assembly->removeInterferenceExclusion(a, b);
     EXPECT_FALSE(_assembly->hasInterferenceExclusion(a, b));
+}
+
+TEST_F(InterferenceScanTest, exclusionPairInsertionAddsEndpointsPreservesOrderAndUndoRedo)
+{
+    auto* seedA = _doc->addObject<App::DocumentObject>("App::Feature", "SeedA");
+    auto* seedB = _doc->addObject<App::DocumentObject>("App::Feature", "SeedZ");
+    auto* addC = _doc->addObject<App::DocumentObject>("App::Feature", "AddC");
+    auto* addD = _doc->addObject<App::DocumentObject>("App::Feature", "AddD");
+
+    _assembly->addInterferenceExclusion(seedA, seedB);
+    const std::string xmlAfterSeed = exclusionPropertyXml(_assembly);
+
+    auto* prop = dynamic_cast<App::PropertyXLinkSubList*>(
+        _assembly->getPropertyByName("InterferenceExcludedSources")
+    );
+    ASSERT_NE(prop, nullptr);
+    ASSERT_EQ(prop->getSize(), 2);
+
+    _doc->openTransaction("Add exclusion pair");
+    Assembly::addInterferenceExclusion(_assembly, addC, addD);
+    _doc->commitTransaction();
+
+    ASSERT_EQ(prop->getSize(), 4);
+    std::vector<App::DocumentObject*> values = prop->getValues();
+    ASSERT_EQ(values.size(), 4u);
+    EXPECT_EQ(values[0], seedA);
+    EXPECT_EQ(values[1], seedB);
+    EXPECT_EQ(values[2], addC);
+    EXPECT_EQ(values[3], addD);
+
+    _doc->undo();
+    EXPECT_EQ(exclusionPropertyXml(_assembly), xmlAfterSeed);
+    ASSERT_EQ(prop->getSize(), 2);
+
+    _doc->redo();
+    ASSERT_EQ(prop->getSize(), 4);
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(addC, addD));
+
+    _assembly->removeInterferenceExclusion(addC, addD);
+    Assembly::addInterferenceExclusion(_assembly, addC, addD);
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(addC, addD));
+}
+
+TEST_F(InterferenceScanTest, failedExclusionWithUnsavedExternalSecondRestoresProperty)
+{
+    auto* seedA = _doc->addObject<App::DocumentObject>("App::Feature", "KeepSeedA");
+    auto* seedB = _doc->addObject<App::DocumentObject>("App::Feature", "KeepSeedZ");
+    _assembly->addInterferenceExclusion(seedA, seedB);
+    const std::string xmlBefore = exclusionPropertyXml(_assembly);
+
+    ScopedExternalDocument other("asmExclUnsavedOther", "asmExclUnsavedOtherUser");
+    ASSERT_NE(other.doc(), nullptr);
+    auto* local = _doc->addObject<App::DocumentObject>("App::Feature", "LocalPairA");
+    auto* remote = other.doc()->addObject<App::DocumentObject>("App::Feature", "RemotePairZ");
+    ASSERT_LT(objectSourceId(local), objectSourceId(remote));
+
+    ScopedSavedOwnerPath ownerPath;
+    ownerPath.assign(_doc, std::string("/tmp/") + _docName + "_exclAtomic.FCStd");
+    ASSERT_TRUE(_doc->save());
+
+    const auto undoBefore = _doc->getAvailableUndoNames();
+    bool sawInsertionFailure = false;
+    try {
+        Assembly::addInterferenceExclusion(_assembly, local, remote);
+        FAIL() << "expected exception for unsaved external document";
+    }
+    catch (const Base::Exception& exc) {
+        sawInsertionFailure = true;
+        EXPECT_NE(std::string(exc.what()).find("Linked document not saved"), std::string::npos)
+            << exc.what();
+    }
+    EXPECT_TRUE(sawInsertionFailure);
+
+    EXPECT_EQ(exclusionPropertyXml(_assembly), xmlBefore);
+    auto* prop = dynamic_cast<App::PropertyXLinkSubList*>(
+        _assembly->getPropertyByName("InterferenceExcludedSources")
+    );
+    ASSERT_NE(prop, nullptr);
+    EXPECT_EQ(prop->getSize(), 2);
+    EXPECT_EQ(prop->getSize() % 2, 0);
+
+    const auto rules = _assembly->getInterferenceExclusionRules();
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_TRUE(rules[0].valid);
+    EXPECT_EQ(rules[0].first, seedA);
+    EXPECT_EQ(rules[0].second, seedB);
+
+    EXPECT_EQ(_doc->getAvailableUndoNames().size(), undoBefore.size());
+    EXPECT_FALSE(_doc->hasPendingTransaction());
+
+    auto* okA = _doc->addObject<App::DocumentObject>("App::Feature", "LaterOkA");
+    auto* okB = _doc->addObject<App::DocumentObject>("App::Feature", "LaterOkB");
+    _assembly->addInterferenceExclusion(okA, okB);
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(okA, okB));
+    _assembly->removeInterferenceExclusion(okA, okB);
+}
+
+TEST_F(InterferenceScanTest, failedExclusionWithUnsavedExternalFirstRestoresProperty)
+{
+    auto* seedA = _doc->addObject<App::DocumentObject>("App::Feature", "KeepSeedOnlyA");
+    auto* seedB = _doc->addObject<App::DocumentObject>("App::Feature", "KeepSeedOnlyZ");
+    _assembly->addInterferenceExclusion(seedA, seedB);
+    const std::string xmlBefore = exclusionPropertyXml(_assembly);
+
+    ScopedExternalDocument other("aaa_asmExclUnsavedOther", "aaa_asmExclUnsavedOtherUser");
+    auto* local = _doc->addObject<App::DocumentObject>("App::Feature", "Z_LocalLate");
+    auto* remote = other.doc()->addObject<App::DocumentObject>("App::Feature", "A_RemoteEarly");
+    ASSERT_GT(objectSourceId(local), objectSourceId(remote));
+
+    ScopedSavedOwnerPath ownerPath;
+    ownerPath.assign(_doc, std::string("/tmp/") + _docName + "_exclAtomicExtFirst.FCStd");
+    ASSERT_TRUE(_doc->save());
+
+    EXPECT_THROW(Assembly::addInterferenceExclusion(_assembly, local, remote), Base::Exception);
+    EXPECT_EQ(exclusionPropertyXml(_assembly), xmlBefore);
 }
 
 TEST_F(InterferenceScanTest, broadPhaseFindsSeparatedCandidatesConservatively)

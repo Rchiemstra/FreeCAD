@@ -4437,8 +4437,7 @@ void addInterferenceExclusion(
         throw Base::ValueError("Interference exclusion host must be an App::Part root");
     }
     auto canon = canonicalPair(first, second);
-    prop->append(canon.first);
-    prop->append(canon.second);
+    prop->appendPair(canon.first, canon.second);
 }
 
 void removeInterferenceExclusionAt(App::DocumentObject* host, std::size_t ruleIndex)

@@ -1941,6 +1941,73 @@ void TaskInterferenceCheck::onSelectPair()
     }
 }
 
+ExcludePairCommandResult tryExcludeInterferencePairInCommand(
+    Gui::Document* guiDocument,
+    App::DocumentObject* host,
+    App::DocumentObject* sourceA,
+    App::DocumentObject* sourceB
+)
+{
+    ExcludePairCommandResult result;
+    if (!host || !sourceA || !sourceB) {
+        result.errorMessage = TaskInterferenceCheck::tr("Cannot exclude pair: missing host or source.");
+        return result;
+    }
+    if (!guiDocument) {
+        result.errorMessage =
+            TaskInterferenceCheck::tr("Cannot exclude pair: no active GUI document.");
+        return result;
+    }
+
+    bool commandOpen = false;
+    try {
+        guiDocument->openCommand("Exclude interference source pair");
+        commandOpen = true;
+        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
+        guiDocument->commitCommand();
+        commandOpen = false;
+        result.success = true;
+        return result;
+    }
+    catch (const Base::Exception& exc) {
+        if (commandOpen) {
+            guiDocument->abortCommand();
+        }
+        result.errorMessage = QString::fromUtf8(exc.what());
+        return result;
+    }
+    catch (const std::exception& exc) {
+        if (commandOpen) {
+            guiDocument->abortCommand();
+        }
+        result.errorMessage = QString::fromUtf8(exc.what());
+        return result;
+    }
+    catch (...) {
+        if (commandOpen) {
+            guiDocument->abortCommand();
+        }
+        result.errorMessage =
+            TaskInterferenceCheck::tr("Unknown error while excluding interference source pair.");
+        return result;
+    }
+}
+
+bool TaskInterferenceCheck::testExecuteExcludePairCommand(
+    App::DocumentObject* sourceA,
+    App::DocumentObject* sourceB,
+    Gui::Document* guiDocument,
+    QString* errorOut
+)
+{
+    const auto result =
+        tryExcludeInterferencePairInCommand(guiDocument, host, sourceA, sourceB);
+    if (errorOut) {
+        *errorOut = result.errorMessage;
+    }
+    return result.success;
+}
+
 void TaskInterferenceCheck::onExcludePair()
 {
     const int pairIndex = currentPairIndex();
@@ -1981,13 +2048,18 @@ void TaskInterferenceCheck::onExcludePair()
         return;
     }
 
-    if (auto* guiDoc = hostGuiDocument()) {
-        guiDoc->openCommand("Exclude interference source pair");
-        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
-        guiDoc->commitCommand();
-    }
-    else {
-        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
+    Gui::Document* guiDocument = hostGuiDocument();
+    const auto commandResult = tryExcludeInterferencePairInCommand(
+        guiDocument,
+        host,
+        sourceA,
+        sourceB
+    );
+    if (!commandResult.success) {
+        if (!commandResult.errorMessage.isEmpty()) {
+            QMessageBox::warning(this, tr("Exclude source pair"), commandResult.errorMessage);
+        }
+        return;
     }
     onRun();
 }

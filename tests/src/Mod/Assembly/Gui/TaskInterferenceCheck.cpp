@@ -8,7 +8,9 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -21,10 +23,15 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QTimer>
+#include <App/PropertyLinks.h>
 #include <QtGlobal>
 
 #include <App/Document.h>
 #include <App/Link.h>
+#include <App/Property.h>
+#include <Base/Writer.h>
+#include <Gui/Application.h>
+#include <Gui/Document.h>
 #include <App/Part.h>
 #include <Base/Interpreter.h>
 #include <Base/Placement.h>
@@ -93,6 +100,94 @@ Assembly::InterferenceScanResult makeResult(int penetrations, const char* status
     pair.detection.overlapVolume = 1.0;
     result.pairs.push_back(pair);
     return result;
+}
+
+Assembly::InterferenceScanResult makeViolationResultForObjects(
+    App::DocumentObject* sourceA,
+    App::DocumentObject* sourceB
+)
+{
+    auto result = makeResult(1, "Exclude");
+    result.leaves[0].sourceId =
+        std::string(sourceA->getDocument()->getName()) + "#" + sourceA->getNameInDocument();
+    result.leaves[1].sourceId =
+        std::string(sourceB->getDocument()->getName()) + "#" + sourceB->getNameInDocument();
+    return result;
+}
+
+std::string exclusionPropertyXml(Assembly::AssemblyObject* assembly)
+{
+    auto* prop = assembly->getPropertyByName("InterferenceExcludedSources");
+    if (!prop) {
+        return {};
+    }
+    Base::StringWriter writer;
+    prop->Save(writer);
+    return writer.getString();
+}
+
+class ScopedExternalDocument
+{
+public:
+    ScopedExternalDocument(const char* userName, const char* label)
+    {
+        _name = App::GetApplication().getUniqueDocumentName(userName);
+        _doc = App::GetApplication().newDocument(_name.c_str(), label);
+    }
+
+    ~ScopedExternalDocument()
+    {
+        if (_doc && App::GetApplication().getDocument(_name.c_str())) {
+            App::GetApplication().closeDocument(_name.c_str());
+        }
+    }
+
+    App::Document* doc() const
+    {
+        return _doc;
+    }
+
+private:
+    std::string _name;
+    App::Document* _doc {};
+};
+
+class ScopedSavedOwnerPath
+{
+public:
+    void assign(App::Document* doc, std::string path)
+    {
+        _path = std::move(path);
+        doc->FileName.setValue(_path.c_str());
+    }
+
+    ~ScopedSavedOwnerPath()
+    {
+        if (!_path.empty()) {
+            std::remove(_path.c_str());
+        }
+    }
+
+private:
+    std::string _path;
+};
+
+Gui::Document* ensureGuiDocumentForTest(App::Document* appDoc)
+{
+    static bool guiReady = false;
+    if (!guiReady) {
+        Gui::Application::initApplication();
+        static Gui::Application* guiApp = new Gui::Application(false);
+        (void)guiApp;
+        guiReady = true;
+    }
+    if (!Gui::Application::Instance || !appDoc) {
+        return nullptr;
+    }
+    if (Gui::Document* existing = Gui::Application::Instance->getDocument(appDoc)) {
+        return existing;
+    }
+    return new Gui::Document(appDoc, Gui::Application::Instance);
 }
 
 Assembly::InterferenceScanResult makeClearPairOnlyResult(int clearPairs)
@@ -1528,6 +1623,82 @@ TEST_F(TaskInterferenceCheckTest, clearanceSheetSelectionSupportsUndoRedo)
     EXPECT_EQ(Assembly::getInterferenceClearanceSheet(_assembly), nullptr);
     _doc->redo();
     EXPECT_EQ(Assembly::getInterferenceClearanceSheet(_assembly), sheet);
+}
+
+TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperCommitsAndClearsPendingTransaction)
+{
+    Gui::Document* guiDoc = ensureGuiDocumentForTest(_doc);
+    ASSERT_NE(guiDoc, nullptr);
+
+    auto* sourceA = _doc->addObject<App::DocumentObject>("App::Feature", "CmdSrcA");
+    auto* sourceB = _doc->addObject<App::DocumentObject>("App::Feature", "CmdSrcZ");
+    ASSERT_NE(sourceA, nullptr);
+    ASSERT_NE(sourceB, nullptr);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    QString error;
+    EXPECT_TRUE(task.testExecuteExcludePairCommand(sourceA, sourceB, guiDoc, &error));
+    EXPECT_TRUE(error.isEmpty());
+    EXPECT_FALSE(guiDoc->hasPendingCommand());
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+
+    _doc->undo();
+    EXPECT_FALSE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+    _doc->redo();
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+}
+
+TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperAbortsOnUnsavedExternalInsertion)
+{
+    Gui::Document* guiDoc = ensureGuiDocumentForTest(_doc);
+    ASSERT_NE(guiDoc, nullptr);
+
+    auto* seedA = _doc->addObject<App::DocumentObject>("App::Feature", "GuiSeedA");
+    auto* seedB = _doc->addObject<App::DocumentObject>("App::Feature", "GuiSeedZ");
+    _assembly->addInterferenceExclusion(seedA, seedB);
+    const std::string xmlBefore = exclusionPropertyXml(_assembly);
+
+    ScopedExternalDocument other("asmGuiExclOther", "asmGuiExclOtherUser");
+    auto* local = _doc->addObject<App::DocumentObject>("App::Feature", "GuiLocalA");
+    auto* remote = other.doc()->addObject<App::DocumentObject>("App::Feature", "GuiRemoteZ");
+    ASSERT_NE(local, nullptr);
+    ASSERT_NE(remote, nullptr);
+    const std::string idLocal =
+        std::string(local->getDocument()->getName()) + "#" + local->getNameInDocument();
+    const std::string idRemote =
+        std::string(remote->getDocument()->getName()) + "#" + remote->getNameInDocument();
+    ASSERT_LT(idLocal, idRemote);
+
+    ScopedSavedOwnerPath ownerPath;
+    ownerPath.assign(_doc, std::string("/tmp/") + _docName + "_guiExclFail.FCStd");
+    ASSERT_TRUE(_doc->save());
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto result = makeViolationResultForObjects(local, remote);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    task.testSelectResultRow(0);
+
+    const auto undoBefore = _doc->getAvailableUndoNames();
+    QString error;
+    EXPECT_FALSE(task.testExecuteExcludePairCommand(local, remote, guiDoc, &error));
+    EXPECT_FALSE(error.isEmpty());
+    EXPECT_NE(error.indexOf(QStringLiteral("Linked document not saved")), -1) << error.toStdString();
+    EXPECT_FALSE(guiDoc->hasPendingCommand());
+    EXPECT_EQ(_doc->getAvailableUndoNames().size(), undoBefore.size());
+    EXPECT_EQ(exclusionPropertyXml(_assembly), xmlBefore);
+
+    auto* prop = dynamic_cast<App::PropertyXLinkSubList*>(
+        _assembly->getPropertyByName("InterferenceExcludedSources")
+    );
+    ASSERT_NE(prop, nullptr);
+    EXPECT_EQ(prop->getSize(), 2);
+
+    auto* okA = _doc->addObject<App::DocumentObject>("App::Feature", "GuiLaterOkA");
+    auto* okB = _doc->addObject<App::DocumentObject>("App::Feature", "GuiLaterOkB");
+    EXPECT_TRUE(task.testExecuteExcludePairCommand(okA, okB, guiDoc, &error));
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(okA, okB));
 }
 
 int main(int argc, char** argv)

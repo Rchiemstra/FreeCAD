@@ -5011,6 +5011,28 @@ void PropertyXLinkSubList::append(DocumentObject* obj)
     guard.tryInvoke();
 }
 
+void PropertyXLinkSubList::appendPair(DocumentObject* first, DocumentObject* second)
+{
+    atomic_change guard(*this);
+    auto firstAppended = _Links.end();
+    try {
+        _Links.emplace_back(testFlag(LinkAllowPartial), this);
+        firstAppended = std::prev(_Links.end());
+        _Links.back().setValue(first);
+
+        _Links.emplace_back(testFlag(LinkAllowPartial), this);
+        _Links.back().setValue(second);
+
+        guard.tryInvoke();
+    }
+    catch (...) {
+        if (firstAppended != _Links.end()) {
+            _Links.erase(firstAppended, _Links.end());
+        }
+        throw;
+    }
+}
+
 void PropertyXLinkSubList::addLink(const PropertyXLinkSub& link)
 {
     atomic_change guard(*this);

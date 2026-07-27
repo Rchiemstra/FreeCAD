@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <QPointer>
+#include <QString>
 
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
@@ -49,6 +50,23 @@ class View3DInventorViewer;
 
 namespace AssemblyGui
 {
+
+struct AssemblyGuiExport ExcludePairCommandResult
+{
+    bool success {false};
+    QString errorMessage;
+};
+
+/**
+ * Open a GUI command, append an interference exclusion pair, and commit only on success.
+ * Aborts the command on insertion/commit failures and returns a user-facing error message.
+ */
+AssemblyGuiExport ExcludePairCommandResult tryExcludeInterferencePairInCommand(
+    Gui::Document* guiDocument,
+    App::DocumentObject* host,
+    App::DocumentObject* sourceA,
+    App::DocumentObject* sourceB
+);
 
 class AssemblyGuiExport TaskInterferenceCheck: public QWidget
 {
@@ -112,6 +130,16 @@ public:
     void testSelectClearanceSheetByName(const QString& objectName);
     void testRebuildTable();
     bool testIsRestorePairEnabled() const;
+
+    /**
+     * Run the document-command exclusion path (no confirmation dialog). Does not rescan.
+     */
+    bool testExecuteExcludePairCommand(
+        App::DocumentObject* sourceA,
+        App::DocumentObject* sourceB,
+        Gui::Document* guiDocument,
+        QString* errorOut = nullptr
+    );
 
     /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
     void testEnsureDetachedPreviewRoot();
