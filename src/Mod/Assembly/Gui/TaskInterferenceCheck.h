@@ -81,7 +81,7 @@ public:
     }
     bool hasResults() const
     {
-        return !lastResult.pairs.empty() || !lastResult.componentIssues.empty();
+        return hasAcceptedScanResult;
     }
     bool isSelectPairEnabled() const;
     bool isExcludePairEnabled() const;
@@ -95,6 +95,7 @@ public:
         const Assembly::InterferenceScanResult& result
     );
     QString testStatusText() const;
+    QString testSummaryText() const;
     QString testProgressText() const;
     int testTableRowCount() const;
     QString testTableCellText(int row, int column) const;
@@ -236,6 +237,8 @@ private:
     QPushButton* manageExclusionsButton = nullptr;
 
     Assembly::InterferenceScanResult lastResult;
+    /** True after the active scan generation finishes via finishScan() and is not cancelled. */
+    bool hasAcceptedScanResult = false;
     SoSeparator* previewRoot = nullptr;
     SoGroup* attachedScene = nullptr;
     Gui::View3DInventorViewer* attachedViewer = nullptr;

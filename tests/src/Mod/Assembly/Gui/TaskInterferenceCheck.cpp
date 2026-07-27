@@ -95,6 +95,14 @@ Assembly::InterferenceScanResult makeResult(int penetrations, const char* status
     return result;
 }
 
+Assembly::InterferenceScanResult makeClearPairOnlyResult(int clearPairs)
+{
+    Assembly::InterferenceScanResult result;
+    result.complete = true;
+    result.counts.clearPairs = clearPairs;
+    return result;
+}
+
 Assembly::InterferenceScanResult makePlacedPenetrationResult()
 {
     auto result = makeResult(1, "P");
@@ -838,6 +846,89 @@ TEST_F(TaskInterferenceCheckTest, clearanceSheetChangeMarksResultsStale)
 
     EXPECT_TRUE(session.isStale());
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, completeZeroRowClearPairResultIsRetainedAndSummarized)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makeClearPairOnlyResult(4));
+
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+    EXPECT_EQ(task.testResultPairCount(), 0u);
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 4")));
+    EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, stricterClearanceSheetClearsZeroRowAcceptedResult)
+{
+    auto* lenientSheet = _doc->addObject<Spreadsheet::Sheet>("LenientClearances");
+    lenientSheet->setCell("A1", "Enabled");
+    lenientSheet->setCell("B1", "Face");
+    lenientSheet->setCell("C1", "Tolerance");
+    lenientSheet->setCell("A2", "true");
+    lenientSheet->setCell("B2", "*");
+    lenientSheet->setCell("C2", "1");
+    auto* strictSheet = _doc->addObject<Spreadsheet::Sheet>("StrictClearances");
+    strictSheet->setCell("A1", "Enabled");
+    strictSheet->setCell("B1", "Face");
+    strictSheet->setCell("C1", "Tolerance");
+    strictSheet->setCell("A2", "true");
+    strictSheet->setCell("B2", "*");
+    strictSheet->setCell("C2", "10");
+    _doc->recompute();
+    _assembly->setInterferenceClearanceSheet(lenientSheet);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, makeClearPairOnlyResult(2));
+    ASSERT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+
+    task.testSelectClearanceSheetByName(QStringLiteral("StrictClearances"));
+    _doc->recompute();
+
+    EXPECT_EQ(Assembly::getInterferenceClearanceSheet(_assembly), strictSheet);
+    EXPECT_TRUE(session.isStale());
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+    EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("No results"), Qt::CaseInsensitive));
+}
+
+TEST_F(TaskInterferenceCheckTest, cancelledOrObsoleteResultsCannotCreatePhantomAcceptedState)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+
+    const auto cancelledScan = session.beginScan();
+    auto cancelledResult = makeClearPairOnlyResult(6);
+    cancelledResult.cancelled = true;
+    task.testDeliverScanFinished(cancelledScan.generation, cancelledResult);
+    EXPECT_FALSE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("No results"), Qt::CaseInsensitive));
+
+    const auto scanA = session.beginScan();
+    const auto scanB = session.beginScan();
+    ASSERT_EQ(session.activeGeneration(), scanB.generation);
+
+    Assembly::InterferenceScanResult emptyComplete;
+    emptyComplete.complete = true;
+    task.testDeliverScanFinished(scanB.generation, emptyComplete);
+    ASSERT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 0")));
+    const QString summaryAfterCurrent = task.testSummaryText();
+
+    task.testDeliverScanFinished(scanA.generation, makeClearPairOnlyResult(9));
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 0);
+    EXPECT_EQ(task.testSummaryText(), summaryAfterCurrent);
+    EXPECT_FALSE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 9")));
 }
 
 TEST_F(TaskInterferenceCheckTest, defaultAllComponentsPathConsumesLinkedClearanceSheet)

@@ -360,6 +360,11 @@ QString TaskInterferenceCheck::testStatusText() const
     return statusLabel ? statusLabel->text() : QString();
 }
 
+QString TaskInterferenceCheck::testSummaryText() const
+{
+    return summaryLabel ? summaryLabel->text() : QString();
+}
+
 QString TaskInterferenceCheck::testProgressText() const
 {
     return progressLabel ? progressLabel->text() : QString();
@@ -859,6 +864,7 @@ void TaskInterferenceCheck::detachPreviewFromViewer()
 void TaskInterferenceCheck::discardResults()
 {
     lastResult = {};
+    hasAcceptedScanResult = false;
     clearPreview();
     if (resultsTable) {
         resultsTable->setRowCount(0);
@@ -1290,6 +1296,7 @@ void TaskInterferenceCheck::onRun()
     progressLabel->setText(tr("Progress: preparing geometry…"));
     clearPreview();
     lastResult = {};
+    hasAcceptedScanResult = false;
     rebuildTable();
 
     refreshScanScope();
@@ -1568,6 +1575,8 @@ void TaskInterferenceCheck::onScanFinished(
         return;
     }
 
+    hasAcceptedScanResult = true;
+
     statusLabel->setText(lastResult.complete ? tr("Scan complete.") : tr("Scan incomplete."));
     progressLabel->clear();
     rebuildTable();
@@ -1786,7 +1795,7 @@ void TaskInterferenceCheck::updateSummary()
     const auto& c = lastResult.counts;
     summaryLabel->setText(
         tr("Penetrations: %1 | Contacts: %2 | Clearance: %3 | Excluded: %4 | Invalid geom: %5 | "
-           "Invalid rules: %6 | Inconclusive: %7 | Clear faces: %8")
+           "Invalid rules: %6 | Inconclusive: %7 | Clear faces: %8 | Clear pairs: %9")
             .arg(c.penetrations)
             .arg(c.contacts)
             .arg(c.clearanceViolations)
@@ -1795,6 +1804,7 @@ void TaskInterferenceCheck::updateSummary()
             .arg(c.invalidRules)
             .arg(c.inconclusivePairs)
             .arg(c.clearFaceHits)
+            .arg(c.clearPairs)
     );
 }
 
