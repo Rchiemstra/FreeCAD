@@ -13,9 +13,12 @@
 #include <App/StringHasher.h>
 #include <Mod/Part/App/BooleanGeometryOperation.h>
 #include <Mod/Part/App/FilletGeometryOperation.h>
+#include <Mod/Part/App/SweepGeometryOperation.h>
 #include <Mod/Part/App/TopoShapeArchive.h>
 #include <src/App/InitApplication.h>
 
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <GProp_GProps.hxx>
@@ -317,6 +320,185 @@ std::shared_ptr<Part::FilletGeometryOperation> makeMappedFilletTask(MappedFillet
     }
     return std::make_shared<Part::FilletGeometryOperation>(mapped.base,
                                                            std::vector<Part::FilletEdgeSpec>{{0, 1.0, 1.0}});
+}
+
+TopoDS_Wire makeVerticalSpineWire()
+{
+    const auto spineEdge =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(0.0, 0.0, 8.0)).Edge();
+    return BRepBuilderAPI_MakeWire(spineEdge).Wire();
+}
+
+TopoDS_Wire makeRectProfileWire(double width, double height)
+{
+    const auto e1 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, 0.0, 0.0), gp_Pnt(width, 0.0, 0.0)).Edge();
+    const auto e2 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, 0.0, 0.0), gp_Pnt(width, height, 0.0)).Edge();
+    const auto e3 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(width, height, 0.0), gp_Pnt(0.0, height, 0.0)).Edge();
+    const auto e4 =
+        BRepBuilderAPI_MakeEdge(gp_Pnt(0.0, height, 0.0), gp_Pnt(0.0, 0.0, 0.0)).Edge();
+    return BRepBuilderAPI_MakeWire(e1, e2, e3, e4).Wire();
+}
+
+struct MappedSweepOperands
+{
+    Part::FrozenTopoShapeBundle spine;
+    Part::FrozenTopoShapeBundle profile;
+    long hashedId {0};
+    QByteArray longName;
+    int threshold {8};
+};
+
+MappedSweepOperands makeMappedSweepOperands()
+{
+    MappedSweepOperands out;
+    out.longName = QByteArray(
+        "SweepProfileWithAVeryLongTopologicalNameThatExceedsTheHasherThreshold");
+
+    const TopoDS_Wire spineWire = makeVerticalSpineWire();
+    const TopoDS_Wire profileWire = makeRectProfileWire(5.0, 5.0);
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(out.threshold);
+    hasher->advanceRevision();
+
+    Part::TopoShape spineShape(spineWire, /*tag=*/1, hasher);
+    Part::TopoShape profileShape(profileWire, /*tag=*/2, hasher);
+
+    auto spineMap = std::make_shared<Data::ElementMap>();
+    spineMap->hasher = hasher;
+    spineShape.resetElementMap(spineMap);
+
+    auto profileMap = std::make_shared<Data::ElementMap>();
+    profileMap->hasher = hasher;
+    profileShape.resetElementMap(profileMap);
+
+    App::StringIDRef spineSeed = hasher->getID(QByteArray("SpineEd"));
+    if (!spineSeed) {
+        return {};
+    }
+    Data::MappedName spineMapped(QByteArray::fromStdString(spineSeed.toString()));
+    Data::ElementIDRefs spineSids;
+    spineSids.push_back(spineSeed);
+    spineMap->setElementName(Data::IndexedName("Edge", 1), spineMapped, spineShape.Tag, &spineSids);
+    spineSeed.mark();
+
+    if (static_cast<size_t>(out.longName.size()) <= static_cast<size_t>(hasher->getThreshold())) {
+        return {};
+    }
+    App::StringIDRef longSid = hasher->getID(out.longName, App::StringHasher::Option::Hashable);
+    if (!longSid || !longSid.isHashed()) {
+        return {};
+    }
+    out.hashedId = longSid.value();
+    Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+    Data::ElementIDRefs longSids;
+    longSids.push_back(longSid);
+    profileMap->setElementName(Data::IndexedName("Edge", 1), longMapped, profileShape.Tag, &longSids);
+    longSid.mark();
+
+    out.spine = Part::TopoShapeArchive::createBundle(spineShape);
+    out.profile = Part::TopoShapeArchive::createBundle(profileShape);
+    return out;
+}
+
+void assertSweepElementMapUsesHasher(const Data::ElementMapPtr& map,
+                                     const App::StringHasherRef& hasher)
+{
+    ASSERT_TRUE(map);
+    EXPECT_EQ(static_cast<App::StringHasher*>(map->hasher),
+              static_cast<App::StringHasher*>(hasher));
+    for (const auto& child : map->getChildElements()) {
+        for (const auto& sid : child.sids) {
+            EXPECT_TRUE(sid.isFromSameHasher(hasher));
+            const App::StringIDRef resolved = hasher->getID(sid.value());
+            ASSERT_TRUE(resolved) << "child SID must resolve from shared hasher";
+            EXPECT_EQ(resolved.value(), sid.value());
+        }
+        if (child.elementMap) {
+            assertSweepElementMapUsesHasher(child.elementMap, hasher);
+        }
+    }
+    for (const auto& el : map->getAll()) {
+        Data::ElementIDRefs sids;
+        (void)map->find(el.index, &sids);
+        for (const auto& sid : sids) {
+            EXPECT_TRUE(sid.isFromSameHasher(hasher));
+            const App::StringIDRef resolved = hasher->getID(sid.value());
+            ASSERT_TRUE(resolved) << "mapped SID must resolve from shared hasher";
+            EXPECT_EQ(resolved.value(), sid.value());
+        }
+    }
+}
+
+void assertMappedSweepResult(const Part::FrozenTopoShapeBundle& out,
+                             long hashedId,
+                             const QByteArray& longName,
+                             int expectedThreshold)
+{
+    ASSERT_TRUE(out.valid);
+    ASSERT_FALSE(out.shape.isNull());
+    ASSERT_TRUE(out.elementMap);
+    EXPECT_GT(out.elementMap->size(), 0u);
+    ASSERT_TRUE(out.hasher);
+    EXPECT_FALSE(out.hasherSnapshot.entries.empty());
+    EXPECT_EQ(out.hasher->getThreshold(), expectedThreshold);
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.shape.Hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+    EXPECT_TRUE(allMapsUseHasher(out.elementMap, out.hasher));
+    assertSweepElementMapUsesHasher(out.elementMap, out.hasher);
+
+    auto again = out.hasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), hashedId);
+    EXPECT_TRUE(again.isHashed());
+
+    bool historyCallbackRan = false;
+    bool sawExpectedSourceTag = false;
+    std::function<void(const Data::ElementMapPtr&)> walkMap = [&](const Data::ElementMapPtr& em) {
+        if (!em) {
+            return;
+        }
+        for (const auto& el : em->getAll()) {
+            Data::ElementIDRefs sids;
+            auto mapped = em->find(el.index, &sids);
+            if (!mapped) {
+                continue;
+            }
+            out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long tag, long) {
+                historyCallbackRan = true;
+                if (tag == 1 || tag == 2) {
+                    sawExpectedSourceTag = true;
+                }
+                return true;
+            });
+        }
+        for (const auto& child : em->getChildElements()) {
+            walkMap(child.elementMap);
+        }
+    };
+    walkMap(out.elementMap);
+    EXPECT_TRUE(historyCallbackRan)
+        << "traceElement callback must run for at least one mapped output element";
+    EXPECT_TRUE(sawExpectedSourceTag)
+        << "mapped history must reference spine tag 1 or profile tag 2";
+}
+
+std::shared_ptr<Part::SweepGeometryOperation> makeMappedSweepTask(MappedSweepOperands* operandsOut = nullptr)
+{
+    const MappedSweepOperands mapped = makeMappedSweepOperands();
+    if (operandsOut) {
+        *operandsOut = mapped;
+    }
+    if (!mapped.spine.valid || !mapped.profile.valid) {
+        return {};
+    }
+    return std::make_shared<Part::SweepGeometryOperation>(mapped.spine,
+                                                            std::vector<Part::FrozenTopoShapeBundle> {
+                                                                mapped.profile},
+                                                            /*isSolid=*/false);
 }
 
 QString helloLine()
@@ -836,6 +1018,156 @@ TEST_F(GeometryWorkerProcessTest, ParentControlledFilletEmptyEdgesFailsBeforeOcc
     EXPECT_EQ(goodCallbacks.load(), 1);
     EXPECT_EQ(goodTerminal, App::GeometryJobState::ReadyToCommit) << goodResult.errorCode;
     EXPECT_TRUE(goodResult.success);
+    QDir(goodProc.workspaceDir()).removeRecursively();
+}
+
+TEST_F(GeometryWorkerProcessTest, ParentControlledRealFreeCADCmdMappedSweep)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    MappedSweepOperands mapped;
+    auto task = makeMappedSweepTask(&mapped);
+    ASSERT_TRUE(task);
+    ASSERT_TRUE(mapped.spine.valid);
+    ASSERT_TRUE(mapped.profile.valid);
+    ASSERT_TRUE(mapped.spine.elementMap);
+    ASSERT_TRUE(mapped.profile.elementMap);
+    EXPECT_GT(mapped.spine.elementMap->size(), 0u);
+    EXPECT_GT(mapped.profile.elementMap->size(), 0u);
+
+    App::GeometryJobSpec spec;
+    spec.id = 46;
+    spec.task = task;
+    spec.backend = App::GeometryBackend::FreeCADCmd;
+    spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess proc;
+    std::atomic<int> callbacks {0};
+    bool finished = false;
+    App::GeometryJobState terminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult terminalResult;
+    QObject::connect(&proc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &proc,
+                     [&](App::GeometryJobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++callbacks;
+                         finished = true;
+                         terminal = state;
+                         terminalResult = result;
+                     });
+
+    ASSERT_TRUE(proc.startJob(spec, _tempDir->path() + QStringLiteral("/parent_sweep_job")));
+    ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/request.json")));
+    ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/spine.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/profile-0.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/base.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/tool.fcg")));
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop, &QEventLoop::quit);
+    timeout.start(180000);
+    if (!finished) {
+        loop.exec();
+    }
+
+    ASSERT_TRUE(finished) << "GeometryWorkerProcess did not finish";
+    EXPECT_EQ(callbacks.load(), 1);
+    EXPECT_FALSE(proc.protocolFailed());
+    EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit) << terminalResult.errorCode << ": "
+                                                              << terminalResult.errorMessage;
+    EXPECT_TRUE(terminalResult.success);
+    ASSERT_FALSE(terminalResult.resultArchivePath.empty());
+    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(terminalResult.resultArchivePath)));
+    EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir()));
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(terminalResult.resultArchivePath, recovered));
+    assertMappedSweepResult(recovered, mapped.hashedId, mapped.longName, mapped.threshold);
+
+    QDir(proc.workspaceDir()).removeRecursively();
+}
+
+TEST_F(GeometryWorkerProcessTest, ParentControlledSweepEmptyProfilesFailsBeforeLaunchAndRecovers)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    const MappedSweepOperands mapped = makeMappedSweepOperands();
+    ASSERT_TRUE(mapped.spine.valid);
+    ASSERT_TRUE(mapped.spine.elementMap);
+    EXPECT_GT(mapped.spine.elementMap->size(), 0u);
+
+    auto badTask = std::make_shared<Part::SweepGeometryOperation>(
+        mapped.spine, std::vector<Part::FrozenTopoShapeBundle> {}, /*isSolid=*/false);
+
+    App::GeometryJobSpec badSpec;
+    badSpec.id = 47;
+    badSpec.task = badTask;
+    badSpec.backend = App::GeometryBackend::FreeCADCmd;
+    badSpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess badProc;
+    const QString badWorkspace = _tempDir->path() + QStringLiteral("/parent_sweep_bad");
+    EXPECT_FALSE(badProc.startJob(badSpec, badWorkspace));
+    EXPECT_EQ(badProc.state(), App::GeometryJobState::Failed);
+    EXPECT_FALSE(badProc.result().success);
+    EXPECT_EQ(badProc.result().errorCode, "NoProfiles");
+    EXPECT_FALSE(badProc.isRunning());
+    EXPECT_NE(badProc.state(), App::GeometryJobState::ReadyToCommit);
+    EXPECT_NE(badProc.state(), App::GeometryJobState::Completed);
+    EXPECT_FALSE(QFileInfo::exists(badWorkspace + QStringLiteral("/request.json")));
+    EXPECT_FALSE(QFileInfo::exists(badWorkspace + QStringLiteral("/result.fcg")));
+
+    auto goodTask = makeMappedSweepTask();
+    ASSERT_TRUE(goodTask);
+    App::GeometryJobSpec goodSpec;
+    goodSpec.id = 48;
+    goodSpec.task = goodTask;
+    goodSpec.backend = App::GeometryBackend::FreeCADCmd;
+    goodSpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    Gui::GeometryWorkerProcess goodProc;
+    std::atomic<int> goodCallbacks {0};
+    bool goodFinished = false;
+    App::GeometryJobState goodTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult goodResult;
+    QObject::connect(&goodProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &goodProc,
+                     [&](App::GeometryJobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++goodCallbacks;
+                         goodFinished = true;
+                         goodTerminal = state;
+                         goodResult = result;
+                     });
+
+    ASSERT_TRUE(goodProc.startJob(goodSpec, _tempDir->path() + QStringLiteral("/parent_sweep_good")));
+    QEventLoop goodLoop;
+    QTimer goodTimeout;
+    goodTimeout.setSingleShot(true);
+    QObject::connect(&goodTimeout, &QTimer::timeout, &goodLoop, &QEventLoop::quit);
+    QObject::connect(&goodProc, &Gui::GeometryWorkerProcess::jobFinished, &goodLoop, &QEventLoop::quit);
+    goodTimeout.start(180000);
+    if (!goodFinished) {
+        goodLoop.exec();
+    }
+
+    ASSERT_TRUE(goodFinished);
+    EXPECT_EQ(goodCallbacks.load(), 1);
+    EXPECT_EQ(goodTerminal, App::GeometryJobState::ReadyToCommit) << goodResult.errorCode;
+    EXPECT_TRUE(goodResult.success);
+    ASSERT_FALSE(goodResult.resultArchivePath.empty());
+    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(goodResult.resultArchivePath)));
+    const App::DetachedGeometryResult decoded =
+        goodTask->decodeResultArchive(goodResult.resultArchivePath);
+    EXPECT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
     QDir(goodProc.workspaceDir()).removeRecursively();
 }
 
