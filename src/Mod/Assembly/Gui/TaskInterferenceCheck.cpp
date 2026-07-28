@@ -61,6 +61,7 @@
 #include <QUnhandledException>
 #include <cmath>
 #include <exception>
+#include <stdexcept>
 #include <functional>
 #include <algorithm>
 #include <Mod/Spreadsheet/App/Sheet.h>
@@ -123,7 +124,7 @@ SbColor colorForKind(Part::InterferenceKind kind)
     }
 }
 
-InterferenceScanResult makeIncompleteWorkerDiagnosticResult(const char* message)
+InterferenceScanResult makeIncompleteDiagnosticResult(const char* message)
 {
     InterferenceScanResult result;
     result.complete = false;
@@ -131,7 +132,7 @@ InterferenceScanResult makeIncompleteWorkerDiagnosticResult(const char* message)
     InterferenceComponentIssue issue;
     issue.kind = InterferenceComponentIssue::Kind::Other;
     issue.diagnostic =
-        message && message[0] != '\0' ? message : "Unknown worker failure";
+        message && message[0] != '\0' ? message : "Unknown failure";
     result.componentIssues.push_back(issue);
     return result;
 }
@@ -139,25 +140,25 @@ InterferenceScanResult makeIncompleteWorkerDiagnosticResult(const char* message)
 InterferenceScanResult incompleteResultFromBaseException(const Base::Exception& e)
 {
     const std::string message = e.getMessage();
-    return makeIncompleteWorkerDiagnosticResult(
+    return makeIncompleteDiagnosticResult(
         message.empty() ? e.what() : message.c_str()
     );
 }
 
 InterferenceScanResult incompleteResultFromStdException(const std::exception& e)
 {
-    return makeIncompleteWorkerDiagnosticResult(e.what());
+    return makeIncompleteDiagnosticResult(e.what());
 }
 
-InterferenceScanResult incompleteResultFromUnknownWorkerException()
+InterferenceScanResult incompleteResultFromUnknownException()
 {
-    return makeIncompleteWorkerDiagnosticResult(nullptr);
+    return makeIncompleteDiagnosticResult(nullptr);
 }
 
 InterferenceScanResult incompleteResultFromExceptionPtr(std::exception_ptr ptr)
 {
     if (!ptr) {
-        return incompleteResultFromUnknownWorkerException();
+        return incompleteResultFromUnknownException();
     }
     try {
         std::rethrow_exception(ptr);
@@ -169,7 +170,7 @@ InterferenceScanResult incompleteResultFromExceptionPtr(std::exception_ptr ptr)
         return incompleteResultFromStdException(e);
     }
     catch (...) {
-        return incompleteResultFromUnknownWorkerException();
+        return incompleteResultFromUnknownException();
     }
 }
 
@@ -188,9 +189,47 @@ InterferenceScanResult readWatcherInterferenceResult(QFutureWatcher<Interference
         return incompleteResultFromStdException(e);
     }
     catch (...) {
-        return incompleteResultFromUnknownWorkerException();
+        return incompleteResultFromUnknownException();
     }
 }
+
+/** Disconnects and deletes the watcher if worker launch aborts before setFuture(). */
+class ScopedPendingScanWatcher
+{
+public:
+    ScopedPendingScanWatcher(
+        QFutureWatcher<InterferenceScanResult>* watcherIn,
+        QObject* ownerIn,
+        int& ownedWatcherCountIn
+    )
+        : watcher(watcherIn)
+        , owner(ownerIn)
+        , ownedWatcherCount(ownedWatcherCountIn)
+    {
+        ++ownedWatcherCount;
+    }
+
+    ~ScopedPendingScanWatcher()
+    {
+        if (!released && watcher) {
+            QObject::disconnect(watcher, nullptr, owner, nullptr);
+            delete watcher;
+            watcher = nullptr;
+            --ownedWatcherCount;
+        }
+    }
+
+    void release()
+    {
+        released = true;
+    }
+
+private:
+    QFutureWatcher<InterferenceScanResult>* watcher = nullptr;
+    QObject* owner = nullptr;
+    int& ownedWatcherCount;
+    bool released = false;
+};
 
 bool isViolationKind(Part::InterferenceKind kind)
 {
@@ -779,6 +818,57 @@ void TaskInterferenceCheck::testSetWorkerInjectionControl(
 void TaskInterferenceCheck::testClearWorkerInjectionControl()
 {
     testWorkerInjectionControl.reset();
+}
+
+void TaskInterferenceCheck::testSetGuiThreadScanFailureInjection(
+    const GuiThreadScanFailureInjection& injection
+)
+{
+    testGuiThreadScanFailureInjection = injection;
+}
+
+void TaskInterferenceCheck::testClearGuiThreadScanFailureInjection()
+{
+    testGuiThreadScanFailureInjection = {};
+}
+
+int TaskInterferenceCheck::testOwnedScanWatcherCount() const
+{
+    return ownedScanWatcherCount_;
+}
+
+void TaskInterferenceCheck::throwInjectedGuiThreadScanFailure(
+    GuiThreadScanFailureStage stage,
+    const GuiThreadScanFailureInjection& captured
+) const
+{
+    if (captured.stage != stage || captured.stage == GuiThreadScanFailureStage::None) {
+        return;
+    }
+    switch (captured.kind) {
+        case GuiThreadScanFailureKind::BaseException:
+            throw Base::RuntimeError(captured.message.c_str());
+        case GuiThreadScanFailureKind::StdException:
+            throw std::runtime_error(captured.message);
+        case GuiThreadScanFailureKind::Unknown:
+            throw 1;
+    }
+}
+
+void TaskInterferenceCheck::recoverFromSynchronousScanFailure(
+    std::uint64_t generation,
+    const InterferenceScanResult& diagnostic
+)
+{
+    if (generation != session.activeGeneration()) {
+        return;
+    }
+    preparingScan = false;
+    clearPreview();
+    if (progressLabel) {
+        progressLabel->clear();
+    }
+    onScanFinished(generation, diagnostic);
 }
 
 void TaskInterferenceCheck::testSetIncludeHidden(bool enabled)
@@ -1429,209 +1519,286 @@ void TaskInterferenceCheck::onRun()
     std::vector<InterferenceLeaf> leavesB;
     InterferenceComponentScanSnapshot acrossSnapshot;
 
+    GuiThreadScanFailureInjection capturedGuiFailureInjection;
+    {
+        const auto& pending = testGuiThreadScanFailureInjection;
+        if (pending.stage != GuiThreadScanFailureStage::None
+            && (pending.generation == 0 || pending.generation == generation)) {
+            capturedGuiFailureInjection = pending;
+        }
+    }
+
     auto prepCancelled = [&]() {
         return cancel && cancel->load(std::memory_order_relaxed);
     };
+    auto supersededGeneration = [&]() {
+        return generation != session.activeGeneration();
+    };
 
-    if (betweenSelected) {
-        // Explicitly selected occurrences always contribute geometry, including
-        // when hidden. Traverse only each selected branch (includeHidden=true).
-        if (testPreparationBarrierFn) {
-            testPreparationBarrierFn();
-        }
-        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
-            preparingScan = false;
-            (void)session.finishScan(generation);
-            discardResults();
-            cancelButton->setEnabled(false);
-            setScanControlsEnabled(host != nullptr);
-            if (statusLabel) {
-                statusLabel->setText(tr("Scan cancelled."));
+    try {
+        if (betweenSelected) {
+            // Explicitly selected occurrences always contribute geometry, including
+            // when hidden. Traverse only each selected branch (includeHidden=true).
+            if (testPreparationBarrierFn) {
+                testPreparationBarrierFn();
             }
-            if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
-                selectionDirtyWhileBusy = false;
-                refreshScanScope();
-            }
-            return;
-        }
-        leavesA = collectInterferenceLeavesUnderPrefix(
-            host,
-            selectedA.occurrencePrefix,
-            /*includeHidden=*/true
-        );
-        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
-            preparingScan = false;
-            (void)session.finishScan(generation);
-            discardResults();
-            cancelButton->setEnabled(false);
-            setScanControlsEnabled(host != nullptr);
-            if (statusLabel) {
-                statusLabel->setText(tr("Scan cancelled."));
-            }
-            return;
-        }
-        leavesB = collectInterferenceLeavesUnderPrefix(
-            host,
-            selectedB.occurrencePrefix,
-            /*includeHidden=*/true
-        );
-        if (prepCancelled() || !host || !host->isAttachedToDocument()) {
-            preparingScan = false;
-            (void)session.finishScan(generation);
-            discardResults();
-            cancelButton->setEnabled(false);
-            setScanControlsEnabled(host != nullptr);
-            if (statusLabel) {
-                statusLabel->setText(tr("Scan cancelled."));
-            }
-            return;
-        }
-        std::vector<InterferenceLeaf> preparedPairLeaves;
-        preparedPairLeaves.reserve(leavesA.size() + leavesB.size());
-        preparedPairLeaves.insert(
-            preparedPairLeaves.end(),
-            leavesA.begin(),
-            leavesA.end()
-        );
-        preparedPairLeaves.insert(
-            preparedPairLeaves.end(),
-            leavesB.begin(),
-            leavesB.end()
-        );
-        prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
-            host,
-            &preparedPairLeaves
-        );
-        preparingScan = false;
-        if (statusLabel) {
-            statusLabel->setText(
-                tr("Scanning selected components '%1' and '%2'…")
-                    .arg(QString::fromStdString(selectedA.displayPath))
-                    .arg(QString::fromStdString(selectedB.displayPath))
-            );
-        }
-    }
-    else {
-        // Snapshot DocumentObject-backed geometry on this thread before the worker.
-        // Optional test barrier runs mid-preparation (after occurrence listing).
-        auto snapshot = prepareInterferenceComponentScanSnapshot(
-            host,
-            includeHidden,
-            prepOptions,
-            testPreparationBarrierFn
-        );
-        preparingScan = false;
-        if (!host || !host->isAttachedToDocument() || snapshot.cancelled
-            || (cancel && cancel->load(std::memory_order_relaxed))) {
-            (void)session.finishScan(generation);
-            discardResults();
-            cancelButton->setEnabled(false);
-            setScanControlsEnabled(host != nullptr);
-            if (statusLabel) {
-                statusLabel->setText(tr("Scan cancelled."));
-            }
-            if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
-                selectionDirtyWhileBusy = false;
-                refreshScanScope();
-            }
-            return;
-        }
-        acrossSnapshot = std::move(snapshot);
-        prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
-            host,
-            &acrossSnapshot.leaves
-        );
-        if (statusLabel) {
-            statusLabel->setText(tr("Scanning all applicable component occurrences…"));
-        }
-    }
-
-    // Worker phase: Cancel is meaningful for pair classification.
-    cancelButton->setEnabled(true);
-    if (progressLabel) {
-        progressLabel->setText(tr("Progress: starting…"));
-    }
-
-    auto* watcher = new QFutureWatcher<InterferenceScanResult>(this);
-    std::uint64_t injectGeneration = testInjectWorkerFailureGeneration;
-    if (injectGeneration == 0 && testWorkerInjectionControl) {
-        injectGeneration = testWorkerInjectionControl->injectGeneration.load(
-            std::memory_order_relaxed
-        );
-    }
-    std::shared_ptr<InterferenceWorkerInjectionControl> workerInjection =
-        testWorkerInjectionControl;
-    connect(
-        watcher,
-        &QFutureWatcher<InterferenceScanResult>::finished,
-        this,
-        [self, watcher, generation, workerInjection, injectGeneration]() {
-            watcher->deleteLater();
-            if (!self) {
+            if (supersededGeneration()) {
                 return;
             }
-            InterferenceScanResult result;
-            if (watcher->future().isFinished()) {
-                result = readWatcherInterferenceResult(watcher);
+            if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+                if (supersededGeneration()) {
+                    return;
+                }
+                preparingScan = false;
+                (void)session.finishScan(generation);
+                discardResults();
+                cancelButton->setEnabled(false);
+                setScanControlsEnabled(host != nullptr);
+                if (statusLabel) {
+                    statusLabel->setText(tr("Scan cancelled."));
+                }
+                if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+                    selectionDirtyWhileBusy = false;
+                    refreshScanScope();
+                }
+                return;
             }
-            self->onScanFinished(generation, result);
-            if (workerInjection && injectGeneration != 0 && generation == injectGeneration) {
-                workerInjection->injectWatcherDelivered.store(true, std::memory_order_release);
+            leavesA = collectInterferenceLeavesUnderPrefix(
+                host,
+                selectedA.occurrencePrefix,
+                /*includeHidden=*/true
+            );
+            if (supersededGeneration()) {
+                return;
+            }
+            if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+                if (supersededGeneration()) {
+                    return;
+                }
+                preparingScan = false;
+                (void)session.finishScan(generation);
+                discardResults();
+                cancelButton->setEnabled(false);
+                setScanControlsEnabled(host != nullptr);
+                if (statusLabel) {
+                    statusLabel->setText(tr("Scan cancelled."));
+                }
+                return;
+            }
+            leavesB = collectInterferenceLeavesUnderPrefix(
+                host,
+                selectedB.occurrencePrefix,
+                /*includeHidden=*/true
+            );
+            if (supersededGeneration()) {
+                return;
+            }
+            if (prepCancelled() || !host || !host->isAttachedToDocument()) {
+                if (supersededGeneration()) {
+                    return;
+                }
+                preparingScan = false;
+                (void)session.finishScan(generation);
+                discardResults();
+                cancelButton->setEnabled(false);
+                setScanControlsEnabled(host != nullptr);
+                if (statusLabel) {
+                    statusLabel->setText(tr("Scan cancelled."));
+                }
+                return;
+            }
+            std::vector<InterferenceLeaf> preparedPairLeaves;
+            preparedPairLeaves.reserve(leavesA.size() + leavesB.size());
+            preparedPairLeaves.insert(
+                preparedPairLeaves.end(),
+                leavesA.begin(),
+                leavesA.end()
+            );
+            preparedPairLeaves.insert(
+                preparedPairLeaves.end(),
+                leavesB.begin(),
+                leavesB.end()
+            );
+            prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
+                host,
+                &preparedPairLeaves
+            );
+            throwInjectedGuiThreadScanFailure(
+                GuiThreadScanFailureStage::SelectedPairPreparation,
+                capturedGuiFailureInjection
+            );
+            if (supersededGeneration()) {
+                return;
+            }
+            preparingScan = false;
+            if (statusLabel) {
+                statusLabel->setText(
+                    tr("Scanning selected components '%1' and '%2'…")
+                        .arg(QString::fromStdString(selectedA.displayPath))
+                        .arg(QString::fromStdString(selectedB.displayPath))
+                );
             }
         }
-    );
-
-    QFuture<InterferenceScanResult> future = QtConcurrent::run(
-        [leavesA = std::move(leavesA),
-         leavesB = std::move(leavesB),
-         acrossSnapshot = std::move(acrossSnapshot),
-         betweenSelected,
-         excluded = std::move(excluded),
-         clearance,
-         clearanceRules = prepOptions.clearanceRules,
-         cancel,
-         self,
-         generation,
-         injectGeneration,
-         workerInjection]() mutable {
-            if (injectGeneration != 0 && injectGeneration == generation) {
-                if (workerInjection) {
-                    workerInjection->workerStarted.store(true, std::memory_order_release);
-                    // Test seam: explicit hold ignores cooperative cancel from newer generations.
-                    while (workerInjection->holdInWorker.load(std::memory_order_acquire)) {
-                        QThread::msleep(2);
-                    }
-                }
-                throw Base::RuntimeError("Injected worker failure");
+        else {
+            // Snapshot DocumentObject-backed geometry on this thread before the worker.
+            // Optional test barrier runs mid-preparation (after occurrence listing).
+            auto snapshot = prepareInterferenceComponentScanSnapshot(
+                host,
+                includeHidden,
+                prepOptions,
+                testPreparationBarrierFn
+            );
+            if (supersededGeneration()) {
+                return;
             }
-            InterferenceScanOptions options;
-            options.clearance = clearance;
-            options.clearanceRules = std::move(clearanceRules);
-            options.cancelFlag = cancel.get();
-            options.detectionOptions.clearance = clearance;
-            options.detectionOptions.cancelFlag = cancel.get();
-            options.progress = [self, generation](int current, int total) {
+            if (!host || !host->isAttachedToDocument() || snapshot.cancelled
+                || (cancel && cancel->load(std::memory_order_relaxed))) {
+                preparingScan = false;
+                (void)session.finishScan(generation);
+                discardResults();
+                cancelButton->setEnabled(false);
+                setScanControlsEnabled(host != nullptr);
+                if (statusLabel) {
+                    statusLabel->setText(tr("Scan cancelled."));
+                }
+                if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
+                    selectionDirtyWhileBusy = false;
+                    refreshScanScope();
+                }
+                return;
+            }
+            acrossSnapshot = std::move(snapshot);
+            prepOptions.clearanceRules = Assembly::snapshotInterferenceClearanceRules(
+                host,
+                &acrossSnapshot.leaves
+            );
+            throwInjectedGuiThreadScanFailure(
+                GuiThreadScanFailureStage::AllComponentsPreparation,
+                capturedGuiFailureInjection
+            );
+            if (supersededGeneration()) {
+                return;
+            }
+            preparingScan = false;
+            if (statusLabel) {
+                statusLabel->setText(tr("Scanning all applicable component occurrences…"));
+            }
+        }
+
+        if (supersededGeneration()) {
+            return;
+        }
+
+        // Worker phase: Cancel is meaningful for pair classification.
+        cancelButton->setEnabled(true);
+        if (progressLabel) {
+            progressLabel->setText(tr("Progress: starting…"));
+        }
+
+        auto* watcher = new QFutureWatcher<InterferenceScanResult>(nullptr);
+        ScopedPendingScanWatcher pendingWatcher(watcher, this, ownedScanWatcherCount_);
+        std::uint64_t injectGeneration = testInjectWorkerFailureGeneration;
+        if (injectGeneration == 0 && testWorkerInjectionControl) {
+            injectGeneration = testWorkerInjectionControl->injectGeneration.load(
+                std::memory_order_relaxed
+            );
+        }
+        std::shared_ptr<InterferenceWorkerInjectionControl> workerInjection =
+            testWorkerInjectionControl;
+        connect(
+            watcher,
+            &QFutureWatcher<InterferenceScanResult>::finished,
+            this,
+            [self, watcher, generation, workerInjection, injectGeneration]() {
+                if (self) {
+                    --self->ownedScanWatcherCount_;
+                }
+                watcher->deleteLater();
                 if (!self) {
                     return;
                 }
-                QMetaObject::invokeMethod(
-                    self,
-                    [self, generation, current, total]() {
-                        if (!self || generation != self->session.activeGeneration()) {
-                            return;
-                        }
-                        self->onScanProgress(current, total);
-                    },
-                    Qt::QueuedConnection
-                );
-            };
-            if (betweenSelected) {
-                return runInterferenceScanBetweenLeafSets(leavesA, leavesB, options, excluded);
+                InterferenceScanResult result;
+                if (watcher->future().isFinished()) {
+                    result = readWatcherInterferenceResult(watcher);
+                }
+                self->onScanFinished(generation, result);
+                if (workerInjection && injectGeneration != 0 && generation == injectGeneration) {
+                    workerInjection->injectWatcherDelivered.store(true, std::memory_order_release);
+                }
             }
-            return runInterferenceScanAcrossComponents(acrossSnapshot, options, excluded);
-        }
-    );
-    watcher->setFuture(future);
+        );
+
+        throwInjectedGuiThreadScanFailure(
+            GuiThreadScanFailureStage::WorkerLaunchSetup,
+            capturedGuiFailureInjection
+        );
+
+        QFuture<InterferenceScanResult> future = QtConcurrent::run(
+            [leavesA = std::move(leavesA),
+             leavesB = std::move(leavesB),
+             acrossSnapshot = std::move(acrossSnapshot),
+             betweenSelected,
+             excluded = std::move(excluded),
+             clearance,
+             clearanceRules = prepOptions.clearanceRules,
+             cancel,
+             self,
+             generation,
+             injectGeneration,
+             workerInjection]() mutable {
+                if (injectGeneration != 0 && injectGeneration == generation) {
+                    if (workerInjection) {
+                        workerInjection->workerStarted.store(true, std::memory_order_release);
+                        // Test seam: explicit hold ignores cooperative cancel from newer generations.
+                        while (workerInjection->holdInWorker.load(std::memory_order_acquire)) {
+                            QThread::msleep(2);
+                        }
+                    }
+                    throw Base::RuntimeError("Injected worker failure");
+                }
+                InterferenceScanOptions options;
+                options.clearance = clearance;
+                options.clearanceRules = std::move(clearanceRules);
+                options.cancelFlag = cancel.get();
+                options.detectionOptions.clearance = clearance;
+                options.detectionOptions.cancelFlag = cancel.get();
+                options.progress = [self, generation](int current, int total) {
+                    if (!self) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        self,
+                        [self, generation, current, total]() {
+                            if (!self || generation != self->session.activeGeneration()) {
+                                return;
+                            }
+                            if (!self->session.isBusy()) {
+                                return;
+                            }
+                            self->onScanProgress(current, total);
+                        },
+                        Qt::QueuedConnection
+                    );
+                };
+                if (betweenSelected) {
+                    return runInterferenceScanBetweenLeafSets(leavesA, leavesB, options, excluded);
+                }
+                return runInterferenceScanAcrossComponents(acrossSnapshot, options, excluded);
+            }
+        );
+        watcher->setFuture(future);
+        watcher->setParent(this);
+        pendingWatcher.release();
+    }
+    catch (const Base::Exception& e) {
+        recoverFromSynchronousScanFailure(generation, incompleteResultFromBaseException(e));
+    }
+    catch (const std::exception& e) {
+        recoverFromSynchronousScanFailure(generation, incompleteResultFromStdException(e));
+    }
+    catch (...) {
+        recoverFromSynchronousScanFailure(generation, incompleteResultFromUnknownException());
+    }
 }
 
 void TaskInterferenceCheck::onCancelScan()

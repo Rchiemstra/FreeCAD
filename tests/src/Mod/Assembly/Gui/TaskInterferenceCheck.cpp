@@ -5,8 +5,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
-#include <iostream>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -1784,6 +1782,250 @@ struct ScopedWorkerInjectionHoldRelease
         }
     }
 };
+
+struct ScopedGuiThreadScanFailureInjection
+{
+    AssemblyGui::TaskInterferenceCheck& task;
+
+    explicit ScopedGuiThreadScanFailureInjection(AssemblyGui::TaskInterferenceCheck& taskIn)
+        : task(taskIn)
+    {}
+
+    ~ScopedGuiThreadScanFailureInjection()
+    {
+        task.testClearGuiThreadScanFailureInjection();
+    }
+};
+
+static void assertGuiThreadSyncFailureRecoveryState(
+    AssemblyGui::TaskInterferenceCheck& task,
+    Assembly::InterferenceScanSession& session,
+    const QString& diagnosticSubstring,
+    const QString& previousPenetrationMarker = QStringLiteral("P_A")
+)
+{
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_FALSE(session.isBusy());
+    EXPECT_FALSE(task.testIsPreparing());
+    EXPECT_TRUE(task.testIsRunEnabled());
+    EXPECT_FALSE(task.testIsCancelEnabled());
+    EXPECT_EQ(task.testOwnedScanWatcherCount(), 0);
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("incomplete"), Qt::CaseInsensitive)
+        || task.testStatusText().contains(QStringLiteral("failed"), Qt::CaseInsensitive)
+    );
+    EXPECT_TRUE(task.testProgressText().isEmpty());
+    EXPECT_EQ(task.testPreviewShapeCount(), 0);
+    EXPECT_EQ(task.testPenetrationCount(), 0);
+    EXPECT_EQ(task.testResultPairCount(), 0u);
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(
+        task.testTableCellText(0, 0).contains(QStringLiteral("Diagnostic"), Qt::CaseInsensitive)
+    );
+    if (!previousPenetrationMarker.isEmpty()) {
+        EXPECT_FALSE(task.testTableCellText(0, 1).contains(previousPenetrationMarker));
+    }
+    EXPECT_TRUE(task.testTableCellText(0, 7).contains(diagnosticSubstring));
+}
+
+static std::unique_ptr<AssemblyGui::TaskInterferenceCheck> makeOverlappingSelectedPairTask(
+    App::Document* doc,
+    Assembly::AssemblyObject* assembly
+)
+{
+    addOverlappingPairForAsyncScan(doc, assembly);
+    Assembly::InterferenceComponentOccurrence a;
+    a.component = assembly;
+    a.occurrencePrefix = "WorkerFailA.";
+    a.displayPath = "WorkerFailA";
+    Assembly::InterferenceComponentOccurrence b;
+    b.component = assembly;
+    b.occurrencePrefix = "WorkerFailB.";
+    b.displayPath = "WorkerFailB";
+    return std::make_unique<AssemblyGui::TaskInterferenceCheck>(assembly, a, b);
+}
+
+TEST_F(TaskInterferenceCheckTest, allComponentsPreparationFailureRecoversSynchronously)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    ASSERT_TRUE(task.testHasPreviewRoot());
+
+    auto& session = task.scanSession();
+    const auto seed = session.beginScan();
+    task.testDeliverScanFinished(seed.generation, makePlacedPenetrationResult());
+    ASSERT_TRUE(task.hasResults());
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(task.testTableCellText(0, 1).contains(QStringLiteral("P_A")));
+    task.testSelectResultRow(0);
+    ASSERT_EQ(task.testPreviewShapeCount(), 2);
+
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    ScopedGuiThreadScanFailureInjection clearInjection(task);
+    AssemblyGui::GuiThreadScanFailureInjection injection;
+    injection.stage = AssemblyGui::GuiThreadScanFailureStage::AllComponentsPreparation;
+    injection.kind = AssemblyGui::GuiThreadScanFailureKind::BaseException;
+    injection.message = "Injected all-components preparation failure";
+    task.testSetGuiThreadScanFailureInjection(injection);
+
+    EXPECT_NO_THROW(task.testRunScan());
+    assertGuiThreadSyncFailureRecoveryState(
+        task,
+        session,
+        QStringLiteral("Injected all-components preparation failure")
+    );
+}
+
+TEST_F(TaskInterferenceCheckTest, selectedPairPreparationFailureRecoversSynchronously)
+{
+    auto pairTask = makeOverlappingSelectedPairTask(_doc, _assembly);
+    AssemblyGui::TaskInterferenceCheck& task = *pairTask;
+    EXPECT_TRUE(task.testIsSelectedPairMode());
+    EXPECT_TRUE(
+        task.testScopeText().contains(QStringLiteral("selected pair"), Qt::CaseInsensitive)
+    );
+
+    ScopedGuiThreadScanFailureInjection clearInjection(task);
+    AssemblyGui::GuiThreadScanFailureInjection injection;
+    injection.stage = AssemblyGui::GuiThreadScanFailureStage::SelectedPairPreparation;
+    injection.kind = AssemblyGui::GuiThreadScanFailureKind::StdException;
+    injection.message = "Injected selected-pair preparation failure";
+    task.testSetGuiThreadScanFailureInjection(injection);
+
+    auto& session = task.scanSession();
+    EXPECT_NO_THROW(task.testRunScan());
+    assertGuiThreadSyncFailureRecoveryState(
+        task,
+        session,
+        QStringLiteral("Injected selected-pair preparation failure"),
+        QString()
+    );
+}
+
+TEST_F(TaskInterferenceCheckTest, workerLaunchSetupFailureRecoversWithoutOrphanWatcher)
+{
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    auto control = std::make_shared<AssemblyGui::InterferenceWorkerInjectionControl>();
+    ScopedWorkerInjectionHoldRelease releaseHeldWorker(control);
+
+    auto runLaunchFailureScan = [&](AssemblyGui::TaskInterferenceCheck& task) {
+        task.testSetWorkerInjectionControl(control);
+        ScopedGuiThreadScanFailureInjection clearInjection(task);
+        AssemblyGui::GuiThreadScanFailureInjection injection;
+        injection.stage = AssemblyGui::GuiThreadScanFailureStage::WorkerLaunchSetup;
+        injection.kind = AssemblyGui::GuiThreadScanFailureKind::Unknown;
+        task.testSetGuiThreadScanFailureInjection(injection);
+
+        EXPECT_NO_THROW(task.testRunScan());
+        EXPECT_FALSE(control->workerStarted.load(std::memory_order_acquire));
+        EXPECT_EQ(task.testOwnedScanWatcherCount(), 0);
+
+        const QString statusAfterRecovery = task.testStatusText();
+        const QString progressAfterRecovery = task.testProgressText();
+        const int rowsAfterRecovery = task.testTableRowCount();
+
+        for (int i = 0; i < 30; ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+        EXPECT_EQ(task.testOwnedScanWatcherCount(), 0);
+        EXPECT_EQ(task.testStatusText(), statusAfterRecovery);
+        EXPECT_EQ(task.testProgressText(), progressAfterRecovery);
+        EXPECT_EQ(task.testTableRowCount(), rowsAfterRecovery);
+        EXPECT_TRUE(task.testTableCellText(0, 7).contains(QStringLiteral("Unknown")));
+
+        task.testClearWorkerInjectionControl();
+    };
+
+    {
+        AssemblyGui::TaskInterferenceCheck task(_assembly);
+        runLaunchFailureScan(task);
+    }
+
+    auto heapTask = std::make_unique<AssemblyGui::TaskInterferenceCheck>(_assembly);
+    runLaunchFailureScan(*heapTask);
+    heapTask.reset();
+    QApplication::processEvents(QEventLoop::AllEvents, 50);
+}
+
+TEST_F(TaskInterferenceCheckTest, obsoleteGuiThreadPreparationFailureDoesNotOverwriteNewerScan)
+{
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    bool obsoleteFailureThrown = false;
+
+    task.testSetPreparationBarrier([&]() {
+        task.testClearPreparationBarrier();
+        task.testClearGuiThreadScanFailureInjection();
+        task.testRunScan();
+        obsoleteFailureThrown = true;
+        throw Base::RuntimeError("Injected obsolete synchronous preparation failure");
+    });
+
+    task.testRunScan();
+    waitUntilScanIdle(task);
+
+    EXPECT_TRUE(obsoleteFailureThrown);
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testOwnedScanWatcherCount(), 0);
+    EXPECT_GE(task.testPenetrationCount(), 1);
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+    EXPECT_FALSE(
+        task.testStatusText().contains(QStringLiteral("incomplete"), Qt::CaseInsensitive)
+    );
+    for (int row = 0; row < task.testTableRowCount(); ++row) {
+        EXPECT_FALSE(
+            task.testTableCellText(row, 7)
+                .contains(QStringLiteral("Injected obsolete synchronous preparation failure"))
+        );
+    }
+}
+
+TEST_F(TaskInterferenceCheckTest, asyncScansCompleteWhenGuiThreadFailureInjectionDisabled)
+{
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    AssemblyGui::TaskInterferenceCheck taskAll(_assembly);
+    taskAll.testClearGuiThreadScanFailureInjection();
+    taskAll.testClearInjectWorkerFailure();
+    taskAll.testClearWorkerInjectionControl();
+    taskAll.testRunScan();
+    waitUntilScanIdle(taskAll);
+
+    EXPECT_FALSE(taskAll.isScanning());
+    EXPECT_TRUE(taskAll.hasResults());
+    EXPECT_GE(taskAll.testPenetrationCount(), 1);
+    EXPECT_TRUE(
+        taskAll.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+    EXPECT_FALSE(
+        taskAll.testStatusText().contains(QStringLiteral("Injected"), Qt::CaseInsensitive)
+    );
+    EXPECT_EQ(taskAll.testOwnedScanWatcherCount(), 0);
+
+    Assembly::InterferenceComponentOccurrence occA;
+    occA.component = _assembly;
+    occA.occurrencePrefix = "WorkerFailA.";
+    occA.displayPath = "WorkerFailA";
+    Assembly::InterferenceComponentOccurrence occB;
+    occB.component = _assembly;
+    occB.occurrencePrefix = "WorkerFailB.";
+    occB.displayPath = "WorkerFailB";
+    AssemblyGui::TaskInterferenceCheck taskPair(_assembly, occA, occB);
+    taskPair.testClearGuiThreadScanFailureInjection();
+    taskPair.testRunScan();
+    waitUntilScanIdle(taskPair);
+
+    EXPECT_FALSE(taskPair.isScanning());
+    EXPECT_TRUE(taskPair.hasResults());
+    EXPECT_GE(taskPair.testPenetrationCount(), 1);
+    EXPECT_TRUE(
+        taskPair.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+    EXPECT_EQ(taskPair.testOwnedScanWatcherCount(), 0);
+}
 
 TEST_F(TaskInterferenceCheckTest, workerInjectedFailureRecoversThroughOnScanFinished)
 {

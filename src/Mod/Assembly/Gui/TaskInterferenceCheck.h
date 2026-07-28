@@ -80,6 +80,30 @@ struct AssemblyGuiExport InterferenceWorkerInjectionControl
     std::atomic<bool> injectWatcherDelivered {false};
 };
 
+/** GUI-thread-only scan failure injection stage (unit tests). */
+enum class GuiThreadScanFailureStage
+{
+    None,
+    AllComponentsPreparation,
+    SelectedPairPreparation,
+    WorkerLaunchSetup,
+};
+
+enum class GuiThreadScanFailureKind
+{
+    BaseException,
+    StdException,
+    Unknown,
+};
+
+struct AssemblyGuiExport GuiThreadScanFailureInjection
+{
+    std::uint64_t generation = 0;
+    GuiThreadScanFailureStage stage = GuiThreadScanFailureStage::None;
+    GuiThreadScanFailureKind kind = GuiThreadScanFailureKind::BaseException;
+    std::string message;
+};
+
 class AssemblyGuiExport TaskInterferenceCheck: public QWidget
 {
     Q_OBJECT
@@ -203,6 +227,9 @@ public:
         std::shared_ptr<InterferenceWorkerInjectionControl> control
     );
     void testClearWorkerInjectionControl();
+    void testSetGuiThreadScanFailureInjection(const GuiThreadScanFailureInjection& injection);
+    void testClearGuiThreadScanFailureInjection();
+    int testOwnedScanWatcherCount() const;
     void testSetIncludeHidden(bool enabled);
     void testRunScan();
     bool testIsPreparing() const;
@@ -226,6 +253,14 @@ private Q_SLOTS:
     void onRowChanged();
     void onScanFinished(std::uint64_t generation, const Assembly::InterferenceScanResult& result);
     void onScanProgress(int current, int total);
+    void recoverFromSynchronousScanFailure(
+        std::uint64_t generation,
+        const Assembly::InterferenceScanResult& diagnostic
+    );
+    void throwInjectedGuiThreadScanFailure(
+        GuiThreadScanFailureStage stage,
+        const GuiThreadScanFailureInjection& captured
+    ) const;
     void onSelectionChanged();
     void onClearanceSheetChanged(int index);
 
@@ -274,6 +309,8 @@ private:
     std::function<void()> testPreparationBarrierFn;
     std::uint64_t testInjectWorkerFailureGeneration = 0;
     std::shared_ptr<InterferenceWorkerInjectionControl> testWorkerInjectionControl;
+    GuiThreadScanFailureInjection testGuiThreadScanFailureInjection;
+    int ownedScanWatcherCount_ = 0;
     bool hasTestSelectionOverride = false;
     std::vector<Assembly::InterferenceSelectionHandle> testSelectionHandles;
     /** True while DocumentObject-backed snapshot preparation is running (Cancel inactive). */
