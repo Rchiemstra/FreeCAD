@@ -1375,7 +1375,7 @@ public:
         return filePath.c_str();
     }
 
-    /** Break a live link while preserving file/object identity for unresolved review. */
+    /** Break a live link; partial links preserve detached file/object identity. */
     void breakLink(App::DocumentObject* obj, bool clear) override;
 
     virtual bool upgrade(Base::XMLReader& reader, const char* typeName);

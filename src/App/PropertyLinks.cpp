@@ -4063,6 +4063,10 @@ const char* PropertyXLink::getObjectName() const
 
 void PropertyXLink::breakLink(App::DocumentObject* obj, bool clear)
 {
+    if (!testFlag(LinkAllowPartial)) {
+        PropertyLink::breakLink(obj, clear);
+        return;
+    }
     if (clear && getContainer() == obj) {
         setValue(nullptr);
         return;
@@ -5608,7 +5612,8 @@ void PropertyXLinkSubList::breakLink(App::DocumentObject* obj, bool clear)
     for (auto& l : _Links) {
         if (l.getValue() == obj) {
             guard.aboutToChange();
-            // Use PropertyXLink::breakLink so objectName / DocInfo survive deletion.
+            // Partial lists deliberately retain detached identity. Ordinary XLink lists
+            // preserve their established null-link behavior.
             l.breakLink(obj, false);
         }
     }

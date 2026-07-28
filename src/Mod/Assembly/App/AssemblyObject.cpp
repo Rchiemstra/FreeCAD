@@ -133,6 +133,10 @@ AssemblyObject::AssemblyObject()
         (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
         "Alternating source-definition endpoints for excluded unordered pairs"
     );
+    // Exclusions are review records rather than dependency links. Opt into partial-link
+    // persistence so deleted or temporarily closed endpoints keep enough identity to be
+    // displayed and explicitly removed without changing ordinary XLink behavior.
+    InterferenceExcludedSources.setAllowPartial(true);
 
     lastDoF = numberOfComponents() * 6;
     signalSolverUpdate();

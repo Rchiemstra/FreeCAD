@@ -64,6 +64,7 @@
 #include <stdexcept>
 #include <functional>
 #include <algorithm>
+#include <utility>
 #include <Mod/Spreadsheet/App/Sheet.h>
 
 using namespace Assembly;
@@ -230,6 +231,71 @@ private:
     int& ownedWatcherCount;
     bool released = false;
 };
+
+template<typename Mutation>
+bool executeInterferenceMutation(
+    Gui::Document* guiDocument,
+    App::Document* appDocument,
+    const char* commandName,
+    Mutation&& mutation,
+    QString& errorMessage
+)
+{
+    bool guiCommandOpen = false;
+    bool appTransactionOpen = false;
+    auto abortOpenTransaction = [&]() {
+        try {
+            if (guiCommandOpen) {
+                guiDocument->abortCommand();
+                guiCommandOpen = false;
+            }
+            else if (appTransactionOpen) {
+                appDocument->abortTransaction();
+                appTransactionOpen = false;
+            }
+        }
+        catch (...) {
+            // Retain the original mutation error; abort is best-effort during recovery.
+        }
+    };
+
+    try {
+        if (guiDocument) {
+            guiDocument->openCommand(commandName);
+            guiCommandOpen = true;
+        }
+        else if (appDocument) {
+            appDocument->openTransaction(commandName);
+            appTransactionOpen = true;
+        }
+
+        std::forward<Mutation>(mutation)();
+
+        if (guiCommandOpen) {
+            guiDocument->commitCommand();
+            guiCommandOpen = false;
+        }
+        else if (appTransactionOpen) {
+            appDocument->commitTransaction();
+            appTransactionOpen = false;
+        }
+        errorMessage.clear();
+        return true;
+    }
+    catch (const Base::Exception& exc) {
+        abortOpenTransaction();
+        errorMessage = QString::fromUtf8(exc.what());
+    }
+    catch (const std::exception& exc) {
+        abortOpenTransaction();
+        errorMessage = QString::fromUtf8(exc.what());
+    }
+    catch (...) {
+        abortOpenTransaction();
+        errorMessage = QObject::tr("Unknown error while updating interference settings.");
+    }
+    return false;
+}
 
 bool isViolationKind(Part::InterferenceKind kind)
 {
@@ -647,23 +713,20 @@ void TaskInterferenceCheck::onClearanceSheetChanged(int index)
     if (sheet == current) {
         return;
     }
-    try {
-        if (auto* guiDoc = hostGuiDocument()) {
-            guiDoc->openCommand("Set interference clearance sheet");
-            Assembly::setInterferenceClearanceSheet(host, sheet);
-            guiDoc->commitCommand();
-        }
-        else if (App::Document* doc = host->getDocument()) {
-            doc->openTransaction("Set interference clearance sheet");
-            Assembly::setInterferenceClearanceSheet(host, sheet);
-            doc->commitTransaction();
-        }
-        else {
-            Assembly::setInterferenceClearanceSheet(host, sheet);
-        }
-    }
-    catch (const Base::Exception& exc) {
-        Base::Console().warning("Interference clearance sheet: %s\n", exc.what());
+    QString errorMessage;
+    if (!executeInterferenceMutation(
+            hostGuiDocument(),
+            host->getDocument(),
+            "Set interference clearance sheet",
+            [this, sheet]() {
+                Assembly::setInterferenceClearanceSheet(host, sheet);
+            },
+            errorMessage
+        )) {
+        Base::Console().warning(
+            "Interference clearance sheet: %s\n",
+            errorMessage.toUtf8().constData()
+        );
         refreshClearanceSheetUi();
         return;
     }
@@ -1524,13 +1587,18 @@ void TaskInterferenceCheck::onRun()
     }
 
     if (std::abs(Assembly::getInterferenceClearance(host) - clearance) > 1e-12) {
-        if (auto* guiDoc = hostGuiDocument()) {
-            guiDoc->openCommand("Set interference clearance");
-            Assembly::setInterferenceClearance(host, clearance);
-            guiDoc->commitCommand();
-        }
-        else {
-            Assembly::setInterferenceClearance(host, clearance);
+        QString errorMessage;
+        if (!executeInterferenceMutation(
+                hostGuiDocument(),
+                host->getDocument(),
+                "Set interference clearance",
+                [this, clearance]() {
+                    Assembly::setInterferenceClearance(host, clearance);
+                },
+                errorMessage
+            )) {
+            QMessageBox::warning(this, tr("Set interference clearance"), errorMessage);
+            return;
         }
     }
 
@@ -2359,38 +2427,16 @@ ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
         return result;
     }
 
-    bool commandOpen = false;
-    try {
-        guiDocument->openCommand("Exclude interference source pair");
-        commandOpen = true;
-        Assembly::addInterferenceExclusion(host, sourceA, sourceB);
-        guiDocument->commitCommand();
-        commandOpen = false;
-        result.success = true;
-        return result;
-    }
-    catch (const Base::Exception& exc) {
-        if (commandOpen) {
-            guiDocument->abortCommand();
-        }
-        result.errorMessage = QString::fromUtf8(exc.what());
-        return result;
-    }
-    catch (const std::exception& exc) {
-        if (commandOpen) {
-            guiDocument->abortCommand();
-        }
-        result.errorMessage = QString::fromUtf8(exc.what());
-        return result;
-    }
-    catch (...) {
-        if (commandOpen) {
-            guiDocument->abortCommand();
-        }
-        result.errorMessage =
-            TaskInterferenceCheck::tr("Unknown error while excluding interference source pair.");
-        return result;
-    }
+    result.success = executeInterferenceMutation(
+        guiDocument,
+        host->getDocument(),
+        "Exclude interference source pair",
+        [host, sourceA, sourceB]() {
+            Assembly::addInterferenceExclusion(host, sourceA, sourceB);
+        },
+        result.errorMessage
+    );
+    return result;
 }
 
 bool TaskInterferenceCheck::testExecuteExcludePairCommand(
@@ -2499,13 +2545,18 @@ void TaskInterferenceCheck::onRestorePair()
     if (!sourceA || !sourceB) {
         return;
     }
-    if (auto* guiDoc = hostGuiDocument()) {
-        guiDoc->openCommand("Restore interference source pair");
-        Assembly::removeInterferenceExclusion(host, sourceA, sourceB);
-        guiDoc->commitCommand();
-    }
-    else {
-        Assembly::removeInterferenceExclusion(host, sourceA, sourceB);
+    QString errorMessage;
+    if (!executeInterferenceMutation(
+            hostGuiDocument(),
+            host->getDocument(),
+            "Restore interference source pair",
+            [this, sourceA, sourceB]() {
+                Assembly::removeInterferenceExclusion(host, sourceA, sourceB);
+            },
+            errorMessage
+        )) {
+        QMessageBox::warning(this, tr("Restore interference source pair"), errorMessage);
+        return;
     }
     onRun();
 }
@@ -2625,13 +2676,18 @@ void TaskInterferenceCheck::onManageExclusions()
         if (!rule.valid || !rule.first || !rule.second) {
             return;
         }
-        if (auto* guiDoc = hostGuiDocument()) {
-            guiDoc->openCommand("Restore interference source pair");
-            Assembly::removeInterferenceExclusion(host, rule.first, rule.second);
-            guiDoc->commitCommand();
-        }
-        else {
-            Assembly::removeInterferenceExclusion(host, rule.first, rule.second);
+        QString errorMessage;
+        if (!executeInterferenceMutation(
+                hostGuiDocument(),
+                host->getDocument(),
+                "Restore interference source pair",
+                [this, first = rule.first, second = rule.second]() {
+                    Assembly::removeInterferenceExclusion(host, first, second);
+                },
+                errorMessage
+            )) {
+            QMessageBox::warning(dialog, tr("Restore interference source pair"), errorMessage);
+            return;
         }
         fillTable();
     });
@@ -2645,13 +2701,21 @@ void TaskInterferenceCheck::onManageExclusions()
         if (index < 0) {
             return;
         }
-        if (auto* guiDoc = hostGuiDocument()) {
-            guiDoc->openCommand("Remove interference exclusion rule");
-            Assembly::removeInterferenceExclusionAt(host, static_cast<std::size_t>(index));
-            guiDoc->commitCommand();
-        }
-        else {
-            Assembly::removeInterferenceExclusionAt(host, static_cast<std::size_t>(index));
+        QString errorMessage;
+        if (!executeInterferenceMutation(
+                hostGuiDocument(),
+                host->getDocument(),
+                "Remove interference exclusion rule",
+                [this, index]() {
+                    Assembly::removeInterferenceExclusionAt(
+                        host,
+                        static_cast<std::size_t>(index)
+                    );
+                },
+                errorMessage
+            )) {
+            QMessageBox::warning(dialog, tr("Remove interference exclusion rule"), errorMessage);
+            return;
         }
         fillTable();
     });

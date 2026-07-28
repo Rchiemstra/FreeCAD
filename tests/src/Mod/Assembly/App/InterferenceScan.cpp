@@ -570,6 +570,49 @@ TEST_F(InterferenceScanTest, sameDocDeletedExclusionEndpointKeepsIdentity)
     }
 }
 
+TEST_F(InterferenceScanTest, detachedIdentityRetentionIsOptInForExclusionProperty)
+{
+    auto* ordinaryOwner =
+        _doc->addObject<App::DocumentObject>("App::FeaturePython", "OrdinaryXLinkOwner");
+    auto* ordinaryTarget =
+        _doc->addObject<App::DocumentObject>("App::FeaturePython", "OrdinaryXLinkTarget");
+    ASSERT_NE(ordinaryOwner, nullptr);
+    ASSERT_NE(ordinaryTarget, nullptr);
+    auto* ordinary = dynamic_cast<App::PropertyXLinkSubList*>(ordinaryOwner->addDynamicProperty(
+        "App::PropertyXLinkSubList",
+        "OrdinaryLinks"
+    ));
+    ASSERT_NE(ordinary, nullptr);
+    ordinary->append(ordinaryTarget);
+    ASSERT_EQ(ordinary->getSubListValues().size(), 1u);
+
+    auto* exclusionTarget =
+        _doc->addObject<App::DocumentObject>("App::FeaturePython", "ExclusionIdentityTarget");
+    ASSERT_NE(exclusionTarget, nullptr);
+    _assembly->addInterferenceExclusion(ordinaryOwner, exclusionTarget);
+
+    const std::string ordinaryName = ordinaryTarget->getNameInDocument();
+    const std::string exclusionName = exclusionTarget->getNameInDocument();
+    _doc->removeObject(ordinaryName.c_str());
+    _doc->removeObject(exclusionName.c_str());
+
+    const auto& ordinaryLinks = ordinary->getSubListValues();
+    ASSERT_EQ(ordinaryLinks.size(), 1u);
+    EXPECT_EQ(ordinaryLinks.front().getValue(), nullptr);
+    EXPECT_TRUE(
+        !ordinaryLinks.front().getObjectName()
+        || ordinaryLinks.front().getObjectName()[0] == '\0'
+    );
+
+    const auto rules = _assembly->getInterferenceExclusionRules();
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_FALSE(rules.front().valid);
+    EXPECT_TRUE(
+        rules.front().firstIdentity.find(exclusionName) != std::string::npos
+        || rules.front().secondIdentity.find(exclusionName) != std::string::npos
+    );
+}
+
 TEST_F(InterferenceScanTest, detachedCrossDocExclusionIdentitySurvivesAddAndIndexedRemove)
 {
     try {
