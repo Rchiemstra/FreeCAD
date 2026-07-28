@@ -33,10 +33,13 @@
 #include <QTimer>
 #include <QTemporaryDir>
 
+#include <cstring>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -506,6 +509,150 @@ QString helloLine()
     return QStringLiteral(
         "FCGEO/1 {\"type\":\"hello\",\"protocol\":\"FCGEO/1\",\"version\":\"1.0\"}");
 }
+
+bool nameReachable(const Data::ElementMapPtr& map, const QByteArray& needle)
+{
+    if (!map) {
+        return false;
+    }
+    for (const auto& el : map->getAll()) {
+        Data::ElementIDRefs sids;
+        auto name = map->find(el.index, &sids);
+        if (!name) {
+            continue;
+        }
+        if (name.toString().find(needle.constData()) != std::string::npos) {
+            return true;
+        }
+        for (const auto& sid : sids) {
+            if (sid.dataToText().find(needle.constData()) != std::string::npos) {
+                return true;
+            }
+            if (sid.toString().find(needle.constData()) != std::string::npos) {
+                return true;
+            }
+        }
+    }
+    for (const auto& child : map->getChildElements()) {
+        if (nameReachable(child.elementMap, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void assertMappedBooleanRecovery(const Part::FrozenTopoShapeBundle& out,
+                                 long hashedId,
+                                 int expectedThreshold)
+{
+    const QByteArray longName(
+        "MappedFaceNameThatDefinitelyExceedsTheSmallHashThresholdXX");
+    ASSERT_TRUE(out.valid);
+    ASSERT_FALSE(out.shape.isNull());
+    ASSERT_TRUE(out.elementMap);
+    EXPECT_GT(out.elementMap->size(), 0u);
+    ASSERT_TRUE(out.hasher);
+    EXPECT_FALSE(out.hasherSnapshot.entries.empty());
+    EXPECT_EQ(out.hasher->getThreshold(), expectedThreshold);
+    EXPECT_EQ(static_cast<App::StringHasher*>(out.shape.Hasher),
+              static_cast<App::StringHasher*>(out.hasher));
+    EXPECT_TRUE(allMapsUseHasher(out.elementMap, out.hasher));
+
+    auto again = out.hasher->getID(longName, App::StringHasher::Option::Hashable);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again.value(), hashedId);
+    EXPECT_TRUE(again.isHashed());
+
+    EXPECT_TRUE(nameReachable(out.elementMap, QByteArray("SeedFaceA")));
+    EXPECT_TRUE(nameReachable(out.elementMap, QByteArray("SeedFaceB")));
+
+    bool sawTag1 = false;
+    bool sawTag2 = false;
+    for (const auto& el : out.elementMap->getAll()) {
+        Data::ElementIDRefs sids;
+        auto mapped = out.elementMap->find(el.index, &sids);
+        if (!mapped) {
+            continue;
+        }
+        out.shape.traceElement(mapped, [&](const Data::MappedName&, int, long tag, long) {
+            if (tag == 1) {
+                sawTag1 = true;
+            }
+            if (tag == 2) {
+                sawTag2 = true;
+            }
+            return true;
+        });
+        if (sawTag1 && sawTag2) {
+            break;
+        }
+    }
+    EXPECT_TRUE(sawTag1);
+    EXPECT_TRUE(sawTag2);
+}
+
+class TestEnvironmentGuard
+{
+public:
+    void set(const char* name, const QByteArray& value)
+    {
+        record(name);
+        qputenv(name, value);
+    }
+
+    void clear(const char* name)
+    {
+        record(name);
+        qunsetenv(name);
+    }
+
+    ~TestEnvironmentGuard()
+    {
+        for (auto it = _states.rbegin(); it != _states.rend(); ++it) {
+            if (it->existed) {
+                qputenv(it->name.constData(), it->value);
+            }
+            else {
+                qunsetenv(it->name.constData());
+            }
+        }
+    }
+
+private:
+    struct VarState
+    {
+        QByteArray name;
+        bool existed {false};
+        QByteArray value;
+    };
+
+    void record(const char* name)
+    {
+        const QByteArray key(name);
+        for (const auto& existing : _states) {
+            if (existing.name == key) {
+                return;
+            }
+        }
+        VarState state;
+        state.name = key;
+        state.existed = qEnvironmentVariableIsSet(name);
+        if (state.existed) {
+            state.value = qgetenv(name);
+        }
+        _states.push_back(std::move(state));
+    }
+
+    std::vector<VarState> _states;
+};
+
+struct FaultInjectionCase
+{
+    const char* modeEnv;
+    App::GeometryJobId faultJobId;
+    App::GeometryJobId recoveryJobId;
+    int parentDeadlineMs;
+};
 
 } // namespace
 
@@ -1455,4 +1602,288 @@ TEST_F(GeometryWorkerProcessTest, StaleRequestDirectoryBlocksChildLaunch)
     EXPECT_FALSE(proc.isRunning());
     EXPECT_EQ(proc.result().errorCode, "WorkspaceReplaceFailed");
     EXPECT_TRUE(QFileInfo(ws + QStringLiteral("/request.json")).isDir());
+}
+
+class GeometryWorkerProcessFaultTest
+    : public ::testing::TestWithParam<FaultInjectionCase>
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+        if (!QCoreApplication::instance()) {
+            static int argc = 1;
+            static char arg0[] = "Gui_tests_run";
+            static char* argv[] = {arg0, nullptr};
+            new QCoreApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        _tempDir = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(_tempDir->isValid());
+    }
+
+    std::unique_ptr<QTemporaryDir> _tempDir;
+};
+
+TEST_P(GeometryWorkerProcessFaultTest, ParentControlledFaultThenFreshJobRecovers)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    const FaultInjectionCase param = GetParam();
+    long hashedId = 0;
+    auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+    ASSERT_TRUE(task);
+
+    App::GeometryJobSpec faultSpec;
+    faultSpec.id = param.faultJobId;
+    faultSpec.task = task;
+    faultSpec.backend = App::GeometryBackend::FreeCADCmd;
+
+    const QString faultWs =
+        _tempDir->path() + QStringLiteral("/fault_") + QString::number(param.faultJobId);
+
+    TestEnvironmentGuard env;
+    env.set("FCGEO_TEST_FAULT_MODE", QByteArray(param.modeEnv));
+    std::string faultJobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(param.faultJobId, faultJobWire));
+    env.set("FCGEO_TEST_FAULT_JOB_ID", QByteArray::fromStdString(faultJobWire));
+
+    Gui::GeometryWorkerProcess faultProc;
+    std::atomic<int> faultCallbacks {0};
+    bool faultFinished = false;
+    bool sawWorkerStart = false;
+    App::GeometryJobId faultCallbackJobId = 0;
+    App::GeometryJobState faultTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult faultResult;
+
+    QObject::connect(&faultProc,
+                     &Gui::GeometryWorkerProcess::progressUpdated,
+                     &faultProc,
+                     [&](double, const QString& phase) {
+                         if (phase == QStringLiteral("worker.start")) {
+                             sawWorkerStart = true;
+                         }
+                     });
+    QObject::connect(&faultProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &faultProc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++faultCallbacks;
+                         faultFinished = true;
+                         faultCallbackJobId = jobId;
+                         faultTerminal = state;
+                         faultResult = result;
+                     });
+
+    const auto faultStart = std::chrono::steady_clock::now();
+    faultSpec.deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(param.parentDeadlineMs);
+    ASSERT_TRUE(faultProc.startJob(faultSpec, faultWs));
+    env.clear("FCGEO_TEST_FAULT_MODE");
+    env.clear("FCGEO_TEST_FAULT_JOB_ID");
+
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/request.json")));
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/base.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/tool.fcg")));
+
+    QEventLoop faultLoop;
+    QTimer faultTimeout;
+    faultTimeout.setSingleShot(true);
+    QObject::connect(&faultTimeout, &QTimer::timeout, &faultLoop, &QEventLoop::quit);
+    QObject::connect(&faultProc, &Gui::GeometryWorkerProcess::jobFinished, &faultLoop, &QEventLoop::quit);
+    faultTimeout.start(30000);
+    if (!faultFinished) {
+        faultLoop.exec();
+    }
+    const auto faultElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - faultStart)
+                                    .count();
+
+    ASSERT_TRUE(faultFinished) << "fault job did not finish";
+    EXPECT_EQ(faultCallbacks.load(), 1);
+    EXPECT_EQ(faultCallbackJobId, param.faultJobId);
+    EXPECT_FALSE(faultProc.isRunning());
+    EXPECT_FALSE(faultResult.success);
+    EXPECT_TRUE(faultResult.resultArchivePath.empty());
+    EXPECT_TRUE(sawWorkerStart);
+    EXPECT_FALSE(faultProc.protocolFailed());
+    EXPECT_NE(faultTerminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_NE(faultTerminal, App::GeometryJobState::Completed);
+    EXPECT_TRUE(QFileInfo::exists(faultWs));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/request.json")));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/base.fcg")));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/tool.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(faultWs + QStringLiteral("/result.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(faultWs + QStringLiteral("/result.fcg.tmp")));
+
+    if (strcmp(param.modeEnv, "abort") == 0) {
+        EXPECT_EQ(faultTerminal, App::GeometryJobState::Crashed);
+        EXPECT_EQ(faultResult.errorCode, "Crashed");
+    }
+    else if (strcmp(param.modeEnv, "hang") == 0) {
+        EXPECT_EQ(faultTerminal, App::GeometryJobState::TimedOut);
+        EXPECT_EQ(faultResult.errorCode, "TimedOut");
+        EXPECT_NE(faultTerminal, App::GeometryJobState::Crashed);
+        EXPECT_LT(faultElapsedMs, 15000);
+    }
+    else if (strcmp(param.modeEnv, "bad_alloc") == 0) {
+        EXPECT_EQ(faultTerminal, App::GeometryJobState::Failed);
+        EXPECT_EQ(faultResult.errorCode, "OutOfMemory");
+        EXPECT_NE(faultTerminal, App::GeometryJobState::Crashed);
+        EXPECT_NE(faultTerminal, App::GeometryJobState::TimedOut);
+        EXPECT_FALSE(faultResult.errorMessage.empty());
+    }
+
+    QDir(faultWs).removeRecursively();
+
+    long recoveryHashedId = 0;
+    auto recoveryTask = makeMappedBooleanTask(/*threshold=*/16, &recoveryHashedId);
+    ASSERT_TRUE(recoveryTask);
+
+    App::GeometryJobSpec recoverySpec;
+    recoverySpec.id = param.recoveryJobId;
+    recoverySpec.task = recoveryTask;
+    recoverySpec.backend = App::GeometryBackend::FreeCADCmd;
+    recoverySpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    const QString recoveryWs =
+        _tempDir->path() + QStringLiteral("/recovery_") + QString::number(param.recoveryJobId);
+
+    Gui::GeometryWorkerProcess recoveryProc;
+    std::atomic<int> recoveryCallbacks {0};
+    bool recoveryFinished = false;
+    App::GeometryJobId recoveryCallbackJobId = 0;
+    App::GeometryJobState recoveryTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult recoveryResult;
+
+    QObject::connect(&recoveryProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &recoveryProc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++recoveryCallbacks;
+                         recoveryFinished = true;
+                         recoveryCallbackJobId = jobId;
+                         recoveryTerminal = state;
+                         recoveryResult = result;
+                     });
+
+    ASSERT_TRUE(recoveryProc.startJob(recoverySpec, recoveryWs));
+
+    QEventLoop recoveryLoop;
+    QTimer recoveryTimeout;
+    recoveryTimeout.setSingleShot(true);
+    QObject::connect(&recoveryTimeout, &QTimer::timeout, &recoveryLoop, &QEventLoop::quit);
+    QObject::connect(&recoveryProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &recoveryLoop,
+                     &QEventLoop::quit);
+    recoveryTimeout.start(180000);
+    if (!recoveryFinished) {
+        recoveryLoop.exec();
+    }
+
+    ASSERT_TRUE(recoveryFinished);
+    EXPECT_EQ(recoveryCallbacks.load(), 1);
+    EXPECT_EQ(recoveryCallbackJobId, param.recoveryJobId);
+    EXPECT_FALSE(recoveryProc.protocolFailed());
+    EXPECT_EQ(recoveryTerminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_TRUE(recoveryResult.success);
+    ASSERT_FALSE(recoveryResult.resultArchivePath.empty());
+    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(recoveryResult.resultArchivePath)));
+    EXPECT_TRUE(QFileInfo::exists(recoveryWs + QStringLiteral("/result.fcg")));
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(recoveryResult.resultArchivePath, recovered));
+    assertMappedBooleanRecovery(recovered, recoveryHashedId, 16);
+
+    QDir(recoveryWs).removeRecursively();
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    GeometryWorkerProcessFaultTest,
+    ::testing::Values(FaultInjectionCase {"abort", 49, 52, 120000},
+                      FaultInjectionCase {"hang", 50, 53, 1500},
+                      FaultInjectionCase {"bad_alloc", 51, 54, 120000}),
+    [](const ::testing::TestParamInfo<FaultInjectionCase>& info) {
+        if (strcmp(info.param.modeEnv, "abort") == 0) {
+            return std::string("Abort");
+        }
+        if (strcmp(info.param.modeEnv, "hang") == 0) {
+            return std::string("Hang");
+        }
+        return std::string("BadAlloc");
+    });
+
+TEST_F(GeometryWorkerProcessFaultTest, FaultJobIdMismatchDoesNotInject)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+
+    long hashedId = 0;
+    auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+    ASSERT_TRUE(task);
+
+    App::GeometryJobSpec spec;
+    spec.id = 55;
+    spec.task = task;
+    spec.backend = App::GeometryBackend::FreeCADCmd;
+    spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    const QString ws = _tempDir->path() + QStringLiteral("/mismatch_job");
+
+    TestEnvironmentGuard env;
+    env.set("FCGEO_TEST_FAULT_MODE", QByteArray("abort"));
+    env.set("FCGEO_TEST_FAULT_JOB_ID", QByteArray("49"));
+
+    Gui::GeometryWorkerProcess proc;
+    std::atomic<int> callbacks {0};
+    bool finished = false;
+    App::GeometryJobId callbackJobId = 0;
+    App::GeometryJobState terminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult result;
+
+    QObject::connect(&proc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &proc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& res) {
+                         ++callbacks;
+                         finished = true;
+                         callbackJobId = jobId;
+                         terminal = state;
+                         result = res;
+                     });
+
+    ASSERT_TRUE(proc.startJob(spec, ws));
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop, &QEventLoop::quit);
+    timeout.start(180000);
+    if (!finished) {
+        loop.exec();
+    }
+
+    ASSERT_TRUE(finished);
+    EXPECT_EQ(callbacks.load(), 1);
+    EXPECT_EQ(callbackJobId, spec.id);
+    EXPECT_FALSE(proc.protocolFailed());
+    EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_TRUE(result.success);
+    ASSERT_FALSE(result.resultArchivePath.empty());
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(result.resultArchivePath, recovered));
+    assertMappedBooleanRecovery(recovered, hashedId, 16);
+
+    QDir(ws).removeRecursively();
 }

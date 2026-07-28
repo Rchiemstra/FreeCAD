@@ -821,7 +821,8 @@ void GeometryWorkerProcess::onProcessFinished(int exitCode, QProcess::ExitStatus
         _result.errorCode = "Cancelled";
         _result.errorMessage = "Job was cancelled";
     }
-    else if (exitStatus == QProcess::CrashExit) {
+    else if (exitStatus == QProcess::CrashExit
+             && _state != App::GeometryJobState::TimedOut) {
         _state = App::GeometryJobState::Crashed;
         _result.success = false;
         _result.errorCode = "Crashed";

@@ -22,9 +22,9 @@ complete.
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker validation across Steps 24–28A: **35/35 App**,
+Verified narrow positives (focused Docker validation across Steps 24–28B: **35/35 App**,
 **53 passed + 2 LP64 skips NonBlockingGeometryTest**, **17/17** CrossProcessBoolean/Fillet/Sweep/CrashRename,
-**29/29 GeometryWorkerProcessTest**):
+**33/33 GeometryWorkerProcess + fault tests**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
   failure-aware generation (no advance on failed commit) with `FeatureTestDetached`.
@@ -280,8 +280,8 @@ Unverified items:
   is clean at `191a1046ee4391273bfddc31cdcf691526087f41`, different from the superproject-recorded
   `5894a776c1b437c77e9c369797d37a3f63d8d338`; behavioral equivalence is unverified.
 - Real GUI navigation/painting/cancellation, 33/100/250 ms acceptance, install-tree worker launch,
-  cross-process naming/history, Windows Job Object behavior, crash/OOM/disk/rename recovery,
-  fuzzing, and sanitizer qualification remain unverified.
+  Windows Job Object behavior, actual OCC crash/host OOM/disk recovery, fuzzing, and sanitizer
+  qualification remain unverified.
 - Broad App/Part regression safety is unverified until the Docker Material/Expression environment
   has a known passing baseline.
 
@@ -300,8 +300,9 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 Concrete next action for the implementing agent:
 
-- Broader crash/rename recovery matrix for mapped Boolean/Fillet/Sweep cross-process workspaces.
-  Keep production feature adapters and rollout flags disabled. Do not mark Phase 2 complete.
+- Descendant-process / tree-kill qualification and installed-tree smoke outside the Docker
+  build tree. Keep production feature adapters and rollout flags disabled. Do not mark Phase 2
+  complete.
 
 ## Implementation log (continued)
 
@@ -1096,7 +1097,7 @@ Concrete next action for the implementing agent:
 * Next step:
   - Broader crash/rename recovery matrix per `## Next step` above.
 
-### Step 28A — Parameterized crash + workspace-rename recovery matrix (Task 28A, this commit)
+### Step 28A — Parameterized crash + workspace-rename recovery matrix (Task 28A, `960aebfcbf`)
 
 * **28A (cross-process crash/rename/recovery):** `CrossProcessCrashRenameRecoveryTest.CrashThenRenamedWorkspaceRecoversMappedResult`
   — parameterized matrix for `Part::Boolean` (jobId **33**), `Part::Fillet` (**34**), and `Part::Sweep`
@@ -1111,7 +1112,7 @@ Concrete next action for the implementing agent:
   This qualifies explicitly relative test requests only: manager-produced requests normally carry
   an absolute workspace `tempDir`, so default parent-controlled workspace relocation remains
   unqualified.
-* **Status:** committed with this change on base `d0180d8d4a`.
+* **Status:** committed as `960aebfcbf` on base `d0180d8d4a`.
 * Tests or validation performed (Docker `/code/build_docker`, sequential qualification):
   - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts Part_tests_run`
   - Part `CrossProcessCrashRenameRecoveryTest.*` → **3/3 PASSED**
@@ -1131,5 +1132,39 @@ Concrete next action for the implementing agent:
   - **P4:** production adapters/rollout (blocked).
 * Next step:
   - Actual worker hang/crash/OOM parent-controlled recovery per `## Next step` above.
+
+### Step 28B — Parent-controlled real worker abort, hang, and injected bad_alloc recovery (Task 28B, this commit)
+
+* **28B (developer fault seam + parent qualification):** `FC_GEOMETRY_WORKER_TEST_SEAMS` on the Part
+  target when `ENABLE_DEVELOPER_TESTS` is enabled. C++ `GeometryWorker::runWorkerProcess` honors
+  `FCGEO_TEST_FAULT_MODE` / `FCGEO_TEST_FAULT_JOB_ID` only when the fault job ID is a canonical
+  nonzero ID matching both the parsed request and `FCGEO_LAUNCHED_JOB_ID`, injected after hello and
+  `worker.start` and before operand decode. Modes: **abort** is a developer-only real C++ worker
+  `std::abort()`; **hang** is developer-only and non-cooperative (ignores cancel/stdin/deadline,
+  parent deadline must terminate); **bad_alloc** is deterministically injected `std::bad_alloc`, not
+  real host OOM, caught at the worker boundary with a single `OutOfMemory` error terminal. Docker
+  validates Unix process-group deadline termination for hang; Windows Job Object behavior remains
+  unqualified. Actual OCC crash and actual host OOM remain open. `GeometryWorkerProcess` preserves an
+  already-established `TimedOut` state when the killed child exits as `CrashExit`.
+* **Tests:** `GeometryWorkerProcessFaultTest` parameterized `ParentControlledFaultThenFreshJobRecovers`
+  (Abort/Hang/BadAlloc) plus `FaultJobIdMismatchDoesNotInject`; launch only via
+  `GeometryWorkerProcess::startJob()`; fresh mapped Boolean recovery after each failure.
+  - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts FreeCADGui Gui_tests_run Part_tests_run`
+  - Gui `GeometryWorkerProcessFaultTest.*` → **4/4 PASSED** (repeat ×5 → **20/20**)
+  - Gui `GeometryWorkerProcessTest.*:GeometryWorkerProcessFaultTest.*` → **33/33 PASSED**
+  - Part cross-process + crash/rename → **17/17 PASSED**
+  - Part `NonBlockingGeometryTest.*` → **53 passed**, **2 LP64 skipped**
+  - Hang case uses a **1.5 s** parent `GeometryWorkerProcess` deadline in Docker (set immediately before
+    `startJob`); isolated hang probe passed at 1500–3000 ms with fault-path wall time ≈ **3–6 s**
+    (`TimedOut`, not `Crashed`). Sub-second (300–750 ms) deadlines are unreliable from process start.
+* **Status:** committed with this change on base `960aebfcbf`.
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** actual OCC crash; actual host OOM; parent-controlled default-workspace relocation;
+    install-tree smoke; LLP64/32-bit-long decode qualification on a non-LP64 builder.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Descendant-process/tree-kill and installed-tree qualification per `## Next step` above.
 
 ---

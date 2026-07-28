@@ -656,6 +656,7 @@ endif()
 
 if(ENABLE_DEVELOPER_TESTS)
     target_compile_definitions(Part PRIVATE FC_TOPOSHape_ARCHIVE_TEST_SEAMS=1)
+    target_compile_definitions(Part PRIVATE FC_GEOMETRY_WORKER_TEST_SEAMS=1)
 endif()
 
 if (FREECAD_WARN_ERROR)
