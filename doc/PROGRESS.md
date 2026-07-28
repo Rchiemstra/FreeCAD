@@ -22,8 +22,8 @@ complete.
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker validation across Steps 24–27B: **35/35 App**,
-**53 passed + 2 LP64 skips NonBlockingGeometryTest**, **14/14** CrossProcessBoolean/Fillet/Sweep,
+Verified narrow positives (focused Docker validation across Steps 24–28A: **35/35 App**,
+**53 passed + 2 LP64 skips NonBlockingGeometryTest**, **17/17** CrossProcessBoolean/Fillet/Sweep/CrashRename,
 **29/29 GeometryWorkerProcessTest**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
@@ -1070,7 +1070,7 @@ Concrete next action for the implementing agent:
 * Next step:
   - Sweep semantic FCStd reopen per `## Next step` above.
 
-### Step 27B — Sweep semantic FCStd reopen qualification (Task 27B, this commit)
+### Step 27B — Sweep semantic FCStd reopen qualification (Task 27B, `d0180d8d4a`)
 
 * **27B (cross-process FCStd):** `CrossProcessSweepTest.FCStdSecondProcessReopenPreservesMappedSweepSemantics`
   — real FreeCADCmd mapped Sweep (`isSolid=false`, jobId 32), `assertMappedSweepResult`,
@@ -1078,7 +1078,7 @@ Concrete next action for the implementing agent:
   resolution, `traceElement` source tag 1 or 2), second FreeCADCmd Python verifier
   (`verify_sweep_fcstd.py`) with intentional bad hashed-ID failure before success (`VERIFY_OK` only
   on correct expectations; area-based shell checks, `getElementHistory` tags 1 or 2).
-* **Status:** committed with this change on base `1315920657` (Task 27A Fillet FCStd qualification).
+* **Status:** committed as `d0180d8d4a` on base `1315920657`.
 * Tests or validation performed (Docker `freecad-nbgeom-review27b`, `/code/build_docker`):
   - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts Part_tests_run`
   - Part `CrossProcessSweepTest.*` → **3/3 PASSED** (includes real FreeCADCmd jobId 32 +
@@ -1095,5 +1095,41 @@ Concrete next action for the implementing agent:
   - **P4:** production adapters/rollout (blocked).
 * Next step:
   - Broader crash/rename recovery matrix per `## Next step` above.
+
+### Step 28A — Parameterized crash + workspace-rename recovery matrix (Task 28A, this commit)
+
+* **28A (cross-process crash/rename/recovery):** `CrossProcessCrashRenameRecoveryTest.CrashThenRenamedWorkspaceRecoversMappedResult`
+  — parameterized matrix for `Part::Boolean` (jobId **33**), `Part::Fillet` (**34**), and `Part::Sweep`
+  (**35**). Each case fully stages a mapped request, runs a **synthetic FreeCADCmd crash probe**
+  (`crash_after_start.py`: hello + `worker.start`, then `os._exit(97)` — not a real
+  `GeometryWorker.py`/OCC crash), verifies byte-stable `request.json` and operand archives (size +
+  SHA-256 manifest), renames the whole workspace directory, then recovers via real
+  `FreeCADCmd --safe-mode GeometryWorker.py` from the renamed path (staged requests publish
+  `tempDir:"."` so operand paths stay cwd-relative without republishing `request.json` after
+  rename) and runs operation-specific
+  `assertMappedBooleanResult` / `assertMappedFilletResult` / `assertMappedSweepResult` checks.
+  This qualifies explicitly relative test requests only: manager-produced requests normally carry
+  an absolute workspace `tempDir`, so default parent-controlled workspace relocation remains
+  unqualified.
+* **Status:** committed with this change on base `d0180d8d4a`.
+* Tests or validation performed (Docker `/code/build_docker`, sequential qualification):
+  - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts Part_tests_run`
+  - Part `CrossProcessCrashRenameRecoveryTest.*` → **3/3 PASSED**
+  - Part `CrossProcessBooleanTest.*:CrossProcessFilletTest.*:CrossProcessSweepTest.*:CrossProcessCrashRenameRecoveryTest.*`
+    → **17/17 PASSED**
+  - Part `NonBlockingGeometryTest.*` → **53 passed**, **2 skipped** (LP64 narrowing guards)
+  - Part `CrossProcessCrashRenameRecoveryTest.*` `--gtest_repeat=5 --gtest_break_on_failure` → **15/15**
+    parameter executions PASSED
+  - `git diff --check` → clean on changed sources
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** actual GeometryWorker/OCC crash qualification; parent-controlled default-workspace
+    relocation; hang; OOM; install-tree smoke; LLP64/32-bit-long decode qualification on a
+    non-LP64 builder.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Actual worker hang/crash/OOM parent-controlled recovery per `## Next step` above.
 
 ---

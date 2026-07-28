@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -433,6 +434,117 @@ void assertMappedBooleanResult(const Part::FrozenTopoShapeBundle& out,
     }
 }
 
+struct MappedBooleanOperands
+{
+    Part::FrozenTopoShapeBundle base;
+    Part::FrozenTopoShapeBundle tool;
+    long hashedId {0};
+    QByteArray longName;
+    QByteArray nameA;
+    QByteArray nameB;
+    int threshold {16};
+};
+
+MappedBooleanOperands makeMappedBooleanOperands()
+{
+    MappedBooleanOperands out;
+    out.threshold = 16;
+    out.longName = QByteArray("MappedFaceNameThatDefinitelyExceedsTheSmallHashThresholdXX");
+    out.nameA = QByteArray("SeedFaceA");
+    out.nameB = QByteArray("SeedFaceB");
+
+    App::StringHasherRef hasher(new App::StringHasher);
+    hasher->setThreshold(out.threshold);
+
+    BRepPrimAPI_MakeBox box1(10.0, 10.0, 10.0);
+    BRepPrimAPI_MakeBox box2(gp_Pnt(5, 5, 5), 10.0, 10.0, 10.0);
+    Part::TopoShape shape1(box1.Shape(), /*tag=*/1, hasher);
+    Part::TopoShape shape2(box2.Shape(), /*tag=*/2, hasher);
+
+    auto sharedLeaf = makeLeafMap(hasher, "SharedEdge", /*tag=*/11);
+    if (!sharedLeaf) {
+        return {};
+    }
+    auto intermediate = std::make_shared<Data::ElementMap>();
+    intermediate->hasher = hasher;
+    {
+        Data::ElementIDRefs empty;
+        intermediate->addChildElements(
+            /*masterTag=*/21,
+            {{Data::IndexedName("Face", 1),
+              6,
+              0,
+              11,
+              sharedLeaf,
+              QByteArray("interSharedx"),
+              empty},
+             {Data::IndexedName("Face", 7),
+              6,
+              0,
+              11,
+              sharedLeaf,
+              QByteArray("interSharedy"),
+              empty}});
+    }
+
+    {
+        auto map = std::make_shared<Data::ElementMap>();
+        map->hasher = hasher;
+        Data::IndexedName face1("Face", 1);
+        App::StringIDRef sid = hasher->getID(out.nameA);
+        if (!sid) {
+            return {};
+        }
+        Data::MappedName mapped(sid);
+        Data::ElementIDRefs sids;
+        sids.push_back(sid);
+        map->setElementName(face1, mapped, shape1.Tag, &sids);
+        sid.mark();
+
+        App::StringIDRef longSid =
+            hasher->getID(out.longName, App::StringHasher::Option::Hashable);
+        if (!longSid || !longSid.isHashed()) {
+            return {};
+        }
+        out.hashedId = longSid.value();
+        Data::MappedName longMapped(QByteArray::fromStdString(longSid.toString()));
+        Data::ElementIDRefs longSids;
+        longSids.push_back(longSid);
+        map->setElementName(Data::IndexedName("Face", 2), longMapped, shape1.Tag, &longSids);
+        longSid.mark();
+
+        Data::ElementIDRefs empty;
+        map->addChildElements(
+            /*masterTag=*/1,
+            {{Data::IndexedName("Face", 20),
+              6,
+              0,
+              21,
+              intermediate,
+              QByteArray("parentInter1"),
+              empty}});
+        shape1.resetElementMap(map);
+    }
+    {
+        auto map = std::make_shared<Data::ElementMap>();
+        map->hasher = hasher;
+        App::StringIDRef sid = hasher->getID(out.nameB);
+        if (!sid) {
+            return {};
+        }
+        Data::MappedName mapped(sid);
+        Data::ElementIDRefs sids;
+        sids.push_back(sid);
+        map->setElementName(Data::IndexedName("Face", 1), mapped, shape2.Tag, &sids);
+        sid.mark();
+        shape2.resetElementMap(map);
+    }
+
+    out.base = Part::TopoShapeArchive::createBundle(shape1);
+    out.tool = Part::TopoShapeArchive::createBundle(shape2);
+    return out;
+}
+
 struct MappedFilletBox
 {
     Part::FrozenTopoShapeBundle base;
@@ -729,6 +841,146 @@ void assertMappedSweepResult(const Part::FrozenTopoShapeBundle& out,
         << "traceElement callback must run for at least one mapped output element";
     EXPECT_TRUE(sawExpectedSourceTag)
         << "mapped history must reference spine tag 1 or profile tag 2";
+}
+
+struct WorkspaceInputManifest
+{
+    QByteArray requestJsonBytes;
+    struct Entry
+    {
+        QString relativePath;
+        qint64 size {-1};
+        QByteArray sha256Hex;
+    };
+    std::vector<Entry> entries;
+};
+
+WorkspaceInputManifest captureWorkspaceInputManifest(const QString& workspaceDir,
+                                                     const QStringList& relativePaths)
+{
+    WorkspaceInputManifest out;
+    for (const QString& rel : relativePaths) {
+        const QString abs = QDir(workspaceDir).filePath(rel);
+        QFile file(abs);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return {};
+        }
+        const QByteArray bytes = file.readAll();
+        WorkspaceInputManifest::Entry entry;
+        entry.relativePath = rel;
+        entry.size = bytes.size();
+        entry.sha256Hex =
+            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
+        out.entries.push_back(std::move(entry));
+        if (rel == QStringLiteral("request.json")) {
+            out.requestJsonBytes = bytes;
+        }
+    }
+    return out;
+}
+
+void assertWorkspaceInputManifestEqual(const WorkspaceInputManifest& expected,
+                                       const WorkspaceInputManifest& actual)
+{
+    ASSERT_FALSE(expected.requestJsonBytes.isEmpty());
+    EXPECT_EQ(actual.requestJsonBytes, expected.requestJsonBytes);
+    ASSERT_EQ(expected.entries.size(), actual.entries.size());
+    for (size_t i = 0; i < expected.entries.size(); ++i) {
+        SCOPED_TRACE(expected.entries[i].relativePath.toStdString());
+        EXPECT_EQ(actual.entries[i].relativePath, expected.entries[i].relativePath);
+        EXPECT_EQ(actual.entries[i].size, expected.entries[i].size);
+        ASSERT_FALSE(expected.entries[i].sha256Hex.isEmpty());
+        EXPECT_EQ(actual.entries[i].sha256Hex, expected.entries[i].sha256Hex);
+    }
+}
+
+QString writeCrashAfterStartProbeScript(const QString& parentDir)
+{
+    const QString path = parentDir + QStringLiteral("/crash_after_start.py");
+    QFile py(path);
+    if (!py.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return {};
+    }
+    const QByteArray script = QByteArray(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "def _emit(obj):\n"
+        "    payload = json.dumps(obj, separators=(',', ':'))\n"
+        "    print('FCGEO/1 ' + payload, flush=True)\n"
+        "\n"
+        "def main():\n"
+        "    launched = os.environ.get('FCGEO_LAUNCHED_JOB_ID')\n"
+        "    if not launched:\n"
+        "        os._exit(96)\n"
+        "    if '--pass' not in sys.argv:\n"
+        "        os._exit(96)\n"
+        "    idx = sys.argv.index('--pass')\n"
+        "    if idx + 1 >= len(sys.argv):\n"
+        "        os._exit(96)\n"
+        "    request_path = sys.argv[idx + 1]\n"
+        "    with open(request_path, 'r', encoding='utf-8') as f:\n"
+        "        req = json.load(f)\n"
+        "    if str(req.get('jobId')) != str(launched):\n"
+        "        os._exit(96)\n"
+        "    _emit({'type': 'hello', 'version': '1.0', 'protocol': 'FCGEO/1'})\n"
+        "    _emit({'type': 'progress', 'phase': 'worker.start', 'fraction': 0.05})\n"
+        "    os._exit(97)\n"
+        "\n"
+        "main()\n");
+    py.write(script);
+    py.close();
+    return path;
+}
+
+struct CrashProbeRun
+{
+    bool started {false};
+    bool finished {false};
+    int exitCode {-1};
+    QProcess::ExitStatus exitStatus {QProcess::NormalExit};
+    QByteArray stdoutBytes;
+    QByteArray stderrBytes;
+    WorkerTranscript transcript;
+};
+
+CrashProbeRun runCrashAfterStartProbe(const QString& cmdPath,
+                                      const QString& probeScriptPath,
+                                      const QString& requestPath,
+                                      const QString& workDir,
+                                      const QString& launchedJobIdWire,
+                                      int timeoutMs = 120000)
+{
+    CrashProbeRun out;
+    QProcess proc;
+    proc.setWorkingDirectory(workDir);
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("FCGEO_LAUNCHED_JOB_ID"), launchedJobIdWire);
+    proc.setProcessEnvironment(env);
+    proc.start(cmdPath,
+               {QStringLiteral("--safe-mode"),
+                probeScriptPath,
+                QStringLiteral("--pass"),
+                requestPath});
+    out.started = proc.waitForStarted(30000);
+    if (!out.started) {
+        return out;
+    }
+    out.finished = proc.waitForFinished(timeoutMs);
+    out.stdoutBytes = proc.readAllStandardOutput();
+    out.stderrBytes = proc.readAllStandardError();
+    if (!out.finished) {
+        proc.kill();
+        proc.waitForFinished(5000);
+        out.exitCode = -1;
+        return out;
+    }
+    out.exitCode = proc.exitCode();
+    out.exitStatus = proc.exitStatus();
+    out.transcript = parseWorkerTranscript(out.stdoutBytes, out.exitCode, out.stderrBytes);
+    return out;
 }
 
 } // namespace
@@ -2488,3 +2740,337 @@ TEST_F(CrossProcessSweepTest, FCStdSecondProcessReopenPreservesMappedSweepSemant
         FAIL() << "std::exception: " << e.what();
     }
 }
+
+struct CrashRenameRecoveryFixture
+{
+    bool staged {false};
+    std::optional<MappedBooleanOperands> boolean;
+    std::optional<MappedFilletBox> fillet;
+    std::optional<MappedSweepOperands> sweep;
+};
+
+struct CrashRenameRecoveryParam
+{
+    const char* name;
+    App::GeometryJobId jobId;
+    const char* workDirLeaf;
+    const char* renamedWorkDirLeaf;
+    QStringList operandArchives;
+    QString alternateResultArchive;
+    QString computeProgressPhase;
+    std::function<CrashRenameRecoveryFixture(const QString&, const QString&)> stage;
+    std::function<void(const QString&, const CrashRenameRecoveryFixture&)> validate;
+};
+
+class CrossProcessCrashRenameRecoveryTest
+    : public ::testing::TestWithParam<CrashRenameRecoveryParam>
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+        if (!QCoreApplication::instance()) {
+            static int argc = 1;
+            static char arg0[] = "Part_tests_run";
+            static char* argv[] = {arg0, nullptr};
+            new QCoreApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        _tempDir = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(_tempDir->isValid());
+        _cmdPath = findFreeCADCmd();
+        _scriptPath = findGeometryWorkerPy();
+        ASSERT_FALSE(_cmdPath.isEmpty())
+            << "FreeCADCmd is required; cross-process test must not fall back to in-process task.run()";
+        ASSERT_FALSE(_scriptPath.isEmpty())
+            << "GeometryWorker.py is required; cross-process test must not fall back to in-process task.run()";
+    }
+
+    std::unique_ptr<QTemporaryDir> _tempDir;
+    QString _cmdPath;
+    QString _scriptPath;
+};
+
+static CrashRenameRecoveryFixture stageMappedBooleanRequest(const QString& workDir,
+                                                            const QString& jobIdWire)
+{
+    CrashRenameRecoveryFixture fx;
+    fx.boolean = makeMappedBooleanOperands();
+    if (!fx.boolean->base.valid || !fx.boolean->tool.valid) {
+        return fx;
+    }
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::BooleanGeometryOperation op(Part::BooleanType::Fuse,
+                                      fx.boolean->base,
+                                      fx.boolean->tool);
+    workspace.requestObject().insert(QStringLiteral("jobId"), jobIdWire);
+    workspace.requestObject().insert(QStringLiteral("tempDir"), QStringLiteral("."));
+    if (!op.writeArchive(workspace).success || !workspace.publishRequestJson()) {
+        return fx;
+    }
+    fx.staged = true;
+    return fx;
+}
+
+static CrashRenameRecoveryFixture stageMappedFilletRequest(const QString& workDir,
+                                                         const QString& jobIdWire)
+{
+    CrashRenameRecoveryFixture fx;
+    fx.fillet = makeMappedFilletBox();
+    if (!fx.fillet->base.valid) {
+        return fx;
+    }
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::FilletGeometryOperation op(fx.fillet->base, {{0, 1.0, 1.0}});
+    workspace.requestObject().insert(QStringLiteral("jobId"), jobIdWire);
+    workspace.requestObject().insert(QStringLiteral("tempDir"), QStringLiteral("."));
+    if (!op.writeArchive(workspace).success || !workspace.publishRequestJson()) {
+        return fx;
+    }
+    fx.staged = true;
+    return fx;
+}
+
+static CrashRenameRecoveryFixture stageMappedSweepRequest(const QString& workDir,
+                                                          const QString& jobIdWire)
+{
+    CrashRenameRecoveryFixture fx;
+    fx.sweep = makeMappedSweepOperands();
+    if (!fx.sweep->spine.valid || !fx.sweep->profile.valid) {
+        return fx;
+    }
+    App::GeometryRequestWorkspace workspace(workDir);
+    Part::SweepGeometryOperation op(fx.sweep->spine, {fx.sweep->profile}, /*isSolid=*/false);
+    workspace.requestObject().insert(QStringLiteral("jobId"), jobIdWire);
+    workspace.requestObject().insert(QStringLiteral("tempDir"), QStringLiteral("."));
+    if (!op.writeArchive(workspace).success || !workspace.publishRequestJson()) {
+        return fx;
+    }
+    fx.staged = true;
+    return fx;
+}
+
+static void validateRecoveredBoolean(const QString& resultPath, const CrashRenameRecoveryFixture& fx)
+{
+    ASSERT_TRUE(fx.boolean.has_value());
+    const MappedBooleanOperands& mapped = *fx.boolean;
+    Part::BooleanGeometryOperation op(Part::BooleanType::Fuse, mapped.base, mapped.tool);
+    const App::DetachedGeometryResult decoded = op.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), recovered));
+    assertMappedBooleanResult(recovered,
+                              mapped.hashedId,
+                              mapped.longName,
+                              mapped.nameA,
+                              mapped.nameB,
+                              mapped.threshold);
+}
+
+static void validateRecoveredFillet(const QString& resultPath, const CrashRenameRecoveryFixture& fx)
+{
+    ASSERT_TRUE(fx.fillet.has_value());
+    const MappedFilletBox& mapped = *fx.fillet;
+    Part::FilletGeometryOperation op(mapped.base, {{0, 1.0, 1.0}});
+    const App::DetachedGeometryResult decoded = op.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), recovered));
+    assertMappedFilletResult(recovered,
+                             mapped.hashedId,
+                             mapped.longName,
+                             mapped.seedName,
+                             mapped.threshold);
+}
+
+static void validateRecoveredSweep(const QString& resultPath, const CrashRenameRecoveryFixture& fx)
+{
+    ASSERT_TRUE(fx.sweep.has_value());
+    const MappedSweepOperands& mapped = *fx.sweep;
+    Part::SweepGeometryOperation op(mapped.spine, {mapped.profile}, /*isSolid=*/false);
+    const App::DetachedGeometryResult decoded = op.decodeResultArchive(resultPath.toStdString());
+    ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), recovered));
+    assertMappedSweepResult(recovered, mapped.hashedId, mapped.longName, mapped.threshold);
+}
+
+static std::vector<CrashRenameRecoveryParam> crashRenameRecoveryMatrix()
+{
+    return {
+        CrashRenameRecoveryParam {
+            "Boolean",
+            33,
+            "crash_rename_bool_ws",
+            "crash_rename_bool_ws_renamed",
+            {QStringLiteral("base.fcg"), QStringLiteral("tool.fcg")},
+            {},
+            QStringLiteral("boolean.compute"),
+            &stageMappedBooleanRequest,
+            &validateRecoveredBoolean,
+        },
+        CrashRenameRecoveryParam {
+            "Fillet",
+            34,
+            "crash_rename_fillet_ws",
+            "crash_rename_fillet_ws_renamed",
+            {QStringLiteral("base.fcg")},
+            {},
+            QStringLiteral("fillet.compute"),
+            &stageMappedFilletRequest,
+            &validateRecoveredFillet,
+        },
+        CrashRenameRecoveryParam {
+            "Sweep",
+            35,
+            "crash_rename_sweep_ws",
+            "crash_rename_sweep_ws_renamed",
+            {QStringLiteral("spine.fcg"), QStringLiteral("profile-0.fcg")},
+            QStringLiteral("sweep_result.fcg"),
+            QStringLiteral("sweep.compute"),
+            &stageMappedSweepRequest,
+            &validateRecoveredSweep,
+        },
+    };
+}
+
+TEST_P(CrossProcessCrashRenameRecoveryTest, CrashThenRenamedWorkspaceRecoversMappedResult)
+{
+    const CrashRenameRecoveryParam& param = GetParam();
+    SCOPED_TRACE(param.name);
+
+    std::string jobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(param.jobId, jobWire));
+    const QString launchedJobIdWire = QString::fromStdString(jobWire);
+
+    const QString originalWorkDir = _tempDir->path() + QLatin1Char('/')
+        + QLatin1String(param.workDirLeaf);
+    const QString renamedWorkDir = _tempDir->path() + QLatin1Char('/')
+        + QLatin1String(param.renamedWorkDirLeaf);
+
+    const CrashRenameRecoveryFixture fixture =
+        param.stage(originalWorkDir, launchedJobIdWire);
+    ASSERT_TRUE(fixture.staged);
+
+    QStringList inputRelativePaths;
+    inputRelativePaths << QStringLiteral("request.json");
+    inputRelativePaths.append(param.operandArchives);
+    for (const QString& rel : inputRelativePaths) {
+        ASSERT_TRUE(QFileInfo::exists(QDir(originalWorkDir).filePath(rel))) << rel.toStdString();
+    }
+
+    const WorkspaceInputManifest manifestBeforeCrash =
+        captureWorkspaceInputManifest(originalWorkDir, inputRelativePaths);
+    ASSERT_FALSE(manifestBeforeCrash.requestJsonBytes.isEmpty());
+    for (const auto& entry : manifestBeforeCrash.entries) {
+        ASSERT_FALSE(entry.sha256Hex.isEmpty()) << entry.relativePath.toStdString();
+    }
+
+    const QString crashProbePath = writeCrashAfterStartProbeScript(_tempDir->path());
+    ASSERT_FALSE(crashProbePath.isEmpty());
+    const QString requestPath = QDir(originalWorkDir).filePath(QStringLiteral("request.json"));
+
+    const CrashProbeRun crash =
+        runCrashAfterStartProbe(_cmdPath,
+                                crashProbePath,
+                                requestPath,
+                                originalWorkDir,
+                                launchedJobIdWire);
+    ASSERT_TRUE(crash.started);
+    ASSERT_TRUE(crash.finished)
+        << "stdout:\n"
+        << crash.stdoutBytes.constData() << "\nstderr:\n"
+        << crash.stderrBytes.constData();
+    // os._exit(97) is a controlled nonzero exit, not a signal/abort crash.
+    EXPECT_EQ(crash.exitStatus, QProcess::NormalExit);
+    EXPECT_NE(crash.exitCode, 0);
+    EXPECT_EQ(crash.exitCode, 97);
+    ASSERT_FALSE(crash.stdoutBytes.isEmpty());
+    ASSERT_FALSE(crash.transcript.types.isEmpty());
+    EXPECT_EQ(crash.transcript.types.front(), QStringLiteral("hello"));
+    EXPECT_EQ(countTranscriptType(crash.transcript, QStringLiteral("hello")), 1);
+    EXPECT_TRUE(transcriptHasProgressPhase(crash.stdoutBytes, QStringLiteral("worker.start")));
+    EXPECT_EQ(countTranscriptType(crash.transcript, QStringLiteral("result")), 0);
+    EXPECT_EQ(countTranscriptType(crash.transcript, QStringLiteral("error")), 0);
+
+    EXPECT_FALSE(QFileInfo::exists(QDir(originalWorkDir).filePath(QStringLiteral("result.fcg"))));
+    EXPECT_FALSE(
+        QFileInfo::exists(QDir(originalWorkDir).filePath(QStringLiteral("result.fcg.tmp"))));
+    if (!param.alternateResultArchive.isEmpty()) {
+        EXPECT_FALSE(QFileInfo::exists(
+            QDir(originalWorkDir).filePath(param.alternateResultArchive)));
+    }
+
+    const WorkspaceInputManifest manifestAfterCrash =
+        captureWorkspaceInputManifest(originalWorkDir, inputRelativePaths);
+    assertWorkspaceInputManifestEqual(manifestBeforeCrash, manifestAfterCrash);
+
+    ASSERT_TRUE(QDir().rename(originalWorkDir, renamedWorkDir));
+    EXPECT_FALSE(QFileInfo::exists(originalWorkDir));
+    EXPECT_TRUE(QFileInfo::exists(renamedWorkDir));
+
+    const WorkspaceInputManifest manifestAfterRename =
+        captureWorkspaceInputManifest(renamedWorkDir, inputRelativePaths);
+    assertWorkspaceInputManifestEqual(manifestBeforeCrash, manifestAfterRename);
+
+    const QString renamedRequestPath =
+        QDir(renamedWorkDir).filePath(QStringLiteral("request.json"));
+    const WorkerTranscript recovery = runGeometryWorker(_cmdPath,
+                                                        _scriptPath,
+                                                        renamedRequestPath,
+                                                        renamedWorkDir,
+                                                        launchedJobIdWire);
+    ASSERT_EQ(recovery.exitCode, 0)
+        << "stdout:\n"
+        << recovery.stdoutBytes.constData() << "\nstderr:\n"
+        << recovery.stderrBytes.constData();
+    ASSERT_FALSE(recovery.stdoutBytes.isEmpty());
+    ASSERT_FALSE(recovery.types.isEmpty());
+    EXPECT_EQ(countTranscriptType(recovery, QStringLiteral("hello")), 1);
+    EXPECT_EQ(recovery.types.front(), QStringLiteral("hello"));
+    EXPECT_TRUE(transcriptHasProgressPhase(recovery.stdoutBytes, param.computeProgressPhase));
+    EXPECT_EQ(countTranscriptType(recovery, QStringLiteral("result")), 1);
+    EXPECT_EQ(countTranscriptType(recovery, QStringLiteral("error")), 0);
+    EXPECT_EQ(recovery.types.back(), QStringLiteral("result"));
+    EXPECT_EQ(recovery.resultObj.value(QStringLiteral("jobId")).toString(), launchedJobIdWire);
+
+    const QString relPath = recovery.resultObj.value(QStringLiteral("path")).toString();
+    EXPECT_EQ(relPath, QStringLiteral("result.fcg"));
+    const qint64 claimedSize =
+        recovery.resultObj.value(QStringLiteral("size")).toVariant().toLongLong();
+    const QString claimedSha =
+        recovery.resultObj.value(QStringLiteral("sha256")).toString().toLower();
+    const QString absResult = QDir(renamedWorkDir).filePath(relPath);
+    ASSERT_TRUE(QFileInfo::exists(absResult));
+    EXPECT_EQ(QFileInfo(absResult).size(), claimedSize);
+    {
+        QFile f(absResult);
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        const QByteArray digest =
+            QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex();
+        EXPECT_EQ(QString::fromLatin1(digest), claimedSha);
+    }
+    EXPECT_FALSE(QFileInfo::exists(QDir(renamedWorkDir).filePath(QStringLiteral("result.fcg.tmp"))));
+    if (!param.alternateResultArchive.isEmpty()) {
+        EXPECT_FALSE(QFileInfo::exists(
+            QDir(renamedWorkDir).filePath(param.alternateResultArchive)));
+    }
+
+    param.validate(absResult, fixture);
+
+    const WorkspaceInputManifest manifestAfterRecovery =
+        captureWorkspaceInputManifest(renamedWorkDir, inputRelativePaths);
+    assertWorkspaceInputManifestEqual(manifestBeforeCrash, manifestAfterRecovery);
+    EXPECT_FALSE(QFileInfo::exists(originalWorkDir));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    CrossProcessCrashRenameRecoveryTest,
+    ::testing::ValuesIn(crashRenameRecoveryMatrix()),
+    [](const ::testing::TestParamInfo<CrashRenameRecoveryParam>& info) {
+        return info.param.name;
+    });
