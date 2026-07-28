@@ -534,50 +534,69 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         )
 
     def test_gui_fixed_box_raster_is_bounded(self):
-        operation = "GUI: fixed box raster is bounded (no crash/huge image at extreme zoom)"
+        operation = "GUI: fixed box raster is bounded and leader stays glued to it"
         _msg("  Test '{}'".format(operation))
         note = self._make_note(["Bounded"], offset=App.Vector(40, 0, 0))
         self._flush()
-        # A huge mm size would request an enormous raster at close zoom; the P1 cap
-        # (MaxBoxRasterPx) must prevent a multi-megapixel QImage / 16-bit SbVec2s
-        # overflow in BitmapFactory::convert. Without the cap this _flush would
-        # exhaust memory or crash. The leader follows the clamped box, so it stays
-        # well under BoxWidth/2.
+        # Reference with a small (uncapped) box: derive worldPerPixel from the leader
+        # vs the actual raster width (leader = 0.5 * RasterWidth * worldPerPixel).
+        note.ViewObject.BoxWidth = 10.0
+        self._flush()
+        rw_small = int(note.ViewObject.RasterWidth)
+        he_small = App.Vector(note.ViewObject.LeaderHalfExtent)
+        self.assertGreater(rw_small, 0, operation)
+        self.assertGreater(float(he_small.x), 0.0, operation)
+        wp_ref = float(he_small.x) / (0.5 * rw_small)
+        self.assertGreater(wp_ref, 0.0, operation)
+        # A huge mm size would request an enormous raster; the P1 cap must clamp it
+        # (without the cap this _flush would exhaust memory or overflow SbVec2s).
         note.ViewObject.BoxWidth = 5000.0
         note.ViewObject.BoxHeight = 5000.0
         self._flush()
+        rw = int(note.ViewObject.RasterWidth)
+        rh = int(note.ViewObject.RasterHeight)
+        self.assertGreater(rw, 0, operation)
+        self.assertGreater(rh, 0, operation)
+        self.assertLessEqual(rw, 4096, "{}: RasterWidth={} must be capped at 4096".format(operation, rw))
+        self.assertLessEqual(rh, 4096, "{}: RasterHeight={} must be capped at 4096".format(operation, rh))
+        # Leader must stay glued to the (clamped) raster: the worldPerPixel implied by
+        # leader vs raster must match the uncapped reference (same view/camera).
         he = App.Vector(note.ViewObject.LeaderHalfExtent)
-        self.assertGreater(float(he.x), 0.0, operation)
-        self.assertGreater(float(he.y), 0.0, operation)
+        wp_capped = float(he.x) / (0.5 * rw)
+        self.assertAlmostEqual(wp_capped, wp_ref, places=3,
+            msg="{}: leader detached from raster (wp {} vs ref {})".format(operation, wp_capped, wp_ref))
         self.assertLessEqual(float(he.x), 2500.0, operation)  # <= BoxWidth/2
         self.assertLessEqual(float(he.y), 2500.0, operation)
 
-    def test_gui_viewport_resize_keeps_fixed_box_valid(self):
-        operation = "GUI: viewport resize keeps a fixed-mm box valid (re-rasterizes)"
+    def test_gui_viewport_resize_rerasters_fixed_box(self):
+        operation = "GUI: viewport resize re-rasterizes a fixed-mm box"
         _msg("  Test '{}'".format(operation))
         import FreeCADGui as Gui
+        from PySide import QtWidgets
         note = self._make_note(["Resize"], offset=App.Vector(40, 0, 0))
         note.ViewObject.BoxWidth = 30.0
         self._flush()
-        # P2: viewport resize changes worldPerPixel but not the Coin camera node,
-        # so a fixed-mm box must re-raster via the GL-widget event filter. Best-effort:
-        # skip if the view does not expose a resizable widget in this config.
-        view = Gui.ActiveDocument.ActiveView
-        widget = None
-        try:
-            widget = view.getViewer().getGLWidget()
-        except Exception:
-            widget = None
-        if widget is None:
-            self.skipTest("view does not expose a resizable GL widget in this config")
-        try:
-            widget.resize(640, 480)
-        except Exception:
-            self.skipTest("GL widget not resizable in this config")
+        count_before = int(note.ViewObject.DrawImageCount)
+        self.assertGreater(count_before, 0, operation)
+        # P2: viewport resize changes worldPerPixel but not the Coin camera node, so
+        # a fixed-mm box must re-raster via the GL-widget event filter. Resize the 3D
+        # view's MDI subwindow; the GL widget gets QEvent::Resize -> filter ->
+        # scheduleVisualFrame -> drawImage. DrawImageCount must increase.
+        main = Gui.getMainWindow()
+        mdi = main.findChild(QtWidgets.QMdiArea)
+        subs = mdi.subWindowList() if mdi else []
+        self.assertTrue(subs, operation + ": no MDI subwindow to resize")
+        sw = subs[0]
+        w = sw.width()
+        h = sw.height()
+        sw.resize(max(w - 140, 320), max(h - 140, 240))
         self._flush()
-        he_after = App.Vector(note.ViewObject.LeaderHalfExtent)
-        self.assertGreater(float(he_after.x), 0.0, operation)
-        self.assertLessEqual(float(he_after.x), 15.0 + 1e-3, operation)  # <= BoxWidth/2
+        count_after = int(note.ViewObject.DrawImageCount)
+        sw.resize(w, h)  # restore the original geometry
+        self._flush()
+        self.assertGreater(count_after, count_before,
+            "{}: DrawImageCount {} not > {} (no resize re-raster)".format(
+                operation, count_after, count_before))
 
     def test_gui_auto_box_when_zero_uses_text(self):
         operation = "GUI: BoxWidth=0 keeps auto (text-sized) box"

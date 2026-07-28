@@ -149,6 +149,33 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         App::Prop_None,
         "Fixed box height in mm (0 = auto-size to text)"
     );
+    ADD_PROPERTY_TYPE(
+        RasterWidth,
+        (0),
+        "ReviewNote",
+        App::Prop_Hidden,
+        "Test-visible: pixel width of the last rasterized box image (capped)"
+    );
+    RasterWidth.setStatus(App::Property::Output, true);
+    RasterWidth.setStatus(App::Property::ReadOnly, true);
+    ADD_PROPERTY_TYPE(
+        RasterHeight,
+        (0),
+        "ReviewNote",
+        App::Prop_Hidden,
+        "Test-visible: pixel height of the last rasterized box image (capped)"
+    );
+    RasterHeight.setStatus(App::Property::Output, true);
+    RasterHeight.setStatus(App::Property::ReadOnly, true);
+    ADD_PROPERTY_TYPE(
+        DrawImageCount,
+        (0),
+        "ReviewNote",
+        App::Prop_Hidden,
+        "Test-visible: count of drawImage rasterizations (verifies resize re-raster)"
+    );
+    DrawImageCount.setStatus(App::Property::Output, true);
+    DrawImageCount.setStatus(App::Property::ReadOnly, true);
 }
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
@@ -777,6 +804,8 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         pImageHitProxy->image = SoSFImage();
         labelImageWidth = 0;
         labelImageHeight = 0;
+        RasterWidth.setValue(0);
+        RasterHeight.setValue(0);
         this->hide();
         return;
     }
@@ -815,22 +844,25 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         }
         if (worldPerPixel > 1e-12) {
             // P1: bound the raster so extreme zoom cannot exhaust memory or overflow
-            // the 16-bit SbVec2s downstream (BitmapFactory::convert). The leader
+            // the 16-bit SbVec2s downstream (BitmapFactory::convert). Clamp the
+            // requested size as a DOUBLE before converting to int: a value above
+            // INT_MAX would overflow static_cast<int> before the cap could help, and
+            // non-finite (NaN/Inf) inputs must be rejected outright. The leader
             // half-extents follow the *rendered* (clamped) box when clamped, so they
             // stay glued even when the requested mm size would exceed the cap.
+            auto clampRasterPx = [](double mm, double wpp) -> int {
+                double requested = mm / wpp;
+                if (!std::isfinite(requested) || requested <= 0.0) {
+                    return 0;
+                }
+                double clamped = std::min(std::ceil(requested), static_cast<double>(MaxBoxRasterPx));
+                return static_cast<int>(clamped);
+            };
             if (BoxWidth.getValue() > 0.0) {
-                targetW = std::max<int>(
-                    targetW,
-                    static_cast<int>(std::ceil(BoxWidth.getValue() / worldPerPixel))
-                );
-                targetW = std::min(targetW, MaxBoxRasterPx);
+                targetW = std::max(targetW, clampRasterPx(BoxWidth.getValue(), worldPerPixel));
             }
             if (BoxHeight.getValue() > 0.0) {
-                targetH = std::max<int>(
-                    targetH,
-                    static_cast<int>(std::ceil(BoxHeight.getValue() / worldPerPixel))
-                );
-                targetH = std::min(targetH, MaxBoxRasterPx);
+                targetH = std::max(targetH, clampRasterPx(BoxHeight.getValue(), worldPerPixel));
             }
         }
     }
@@ -930,6 +962,11 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
 
     labelImageWidth = image.width();
     labelImageHeight = image.height();
+    // P1/P2 test-visible: publish the rendered raster dims (already capped above) and
+    // count this rasterization so tests can verify the cap and a resize re-raster.
+    RasterWidth.setValue(image.width());
+    RasterHeight.setValue(image.height());
+    DrawImageCount.setValue(DrawImageCount.getValue() + 1);
 
     SoSFImage sfimage;
     Gui::BitmapFactory().convert(image, sfimage);
@@ -1063,12 +1100,13 @@ void ViewProviderReviewNote::ensureViewportResizeObserver()
     if (const Gui::View3DInventorViewer* viewer = getActiveViewer()) {
         gl = viewer->getGLWidget();
     }
-    // Already installed on this exact widget (or there is no widget yet).
-    if (gl == attachedGlWidget && resizeObserver) {
+    // Already installed on this exact widget (or there is no widget yet). QPointer
+    // auto-clears if the previous widget was destroyed, so a stale pointer reads null.
+    if (gl == attachedGlWidget.data() && resizeObserver) {
         return;
     }
-    // Widget changed (or first time): move the filter to the new widget.
-    if (resizeObserver && attachedGlWidget) {
+    // Widget changed (or first time, or previous widget destroyed): move the filter.
+    if (resizeObserver && !attachedGlWidget.isNull()) {
         attachedGlWidget->removeEventFilter(resizeObserver);
     }
     if (!resizeObserver) {
@@ -1085,9 +1123,9 @@ void ViewProviderReviewNote::detachViewportResizeObserver()
     if (!resizeObserver) {
         return;
     }
-    // Removing the filter from the widget is optional (deleting the QObject also
-    // unregisters it), but do it explicitly when the widget is still alive.
-    if (attachedGlWidget) {
+    // QPointer clears automatically if Qt already destroyed the GL widget, so this
+    // removeEventFilter only runs when the widget is still alive (no dangling deref).
+    if (!attachedGlWidget.isNull()) {
         attachedGlWidget->removeEventFilter(resizeObserver);
     }
     delete resizeObserver;

@@ -28,6 +28,7 @@
 #include <fastsignals/signal.h>
 
 #include <QObject>
+#include <QPointer>
 #include <QRect>
 #include <string>
 #include <vector>
@@ -58,6 +59,13 @@ public:
     App::PropertyLength BoxWidth;
     /// Fixed box height in mm (0 = auto-size to text). Overrides the auto billboard half-height.
     App::PropertyLength BoxHeight;
+    /// Test-visible: pixel width of the last rasterized box image (capped at MaxBoxRasterPx).
+    App::PropertyInteger RasterWidth;
+    /// Test-visible: pixel height of the last rasterized box image (capped at MaxBoxRasterPx).
+    App::PropertyInteger RasterHeight;
+    /// Test-visible: number of times drawImage has rasterized the box (incremented per raster;
+    /// used to verify resize-triggered re-raster).
+    App::PropertyInteger DrawImageCount;
 
     QIcon getIcon() const override;
     bool doubleClicked() override;
@@ -148,7 +156,9 @@ private:
     SoCamera* attachedCamera = nullptr;
     /// P2: Qt event filter on the viewer GL widget (viewport-resize -> re-raster).
     ResizeObserver* resizeObserver = nullptr;
-    QWidget* attachedGlWidget = nullptr;
+    /// P2: held via QPointer so it auto-clears if Qt destroys the GL widget before
+    /// the view provider (avoids a dangling pointer in detachViewportResizeObserver).
+    QPointer<QWidget> attachedGlWidget;
     /// Coalesced visual refresh. SoOneShotSensor (not SoIdleSensor) so Quarter's
     /// processDelayQueue(false) still runs it. Priority is redrawPri-1 (lower
     /// numeric = earlier); redraw OneShot is typically 10000.
