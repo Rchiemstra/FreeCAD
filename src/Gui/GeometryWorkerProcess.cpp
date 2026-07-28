@@ -164,10 +164,41 @@ bool requireJsonNumber(const QJsonObject& obj,
 #else
 #include <signal.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <errno.h>
 #endif
 
 namespace Gui
 {
+
+#if defined(Q_OS_UNIX)
+/// Send a signal to the retained Unix process group for the active job.
+/// Returns true if a signal was actually delivered (or already gone ESRCH).
+/// Never signals PGID 0, a negative invalid value, or a group that does not
+/// belong to the current active job (cleared at the terminal point).
+///
+/// The controller signals its verified process group but never reaps
+/// descendants it did not create directly. After the FreeCADCmd leader exits,
+/// the descendant is reparented to init (PID 1), which reaps it.
+static bool signalActiveProcessGroup(qint64 pgid, int signo, bool& wasGone)
+{
+    wasGone = false;
+    if (pgid <= 0) {
+        return false;
+    }
+    const int rc = ::kill(static_cast<pid_t>(-pgid), signo);
+    if (rc == 0) {
+        return true;
+    }
+    if (errno == ESRCH) {
+        wasGone = true;
+        return true;
+    }
+    // EPERM: group exists but is not ours; treat as failure (still existing).
+    return false;
+}
+#endif
+
 
 GeometryWorkerProcess::GeometryWorkerProcess(QObject* parent)
     : QObject(parent)
@@ -190,9 +221,34 @@ GeometryWorkerProcess::~GeometryWorkerProcess()
     if (_process) {
         disconnect(_process, nullptr, this, nullptr);
         if (_process->state() != QProcess::NotRunning) {
+#if defined(Q_OS_UNIX)
+            // Ensure the retained process group is fully removed even on
+            // abnormal controller destruction. The group SIGKILL covers the
+            // leader and any descendants that ignored SIGTERM.
+            if (_activePgid > 0) {
+                bool gone = false;
+                signalActiveProcessGroup(_activePgid, SIGKILL, gone);
+            }
+            else {
+                _process->kill();
+            }
+#else
             _process->kill();
+#endif
             _retainWorkspaceOnDestroy = true;
         }
+        else {
+#if defined(Q_OS_UNIX)
+            // Leader already gone; still clean any retained group descendants.
+            if (_activePgid > 0) {
+                bool gone = false;
+                signalActiveProcessGroup(_activePgid, SIGKILL, gone);
+            }
+#endif
+        }
+#if defined(Q_OS_UNIX)
+        _activePgid = 0;
+#endif
     }
     if (_deadlineTimer) {
         _deadlineTimer->stop();
@@ -232,6 +288,9 @@ void GeometryWorkerProcess::prepareIdleJob(const App::GeometryJobSpec& spec,
     _tempDir = workspaceDir;
     QDir().mkpath(_tempDir);
     _retainWorkspaceOnDestroy = true;
+#if defined(Q_OS_UNIX)
+    _activePgid = 0;
+#endif
 }
 
 bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QString& workspaceDir)
@@ -251,6 +310,9 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
     _finishedHandled = false;
     _state = App::GeometryJobState::Running;
     _retainWorkspaceOnDestroy = !workspaceDir.isEmpty();
+#if defined(Q_OS_UNIX)
+    _activePgid = 0;
+#endif
 
     if (!workspaceDir.isEmpty()) {
         _tempDir = workspaceDir;
@@ -386,6 +448,25 @@ bool GeometryWorkerProcess::startJob(const App::GeometryJobSpec& spec, const QSt
         return false;
     }
 
+#if defined(Q_OS_UNIX)
+    // Verify the launched worker's actual process-group ID with getpgid()
+    // before trusting it as a signalable group. Set _activePgid only when
+    // worker PID > 0, actual PGID > 0, and actual PGID == worker PID (the
+    // child sets itself as its own process-group leader via
+    // setChildProcessModifier). Never derive a signalable process group
+    // merely by copying an unverified QProcess PID.
+    _activePgid = 0;
+    {
+        const qint64 workerPid = static_cast<qint64>(_process->processId());
+        if (workerPid > 0) {
+            const pid_t actualPgid = ::getpgid(static_cast<pid_t>(workerPid));
+            if (actualPgid > 0 && static_cast<qint64>(actualPgid) == workerPid) {
+                _activePgid = static_cast<qint64>(actualPgid);
+            }
+        }
+    }
+#endif
+
     auto now = std::chrono::steady_clock::now();
     if (_spec.deadline > now) {
         auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(_spec.deadline - now);
@@ -421,9 +502,9 @@ void GeometryWorkerProcess::onCooperativeCancelTimeout()
         _cancelPhase = 2;
         if (_process && _process->state() != QProcess::NotRunning) {
 #if defined(Q_OS_UNIX)
-            const qint64 pid = _process->processId();
-            if (pid > 0) {
-                ::kill(static_cast<pid_t>(-pid), SIGTERM);
+            if (_activePgid > 0) {
+                bool gone = false;
+                signalActiveProcessGroup(_activePgid, SIGTERM, gone);
             }
             else {
                 _process->terminate();
@@ -438,9 +519,9 @@ void GeometryWorkerProcess::onCooperativeCancelTimeout()
         _cancelTimer->stop();
         if (_process && _process->state() != QProcess::NotRunning) {
 #if defined(Q_OS_UNIX)
-            const qint64 pid = _process->processId();
-            if (pid > 0) {
-                ::kill(static_cast<pid_t>(-pid), SIGKILL);
+            if (_activePgid > 0) {
+                bool gone = false;
+                signalActiveProcessGroup(_activePgid, SIGKILL, gone);
             }
             else {
                 _process->kill();
@@ -793,15 +874,26 @@ void GeometryWorkerProcess::onTimeout()
 
     if (_process && _process->state() != QProcess::NotRunning) {
 #if defined(Q_OS_UNIX)
-        const qint64 pid = _process->processId();
-        if (pid > 0) {
-            ::kill(static_cast<pid_t>(-pid), SIGKILL);
+        if (_activePgid > 0) {
+            bool gone = false;
+            signalActiveProcessGroup(_activePgid, SIGKILL, gone);
         }
         else {
             _process->kill();
         }
 #else
         _process->kill();
+#endif
+    }
+    else {
+#if defined(Q_OS_UNIX)
+        // Leader already gone (e.g. crashed before deadline). Still ensure the
+        // retained verified process group is fully removed so descendants
+        // cannot survive.
+        if (_activePgid > 0) {
+            bool gone = false;
+            signalActiveProcessGroup(_activePgid, SIGKILL, gone);
+        }
 #endif
     }
 }
@@ -814,6 +906,23 @@ void GeometryWorkerProcess::onProcessFinished(int exitCode, QProcess::ExitStatus
     _finishedHandled = true;
     _deadlineTimer->stop();
     _cancelTimer->stop();
+
+#if defined(Q_OS_UNIX)
+    // Cancellation race fix: if the leader exits on SIGTERM before the SIGKILL
+    // escalation timer fires, descendants that ignored SIGTERM would survive.
+    // Force a group-level SIGKILL now using the verified retained PGID, before
+    // the terminal callback is emitted. This does not change the final state
+    // (Cancelled) — it only guarantees the entire process group is gone.
+    // The controller signals its verified group but does not reap descendants
+    // it did not create directly (the descendant is reparented to init).
+    if (_cancelling && _activePgid > 0) {
+        bool gone = false;
+        signalActiveProcessGroup(_activePgid, SIGKILL, gone);
+    }
+    // Clear stored group ownership at the terminal point so a later job with a
+    // recycled PGID can never be signaled by stale state.
+    _activePgid = 0;
+#endif
 
     if (_cancelling) {
         _state = App::GeometryJobState::Cancelled;

@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QSaveFile>
 #include <QCryptographicHash>
 
 #include <cstdlib>
@@ -25,6 +26,15 @@
 #include <new>
 #include <string>
 #include <thread>
+
+#if defined(FC_GEOMETRY_WORKER_TEST_SEAMS) && defined(Q_OS_UNIX)
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+#include <poll.h>
+#endif
 
 namespace Part
 {
@@ -153,6 +163,176 @@ void injectWorkerFaultBadAlloc()
     throw std::bad_alloc();
 }
 
+#if defined(FC_GEOMETRY_WORKER_TEST_SEAMS) && defined(Q_OS_UNIX)
+/// Fork a single real descendant in the worker's existing process group. The
+/// descendant ignores SIGTERM and waits without busy-spinning so that only a
+/// group-level SIGKILL from the parent controller can remove it. The worker
+/// leader then publishes a fixed developer-test record (`fault-descendant.json`)
+/// inside the trusted job workspace and hangs non-cooperatively.
+///
+/// A private POSIX pipe is used as a child-readiness handshake: the child writes
+/// exactly one readiness byte only after both SIGTERM and SIGINT handlers are
+/// installed. The worker leader waits for that byte with a bounded poll deadline
+/// before publishing the record. The presence of the record therefore proves
+/// the descendant is already ignoring SIGTERM.
+///
+/// Returns true if the descendant was created, confirmed ready, and the record
+/// was atomically published (the worker leader then enters a non-cooperative
+/// hang and never returns). Returns false if the worker is not its own process-
+/// group leader, fork fails, the readiness handshake fails, or record
+/// publication fails; on failure any created descendant is killed and reaped
+/// (only the directly created child) so no process leaks.
+bool injectWorkerFaultDescendantHang(const QString& tempDir, App::GeometryJobId requestJobId)
+{
+    // Require a dedicated worker process group: the FreeCADCmd worker must be
+    // its own process-group leader so the descendant is not placed in the
+    // GUI/test runner's process group.
+    const pid_t workerPid = ::getpid();
+    if (workerPid <= 0) {
+        return false;
+    }
+    const pid_t workerPgrp = ::getpgrp();
+    if (workerPgrp <= 0) {
+        return false;
+    }
+    if (workerPid != workerPgrp) {
+        // Not our own process group — do not fork.
+        return false;
+    }
+
+    // Create a private POSIX pipe for the child-readiness handshake.
+    int pipeFd[2] = {-1, -1};
+    if (::pipe(pipeFd) != 0) {
+        return false;
+    }
+
+    const pid_t childPid = ::fork();
+    if (childPid < 0) {
+        ::close(pipeFd[0]);
+        ::close(pipeFd[1]);
+        return false;
+    }
+
+    if (childPid == 0) {
+        // Descendant: post-fork code uses only async-signal-safe POSIX.
+        ::close(pipeFd[0]); // Close read end in child.
+
+        struct sigaction ignoreSig;
+        ignoreSig.sa_handler = SIG_IGN;
+        sigemptyset(&ignoreSig.sa_mask);
+        ignoreSig.sa_flags = 0;
+
+        if (::sigaction(SIGTERM, &ignoreSig, nullptr) != 0
+            || ::sigaction(SIGINT, &ignoreSig, nullptr) != 0) {
+            ::close(pipeFd[1]);
+            ::_exit(1);
+        }
+
+        // Write exactly one readiness byte after both handlers are installed.
+        const char ready = 1;
+        if (::write(pipeFd[1], &ready, 1) != 1) {
+            ::close(pipeFd[1]);
+            ::_exit(1);
+        }
+        ::close(pipeFd[1]);
+
+        // Non-busy pause loop — only SIGKILL can remove us.
+        for (;;) {
+            ::pause();
+        }
+        ::_exit(0); // Never reached.
+    }
+
+    // Worker leader: close write end, wait for readiness byte with bounded poll.
+    ::close(pipeFd[1]);
+    pipeFd[1] = -1;
+
+    auto cleanupChildAndPipe = [&]() {
+        if (pipeFd[0] >= 0) {
+            ::close(pipeFd[0]);
+            pipeFd[0] = -1;
+        }
+        ::kill(childPid, SIGKILL);
+        int status = 0;
+        while (::waitpid(childPid, &status, 0) == -1 && errno == EINTR) {
+        }
+    };
+
+    // Bounded poll for the readiness byte (5 s deadline).
+    {
+        struct pollfd pfd;
+        pfd.fd = pipeFd[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        const int rc = ::poll(&pfd, 1, 5000);
+        if (rc <= 0) {
+            // Timeout (0) or error (-1).
+            cleanupChildAndPipe();
+            return false;
+        }
+        char ready = 0;
+        const ssize_t n = ::read(pipeFd[0], &ready, 1);
+        if (n != 1 || ready != 1) {
+            cleanupChildAndPipe();
+            return false;
+        }
+    }
+    ::close(pipeFd[0]);
+    pipeFd[0] = -1;
+
+    // Descendant is confirmed ready (SIGTERM-ignore installed). Publish the
+    // fixed developer-test record atomically using QSaveFile.
+
+    // Remove any stale fault record from a prior job in this workspace.
+    const QString finalPath = QDir(tempDir).filePath(QStringLiteral("fault-descendant.json"));
+    QFile::remove(finalPath);
+    QFile::remove(finalPath + QStringLiteral(".tmp"));
+
+    std::string jobIdWire;
+    if (!App::formatGeometryJobId(requestJobId, jobIdWire)) {
+        cleanupChildAndPipe();
+        return false;
+    }
+
+    QJsonObject record;
+    record.insert(QStringLiteral("type"), QStringLiteral("descendant_hang"));
+    record.insert(QStringLiteral("jobId"), QString::fromStdString(jobIdWire));
+    record.insert(QStringLiteral("workerPid"), static_cast<qint64>(workerPid));
+    record.insert(QStringLiteral("descendantPid"), static_cast<qint64>(childPid));
+    record.insert(QStringLiteral("processGroupId"), static_cast<qint64>(workerPgrp));
+
+    const QByteArray payload = QJsonDocument(record).toJson(QJsonDocument::Compact);
+
+    {
+        QSaveFile f(finalPath);
+        if (!f.open(QIODevice::WriteOnly)) {
+            cleanupChildAndPipe();
+            return false;
+        }
+        if (f.write(payload) != payload.size()) {
+            f.cancelWriting();
+            cleanupChildAndPipe();
+            return false;
+        }
+        if (!f.commit()) {
+            cleanupChildAndPipe();
+            return false;
+        }
+    }
+
+    // Record published; hang the worker leader non-cooperatively.
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    // Never reached.
+}
+#else
+bool injectWorkerFaultDescendantHang(const QString&, App::GeometryJobId)
+{
+    return false;
+}
+#endif
+
 bool shouldInjectWorkerFault(App::GeometryJobId requestJobId, std::string& faultModeOut)
 {
     const QByteArray modeRaw = qgetenv("FCGEO_TEST_FAULT_MODE");
@@ -175,15 +355,18 @@ bool shouldInjectWorkerFault(App::GeometryJobId requestJobId, std::string& fault
         return false;
     }
     const std::string mode = modeRaw.toStdString();
-    if (mode == "abort" || mode == "hang" || mode == "bad_alloc") {
+    if (mode == "abort" || mode == "hang" || mode == "bad_alloc" || mode == "descendant_hang") {
         faultModeOut = mode;
         return true;
     }
     return false;
 }
 
-void runInjectedWorkerFault(const std::string& mode)
+bool runInjectedWorkerFault(const std::string& mode, const QString& tempDir, App::GeometryJobId jobId)
 {
+    // Returns true when the worker should exit immediately after a fault-setup
+    // error (only possible for descendant_hang setup failure). abort/hang never
+    // return; bad_alloc throws.
     if (mode == "abort") {
         injectWorkerFaultAbort();
     }
@@ -193,6 +376,15 @@ void runInjectedWorkerFault(const std::string& mode)
     if (mode == "bad_alloc") {
         injectWorkerFaultBadAlloc();
     }
+    if (mode == "descendant_hang") {
+        if (!injectWorkerFaultDescendantHang(tempDir, jobId)) {
+            emitError("FaultSetupFailed",
+                      "descendant_hang fault seam failed to create or publish the descendant record",
+                      jobId);
+            return true;
+        }
+    }
+    return false;
 }
 
 #endif // FC_GEOMETRY_WORKER_TEST_SEAMS
@@ -280,10 +472,20 @@ int GeometryWorker::runWorkerProcess(const std::string& requestJsonPath)
     ctx.reportProgress(0.05, "worker.start");
 
 #ifdef FC_GEOMETRY_WORKER_TEST_SEAMS
+    // Remove any stale fault-descendant.json (and its temporary form) from a
+    // prior job in this reused workspace before processing this request. A
+    // normal or mismatched job must not inherit a stale fault record.
+    {
+        const QString staleRecord = QDir(tempDir).filePath(QStringLiteral("fault-descendant.json"));
+        QFile::remove(staleRecord);
+        QFile::remove(staleRecord + QStringLiteral(".tmp"));
+    }
     try {
         std::string faultMode;
         if (shouldInjectWorkerFault(jobId, faultMode)) {
-            runInjectedWorkerFault(faultMode);
+            if (runInjectedWorkerFault(faultMode, tempDir, jobId)) {
+                return 1;
+            }
         }
     }
     catch (const std::bad_alloc&) {

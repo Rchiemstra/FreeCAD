@@ -30,6 +30,9 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QTimer>
 #include <QTemporaryDir>
 
@@ -1886,4 +1889,501 @@ TEST_F(GeometryWorkerProcessFaultTest, FaultJobIdMismatchDoesNotInject)
     assertMappedBooleanRecovery(recovered, hashedId, 16);
 
     QDir(ws).removeRecursively();
+}
+
+#if defined(Q_OS_UNIX)
+#include <signal.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <errno.h>
+#endif
+
+namespace
+{
+
+#if defined(Q_OS_UNIX)
+struct DescendantRecord
+{
+    App::GeometryJobId jobId {0};
+    qint64 workerPid {0};
+    qint64 descendantPid {0};
+    qint64 processGroupId {0};
+};
+
+bool readDescendantRecord(const QString& path, DescendantRecord& out)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (!doc.isObject()) {
+        return false;
+    }
+    const QJsonObject obj = doc.object();
+    QString jobIdText;
+    if (!obj.contains(QStringLiteral("jobId")) || !obj.value(QStringLiteral("jobId")).isString()) {
+        return false;
+    }
+    jobIdText = obj.value(QStringLiteral("jobId")).toString();
+    std::string ec, em;
+    if (!App::parseGeometryJobId(jobIdText.toStdString(), out.jobId, ec, em)) {
+        return false;
+    }
+    out.workerPid = obj.value(QStringLiteral("workerPid")).toVariant().toLongLong();
+    out.descendantPid = obj.value(QStringLiteral("descendantPid")).toVariant().toLongLong();
+    out.processGroupId = obj.value(QStringLiteral("processGroupId")).toVariant().toLongLong();
+    // Require positive PIDs and workerPid == processGroupId (dedicated group).
+    return out.workerPid > 0 && out.descendantPid > 0 && out.processGroupId > 0
+        && out.workerPid == out.processGroupId;
+}
+
+/// Returns true only when the process is positively confirmed gone via ESRCH.
+/// EPERM or any other error is treated as still existing (not gone).
+bool processGoneEsch(pid_t pid)
+{
+    if (pid <= 0) {
+        return true;
+    }
+    if (::kill(pid, 0) == 0) {
+        return false;
+    }
+    return errno == ESRCH;
+}
+
+/// Returns true only when the process group is positively confirmed gone via ESRCH.
+bool groupGoneEsch(pid_t pgid)
+{
+    if (pgid <= 0) {
+        return true;
+    }
+    if (::kill(-pgid, 0) == 0) {
+        return false;
+    }
+    return errno == ESRCH;
+}
+
+class DescendantCleanupGuard
+{
+public:
+    void set(qint64 pid, qint64 pgid)
+    {
+        _descendantPid = pid;
+        _pgid = pgid;
+    }
+    ~DescendantCleanupGuard()
+    {
+#if defined(Q_OS_UNIX)
+        if (_pgid > 0) {
+            ::kill(static_cast<pid_t>(-_pgid), SIGKILL);
+        }
+        if (_descendantPid > 0) {
+            ::kill(static_cast<pid_t>(_descendantPid), SIGKILL);
+        }
+#endif
+    }
+
+private:
+    qint64 _descendantPid {0};
+    qint64 _pgid {0};
+};
+#endif
+
+struct DescendantFaultCase
+{
+    const char* label;
+    App::GeometryJobId faultJobId;
+    App::GeometryJobId recoveryJobId;
+    int parentDeadlineMs;
+    bool cancelInsteadOfDeadline;
+};
+
+} // namespace
+
+class GeometryWorkerProcessDescendantFaultTest
+    : public ::testing::TestWithParam<DescendantFaultCase>
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+        if (!QCoreApplication::instance()) {
+            static int argc = 1;
+            static char arg0[] = "Gui_tests_run";
+            static char* argv[] = {arg0, nullptr};
+            new QCoreApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        _tempDir = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(_tempDir->isValid());
+    }
+
+    std::unique_ptr<QTemporaryDir> _tempDir;
+};
+
+TEST_P(GeometryWorkerProcessDescendantFaultTest, DescendantRemovedAndFreshJobRecovers)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+#if !defined(Q_OS_UNIX)
+    GTEST_SKIP() << "Descendant_hang fault seam is Unix-only";
+#else
+    const DescendantFaultCase param = GetParam();
+    long hashedId = 0;
+    auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+    ASSERT_TRUE(task);
+
+    App::GeometryJobSpec faultSpec;
+    faultSpec.id = param.faultJobId;
+    faultSpec.task = task;
+    faultSpec.backend = App::GeometryBackend::FreeCADCmd;
+    const QString faultWs =
+        _tempDir->path() + QStringLiteral("/fault_") + QString::number(param.faultJobId);
+
+    TestEnvironmentGuard env;
+    env.set("FCGEO_TEST_FAULT_MODE", QByteArray("descendant_hang"));
+    std::string faultJobWire;
+    ASSERT_TRUE(App::formatGeometryJobId(param.faultJobId, faultJobWire));
+    env.set("FCGEO_TEST_FAULT_JOB_ID", QByteArray::fromStdString(faultJobWire));
+
+    Gui::GeometryWorkerProcess faultProc;
+    std::atomic<int> faultCallbacks {0};
+    bool faultFinished = false;
+    bool sawWorkerStart = false;
+    App::GeometryJobId faultCallbackJobId = 0;
+    App::GeometryJobState faultTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult faultResult;
+
+    QObject::connect(&faultProc,
+                     &Gui::GeometryWorkerProcess::progressUpdated,
+                     &faultProc,
+                     [&](double, const QString& phase) {
+                         if (phase == QStringLiteral("worker.start")) {
+                             sawWorkerStart = true;
+                         }
+                     });
+    QObject::connect(&faultProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &faultProc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++faultCallbacks;
+                         faultFinished = true;
+                         faultCallbackJobId = jobId;
+                         faultTerminal = state;
+                         faultResult = result;
+                     });
+
+    const auto faultStart = std::chrono::steady_clock::now();
+    faultSpec.deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(param.parentDeadlineMs);
+    ASSERT_TRUE(faultProc.startJob(faultSpec, faultWs));
+    env.clear("FCGEO_TEST_FAULT_MODE");
+    env.clear("FCGEO_TEST_FAULT_JOB_ID");
+
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/request.json")));
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/base.fcg")));
+    ASSERT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/tool.fcg")));
+
+    // Poll for the atomic descendant record with a bounded deadline.
+    const QString recordPath = faultWs + QStringLiteral("/fault-descendant.json");
+    DescendantRecord record;
+    DescendantCleanupGuard cleanupGuard; // Armed only after identity validation.
+    {
+        QEventLoop pollLoop;
+        QTimer pollTimer;
+        pollTimer.setSingleShot(false);
+        QTimer deadline;
+        deadline.setSingleShot(true);
+        QObject::connect(&pollTimer, &QTimer::timeout, &pollLoop, [&]() {
+            if (readDescendantRecord(recordPath, record)) {
+                pollLoop.quit();
+            }
+        });
+        QObject::connect(&deadline, &QTimer::timeout, &pollLoop, &QEventLoop::quit);
+        pollTimer.start(50);
+        deadline.start(30000);
+        pollLoop.exec();
+        pollTimer.stop();
+    }
+    // Fatal identity validation before the PGID is trusted.
+    ASSERT_TRUE(record.jobId == param.faultJobId)
+        << "fault-descendant.json was not published or had wrong jobId";
+    ASSERT_GT(record.workerPid, 0);
+    ASSERT_GT(record.descendantPid, 0);
+    ASSERT_GT(record.processGroupId, 0);
+    ASSERT_NE(record.workerPid, record.descendantPid)
+        << "worker leader and descendant must have distinct PIDs";
+    ASSERT_EQ(record.workerPid, record.processGroupId)
+        << "worker PID must equal process group ID (dedicated group)";
+    // Verify the worker leader's actual PGID matches the record while it lives.
+    const pid_t workerActualPgid = ::getpgid(static_cast<pid_t>(record.workerPid));
+    ASSERT_EQ(static_cast<qint64>(workerActualPgid), record.processGroupId)
+        << "worker leader actual PGID must match recorded process group";
+    // Verify the descendant's actual PGID matches the record.
+    const pid_t descendantActualPgid = ::getpgid(static_cast<pid_t>(record.descendantPid));
+    ASSERT_EQ(static_cast<qint64>(descendantActualPgid), record.processGroupId)
+        << "descendant actual PGID must match recorded process group";
+
+    // Identity validated — arm the cleanup guard before any later fatal assertion.
+    cleanupGuard.set(record.descendantPid, record.processGroupId);
+
+    if (param.cancelInsteadOfDeadline) {
+        faultProc.cancelJob(App::CancelReason::UserRequested);
+    }
+
+    QEventLoop faultLoop;
+    QTimer faultTimeout;
+    faultTimeout.setSingleShot(true);
+    QObject::connect(&faultTimeout, &QTimer::timeout, &faultLoop, &QEventLoop::quit);
+    QObject::connect(&faultProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &faultLoop,
+                     &QEventLoop::quit);
+    faultTimeout.start(30000);
+    if (!faultFinished) {
+        faultLoop.exec();
+    }
+    const auto faultElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - faultStart)
+                                    .count();
+
+    ASSERT_TRUE(faultFinished) << "fault job did not finish";
+    EXPECT_EQ(faultCallbacks.load(), 1);
+    EXPECT_EQ(faultCallbackJobId, param.faultJobId);
+    EXPECT_FALSE(faultProc.isRunning());
+    EXPECT_FALSE(faultResult.success);
+    EXPECT_TRUE(faultResult.resultArchivePath.empty());
+    EXPECT_TRUE(sawWorkerStart);
+    EXPECT_FALSE(faultProc.protocolFailed());
+    EXPECT_NE(faultTerminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_NE(faultTerminal, App::GeometryJobState::Completed);
+    EXPECT_TRUE(QFileInfo::exists(faultWs));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/request.json")));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/base.fcg")));
+    EXPECT_TRUE(QFileInfo::exists(faultWs + QStringLiteral("/tool.fcg")));
+    EXPECT_FALSE(QFileInfo::exists(faultWs + QStringLiteral("/result.fcg")));
+
+    if (param.cancelInsteadOfDeadline) {
+        EXPECT_EQ(faultTerminal, App::GeometryJobState::Cancelled);
+        EXPECT_EQ(faultResult.errorCode, "Cancelled");
+        EXPECT_NE(faultTerminal, App::GeometryJobState::Crashed);
+        EXPECT_NE(faultTerminal, App::GeometryJobState::TimedOut);
+    }
+    else {
+        EXPECT_EQ(faultTerminal, App::GeometryJobState::TimedOut);
+        EXPECT_EQ(faultResult.errorCode, "TimedOut");
+        EXPECT_NE(faultTerminal, App::GeometryJobState::Crashed);
+        EXPECT_LT(faultElapsedMs, 15000);
+    }
+
+    // Poll with a bounded deadline until both the descendant PID and the
+    // process group are positively confirmed gone via ESRCH. EPERM is treated
+    // as still existing. Only disarm the guard if both are confirmed gone.
+    {
+        QEventLoop goneLoop;
+        QTimer goneTimer;
+        goneTimer.setSingleShot(false);
+        QTimer goneDeadline;
+        goneDeadline.setSingleShot(true);
+        bool descendantGone = false;
+        bool groupGone = false;
+        QObject::connect(&goneTimer, &QTimer::timeout, &goneLoop, [&]() {
+            if (processGoneEsch(static_cast<pid_t>(record.descendantPid))) {
+                descendantGone = true;
+            }
+            if (groupGoneEsch(static_cast<pid_t>(record.processGroupId))) {
+                groupGone = true;
+            }
+            if (descendantGone && groupGone) {
+                goneLoop.quit();
+            }
+        });
+        QObject::connect(&goneDeadline, &QTimer::timeout, &goneLoop, &QEventLoop::quit);
+        goneTimer.start(50);
+        goneDeadline.start(10000);
+        goneLoop.exec();
+        goneTimer.stop();
+        EXPECT_TRUE(descendantGone)
+            << "descendant PID must be ESRCH-gone after completion; Docker containers "
+               "must run with an init/reaper (for example, docker run --init)";
+        EXPECT_TRUE(groupGone)
+            << "process group must be ESRCH-gone after completion; Docker containers "
+               "must run with an init/reaper (for example, docker run --init)";
+        // Only disarm the guard if both were positively confirmed gone.
+        if (descendantGone && groupGone) {
+            cleanupGuard.set(0, 0);
+        }
+        // If either check failed, the guard stays armed for the destructor SIGKILL.
+    }
+
+    QDir(faultWs).removeRecursively();
+
+    // Happy/recovery path: fresh mapped Boolean request in a fresh workspace.
+    long recoveryHashedId = 0;
+    auto recoveryTask = makeMappedBooleanTask(/*threshold=*/16, &recoveryHashedId);
+    ASSERT_TRUE(recoveryTask);
+
+    App::GeometryJobSpec recoverySpec;
+    recoverySpec.id = param.recoveryJobId;
+    recoverySpec.task = recoveryTask;
+    recoverySpec.backend = App::GeometryBackend::FreeCADCmd;
+    recoverySpec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    const QString recoveryWs =
+        _tempDir->path() + QStringLiteral("/recovery_") + QString::number(param.recoveryJobId);
+
+    Gui::GeometryWorkerProcess recoveryProc;
+    std::atomic<int> recoveryCallbacks {0};
+    bool recoveryFinished = false;
+    App::GeometryJobId recoveryCallbackJobId = 0;
+    App::GeometryJobState recoveryTerminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult recoveryResult;
+
+    QObject::connect(&recoveryProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &recoveryProc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& result) {
+                         ++recoveryCallbacks;
+                         recoveryFinished = true;
+                         recoveryCallbackJobId = jobId;
+                         recoveryTerminal = state;
+                         recoveryResult = result;
+                     });
+
+    ASSERT_TRUE(recoveryProc.startJob(recoverySpec, recoveryWs));
+
+    QEventLoop recoveryLoop;
+    QTimer recoveryTimeout;
+    recoveryTimeout.setSingleShot(true);
+    QObject::connect(&recoveryTimeout, &QTimer::timeout, &recoveryLoop, &QEventLoop::quit);
+    QObject::connect(&recoveryProc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &recoveryLoop,
+                     &QEventLoop::quit);
+    recoveryTimeout.start(180000);
+    if (!recoveryFinished) {
+        recoveryLoop.exec();
+    }
+
+    ASSERT_TRUE(recoveryFinished);
+    EXPECT_EQ(recoveryCallbacks.load(), 1);
+    EXPECT_EQ(recoveryCallbackJobId, param.recoveryJobId);
+    EXPECT_FALSE(recoveryProc.protocolFailed());
+    EXPECT_EQ(recoveryTerminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_TRUE(recoveryResult.success);
+    ASSERT_FALSE(recoveryResult.resultArchivePath.empty());
+    EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(recoveryResult.resultArchivePath)));
+    EXPECT_TRUE(QFileInfo::exists(recoveryWs + QStringLiteral("/result.fcg")));
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(recoveryResult.resultArchivePath, recovered));
+    assertMappedBooleanRecovery(recovered, recoveryHashedId, 16);
+
+    QDir(recoveryWs).removeRecursively();
+#endif
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    GeometryWorkerProcessDescendantFaultTest,
+    ::testing::Values(
+        DescendantFaultCase {"Deadline", 56, 58, 1500, false},
+        DescendantFaultCase {"Cancellation", 57, 59, 120000, true}),
+    [](const ::testing::TestParamInfo<DescendantFaultCase>& info) {
+        return std::string(info.param.label);
+    });
+
+TEST_F(GeometryWorkerProcessDescendantFaultTest, FaultJobIdMismatchDoesNotInjectDescendant)
+{
+    ASSERT_FALSE(findFreeCADCmd().isEmpty()) << "FreeCADCmd required";
+    ASSERT_FALSE(findGeometryWorkerPy().isEmpty()) << "GeometryWorker.py required";
+#if !defined(Q_OS_UNIX)
+    GTEST_SKIP() << "Descendant_hang fault seam is Unix-only";
+#else
+    long hashedId = 0;
+    auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+    ASSERT_TRUE(task);
+
+    App::GeometryJobSpec spec;
+    spec.id = 60;
+    spec.task = task;
+    spec.backend = App::GeometryBackend::FreeCADCmd;
+    spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+    const QString ws = _tempDir->path() + QStringLiteral("/mismatch_descendant_job");
+
+    // Pre-create a recognizable stale fault-descendant.json in the workspace
+    // to verify the worker removes it before processing a new request.
+    QDir().mkpath(ws);
+    {
+        const QString stalePath = ws + QStringLiteral("/fault-descendant.json");
+        QFile stale(stalePath);
+        ASSERT_TRUE(stale.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        stale.write("{\"type\":\"descendant_hang\",\"jobId\":\"999\","
+                    "\"workerPid\":1,\"descendantPid\":2,\"processGroupId\":1}");
+        stale.close();
+        ASSERT_TRUE(QFileInfo::exists(stalePath));
+    }
+
+    TestEnvironmentGuard env;
+    env.set("FCGEO_TEST_FAULT_MODE", QByteArray("descendant_hang"));
+    // Intentionally mismatched fault job ID (49, not 60).
+    env.set("FCGEO_TEST_FAULT_JOB_ID", QByteArray("49"));
+
+    Gui::GeometryWorkerProcess proc;
+    std::atomic<int> callbacks {0};
+    bool finished = false;
+    App::GeometryJobId callbackJobId = 0;
+    App::GeometryJobState terminal = App::GeometryJobState::Queued;
+    App::DetachedGeometryResult result;
+
+    QObject::connect(&proc,
+                     &Gui::GeometryWorkerProcess::jobFinished,
+                     &proc,
+                     [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                         const App::DetachedGeometryResult& res) {
+                         ++callbacks;
+                         finished = true;
+                         callbackJobId = jobId;
+                         terminal = state;
+                         result = res;
+                     });
+
+    ASSERT_TRUE(proc.startJob(spec, ws));
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop, &QEventLoop::quit);
+    timeout.start(180000);
+    if (!finished) {
+        loop.exec();
+    }
+
+    ASSERT_TRUE(finished);
+    EXPECT_EQ(callbacks.load(), 1);
+    EXPECT_EQ(callbackJobId, spec.id);
+    EXPECT_FALSE(proc.protocolFailed());
+    EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit);
+    EXPECT_TRUE(result.success);
+    ASSERT_FALSE(result.resultArchivePath.empty());
+
+    // No fault-descendant.json must remain for a job-ID mismatch — the stale
+    // record must have been removed, not merely left untouched.
+    EXPECT_FALSE(QFileInfo::exists(ws + QStringLiteral("/fault-descendant.json")))
+        << "stale fault-descendant.json must be removed by the worker";
+
+    Part::FrozenTopoShapeBundle recovered;
+    ASSERT_TRUE(Part::TopoShapeArchive::readArchive(result.resultArchivePath, recovered));
+    assertMappedBooleanRecovery(recovered, hashedId, 16);
+
+    QDir(ws).removeRecursively();
+#endif
 }
