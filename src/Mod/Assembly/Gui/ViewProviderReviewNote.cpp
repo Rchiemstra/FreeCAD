@@ -56,6 +56,7 @@
 #include <Gui/Document.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Tools.h>
+#include <Gui/TranslateManip.h>
 #include <Gui/Utilities.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>

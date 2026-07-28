@@ -35,7 +35,7 @@ def _msg(text, end="\n"):
     App.Console.PrintMessage(text + end)
 
 
-class TestCore(unittest.TestCase):
+class AssemblyTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """setUpClass()...
@@ -86,6 +86,8 @@ class TestCore(unittest.TestCase):
         """
         App.closeDocument(self.doc.Name)
 
+
+class TestCore(AssemblyTestBase):
     def test_create_assembly(self):
         """Create an assembly."""
         operation = "Create Assembly Object"
