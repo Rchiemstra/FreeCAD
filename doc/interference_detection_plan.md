@@ -31,7 +31,7 @@ The implementation now includes:
 - quantity-aware GUI controls, exception-safe GUI transactions, filtered result
   rows, and immutable worker-produced preview geometry in world coordinates.
 
-Final isolated validation stamp `20260728T145157Z-12989` passed:
+Final isolated validation stamp `20260728T150348Z-13175` passed:
 `InterferenceDetectionTest.*` **23/23**; `InterferenceScanTest.*` **107/107**
 plus `AssemblyObjectTest.*` **1/1**; offscreen
 `TaskInterferenceCheckTest.*` **45/45**; mandatory Xvfb/xcb lifecycle/preview

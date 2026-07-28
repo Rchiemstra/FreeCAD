@@ -19,11 +19,11 @@ closure, preview cleanup, GUI transactions, and worker/test-hook ownership.
 
 | Commit | Milestone |
 |--------|-----------|
-| `7ddcdec448` | Recover worker exceptions as visible incomplete results (Task 7A baseline) |
-| `4836d32566` | Recover synchronous preparation and launch failures |
-| `528bfb9e4b` | Align table data and 3D preview with the governing face hit |
-| `52234de1cf` | Share exclusion eligibility and affected-pair counting |
-| `fd3f04ad60` | Make detached exclusion identity opt-in and make GUI mutations exception-safe |
+| `d4ab733f91` | Recover worker exceptions as visible incomplete results (Task 7A baseline) |
+| `4b146a4357` | Recover synchronous preparation and launch failures |
+| `bd681071aa` | Align table data and 3D preview with the governing face hit |
+| `b454f6c5dd` | Share exclusion eligibility and affected-pair counting |
+| `716ab4ec70` | Make detached exclusion identity opt-in and make GUI mutations exception-safe |
 
 Earlier feature commits provide selection-aware scope, placed/nested occurrence
 collection, collapsed and expanded link-array handling, face-specific
@@ -38,7 +38,7 @@ only to accelerate the build.
 
 | Evidence | Result |
 |----------|--------|
-| Stamp | `20260728T145157Z-12989` |
+| Stamp | `20260728T150348Z-13175` |
 | Build | `BUILD_EXIT:0` |
 | Part | `InterferenceDetectionTest.*`: **23/23 passed** |
 | Assembly | `InterferenceScanTest.*`: **107/107 passed**; `AssemblyObjectTest.*`: **1/1 passed**; **108/108 total** |
