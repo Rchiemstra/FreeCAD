@@ -52,6 +52,10 @@ public:
     App::PropertyVector LeaderEnd;
     /// Billboard half-extents (x=halfW, y=halfH) used for leader attachment, relative to TextPosition.
     App::PropertyVector LeaderHalfExtent;
+    /// Fixed box width in mm (0 = auto-size to text). Overrides the auto billboard half-width.
+    App::PropertyFloat BoxWidth;
+    /// Fixed box height in mm (0 = auto-size to text). Overrides the auto billboard half-height.
+    App::PropertyFloat BoxHeight;
 
     QIcon getIcon() const override;
     bool doubleClicked() override;
@@ -63,6 +67,9 @@ public:
 
     /// Half-extents of the label box in annotation-local billboard units.
     void labelHalfExtents(double& halfW, double& halfH) const;
+
+    /// True when the user set a fixed box width/height (mm) from the View panel.
+    bool hasFixedSize() const;
 
     /// Map a perimeter parameter in [0,1] to a UV offset from the text/image center.
     static Base::Vector3d perimeterOffset(double port, double halfW, double halfH);

@@ -127,6 +127,21 @@ ViewProviderReviewNote::ViewProviderReviewNote()
     );
     LeaderHalfExtent.setStatus(App::Property::Output, true);
     LeaderHalfExtent.setStatus(App::Property::ReadOnly, true);
+
+    ADD_PROPERTY_TYPE(
+        BoxWidth,
+        (0.0),
+        "ReviewNote",
+        App::Prop_None,
+        "Fixed box width in mm (0 = auto-size to text)"
+    );
+    ADD_PROPERTY_TYPE(
+        BoxHeight,
+        (0.0),
+        "ReviewNote",
+        App::Prop_None,
+        "Fixed box height in mm (0 = auto-size to text)"
+    );
 }
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
@@ -293,6 +308,17 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
     if (applyingVisualFrame) {
         return;
     }
+    if (prop == &BoxWidth || prop == &BoxHeight) {
+        // Re-render the image at the new fixed/auto size; drawImage ends with refreshLeader.
+        if (auto* note = getObject<Assembly::ReviewNote>()) {
+            drawImage(note->LabelText.getValues());
+        }
+        else {
+            ensureCameraSensor();
+            scheduleVisualFrame();
+        }
+        return;
+    }
     if (prop == &FontSize || prop == &FontName || prop == &Frame || prop == &Justification
         || prop == &TextColor || prop == &BackgroundColor) {
         ensureCameraSensor();
@@ -387,6 +413,15 @@ void ViewProviderReviewNote::flushScheduledVisualFrame()
 {
     visualFrameScheduled = false;
     visualFrameDirty = false;
+    // A fixed-mm box must be re-rasterized when the zoom changes (mm -> px), otherwise
+    // the visible box drifts away from the leader border. drawImage ends with
+    // refreshLeader, so the leader stays glued to the new box in one atomic pass.
+    if (hasFixedSize()) {
+        if (auto* note = getObject<Assembly::ReviewNote>()) {
+            drawImage(note->LabelText.getValues());
+            return;
+        }
+    }
     refreshLeader();
 }
 
@@ -420,6 +455,11 @@ void ViewProviderReviewNote::labelHalfExtents(double& halfW, double& halfH) cons
     );
     halfW = frame.halfW;
     halfH = frame.halfH;
+}
+
+bool ViewProviderReviewNote::hasFixedSize() const
+{
+    return BoxWidth.getValue() > 0.0 || BoxHeight.getValue() > 0.0;
 }
 
 Base::Vector3d ViewProviderReviewNote::perimeterOffset(double port, double halfW, double halfH)
@@ -693,6 +733,14 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
             frame.up = Base::Vector3d(0.0, 1.0, 0.0);
         }
     }
+    // User-set fixed box size (mm) grows the leader-attachment border so the leader
+    // stays glued to the (padded) visible box. Never shrink below the auto size.
+    if (BoxWidth.getValue() > 0.0) {
+        frame.halfW = std::max(frame.halfW, BoxWidth.getValue() / 2.0);
+    }
+    if (BoxHeight.getValue() > 0.0) {
+        frame.halfH = std::max(frame.halfH, BoxHeight.getValue() / 2.0);
+    }
     return frame;
 }
 
@@ -727,9 +775,35 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         qlines << line;
     }
 
+    // Auto box size (pixels) fits the text. A user-set BoxWidth/BoxHeight (mm) grows
+    // the box to at least that mm size at the current zoom (mm -> px via worldPerPixel),
+    // so the visible box and the leader-attachment border stay glued.
+    int autoW = contentW + 2 * TextPadding;
+    int autoH = contentH + 2 * TextPadding;
+    int targetW = autoW;
+    int targetH = autoH;
+    if (hasFixedSize()) {
+        double worldPerPixel = 0.0;
+        if (auto* note = getObject<Assembly::ReviewNote>()) {
+            const Base::Vector3d textWorld = textPositionWorld(note->TextPosition.getValue());
+            screenWorldPerPixel(textWorld, worldPerPixel);
+        }
+        if (worldPerPixel > 1e-12) {
+            if (BoxWidth.getValue() > 0.0) {
+                targetW = std::max<int>(targetW, static_cast<int>(std::ceil(BoxWidth.getValue() / worldPerPixel)));
+            }
+            if (BoxHeight.getValue() > 0.0) {
+                targetH = std::max<int>(targetH, static_cast<int>(std::ceil(BoxHeight.getValue() / worldPerPixel)));
+            }
+        }
+    }
+    // Center the text block inside the (possibly larger) box.
+    const int xOffset = (targetW - autoW) / 2;
+    const int yOffset = (targetH - autoH) / 2;
+
     QImage image(
-        contentW + 2 * TextPadding,
-        contentH + 2 * TextPadding,
+        targetW,
+        targetH,
         QImage::Format_ARGB32_Premultiplied
     );
     image.fill(0x00000000);
@@ -754,7 +828,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
     painter.setFont(font);
     for (int row = 0; row < qlines.size(); ++row) {
         const QString& line = qlines.at(row);
-        const int baselineY = TextPadding + fm.ascent() + row * fm.height();
+        const int baselineY = TextPadding + yOffset + fm.ascent() + row * fm.height();
         int x = TextPadding;
         if (Justification.getValue() == 1) {
             x = TextPadding + contentW - Gui::QtTools::horizontalAdvance(fm, line);
@@ -762,6 +836,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         else if (Justification.getValue() == 2) {
             x = TextPadding + (contentW - Gui::QtTools::horizontalAdvance(fm, line)) / 2;
         }
+        x += xOffset;
 
         const std::string utf8 = line.toUtf8().constData();
         std::sregex_iterator it(utf8.begin(), utf8.end(), refRegex());
@@ -786,7 +861,7 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
             painter.drawLine(x, baselineY + 1, x + linkW, baselineY + 1);
 
             RefHit hit;
-            hit.pixelRect = QRect(x, TextPadding + row * fm.height(), linkW, fm.height());
+            hit.pixelRect = QRect(x, TextPadding + yOffset + row * fm.height(), linkW, fm.height());
             const std::string full = match[1].str();
             const auto dot = full.find('.');
             if (dot == std::string::npos) {

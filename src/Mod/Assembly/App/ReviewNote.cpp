@@ -574,7 +574,7 @@ void ReviewNote::onDocumentRestored()
     App::AnnotationLabel::onDocumentRestored();
     ensureOwnerObserver(getOwnerPart());
     refreshBasePosition();
-    updateLabelFromText();
+    updateReviewNoteLabel();
 }
 
 void ReviewNote::onChanged(const App::Property* prop)
@@ -589,7 +589,7 @@ void ReviewNote::onChanged(const App::Property* prop)
     }
 
     if (prop == &LabelText) {
-        updateLabelFromText();
+        updateReviewNoteLabel();
     }
     else if (prop == &Target || prop == &LocalAnchor || prop == &JointSide) {
         if (!isRestoring() && !refreshing) {
@@ -631,19 +631,82 @@ void ReviewNote::onChanged(const App::Property* prop)
     App::AnnotationLabel::onChanged(prop);
 }
 
-void ReviewNote::updateLabelFromText()
+void ReviewNote::updateReviewNoteLabel()
 {
     if (updatingLabel || isRestoring()) {
         return;
     }
-    std::string line = firstTextLine();
-    if (Label.getStrValue() == line) {
+    const std::string label = computeReviewNoteLabel();
+    if (label.empty()) {
+        return;
+    }
+    if (Label.getStrValue() == label) {
         return;
     }
     Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> guard(App::NoTouch, this);
     updatingLabel = true;
-    Label.setValue(line);
+    Label.setValue(label);
     updatingLabel = false;
+}
+
+std::string ReviewNote::computeReviewNoteLabel() const
+{
+    auto* group = getGroup();
+    if (!group) {
+        // Not yet parented in a ReviewNoteGroup: keep a stable placeholder so the
+        // tree never shows the note text as its name. renumberGroup() will assign
+        // the real review_note_N once the note joins a group.
+        return "review_note";
+    }
+    const auto& children = group->Group.getValues();
+    int index = 0;
+    for (auto* child : children) {
+        if (!child || !child->isDerivedFrom(ReviewNote::getClassTypeId())) {
+            continue;
+        }
+        ++index;
+        if (child == this) {
+            return "review_note_" + std::to_string(index);
+        }
+    }
+    // Present in the group's inlist but not in its Group property yet (mid-add):
+    // fall back to the running count + 1 so the label is still unique and stable.
+    return "review_note_" + std::to_string(index + 1);
+}
+
+void ReviewNote::renumberGroup(ReviewNoteGroup* group)
+{
+    if (!group || !group->isAttachedToDocument()) {
+        return;
+    }
+    // Skip during file restore: each note's onDocumentRestored already re-labels
+    // itself, and renumbering half-restored children can fight the restore order.
+    if (group->isRestoring()) {
+        return;
+    }
+    auto* doc = group->getDocument();
+    if (doc && doc->isPerformingTransaction()) {
+        return;
+    }
+    const auto& children = group->Group.getValues();
+    int index = 0;
+    for (auto* child : children) {
+        auto* note = freecad_cast<ReviewNote*>(child);
+        if (!note) {
+            continue;
+        }
+        ++index;
+        const std::string label = "review_note_" + std::to_string(index);
+        if (note->isRestoring() || note->Label.getStrValue() == label) {
+            continue;
+        }
+        Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> guard(
+            App::NoTouch, note
+        );
+        note->updatingLabel = true;
+        note->Label.setValue(label);
+        note->updatingLabel = false;
+    }
 }
 
 std::string ReviewNote::firstTextLine() const

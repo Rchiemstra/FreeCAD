@@ -32,6 +32,7 @@
 #include "Groups.h"
 #include "BomGroupPy.h"
 #include "JointGroupPy.h"
+#include "ReviewNote.h"
 #include "ReviewNoteGroupPy.h"
 #include "SimulationGroupPy.h"
 #include "SnapshotGroupPy.h"
@@ -131,4 +132,14 @@ PyObject* ReviewNoteGroup::getPyObject()
         PythonObject = Py::Object(new ReviewNoteGroupPy(this), true);
     }
     return Py::new_reference_to(PythonObject);
+}
+
+void ReviewNoteGroup::onChanged(const App::Property* prop)
+{
+    App::DocumentObjectGroup::onChanged(prop);
+    // Re-label child notes (review_note_N) whenever the group membership or order
+    // changes. Skip during restore; each note re-labels itself on document restore.
+    if (!isRestoring() && prop && prop == &Group) {
+        ReviewNote::renumberGroup(this);
+    }
 }

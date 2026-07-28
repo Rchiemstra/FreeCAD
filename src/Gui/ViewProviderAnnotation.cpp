@@ -429,11 +429,16 @@ void ViewProviderAnnotationLabel::attach(App::DocumentObject* f)
     linePickStyle->style = SoPickStyle::UNPICKABLE;
     lineVisual->addChild(linePickStyle);
     lineVisual->addChild(pColor);
-    lineVisual->addChild(pCoords);
-    lineVisual->addChild(new SoLineSet());
+    // Draw style must precede the geometry it governs: lineWidth for the leader
+    // line (SoLineSet) and pointSize for the endpoint dot (SoPointSet). Placing it
+    // after SoLineSet left the leader with no thickness (Coin default ~1px, often
+    // invisible against the model), so the leader "had no thickness".
     auto ds = new SoDrawStyle();
+    ds->lineWidth.setValue(2.0f);
     ds->pointSize.setValue(3.0f);
     lineVisual->addChild(ds);
+    lineVisual->addChild(pCoords);
+    lineVisual->addChild(new SoLineSet());
     lineVisual->addChild(new SoPointSet());
     linesep->addChild(lineVisual);
 
