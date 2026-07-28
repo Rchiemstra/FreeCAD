@@ -6,7 +6,45 @@ Add an on-demand `Assembly_CheckInterference` command for the active assembly. I
 
 The clearance threshold will be saved per assembly; zero means contacts and penetrations are still violations. Exclusions will apply to source-definition pairs, so they affect every occurrence of those two sources. No automatic recompute-time checking, generic Part command, persistent result objects, or Python detection API will be added in v1.
 
-This plan is based solely on static repository inspection. No files, running FreeCAD instance, or MCP server were changed or accessed.
+The original plan was based solely on static repository inspection; the
+historical review section below records that pre-completion context.
+
+## Current implementation status — 2026-07-28
+
+**Verdict: PASS for the planned on-demand feature and its mandatory focused
+validation.**
+
+The implementation now includes:
+
+- selection-aware all-component and exact selected-pair scope with top-level
+  occurrence identity, world placement, visibility, nested containers, rigid
+  and flexible links, Bodies, and collapsed/expanded link arrays;
+- fail-closed Part classification plus face-specific spreadsheet clearances,
+  canonical face-path validation, deterministic governing-hit selection, and
+  row/comment provenance;
+- persistent unordered source exclusions with atomic insertion, undo/redo,
+  same-document deletion and cross-document FCStd identity, opt-in detached
+  link behavior, and shared affected-component-pair counting;
+- generation-aware asynchronous scans with cooperative cancellation, accepted
+  zero-row results, stale monitoring, worker and synchronous preparation
+  exception conversion, obsolete-result rejection, and document-close cleanup;
+- quantity-aware GUI controls, exception-safe GUI transactions, filtered result
+  rows, and immutable worker-produced preview geometry in world coordinates.
+
+Final isolated validation stamp `20260728T145157Z-12989` passed:
+`InterferenceDetectionTest.*` **23/23**; `InterferenceScanTest.*` **107/107**
+plus `AssemblyObjectTest.*` **1/1**; offscreen
+`TaskInterferenceCheckTest.*` **45/45**; mandatory Xvfb/xcb lifecycle/preview
+lane **8/8**. Markers were `BUILD_EXIT:0`,
+`ASSEMBLYGUI_PLATFORM_GUARD_OK platform=xcb`, and
+`ALL_MANDATORY_PASSED`. The offscreen negative xcb control was also rejected
+as expected.
+
+Deferred scope remains continuous/live checking, multi-assembly batch
+workflows, broader indexing for very dense assemblies, and cancellation inside
+an OCCT call already in progress. Invalid or tolerance-sensitive geometry
+continues to fail closed as Invalid or Inconclusive rather than being reported
+Clear.
 
 ## Interfaces and Detection
 
@@ -185,9 +223,11 @@ One `InterferencePairResult` per component/leaf pair:
 - Immutable per-leaf face cache in the worker.
 - Oversized face-pair candidate sets: deterministic cap + visible diagnostic (never silent omit).
 
-## Implementation review — 2026-07-24 (fresh follow-up)
+## Historical implementation review — 2026-07-24 (fresh follow-up)
 
-**Verdict: FAIL.**
+**Historical verdict at that snapshot: FAIL.** The current status and final
+validation are recorded above; this section is retained as an audit trail of
+the defects that drove the subsequent fixes.
 
 The implementation was reviewed read-only against this plan and `doc/PROGRESS.md`. No implementation file was changed, no commit was created, and no running MCP server, FreeCAD instance, or existing container was inspected, reused, stopped, restarted, or reconfigured. All executable validation ran only in new `--rm --network=none` Docker containers with no ports and a read-only host source mount.
 
@@ -248,7 +288,7 @@ The implementation’s own validation remains insufficient and not fully reprodu
 - Inaccurate/incomplete: the validator description overstates provenance, `PROGRESS.md:48` documents a persistent incremental volume rather than the script’s current default, and `PROGRESS.md:61` claims `dd` plus non-zero verification that the script does not implement.
 - The admitted lack of GUI/Xvfb tests and most remaining matrix items (`PROGRESS.md:57-60`) is accurate, but the issue list omits the confirmed false negatives and GUI defects above.
 
-## Next steps for the coding agent
+## Historical next steps from the 2026-07-24 audit
 
 1. Add Xvfb tests for placed/nested previews, linked-document changes or closure, dialog teardown, and unchanged source appearance.
 2. Test exclusion identity through an FCStd cross-document round trip and same-document endpoint deletion.
