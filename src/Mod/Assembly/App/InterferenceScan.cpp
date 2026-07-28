@@ -9,6 +9,7 @@
 # include <algorithm>
 # include <cmath>
 # include <limits>
+# include <iterator>
 # include <set>
 # include <sstream>
 # include <unordered_set>
@@ -18,6 +19,7 @@
 #include "AssemblyLink.h"
 #include "AssemblyObject.h"
 #include "Groups.h"
+#include "ReviewNote.h"
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -1022,7 +1024,10 @@ std::pair<App::DocumentObject*, App::DocumentObject*> canonicalPair(
     return {second, first};
 }
 
-std::vector<InterferenceExclusionRule> rulesFromProperty(const App::PropertyXLinkSubList& prop)
+std::vector<InterferenceExclusionRule> rulesFromProperty(
+    const App::PropertyXLinkSubList& prop,
+    const App::PropertyStringList* reasons
+)
 {
     std::vector<InterferenceExclusionRule> rules;
     const auto& links = prop.getSubListValues();
@@ -1056,6 +1061,36 @@ std::vector<InterferenceExclusionRule> rulesFromProperty(const App::PropertyXLin
             || !rule.second->isAttachedToDocument()) {
             rule.valid = false;
             rule.diagnostic = "Unresolved or deleted exclusion endpoint";
+        }
+        if (reasons && i / 2 < reasons->getValues().size()) {
+            rule.reasonIdentity = reasons->getValues()[i / 2];
+            const auto sep = rule.reasonIdentity.find('#');
+            if (sep != std::string::npos) {
+                // Reasons are constrained to the host document. Resolve there
+                // first so Save As/reopen document-name changes do not orphan
+                // otherwise valid note identities; keep the prefix as provenance.
+                App::Document* doc = nullptr;
+                if (auto* owner =
+                        freecad_cast<App::DocumentObject*>(reasons->getContainer())) {
+                    doc = owner->getDocument();
+                }
+                if (doc) {
+                    rule.reason = freecad_cast<ReviewNote*>(
+                        doc->getObject(rule.reasonIdentity.substr(sep + 1).c_str())
+                    );
+                }
+                if (!rule.reason) {
+                    if (auto* storedDoc = App::GetApplication().getDocument(
+                            rule.reasonIdentity.substr(0, sep).c_str()
+                        )) {
+                        rule.reason = freecad_cast<ReviewNote*>(
+                            storedDoc->getObject(
+                                rule.reasonIdentity.substr(sep + 1).c_str()
+                            )
+                        );
+                    }
+                }
+            }
         }
         rules.push_back(rule);
     }
@@ -1139,6 +1174,28 @@ App::PropertyXLinkSubList* ensureExclusionProperty(App::DocumentObject* host)
     ));
 }
 
+App::PropertyStringList* ensureExclusionReasonProperty(App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<AssemblyObject*>(host)) {
+        return &assembly->InterferenceExclusionReasons;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    if (auto* existing = dynamic_cast<App::PropertyStringList*>(
+            host->getPropertyByName("InterferenceExclusionReasons")
+        )) {
+        return existing;
+    }
+    return dynamic_cast<App::PropertyStringList*>(host->addDynamicProperty(
+        "App::PropertyStringList",
+        "InterferenceExclusionReasons",
+        "Interference",
+        "Stable ReviewNote identities aligned one-to-one with interference exclusions",
+        App::Prop_Hidden | App::Prop_NoRecompute
+    ));
+}
+
 const App::PropertyLength* clearanceProperty(const App::DocumentObject* host)
 {
     if (auto* assembly = freecad_cast<const AssemblyObject*>(host)) {
@@ -1161,6 +1218,37 @@ const App::PropertyXLinkSubList* exclusionProperty(const App::DocumentObject* ho
     return dynamic_cast<const App::PropertyXLinkSubList*>(
         host->getPropertyByName("InterferenceExcludedSources")
     );
+}
+
+const App::PropertyStringList* exclusionReasonProperty(const App::DocumentObject* host)
+{
+    if (auto* assembly = freecad_cast<const AssemblyObject*>(host)) {
+        return &assembly->InterferenceExclusionReasons;
+    }
+    if (!host) {
+        return nullptr;
+    }
+    return dynamic_cast<const App::PropertyStringList*>(
+        host->getPropertyByName("InterferenceExclusionReasons")
+    );
+}
+
+void setExclusionReasonAt(
+    App::PropertyStringList& prop,
+    std::size_t index,
+    std::size_t ruleCount,
+    ReviewNote* reason
+)
+{
+    auto values = prop.getValues();
+    if (values.size() < ruleCount) {
+        values.resize(ruleCount);
+    }
+    if (index >= values.size()) {
+        throw Base::RuntimeError("Exclusion reason index out of range");
+    }
+    values[index] = sourceIdentity(reason);
+    prop.setValues(values);
 }
 
 }  // namespace
@@ -4495,7 +4583,7 @@ InterferenceClearanceLookup lookupInterferenceClearance(
 std::vector<InterferenceExclusionRule> getInterferenceExclusionRules(const App::DocumentObject* host)
 {
     if (const auto* prop = exclusionProperty(host)) {
-        return rulesFromProperty(*prop);
+        return rulesFromProperty(*prop, exclusionReasonProperty(host));
     }
     return {};
 }
@@ -4528,13 +4616,48 @@ void addInterferenceExclusion(
     App::DocumentObject* second
 )
 {
-    if (!first || !second) {
-        throw Base::ValueError("Exclusion endpoints must be valid document objects");
+    addInterferenceExclusionWithReason(host, first, second, nullptr);
+}
+
+void addInterferenceExclusionWithReason(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second,
+    ReviewNote* reason
+)
+{
+    if (!host || !first || !second) {
+        throw Base::ValueError("Exclusion host and endpoints must be valid document objects");
     }
     if (!first->isAttachedToDocument() || !second->isAttachedToDocument()) {
         throw Base::ValueError("Exclusion endpoints must be attached to a document");
     }
-    if (hasInterferenceExclusion(host, first, second)) {
+    if (reason
+        && (!reason->isAttachedToDocument() || reason->getDocument() != host->getDocument()
+            || reason->getOwnerPart() != host)) {
+        throw Base::ValueError("Exclusion reason must be a ReviewNote owned by the host");
+    }
+
+    const auto want = canonicalPair(first, second);
+    const auto rules = getInterferenceExclusionRules(host);
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const auto& rule = rules[i];
+        if (!rule.valid || !rule.first || !rule.second) {
+            continue;
+        }
+        const auto have = canonicalPair(rule.first, rule.second);
+        if (have.first != want.first || have.second != want.second) {
+            continue;
+        }
+        // Adding the same pair remains idempotent. A supplied note may enrich an
+        // existing rule, but an unreasoned add never clears its current reason.
+        if (reason) {
+            auto* reasons = ensureExclusionReasonProperty(host);
+            if (!reasons) {
+                throw Base::ValueError("Could not create interference exclusion reason property");
+            }
+            setExclusionReasonAt(*reasons, i, rules.size(), reason);
+        }
         return;
     }
     auto* prop = ensureExclusionProperty(host);
@@ -4542,7 +4665,23 @@ void addInterferenceExclusion(
         throw Base::ValueError("Interference exclusion host must be an App::Part root");
     }
     auto canon = canonicalPair(first, second);
+    const std::size_t oldRuleCount = static_cast<std::size_t>(prop->getSize() / 2);
     prop->appendPair(canon.first, canon.second);
+    if (reason || exclusionReasonProperty(host)) {
+        try {
+            auto* reasons = ensureExclusionReasonProperty(host);
+            if (!reasons) {
+                throw Base::ValueError(
+                    "Could not create interference exclusion reason property"
+                );
+            }
+            setExclusionReasonAt(*reasons, oldRuleCount, oldRuleCount + 1, reason);
+        }
+        catch (...) {
+            prop->removeIndices(static_cast<int>(oldRuleCount * 2), 2);
+            throw;
+        }
+    }
 }
 
 void removeInterferenceExclusionAt(App::DocumentObject* host, std::size_t ruleIndex)
@@ -4560,6 +4699,12 @@ void removeInterferenceExclusionAt(App::DocumentObject* host, std::size_t ruleIn
         throw Base::ValueError("Exclusion rule index out of range");
     }
     prop->removeIndices(static_cast<int>(ruleIndex * 2), 2);
+    if (auto* reasons = const_cast<App::PropertyStringList*>(exclusionReasonProperty(host));
+        reasons && ruleIndex < static_cast<std::size_t>(reasons->getSize())) {
+        auto values = reasons->getValues();
+        values.erase(values.begin() + static_cast<std::ptrdiff_t>(ruleIndex));
+        reasons->setValues(values);
+    }
 }
 
 void removeInterferenceExclusion(

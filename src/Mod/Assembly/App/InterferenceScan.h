@@ -27,6 +27,7 @@ namespace Assembly
 {
 
 class AssemblyObject;
+class ReviewNote;
 
 struct InterferenceExclusionRule
 {
@@ -35,6 +36,10 @@ struct InterferenceExclusionRule
     /** Stable identity even when the endpoint DocumentObject* is unresolved. */
     std::string firstIdentity;
     std::string secondIdentity;
+    /** Optional ReviewNote explaining why this source pair is excluded. */
+    ReviewNote* reason = nullptr;
+    /** Stable string identity retained when the reason note is missing/deleted. */
+    std::string reasonIdentity;
     bool valid = true;
     std::string diagnostic;
 };
@@ -340,6 +345,12 @@ AssemblyExport void addInterferenceExclusion(
     App::DocumentObject* host,
     App::DocumentObject* first,
     App::DocumentObject* second
+);
+AssemblyExport void addInterferenceExclusionWithReason(
+    App::DocumentObject* host,
+    App::DocumentObject* first,
+    App::DocumentObject* second,
+    ReviewNote* reason
 );
 AssemblyExport void removeInterferenceExclusion(
     App::DocumentObject* host,

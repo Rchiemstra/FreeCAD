@@ -36,6 +36,7 @@
 #include <App/Property.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
 #include <Gui/Application.h>
@@ -50,6 +51,7 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
+#include <Mod/Assembly/App/ReviewNote.h>
 #include <Mod/Part/App/TopoShape.h>
 #include <Mod/Part/Gui/ViewProviderExt.h>
 #include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
@@ -57,6 +59,7 @@
 #include <QComboBox>
 #include <QFutureWatcher>
 #include <QMetaObject>
+#include <QStringList>
 #include <QThread>
 #include <QUnhandledException>
 #include <cmath>
@@ -232,6 +235,29 @@ private:
     bool released = false;
 };
 
+class ScopedBoolFlag
+{
+public:
+    explicit ScopedBoolFlag(bool& flagIn)
+        : flag(flagIn)
+        , previous(flagIn)
+    {
+        flag = true;
+    }
+
+    ~ScopedBoolFlag()
+    {
+        flag = previous;
+    }
+
+    ScopedBoolFlag(const ScopedBoolFlag&) = delete;
+    ScopedBoolFlag& operator=(const ScopedBoolFlag&) = delete;
+
+private:
+    bool& flag;
+    bool previous;
+};
+
 template<typename Mutation>
 bool executeInterferenceMutation(
     Gui::Document* guiDocument,
@@ -310,6 +336,63 @@ bool hasValidClosestPoints(const Part::InterferenceResult& detection)
             || detection.kind == Part::InterferenceKind::ClearanceViolation
             || detection.kind == Part::InterferenceKind::Contact
             || detection.kind == Part::InterferenceKind::Penetration);
+}
+
+QString pythonStringLiteral(const QString& value)
+{
+    QString escaped;
+    escaped.reserve(value.size() + 2);
+    escaped += QLatin1Char('\'');
+    for (const QChar ch : value) {
+        switch (ch.unicode()) {
+            case '\\':
+                escaped += QStringLiteral("\\\\");
+                break;
+            case '\'':
+                escaped += QStringLiteral("\\'");
+                break;
+            case '\n':
+                escaped += QStringLiteral("\\n");
+                break;
+            case '\r':
+                escaped += QStringLiteral("\\r");
+                break;
+            case '\t':
+                escaped += QStringLiteral("\\t");
+                break;
+            default:
+                escaped += ch;
+                break;
+        }
+    }
+    escaped += QLatin1Char('\'');
+    return escaped;
+}
+
+QString pythonStringListLiteral(const QStringList& values)
+{
+    QStringList literals;
+    literals.reserve(values.size());
+    for (const auto& value : values) {
+        literals.push_back(pythonStringLiteral(value));
+    }
+    return QStringLiteral("[%1]").arg(literals.join(QStringLiteral(", ")));
+}
+
+bool containsCompactLinkArrayIndex(const std::string& occurrencePath)
+{
+    const auto parts = QString::fromStdString(occurrencePath).split(
+        QLatin1Char('.'),
+        Qt::SkipEmptyParts
+    );
+    for (const auto& part : parts) {
+        bool isInteger = false;
+        (void)part.toInt(&isInteger);
+        if (isInteger) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -403,25 +486,40 @@ void TaskInterferenceCheck::setupUi()
     clearanceSheetCombo->setMinimumWidth(160);
     clearanceSheetCombo->setToolTip(
         tr("Optional spreadsheet of face-specific design clearances. "
+           "Required headers: Face (or FaceA) and Tolerance (or Clearance). "
+           "Optional headers: Enabled, FaceB, and Comment. "
            "Assembly clearance is the fallback when no * default row is present.")
     );
     sheetRow->addWidget(clearanceSheetCombo, 1);
+    createClearanceSheetButton = new QPushButton(tr("Create clearance sheet…"), this);
+    createClearanceSheetButton->setToolTip(
+        tr("Create and link a dedicated clearance spreadsheet with the required headers. "
+           "No clearance rule or value is added.")
+    );
+    sheetRow->addWidget(createClearanceSheetButton);
+    layout->addLayout(sheetRow);
     clearanceSheetLabel = new QLabel(tr("Fallback spin when no * row."), this);
     clearanceSheetLabel->setWordWrap(true);
-    sheetRow->addWidget(clearanceSheetLabel, 1);
-    layout->addLayout(sheetRow);
+    clearanceSheetLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(clearanceSheetLabel);
 
     auto* buttons = new QHBoxLayout;
     runButton = new QPushButton(tr("Run"), this);
     cancelButton = new QPushButton(tr("Cancel scan"), this);
     cancelButton->setEnabled(false);
     selectPairButton = new QPushButton(tr("Select pair"), this);
+    createReviewNoteButton = new QPushButton(tr("Create review note"), this);
+    createReviewNoteButton->setToolTip(
+        tr("Create a ReviewNote anchored at this result. The picked face is stored as "
+           "stable metadata, not as a fragile FaceN link.")
+    );
     excludeButton = new QPushButton(tr("Exclude source pair"), this);
     restoreButton = new QPushButton(tr("Restore source pair"), this);
     manageExclusionsButton = new QPushButton(tr("Manage exclusions…"), this);
     buttons->addWidget(runButton);
     buttons->addWidget(cancelButton);
     buttons->addWidget(selectPairButton);
+    buttons->addWidget(createReviewNoteButton);
     buttons->addWidget(excludeButton);
     buttons->addWidget(restoreButton);
     buttons->addWidget(manageExclusionsButton);
@@ -451,6 +549,12 @@ void TaskInterferenceCheck::setupUi()
     connect(runButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onRun);
     connect(cancelButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onCancelScan);
     connect(selectPairButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onSelectPair);
+    connect(
+        createReviewNoteButton,
+        &QPushButton::clicked,
+        this,
+        &TaskInterferenceCheck::onCreateReviewNote
+    );
     connect(excludeButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onExcludePair);
     connect(restoreButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onRestorePair);
     connect(manageExclusionsButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onManageExclusions);
@@ -482,6 +586,12 @@ void TaskInterferenceCheck::setupUi()
         qOverload<int>(&QComboBox::currentIndexChanged),
         this,
         &TaskInterferenceCheck::onClearanceSheetChanged
+    );
+    connect(
+        createClearanceSheetButton,
+        &QPushButton::clicked,
+        this,
+        &TaskInterferenceCheck::onCreateClearanceSheet
     );
     connect(
         resultsTable,
@@ -517,6 +627,11 @@ bool TaskInterferenceCheck::isSelectPairEnabled() const
 bool TaskInterferenceCheck::isExcludePairEnabled() const
 {
     return excludeButton && excludeButton->isEnabled();
+}
+
+bool TaskInterferenceCheck::isCreateReviewNoteEnabled() const
+{
+    return createReviewNoteButton && createReviewNoteButton->isEnabled();
 }
 
 std::size_t TaskInterferenceCheck::testAffectedViolationPairCount() const
@@ -611,6 +726,16 @@ void TaskInterferenceCheck::testRefreshClearanceSheetUi()
     refreshClearanceSheetUi();
 }
 
+bool TaskInterferenceCheck::testCreateClearanceSheet(QString* errorOut)
+{
+    QString errorMessage;
+    const bool created = createClearanceSheet(errorMessage);
+    if (errorOut) {
+        *errorOut = errorMessage;
+    }
+    return created;
+}
+
 void TaskInterferenceCheck::testSetShowClearFaceChecks(bool enabled)
 {
     if (showClearFaceChecks) {
@@ -685,10 +810,43 @@ void TaskInterferenceCheck::refreshClearanceSheetUi()
     clearanceSheetCombo->setCurrentIndex(selectIndex);
     if (clearanceSheetLabel) {
         if (linked && linked->getNameInDocument()) {
-            clearanceSheetLabel->setText(
-                tr("Using sheet \"%1\". Assembly clearance is fallback without a * row.")
-                    .arg(QString::fromUtf8(linked->Label.getValue()))
-            );
+            const auto table = Assembly::parseInterferenceClearanceSheet(linked, host);
+            if (table.invalidRuleCount > 0) {
+                QString diagnostic;
+                if (!table.diagnostics.empty()) {
+                    diagnostic = QString::fromStdString(table.diagnostics.front());
+                }
+                else {
+                    for (const auto& rule : table.rules) {
+                        if (!rule.valid && !rule.diagnostic.empty()) {
+                            diagnostic = QString::fromStdString(rule.diagnostic);
+                            break;
+                        }
+                    }
+                }
+                if (diagnostic.isEmpty()) {
+                    diagnostic = tr("The sheet contains invalid enabled clearance rules");
+                }
+                clearanceSheetLabel->setText(
+                    tr("Invalid clearance sheet \"%1\": %2. Choose (none) or create a "
+                       "dedicated clearance sheet.")
+                        .arg(QString::fromUtf8(linked->Label.getValue()), diagnostic)
+                );
+            }
+            else if (table.rules.empty()) {
+                clearanceSheetLabel->setText(
+                    tr("Clearance sheet \"%1\" is ready. Add rules as needed; assembly "
+                       "clearance remains the fallback.")
+                        .arg(QString::fromUtf8(linked->Label.getValue()))
+                );
+            }
+            else {
+                clearanceSheetLabel->setText(
+                    tr("Using valid sheet \"%1\". Assembly clearance is fallback without a "
+                       "* row.")
+                        .arg(QString::fromUtf8(linked->Label.getValue()))
+                );
+            }
         }
         else {
             clearanceSheetLabel->setText(
@@ -734,6 +892,55 @@ void TaskInterferenceCheck::onClearanceSheetChanged(int index)
     refreshClearanceSheetUi();
     if (hasResults()) {
         markStale("Clearance sheet changed");
+    }
+}
+
+bool TaskInterferenceCheck::createClearanceSheet(QString& errorMessage)
+{
+    if (!host || !host->getDocument()) {
+        errorMessage = tr("No active document is available.");
+        return false;
+    }
+
+    App::Document* document = host->getDocument();
+    Spreadsheet::Sheet* createdSheet = nullptr;
+    if (!executeInterferenceMutation(
+            hostGuiDocument(),
+            document,
+            "Create interference clearance sheet",
+            [this, document, &createdSheet]() {
+                const std::string objectName =
+                    document->getUniqueObjectName("InterferenceClearance");
+                createdSheet = document->addObject<Spreadsheet::Sheet>(objectName.c_str());
+                if (!createdSheet) {
+                    throw Base::RuntimeError("Could not create clearance spreadsheet");
+                }
+                createdSheet->Label.setValue("Interference Clearance");
+                createdSheet->setCell("A1", "Enabled");
+                createdSheet->setCell("B1", "Face");
+                createdSheet->setCell("C1", "FaceB");
+                createdSheet->setCell("D1", "Tolerance");
+                createdSheet->setCell("E1", "Comment");
+                Assembly::setInterferenceClearanceSheet(host, createdSheet);
+            },
+            errorMessage
+        )) {
+        return false;
+    }
+
+    connectDocumentSignals();
+    refreshClearanceSheetUi();
+    if (hasResults()) {
+        markStale("Clearance sheet created");
+    }
+    return true;
+}
+
+void TaskInterferenceCheck::onCreateClearanceSheet()
+{
+    QString errorMessage;
+    if (!createClearanceSheet(errorMessage)) {
+        QMessageBox::warning(this, tr("Create clearance sheet"), errorMessage);
     }
 }
 
@@ -1080,6 +1287,55 @@ App::DocumentObject* TaskInterferenceCheck::resolveSourceId(const std::string& s
     return doc->getObject(sourceId.substr(sep + 1).c_str());
 }
 
+Assembly::ReviewNote* TaskInterferenceCheck::matchingInterferenceReasonNote(
+    const std::string& sourceIdA,
+    const std::string& sourceIdB
+) const
+{
+    if (!host || !host->getDocument() || sourceIdA.empty() || sourceIdB.empty()) {
+        return nullptr;
+    }
+    auto identityMatchesCurrent = [this](
+                                      const std::string& stored,
+                                      const std::string& current
+                                  ) {
+        if (stored == current) {
+            return true;
+        }
+        auto* currentObj = resolveSourceId(current);
+        if (!currentObj || !currentObj->getDocument()) {
+            return false;
+        }
+        auto* storedObj = resolveSourceId(stored);
+        if (!storedObj) {
+            const auto sep = stored.find('#');
+            if (sep != std::string::npos) {
+                // A Save As/reopen can change Document::Name while preserving
+                // object internal names. Resolve the stale suffix in the current
+                // source document before declaring the metadata unmatched.
+                storedObj =
+                    currentObj->getDocument()->getObject(stored.substr(sep + 1).c_str());
+            }
+        }
+        return storedObj == currentObj;
+    };
+    auto notes = host->getDocument()->getObjectsOfType(Assembly::ReviewNote::getClassTypeId());
+    for (auto it = notes.rbegin(); it != notes.rend(); ++it) {
+        auto* note = freecad_cast<Assembly::ReviewNote*>(*it);
+        if (!note || note->getOwnerPart() != host || note->Resolved.getValue()) {
+            continue;
+        }
+        const std::string a = note->InterferenceSourceA.getValue();
+        const std::string b = note->InterferenceSourceB.getValue();
+        if ((identityMatchesCurrent(a, sourceIdA) && identityMatchesCurrent(b, sourceIdB))
+            || (identityMatchesCurrent(a, sourceIdB)
+                && identityMatchesCurrent(b, sourceIdA))) {
+            return note;
+        }
+    }
+    return nullptr;
+}
+
 void TaskInterferenceCheck::attachPreviewToViewer()
 {
     detachPreviewFromViewer();
@@ -1178,6 +1434,9 @@ void TaskInterferenceCheck::setScanControlsEnabled(bool enabled)
     if (clearanceSheetCombo) {
         clearanceSheetCombo->setEnabled(enabled);
     }
+    if (createClearanceSheetButton) {
+        createClearanceSheetButton->setEnabled(enabled && host && host->getDocument());
+    }
     if (includeHiddenCheck) {
         // Selected-pair mode keeps Include hidden disabled even while idle.
         includeHiddenCheck->setEnabled(enabled && !selectedComponentsMode);
@@ -1213,6 +1472,9 @@ void TaskInterferenceCheck::updateRowActionState()
     }
     if (selectPairButton) {
         selectPairButton->setEnabled(hasPair);
+    }
+    if (createReviewNoteButton) {
+        createReviewNoteButton->setEnabled(hasPair);
     }
     if (excludeButton) {
         excludeButton->setEnabled(canExclude);
@@ -1343,12 +1605,16 @@ void TaskInterferenceCheck::connectDocumentSignals()
         ));
         connections.push_back(doc->signalChangedObject.connect(
             [this](const App::DocumentObject& obj, const App::Property& prop) {
-                if (!host || !isResultAffectingProperty(prop)) {
+                if (!host || suppressResultInvalidation || !isResultAffectingProperty(prop)) {
                     return;
                 }
                 if (&obj == host || watchedDocuments.count(obj.getDocument()) != 0) {
                     const char* name = prop.getName();
-                    if (name && std::strcmp(name, "InterferenceClearanceSheet") == 0) {
+                    const bool clearanceSheetLinkChanged =
+                        name && std::strcmp(name, "InterferenceClearanceSheet") == 0;
+                    const bool clearanceSheetContentsChanged =
+                        prop.getContainer() == Assembly::getInterferenceClearanceSheet(host);
+                    if (clearanceSheetLinkChanged || clearanceSheetContentsChanged) {
                         refreshClearanceSheetUi();
                     }
                     markStale("Object change");
@@ -1356,7 +1622,7 @@ void TaskInterferenceCheck::connectDocumentSignals()
             }
         ));
         connections.push_back(doc->signalDeletedObject.connect([this](const App::DocumentObject& obj) {
-            if (!host) {
+            if (!host || suppressResultInvalidation) {
                 return;
             }
             if (&obj == host) {
@@ -2409,11 +2675,154 @@ void TaskInterferenceCheck::onSelectPair()
     }
 }
 
+bool TaskInterferenceCheck::createReviewNoteForCurrentRow(QString& errorMessage)
+{
+    const int pairIndex = currentPairIndex();
+    if (pairIndex < 0 || !host || !host->isAttachedToDocument() || !host->getDocument()) {
+        errorMessage = tr("No interference result pair is selected.");
+        return false;
+    }
+
+    const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
+    if (pair.leafIndexA >= lastResult.leaves.size()
+        || pair.leafIndexB >= lastResult.leaves.size()) {
+        errorMessage = tr("The selected interference result is incomplete.");
+        return false;
+    }
+    const auto& leafA = lastResult.leaves[pair.leafIndexA];
+    const auto& leafB = lastResult.leaves[pair.leafIndexB];
+    const bool firstIsCompactArray =
+        containsCompactLinkArrayIndex(leafA.occurrenceSubName);
+    const bool secondIsCompactArray =
+        containsCompactLinkArrayIndex(leafB.occurrenceSubName);
+    if (firstIsCompactArray && secondIsCompactArray) {
+        errorMessage = tr(
+            "Both result endpoints are compact Link array elements, whose per-element "
+            "ReviewNote anchors are not supported yet. Expand one array element first."
+        );
+        return false;
+    }
+    const bool anchorOnSecond = firstIsCompactArray;
+    const auto& anchorLeaf = anchorOnSecond ? leafB : leafA;
+
+    std::string anchorPath;
+    Base::Vector3d anchorPoint = anchorLeaf.worldBoundBox.IsValid()
+        ? anchorLeaf.worldBoundBox.GetCenter()
+        : Base::Vector3d();
+    Part::InterferenceKind classification = pair.detection.kind;
+    double displayedDistance = pair.detection.minimumDistance;
+    double appliedClearance = 0.0;
+
+    const int faceHitIndex = currentFaceHitIndex();
+    if (faceHitIndex >= 0) {
+        const auto& hit = pair.faceHits[static_cast<std::size_t>(faceHitIndex)];
+        anchorPath = anchorOnSecond ? hit.facePathB : hit.facePathA;
+        classification = hit.classification;
+        displayedDistance = hit.distance;
+        appliedClearance = hit.appliedClearance;
+        if (hit.closestPointsValid) {
+            anchorPoint = anchorOnSecond ? hit.pointOnSecond : hit.pointOnFirst;
+        }
+    }
+    else {
+        InterferenceComponentOccurrence occurrence;
+        if (resolveInterferenceComponentOccurrence(
+                host,
+                host,
+                anchorLeaf.occurrenceSubName,
+                occurrence
+            )) {
+            anchorPath = occurrence.occurrencePrefix;
+        }
+        else {
+            anchorPath = anchorLeaf.occurrenceSubName;
+        }
+        if (hasValidClosestPoints(pair.detection)) {
+            anchorPoint =
+                anchorOnSecond ? pair.detection.pointOnSecond : pair.detection.pointOnFirst;
+        }
+    }
+
+    QStringList lines {
+        tr("Interference: %1").arg(kindText(classification, false)),
+        tr("%1 ↔ %2")
+            .arg(QString::fromStdString(leafA.displayPath))
+            .arg(QString::fromStdString(leafB.displayPath)),
+    };
+    if (classification == Part::InterferenceKind::Penetration
+        && std::isfinite(pair.detection.overlapVolume)
+        && pair.detection.overlapVolume > 0.0) {
+        lines.push_back(
+            tr("Overlap volume: %1").arg(formatVolume(pair.detection.overlapVolume))
+        );
+    }
+    else if (displayedDistance >= 0.0 && std::isfinite(displayedDistance)) {
+        QString detail = tr("Minimum clearance: %1").arg(formatLength(displayedDistance));
+        if (faceHitIndex >= 0) {
+            detail += tr(" (required %1)").arg(formatLength(appliedClearance));
+        }
+        lines.push_back(detail);
+    }
+
+    const QString command =
+        QStringLiteral(
+            "import CommandReviewNote\n"
+            "__interference_note = CommandReviewNote.create_interference_review_note("
+            "%1, %2, %3, (%4, %5, %6), %7, %8, %9, %10)\n"
+            "if __interference_note is None:\n"
+            "    raise RuntimeError('ReviewNote creation returned no object')\n"
+            "del __interference_note\n"
+        )
+            .arg(pythonStringLiteral(QString::fromUtf8(host->getDocument()->getName())))
+            .arg(pythonStringLiteral(QString::fromUtf8(host->getNameInDocument())))
+            .arg(pythonStringLiteral(QString::fromStdString(anchorPath)))
+            .arg(QString::number(anchorPoint.x, 'g', 17))
+            .arg(QString::number(anchorPoint.y, 'g', 17))
+            .arg(QString::number(anchorPoint.z, 'g', 17))
+            .arg(pythonStringLiteral(QString::fromStdString(anchorLeaf.sourceId)))
+            .arg(pythonStringLiteral(QString::fromStdString(leafA.sourceId)))
+            .arg(pythonStringLiteral(QString::fromStdString(leafB.sourceId)))
+            .arg(pythonStringListLiteral(lines));
+
+    try {
+        ScopedBoolFlag suppressSignals(suppressResultInvalidation);
+        Base::Interpreter().runString(command.toUtf8().constData());
+        errorMessage.clear();
+        return true;
+    }
+    catch (const Base::Exception& e) {
+        errorMessage = QString::fromUtf8(e.what());
+    }
+    catch (const std::exception& e) {
+        errorMessage = QString::fromUtf8(e.what());
+    }
+    catch (...) {
+        errorMessage = tr("Unknown error while creating the ReviewNote.");
+    }
+    return false;
+}
+
+void TaskInterferenceCheck::onCreateReviewNote()
+{
+    QString errorMessage;
+    if (!createReviewNoteForCurrentRow(errorMessage)) {
+        QMessageBox::warning(this, tr("Create review note"), errorMessage);
+        return;
+    }
+    if (statusLabel) {
+        statusLabel->setText(
+            tr("Review note created. Excluding this source pair will record it as the reason.")
+        );
+    }
+    updateRowActionState();
+}
+
 ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
     Gui::Document* guiDocument,
     App::DocumentObject* host,
     App::DocumentObject* sourceA,
-    App::DocumentObject* sourceB
+    App::DocumentObject* sourceB,
+    Assembly::ReviewNote* reason
 )
 {
     ExcludePairCommandResult result;
@@ -2431,8 +2840,18 @@ ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
         guiDocument,
         host->getDocument(),
         "Exclude interference source pair",
-        [host, sourceA, sourceB]() {
-            Assembly::addInterferenceExclusion(host, sourceA, sourceB);
+        [host, sourceA, sourceB, reason]() {
+            if (reason) {
+                Assembly::addInterferenceExclusionWithReason(
+                    host,
+                    sourceA,
+                    sourceB,
+                    reason
+                );
+            }
+            else {
+                Assembly::addInterferenceExclusion(host, sourceA, sourceB);
+            }
         },
         result.errorMessage
     );
@@ -2475,12 +2894,29 @@ bool TaskInterferenceCheck::testExecuteExcludePairForSelectedRow(
         }
         return false;
     }
-    const auto result =
-        tryExcludeInterferencePairInCommand(guiDocument, host, sourceA, sourceB);
+    const auto& idA = lastResult.leaves[pair.leafIndexA].sourceId;
+    const auto& idB = lastResult.leaves[pair.leafIndexB].sourceId;
+    const auto result = tryExcludeInterferencePairInCommand(
+        guiDocument,
+        host,
+        sourceA,
+        sourceB,
+        matchingInterferenceReasonNote(idA, idB)
+    );
     if (errorOut) {
         *errorOut = result.errorMessage;
     }
     return result.success;
+}
+
+bool TaskInterferenceCheck::testCreateReviewNoteForSelectedRow(QString* errorOut)
+{
+    QString errorMessage;
+    const bool created = createReviewNoteForCurrentRow(errorMessage);
+    if (errorOut) {
+        *errorOut = errorMessage;
+    }
+    return created;
 }
 
 void TaskInterferenceCheck::onExcludePair()
@@ -2503,15 +2939,22 @@ void TaskInterferenceCheck::onExcludePair()
         idA,
         idB
     );
+    auto* reason = matchingInterferenceReasonNote(idA, idB);
+    const QString reasonText = reason
+        ? tr("\nReason: %1 [%2]")
+              .arg(QString::fromUtf8(reason->Label.getValue()))
+              .arg(QString::fromUtf8(reason->getNameInDocument()))
+        : tr("\nReason: none (create a review note first to link one)");
 
     const auto answer = QMessageBox::question(
         this,
         tr("Exclude source pair"),
         tr("Exclude sources '%1' and '%2' for all occurrences?\nThis currently affects %3 "
-           "violation row(s).")
+           "violation row(s).%4")
             .arg(QString::fromUtf8(sourceA->Label.getValue()))
             .arg(QString::fromUtf8(sourceB->Label.getValue()))
             .arg(static_cast<qulonglong>(affected))
+            .arg(reasonText)
     );
     if (answer != QMessageBox::Yes) {
         return;
@@ -2522,7 +2965,8 @@ void TaskInterferenceCheck::onExcludePair()
         guiDocument,
         host,
         sourceA,
-        sourceB
+        sourceB,
+        reason
     );
     if (!commandResult.success) {
         if (!commandResult.errorMessage.isEmpty()) {
@@ -2580,9 +3024,13 @@ void TaskInterferenceCheck::onManageExclusions()
         dialog
     ));
 
-    auto* table = new QTableWidget(0, 4, dialog);
+    auto* table = new QTableWidget(0, 5, dialog);
     table->setHorizontalHeaderLabels(
-        {tr("Status"), tr("Source A"), tr("Source B"), tr("Affected violations")}
+        {tr("Status"),
+         tr("Source A"),
+         tr("Source B"),
+         tr("Reason"),
+         tr("Affected violations")}
     );
     table->horizontalHeader()->setStretchLastSection(true);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -2640,7 +3088,18 @@ void TaskInterferenceCheck::onManageExclusions()
             table->setItem(row, 0, statusItem);
             table->setItem(row, 1, new QTableWidgetItem(labelOf(rule, true)));
             table->setItem(row, 2, new QTableWidgetItem(labelOf(rule, false)));
-            table->setItem(row, 3, new QTableWidgetItem(QString::number(affected)));
+            QString reasonText;
+            if (rule.reason && rule.reason->isAttachedToDocument()) {
+                reasonText = tr("%1 [%2]")
+                                 .arg(QString::fromUtf8(rule.reason->Label.getValue()))
+                                 .arg(QString::fromUtf8(rule.reason->getNameInDocument()));
+            }
+            else if (!rule.reasonIdentity.empty()) {
+                reasonText =
+                    tr("<missing: %1>").arg(QString::fromStdString(rule.reasonIdentity));
+            }
+            table->setItem(row, 3, new QTableWidgetItem(reasonText));
+            table->setItem(row, 4, new QTableWidgetItem(QString::number(affected)));
         }
     };
     fillTable();

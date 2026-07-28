@@ -32,8 +32,10 @@
 #include <Base/Placement.h>
 #include <Mod/Assembly/App/AssemblyLink.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
+#include <Mod/Assembly/App/Groups.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/App/InterferenceScanSession.h>
+#include <Mod/Assembly/App/ReviewNote.h>
 #include <Mod/Part/App/FeaturePartBox.h>
 #include <Mod/PartDesign/App/Body.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
@@ -259,6 +261,71 @@ TEST_F(InterferenceScanTest, clearanceAndExclusionPropertiesPersistBasics)
 
     _assembly->removeInterferenceExclusion(a, b);
     EXPECT_FALSE(_assembly->hasInterferenceExclusion(a, b));
+}
+
+TEST_F(InterferenceScanTest, exclusionReasonsStayAlignedAndUseStableNoteIdentity)
+{
+    auto* a = _doc->addObject<App::DocumentObject>("App::Feature", "ReasonSourceA");
+    auto* b = _doc->addObject<App::DocumentObject>("App::Feature", "ReasonSourceB");
+    auto* c = _doc->addObject<App::DocumentObject>("App::Feature", "ReasonSourceC");
+    auto* d = _doc->addObject<App::DocumentObject>("App::Feature", "ReasonSourceD");
+
+    auto* group = _doc->addObject<Assembly::ReviewNoteGroup>("ReasonNotes");
+    ASSERT_NE(group, nullptr);
+    _assembly->addObject(group);
+    auto* note = _doc->addObject<Assembly::ReviewNote>("InterferenceReason");
+    ASSERT_NE(note, nullptr);
+    group->addObject(note);
+    auto* replacement = _doc->addObject<Assembly::ReviewNote>("ReplacementReason");
+    ASSERT_NE(replacement, nullptr);
+    group->addObject(replacement);
+
+    Assembly::addInterferenceExclusionWithReason(_assembly, a, b, note);
+    Assembly::addInterferenceExclusion(_assembly, c, d);
+
+    auto* reasons = dynamic_cast<App::PropertyStringList*>(
+        _assembly->getPropertyByName("InterferenceExclusionReasons")
+    );
+    ASSERT_NE(reasons, nullptr);
+    ASSERT_EQ(reasons->getValues().size(), 2u);
+    const std::string noteIdentity = objectSourceId(note);
+    EXPECT_EQ(reasons->getValues()[0], noteIdentity);
+    EXPECT_TRUE(reasons->getValues()[1].empty());
+
+    auto rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 2u);
+    EXPECT_EQ(rules[0].reason, note);
+    EXPECT_EQ(rules[0].reasonIdentity, noteIdentity);
+    EXPECT_EQ(rules[1].reason, nullptr);
+
+    // Idempotently enriching the existing pair replaces only its reason.
+    Assembly::addInterferenceExclusionWithReason(_assembly, b, a, replacement);
+    rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 2u);
+    EXPECT_EQ(rules[0].reason, replacement);
+    EXPECT_EQ(rules[0].reasonIdentity, objectSourceId(replacement));
+
+    // Deleting the note cannot create a stale link: only its identity string remains.
+    const std::string replacementIdentity = objectSourceId(replacement);
+    _doc->removeObject(replacement->getNameInDocument());
+    rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 2u);
+    EXPECT_EQ(rules[0].reason, nullptr);
+    EXPECT_EQ(rules[0].reasonIdentity, replacementIdentity);
+    EXPECT_EQ(
+        dynamic_cast<App::PropertyLinkBase*>(
+            _assembly->getPropertyByName("InterferenceExclusionReasons")
+        ),
+        nullptr
+    );
+
+    // Removing rule zero removes reason zero; the unreasoned second rule shifts with it.
+    Assembly::removeInterferenceExclusionAt(_assembly, 0);
+    rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_TRUE(rules[0].reasonIdentity.empty());
+    ASSERT_EQ(reasons->getValues().size(), 1u);
+    EXPECT_TRUE(reasons->getValues()[0].empty());
 }
 
 TEST_F(InterferenceScanTest, exclusionPairInsertionAddsEndpointsPreservesOrderAndUndoRedo)
@@ -3447,7 +3514,12 @@ TEST_F(InterferenceScanTest, missingAndDuplicateHeadersAreDiagnostic)
     _doc->recompute();
     auto missing = Assembly::parseInterferenceClearanceSheet(sheet, nullptr);
     EXPECT_EQ(missing.invalidRuleCount, 1);
+    EXPECT_TRUE(missing.rules.empty());
     ASSERT_FALSE(missing.diagnostics.empty());
+    EXPECT_EQ(
+        missing.diagnostics.front(),
+        "Clearance spreadsheet requires Face and Tolerance header columns"
+    );
 
     auto* sheet2 = _doc->addObject<Spreadsheet::Sheet>("DupHdr");
     sheet2->setCell(App::CellAddress(0, 0), "Face");

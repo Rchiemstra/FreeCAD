@@ -200,7 +200,12 @@ class TestReviewNotes(unittest.TestCase):
         self.assertEqual(list(note.LabelText), ["First line", "Second line"])
         self.assertEqual(note.Label, "First line")
         self.assertEqual(note.Target[0], self.box)
-        self.assertEqual(list(note.Target[1]), ["Face6"])
+        self.assertEqual(list(note.Target[1]), [])
+        self.assertEqual(note.AnchorSubelement, "Face6")
+        self.assertEqual(
+            note.AnchorSourceIdentity,
+            "{}#{}".format(self.doc.Name, self.box.Name),
+        )
         self.assertTrue(note.LocalAnchor.isEqual(App.Vector(5, 10, 30), 1e-6))
         self.assertFalse(note.Resolved)
 
@@ -211,6 +216,66 @@ class TestReviewNotes(unittest.TestCase):
 
         # BasePosition follows local anchor at identity placement.
         self.assertTrue(note.BasePosition.isEqual(App.Vector(5, 10, 30), 1e-6), operation)
+
+    def test_new_face_note_uses_stable_object_anchor(self):
+        operation = "New face notes keep FaceN out of link dependencies"
+        _msg("  Test '{}'".format(operation))
+
+        feature = self.assembly.newObject("Part::Feature", "ChangingFeature")
+        feature.Shape = Part.makeBox(10, 20, 30)
+        self.doc.recompute()
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly,
+            feature,
+            "Face6",
+            picked_point=App.Vector(5, 10, 30),
+        )
+        self.assertIsNotNone(data, operation)
+        note = CommandReviewNote.create_review_note(
+            self.assembly, data, ["Stable face"], open_transaction=False
+        )
+        self.assertEqual(note.Target[0], feature, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, "Face6", operation)
+        self.assertFalse(note.isAttachmentBroken(), operation)
+
+        # Face6 disappears, but it is only provenance; the occurrence-local
+        # anchor remains valid and strict link validation sees no FaceN.
+        before = App.Vector(note.BasePosition)
+        feature.Shape = Part.makeSphere(5)
+        note.refreshBasePosition()
+        self.assertFalse(note.isAttachmentBroken(), operation)
+        self.assertFalse(note.AttachmentBroken, operation)
+        self.assertTrue(note.BasePosition.isEqual(before, 1e-6), operation)
+
+    def test_create_review_note_from_interference_result(self):
+        operation = "Interference result creates source-paired stable ReviewNote"
+        _msg("  Test '{}'".format(operation))
+
+        source_a = "{}#{}".format(self.doc.Name, self.box.Name)
+        source_b = "{}#OtherSource".format(self.doc.Name)
+        note = CommandReviewNote.create_interference_review_note(
+            self.doc.Name,
+            self.assembly.Name,
+            "Box.Face6",
+            (5, 10, 30),
+            source_a,
+            source_a,
+            source_b,
+            ["Interference: Clearance", "Box ↔ Other"],
+        )
+        self.assertIsNotNone(note, operation)
+        self.assertEqual(note.Target[0], self.box, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, "Face6", operation)
+        self.assertEqual(note.AnchorSourceIdentity, source_a, operation)
+        self.assertEqual(note.InterferenceSourceA, source_a, operation)
+        self.assertEqual(note.InterferenceSourceB, source_b, operation)
+        self.assertEqual(
+            list(note.LabelText),
+            ["Interference: Clearance", "Box ↔ Other"],
+            operation,
+        )
 
     def test_attachment_under_translation_and_rotation(self):
         operation = "Attachment under translation and rotation"
@@ -461,7 +526,9 @@ class TestReviewNotes(unittest.TestCase):
             note = notes[0]
             self.assertEqual(list(note.LabelText), ["Persist", "Line2"])
             self.assertEqual(note.Target[0].Name, "Box")
-            self.assertEqual(list(note.Target[1]), ["Face6"])
+            self.assertEqual(list(note.Target[1]), [])
+            self.assertEqual(note.AnchorSubelement, "Face6")
+            self.assertTrue(note.AnchorSourceIdentity.endswith("#Box"))
             self.assertTrue(note.LocalAnchor.isEqual(App.Vector(5, 10, 30), 1e-6))
             self.assertTrue(note.TextPosition.isEqual(App.Vector(12, 13, 14), 1e-6))
             self.assertTrue(note.Resolved)
@@ -1140,6 +1207,14 @@ class TestReviewNotes(unittest.TestCase):
         self.assertEqual(len(targets), 1, operation)
         self.assertEqual(targets[0]["joint_side"], "Reference2", operation)
         self.assertEqual(targets[0]["sub_list"], ["Main"], operation)
+
+        note = CommandReviewNote.create_review_note(
+            self.assembly, targets[0], ["Joint Main"], open_transaction=False
+        )
+        self.assertIsNotNone(note, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, "Main", operation)
+        self.assertEqual(note.JointSide, "Reference2", operation)
 
         if App.GuiUp and joint.ViewObject and getattr(joint.ViewObject, "Proxy", None):
             proxy = joint.ViewObject.Proxy
@@ -3274,13 +3349,14 @@ class TestReviewNotesGui(unittest.TestCase):
         Gui.Selection.addSelection(self.assembly)
         self.assertEqual(list(task.target_data["sub_list"]), original_sub, operation)
 
-        # Apply creates the note on the original Face6 anchor.
+        # Apply keeps Face6 as non-link provenance on the original local anchor.
         task.edit.setPlainText("Modeless @Box.Face1 mention")
         task.clicked(QtWidgets.QDialogButtonBox.Apply)
         note = task.note
         self.assertIsNotNone(note, operation)
         note_name = note.Name
-        self.assertEqual(list(note.Target[1]), original_sub, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, ".".join(original_sub), operation)
         self.assertTrue(note.LocalAnchor.isEqual(original_anchor, 1e-9), operation)
         self.assertEqual(list(note.LabelText), ["Modeless @Box.Face1 mention"], operation)
 
@@ -3288,7 +3364,8 @@ class TestReviewNotesGui(unittest.TestCase):
         Gui.Selection.clearSelection()
         Gui.Selection.addSelection(self.doc.Name, self.assembly.Name, "Box2.Face6")
         self.assertTrue(task._anchor_still_frozen(), operation)
-        self.assertEqual(list(note.Target[1]), original_sub, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, ".".join(original_sub), operation)
 
         # Cancel discards the Apply (abort command).
         self.assertTrue(task.reject(), operation)
@@ -3398,7 +3475,8 @@ class TestReviewNotesGui(unittest.TestCase):
         self.assertTrue(task.accept(), operation)
         note = task.note
         self.assertIsNotNone(note, operation)
-        self.assertEqual(list(note.Target[1]), original_sub, operation)
+        self.assertEqual(list(note.Target[1]), [], operation)
+        self.assertEqual(note.AnchorSubelement, ".".join(original_sub), operation)
         self.assertTrue(note.LocalAnchor.isEqual(original_anchor, 1e-9), operation)
         joined = "\n".join(list(note.LabelText))
         self.assertIn("@" + expected_path, joined, operation)

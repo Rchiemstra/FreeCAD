@@ -65,7 +65,8 @@ AssemblyGuiExport ExcludePairCommandResult tryExcludeInterferencePairInCommand(
     Gui::Document* guiDocument,
     App::DocumentObject* host,
     App::DocumentObject* sourceA,
-    App::DocumentObject* sourceB
+    App::DocumentObject* sourceB,
+    Assembly::ReviewNote* reason = nullptr
 );
 
 /**
@@ -139,6 +140,7 @@ public:
     }
     bool isSelectPairEnabled() const;
     bool isExcludePairEnabled() const;
+    bool isCreateReviewNoteEnabled() const;
     std::size_t testAffectedViolationPairCount() const;
 
     /**
@@ -160,6 +162,7 @@ public:
     void testSetClearanceQuantity(const Base::Quantity& quantity);
     QString testClearanceSheetLabel() const;
     void testRefreshClearanceSheetUi();
+    bool testCreateClearanceSheet(QString* errorOut = nullptr);
     void testSetShowClearFaceChecks(bool enabled);
     bool testShowClearFaceChecks() const;
     void testSetShowExcluded(bool enabled);
@@ -186,6 +189,7 @@ public:
         Gui::Document* guiDocument,
         QString* errorOut = nullptr
     );
+    bool testCreateReviewNoteForSelectedRow(QString* errorOut = nullptr);
 
     /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
     void testEnsureDetachedPreviewRoot();
@@ -249,6 +253,7 @@ private Q_SLOTS:
     void onRun();
     void onCancelScan();
     void onSelectPair();
+    void onCreateReviewNote();
     void onExcludePair();
     void onRestorePair();
     void onManageExclusions();
@@ -268,10 +273,12 @@ private Q_SLOTS:
     ) const;
     void onSelectionChanged();
     void onClearanceSheetChanged(int index);
+    void onCreateClearanceSheet();
 
 private:
     void setupUi();
     void refreshClearanceSheetUi();
+    bool createClearanceSheet(QString& errorMessage);
     void refreshScanScope();
     void attachPreviewToViewer();
     /** Create previewRoot and add it to scene; optional viewer/view for live teardown hooks. */
@@ -297,6 +304,11 @@ private:
     Gui::View3DInventorViewer* viewer() const;
     std::vector<std::pair<std::string, std::string>> currentExclusionSourceIds() const;
     App::DocumentObject* resolveSourceId(const std::string& sourceId) const;
+    Assembly::ReviewNote* matchingInterferenceReasonNote(
+        const std::string& sourceIdA,
+        const std::string& sourceIdB
+    ) const;
+    bool createReviewNoteForCurrentRow(QString& errorMessage);
     int currentPairIndex() const;
     int currentFaceHitIndex() const;
     QString formatLength(double mm) const;
@@ -324,6 +336,7 @@ private:
     Assembly::InterferenceScanSession session;
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
     QComboBox* clearanceSheetCombo = nullptr;
+    QPushButton* createClearanceSheetButton = nullptr;
     QLabel* clearanceSheetLabel = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
     QCheckBox* showExcludedCheck = nullptr;
@@ -337,6 +350,7 @@ private:
     QPushButton* runButton = nullptr;
     QPushButton* cancelButton = nullptr;
     QPushButton* selectPairButton = nullptr;
+    QPushButton* createReviewNoteButton = nullptr;
     QPushButton* excludeButton = nullptr;
     QPushButton* restoreButton = nullptr;
     QPushButton* manageExclusionsButton = nullptr;
@@ -344,6 +358,12 @@ private:
     Assembly::InterferenceScanResult lastResult;
     /** True after the active scan generation finishes via finishScan() and is not cancelled. */
     bool hasAcceptedScanResult = false;
+    /**
+     * ReviewNote creation changes only annotation/group metadata. Its document
+     * signals are synchronous, so suppress result invalidation only for the
+     * duration of that known operation.
+     */
+    bool suppressResultInvalidation = false;
     SoSeparator* previewRoot = nullptr;
     SoGroup* attachedScene = nullptr;
     Gui::View3DInventorViewer* attachedViewer = nullptr;

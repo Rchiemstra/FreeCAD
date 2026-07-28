@@ -43,6 +43,7 @@
 #include <Inventor/nodes/SoSeparator.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
+#include <Mod/Assembly/App/ReviewNote.h>
 #include <Mod/Assembly/Gui/TaskInterferenceCheck.h>
 #include <Mod/Part/App/FeaturePartBox.h>
 #include <Mod/Part/App/InterferenceDetection.h>
@@ -50,6 +51,7 @@
 #include <Mod/Part/Gui/SoBrepFaceSet.h>
 #include <Mod/Part/Gui/SoBrepPointSet.h>
 #include <Mod/Part/Gui/SoFCShapeObject.h>
+#include <Mod/Spreadsheet/App/Cell.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
 #include <Mod/Part/Gui/ViewProviderPreviewExtension.h>
 #include <src/App/InitApplication.h>
@@ -110,6 +112,14 @@ Assembly::InterferenceScanResult makeViolationResultForObjects(
     result.leaves[1].sourceId =
         std::string(sourceB->getDocument()->getName()) + "#" + sourceB->getNameInDocument();
     return result;
+}
+
+App::DocumentObject* makeLightweightReviewTarget(App::Document* doc, const char* name)
+{
+    // The fixture initializes Coin without a MainWindow. Suppress a view
+    // provider for these synthetic anchors; only their App-side placement and
+    // ownership are relevant to this task-panel test.
+    return doc ? doc->addObject("Part::Feature", name, true, "None") : nullptr;
 }
 
 std::string exclusionPropertyXml(Assembly::AssemblyObject* assembly)
@@ -1136,6 +1146,118 @@ TEST_F(TaskInterferenceCheckTest, clearanceSheetChangeMarksResultsStale)
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("stale"), Qt::CaseInsensitive));
 }
 
+TEST_F(TaskInterferenceCheckTest, invalidClearanceSheetShowsRequiredHeaders)
+{
+    auto* sheet = _doc->addObject<Spreadsheet::Sheet>("Parameters");
+    ASSERT_NE(sheet, nullptr);
+    sheet->setCell("A1", "Parameter");
+    sheet->setCell("B1", "Value");
+    sheet->setCell("C1", "Unit");
+    sheet->setCell("D1", "Notes");
+    _assembly->setInterferenceClearanceSheet(sheet);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const QString status = task.testClearanceSheetLabel();
+    EXPECT_TRUE(status.contains(QStringLiteral("Invalid"), Qt::CaseInsensitive));
+    EXPECT_TRUE(status.contains(QStringLiteral("Face"), Qt::CaseInsensitive));
+    EXPECT_TRUE(status.contains(QStringLiteral("Tolerance"), Qt::CaseInsensitive));
+
+    sheet->setCell("A1", "Enabled");
+    sheet->setCell("B1", "Face");
+    sheet->setCell("C1", "FaceB");
+    sheet->setCell("D1", "Tolerance");
+    sheet->setCell("E1", "Comment");
+    EXPECT_TRUE(
+        task.testClearanceSheetLabel().contains(QStringLiteral("ready"), Qt::CaseInsensitive)
+    );
+
+    sheet->setCell("A2", "true");
+    sheet->setCell("B2", "MissingOccurrence.Face1");
+    sheet->setCell("D2", "0.1");
+    task.testRefreshClearanceSheetUi();
+    EXPECT_TRUE(
+        task.testClearanceSheetLabel().contains(QStringLiteral("Invalid"), Qt::CaseInsensitive)
+    );
+    EXPECT_TRUE(
+        task.testClearanceSheetLabel().contains(
+            QStringLiteral("MissingOccurrence"),
+            Qt::CaseInsensitive
+        )
+    );
+}
+
+TEST_F(TaskInterferenceCheckTest, openingPanelDoesNotCreatePropertiesOrAutoLinkSoleSheet)
+{
+    auto* plainRoot = _doc->addObject<App::Part>("PlainAssemblyRoot");
+    ASSERT_NE(plainRoot, nullptr);
+    auto* sheet = _doc->addObject<Spreadsheet::Sheet>("OnlySpreadsheet");
+    ASSERT_NE(sheet, nullptr);
+    sheet->setCell("A1", "Parameter");
+    sheet->setCell("B1", "Value");
+    _doc->recompute();
+    const bool touchedBefore = _doc->isTouched();
+
+    ASSERT_EQ(plainRoot->getPropertyByName("InterferenceClearance"), nullptr);
+    ASSERT_EQ(plainRoot->getPropertyByName("InterferenceClearanceSheet"), nullptr);
+    ASSERT_EQ(plainRoot->getPropertyByName("InterferenceExcludedSources"), nullptr);
+
+    AssemblyGui::TaskInterferenceCheck task(plainRoot);
+
+    EXPECT_EQ(plainRoot->getPropertyByName("InterferenceClearance"), nullptr);
+    EXPECT_EQ(plainRoot->getPropertyByName("InterferenceClearanceSheet"), nullptr);
+    EXPECT_EQ(plainRoot->getPropertyByName("InterferenceExcludedSources"), nullptr);
+    EXPECT_EQ(Assembly::getInterferenceClearanceSheet(plainRoot), nullptr);
+    EXPECT_EQ(_doc->isTouched(), touchedBefore);
+    EXPECT_TRUE(
+        task.testClearanceSheetLabel().contains(
+            QStringLiteral("No clearance sheet"),
+            Qt::CaseInsensitive
+        )
+    );
+}
+
+TEST_F(TaskInterferenceCheckTest, createClearanceSheetAddsHeadersAndLinksIt)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    QString error;
+    ASSERT_TRUE(task.testCreateClearanceSheet(&error)) << error.toStdString();
+    EXPECT_TRUE(error.isEmpty());
+
+    auto* sheet = freecad_cast<Spreadsheet::Sheet*>(
+        Assembly::getInterferenceClearanceSheet(_assembly)
+    );
+    ASSERT_NE(sheet, nullptr);
+    EXPECT_EQ(std::string(sheet->getNameInDocument()).rfind("InterferenceClearance", 0), 0);
+
+    const std::vector<std::pair<const char*, const char*>> expected {
+        {"A1", "Enabled"},
+        {"B1", "Face"},
+        {"C1", "FaceB"},
+        {"D1", "Tolerance"},
+        {"E1", "Comment"},
+    };
+    for (const auto& [address, expectedContent] : expected) {
+        const auto* cell = sheet->getCell(App::CellAddress(address));
+        ASSERT_NE(cell, nullptr) << address;
+        std::string content;
+        ASSERT_TRUE(cell->getStringContent(content)) << address;
+        EXPECT_EQ(content, std::string("'") + expectedContent) << address;
+    }
+    EXPECT_EQ(sheet->getCell(App::CellAddress("A2")), nullptr);
+
+    const auto table = Assembly::parseInterferenceClearanceSheet(sheet, _assembly);
+    EXPECT_EQ(table.invalidRuleCount, 0);
+    EXPECT_TRUE(table.rules.empty());
+    EXPECT_TRUE(
+        task.testClearanceSheetLabel().contains(QStringLiteral("ready"), Qt::CaseInsensitive)
+    );
+
+    const std::string sheetName = sheet->getNameInDocument();
+    _doc->undo();
+    EXPECT_EQ(Assembly::getInterferenceClearanceSheet(_assembly), nullptr);
+    EXPECT_EQ(_doc->getObject(sheetName.c_str()), nullptr);
+}
+
 TEST_F(TaskInterferenceCheckTest, completeZeroRowClearPairResultIsRetainedAndSummarized)
 {
     AssemblyGui::TaskInterferenceCheck task(_assembly);
@@ -1898,6 +2020,137 @@ TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperCommitsAndClearsPendin
     EXPECT_FALSE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
     _doc->redo();
     EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+}
+
+TEST_F(TaskInterferenceCheckTest, resultCreatesStableReviewNoteAndLinksExclusionReason)
+{
+    auto* sourceA = makeLightweightReviewTarget(_doc, "ReviewResultA");
+    auto* sourceB = makeLightweightReviewTarget(_doc, "ReviewResultB");
+    ASSERT_NE(sourceA, nullptr);
+    ASSERT_NE(sourceB, nullptr);
+    _assembly->addObject(sourceA);
+    _assembly->addObject(sourceB);
+    ASSERT_TRUE(_assembly->hasObject(sourceA, true));
+    ASSERT_TRUE(_assembly->hasObject(sourceB, true));
+
+    auto result = makeViolationResultForObjects(sourceA, sourceB);
+    result.leaves[0].occurrenceSubName = "ReviewResultA.";
+    result.leaves[0].displayPath = "ReviewResultA";
+    result.leaves[0].worldShape = makePlacedBox(10, 10, 10, 0, 0, 0);
+    result.leaves[0].worldBoundBox = Base::BoundBox3d(0, 0, 0, 10, 10, 10);
+    result.leaves[1].occurrenceSubName = "ReviewResultB.";
+    result.leaves[1].displayPath = "ReviewResultB";
+    result.leaves[1].worldShape = makePlacedBox(10, 10, 10, 5, 0, 0);
+    result.leaves[1].worldBoundBox = Base::BoundBox3d(5, 0, 0, 15, 10, 10);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    task.testSelectResultRow(0);
+    EXPECT_TRUE(task.isCreateReviewNoteEnabled());
+
+    QString error;
+    ASSERT_TRUE(task.testCreateReviewNoteForSelectedRow(&error)) << error.toStdString();
+    EXPECT_TRUE(error.isEmpty());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(task.isExcludePairEnabled());
+    EXPECT_TRUE(task.isCreateReviewNoteEnabled());
+    const auto notes = _doc->getObjectsOfType(Assembly::ReviewNote::getClassTypeId());
+    ASSERT_EQ(notes.size(), 1u);
+    auto* note = freecad_cast<Assembly::ReviewNote*>(notes.front());
+    ASSERT_NE(note, nullptr);
+    EXPECT_TRUE(note->Target.getSubValues().empty());
+    EXPECT_EQ(note->InterferenceSourceA.getValue(), result.leaves[0].sourceId);
+    EXPECT_EQ(note->InterferenceSourceB.getValue(), result.leaves[1].sourceId);
+
+    // Simulate Save As/reopen changing the document prefix in both metadata
+    // identities. Selected-row exclusion must still resolve the current objects.
+    note->InterferenceSourceA.setValue("oldDocument#ReviewResultA");
+    note->InterferenceSourceB.setValue("oldDocument#ReviewResultB");
+    Gui::Document* guiDoc = ensureGuiDocumentForTest(_doc);
+    ASSERT_NE(guiDoc, nullptr);
+    ASSERT_TRUE(task.testExecuteExcludePairForSelectedRow(guiDoc, &error))
+        << error.toStdString();
+    auto rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_EQ(rules.front().reason, note);
+    EXPECT_EQ(
+        rules.front().reasonIdentity,
+        std::string(_doc->getName()) + "#" + note->getNameInDocument()
+    );
+
+    // Stored reason provenance may also carry the pre-reopen document prefix.
+    auto* reasons = dynamic_cast<App::PropertyStringList*>(
+        _assembly->getPropertyByName("InterferenceExclusionReasons")
+    );
+    ASSERT_NE(reasons, nullptr);
+    reasons->setValues(
+        std::vector<std::string> {"oldDocument#" + std::string(note->getNameInDocument())}
+    );
+    rules = Assembly::getInterferenceExclusionRules(_assembly);
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_EQ(rules.front().reason, note);
+}
+
+TEST_F(TaskInterferenceCheckTest, compactLinkArrayResultExplainsUnsupportedReviewNoteAnchor)
+{
+    auto result = makeResult(1, "Array");
+    result.leaves[0].occurrenceSubName = "ArrayLink.0.";
+    result.leaves[0].displayPath = "ArrayLink.0";
+    result.leaves[0].worldBoundBox = Base::BoundBox3d(0, 0, 0, 10, 10, 10);
+    result.leaves[1].occurrenceSubName = "OtherArray.1.";
+    result.leaves[1].displayPath = "OtherArray.1";
+    result.leaves[1].worldBoundBox = Base::BoundBox3d(5, 0, 0, 15, 10, 10);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    task.testSelectResultRow(0);
+
+    QString error;
+    EXPECT_FALSE(task.testCreateReviewNoteForSelectedRow(&error));
+    EXPECT_TRUE(error.contains(QStringLiteral("compact Link array"), Qt::CaseInsensitive))
+        << error.toStdString();
+    EXPECT_TRUE(_doc->getObjectsOfType(Assembly::ReviewNote::getClassTypeId()).empty());
+}
+
+TEST_F(TaskInterferenceCheckTest, compactLinkArrayResultFallsBackToDurableSecondAnchor)
+{
+    auto* sourceA = makeLightweightReviewTarget(_doc, "ArraySource");
+    auto* sourceB = makeLightweightReviewTarget(_doc, "DurableAnchor");
+    ASSERT_NE(sourceA, nullptr);
+    ASSERT_NE(sourceB, nullptr);
+    _assembly->addObject(sourceA);
+    _assembly->addObject(sourceB);
+    ASSERT_TRUE(_assembly->hasObject(sourceA, true));
+    ASSERT_TRUE(_assembly->hasObject(sourceB, true));
+
+    auto result = makeViolationResultForObjects(sourceA, sourceB);
+    result.leaves[0].occurrenceSubName = "ArrayLink.0.";
+    result.leaves[0].displayPath = "ArrayLink.0";
+    result.leaves[0].worldBoundBox = Base::BoundBox3d(0, 0, 0, 10, 10, 10);
+    result.leaves[1].occurrenceSubName = "DurableAnchor.";
+    result.leaves[1].displayPath = "DurableAnchor";
+    result.leaves[1].worldBoundBox = Base::BoundBox3d(5, 0, 0, 15, 10, 10);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    task.testSelectResultRow(0);
+
+    QString error;
+    ASSERT_TRUE(task.testCreateReviewNoteForSelectedRow(&error)) << error.toStdString();
+    EXPECT_TRUE(error.isEmpty());
+    EXPECT_TRUE(task.hasResults());
+
+    const auto notes = _doc->getObjectsOfType(Assembly::ReviewNote::getClassTypeId());
+    ASSERT_EQ(notes.size(), 1u);
+    auto* note = freecad_cast<Assembly::ReviewNote*>(notes.front());
+    ASSERT_NE(note, nullptr);
+    EXPECT_EQ(note->Target.getValue(), sourceB);
+    EXPECT_TRUE(note->Target.getSubValues().empty());
+    EXPECT_EQ(note->AnchorSourceIdentity.getValue(), result.leaves[1].sourceId);
 }
 
 TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperAbortsOnUnsavedExternalInsertion)

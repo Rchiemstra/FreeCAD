@@ -133,6 +133,13 @@ AssemblyObject::AssemblyObject()
         (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
         "Alternating source-definition endpoints for excluded unordered pairs"
     );
+    ADD_PROPERTY_TYPE(
+        InterferenceExclusionReasons,
+        (std::vector<std::string> {}),
+        "Interference",
+        (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Stable ReviewNote identities aligned one-to-one with interference exclusions"
+    );
     // Exclusions are review records rather than dependency links. Opt into partial-link
     // persistence so deleted or temporarily closed endpoints keep enough identity to be
     // displayed and explicitly removed without changing ordinary XLink behavior.
@@ -2330,6 +2337,9 @@ void AssemblyObject::setInterferenceExclusions(
         throw Base::ValueError("Exclusion endpoints must form even pairs");
     }
     InterferenceExcludedSources.setValues(flat);
+    // A full source-pair replacement cannot infer review reasons. Clear the
+    // aligned metadata rather than accidentally assigning old reasons by index.
+    InterferenceExclusionReasons.setValues(std::vector<std::string> {});
 }
 
 void AssemblyObject::addInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second)

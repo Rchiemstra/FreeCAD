@@ -31,6 +31,7 @@
 #include <App/FeaturePython.h>
 #include <App/Part.h>
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
 
 #include <App/PropertyUnits.h>
 #include <App/PropertyLinks.h>
@@ -96,6 +97,8 @@ public:
     App::PropertyLink InterferenceClearanceSheet;
     /** Hidden alternating source-definition endpoints for excluded unordered pairs. */
     App::PropertyXLinkSubList InterferenceExcludedSources;
+    /** Stable ReviewNote identities aligned one-to-one with exclusion pairs. */
+    App::PropertyStringList InterferenceExclusionReasons;
 
     /** Minimum clearance used by interference checks (nonnegative length). */
     double getInterferenceClearance() const;
