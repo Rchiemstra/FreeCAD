@@ -22,7 +22,9 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <new>
 #include <string>
+#include <thread>
 
 namespace Part
 {
@@ -131,6 +133,70 @@ App::GeometryJobId launchedJobIdFromEnvironment()
     return id;
 }
 
+#ifdef FC_GEOMETRY_WORKER_TEST_SEAMS
+
+[[noreturn]] void injectWorkerFaultAbort()
+{
+    std::abort();
+}
+
+[[noreturn]] void injectWorkerFaultHang()
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
+void injectWorkerFaultBadAlloc()
+{
+    throw std::bad_alloc();
+}
+
+bool shouldInjectWorkerFault(App::GeometryJobId requestJobId, std::string& faultModeOut)
+{
+    const QByteArray modeRaw = qgetenv("FCGEO_TEST_FAULT_MODE");
+    if (modeRaw.isEmpty()) {
+        return false;
+    }
+    const QByteArray jobRaw = qgetenv("FCGEO_TEST_FAULT_JOB_ID");
+    if (jobRaw.isEmpty()) {
+        return false;
+    }
+    App::GeometryJobId faultJobId = 0;
+    std::string errorCode;
+    std::string errorMessage;
+    if (!App::parseGeometryJobId(jobRaw.toStdString(), faultJobId, errorCode, errorMessage)) {
+        return false;
+    }
+    const App::GeometryJobId launchedJobId = launchedJobIdFromEnvironment();
+    if (faultJobId == 0 || faultJobId != requestJobId || launchedJobId == 0
+        || launchedJobId != requestJobId) {
+        return false;
+    }
+    const std::string mode = modeRaw.toStdString();
+    if (mode == "abort" || mode == "hang" || mode == "bad_alloc") {
+        faultModeOut = mode;
+        return true;
+    }
+    return false;
+}
+
+void runInjectedWorkerFault(const std::string& mode)
+{
+    if (mode == "abort") {
+        injectWorkerFaultAbort();
+    }
+    if (mode == "hang") {
+        injectWorkerFaultHang();
+    }
+    if (mode == "bad_alloc") {
+        injectWorkerFaultBadAlloc();
+    }
+}
+
+#endif // FC_GEOMETRY_WORKER_TEST_SEAMS
+
 } // namespace
 
 int GeometryWorker::runWorkerProcess(const std::string& requestJsonPath)
@@ -212,6 +278,21 @@ int GeometryWorker::runWorkerProcess(const std::string& requestJsonPath)
     }
     ProcessWorkerContext ctx(tempDir.toStdString(), deadline);
     ctx.reportProgress(0.05, "worker.start");
+
+#ifdef FC_GEOMETRY_WORKER_TEST_SEAMS
+    try {
+        std::string faultMode;
+        if (shouldInjectWorkerFault(jobId, faultMode)) {
+            runInjectedWorkerFault(faultMode);
+        }
+    }
+    catch (const std::bad_alloc&) {
+        emitError("OutOfMemory",
+                  "Geometry worker rejected the job after a deterministic test allocation fault",
+                  jobId);
+        return 1;
+    }
+#endif
 
     if (operationType.isEmpty()) {
         emitError("missing_operation", "operationType missing from request", jobId);
