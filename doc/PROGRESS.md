@@ -16,14 +16,14 @@ complete.
 | Phase | Plan focus | Actual status |
 |---|---|---|
 | 1 | Guardrails and scheduler foundation | Mostly scaffolded; fences/transactions/failure-aware generation/slice budget/non-blocking close/FreeCADCmd cancel covered. 30 s acceptance heartbeat and non-cooperative shutdown recovery still incomplete |
-| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep (in-process), hasher revision/atomic merge, nested/shared child maps, long hashed names (FCG1 v4), typed Boolean/Fillet/Sweep codecs, parent `GeometryWorkerProcess` protocol+decode gates, and real FreeCADCmd mapped Boolean/Fillet/Sweep. Boolean and Fillet have semantic FCStd reopen qualification; Sweep FCStd semantic reopen remains open |
+| 2 | Archive and isolated worker | In progress; deep OCC copy + repeat-write restore, mapped Boolean/Fillet/Sweep (in-process), hasher revision/atomic merge, nested/shared child maps, long hashed names (FCG1 v4), typed Boolean/Fillet/Sweep codecs, parent `GeometryWorkerProcess` protocol+decode gates, and real FreeCADCmd mapped Boolean/Fillet/Sweep. Boolean, Fillet, and Sweep have semantic FCStd reopen qualification |
 | 3 | Non-blocking visual pipeline | Not started; GUI-thread tessellation remains. Progress controller is hooked to the manager; 250 ms GUI visibility harness still missing |
 | 4 | Native geometry migrations | Unconnected ops (mapped + registry allowlisted) without feature/task-panel adapters |
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker validation across Steps 24–27A: **35/35 App**,
-**53 passed + 2 LP64 skips NonBlockingGeometryTest**, **13/13** CrossProcessBoolean/Fillet/Sweep,
+Verified narrow positives (focused Docker validation across Steps 24–27B: **35/35 App**,
+**53 passed + 2 LP64 skips NonBlockingGeometryTest**, **14/14** CrossProcessBoolean/Fillet/Sweep,
 **29/29 GeometryWorkerProcessTest**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
@@ -45,10 +45,11 @@ Verified narrow positives (focused Docker validation across Steps 24–27A: **35
   FCGEO/1 protocol, task-aware FCG1 decode before `ReadyToCommit`, explicit serialize failure
   channel, and digest-correct malformed FCG rejection. Boolean and Fillet have FCStd
   second-process naming/SID/history reopen qualification (hasher lookup, SID resolution, source-tag
-  history — not raw seed strings in post-Fillet maps).
+  history — not raw seed strings in post-Fillet maps). Sweep has the same FCStd second-process
+  qualification bar (`mapped_sweep.FCStd`, `verify_sweep_fcstd.py`, tags 1 or 2).
 
 Those positives are scaffolding checks, not phase acceptance. No production Part/PartDesign feature
-implements prepare/commit; Sweep semantic FCStd reopen remains open; Windows Job Object cancel and
+implements prepare/commit; Windows Job Object cancel and
 installed-tree smoke beyond the Docker build tree remain open; Phases 3–6 are untouched.
 
 
@@ -290,7 +291,7 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 1. **Priority 1 residuals:** 30-second OCC/serialization heartbeat acceptance workload;
    non-cooperative deadline/shutdown recovery; `Document::recompute` GIL hold during long work.
-2. **Priority 2 residuals:** Sweep semantic FCStd reopen; broader
+2. **Priority 2 residuals:** broader
    hang/crash/OOM/rename recovery matrix; installed-tree smoke outside the Docker build tree.
 3. **Priority 3 residuals:** Windows Job Object cancel; retained-success cleanup janitor;
    250 ms geometry-progress visibility harness (controller is wired; GUI timing test still open).
@@ -299,9 +300,8 @@ Required remaining fixes (priorities still open — do not enable rollout):
 
 Concrete next action for the implementing agent:
 
-- Sweep semantic FCStd reopen qualification with the mapped-name/history bar established for
-  Boolean and Fillet FCStd reopen. Keep production feature adapters and rollout flags disabled. Do
-  not mark Phase 2 complete.
+- Broader crash/rename recovery matrix for mapped Boolean/Fillet/Sweep cross-process workspaces.
+  Keep production feature adapters and rollout flags disabled. Do not mark Phase 2 complete.
 
 ## Implementation log (continued)
 
@@ -1037,14 +1037,14 @@ Concrete next action for the implementing agent:
 
 * Remaining gaps (Phase 2 still **not** complete):
   - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
-  - **P2:** Sweep semantic FCStd reopen; broader crash/rename;
+  - **P2:** Fillet semantic FCStd reopen; Sweep semantic FCStd reopen; broader crash/rename;
     install-tree smoke; LLP64/32-bit-long decode qualification on a non-LP64 builder.
   - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
   - **P4:** production adapters/rollout (blocked).
 * Next step:
-  - Sweep semantic FCStd reopen per `## Next step` above.
+  - Fillet semantic FCStd reopen per `## Next step` above.
 
-### Step 27A — Fillet semantic FCStd reopen qualification (Task 27A, this commit)
+### Step 27A — Fillet semantic FCStd reopen qualification (Task 27A, `1315920657`)
 
 * **27A (cross-process FCStd):** `CrossProcessFilletTest.FCStdSecondProcessReopenPreservesMappedFilletSemantics`
   — real FreeCADCmd mapped Fillet (jobId 31), `assertMappedFilletResult`, same-process
@@ -1052,7 +1052,7 @@ Concrete next action for the implementing agent:
   `traceElement` source tag 1), second FreeCADCmd Python verifier with intentional bad hashed-ID
   failure before success (`VERIFY_OK` only on correct expectations). Post-Fillet qualification uses
   hasher lookup and history traversal, not raw input seed strings in ElementMap.
-* **Status:** committed with this change on `feature/non-blocking-geometry-scaffolding`.
+* **Status:** committed as `1315920657` on `feature/non-blocking-geometry-scaffolding`.
 * Tests or validation performed (Docker `freecad-nbgeom-step20b`, `/code/build_docker`):
   - `ninja -j1 Part_tests_run` (test target rebuild after `TestCrossProcessBoolean.cpp` change)
   - Part `CrossProcessFilletTest.*` → **3/3 PASSED** (includes real FreeCADCmd jobId 31 +
@@ -1069,5 +1069,31 @@ Concrete next action for the implementing agent:
   - **P4:** production adapters/rollout (blocked).
 * Next step:
   - Sweep semantic FCStd reopen per `## Next step` above.
+
+### Step 27B — Sweep semantic FCStd reopen qualification (Task 27B, this commit)
+
+* **27B (cross-process FCStd):** `CrossProcessSweepTest.FCStdSecondProcessReopenPreservesMappedSweepSemantics`
+  — real FreeCADCmd mapped Sweep (`isSolid=false`, jobId 32), `assertMappedSweepResult`,
+  same-process `mapped_sweep.FCStd` reopen (hasher threshold 8, Hashable long-name SID, ElementMap/SID
+  resolution, `traceElement` source tag 1 or 2), second FreeCADCmd Python verifier
+  (`verify_sweep_fcstd.py`) with intentional bad hashed-ID failure before success (`VERIFY_OK` only
+  on correct expectations; area-based shell checks, `getElementHistory` tags 1 or 2).
+* **Status:** committed with this change on base `1315920657` (Task 27A Fillet FCStd qualification).
+* Tests or validation performed (Docker `freecad-nbgeom-review27b`, `/code/build_docker`):
+  - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts Part_tests_run`
+  - Part `CrossProcessSweepTest.*` → **3/3 PASSED** (includes real FreeCADCmd jobId 32 +
+    same-process `mapped_sweep.FCStd` reopen + second-process verifier bad/good paths)
+  - Part `CrossProcessBooleanTest.*:CrossProcessFilletTest.*:CrossProcessSweepTest.*` → **14/14 PASSED**
+  - Part `NonBlockingGeometryTest.*` → **53 passed**, **2 skipped** (LP64 narrowing guards)
+  - `git diff --check` → clean on changed sources
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** broader crash/rename;
+    install-tree smoke; LLP64/32-bit-long decode qualification on a non-LP64 builder.
+  - **P3:** Windows Job Object; janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Broader crash/rename recovery matrix per `## Next step` above.
 
 ---

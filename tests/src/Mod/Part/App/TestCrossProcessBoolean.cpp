@@ -2149,3 +2149,342 @@ TEST_F(CrossProcessSweepTest, RecoveryAfterBadSweepRequestThenValid)
     ASSERT_TRUE(Part::TopoShapeArchive::readArchive(resultPath.toStdString(), recovered));
     assertMappedSweepResult(recovered, mapped.hashedId, mapped.longName, mapped.threshold);
 }
+
+TEST_F(CrossProcessSweepTest, FCStdSecondProcessReopenPreservesMappedSweepSemantics)
+{
+    try {
+        const MappedSweepOperands mapped = makeMappedSweepOperands();
+        ASSERT_TRUE(mapped.spine.valid) << mapped.spine.errorCode;
+        ASSERT_TRUE(mapped.profile.valid) << mapped.profile.errorCode;
+        ASSERT_TRUE(mapped.spine.elementMap);
+        ASSERT_TRUE(mapped.profile.elementMap);
+        EXPECT_GT(mapped.spine.elementMap->size(), 0u);
+        EXPECT_GT(mapped.profile.elementMap->size(), 0u);
+
+        constexpr App::GeometryJobId kJobId = 32;
+        std::string jobWire;
+        ASSERT_TRUE(App::formatGeometryJobId(kJobId, jobWire));
+        const QString launchedJobIdWire = QString::fromStdString(jobWire);
+
+        const QString workDir = _tempDir->path() + QStringLiteral("/sweep_fcstd_job");
+        App::GeometryRequestWorkspace workspace(workDir);
+        Part::SweepGeometryOperation op(mapped.spine, {mapped.profile}, /*isSolid=*/false);
+        workspace.requestObject().insert(QStringLiteral("jobId"), launchedJobIdWire);
+        ASSERT_TRUE(op.writeArchive(workspace).success);
+        ASSERT_TRUE(workspace.publishRequestJson());
+
+        const WorkerTranscript transcript = runGeometryWorker(_cmdPath,
+                                                              _scriptPath,
+                                                              workDir + QStringLiteral("/request.json"),
+                                                              workDir,
+                                                              launchedJobIdWire);
+        ASSERT_EQ(transcript.exitCode, 0)
+            << "stdout:\n"
+            << transcript.stdoutBytes.constData() << "\nstderr:\n"
+            << transcript.stderrBytes.constData();
+        ASSERT_FALSE(transcript.types.isEmpty())
+            << "stdout:\n"
+            << transcript.stdoutBytes.constData() << "\nstderr:\n"
+            << transcript.stderrBytes.constData();
+
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("hello")), 1);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("result")), 1);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("error")), 0);
+        EXPECT_EQ(countTranscriptType(transcript, QStringLiteral("result"))
+                      + countTranscriptType(transcript, QStringLiteral("error")),
+                  1);
+        EXPECT_EQ(transcript.types.front(), QStringLiteral("hello"));
+        EXPECT_NE(std::find(transcript.types.begin(),
+                            transcript.types.end(),
+                            QStringLiteral("progress")),
+                  transcript.types.end());
+        EXPECT_TRUE(transcriptHasProgressPhase(transcript.stdoutBytes, QStringLiteral("sweep.compute")));
+        EXPECT_EQ(transcript.types.back(), QStringLiteral("result"));
+
+        EXPECT_EQ(transcript.resultObj.value(QStringLiteral("jobId")).toString(), launchedJobIdWire);
+
+        const QString relPath = transcript.resultObj.value(QStringLiteral("path")).toString();
+        EXPECT_EQ(relPath, QStringLiteral("result.fcg"));
+        const qint64 claimedSize =
+            transcript.resultObj.value(QStringLiteral("size")).toVariant().toLongLong();
+        const QString claimedSha =
+            transcript.resultObj.value(QStringLiteral("sha256")).toString().toLower();
+        const QString absResult = QDir(workDir).filePath(relPath);
+        ASSERT_TRUE(QFileInfo::exists(absResult));
+        EXPECT_EQ(QFileInfo(absResult).size(), claimedSize);
+        {
+            QFile f(absResult);
+            ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+            const QByteArray digest =
+                QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex();
+            EXPECT_EQ(QString::fromLatin1(digest), claimedSha);
+        }
+
+        Part::SweepGeometryOperation sweepOp(mapped.spine, {mapped.profile}, /*isSolid=*/false);
+        const App::DetachedGeometryResult decoded =
+            sweepOp.decodeResultArchive(absResult.toStdString());
+        ASSERT_TRUE(decoded.success) << decoded.errorCode << ": " << decoded.errorMessage;
+
+        Part::FrozenTopoShapeBundle recovered;
+        ASSERT_TRUE(Part::TopoShapeArchive::readArchive(absResult.toStdString(), recovered));
+        assertMappedSweepResult(recovered, mapped.hashedId, mapped.longName, mapped.threshold);
+
+        App::Document* doc = App::GetApplication().newDocument("CrossProcessSweepFcstdDoc");
+        ASSERT_TRUE(doc);
+        App::DocumentObject* obj = doc->addObject("App::FeaturePython", "Swept");
+        ASSERT_TRUE(obj);
+        auto* shapeProp = dynamic_cast<Part::PropertyPartShape*>(
+            obj->addDynamicProperty("Part::PropertyPartShape", "Shape"));
+        ASSERT_TRUE(shapeProp);
+        shapeProp->setValue(recovered.shape);
+        {
+            const auto& savedShape = shapeProp->getShape();
+            ASSERT_FALSE(savedShape.isNull());
+            ASSERT_GT(savedShape.getElementMapSize(), 0u);
+            ASSERT_TRUE(savedShape.Hasher);
+            EXPECT_EQ(savedShape.Hasher->getThreshold(), mapped.threshold);
+            auto sidAfterSet =
+                savedShape.Hasher->getID(mapped.longName, App::StringHasher::Option::Hashable);
+            ASSERT_TRUE(sidAfterSet);
+            EXPECT_EQ(sidAfterSet.value(), mapped.hashedId);
+            EXPECT_TRUE(sidAfterSet.isHashed());
+        }
+        const QString fcstdPath = _tempDir->path() + QStringLiteral("/mapped_sweep.FCStd");
+        doc->saveAs(fcstdPath.toStdString().c_str());
+        App::GetApplication().closeDocument(doc->getName());
+
+        struct ShapeMapAccess: Part::TopoShape
+        {
+            explicit ShapeMapAccess(const Part::TopoShape& s)
+                : Part::TopoShape(s)
+            {}
+            Data::ElementMapPtr liveMap() const
+            {
+                return this->elementMap(false);
+            }
+        };
+
+        App::Document* reopened = App::GetApplication().openDocument(fcstdPath.toStdString().c_str());
+        ASSERT_TRUE(reopened);
+        auto* swept = reopened->getObject("Swept");
+        ASSERT_TRUE(swept);
+        auto* prop = dynamic_cast<Part::PropertyPartShape*>(swept->getPropertyByName("Shape"));
+        ASSERT_TRUE(prop);
+        const auto& sh = prop->getShape();
+        ASSERT_FALSE(sh.isNull());
+        {
+            GProp_GProps areaProps;
+            BRepGProp::SurfaceProperties(sh.getShape(), areaProps);
+            EXPECT_GT(areaProps.Mass(), 0.0);
+        }
+        ASSERT_TRUE(sh.Hasher);
+        EXPECT_EQ(sh.Hasher->getThreshold(), mapped.threshold);
+        auto sid = sh.Hasher->getID(mapped.longName, App::StringHasher::Option::Hashable);
+        ASSERT_TRUE(sid) << "Hashable lookup missing after same-process FCStd reopen";
+        EXPECT_EQ(sid.value(), mapped.hashedId);
+        EXPECT_TRUE(sid.isHashed());
+        EXPECT_TRUE(sh.Hasher->getID(mapped.hashedId));
+        EXPECT_GT(sh.getElementMapSize(), 0u);
+
+        ShapeMapAccess access(sh);
+        auto liveMap = access.liveMap();
+        ASSERT_TRUE(liveMap);
+        EXPECT_EQ(static_cast<App::StringHasher*>(liveMap->hasher),
+                  static_cast<App::StringHasher*>(sh.Hasher));
+        EXPECT_TRUE(allMapsUseHasher(liveMap, sh.Hasher));
+
+        std::function<void(const Data::ElementMapPtr&)> assertSidsResolve =
+            [&](const Data::ElementMapPtr& em) {
+                if (!em) {
+                    return;
+                }
+                EXPECT_EQ(static_cast<App::StringHasher*>(em->hasher),
+                          static_cast<App::StringHasher*>(sh.Hasher));
+                for (const auto& el : em->getAll()) {
+                    Data::ElementIDRefs sids;
+                    (void)em->find(el.index, &sids);
+                    for (const auto& ref : sids) {
+                        ASSERT_TRUE(ref);
+                        EXPECT_TRUE(ref.isFromSameHasher(sh.Hasher));
+                        EXPECT_TRUE(sh.Hasher->getID(ref.value()));
+                    }
+                }
+                for (const auto& child : em->getChildElements()) {
+                    assertSidsResolve(child.elementMap);
+                }
+            };
+        assertSidsResolve(liveMap);
+
+        bool traceCallbackRan = false;
+        bool sawSourceTag = false;
+        std::function<void(const Data::ElementMapPtr&)> walk = [&](const Data::ElementMapPtr& em) {
+            if (!em) {
+                return;
+            }
+            for (const auto& el : em->getAll()) {
+                Data::ElementIDRefs sids;
+                auto mappedName = em->find(el.index, &sids);
+                if (mappedName) {
+                    sh.traceElement(mappedName, [&](const Data::MappedName&, int, long tag, long) {
+                        traceCallbackRan = true;
+                        if (tag == 1 || tag == 2) {
+                            sawSourceTag = true;
+                        }
+                        return true;
+                    });
+                }
+            }
+            for (const auto& child : em->getChildElements()) {
+                walk(child.elementMap);
+            }
+        };
+        walk(liveMap);
+        EXPECT_TRUE(traceCallbackRan);
+        EXPECT_TRUE(sawSourceTag);
+
+        App::GetApplication().closeDocument(reopened->getName());
+
+        const QString verifyPy = _tempDir->path() + QStringLiteral("/verify_sweep_fcstd.py");
+        {
+            QFile py(verifyPy);
+            ASSERT_TRUE(py.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            const QByteArray portable = QByteArray(
+                "import FreeCAD as App\n"
+                "import os\n"
+                "import re\n"
+                "import sys\n"
+                "args = sys.argv[sys.argv.index('--pass') + 1:] if '--pass' in sys.argv else sys.argv[1:]\n"
+                "path, threshold_s, hashed_s, long_name = args[:4]\n"
+                "threshold = int(threshold_s)\n"
+                "hashed_id = int(hashed_s)\n"
+                "doc = App.open(path)\n"
+                "obj = doc.getObject('Swept')\n"
+                "assert obj is not None, 'missing Swept'\n"
+                "sh = obj.Shape\n"
+                "assert sh is not None and (not sh.isNull()), 'null shape'\n"
+                "area = float(sh.Area)\n"
+                "assert area > 0.0, area\n"
+                "assert sh.ElementMapSize > 0, 'empty element map'\n"
+                "hasher = sh.Hasher\n"
+                "assert hasher is not None, 'missing hasher'\n"
+                "assert int(hasher.Threshold) == threshold, (hasher.Threshold, threshold)\n"
+                "sid = hasher.getID(long_name, False, True)\n"
+                "assert sid is not None, 'long name Hashable lookup failed'\n"
+                "if int(sid.Value) != hashed_id:\n"
+                "    sys.stderr.write('hashed_id mismatch %s != %s\\n' % (sid.Value, hashed_id))\n"
+                "    App.closeDocument(doc.Name)\n"
+                "    os._exit(1)\n"
+                "assert bool(sid.IsHashed), 'expected hashed SID'\n"
+                "assert hasher.getID(hashed_id) is not None\n"
+                "emap = sh.ElementMap\n"
+                "assert emap, 'missing ElementMap dict'\n"
+                "def resolve_tokens(value, depth=0):\n"
+                "    assert depth <= 32, 'ElementMap nesting too deep'\n"
+                "    if isinstance(value, dict):\n"
+                "        for key, item in value.items():\n"
+                "            resolve_tokens(key, depth + 1)\n"
+                "            resolve_tokens(item, depth + 1)\n"
+                "        return\n"
+                "    if isinstance(value, (list, tuple, set)):\n"
+                "        for item in value:\n"
+                "            resolve_tokens(item, depth + 1)\n"
+                "        return\n"
+                "    for encoded in re.findall(r'#([0-9A-Fa-f]+)', str(value)):\n"
+                "        ref = int(encoded, 16)\n"
+                "        assert hasher.getID(ref) is not None, ('unresolved SID', encoded)\n"
+                "resolve_tokens(emap)\n"
+                "tags = set()\n"
+                "def walk_hist(name, depth=0):\n"
+                "    if depth > 32 or not name:\n"
+                "        return\n"
+                "    try:\n"
+                "        hist = sh.getElementHistory(str(name))\n"
+                "    except Exception:\n"
+                "        return\n"
+                "    if not hist:\n"
+                "        return\n"
+                "    tags.add(int(hist[0]))\n"
+                "    walk_hist(hist[1], depth + 1)\n"
+                "    for item in hist[2]:\n"
+                "        walk_hist(item, depth + 1)\n"
+                "for _key, val in list(emap.items())[:512]:\n"
+                "    walk_hist(val)\n"
+                "    walk_hist(_key)\n"
+                "    if 1 in tags or 2 in tags:\n"
+                "        break\n"
+                "if 1 not in tags and 2 not in tags:\n"
+                "    sys.stderr.write('missing source tag 1 or 2 %r\\n' % (tags,))\n"
+                "    App.closeDocument(doc.Name)\n"
+                "    os._exit(1)\n"
+                "print('VERIFY_OK', area, sh.ElementMapSize, hashed_id, threshold, sorted(tags))\n"
+                "App.closeDocument(doc.Name)\n");
+            py.write(portable);
+            py.close();
+        }
+
+        const QByteArray fcstdDigestBefore = [&]() {
+            QFile f(fcstdPath);
+            if (!f.open(QIODevice::ReadOnly)) {
+                return QByteArray();
+            }
+            return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256);
+        }();
+        ASSERT_FALSE(fcstdDigestBefore.isEmpty()) << "failed to hash mapped_sweep.FCStd";
+
+        const auto runVerifier = [&](long expectedHashedId) {
+            QProcess proc;
+            proc.setWorkingDirectory(_tempDir->path());
+            proc.start(_cmdPath,
+                       {QStringLiteral("--safe-mode"),
+                        verifyPy,
+                        QStringLiteral("--pass"),
+                        fcstdPath,
+                        QString::number(mapped.threshold),
+                        QString::number(expectedHashedId),
+                        QString::fromUtf8(mapped.longName)});
+            EXPECT_TRUE(proc.waitForFinished(180000));
+            WorkerTranscript fake;
+            fake.exitCode = proc.exitCode();
+            fake.stdoutBytes = proc.readAllStandardOutput();
+            fake.stderrBytes = proc.readAllStandardError();
+            return fake;
+        };
+
+        const WorkerTranscript badVerify = runVerifier(mapped.hashedId + 1);
+        EXPECT_NE(badVerify.exitCode, 0);
+        EXPECT_FALSE(QString::fromUtf8(badVerify.stdoutBytes).contains(QStringLiteral("VERIFY_OK")))
+            << "stdout:\n"
+            << badVerify.stdoutBytes.constData() << "\nstderr:\n"
+            << badVerify.stderrBytes.constData();
+
+        const QByteArray fcstdDigestAfterBad = [&]() {
+            QFile f(fcstdPath);
+            if (!f.open(QIODevice::ReadOnly)) {
+                return QByteArray();
+            }
+            return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256);
+        }();
+        ASSERT_FALSE(fcstdDigestAfterBad.isEmpty())
+            << "failed to hash mapped_sweep.FCStd after bad verifier";
+        EXPECT_EQ(fcstdDigestBefore, fcstdDigestAfterBad);
+
+        const WorkerTranscript goodVerify = runVerifier(mapped.hashedId);
+        ASSERT_EQ(goodVerify.exitCode, 0)
+            << "stdout:\n"
+            << goodVerify.stdoutBytes.constData() << "\nstderr:\n"
+            << goodVerify.stderrBytes.constData();
+        ASSERT_TRUE(QString::fromUtf8(goodVerify.stdoutBytes).contains(QStringLiteral("VERIFY_OK")))
+            << "stdout:\n"
+            << goodVerify.stdoutBytes.constData() << "\nstderr:\n"
+            << goodVerify.stderrBytes.constData();
+    }
+    catch (const Base::Exception& e) {
+        FAIL() << "Base::Exception: " << e.what();
+    }
+    catch (const Standard_Failure& e) {
+        FAIL() << "OCC: " << (e.GetMessageString() ? e.GetMessageString() : "unknown");
+    }
+    catch (const std::exception& e) {
+        FAIL() << "std::exception: " << e.what();
+    }
+}
