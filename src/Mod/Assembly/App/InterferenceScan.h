@@ -144,6 +144,12 @@ struct InterferenceFaceHit
     std::vector<int> sourceRows;
     std::vector<std::string> sourceComments;
     std::string diagnostic;
+    /** Worker-computed closest points for this exact face pair, in world coordinates. */
+    bool closestPointsValid = false;
+    Base::Vector3d pointOnFirst;
+    Base::Vector3d pointOnSecond;
+    /** Worker-computed contact/common geometry for this exact face pair, when available. */
+    TopoDS_Shape commonShape;
     /**
      * True when this hit is a Penetration/Contact/ClearanceViolation that is
      * suppressed by a source-pair exclusion. InvalidInput / Inconclusive never
@@ -169,6 +175,11 @@ struct InterferencePairResult
     bool excluded = false;
     /** Face evaluations including Clear (App/tests); GUI filters Clear by default. */
     std::vector<InterferenceFaceHit> faceHits;
+    /**
+     * Face hit that determined detection.kind/minimumDistance, or npos when the
+     * whole-solid result (for example Penetration/Inconclusive) governs.
+     */
+    std::size_t governingFaceHitIndex = static_cast<std::size_t>(-1);
     /** Optional note when face-pair candidates were capped. */
     std::string faceEnumerationDiagnostic;
 };

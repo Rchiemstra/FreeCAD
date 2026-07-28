@@ -2248,31 +2248,108 @@ bool isExcludableViolation(Part::InterferenceKind kind)
         || kind == Part::InterferenceKind::ClearanceViolation;
 }
 
+int interferenceKindRank(Part::InterferenceKind kind)
+{
+    switch (kind) {
+        case Part::InterferenceKind::Penetration:
+            return 5;
+        case Part::InterferenceKind::ClearanceViolation:
+            return 4;
+        case Part::InterferenceKind::Contact:
+            return 3;
+        case Part::InterferenceKind::InvalidInput:
+            return 2;
+        case Part::InterferenceKind::Inconclusive:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 Part::InterferenceKind worstFaceKind(const std::vector<InterferenceFaceHit>& hits)
 {
-    auto rank = [](Part::InterferenceKind k) {
-        switch (k) {
-            case Part::InterferenceKind::Penetration:
-                return 5;
-            case Part::InterferenceKind::ClearanceViolation:
-                return 4;
-            case Part::InterferenceKind::Contact:
-                return 3;
-            case Part::InterferenceKind::InvalidInput:
-                return 2;
-            case Part::InterferenceKind::Inconclusive:
-                return 1;
-            default:
-                return 0;
-        }
-    };
     Part::InterferenceKind worst = Part::InterferenceKind::Clear;
     for (const auto& hit : hits) {
-        if (rank(hit.classification) > rank(worst)) {
+        if (interferenceKindRank(hit.classification) > interferenceKindRank(worst)) {
             worst = hit.classification;
         }
     }
     return worst;
+}
+
+std::size_t governingFaceHitIndex(
+    const std::vector<InterferenceFaceHit>& hits,
+    Part::InterferenceKind governingKind
+)
+{
+    std::size_t selected = static_cast<std::size_t>(-1);
+    double selectedDistance = -1.0;
+    for (std::size_t i = 0; i < hits.size(); ++i) {
+        const auto& hit = hits[i];
+        if (hit.classification != governingKind) {
+            continue;
+        }
+        const bool distanceValid = hit.distance >= 0.0 && std::isfinite(hit.distance);
+        if (selected == static_cast<std::size_t>(-1)
+            || (distanceValid
+                && (selectedDistance < 0.0 || hit.distance < selectedDistance))) {
+            selected = i;
+            selectedDistance = distanceValid ? hit.distance : -1.0;
+        }
+    }
+    return selected;
+}
+
+struct FinalizedPairDetection
+{
+    Part::InterferenceResult detection;
+    std::size_t governingFaceHitIndex = static_cast<std::size_t>(-1);
+};
+
+FinalizedPairDetection finalizePairDetection(
+    const Part::InterferenceResult& solid,
+    const std::vector<InterferenceFaceHit>& faceHits,
+    bool faceEnumerationCapped,
+    const std::string& faceEnumerationDiagnostic
+)
+{
+    FinalizedPairDetection finalized;
+    finalized.detection = solid;
+
+    // Whole-solid outcomes have precedence over every face-level result.
+    if (solid.kind == Part::InterferenceKind::Penetration
+        || solid.kind == Part::InterferenceKind::InvalidInput) {
+        return finalized;
+    }
+    if (solid.kind == Part::InterferenceKind::Inconclusive) {
+        finalized.detection.kind = Part::InterferenceKind::Inconclusive;
+        if (finalized.detection.diagnostic.empty() && !faceEnumerationDiagnostic.empty()) {
+            finalized.detection.diagnostic = faceEnumerationDiagnostic;
+        }
+        return finalized;
+    }
+
+    if (!faceHits.empty()) {
+        finalized.detection.kind = worstFaceKind(faceHits);
+        finalized.governingFaceHitIndex =
+            governingFaceHitIndex(faceHits, finalized.detection.kind);
+        if (finalized.governingFaceHitIndex != static_cast<std::size_t>(-1)) {
+            const double distance =
+                faceHits[finalized.governingFaceHitIndex].distance;
+            finalized.detection.minimumDistance =
+                distance >= 0.0 && std::isfinite(distance) ? distance : -1.0;
+        }
+    }
+    if (faceEnumerationCapped
+        && finalized.detection.kind == Part::InterferenceKind::Clear) {
+        finalized.detection.kind = Part::InterferenceKind::Inconclusive;
+        finalized.governingFaceHitIndex = static_cast<std::size_t>(-1);
+        finalized.detection.minimumDistance = -1.0;
+        if (finalized.detection.diagnostic.empty()) {
+            finalized.detection.diagnostic = faceEnumerationDiagnostic;
+        }
+    }
+    return finalized;
 }
 
 }  // namespace
@@ -2284,70 +2361,13 @@ Part::InterferenceResult finalizeInterferencePairDetection(
     const std::string& faceEnumerationDiagnostic
 )
 {
-    auto rank = [](Part::InterferenceKind k) {
-        switch (k) {
-            case Part::InterferenceKind::Penetration:
-                return 5;
-            case Part::InterferenceKind::ClearanceViolation:
-                return 4;
-            case Part::InterferenceKind::Contact:
-                return 3;
-            case Part::InterferenceKind::InvalidInput:
-                return 2;
-            case Part::InterferenceKind::Inconclusive:
-                return 1;
-            default:
-                return 0;
-        }
-    };
-    auto worstOf = [&](const std::vector<InterferenceFaceHit>& hits) {
-        Part::InterferenceKind worst = Part::InterferenceKind::Clear;
-        for (const auto& hit : hits) {
-            if (rank(hit.classification) > rank(worst)) {
-                worst = hit.classification;
-            }
-        }
-        return worst;
-    };
-
-    // Penetration / InvalidInput are handled before face enumeration by the caller.
-    // Solid Inconclusive must never become Clear / Contact / ClearanceViolation.
-    if (solid.kind == Part::InterferenceKind::Inconclusive) {
-        Part::InterferenceResult out = solid;
-        out.kind = Part::InterferenceKind::Inconclusive;
-        if (out.diagnostic.empty() && !faceEnumerationDiagnostic.empty()) {
-            out.diagnostic = faceEnumerationDiagnostic;
-        }
-        return out;
-    }
-
-    Part::InterferenceResult out = solid;
-    const auto worst = worstOf(faceHits);
-    if (!faceHits.empty()) {
-        if (worst != Part::InterferenceKind::Clear) {
-            out.kind = worst;
-            double bestDist = -1.0;
-            for (const auto& hit : faceHits) {
-                if (hit.classification == worst && hit.distance >= 0.0
-                    && (bestDist < 0.0 || hit.distance < bestDist)) {
-                    bestDist = hit.distance;
-                }
-            }
-            if (bestDist >= 0.0) {
-                out.minimumDistance = bestDist;
-            }
-        }
-        else {
-            out.kind = Part::InterferenceKind::Clear;
-        }
-    }
-    if (faceEnumerationCapped && out.kind == Part::InterferenceKind::Clear) {
-        out.kind = Part::InterferenceKind::Inconclusive;
-        if (out.diagnostic.empty()) {
-            out.diagnostic = faceEnumerationDiagnostic;
-        }
-    }
-    return out;
+    return finalizePairDetection(
+               solid,
+               faceHits,
+               faceEnumerationCapped,
+               faceEnumerationDiagnostic
+    )
+        .detection;
 }
 
 namespace
@@ -2657,6 +2677,16 @@ bool evaluateLeafPairWithClearanceRules(
         hit.sourceRows = lookup.sourceRows;
         hit.sourceComments = lookup.sourceComments;
         hit.diagnostic = lookup.diagnostic.empty() ? gap.diagnostic : lookup.diagnostic;
+        hit.closestPointsValid = gap.minimumDistance >= 0.0
+            && std::isfinite(gap.minimumDistance)
+            && std::isfinite(gap.pointOnFirst.x) && std::isfinite(gap.pointOnFirst.y)
+            && std::isfinite(gap.pointOnFirst.z) && std::isfinite(gap.pointOnSecond.x)
+            && std::isfinite(gap.pointOnSecond.y) && std::isfinite(gap.pointOnSecond.z);
+        if (hit.closestPointsValid) {
+            hit.pointOnFirst = gap.pointOnFirst;
+            hit.pointOnSecond = gap.pointOnSecond;
+        }
+        hit.commonShape = std::move(gap.commonShape);
         // Invalid enabled spreadsheet rules must not silently fall back to a Clear
         // AssemblyGlobal classification (e.g. typo "0.5 garbage" rejected → host 0).
         if (options.clearanceRules.invalidRuleCount > 0
@@ -2676,12 +2706,14 @@ bool evaluateLeafPairWithClearanceRules(
         reportProgress(1, 1);
     }
 
-    pairResult.detection = finalizeInterferencePairDetection(
+    auto finalized = finalizePairDetection(
         solid,
         pairResult.faceHits,
         capped,
         pairResult.faceEnumerationDiagnostic
     );
+    pairResult.detection = std::move(finalized.detection);
+    pairResult.governingFaceHitIndex = finalized.governingFaceHitIndex;
 
     recordPairCounts(result, pairResult, sourcesExcluded);
     return true;

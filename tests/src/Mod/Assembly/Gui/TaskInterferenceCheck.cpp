@@ -204,6 +204,54 @@ Assembly::InterferenceScanResult makePlacedPenetrationResult()
     return result;
 }
 
+Assembly::InterferenceScanResult makeGoverningFacePreviewResult(
+    const char* statusTag,
+    const Base::Vector3d& pointOnFirst,
+    const Base::Vector3d& pointOnSecond
+)
+{
+    auto result = makeResult(0, statusTag);
+    result.counts.penetrations = 0;
+    result.counts.clearanceViolations = 1;
+    result.leaves[0].worldShape = makePlacedBox(10, 10, 10, 0, 0, 0);
+    result.leaves[1].worldShape = makePlacedBox(10, 10, 10, 40, 15, 7);
+
+    auto& pair = result.pairs.front();
+    pair.detection.kind = Part::InterferenceKind::ClearanceViolation;
+    pair.detection.minimumDistance = 0.05;
+    pair.detection.pointOnFirst = Base::Vector3d(1, 1, 1);
+    pair.detection.pointOnSecond = Base::Vector3d(2, 2, 2);
+    pair.detection.overlapVolume = 0.0;
+
+    Assembly::InterferenceFaceHit globalClosest;
+    globalClosest.facePathA = std::string(statusTag) + "_A.Face1";
+    globalClosest.facePathB = std::string(statusTag) + "_B.Face1";
+    globalClosest.distance = 0.05;
+    globalClosest.appliedClearance = 0.0;
+    globalClosest.classification = Part::InterferenceKind::Clear;
+    globalClosest.closestPointsValid = true;
+    globalClosest.pointOnFirst = Base::Vector3d(1, 1, 1);
+    globalClosest.pointOnSecond = Base::Vector3d(2, 2, 2);
+
+    Assembly::InterferenceFaceHit governed;
+    governed.facePathA = std::string(statusTag) + "_A.Face5";
+    governed.facePathB = std::string(statusTag) + "_B.Face3";
+    governed.distance = 0.4;
+    governed.appliedClearance = 0.5;
+    governed.classification = Part::InterferenceKind::ClearanceViolation;
+    governed.ruleKind = Assembly::InterferenceClearanceRuleKind::ExactPair;
+    governed.sourceRows = {7};
+    governed.sourceComments = {"governing exact rule"};
+    governed.closestPointsValid = true;
+    governed.pointOnFirst = pointOnFirst;
+    governed.pointOnSecond = pointOnSecond;
+
+    pair.faceHits = {std::move(globalClosest), std::move(governed)};
+    pair.governingFaceHitIndex = 1;
+    pair.detection.minimumDistance = pair.faceHits[1].distance;
+    return result;
+}
+
 void ensureDefaultOffscreenQtPlatform()
 {
     if (qgetenv("QT_QPA_PLATFORM").isEmpty()) {
@@ -317,6 +365,45 @@ TEST_F(TaskInterferenceCheckTest, bThenALateFinishDoesNotMutateNewerUiState)
     EXPECT_EQ(task.testTableCellText(0, 1), QStringLiteral("B_A"));
     EXPECT_EQ(task.testTableCellText(0, 2), QStringLiteral("B_B"));
     EXPECT_NE(task.testTableCellText(0, 1), QStringLiteral("A_A"));
+}
+
+TEST_F(TaskInterferenceCheckTest, obsoleteFaceResultDoesNotReplaceGoverningPreview)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    ASSERT_TRUE(task.testHasPreviewRoot());
+
+    auto& session = task.scanSession();
+    const auto scanA = session.beginScan();
+    const auto scanB = session.beginScan();
+    const Base::Vector3d governedFirst(110, 21, 6);
+    const Base::Vector3d governedSecond(110.4, 21, 6);
+    const auto resultB =
+        makeGoverningFacePreviewResult("New", governedFirst, governedSecond);
+    const auto resultA = makeGoverningFacePreviewResult(
+        "Obsolete",
+        Base::Vector3d(-50, -50, -50),
+        Base::Vector3d(-40, -40, -40)
+    );
+
+    task.testDeliverScanFinished(scanB.generation, resultB);
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    task.testSelectResultRow(0);
+    Base::Vector3d beforeFirst;
+    Base::Vector3d beforeSecond;
+    ASSERT_TRUE(task.testPreviewMarkerPoints(beforeFirst, beforeSecond));
+    EXPECT_NEAR(beforeFirst.x, governedFirst.x, 1e-4);
+    EXPECT_NEAR(beforeSecond.x, governedSecond.x, 1e-4);
+
+    task.testDeliverScanFinished(scanA.generation, resultA);
+    EXPECT_EQ(task.testTableCellText(0, 1), QStringLiteral("New_A"));
+    Base::Vector3d afterFirst;
+    Base::Vector3d afterSecond;
+    ASSERT_TRUE(task.testPreviewMarkerPoints(afterFirst, afterSecond));
+    EXPECT_NEAR(afterFirst.x, beforeFirst.x, 1e-4);
+    EXPECT_NEAR(afterFirst.y, beforeFirst.y, 1e-4);
+    EXPECT_NEAR(afterSecond.x, beforeSecond.x, 1e-4);
+    EXPECT_NEAR(afterSecond.y, beforeSecond.y, 1e-4);
 }
 
 TEST_F(TaskInterferenceCheckTest, constructsWithoutMainWindow)
@@ -663,6 +750,115 @@ TEST_F(TaskInterferenceCheckTest, placedLeafPreviewRestoresWorldTransform)
     EXPECT_TRUE(task.reject());
     EXPECT_FALSE(task.hasResults());
     EXPECT_FALSE(task.testHasPreviewRoot());
+}
+
+TEST_F(TaskInterferenceCheckTest, tableAndPreviewUseTheSameGoverningFaceHit)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+
+    const Base::Vector3d governedFirst(110, 21, 6);
+    const Base::Vector3d governedSecond(110.4, 21, 6);
+    auto result =
+        makeGoverningFacePreviewResult("Governed", governedFirst, governedSecond);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(task.testTableCellText(0, 0).contains(QStringLiteral("Clearance")));
+    EXPECT_TRUE(task.testTableCellText(0, 3).contains(QStringLiteral("0.4")));
+    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("Governed_A.Face5")));
+    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("Governed_B.Face3")));
+    EXPECT_FALSE(task.testTableCellText(0, 6).contains(QStringLiteral("Face1")));
+    EXPECT_TRUE(task.testTableCellText(0, 7).contains(QStringLiteral("row 7")));
+    EXPECT_TRUE(
+        task.testTableCellText(0, 7).contains(QStringLiteral("governing exact rule"))
+    );
+
+    task.testSelectResultRow(0);
+    Base::Vector3d previewFirst;
+    Base::Vector3d previewSecond;
+    ASSERT_TRUE(task.testPreviewMarkerPoints(previewFirst, previewSecond));
+    EXPECT_NEAR(previewFirst.x, governedFirst.x, 1e-4);
+    EXPECT_NEAR(previewFirst.y, governedFirst.y, 1e-4);
+    EXPECT_NEAR(previewFirst.z, governedFirst.z, 1e-4);
+    EXPECT_NEAR(previewSecond.x, governedSecond.x, 1e-4);
+    EXPECT_NEAR(previewSecond.y, governedSecond.y, 1e-4);
+    EXPECT_NEAR(previewSecond.z, governedSecond.z, 1e-4);
+}
+
+TEST_F(TaskInterferenceCheckTest, governingContactCommonShapeDrivesPreview)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    auto result = makeGoverningFacePreviewResult(
+        "ContactGoverned",
+        Base::Vector3d(),
+        Base::Vector3d()
+    );
+    auto& pair = result.pairs.front();
+    pair.detection.kind = Part::InterferenceKind::Contact;
+    pair.detection.commonShape = makePlacedBox(1, 1, 1, 90, 0, 0);
+    auto& hit = pair.faceHits[pair.governingFaceHitIndex];
+    hit.classification = Part::InterferenceKind::Contact;
+    hit.closestPointsValid = false;
+    hit.commonShape = makePlacedBox(1, 1, 1, 25, 12, 3);
+
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    task.testSelectResultRow(0);
+
+    ASSERT_EQ(task.testPreviewShapeCount(), 3);
+    double x = 0, y = 0, z = 0;
+    ASSERT_TRUE(task.testPreviewShapeTranslation(0, x, y, z));
+    EXPECT_NEAR(x, 25.0, 1e-4);
+    EXPECT_NEAR(y, 12.0, 1e-4);
+    EXPECT_NEAR(z, 3.0, 1e-4);
+    Base::Vector3d unusedFirst;
+    Base::Vector3d unusedSecond;
+    EXPECT_FALSE(task.testPreviewMarkerPoints(unusedFirst, unusedSecond));
+}
+
+TEST_F(TaskInterferenceCheckTest, inconclusiveFaceWithoutGeometryCreatesNoOriginMarker)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    auto result = makeGoverningFacePreviewResult(
+        "NoGeometry",
+        Base::Vector3d(),
+        Base::Vector3d()
+    );
+    auto& pair = result.pairs.front();
+    pair.detection.kind = Part::InterferenceKind::Inconclusive;
+    pair.detection.minimumDistance = 0.0;
+    pair.detection.pointOnFirst = Base::Vector3d();
+    pair.detection.pointOnSecond = Base::Vector3d();
+    auto& hit = pair.faceHits[pair.governingFaceHitIndex];
+    hit.classification = Part::InterferenceKind::Inconclusive;
+    hit.distance = -1.0;
+    hit.diagnostic = "governing face geometry unavailable";
+    hit.closestPointsValid = false;
+    hit.commonShape.Nullify();
+
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(
+        task.testTableCellText(0, 0).contains(QStringLiteral("Inconclusive"))
+    );
+    EXPECT_TRUE(
+        task.testTableCellText(0, 7).contains(
+            QStringLiteral("governing face geometry unavailable")
+        )
+    );
+    task.testSelectResultRow(0);
+    EXPECT_EQ(task.testPreviewShapeCount(), 2);
+    Base::Vector3d unusedFirst;
+    Base::Vector3d unusedSecond;
+    EXPECT_FALSE(task.testPreviewMarkerPoints(unusedFirst, unusedSecond));
 }
 
 TEST_F(TaskInterferenceCheckTest, documentCloseDiscardsResultsAndClosesManageExclusions)
@@ -1420,7 +1616,17 @@ TEST_F(TaskInterferenceCheckTest, showClearFaceChecksRevealsClearStatusAndHidesB
     contactHit.facePathB = "B.Face3";
     contactHit.classification = Part::InterferenceKind::Contact;
     pair.faceHits = {clearHit, violHit, contactHit};
+    pair.governingFaceHitIndex = 1;
     result.pairs.push_back(pair);
+
+    Assembly::InterferencePairResult clearPair;
+    clearPair.leafIndexA = 0;
+    clearPair.leafIndexB = 1;
+    clearPair.detection.kind = Part::InterferenceKind::Clear;
+    clearPair.detection.minimumDistance = 0.2;
+    clearPair.faceHits = {clearHit};
+    clearPair.governingFaceHitIndex = 0;
+    result.pairs.push_back(clearPair);
 
     auto& session = task.scanSession();
     const auto scan = session.beginScan();
@@ -1428,14 +1634,14 @@ TEST_F(TaskInterferenceCheckTest, showClearFaceChecksRevealsClearStatusAndHidesB
     ASSERT_EQ(task.testTableRowCount(), 1);
     EXPECT_FALSE(task.testTableCellText(0, 6).contains(QStringLiteral("A.Face1")));
     EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("[Clearance]")));
-    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("[Contact]")));
     EXPECT_TRUE(task.testTableCellText(0, 7).contains(QStringLiteral("row 3")));
     EXPECT_TRUE(task.testTableCellText(0, 7).contains(QStringLiteral("c1")));
     EXPECT_TRUE(task.testTableCellText(0, 7).contains(QStringLiteral("c2")));
 
     task.testSetShowClearFaceChecks(true);
-    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("[Clear]")));
-    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("A.Face1")));
+    ASSERT_EQ(task.testTableRowCount(), 2);
+    EXPECT_TRUE(task.testTableCellText(1, 6).contains(QStringLiteral("[Clear]")));
+    EXPECT_TRUE(task.testTableCellText(1, 6).contains(QStringLiteral("A.Face1")));
 }
 
 TEST_F(TaskInterferenceCheckTest, issueKindsHaveDistinctLabels)
@@ -1490,6 +1696,7 @@ TEST_F(TaskInterferenceCheckTest, mixedExcludedPairKeepsInvalidVisibleByDefault)
     invalid.classification = Part::InterferenceKind::InvalidInput;
     invalid.suppressedByExclusion = false;
     pair.faceHits = {contact, invalid};
+    pair.governingFaceHitIndex = 0;
     result.pairs.push_back(pair);
     result.counts.excludedViolations = 1;
     result.counts.invalidInputs = 1;
@@ -1538,6 +1745,7 @@ TEST_F(TaskInterferenceCheckTest, mixedExcludedPairKeepsInconclusiveVisibleByDef
     incon.facePathB = "B.Face2";
     incon.classification = Part::InterferenceKind::Inconclusive;
     pair.faceHits = {viol, incon};
+    pair.governingFaceHitIndex = 0;
     result.pairs.push_back(pair);
     result.counts.excludedViolations = 1;
     result.counts.inconclusivePairs = 1;
@@ -1578,6 +1786,7 @@ TEST_F(TaskInterferenceCheckTest, excludedViolationsOnlyHiddenByDefault)
     contact.facePathB = "B.Face1";
     contact.suppressedByExclusion = true;
     pair.faceHits = {contact};
+    pair.governingFaceHitIndex = 0;
     result.pairs.push_back(pair);
 
     auto& session = task.scanSession();

@@ -197,6 +197,10 @@ public:
         double& y,
         double& z
     ) const;
+    bool testPreviewMarkerPoints(
+        Base::Vector3d& pointOnFirst,
+        Base::Vector3d& pointOnSecond
+    ) const;
     void testOpenManageExclusions();
     bool testManageExclusionsOpen() const;
     bool testHasHost() const;
@@ -293,6 +297,7 @@ private:
     std::vector<std::pair<std::string, std::string>> currentExclusionSourceIds() const;
     App::DocumentObject* resolveSourceId(const std::string& sourceId) const;
     int currentPairIndex() const;
+    int currentFaceHitIndex() const;
     QString formatLength(double mm) const;
     QString formatVolume(double cubicMm) const;
     QString formatPairDistance(const Part::InterferenceResult& detection) const;

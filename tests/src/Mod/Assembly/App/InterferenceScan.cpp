@@ -2712,10 +2712,12 @@ TEST_F(InterferenceScanTest, faceSpecificRulesClassifyTwoGapsIndependently)
     ASSERT_TRUE(result.complete);
     EXPECT_EQ(result.counts.penetrations, 0);
     ASSERT_EQ(result.pairs.size(), 1u);
+    const auto& pairResult = result.pairs.front();
+    ASSERT_LT(pairResult.governingFaceHitIndex, pairResult.faceHits.size());
 
     bool sawPassClear = false;
     bool sawFailViolation = false;
-    for (const auto& hit : result.pairs.front().faceHits) {
+    for (const auto& hit : pairResult.faceHits) {
         const bool matchPass =
             (hit.facePathA == passGap->pathA && hit.facePathB == passGap->pathB)
             || (hit.facePathA == passGap->pathB && hit.facePathB == passGap->pathA);
@@ -2743,6 +2745,40 @@ TEST_F(InterferenceScanTest, faceSpecificRulesClassifyTwoGapsIndependently)
     EXPECT_TRUE(sawFailViolation);
     EXPECT_GE(result.counts.clearFaceHits, 1);
     EXPECT_GE(result.counts.clearanceViolations, 1);
+
+    const auto& governingHit = pairResult.faceHits[pairResult.governingFaceHitIndex];
+    EXPECT_EQ(governingHit.facePathA, failGap->pathA);
+    EXPECT_EQ(governingHit.facePathB, failGap->pathB);
+    EXPECT_EQ(governingHit.classification, Part::InterferenceKind::ClearanceViolation);
+    EXPECT_EQ(governingHit.ruleKind, Assembly::InterferenceClearanceRuleKind::ExactPair);
+    ASSERT_EQ(governingHit.sourceRows.size(), 1u);
+    EXPECT_EQ(governingHit.sourceRows[0], 3);
+    ASSERT_EQ(governingHit.sourceComments.size(), 1u);
+    EXPECT_EQ(governingHit.sourceComments[0], "loose fail");
+    EXPECT_TRUE(governingHit.closestPointsValid);
+    EXPECT_NEAR(pairResult.detection.minimumDistance, governingHit.distance, 1e-9);
+    EXPECT_LT(gaps.front().distance, governingHit.distance)
+        << "the governed exact-rule pair must not be the global closest face pair";
+}
+
+TEST_F(InterferenceScanTest, governingContactRetainsItsCommonShape)
+{
+    auto leafA = makeLeaf("ContactA.", "srcA", gp_Pnt(0, 0, 0));
+    auto leafB = makeLeaf("ContactB.", "srcB", gp_Pnt(10, 0, 0));
+
+    auto result = Assembly::runInterferenceScan(
+        {leafA, leafB},
+        Assembly::InterferenceScanOptions {}
+    );
+    ASSERT_TRUE(result.complete);
+    ASSERT_EQ(result.pairs.size(), 1u);
+    const auto& pair = result.pairs.front();
+    EXPECT_NE(pair.detection.kind, Part::InterferenceKind::Penetration);
+    ASSERT_LT(pair.governingFaceHitIndex, pair.faceHits.size());
+    const auto& hit = pair.faceHits[pair.governingFaceHitIndex];
+    EXPECT_EQ(hit.classification, Part::InterferenceKind::Contact);
+    EXPECT_FALSE(hit.commonShape.IsNull());
+    EXPECT_TRUE(hit.closestPointsValid);
 }
 
 TEST_F(InterferenceScanTest, hostFallbackBroadPhaseKeepsUnmatchedFacePair)
@@ -3343,6 +3379,18 @@ TEST_F(InterferenceScanTest, spreadsheetParserBadPathsAndTolerances)
             }
         }
     }
+    ASSERT_FALSE(result.pairs.empty());
+    const auto& governedPair = result.pairs.front();
+    ASSERT_LT(governedPair.governingFaceHitIndex, governedPair.faceHits.size());
+    const auto& governedHit =
+        governedPair.faceHits[governedPair.governingFaceHitIndex];
+    EXPECT_EQ(governedHit.classification, Part::InterferenceKind::Inconclusive);
+    EXPECT_EQ(
+        governedHit.ruleKind,
+        Assembly::InterferenceClearanceRuleKind::AssemblyGlobal
+    );
+    EXPECT_TRUE(governedHit.sourceRows.empty());
+    EXPECT_NE(governedHit.diagnostic.find("invalid enabled rules"), std::string::npos);
 }
 
 TEST_F(InterferenceScanTest, missingAndDuplicateHeadersAreDiagnostic)
@@ -3465,6 +3513,14 @@ TEST_F(InterferenceScanTest, finalizeSolidInconclusiveNeverDowngrades)
     clearSolid.kind = Part::InterferenceKind::Clear;
     auto upgraded = Assembly::finalizeInterferencePairDetection(clearSolid, viol, false, {});
     EXPECT_EQ(upgraded.kind, Part::InterferenceKind::ClearanceViolation);
+
+    Part::InterferenceResult penetration;
+    penetration.kind = Part::InterferenceKind::Penetration;
+    penetration.overlapVolume = 12.0;
+    auto penetrationWithFaceHits =
+        Assembly::finalizeInterferencePairDetection(penetration, clears, false, {});
+    EXPECT_EQ(penetrationWithFaceHits.kind, Part::InterferenceKind::Penetration);
+    EXPECT_DOUBLE_EQ(penetrationWithFaceHits.overlapVolume, 12.0);
 }
 
 TEST_F(InterferenceScanTest, solidInconclusivePathsAgreeAndPreserveFaceHits)
@@ -4174,6 +4230,9 @@ TEST_F(InterferenceScanTest, clearanceFacePathNestedOrganizerAndDuplicateInstanc
 TEST_F(InterferenceScanTest, clearanceFacePathTnpAndFaceBCanonicalization)
 {
     auto* nest = _doc->addObject<App::Part>("TnpNest");
+    nest->Placement.setValue(
+        Base::Placement(Base::Vector3d(100, 20, 5), Base::Rotation())
+    );
     auto* box = makeBox(_doc, "TnpBox", Base::Vector3d(0, 0, 0), 10, 10, 10);
     nest->addObject(box);
     _assembly->addObject(nest);
@@ -4206,7 +4265,7 @@ TEST_F(InterferenceScanTest, clearanceFacePathTnpAndFaceBCanonicalization)
         EXPECT_EQ(table.invalidRuleCount, 1);
     });
 
-    auto* other = makeBox(_doc, "TnpOther", Base::Vector3d(10.4, 0, 0), 10, 10, 10);
+    auto* other = makeBox(_doc, "TnpOther", Base::Vector3d(110.4, 20, 5), 10, 10, 10);
     _assembly->addObject(other);
     _doc->recompute();
 
@@ -4257,6 +4316,15 @@ TEST_F(InterferenceScanTest, clearanceFacePathTnpAndFaceBCanonicalization)
     ASSERT_FALSE(hit->sourceRows.empty());
     EXPECT_EQ(hit->sourceRows[0], 2);
     EXPECT_EQ(hit->sourceComments[0], "tnp-pair");
+    ASSERT_EQ(scan.pairs.size(), 1u);
+    const auto& pair = scan.pairs.front();
+    ASSERT_LT(pair.governingFaceHitIndex, pair.faceHits.size());
+    EXPECT_EQ(&pair.faceHits[pair.governingFaceHitIndex], hit);
+    EXPECT_TRUE(hit->closestPointsValid);
+    EXPECT_GT(hit->pointOnFirst.x, 99.0);
+    EXPECT_GT(hit->pointOnSecond.x, 99.0);
+    EXPECT_GT(hit->pointOnFirst.y, 19.0);
+    EXPECT_GT(hit->pointOnSecond.y, 19.0);
 }
 
 TEST_F(InterferenceScanTest, clearanceFacePathAliasNeverCompletesClearExpanded)

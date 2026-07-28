@@ -729,6 +729,28 @@ bool TaskInterferenceCheck::testPreviewShapeTranslation(
     return false;
 }
 
+bool TaskInterferenceCheck::testPreviewMarkerPoints(
+    Base::Vector3d& pointOnFirst,
+    Base::Vector3d& pointOnSecond
+) const
+{
+    if (!previewRoot) {
+        return false;
+    }
+    for (int i = 0; i < previewRoot->getNumChildren(); ++i) {
+        auto* coordinates = dynamic_cast<SoCoordinate3*>(previewRoot->getChild(i));
+        if (!coordinates || coordinates->point.getNum() < 2) {
+            continue;
+        }
+        const SbVec3f first = coordinates->point[0];
+        const SbVec3f second = coordinates->point[1];
+        pointOnFirst = Base::Vector3d(first[0], first[1], first[2]);
+        pointOnSecond = Base::Vector3d(second[0], second[1], second[2]);
+        return true;
+    }
+    return false;
+}
+
 void TaskInterferenceCheck::testOpenManageExclusions()
 {
     onManageExclusions();
@@ -1134,6 +1156,23 @@ int TaskInterferenceCheck::currentPairIndex() const
         return -1;
     }
     return pairIndex;
+}
+
+int TaskInterferenceCheck::currentFaceHitIndex() const
+{
+    const int pairIndex = currentPairIndex();
+    if (pairIndex < 0 || !resultsTable) {
+        return -1;
+    }
+    auto* statusItem = resultsTable->item(resultsTable->currentRow(), 0);
+    if (!statusItem) {
+        return -1;
+    }
+    const int faceHitIndex = statusItem->data(Qt::UserRole + 1).toInt();
+    const auto& hits = lastResult.pairs[static_cast<std::size_t>(pairIndex)].faceHits;
+    return faceHitIndex >= 0 && faceHitIndex < static_cast<int>(hits.size())
+        ? faceHitIndex
+        : -1;
 }
 
 bool TaskInterferenceCheck::isResultAffectingProperty(const App::Property& prop) const
@@ -1908,9 +1947,11 @@ void TaskInterferenceCheck::rebuildTable()
         const bool solidPenetration = pair.detection.kind == Part::InterferenceKind::Penetration;
 
         std::vector<const Assembly::InterferenceFaceHit*> visibleHits;
+        std::vector<std::size_t> visibleHitIndices;
         bool hasVisibleUnknown = solidInvalidOrInconclusive;
         bool hasVisibleViolation = false;
-        for (const auto& hit : pair.faceHits) {
+        for (std::size_t hitIndex = 0; hitIndex < pair.faceHits.size(); ++hitIndex) {
+            const auto& hit = pair.faceHits[hitIndex];
             if (hit.classification == Part::InterferenceKind::Clear && !showClear) {
                 continue;
             }
@@ -1928,6 +1969,7 @@ void TaskInterferenceCheck::rebuildTable()
                 hasVisibleViolation = true;
             }
             visibleHits.push_back(&hit);
+            visibleHitIndices.push_back(hitIndex);
         }
 
         const bool solidReportable = solidInvalidOrInconclusive
@@ -1949,35 +1991,50 @@ void TaskInterferenceCheck::rebuildTable()
         const int row = resultsTable->rowCount();
         resultsTable->insertRow(row);
 
-        // Never label Invalid/Inconclusive details as Excluded just because another
-        // hit in the same pair is exclusion-suppressed.
+        const Assembly::InterferenceFaceHit* governingHit = nullptr;
+        std::size_t governingHitIndex = static_cast<std::size_t>(-1);
+        if (pair.governingFaceHitIndex < pair.faceHits.size()) {
+            governingHitIndex = pair.governingFaceHitIndex;
+            governingHit = &pair.faceHits[governingHitIndex];
+        }
+        const Assembly::InterferenceFaceHit* displayedHit = nullptr;
+        std::size_t displayedHitIndex = static_cast<std::size_t>(-1);
+        const auto governingVisible = std::find(
+            visibleHitIndices.begin(),
+            visibleHitIndices.end(),
+            governingHitIndex
+        );
+        if (governingHit && governingVisible != visibleHitIndices.end()) {
+            displayedHit = governingHit;
+            displayedHitIndex = governingHitIndex;
+        }
+        else if (!visibleHits.empty() && !solidReportable) {
+            // If the governing violation is filtered (normally an exclusion),
+            // report the first remaining diagnostic hit and preview that same hit.
+            displayedHit = visibleHits.front();
+            displayedHitIndex = visibleHitIndices.front();
+        }
+
         QString status;
-        if (hasVisibleUnknown) {
-            if (pair.detection.kind == Part::InterferenceKind::InvalidInput
-                || std::any_of(
-                       pair.faceHits.begin(),
-                       pair.faceHits.end(),
-                       [](const Assembly::InterferenceFaceHit& h) {
-                           return h.classification == Part::InterferenceKind::InvalidInput;
-                       })) {
-                status = kindText(Part::InterferenceKind::InvalidInput, false);
-            }
-            else {
-                status = kindText(Part::InterferenceKind::Inconclusive, false);
-            }
-        }
-        else if (pair.excluded && showExcluded && !hasVisibleViolation) {
-            status = kindText(pair.detection.kind, true);
-        }
-        else if (pair.excluded && showExcluded && hasVisibleViolation && !hasVisibleUnknown) {
-            status = kindText(pair.detection.kind, true);
+        if (displayedHit) {
+            status = kindText(
+                displayedHit->classification,
+                displayedHit->suppressedByExclusion
+            );
         }
         else {
-            status = kindText(pair.detection.kind, false);
+            status = kindText(
+                pair.detection.kind,
+                pair.excluded && showExcluded && !solidInvalidOrInconclusive
+            );
         }
 
         auto* statusItem = new QTableWidgetItem(status);
         statusItem->setData(Qt::UserRole, static_cast<int>(i));
+        statusItem->setData(
+            Qt::UserRole + 1,
+            displayedHit ? static_cast<int>(displayedHitIndex) : -1
+        );
         resultsTable->setItem(row, 0, statusItem);
         resultsTable->setItem(
             row,
@@ -1989,30 +2046,46 @@ void TaskInterferenceCheck::rebuildTable()
             2,
             new QTableWidgetItem(QString::fromStdString(lastResult.leaves[pair.leafIndexB].displayPath))
         );
-        resultsTable->setItem(row, 3, new QTableWidgetItem(formatPairDistance(pair.detection)));
-        resultsTable->setItem(row, 4, new QTableWidgetItem(formatPairVolume(pair.detection)));
+        QString distanceText = formatPairDistance(pair.detection);
+        if (displayedHit) {
+            distanceText = displayedHit->distance >= 0.0
+                    && std::isfinite(displayedHit->distance)
+                ? formatLength(displayedHit->distance)
+                : (displayedHit->diagnostic.empty()
+                       ? QStringLiteral("—")
+                       : QString::fromStdString(displayedHit->diagnostic));
+        }
+        resultsTable->setItem(row, 3, new QTableWidgetItem(distanceText));
+        resultsTable->setItem(
+            row,
+            4,
+            new QTableWidgetItem(
+                displayedHit ? QStringLiteral("—") : formatPairVolume(pair.detection)
+            )
+        );
 
         QStringList appliedParts;
         QStringList faceParts;
         QStringList ruleParts;
-        if (pair.detection.kind == Part::InterferenceKind::Penetration) {
+        if (!displayedHit && pair.detection.kind == Part::InterferenceKind::Penetration) {
             appliedParts << tr("n/a");
         }
-        for (const auto* hit : visibleHits) {
-            appliedParts << formatLength(hit->appliedClearance);
-            QString hitStatus = kindText(hit->classification, hit->suppressedByExclusion);
+        if (displayedHit) {
+            appliedParts << formatLength(displayedHit->appliedClearance);
+            QString hitStatus =
+                kindText(displayedHit->classification, displayedHit->suppressedByExclusion);
             faceParts << QStringLiteral("[%1] %2 ↔ %3")
                              .arg(hitStatus)
-                             .arg(QString::fromStdString(hit->facePathA))
-                             .arg(QString::fromStdString(hit->facePathB));
-            QString rule = ruleKindText(hit->ruleKind);
+                             .arg(QString::fromStdString(displayedHit->facePathA))
+                             .arg(QString::fromStdString(displayedHit->facePathB));
+            QString rule = ruleKindText(displayedHit->ruleKind);
             QStringList provenance;
-            const std::size_t n = hit->sourceRows.size();
+            const std::size_t n = displayedHit->sourceRows.size();
             for (std::size_t ri = 0; ri < n; ++ri) {
-                QString part = QStringLiteral("row %1").arg(hit->sourceRows[ri]);
+                QString part = QStringLiteral("row %1").arg(displayedHit->sourceRows[ri]);
                 const QString comment =
-                    ri < hit->sourceComments.size()
-                    ? QString::fromStdString(hit->sourceComments[ri])
+                    ri < displayedHit->sourceComments.size()
+                    ? QString::fromStdString(displayedHit->sourceComments[ri])
                     : QString();
                 if (!comment.isEmpty()) {
                     part += QStringLiteral(": %1").arg(comment);
@@ -2023,6 +2096,12 @@ void TaskInterferenceCheck::rebuildTable()
                 rule += QStringLiteral(" (%1)").arg(provenance.join(QStringLiteral("; ")));
             }
             ruleParts << rule;
+            if (!displayedHit->diagnostic.empty()) {
+                ruleParts << QString::fromStdString(displayedHit->diagnostic);
+            }
+        }
+        else if (!pair.detection.diagnostic.empty()) {
+            ruleParts << QString::fromStdString(pair.detection.diagnostic);
         }
         if (!pair.faceEnumerationDiagnostic.empty()) {
             ruleParts << QString::fromStdString(pair.faceEnumerationDiagnostic);
@@ -2139,7 +2218,11 @@ void TaskInterferenceCheck::updatePreviewForCurrentRow()
     const auto& pair = lastResult.pairs[static_cast<std::size_t>(currentPairIndex())];
     const auto& leafA = lastResult.leaves[pair.leafIndexA];
     const auto& leafB = lastResult.leaves[pair.leafIndexB];
-    const auto color = colorForKind(pair.detection.kind);
+    const int faceHitIndex = currentFaceHitIndex();
+    const Assembly::InterferenceFaceHit* faceHit =
+        faceHitIndex >= 0 ? &pair.faceHits[static_cast<std::size_t>(faceHitIndex)] : nullptr;
+    const auto color =
+        colorForKind(faceHit ? faceHit->classification : pair.detection.kind);
 
     auto addPreviewShape = [&](const TopoDS_Shape& shape, float transparency) {
         if (shape.IsNull()) {
@@ -2167,21 +2250,29 @@ void TaskInterferenceCheck::updatePreviewForCurrentRow()
         previewRoot->addChild(node);
     };
 
-    if (!pair.detection.commonShape.IsNull()) {
-        addPreviewShape(pair.detection.commonShape, 0.45F);
+    const TopoDS_Shape& commonShape =
+        faceHit ? faceHit->commonShape : pair.detection.commonShape;
+    if (!commonShape.IsNull()) {
+        addPreviewShape(commonShape, 0.45F);
     }
 
-    if (hasValidClosestPoints(pair.detection)) {
+    const bool closestPointsValid =
+        faceHit ? faceHit->closestPointsValid : hasValidClosestPoints(pair.detection);
+    if (closestPointsValid) {
+        const Base::Vector3d& first =
+            faceHit ? faceHit->pointOnFirst : pair.detection.pointOnFirst;
+        const Base::Vector3d& second =
+            faceHit ? faceHit->pointOnSecond : pair.detection.pointOnSecond;
         auto* coords = new SoCoordinate3;
         const SbVec3f p1(
-            static_cast<float>(pair.detection.pointOnFirst.x),
-            static_cast<float>(pair.detection.pointOnFirst.y),
-            static_cast<float>(pair.detection.pointOnFirst.z)
+            static_cast<float>(first.x),
+            static_cast<float>(first.y),
+            static_cast<float>(first.z)
         );
         const SbVec3f p2(
-            static_cast<float>(pair.detection.pointOnSecond.x),
-            static_cast<float>(pair.detection.pointOnSecond.y),
-            static_cast<float>(pair.detection.pointOnSecond.z)
+            static_cast<float>(second.x),
+            static_cast<float>(second.y),
+            static_cast<float>(second.z)
         );
         coords->point.setNum(2);
         coords->point.set1Value(0, p1);
