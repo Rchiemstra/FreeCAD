@@ -88,6 +88,12 @@ private:
     int _cancelPhase {0};
     bool _retainWorkspaceOnDestroy {false};
     bool _finishedHandled {false};
+#if defined(Q_OS_UNIX)
+    /// Unix process-group ID retained for the active job so deadline/cancel
+    /// can signal the complete group even after the leader exits. Only valid
+    /// while a job is running; cleared at the terminal point.
+    qint64 _activePgid {0};
+#endif
 };
 
 } // namespace Gui

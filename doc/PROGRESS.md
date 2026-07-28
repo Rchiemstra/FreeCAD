@@ -22,9 +22,9 @@ complete.
 | 5 | Recompute and legacy compatibility | Not started; `Std_Refresh` still sync; `DetachedDocumentArchive` stub |
 | 6 | Qualification and rollout | Not started |
 
-Verified narrow positives (focused Docker validation across Steps 24–28B: **35/35 App**,
+Verified narrow positives (focused Docker validation across Steps 24–29A: **35/35 App**,
 **53 passed + 2 LP64 skips NonBlockingGeometryTest**, **17/17** CrossProcessBoolean/Fillet/Sweep/CrashRename,
-**33/33 GeometryWorkerProcess + fault tests**):
+**36/36 GeometryWorkerProcess + fault tests**):
 
 - Commit fences (job/object name/type/incarnation/generation), transaction-wrapped commit, and
   failure-aware generation (no advance on failed commit) with `FeatureTestDetached`.
@@ -1133,7 +1133,7 @@ Concrete next action for the implementing agent:
 * Next step:
   - Actual worker hang/crash/OOM parent-controlled recovery per `## Next step` above.
 
-### Step 28B — Parent-controlled real worker abort, hang, and injected bad_alloc recovery (Task 28B, this commit)
+### Step 28B — Parent-controlled real worker abort, hang, and injected bad_alloc recovery (Task 28B, `51b1d76050`)
 
 * **28B (developer fault seam + parent qualification):** `FC_GEOMETRY_WORKER_TEST_SEAMS` on the Part
   target when `ENABLE_DEVELOPER_TESTS` is enabled. C++ `GeometryWorker::runWorkerProcess` honors
@@ -1157,7 +1157,7 @@ Concrete next action for the implementing agent:
   - Hang case uses a **1.5 s** parent `GeometryWorkerProcess` deadline in Docker (set immediately before
     `startJob`); isolated hang probe passed at 1500–3000 ms with fault-path wall time ≈ **3–6 s**
     (`TimedOut`, not `Crashed`). Sub-second (300–750 ms) deadlines are unreliable from process start.
-* **Status:** committed with this change on base `960aebfcbf`.
+* **Status:** committed as `51b1d76050` on base `960aebfcbf`.
 * Remaining gaps (Phase 2 still **not** complete):
   - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
   - **P2:** actual OCC crash; actual host OOM; parent-controlled default-workspace relocation;
@@ -1166,5 +1166,144 @@ Concrete next action for the implementing agent:
   - **P4:** production adapters/rollout (blocked).
 * Next step:
   - Descendant-process/tree-kill and installed-tree qualification per `## Next step` above.
+
+### Step 29A — Unix descendant-process cleanup on deadline and cancellation (Task 29A, this commit)
+
+* **Developer-only fault mode `descendant_hang`:** added to the existing
+  `FC_GEOMETRY_WORKER_TEST_SEAMS` fault seam in `GeometryWorker.cpp`, guarded by
+  `ENABLE_DEVELOPER_TESTS` and `Q_OS_UNIX`. The mode is absent from normal builds and from
+  Windows. All existing fault authorization gates are preserved: canonical nonzero request
+  job ID, `FCGEO_TEST_FAULT_JOB_ID` matches the request, `FCGEO_LAUNCHED_JOB_ID` matches the
+  request, injection happens after hello and `worker.start`, and before operand decode or OCC
+  work.
+* **Real descendant process with readiness handshake:** `descendant_hang` forks exactly one
+  real POSIX child in the worker's existing process group. Before fork, a private POSIX pipe
+  is created. In the child (post-fork code uses only async-signal-safe POSIX): close the read
+  end, install `SIG_IGN` for SIGTERM and SIGINT (both `sigaction` return values checked), write
+  exactly one readiness byte only after both handlers are installed, close the write end, then
+  enter a non-busy `pause()` loop. On setup/write failure the child closes descriptors and
+  `_exit()`s. In the worker leader: close the write end, wait for the readiness byte with a
+  bounded `poll()` deadline (5 s). EOF, timeout, malformed readiness, or read error is
+  `FaultSetupFailed` — the child is SIGKILLed and reaped (only the directly created child). The
+  record is published only after the readiness byte arrives, so its presence proves the
+  descendant is already ignoring SIGTERM. No fixed sleep is used as synchronization.
+
+* **Dedicated worker process group required:** before forking, the seam requires
+  `getpid() > 0`, `getpgrp()` succeeds, and `getpid() == getpgrp()` (worker is its own
+  process-group leader). If the FreeCADCmd worker is not its own group leader, the seam does
+  not fork, returns `FaultSetupFailed`, and does not publish the record. This prevents the
+  descendant from being placed in the GUI/test runner's process group.
+* **Atomic developer-test record (QSaveFile):** the worker leader atomically publishes
+  `fault-descendant.json` inside the trusted job workspace using `QSaveFile` (fail-closed
+  atomic replacement). The record contains compact valid JSON with `jobId`, `workerPid`,
+  `descendantPid`, and `processGroupId`; all PIDs positive, and `workerPid == processGroupId`.
+  The record never appears for normal jobs, other fault modes, or job-ID mismatch. Fork or
+  record-publication failure kills and reaps only the directly created child and returns a
+  stable `FaultSetupFailed` error (no process leak, no leftover temporary record). Under the
+  developer seam, stale `fault-descendant.json` and its temporary form are removed before
+  processing a new request in a reused workspace.
+
+* **Cancellation race found and fixed:** previously, when SIGTERM caused the FreeCADCmd leader
+  to exit before the 750 ms SIGKILL escalation timer fired, `onProcessFinished` stopped the
+  cancel timer and emitted the terminal callback. The SIGKILL escalation never fired, so a
+  descendant that ignored SIGTERM survived — an orphan. Fix: `GeometryWorkerProcess` now
+  retains a `getpgid`-verified Unix process-group ID (`_activePgid`) for the active job. In
+  `onProcessFinished`, when `_cancelling` is true and `_activePgid > 0`, a group-level SIGKILL is
+  sent **before** the terminal callback is emitted. The final state remains `Cancelled` with
+  `errorCode == "Cancelled"`. Exactly one terminal callback is preserved.
+* **Deadline path:** `onTimeout` sends SIGKILL to the complete verified group (via
+  `_activePgid` when available, or `QProcess::kill()` fallback). The final state remains
+  `TimedOut` (not `Crashed`).
+* **PGID ownership verification:** after `waitForStarted()`, `GeometryWorkerProcess` reads the
+  launched worker PID, queries its actual PGID with `getpgid(workerPid)`, and sets
+  `_activePgid` only when worker PID > 0, actual PGID > 0, and actual PGID == worker PID. The
+  controller never derives a signalable group merely by copying an unverified QProcess PID.
+  All Unix group signals for deadline, cancellation escalation, process-finished cleanup, and
+  destructor cleanup use only this verified `_activePgid`. If no verified group is available,
+  the controller falls back to `QProcess::terminate()/kill()` for the leader and never calls
+  `kill(-unverifiedPid, ...)`, `kill(0, ...)`, or `kill` with an invalid group. `_activePgid` is
+  cleared at the terminal ownership boundary in `onProcessFinished` (and in the destructor).
+  `signalActiveProcessGroup` rejects `pgid <= 0` and treats `EPERM` as still-existing/failure;
+  `ESRCH` is treated as gone.
+* **Controller signals but does not reap:** the GUI controller is not the descendant's parent
+  after FreeCADCmd exits. It must never call `waitpid(-1, ...)`, `waitid(P_ALL, ...)`, or any
+  equivalent "reap any child" operation — such a call can steal the exit status of an unrelated
+  QProcess owned by another subsystem. The controller signals its verified process group but
+  does not reap non-child descendants (the descendant is reparented to init/PID 1, which reaps
+  it).
+
+* **Windows:** non-Unix behavior preserved. Windows Job Object qualification remains open.
+* **Files changed (expected only):**
+  - `src/Mod/Part/App/GeometryWorker.cpp` — `descendant_hang` fault mode + atomic record
+  - `src/Gui/GeometryWorkerProcess.h` — `_activePgid` member (Unix-only)
+  - `src/Gui/GeometryWorkerProcess.cpp` — PGID retention + cancellation race fix
+  - `tests/src/Gui/TestGeometryWorkerProcess.cpp` — `GeometryWorkerProcessDescendantFaultTest`
+  - `doc/PROGRESS.md` — this step
+* **Tests:** `GeometryWorkerProcessDescendantFaultTest` parameterized
+  `DescendantRemovedAndFreshJobRecovers` (Deadline / Cancellation) plus
+  `FaultJobIdMismatchDoesNotInjectDescendant` (with stale-record reuse coverage); launch only
+  via `GeometryWorkerProcess::startJob()` (no `operation.run()`,
+  `GeometryWorker::runWorkerProcess()`, or direct `QProcess` worker launch). Mapped
+  `Part::Boolean` recovery fixtures consistent with Task 28B. RAII `DescendantCleanupGuard`
+  sends a final SIGKILL on test failure. Record identity is validated before the PGID is
+  trusted: `record.workerPid == record.processGroupId`, `getpgid(record.workerPid) ==
+  record.processGroupId` while the worker lives, and `getpgid(record.descendantPid) ==
+  record.processGroupId`. These identity checks are fatal (`ASSERT`) before user cancellation
+  is requested. The guard is armed only after identity validation and is released only after
+  both descendant PID and process group are positively confirmed gone via `ESRCH`; if either
+  bounded cleanup check fails, the guard stays armed. The guard never signals an unvalidated
+  record PGID. Event-loop polling with explicit deadlines (no unbounded waits or fixed
+  multi-second sleeps). Unix-only assertions guarded so Windows still compiles (tests
+  `GTEST_SKIP()` on non-Unix).
+
+* **Stale-record reuse coverage:** the isolation test pre-creates a recognizable stale
+  `fault-descendant.json` in the workspace, launches a valid mapped Boolean request with a
+  mismatched fault job ID, requires `ReadyToCommit` and mapped semantic recovery, and requires
+  the stale record to have been removed (not merely left untouched). No descendant fault is
+  injected.
+* **Descendant record example** (`fault-descendant.json`):
+  ```json
+  {"descendantPid":271842,"jobId":"56","processGroupId":271839,"type":"descendant_hang","workerPid":271839}
+  ```
+* **Validation performed** (Docker `/code/build_docker`; the runtime container was launched with
+  `docker run --init` so PID 1 reaps orphaned children):
+  - `ninja -j1 -C /code/build_docker FreeCADApp Part FreeCADCmd PartScripts FreeCADGui Gui_tests_run Part_tests_run`
+  - Gui `GeometryWorkerProcessDescendantFaultTest.*` → **3/3 PASSED** (Deadline, Cancellation,
+    FaultJobIdMismatch)
+  - Gui `GeometryWorkerProcessDescendantFaultTest.*` `--gtest_repeat=5 --gtest_break_on_failure`
+    → **15/15** parameter executions PASSED
+  - Gui `GeometryWorkerProcessTest.*:GeometryWorkerProcessFaultTest.*:GeometryWorkerProcessDescendantFaultTest.*`
+    → **36/36 PASSED** (33 existing + 3 new)
+  - Part `CrossProcessBooleanTest.*:CrossProcessFilletTest.*:CrossProcessSweepTest.*:CrossProcessCrashRenameRecoveryTest.*`
+    → **17/17 PASSED**
+  - Part `NonBlockingGeometryTest.*` → **53 passed**, **2 LP64 skipped**
+  - `git diff --check` → clean on changed sources
+* **Observed timings** (Docker, representative):
+  - Deadline case (1500 ms parent deadline): fault-path wall time ≈ **3–6 s** (`TimedOut`, not
+    `Crashed`); descendant and group confirmed gone within < 1 s of terminal callback.
+  - Cancellation case (120 s parent deadline, cancel after record): fault-path wall time ≈
+    **3–5 s** (`Cancelled`); descendant and group confirmed gone within < 1 s of terminal
+    callback.
+* **Proof no live descendant survived:** both parameterized cases poll
+  `kill(descendantPid, 0)` and `kill(-processGroupId, 0)` with a 10 s bounded deadline after the
+  terminal callback; both must return `ESRCH` (gone). Group SIGKILL terminates the descendant,
+  while the final `ESRCH` also depends on PID 1 reaping the adopted zombie. An independent run
+  in a container whose PID 1 was plain `sleep` correctly exposed persistent `Z` entries; the
+  same linked binary passed **3/3** and repeat **15/15** with Docker `--init`. Tests now identify
+  the reaper requirement in their failure message. The RAII guard sends a final SIGKILL on any
+  early `ASSERT` abort.
+* **Status:** committed with this change on base `51b1d76050`.
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** actual OCC crash; actual host OOM; parent-controlled default-workspace relocation;
+    install-tree smoke beyond the Docker build tree; LLP64/32-bit-long decode qualification on
+    a non-LP64 builder.
+  - **P3:** Windows Job Object cancel; retained-success janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Installed-tree smoke beyond the Docker build tree (named as the next task). Phase 2 remains
+    incomplete. Docker/Unix-only qualification for descendant cleanup; Windows Job Object,
+    installed-tree smoke, actual OCC crash, and host OOM remain open.
 
 ---
