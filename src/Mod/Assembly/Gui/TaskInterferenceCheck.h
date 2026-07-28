@@ -68,6 +68,18 @@ AssemblyGuiExport ExcludePairCommandResult tryExcludeInterferencePairInCommand(
     App::DocumentObject* sourceB
 );
 
+/**
+ * Test-only seam: shared atomics captured by value into the QtConcurrent worker.
+ * Workers must not read or write TaskInterferenceCheck state directly.
+ */
+struct AssemblyGuiExport InterferenceWorkerInjectionControl
+{
+    std::atomic<std::uint64_t> injectGeneration {0};
+    std::atomic<bool> workerStarted {false};
+    std::atomic<bool> holdInWorker {false};
+    std::atomic<bool> injectWatcherDelivered {false};
+};
+
 class AssemblyGuiExport TaskInterferenceCheck: public QWidget
 {
     Q_OBJECT
@@ -181,10 +193,21 @@ public:
     void testNotifySelectionChanged();
     void testSetPreparationBarrier(std::function<void()> barrier);
     void testClearPreparationBarrier();
+    /**
+     * GUI-thread generation tag captured into the next worker lambda before launch.
+     * When that generation runs, the worker throws Base::RuntimeError.
+     */
+    void testSetInjectWorkerFailureForGeneration(std::uint64_t generation);
+    void testClearInjectWorkerFailure();
+    void testSetWorkerInjectionControl(
+        std::shared_ptr<InterferenceWorkerInjectionControl> control
+    );
+    void testClearWorkerInjectionControl();
     void testSetIncludeHidden(bool enabled);
     void testRunScan();
     bool testIsPreparing() const;
     bool testIsCancelEnabled() const;
+    bool testIsRunEnabled() const;
     /** Attach previewRoot to an arbitrary Coin scene (no MainWindow required). */
     void testAttachPreviewToScene(SoGroup* scene);
     void testDetachPreview();
@@ -249,6 +272,8 @@ private:
     /** Selection changed while a scan was busy; refresh scope after finish. */
     bool selectionDirtyWhileBusy = false;
     std::function<void()> testPreparationBarrierFn;
+    std::uint64_t testInjectWorkerFailureGeneration = 0;
+    std::shared_ptr<InterferenceWorkerInjectionControl> testWorkerInjectionControl;
     bool hasTestSelectionOverride = false;
     std::vector<Assembly::InterferenceSelectionHandle> testSelectionHandles;
     /** True while DocumentObject-backed snapshot preparation is running (Cancel inactive). */

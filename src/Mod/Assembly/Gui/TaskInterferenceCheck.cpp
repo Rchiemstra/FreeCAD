@@ -57,7 +57,10 @@
 #include <QComboBox>
 #include <QFutureWatcher>
 #include <QMetaObject>
+#include <QThread>
+#include <QUnhandledException>
 #include <cmath>
+#include <exception>
 #include <functional>
 #include <algorithm>
 #include <Mod/Spreadsheet/App/Sheet.h>
@@ -117,6 +120,75 @@ SbColor colorForKind(Part::InterferenceKind kind)
             return SbColor(0.95F, 0.75F, 0.15F);
         default:
             return SbColor(0.6F, 0.6F, 0.6F);
+    }
+}
+
+InterferenceScanResult makeIncompleteWorkerDiagnosticResult(const char* message)
+{
+    InterferenceScanResult result;
+    result.complete = false;
+    result.cancelled = false;
+    InterferenceComponentIssue issue;
+    issue.kind = InterferenceComponentIssue::Kind::Other;
+    issue.diagnostic =
+        message && message[0] != '\0' ? message : "Unknown worker failure";
+    result.componentIssues.push_back(issue);
+    return result;
+}
+
+InterferenceScanResult incompleteResultFromBaseException(const Base::Exception& e)
+{
+    const std::string message = e.getMessage();
+    return makeIncompleteWorkerDiagnosticResult(
+        message.empty() ? e.what() : message.c_str()
+    );
+}
+
+InterferenceScanResult incompleteResultFromStdException(const std::exception& e)
+{
+    return makeIncompleteWorkerDiagnosticResult(e.what());
+}
+
+InterferenceScanResult incompleteResultFromUnknownWorkerException()
+{
+    return makeIncompleteWorkerDiagnosticResult(nullptr);
+}
+
+InterferenceScanResult incompleteResultFromExceptionPtr(std::exception_ptr ptr)
+{
+    if (!ptr) {
+        return incompleteResultFromUnknownWorkerException();
+    }
+    try {
+        std::rethrow_exception(ptr);
+    }
+    catch (const Base::Exception& e) {
+        return incompleteResultFromBaseException(e);
+    }
+    catch (const std::exception& e) {
+        return incompleteResultFromStdException(e);
+    }
+    catch (...) {
+        return incompleteResultFromUnknownWorkerException();
+    }
+}
+
+InterferenceScanResult readWatcherInterferenceResult(QFutureWatcher<InterferenceScanResult>* watcher)
+{
+    try {
+        return watcher->result();
+    }
+    catch (const QUnhandledException& e) {
+        return incompleteResultFromExceptionPtr(e.exception());
+    }
+    catch (const Base::Exception& e) {
+        return incompleteResultFromBaseException(e);
+    }
+    catch (const std::exception& e) {
+        return incompleteResultFromStdException(e);
+    }
+    catch (...) {
+        return incompleteResultFromUnknownWorkerException();
     }
 }
 
@@ -687,6 +759,28 @@ void TaskInterferenceCheck::testClearPreparationBarrier()
     testPreparationBarrierFn = {};
 }
 
+void TaskInterferenceCheck::testSetInjectWorkerFailureForGeneration(std::uint64_t generation)
+{
+    testInjectWorkerFailureGeneration = generation;
+}
+
+void TaskInterferenceCheck::testClearInjectWorkerFailure()
+{
+    testInjectWorkerFailureGeneration = 0;
+}
+
+void TaskInterferenceCheck::testSetWorkerInjectionControl(
+    std::shared_ptr<InterferenceWorkerInjectionControl> control
+)
+{
+    testWorkerInjectionControl = std::move(control);
+}
+
+void TaskInterferenceCheck::testClearWorkerInjectionControl()
+{
+    testWorkerInjectionControl.reset();
+}
+
 void TaskInterferenceCheck::testSetIncludeHidden(bool enabled)
 {
     if (includeHiddenCheck) {
@@ -707,6 +801,11 @@ bool TaskInterferenceCheck::testIsPreparing() const
 bool TaskInterferenceCheck::testIsCancelEnabled() const
 {
     return cancelButton && cancelButton->isEnabled();
+}
+
+bool TaskInterferenceCheck::testIsRunEnabled() const
+{
+    return runButton && runButton->isEnabled();
 }
 
 void TaskInterferenceCheck::testAttachPreviewToScene(SoGroup* scene)
@@ -1454,20 +1553,31 @@ void TaskInterferenceCheck::onRun()
     }
 
     auto* watcher = new QFutureWatcher<InterferenceScanResult>(this);
+    std::uint64_t injectGeneration = testInjectWorkerFailureGeneration;
+    if (injectGeneration == 0 && testWorkerInjectionControl) {
+        injectGeneration = testWorkerInjectionControl->injectGeneration.load(
+            std::memory_order_relaxed
+        );
+    }
+    std::shared_ptr<InterferenceWorkerInjectionControl> workerInjection =
+        testWorkerInjectionControl;
     connect(
         watcher,
         &QFutureWatcher<InterferenceScanResult>::finished,
         this,
-        [self, watcher, generation]() {
+        [self, watcher, generation, workerInjection, injectGeneration]() {
             watcher->deleteLater();
             if (!self) {
                 return;
             }
             InterferenceScanResult result;
             if (watcher->future().isFinished()) {
-                result = watcher->result();
+                result = readWatcherInterferenceResult(watcher);
             }
             self->onScanFinished(generation, result);
+            if (workerInjection && injectGeneration != 0 && generation == injectGeneration) {
+                workerInjection->injectWatcherDelivered.store(true, std::memory_order_release);
+            }
         }
     );
 
@@ -1481,7 +1591,19 @@ void TaskInterferenceCheck::onRun()
          clearanceRules = prepOptions.clearanceRules,
          cancel,
          self,
-         generation]() mutable {
+         generation,
+         injectGeneration,
+         workerInjection]() mutable {
+            if (injectGeneration != 0 && injectGeneration == generation) {
+                if (workerInjection) {
+                    workerInjection->workerStarted.store(true, std::memory_order_release);
+                    // Test seam: explicit hold ignores cooperative cancel from newer generations.
+                    while (workerInjection->holdInWorker.load(std::memory_order_acquire)) {
+                        QThread::msleep(2);
+                    }
+                }
+                throw Base::RuntimeError("Injected worker failure");
+            }
             InterferenceScanOptions options;
             options.clearance = clearance;
             options.clearanceRules = std::move(clearanceRules);

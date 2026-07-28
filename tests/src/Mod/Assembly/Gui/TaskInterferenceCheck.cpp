@@ -1700,6 +1700,241 @@ TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperAbortsOnUnsavedExterna
     EXPECT_TRUE(_assembly->hasInterferenceExclusion(okA, okB));
 }
 
+static void waitUntilScanIdle(AssemblyGui::TaskInterferenceCheck& task, bool allowNoResults = false)
+{
+    auto& session = task.scanSession();
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.start(60000);
+    while ((session.isBusy() || task.isScanning()) && timeout.isActive()) {
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+    if (!allowNoResults) {
+        for (int i = 0; i < 50 && !task.hasResults() && task.isScanning(); ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+    }
+    else {
+        for (int i = 0; i < 50 && task.isScanning(); ++i) {
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
+        }
+    }
+    ASSERT_TRUE(timeout.isActive()) << "Timed out waiting for scan";
+}
+
+static bool waitWithEvents(const std::function<bool()>& predicate, int timeoutMs = 60000)
+{
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.start(timeoutMs);
+    while (!predicate() && timeout.isActive()) {
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+    return predicate();
+}
+
+static bool waitUntilWorkerStarted(const AssemblyGui::InterferenceWorkerInjectionControl& control)
+{
+    return waitWithEvents([&]() {
+        return control.workerStarted.load(std::memory_order_acquire);
+    });
+}
+
+static bool waitUntilInjectWatcherDelivered(
+    const AssemblyGui::InterferenceWorkerInjectionControl& control
+)
+{
+    return waitWithEvents([&]() {
+        return control.injectWatcherDelivered.load(std::memory_order_acquire);
+    });
+}
+
+static void addOverlappingPairForAsyncScan(App::Document* doc, Assembly::AssemblyObject* assembly)
+{
+    auto* boxA = doc->addObject<Part::Box>("WorkerFailA");
+    boxA->Length.setValue(10);
+    boxA->Width.setValue(10);
+    boxA->Height.setValue(10);
+    boxA->Placement.setValue(Base::Placement(Base::Vector3d(0, 0, 0), Base::Rotation()));
+    auto* boxB = doc->addObject<Part::Box>("WorkerFailB");
+    boxB->Length.setValue(10);
+    boxB->Width.setValue(10);
+    boxB->Height.setValue(10);
+    boxB->Placement.setValue(Base::Placement(Base::Vector3d(5, 0, 0), Base::Rotation()));
+    assembly->addObject(boxA);
+    assembly->addObject(boxB);
+    doc->recompute();
+}
+
+/** Ensures a held inject worker is released if the test fails or the fixture tears down. */
+struct ScopedWorkerInjectionHoldRelease
+{
+    std::shared_ptr<AssemblyGui::InterferenceWorkerInjectionControl> control;
+
+    explicit ScopedWorkerInjectionHoldRelease(
+        std::shared_ptr<AssemblyGui::InterferenceWorkerInjectionControl> injectionControl
+    )
+        : control(std::move(injectionControl))
+    {}
+
+    ~ScopedWorkerInjectionHoldRelease()
+    {
+        if (control) {
+            control->holdInWorker.store(false, std::memory_order_release);
+        }
+    }
+};
+
+TEST_F(TaskInterferenceCheckTest, workerInjectedFailureRecoversThroughOnScanFinished)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    ASSERT_TRUE(task.testHasPreviewRoot());
+
+    auto& session = task.scanSession();
+    const auto seed = session.beginScan();
+    task.testDeliverScanFinished(seed.generation, makePlacedPenetrationResult());
+    ASSERT_TRUE(task.hasResults());
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(task.testTableCellText(0, 1).contains(QStringLiteral("P_A")));
+    task.testSelectResultRow(0);
+    ASSERT_EQ(task.testPreviewShapeCount(), 2);
+
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    task.testSetPreparationBarrier([&]() {
+        task.testSetInjectWorkerFailureForGeneration(task.scanSession().activeGeneration());
+        task.testClearPreparationBarrier();
+    });
+    task.testRunScan();
+    waitUntilScanIdle(task, /*allowNoResults=*/true);
+    ASSERT_TRUE(waitWithEvents([&]() {
+        return task.hasResults();
+    }));
+
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_FALSE(session.isBusy());
+    EXPECT_FALSE(task.testIsPreparing());
+    EXPECT_TRUE(task.testIsRunEnabled());
+    EXPECT_FALSE(task.testIsCancelEnabled());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("incomplete"), Qt::CaseInsensitive)
+        || task.testStatusText().contains(QStringLiteral("failed"), Qt::CaseInsensitive)
+    );
+    EXPECT_TRUE(task.testProgressText().isEmpty());
+    EXPECT_EQ(task.testPreviewShapeCount(), 0);
+    EXPECT_EQ(task.testPenetrationCount(), 0);
+    EXPECT_EQ(task.testResultPairCount(), 0u);
+
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_TRUE(
+        task.testTableCellText(0, 0).contains(QStringLiteral("Diagnostic"), Qt::CaseInsensitive)
+    );
+    EXPECT_FALSE(task.testTableCellText(0, 1).contains(QStringLiteral("P_A")));
+    EXPECT_TRUE(
+        task.testTableCellText(0, 7).contains(QStringLiteral("Injected worker failure"))
+    );
+    task.testClearInjectWorkerFailure();
+}
+
+TEST_F(TaskInterferenceCheckTest, obsoleteWorkerFailureDoesNotOverwriteNewerSuccessfulResult)
+{
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto control = std::make_shared<AssemblyGui::InterferenceWorkerInjectionControl>();
+    control->holdInWorker.store(true, std::memory_order_release);
+    control->injectWatcherDelivered.store(false, std::memory_order_relaxed);
+    ScopedWorkerInjectionHoldRelease releaseHeldWorker(control);
+    task.testSetWorkerInjectionControl(control);
+
+    task.testSetPreparationBarrier([&]() {
+        const std::uint64_t generationA = task.scanSession().activeGeneration();
+        task.testSetInjectWorkerFailureForGeneration(generationA);
+        control->injectGeneration.store(generationA, std::memory_order_relaxed);
+        task.testClearPreparationBarrier();
+    });
+    task.testRunScan();
+    ASSERT_TRUE(waitUntilWorkerStarted(*control));
+
+    task.testClearInjectWorkerFailure();
+    control->injectGeneration.store(0, std::memory_order_relaxed);
+
+    task.testRunScan();
+    waitUntilScanIdle(task);
+
+    EXPECT_TRUE(control->holdInWorker.load(std::memory_order_acquire));
+    EXPECT_FALSE(control->injectWatcherDelivered.load(std::memory_order_acquire));
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_GE(task.testPenetrationCount(), 1);
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+    EXPECT_FALSE(
+        task.testStatusText().contains(QStringLiteral("incomplete"), Qt::CaseInsensitive)
+    );
+
+    const QString statusAfterB = task.testStatusText();
+    const QString summaryAfterB = task.testSummaryText();
+    const QString progressAfterB = task.testProgressText();
+    const int tableRowsAfterB = task.testTableRowCount();
+    const int penetrationAfterB = task.testPenetrationCount();
+    const bool hasResultsAfterB = task.hasResults();
+    const std::size_t pairCountAfterB = task.testResultPairCount();
+    QStringList tableSnapshotAfterB;
+    for (int row = 0; row < tableRowsAfterB; ++row) {
+        QStringList cells;
+        for (int col = 0; col < 8; ++col) {
+            cells << task.testTableCellText(row, col);
+        }
+        tableSnapshotAfterB << cells.join(QLatin1Char('|'));
+    }
+
+    control->holdInWorker.store(false, std::memory_order_release);
+    ASSERT_TRUE(waitUntilInjectWatcherDelivered(*control));
+
+    EXPECT_EQ(task.testStatusText(), statusAfterB);
+    EXPECT_EQ(task.testSummaryText(), summaryAfterB);
+    EXPECT_EQ(task.testProgressText(), progressAfterB);
+    EXPECT_EQ(task.testTableRowCount(), tableRowsAfterB);
+    EXPECT_EQ(task.testPenetrationCount(), penetrationAfterB);
+    EXPECT_EQ(task.hasResults(), hasResultsAfterB);
+    EXPECT_EQ(task.testResultPairCount(), pairCountAfterB);
+    for (int row = 0; row < tableRowsAfterB; ++row) {
+        QStringList cells;
+        for (int col = 0; col < 8; ++col) {
+            cells << task.testTableCellText(row, col);
+        }
+        EXPECT_EQ(cells.join(QLatin1Char('|')), tableSnapshotAfterB[row]);
+        EXPECT_FALSE(
+            task.testTableCellText(row, 7).contains(QStringLiteral("Injected worker failure"))
+        );
+    }
+
+    task.testClearWorkerInjectionControl();
+    task.testClearInjectWorkerFailure();
+}
+
+TEST_F(TaskInterferenceCheckTest, asyncScanCompletesWhenWorkerFailureInjectionDisabled)
+{
+    addOverlappingPairForAsyncScan(_doc, _assembly);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testClearInjectWorkerFailure();
+    task.testClearWorkerInjectionControl();
+    task.testRunScan();
+    waitUntilScanIdle(task);
+
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_GE(task.testPenetrationCount(), 1);
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+    EXPECT_FALSE(
+        task.testStatusText().contains(QStringLiteral("Injected worker failure"))
+    );
+}
+
 int main(int argc, char** argv)
 {
     ensureDefaultOffscreenQtPlatform();
