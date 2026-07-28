@@ -1644,6 +1644,52 @@ TEST_F(TaskInterferenceCheckTest, showClearFaceChecksRevealsClearStatusAndHidesB
     EXPECT_TRUE(task.testTableCellText(1, 6).contains(QStringLiteral("A.Face1")));
 }
 
+TEST_F(TaskInterferenceCheckTest, faceOnlyViolationEnablesExcludeAndCountsPairOnce)
+{
+    auto* sourceA = _doc->addObject<Part::Box>("FaceOnlySourceA");
+    auto* sourceB = _doc->addObject<Part::Box>("FaceOnlySourceB");
+    const std::string idA =
+        std::string(_doc->getName()) + "#" + sourceA->getNameInDocument();
+    const std::string idB =
+        std::string(_doc->getName()) + "#" + sourceB->getNameInDocument();
+
+    Assembly::InterferenceScanResult result;
+    result.complete = true;
+    Assembly::InterferenceLeaf leafA;
+    leafA.displayPath = "FaceOnlyA";
+    leafA.sourceId = idA;
+    Assembly::InterferenceLeaf leafB;
+    leafB.displayPath = "FaceOnlyB";
+    leafB.sourceId = idB;
+    result.leaves = {leafA, leafB};
+
+    Assembly::InterferencePairResult pair;
+    pair.leafIndexA = 0;
+    pair.leafIndexB = 1;
+    pair.detection.kind = Part::InterferenceKind::Clear;
+    Assembly::InterferenceFaceHit clearance;
+    clearance.facePathA = "FaceOnlyA.Face2";
+    clearance.facePathB = "FaceOnlyB.Face4";
+    clearance.classification = Part::InterferenceKind::ClearanceViolation;
+    auto contact = clearance;
+    contact.facePathA = "FaceOnlyA.Face3";
+    contact.facePathB = "FaceOnlyB.Face5";
+    contact.classification = Part::InterferenceKind::Contact;
+    pair.faceHits = {clearance, contact};
+    pair.governingFaceHitIndex = 0;
+    result.pairs.push_back(pair);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    auto& session = task.scanSession();
+    const auto scan = session.beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    task.testSelectResultRow(0);
+
+    EXPECT_TRUE(task.isExcludePairEnabled());
+    EXPECT_EQ(task.testAffectedViolationPairCount(), 1u);
+}
+
 TEST_F(TaskInterferenceCheckTest, issueKindsHaveDistinctLabels)
 {
     AssemblyGui::TaskInterferenceCheck task(_assembly);

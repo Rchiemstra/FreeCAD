@@ -19,6 +19,7 @@
 #include "AssemblyObject.h"
 #include "Groups.h"
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
@@ -2368,6 +2369,78 @@ Part::InterferenceResult finalizeInterferencePairDetection(
                faceEnumerationDiagnostic
     )
         .detection;
+}
+
+std::size_t countInterferenceExclusionAffectedPairs(
+    const InterferenceScanResult& result,
+    const std::string& sourceIdA,
+    const std::string& sourceIdB
+)
+{
+    auto resolveSourceId = [](const std::string& sourceId) -> App::DocumentObject* {
+        const auto separator = sourceId.find('#');
+        if (separator == std::string::npos || separator == 0
+            || separator + 1 >= sourceId.size()
+            || sourceId.find('#', separator + 1) != std::string::npos) {
+            return nullptr;
+        }
+        auto* document =
+            App::GetApplication().getDocument(sourceId.substr(0, separator).c_str());
+        if (!document) {
+            return nullptr;
+        }
+        auto* object = document->getObject(sourceId.substr(separator + 1).c_str());
+        return object && object->isAttachedToDocument() ? object : nullptr;
+    };
+
+    if (!resolveSourceId(sourceIdA) || !resolveSourceId(sourceIdB)) {
+        return 0;
+    }
+    const auto target = sourceIdA <= sourceIdB
+        ? std::make_pair(sourceIdA, sourceIdB)
+        : std::make_pair(sourceIdB, sourceIdA);
+
+    auto isViolation = [](Part::InterferenceKind kind) {
+        return kind == Part::InterferenceKind::Penetration
+            || kind == Part::InterferenceKind::Contact
+            || kind == Part::InterferenceKind::ClearanceViolation;
+    };
+    auto hasUnsuppressedViolation = [&](const InterferencePairResult& pair) {
+        if (pair.excluded
+            || pair.detection.kind == Part::InterferenceKind::InvalidInput
+            || pair.detection.kind == Part::InterferenceKind::Inconclusive
+            || pair.detection.kind == Part::InterferenceKind::Cancelled) {
+            return false;
+        }
+        if (pair.detection.kind == Part::InterferenceKind::Penetration) {
+            return true;
+        }
+        for (const auto& hit : pair.faceHits) {
+            if (!hit.suppressedByExclusion && isViolation(hit.classification)) {
+                return true;
+            }
+        }
+        return pair.faceHits.empty() && isViolation(pair.detection.kind);
+    };
+
+    std::size_t affected = 0;
+    for (const auto& pair : result.pairs) {
+        if (pair.leafIndexA >= result.leaves.size()
+            || pair.leafIndexB >= result.leaves.size()) {
+            continue;
+        }
+        const auto& idA = result.leaves[pair.leafIndexA].sourceId;
+        const auto& idB = result.leaves[pair.leafIndexB].sourceId;
+        if (!resolveSourceId(idA) || !resolveSourceId(idB)) {
+            continue;
+        }
+        const auto candidate =
+            idA <= idB ? std::make_pair(idA, idB) : std::make_pair(idB, idA);
+        if (candidate == target && hasUnsuppressedViolation(pair)) {
+            ++affected;
+        }
+    }
+    return affected;
 }
 
 namespace

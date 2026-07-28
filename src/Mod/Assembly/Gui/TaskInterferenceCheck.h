@@ -139,6 +139,7 @@ public:
     }
     bool isSelectPairEnabled() const;
     bool isExcludePairEnabled() const;
+    std::size_t testAffectedViolationPairCount() const;
 
     /**
      * Test / lifecycle hooks. Deliver a finished scan as the QtConcurrent watcher would.

@@ -453,6 +453,24 @@ bool TaskInterferenceCheck::isExcludePairEnabled() const
     return excludeButton && excludeButton->isEnabled();
 }
 
+std::size_t TaskInterferenceCheck::testAffectedViolationPairCount() const
+{
+    const int pairIndex = currentPairIndex();
+    if (pairIndex < 0) {
+        return 0;
+    }
+    const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
+    if (pair.leafIndexA >= lastResult.leaves.size()
+        || pair.leafIndexB >= lastResult.leaves.size()) {
+        return 0;
+    }
+    return Assembly::countInterferenceExclusionAffectedPairs(
+        lastResult,
+        lastResult.leaves[pair.leafIndexA].sourceId,
+        lastResult.leaves[pair.leafIndexB].sourceId
+    );
+}
+
 bool TaskInterferenceCheck::testIsRestorePairEnabled() const
 {
     return restoreButton && restoreButton->isEnabled();
@@ -1119,13 +1137,15 @@ void TaskInterferenceCheck::updateRowActionState()
     bool canRestore = false;
     if (hasPair) {
         const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
-        bool hasUnsuppressedViolation = isViolationKind(pair.detection.kind) && !pair.excluded;
-        for (const auto& hit : pair.faceHits) {
-            if (isViolationKind(hit.classification) && !hit.suppressedByExclusion) {
-                hasUnsuppressedViolation = true;
-            }
+        if (pair.leafIndexA < lastResult.leaves.size()
+            && pair.leafIndexB < lastResult.leaves.size()) {
+            canExclude = Assembly::countInterferenceExclusionAffectedPairs(
+                             lastResult,
+                             lastResult.leaves[pair.leafIndexA].sourceId,
+                             lastResult.leaves[pair.leafIndexB].sourceId
+                         )
+                > 0;
         }
-        canExclude = !pair.excluded && hasUnsuppressedViolation;
         canRestore = pair.excluded;
     }
     if (selectPairButton) {
@@ -2430,19 +2450,13 @@ void TaskInterferenceCheck::onExcludePair()
         return;
     }
 
-    int affected = 0;
     const auto& idA = lastResult.leaves[pair.leafIndexA].sourceId;
     const auto& idB = lastResult.leaves[pair.leafIndexB].sourceId;
-    for (const auto& other : lastResult.pairs) {
-        if (!isViolationKind(other.detection.kind)) {
-            continue;
-        }
-        const auto& a = lastResult.leaves[other.leafIndexA].sourceId;
-        const auto& b = lastResult.leaves[other.leafIndexB].sourceId;
-        if ((a == idA && b == idB) || (a == idB && b == idA)) {
-            ++affected;
-        }
-    }
+    const std::size_t affected = Assembly::countInterferenceExclusionAffectedPairs(
+        lastResult,
+        idA,
+        idB
+    );
 
     const auto answer = QMessageBox::question(
         this,
@@ -2451,7 +2465,7 @@ void TaskInterferenceCheck::onExcludePair()
            "violation row(s).")
             .arg(QString::fromUtf8(sourceA->Label.getValue()))
             .arg(QString::fromUtf8(sourceB->Label.getValue()))
-            .arg(affected)
+            .arg(static_cast<qulonglong>(affected))
     );
     if (answer != QMessageBox::Yes) {
         return;

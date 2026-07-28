@@ -3365,6 +3365,9 @@ TEST_F(InterferenceScanTest, spreadsheetParserBadPathsAndTolerances)
     }
 
     // Typo must not silently apply 0.5 and clear a 0.4 gap under global 0.
+    // Keep the face pair in the conservative probe so the fail-closed
+    // classification/provenance path is exercised directly.
+    table.maxEnabledClearance = 0.5;
     Assembly::InterferenceScanOptions options;
     options.clearance = 0.0;
     options.clearanceRules = table;
@@ -3521,6 +3524,152 @@ TEST_F(InterferenceScanTest, finalizeSolidInconclusiveNeverDowngrades)
         Assembly::finalizeInterferencePairDetection(penetration, clears, false, {});
     EXPECT_EQ(penetrationWithFaceHits.kind, Part::InterferenceKind::Penetration);
     EXPECT_DOUBLE_EQ(penetrationWithFaceHits.overlapVolume, 12.0);
+}
+
+TEST_F(InterferenceScanTest, exclusionAffectedCountUsesUnorderedComponentPairs)
+{
+    auto* sourceA = makeBox(
+        _doc,
+        "ImpactSourceA",
+        Base::Vector3d(100, 0, 0),
+        1,
+        1,
+        1
+    );
+    auto* sourceB = makeBox(
+        _doc,
+        "ImpactSourceB",
+        Base::Vector3d(110, 0, 0),
+        1,
+        1,
+        1
+    );
+    const std::string idA =
+        std::string(_doc->getName()) + "#" + sourceA->getNameInDocument();
+    const std::string idB =
+        std::string(_doc->getName()) + "#" + sourceB->getNameInDocument();
+
+    Assembly::InterferenceScanResult result;
+    auto addLeaf = [&](const std::string& id, const char* occurrence) {
+        Assembly::InterferenceLeaf leaf;
+        leaf.sourceId = id;
+        leaf.displayPath = occurrence;
+        result.leaves.push_back(std::move(leaf));
+        return result.leaves.size() - 1;
+    };
+    const auto a0 = addLeaf(idA, "A0");
+    const auto b0 = addLeaf(idB, "B0");
+    const auto b1 = addLeaf(idB, "B1");
+    const auto a1 = addLeaf(idA, "A1");
+    const auto a2 = addLeaf(idA, "A2");
+    const auto b2 = addLeaf(idB, "B2");
+
+    Assembly::InterferencePairResult faceOnly;
+    faceOnly.leafIndexA = a0;
+    faceOnly.leafIndexB = b0;
+    faceOnly.detection.kind = Part::InterferenceKind::Clear;
+    faceOnly.faceHits = {
+        makeHit(Part::InterferenceKind::ClearanceViolation),
+        makeHit(Part::InterferenceKind::Contact)
+    };
+    result.pairs.push_back(faceOnly);
+
+    Assembly::InterferencePairResult reversed;
+    reversed.leafIndexA = b1;
+    reversed.leafIndexB = a1;
+    reversed.detection.kind = Part::InterferenceKind::Contact;
+    result.pairs.push_back(reversed);
+
+    Assembly::InterferencePairResult penetration;
+    penetration.leafIndexA = a2;
+    penetration.leafIndexB = b2;
+    penetration.detection.kind = Part::InterferenceKind::Penetration;
+    result.pairs.push_back(penetration);
+
+    EXPECT_EQ(
+        Assembly::countInterferenceExclusionAffectedPairs(result, idA, idB),
+        3u
+    );
+    EXPECT_EQ(
+        Assembly::countInterferenceExclusionAffectedPairs(result, idB, idA),
+        3u
+    );
+}
+
+TEST_F(InterferenceScanTest, exclusionAffectedCountRejectsUnknownAndSuppressedResults)
+{
+    auto* sourceA = makeBox(
+        _doc,
+        "RejectImpactA",
+        Base::Vector3d(100, 0, 0),
+        1,
+        1,
+        1
+    );
+    auto* sourceB = makeBox(
+        _doc,
+        "RejectImpactB",
+        Base::Vector3d(110, 0, 0),
+        1,
+        1,
+        1
+    );
+    const std::string idA =
+        std::string(_doc->getName()) + "#" + sourceA->getNameInDocument();
+    const std::string idB =
+        std::string(_doc->getName()) + "#" + sourceB->getNameInDocument();
+
+    Assembly::InterferenceScanResult result;
+    Assembly::InterferenceLeaf leafA;
+    leafA.sourceId = idA;
+    Assembly::InterferenceLeaf leafB;
+    leafB.sourceId = idB;
+    result.leaves = {leafA, leafB};
+
+    Assembly::InterferencePairResult clear;
+    clear.leafIndexA = 0;
+    clear.leafIndexB = 1;
+    clear.detection.kind = Part::InterferenceKind::Clear;
+    clear.faceHits = {makeHit(Part::InterferenceKind::Clear)};
+    result.pairs.push_back(clear);
+
+    Assembly::InterferencePairResult invalid = clear;
+    invalid.detection.kind = Part::InterferenceKind::InvalidInput;
+    invalid.faceHits = {makeHit(Part::InterferenceKind::Contact)};
+    result.pairs.push_back(invalid);
+
+    Assembly::InterferencePairResult inconclusive = clear;
+    inconclusive.detection.kind = Part::InterferenceKind::Inconclusive;
+    inconclusive.faceHits = {makeHit(Part::InterferenceKind::ClearanceViolation)};
+    result.pairs.push_back(inconclusive);
+
+    Assembly::InterferencePairResult suppressed = clear;
+    suppressed.faceHits = {makeHit(Part::InterferenceKind::Contact)};
+    suppressed.faceHits.front().suppressedByExclusion = true;
+    result.pairs.push_back(suppressed);
+
+    Assembly::InterferencePairResult excluded = clear;
+    excluded.detection.kind = Part::InterferenceKind::Penetration;
+    excluded.faceHits.clear();
+    excluded.excluded = true;
+    result.pairs.push_back(excluded);
+
+    EXPECT_EQ(
+        Assembly::countInterferenceExclusionAffectedPairs(result, idA, idB),
+        0u
+    );
+    EXPECT_EQ(
+        Assembly::countInterferenceExclusionAffectedPairs(
+            result,
+            std::string(_doc->getName()) + "#Missing",
+            idB
+        ),
+        0u
+    );
+    EXPECT_EQ(
+        Assembly::countInterferenceExclusionAffectedPairs(result, "malformed", idB),
+        0u
+    );
 }
 
 TEST_F(InterferenceScanTest, solidInconclusivePathsAgreeAndPreserveFaceHits)

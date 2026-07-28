@@ -319,6 +319,16 @@ AssemblyExport Part::InterferenceResult finalizeInterferencePairDetection(
     bool faceEnumerationCapped,
     const std::string& faceEnumerationDiagnostic
 );
+/**
+ * Count unsuppressed violating component-pair results for an unordered,
+ * currently resolvable source-definition pair. Multiple violating face hits
+ * within one component pair count once.
+ */
+AssemblyExport std::size_t countInterferenceExclusionAffectedPairs(
+    const InterferenceScanResult& result,
+    const std::string& sourceIdA,
+    const std::string& sourceIdB
+);
 AssemblyExport std::vector<InterferenceExclusionRule>
 getInterferenceExclusionRules(const App::DocumentObject* host);
 AssemblyExport bool hasInterferenceExclusion(
