@@ -27,7 +27,9 @@
 #include <QImage>
 #include <QPainter>
 #include <QPen>
+#include <QEvent>
 #include <QObject>
+#include <QWidget>
 
 #include <Inventor/SbRotation.h>
 #include <Inventor/SbVec2s.h>
@@ -75,6 +77,11 @@ namespace
 constexpr int TextPadding = 5;
 constexpr qreal FrameWidth = 2.0;
 constexpr qreal CornerRadius = 5.0;
+/// P1: cap (px) for the fixed-mm box raster so extreme zoom cannot exhaust memory
+/// or overflow the 16-bit SbVec2s in BitmapFactory::convert. When the requested
+/// mm size would exceed this, the raster is clamped and the leader follows the
+/// clamped box (see currentBillboardFrame).
+constexpr int MaxBoxRasterPx = 4096;
 
 /// Coin delay-queue sensors sort ascending and processDelayQueue pops index 0, so a
 /// *lower numeric* priority runs earlier. Redraw OneShot is typically 10000; the
@@ -149,6 +156,7 @@ ViewProviderReviewNote::~ViewProviderReviewNote()
     syncLeaderConnection.disconnect();
     detachFrameSensor();
     detachCameraSensor();
+    detachViewportResizeObserver();
 }
 
 QIcon ViewProviderReviewNote::getIcon() const
@@ -309,6 +317,19 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
         return;
     }
     if (prop == &BoxWidth || prop == &BoxHeight) {
+        // P3: millimetre lengths must be non-negative; clamp negative input to 0 (auto).
+        if (!updatingBoxSize) {
+            if (BoxWidth.getValue() < 0.0) {
+                updatingBoxSize = true;
+                BoxWidth.setValue(0.0);
+                updatingBoxSize = false;
+            }
+            if (BoxHeight.getValue() < 0.0) {
+                updatingBoxSize = true;
+                BoxHeight.setValue(0.0);
+                updatingBoxSize = false;
+            }
+        }
         // Re-render the image at the new fixed/auto size; drawImage ends with refreshLeader.
         if (auto* note = getObject<Assembly::ReviewNote>()) {
             drawImage(note->LabelText.getValues());
@@ -733,13 +754,17 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
             frame.up = Base::Vector3d(0.0, 1.0, 0.0);
         }
     }
-    // User-set fixed box size (mm) grows the leader-attachment border so the leader
-    // stays glued to the (padded) visible box. Never shrink below the auto size.
-    if (BoxWidth.getValue() > 0.0) {
-        frame.halfW = std::max(frame.halfW, BoxWidth.getValue() / 2.0);
+    // P1: when a fixed mm size is set and the raster was NOT clamped (i.e. it reached
+    // the requested size), pin the leader half-extent to BoxWidth/2 / BoxHeight/2 so it
+    // matches the user's intent and is robust to sub-pixel worldPerPixel drift between
+    // drawImage and this frame. When the raster WAS clamped (labelImageWidth/Height
+    // hit MaxBoxRasterPx), leave the raster-driven half-extent above so the leader
+    // follows the actually-rendered (smaller) box instead of detaching past it.
+    if (BoxWidth.getValue() > 0.0 && labelImageWidth < MaxBoxRasterPx) {
+        frame.halfW = BoxWidth.getValue() / 2.0;
     }
-    if (BoxHeight.getValue() > 0.0) {
-        frame.halfH = std::max(frame.halfH, BoxHeight.getValue() / 2.0);
+    if (BoxHeight.getValue() > 0.0 && labelImageHeight < MaxBoxRasterPx) {
+        frame.halfH = BoxHeight.getValue() / 2.0;
     }
     return frame;
 }
@@ -789,11 +814,23 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
             screenWorldPerPixel(textWorld, worldPerPixel);
         }
         if (worldPerPixel > 1e-12) {
+            // P1: bound the raster so extreme zoom cannot exhaust memory or overflow
+            // the 16-bit SbVec2s downstream (BitmapFactory::convert). The leader
+            // half-extents follow the *rendered* (clamped) box when clamped, so they
+            // stay glued even when the requested mm size would exceed the cap.
             if (BoxWidth.getValue() > 0.0) {
-                targetW = std::max<int>(targetW, static_cast<int>(std::ceil(BoxWidth.getValue() / worldPerPixel)));
+                targetW = std::max<int>(
+                    targetW,
+                    static_cast<int>(std::ceil(BoxWidth.getValue() / worldPerPixel))
+                );
+                targetW = std::min(targetW, MaxBoxRasterPx);
             }
             if (BoxHeight.getValue() > 0.0) {
-                targetH = std::max<int>(targetH, static_cast<int>(std::ceil(BoxHeight.getValue() / worldPerPixel)));
+                targetH = std::max<int>(
+                    targetH,
+                    static_cast<int>(std::ceil(BoxHeight.getValue() / worldPerPixel))
+                );
+                targetH = std::min(targetH, MaxBoxRasterPx);
             }
         }
     }
@@ -806,6 +843,12 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
         targetH,
         QImage::Format_ARGB32_Premultiplied
     );
+    // P1: if allocation failed (e.g. huge requested dims before clamping took effect
+    // on some path), fall back to the auto text-sized box instead of feeding a null
+    // QImage into BitmapFactory::convert (which would overflow/divide-by-zero).
+    if (image.isNull()) {
+        image = QImage(autoW, autoH, QImage::Format_ARGB32_Premultiplied);
+    }
     image.fill(0x00000000);
     QPainter painter(&image);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -1014,6 +1057,55 @@ void ViewProviderReviewNote::detachCameraSensor()
     attachedCamera = nullptr;
 }
 
+void ViewProviderReviewNote::ensureViewportResizeObserver()
+{
+    QWidget* gl = nullptr;
+    if (const Gui::View3DInventorViewer* viewer = getActiveViewer()) {
+        gl = viewer->getGLWidget();
+    }
+    // Already installed on this exact widget (or there is no widget yet).
+    if (gl == attachedGlWidget && resizeObserver) {
+        return;
+    }
+    // Widget changed (or first time): move the filter to the new widget.
+    if (resizeObserver && attachedGlWidget) {
+        attachedGlWidget->removeEventFilter(resizeObserver);
+    }
+    if (!resizeObserver) {
+        resizeObserver = new ResizeObserver(this);
+    }
+    if (gl) {
+        gl->installEventFilter(resizeObserver);
+    }
+    attachedGlWidget = gl;
+}
+
+void ViewProviderReviewNote::detachViewportResizeObserver()
+{
+    if (!resizeObserver) {
+        return;
+    }
+    // Removing the filter from the widget is optional (deleting the QObject also
+    // unregisters it), but do it explicitly when the widget is still alive.
+    if (attachedGlWidget) {
+        attachedGlWidget->removeEventFilter(resizeObserver);
+    }
+    delete resizeObserver;
+    resizeObserver = nullptr;
+    attachedGlWidget = nullptr;
+}
+
+bool ViewProviderReviewNote::ResizeObserver::eventFilter(QObject* /*watched*/, QEvent* event)
+{
+    // P2: viewport resize changes worldPerPixel; re-rasterize a fixed-mm box so the
+    // visible box and leader stay glued. Auto-size notes are viewport-independent
+    // and need no re-raster, so skip the schedule to avoid needless work.
+    if (event->type() == QEvent::Resize && vp && vp->hasFixedSize()) {
+        vp->scheduleVisualFrame();
+    }
+    return false;  // never consume the event
+}
+
 void ViewProviderReviewNote::ensureCameraSensor()
 {
     const Gui::View3DInventorViewer* viewer = getActiveViewer();
@@ -1040,6 +1132,9 @@ void ViewProviderReviewNote::ensureCameraSensor()
     }
     cameraSensor->attach(camera);
     attachedCamera = camera;
+    // P2: also watch the GL widget for viewport resize (changes worldPerPixel but
+    // not the camera node), so a fixed-mm box re-rasterizes on view resize.
+    ensureViewportResizeObserver();
 }
 
 void ViewProviderReviewNote::cameraSensorCallback(void* data, SoSensor*)

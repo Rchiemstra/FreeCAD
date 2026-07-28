@@ -498,13 +498,17 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         note.ViewObject.BoxWidth = 60.0
         self._flush()
         fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
-        self.assertGreaterEqual(
-            float(fixed_he.x), 30.0 - 1e-3,
-            "{}: halfW={} must be >= BoxWidth/2=30".format(operation, fixed_he.x),
-        )
+        # P1: the raster is capped (MaxBoxRasterPx), so at close zoom the leader
+        # half-width follows the clamped box and is < BoxWidth/2. It must still grow
+        # vs auto and never exceed BoxWidth/2.
         self.assertGreater(
             float(fixed_he.x), float(auto_he.x),
             "{}: fixed halfW={} must exceed auto halfW={}".format(operation, fixed_he.x, auto_he.x),
+        )
+        self.assertGreater(float(fixed_he.x), 0.0, operation)
+        self.assertLessEqual(
+            float(fixed_he.x), 30.0 + 1e-3,
+            "{}: halfW={} must not exceed BoxWidth/2=30 (raster cap)".format(operation, fixed_he.x),
         )
 
     def test_gui_fixed_box_height_sets_half_extent(self):
@@ -516,14 +520,64 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         note.ViewObject.BoxHeight = 24.0
         self._flush()
         fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
-        self.assertGreaterEqual(
-            float(fixed_he.y), 12.0 - 1e-3,
-            "{}: halfH={} must be >= BoxHeight/2=12".format(operation, fixed_he.y),
-        )
+        # P1: the raster is capped (MaxBoxRasterPx), so at close zoom the leader
+        # half-height follows the clamped box and is < BoxHeight/2. It must still
+        # grow vs auto and never exceed BoxHeight/2.
         self.assertGreater(
             float(fixed_he.y), float(auto_he.y),
             "{}: fixed halfH={} must exceed auto halfH={}".format(operation, fixed_he.y, auto_he.y),
         )
+        self.assertGreater(float(fixed_he.y), 0.0, operation)
+        self.assertLessEqual(
+            float(fixed_he.y), 12.0 + 1e-3,
+            "{}: halfH={} must not exceed BoxHeight/2=12 (raster cap)".format(operation, fixed_he.y),
+        )
+
+    def test_gui_fixed_box_raster_is_bounded(self):
+        operation = "GUI: fixed box raster is bounded (no crash/huge image at extreme zoom)"
+        _msg("  Test '{}'".format(operation))
+        note = self._make_note(["Bounded"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        # A huge mm size would request an enormous raster at close zoom; the P1 cap
+        # (MaxBoxRasterPx) must prevent a multi-megapixel QImage / 16-bit SbVec2s
+        # overflow in BitmapFactory::convert. Without the cap this _flush would
+        # exhaust memory or crash. The leader follows the clamped box, so it stays
+        # well under BoxWidth/2.
+        note.ViewObject.BoxWidth = 5000.0
+        note.ViewObject.BoxHeight = 5000.0
+        self._flush()
+        he = App.Vector(note.ViewObject.LeaderHalfExtent)
+        self.assertGreater(float(he.x), 0.0, operation)
+        self.assertGreater(float(he.y), 0.0, operation)
+        self.assertLessEqual(float(he.x), 2500.0, operation)  # <= BoxWidth/2
+        self.assertLessEqual(float(he.y), 2500.0, operation)
+
+    def test_gui_viewport_resize_keeps_fixed_box_valid(self):
+        operation = "GUI: viewport resize keeps a fixed-mm box valid (re-rasterizes)"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        note = self._make_note(["Resize"], offset=App.Vector(40, 0, 0))
+        note.ViewObject.BoxWidth = 30.0
+        self._flush()
+        # P2: viewport resize changes worldPerPixel but not the Coin camera node,
+        # so a fixed-mm box must re-raster via the GL-widget event filter. Best-effort:
+        # skip if the view does not expose a resizable widget in this config.
+        view = Gui.ActiveDocument.ActiveView
+        widget = None
+        try:
+            widget = view.getViewer().getGLWidget()
+        except Exception:
+            widget = None
+        if widget is None:
+            self.skipTest("view does not expose a resizable GL widget in this config")
+        try:
+            widget.resize(640, 480)
+        except Exception:
+            self.skipTest("GL widget not resizable in this config")
+        self._flush()
+        he_after = App.Vector(note.ViewObject.LeaderHalfExtent)
+        self.assertGreater(float(he_after.x), 0.0, operation)
+        self.assertLessEqual(float(he_after.x), 15.0 + 1e-3, operation)  # <= BoxWidth/2
 
     def test_gui_auto_box_when_zero_uses_text(self):
         operation = "GUI: BoxWidth=0 keeps auto (text-sized) box"
