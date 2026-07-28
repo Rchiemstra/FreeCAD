@@ -781,18 +781,10 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
             frame.up = Base::Vector3d(0.0, 1.0, 0.0);
         }
     }
-    // P1: when a fixed mm size is set and the raster was NOT clamped (i.e. it reached
-    // the requested size), pin the leader half-extent to BoxWidth/2 / BoxHeight/2 so it
-    // matches the user's intent and is robust to sub-pixel worldPerPixel drift between
-    // drawImage and this frame. When the raster WAS clamped (labelImageWidth/Height
-    // hit MaxBoxRasterPx), leave the raster-driven half-extent above so the leader
-    // follows the actually-rendered (smaller) box instead of detaching past it.
-    if (BoxWidth.getValue() > 0.0 && labelImageWidth < MaxBoxRasterPx) {
-        frame.halfW = BoxWidth.getValue() / 2.0;
-    }
-    if (BoxHeight.getValue() > 0.0 && labelImageHeight < MaxBoxRasterPx) {
-        frame.halfH = BoxHeight.getValue() / 2.0;
-    }
+    // Keep the raster-derived half-extents for fixed boxes too. The requested mm
+    // dimensions are minimums: the text can require a larger raster, ceil() can add
+    // a partial pixel, and the safety cap can make it smaller. BoxWidth/2 therefore
+    // is not necessarily the visible border; the rendered raster is the source of truth.
     return frame;
 }
 
@@ -846,12 +838,18 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
             // P1: bound the raster so extreme zoom cannot exhaust memory or overflow
             // the 16-bit SbVec2s downstream (BitmapFactory::convert). Clamp the
             // requested size as a DOUBLE before converting to int: a value above
-            // INT_MAX would overflow static_cast<int> before the cap could help, and
-            // non-finite (NaN/Inf) inputs must be rejected outright. The leader
-            // half-extents follow the *rendered* (clamped) box when clamped, so they
-            // stay glued even when the requested mm size would exceed the cap.
+            // INT_MAX would overflow static_cast<int> before the cap could help.
+            // Positive overflow maps to the cap rather than back to auto-size; NaN,
+            // negative, and otherwise invalid requests are ignored. The leader
+            // half-extents always follow the rendered raster.
             auto clampRasterPx = [](double mm, double wpp) -> int {
+                if (!(mm > 0.0) || !(wpp > 0.0) || !std::isfinite(wpp)) {
+                    return 0;
+                }
                 double requested = mm / wpp;
+                if (std::isinf(requested) && requested > 0.0) {
+                    return MaxBoxRasterPx;
+                }
                 if (!std::isfinite(requested) || requested <= 0.0) {
                     return 0;
                 }

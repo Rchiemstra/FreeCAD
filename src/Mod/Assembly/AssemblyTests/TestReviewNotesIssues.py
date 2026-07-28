@@ -36,6 +36,7 @@ Issues covered (see the review-notes bug list):
   7+9+10 miss-click note; @link click broken / stuck / glitchy
 """
 
+import math
 import os
 import tempfile
 import unittest
@@ -494,21 +495,26 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         note = self._make_note(["W"], offset=App.Vector(40, 0, 0))
         self._flush()
+        auto_width = int(note.ViewObject.RasterWidth)
         auto_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+        world_per_pixel = float(auto_he.x) / (0.5 * auto_width)
         note.ViewObject.BoxWidth = 60.0
         self._flush()
+        fixed_width = int(note.ViewObject.RasterWidth)
         fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
-        # P1: the raster is capped (MaxBoxRasterPx), so at close zoom the leader
-        # half-width follows the clamped box and is < BoxWidth/2. It must still grow
-        # vs auto and never exceed BoxWidth/2.
+        # The fixed-size raster can be capped or ceil to a partial pixel. Verify
+        # that it grows and the leader follows the actual rendered raster.
         self.assertGreater(
             float(fixed_he.x), float(auto_he.x),
             "{}: fixed halfW={} must exceed auto halfW={}".format(operation, fixed_he.x, auto_he.x),
         )
-        self.assertGreater(float(fixed_he.x), 0.0, operation)
-        self.assertLessEqual(
-            float(fixed_he.x), 30.0 + 1e-3,
-            "{}: halfW={} must not exceed BoxWidth/2=30 (raster cap)".format(operation, fixed_he.x),
+        self.assertGreater(fixed_width, 0, operation)
+        implied_world_per_pixel = float(fixed_he.x) / (0.5 * fixed_width)
+        self.assertAlmostEqual(
+            implied_world_per_pixel,
+            world_per_pixel,
+            places=3,
+            msg=operation,
         )
 
     def test_gui_fixed_box_height_sets_half_extent(self):
@@ -516,21 +522,26 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         _msg("  Test '{}'".format(operation))
         note = self._make_note(["H"], offset=App.Vector(40, 0, 0))
         self._flush()
+        auto_height = int(note.ViewObject.RasterHeight)
         auto_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+        world_per_pixel = float(auto_he.y) / (0.5 * auto_height)
         note.ViewObject.BoxHeight = 24.0
         self._flush()
+        fixed_height = int(note.ViewObject.RasterHeight)
         fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
-        # P1: the raster is capped (MaxBoxRasterPx), so at close zoom the leader
-        # half-height follows the clamped box and is < BoxHeight/2. It must still
-        # grow vs auto and never exceed BoxHeight/2.
+        # The fixed-size raster can be capped or ceil to a partial pixel. Verify
+        # that it grows and the leader follows the actual rendered raster.
         self.assertGreater(
             float(fixed_he.y), float(auto_he.y),
             "{}: fixed halfH={} must exceed auto halfH={}".format(operation, fixed_he.y, auto_he.y),
         )
-        self.assertGreater(float(fixed_he.y), 0.0, operation)
-        self.assertLessEqual(
-            float(fixed_he.y), 12.0 + 1e-3,
-            "{}: halfH={} must not exceed BoxHeight/2=12 (raster cap)".format(operation, fixed_he.y),
+        self.assertGreater(fixed_height, 0, operation)
+        implied_world_per_pixel = float(fixed_he.y) / (0.5 * fixed_height)
+        self.assertAlmostEqual(
+            implied_world_per_pixel,
+            world_per_pixel,
+            places=3,
+            msg=operation,
         )
 
     def test_gui_fixed_box_raster_is_bounded(self):
@@ -567,6 +578,49 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
             msg="{}: leader detached from raster (wp {} vs ref {})".format(operation, wp_capped, wp_ref))
         self.assertLessEqual(float(he.x), 2500.0, operation)  # <= BoxWidth/2
         self.assertLessEqual(float(he.y), 2500.0, operation)
+
+    def test_gui_fixed_box_smaller_than_text_keeps_raster_extent(self):
+        operation = "GUI: a fixed width smaller than the text does not detach the leader"
+        _msg("  Test '{}'".format(operation))
+        note = self._make_note(
+            ["This label is intentionally wider than a tiny fixed box"],
+            offset=App.Vector(40, 0, 0),
+        )
+        self._flush()
+        auto_width = int(note.ViewObject.RasterWidth)
+        auto_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+
+        note.ViewObject.BoxWidth = 0.001
+        self._flush()
+        fixed_width = int(note.ViewObject.RasterWidth)
+        fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+
+        self.assertEqual(fixed_width, auto_width, operation)
+        self.assertAlmostEqual(float(fixed_he.x), float(auto_he.x), places=3, msg=operation)
+
+    def test_gui_fixed_box_positive_overflow_is_clamped(self):
+        operation = "GUI: positive fixed-width overflow clamps to the raster cap"
+        _msg("  Test '{}'".format(operation))
+        note = self._make_note(["Overflow"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        auto_width = int(note.ViewObject.RasterWidth)
+        auto_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+        world_per_pixel = float(auto_he.x) / (0.5 * auto_width)
+
+        note.ViewObject.BoxWidth = float("inf")
+        self._flush()
+        raster_width = int(note.ViewObject.RasterWidth)
+        fixed_he = App.Vector(note.ViewObject.LeaderHalfExtent)
+
+        self.assertEqual(raster_width, 4096, operation)
+        self.assertTrue(math.isfinite(float(fixed_he.x)), operation)
+        implied_world_per_pixel = float(fixed_he.x) / (0.5 * raster_width)
+        self.assertAlmostEqual(
+            implied_world_per_pixel,
+            world_per_pixel,
+            places=3,
+            msg=operation,
+        )
 
     def test_gui_viewport_resize_rerasters_fixed_box(self):
         operation = "GUI: viewport resize re-rasterizes a fixed-mm box"
