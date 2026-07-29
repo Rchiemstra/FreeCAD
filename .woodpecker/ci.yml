@@ -4,9 +4,9 @@
 # Triggers (top-level `when` below):
 #   * manual, tag                        (any branch; tags ignore branch filter)
 #   * push to FreeCAD-start              (branch filter excludes main)
-#   * pull_request targeting FreeCAD-start (Woodpecker `branch` matches the PR
-#                                          target branch, so this also excludes
-#                                          PRs into main)
+#   * pull_request targeting FreeCAD-start or the active stacked-PR integration
+#     branch feature/assembly-interference-detection (Woodpecker `branch`
+#     matches the PR target branch; PRs into main remain excluded)
 # `main` is intentionally NOT triggered.
 #
 # ---------------------------------------------------------------------------
@@ -149,8 +149,12 @@
 
 when:
   - event: [manual, tag]
-  - event: [push, pull_request]
+  - event: push
     branch: FreeCAD-start
+  - event: pull_request
+    branch:
+      - FreeCAD-start
+      - feature/assembly-interference-detection
 
 labels:
   backend: docker
