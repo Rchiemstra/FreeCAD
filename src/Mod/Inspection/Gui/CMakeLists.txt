@@ -26,9 +26,15 @@ SET(InspectionGui_SRCS
     ${Dialogs_SRCS}
     AppInspectionGui.cpp
     Command.cpp
+    PhotoInspectionRenderer.cpp
+    PhotoInspectionRenderer.h
+    PhotoInspectionReviewWidget.cpp
+    PhotoInspectionReviewWidget.h
     PreCompiled.h
     ViewProviderInspection.cpp
     ViewProviderInspection.h
+    ViewProviderPhotoInspection.cpp
+    ViewProviderPhotoInspection.h
     Workbench.cpp
     Workbench.h
 )

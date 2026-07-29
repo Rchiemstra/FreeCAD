@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+include(OpenCVPhotoInspection.cmake)
+
 add_subdirectory(App)
 if(BUILD_GUI)
     add_subdirectory(Gui)

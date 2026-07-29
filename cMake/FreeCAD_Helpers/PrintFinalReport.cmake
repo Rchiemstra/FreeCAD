@@ -104,6 +104,13 @@ macro(PrintFinalReport)
     value(BUILD_HELP)
     value(BUILD_IMPORT)
     value(BUILD_INSPECTION)
+    value(FREECAD_USE_OPENCV_PHOTO_INSPECTION)
+    conditional(
+        PhotoInspectionOpenCV
+        PHOTO_INSPECTION_OPENCV_AVAILABLE
+        "not available"
+        "${PHOTO_INSPECTION_OPENCV_VERSION} [${PHOTO_INSPECTION_OPENCV_COMPAT_BRANCH}]"
+    )
     value(BUILD_JTREADER)
     value(BUILD_MATERIAL)
     value(BUILD_MATERIAL_EXTERNAL)
