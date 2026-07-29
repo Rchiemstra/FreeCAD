@@ -336,6 +336,98 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         except Exception:
             pass
 
+    def _viewport_point(self, world):
+        """Return (view, viewport widget, DPR, Qt point) for a world-space point."""
+        import FreeCADGui as Gui
+        from PySide import QtCore
+
+        view = Gui.ActiveDocument.ActiveView
+        graphics_view = view.graphicsView()
+        gl = graphics_view.viewport()
+        self.assertIsNotNone(gl, "No 3D viewport for mouse synthesis")
+        try:
+            px, py = view.getPointOnViewport(world)
+        except Exception:
+            px, py = view.getPointOnScreen(world)
+        _, height = view.getSize()
+        scale = float(gl.devicePixelRatioF()) if hasattr(gl, "devicePixelRatioF") else 1.0
+        point = QtCore.QPoint(
+            int(round(float(px) / scale)),
+            int(round((float(height) - float(py) - 1.0) / scale)),
+        )
+        return view, gl, scale, point
+
+    def _send_mouse(self, gl, event_type, point, button, buttons):
+        from PySide import QtCore, QtGui, QtWidgets
+
+        local = QtCore.QPoint(int(point.x()), int(point.y()))
+        global_pos = gl.mapToGlobal(local)
+        QtGui.QCursor.setPos(global_pos)
+        try:
+            event = QtGui.QMouseEvent(
+                event_type,
+                local,
+                global_pos,
+                button,
+                buttons,
+                QtCore.Qt.NoModifier,
+            )
+        except TypeError:
+            event = QtGui.QMouseEvent(
+                event_type,
+                QtCore.QPointF(local),
+                global_pos,
+                button,
+                buttons,
+                QtCore.Qt.NoModifier,
+            )
+        QtWidgets.QApplication.instance().sendEvent(gl, event)
+        QtCore.QCoreApplication.instance().processEvents()
+
+    def _click_viewport(self, gl, point):
+        from PySide import QtCore
+
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonPress,
+            point,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+        )
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonRelease,
+            point,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+        self._flush()
+
+    def _note_center_point(self, note):
+        world = App.Vector(note.BasePosition) + App.Vector(note.TextPosition)
+        return self._viewport_point(world)
+
+    def _image_pixel_point(self, note, image_x, image_y):
+        """Map a top-left-origin pixel in the note raster to the Qt viewport."""
+        from PySide import QtCore
+
+        view, gl, scale, center = self._note_center_point(note)
+        width = float(note.ViewObject.RasterWidth)
+        height = float(note.ViewObject.RasterHeight)
+        point = QtCore.QPoint(
+            int(round(center.x() + (float(image_x) - 0.5 * width) / scale)),
+            int(round(center.y() + (float(image_y) - 0.5 * height) / scale)),
+        )
+        return view, gl, scale, point
+
+    def _link_center_point(self, note):
+        rect = [int(value) for value in str(note.ViewObject.FirstLinkHitRect).split(",")]
+        self.assertEqual(len(rect), 4, "No first @link hit rectangle was published")
+        x, y, width, height = rect
+        x += 0.5 * width
+        y += 0.5 * height
+        return self._image_pixel_point(note, x, y)
+
     def _make_note(self, text_lines, sub="Face6", pick=None, offset=None):
         if pick is None:
             pick = App.Vector(5, 10, 30)
@@ -375,6 +467,86 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         he = App.Vector(note.ViewObject.LeaderHalfExtent)
         self.assertGreater(float(he.x), 0.0, "{}: halfW={}".format(operation, he.x))
         self.assertGreater(float(he.y), 0.0, "{}: halfH={}".format(operation, he.y))
+
+    def test_gui_single_click_selects_without_holding_or_moving(self):
+        operation = "GUI: one click selects the note without holding or moving it"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from PySide import QtCore
+
+        note = self._make_note(["Click me"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        before = App.Vector(note.TextPosition)
+        _view, gl, _scale, center = self._note_center_point(note)
+        Gui.Selection.clearSelection()
+
+        self._click_viewport(gl, center)
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
+        self.assertIn(note, Gui.Selection.getSelection(), operation)
+
+        # A move after button release must not keep dragging the note.
+        after_release = QtCore.QPoint(center.x() + 80, center.y() - 40)
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseMove,
+            after_release,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+        )
+        self._flush()
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
+
+    def test_gui_click_jitter_below_threshold_does_not_drag(self):
+        operation = "GUI: small press jitter stays a click, not a drag"
+        _msg("  Test '{}'".format(operation))
+        from PySide import QtCore, QtWidgets
+
+        note = self._make_note(["Steady"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        before = App.Vector(note.TextPosition)
+        _view, gl, _scale, center = self._note_center_point(note)
+        threshold = max(2, int(QtWidgets.QApplication.startDragDistance()))
+        delta = max(1, (threshold - 1) // 3)
+        jitter = QtCore.QPoint(center.x() + delta, center.y())
+
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonPress,
+            center,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+        )
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseMove,
+            jitter,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.LeftButton,
+        )
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonRelease,
+            jitter,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+        self._flush()
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
+
+    def test_gui_near_border_click_hits_note(self):
+        operation = "GUI: invisible pick padding catches a near-border miss-click"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+
+        note = self._make_note(["Hit target"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        # Three pixels outside the visible right edge is inside the 6 px hit padding.
+        image_x = float(note.ViewObject.RasterWidth) + 3.0
+        image_y = 0.5 * float(note.ViewObject.RasterHeight)
+        _view, gl, _scale, padded_point = self._image_pixel_point(note, image_x, image_y)
+        Gui.Selection.clearSelection()
+        self._click_viewport(gl, padded_point)
+        self.assertIn(note, Gui.Selection.getSelection(), operation)
 
     def test_gui_display_mode_is_line_so_leader_shows(self):
         operation = "GUI: default display mode is Line so the leader line shows"
@@ -427,6 +599,88 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
                 widths.append(float(tail.lineWidth.getValue()))
         return widths
 
+    def _collect_leader_style_nodes(self):
+        """Return (SoDrawStyle, ancestor SoSwitch) pairs for review-note leaders."""
+        import FreeCADGui as Gui
+        from pivy import coin
+
+        root = Gui.ActiveDocument.ActiveView.getSceneGraph()
+        search = coin.SoSearchAction()
+        search.setType(coin.SoDrawStyle.getClassTypeId())
+        search.setInterest(coin.SoSearchAction.ALL)
+        search.setSearchingAll(True)
+        search.apply(root)
+        pairs = []
+        paths = search.getPaths()
+        for i in range(paths.getLength() if paths is not None else 0):
+            path = paths[i]
+            style = path.getTail()
+            if style is None or not style.isOfType(coin.SoDrawStyle.getClassTypeId()):
+                continue
+            if abs(float(style.pointSize.getValue()) - 3.0) >= 1e-6:
+                continue
+            switch = None
+            for j in range(path.getLength()):
+                node = path.getNode(j)
+                if node is not None and node.isOfType(coin.SoSwitch.getClassTypeId()):
+                    switch = node
+            pairs.append((style, switch))
+        return pairs
+
+    def test_gui_frame_and_leader_styles_are_view_properties(self):
+        operation = "GUI: frame and leader appearance is configurable in the View panel"
+        _msg("  Test '{}'".format(operation))
+        from pivy import coin
+
+        note = self._make_note(["Styled"], offset=App.Vector(40, 0, 0))
+        self._flush()
+        view_object = note.ViewObject
+        expected = {
+            "Frame",
+            "FrameColor",
+            "FrameWidth",
+            "FrameLineStyle",
+            "ShowLeader",
+            "LeaderColor",
+            "LeaderWidth",
+            "LeaderLineStyle",
+        }
+        self.assertTrue(expected.issubset(set(view_object.PropertiesList)), operation)
+
+        draw_count = int(view_object.DrawImageCount)
+        view_object.FrameColor = (1.0, 0.1, 0.1)
+        view_object.FrameWidth = 4.0
+        view_object.FrameLineStyle = "Dashed"
+        view_object.LeaderColor = (0.1, 1.0, 0.1)
+        view_object.LeaderWidth = 5.0
+        view_object.LeaderLineStyle = "Dotted"
+        self._flush()
+        self.assertGreater(int(view_object.DrawImageCount), draw_count, operation)
+
+        styles = self._collect_leader_style_nodes()
+        self.assertTrue(styles, operation + ": no leader style node")
+        self.assertTrue(
+            any(
+                abs(float(style.lineWidth.getValue()) - 5.0) < 1e-6
+                and int(style.linePattern.getValue()) == 0xAAAA
+                for style, _switch in styles
+            ),
+            operation,
+        )
+
+        view_object.ShowLeader = False
+        self._flush()
+        styles = self._collect_leader_style_nodes()
+        self.assertTrue(
+            any(
+                switch is not None and int(switch.whichChild.getValue()) == int(coin.SO_SWITCH_NONE)
+                for _style, switch in styles
+            ),
+            operation + ": ShowLeader=False did not hide the leader switch",
+        )
+        view_object.ShowLeader = True
+        self._flush()
+
     # --- issue 6: multi-line note grows the rendered box -----------------------
 
     def test_gui_multiline_note_grows_half_extent(self):
@@ -446,17 +700,20 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
     # --- issues 9+10: @link click selects target / missing ref no throw ----------
 
     def test_gui_click_at_ref_selects_target(self):
-        operation = "GUI: clicking an @Box.Face6 link selects Box/Face6"
+        operation = "GUI: an actual mouse click on @Box.Face6 selects Box/Face6"
         _msg("  Test '{}'".format(operation))
         import FreeCADGui as Gui
+        from PySide import QtCore
 
-        note = self._make_note(["Inspect @Box.Face6"])
+        prefix = "Inspect "
+        link = "@Box.Face6"
+        note = self._make_note([prefix + link], offset=App.Vector(40, 0, 0))
         self.assertIsNotNone(note, operation)
+        self._flush()
+        before = App.Vector(note.TextPosition)
+        _view, gl, _scale, link_point = self._link_center_point(note)
         Gui.Selection.clearSelection()
-        self.assertTrue(
-            CommandReviewNote.select_review_note_reference(self.doc, "Box", "Face6"),
-            operation,
-        )
+        self._click_viewport(gl, link_point)
         selected = Gui.Selection.getSelectionEx(self.doc.Name, 0)
         self.assertGreaterEqual(len(selected), 1, operation)
         face_hit = any(
@@ -467,16 +724,80 @@ class TestReviewNotesGuiIssues(unittest.TestCase):
         self.assertTrue(face_hit, "{}: Face6 not selected; {!r}".format(
             operation, [(s.Object.Name, list(s.SubElementNames)) for s in selected]
         ))
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
+
+        # Repeated link clicks and a later button-free move must not leave the
+        # manipulator in a held/stuck state.
+        for _ in range(2):
+            self._click_viewport(gl, link_point)
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseMove,
+            QtCore.QPoint(link_point.x() + 70, link_point.y() - 35),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+        )
+        self._flush()
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
+
+        # A press on the link followed by a drag away is not a click: it must
+        # neither activate the target nor move/hold the note.
+        _view, _gl, _scale, far_point = self._image_pixel_point(
+            note,
+            2,
+            0.5 * float(note.ViewObject.RasterHeight),
+        )
+        Gui.Selection.clearSelection()
+        self._flush()
+        self.assertEqual(Gui.Selection.getSelectionEx(self.doc.Name, 0), [], operation)
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonPress,
+            link_point,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+        )
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseMove,
+            far_point,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.LeftButton,
+        )
+        self._send_mouse(
+            gl,
+            QtCore.QEvent.MouseButtonRelease,
+            far_point,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoButton,
+        )
+        self._flush()
+        selected = Gui.Selection.getSelectionEx(self.doc.Name, 0)
+        self.assertFalse(
+            any(
+                ("Face6" in list(s.SubElementNames))
+                or any(n.endswith("Face6") for n in list(s.SubElementNames))
+                for s in selected
+            ),
+            "{}: dragging off the link unexpectedly activated Face6; {!r}".format(
+                operation,
+                [(s.Object.Name, list(s.SubElementNames)) for s in selected],
+            ),
+        )
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
 
     def test_gui_click_at_ref_missing_no_throw(self):
-        operation = "GUI: clicking a missing @ref returns False without throwing"
+        operation = "GUI: an actual mouse click on a missing @ref is harmless"
         _msg("  Test '{}'".format(operation))
-        note = self._make_note(["See @Missing.Face1"])
+        prefix = "See "
+        link = "@Missing.Face1"
+        note = self._make_note([prefix + link], offset=App.Vector(40, 0, 0))
         self.assertIsNotNone(note, operation)
-        ok = CommandReviewNote.select_review_note_reference(
-            self.doc, "Missing", "Face1"
-        )
-        self.assertFalse(ok, operation)
+        self._flush()
+        before = App.Vector(note.TextPosition)
+        _view, gl, _scale, link_point = self._link_center_point(note)
+        self._click_viewport(gl, link_point)
+        self.assertTrue(App.Vector(note.TextPosition).isEqual(before, 1e-9), operation)
 
     # --- resizable box via the View panel (BoxWidth / BoxHeight in mm) ----------
 

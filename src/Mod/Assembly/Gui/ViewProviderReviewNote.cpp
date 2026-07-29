@@ -19,16 +19,20 @@
 #include <algorithm>
 #include <cmath>
 #include <regex>
+#include <utility>
 
 #include <exception>
 
+#include <QApplication>
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QEvent>
 #include <QObject>
+#include <QTimer>
 #include <QWidget>
 
 #include <Inventor/SbRotation.h>
@@ -74,9 +78,80 @@ using namespace AssemblyGui;
 namespace
 {
 
+class ReferenceReleaseSelector: public QObject
+{
+public:
+    ReferenceReleaseSelector(
+        std::string documentName,
+        std::string objectName,
+        std::string subName,
+        QPoint pressPosition,
+        QObject* parent
+    )
+        : QObject(parent)
+        , documentName(std::move(documentName))
+        , objectName(std::move(objectName))
+        , subName(std::move(subName))
+        , pressPosition(pressPosition)
+    {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() != QEvent::MouseButtonRelease
+            || static_cast<QMouseEvent*>(event)->button() != Qt::LeftButton) {
+            return false;
+        }
+
+        if (auto* app = QApplication::instance()) {
+            app->removeEventFilter(this);
+        }
+        bool isClick = true;
+        if (auto* widget = qobject_cast<QWidget*>(watched)) {
+            const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+            const QPointF localPosition = mouseEvent->position();
+#else
+            const QPointF localPosition = mouseEvent->localPos();
+#endif
+            const qreal dpr = widget->devicePixelRatioF();
+            const QPoint releasePosition(
+                qRound(localPosition.x() * dpr),
+                qRound(widget->height() * dpr - localPosition.y() * dpr - 1.0)
+            );
+            isClick = (releasePosition - pressPosition).manhattanLength()
+                <= qRound(QApplication::startDragDistance() * dpr);
+        }
+        const std::string doc = documentName;
+        const std::string obj = objectName;
+        const std::string sub = subName;
+        if (isClick) {
+            QTimer::singleShot(0, [doc, obj, sub]() {
+                Gui::Selection().clearSelection();
+                if (sub.empty()) {
+                    Gui::Selection().addSelection(doc.c_str(), obj.c_str());
+                }
+                else {
+                    Gui::Selection().addSelection(doc.c_str(), obj.c_str(), sub.c_str());
+                }
+            });
+        }
+        deleteLater();
+        return false;
+    }
+
+private:
+    std::string documentName;
+    std::string objectName;
+    std::string subName;
+    QPoint pressPosition;
+};
+
 constexpr int TextPadding = 5;
-constexpr qreal FrameWidth = 2.0;
 constexpr qreal CornerRadius = 5.0;
+/// Extra invisible pixels around the raster make the note reliably clickable
+/// without changing its visible box or @link coordinate system.
+constexpr int HitPaddingPx = 6;
 /// P1: cap (px) for the fixed-mm box raster so extreme zoom cannot exhaust memory
 /// or overflow the 16-bit SbVec2s in BitmapFactory::convert. When the requested
 /// mm size would exceed this, the raster is clamped and the leader follows the
@@ -109,12 +184,48 @@ const std::regex& refRegex()
     return re;
 }
 
+unsigned short coinLinePattern(long style)
+{
+    switch (style) {
+        case 1:
+            return 0xFF00;  // dashed
+        case 2:
+            return 0xAAAA;  // dotted
+        case 3:
+            return 0xFF18;  // dash-dot
+        default:
+            return 0xFFFF;  // solid
+    }
+}
+
+Qt::PenStyle qtPenStyle(long style)
+{
+    switch (style) {
+        case 1:
+            return Qt::DashLine;
+        case 2:
+            return Qt::DotLine;
+        case 3:
+            return Qt::DashDotLine;
+        default:
+            return Qt::SolidLine;
+    }
+}
+
 }  // namespace
 
 PROPERTY_SOURCE(AssemblyGui::ViewProviderReviewNote, Gui::ViewProviderAnnotationLabel)
 
+const char* ViewProviderReviewNote::LeaderLineStyleEnums[] =
+    {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
+const char* ViewProviderReviewNote::FrameLineStyleEnums[] =
+    {"Solid", "Dashed", "Dotted", "Dash Dot", nullptr};
+
 ViewProviderReviewNote::ViewProviderReviewNote()
 {
+    static const App::PropertyFloatConstraint::Constraints lineWidthRange =
+        {0.5F, 64.0F, 0.5F};
+
     ADD_PROPERTY_TYPE(
         LeaderEnd,
         (Base::Vector3d()),
@@ -150,6 +261,59 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         "Fixed box height in mm (0 = auto-size to text)"
     );
     ADD_PROPERTY_TYPE(
+        ShowLeader,
+        (true),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Show the line from the target to the note box"
+    );
+    ADD_PROPERTY_TYPE(
+        LeaderColor,
+        (0.0f, 0.333f, 1.0f),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Leader line color"
+    );
+    ADD_PROPERTY_TYPE(
+        LeaderWidth,
+        (2.0f),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Leader line thickness in pixels"
+    );
+    LeaderWidth.setConstraints(&lineWidthRange);
+    ADD_PROPERTY_TYPE(
+        LeaderLineStyle,
+        (0L),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Leader line pattern"
+    );
+    LeaderLineStyle.setEnums(LeaderLineStyleEnums);
+    ADD_PROPERTY_TYPE(
+        FrameColor,
+        (0.0f, 0.0f, 0.5f),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Text-box border color"
+    );
+    ADD_PROPERTY_TYPE(
+        FrameWidth,
+        (2.0f),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Text-box border thickness in pixels"
+    );
+    FrameWidth.setConstraints(&lineWidthRange);
+    ADD_PROPERTY_TYPE(
+        FrameLineStyle,
+        (0L),
+        "ReviewNote Lines",
+        App::Prop_None,
+        "Text-box border pattern"
+    );
+    FrameLineStyle.setEnums(FrameLineStyleEnums);
+    ADD_PROPERTY_TYPE(
         RasterWidth,
         (0),
         "ReviewNote",
@@ -176,6 +340,15 @@ ViewProviderReviewNote::ViewProviderReviewNote()
     );
     DrawImageCount.setStatus(App::Property::Output, true);
     DrawImageCount.setStatus(App::Property::ReadOnly, true);
+    ADD_PROPERTY_TYPE(
+        FirstLinkHitRect,
+        (""),
+        "ReviewNote",
+        App::Prop_Hidden,
+        "Test-visible: first @link hit rectangle as x,y,width,height raster pixels"
+    );
+    FirstLinkHitRect.setStatus(App::Property::Output, true);
+    FirstLinkHitRect.setStatus(App::Property::ReadOnly, true);
 }
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
@@ -231,6 +404,7 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
         pImageHitProxy->horAlignment = SoImage::CENTER;
         pImageHitProxy->vertAlignment = SoImage::HALF;
     }
+    updateLeaderAppearance();
 
     syncLeaderConnection.disconnect();
     if (obj && obj->isDerivedFrom(Assembly::ReviewNote::getClassTypeId())) {
@@ -341,6 +515,17 @@ void ViewProviderReviewNote::onChanged(const App::Property* prop)
 #endif
 
     if (applyingVisualFrame) {
+        return;
+    }
+    if (prop == &ShowLeader || prop == &LeaderColor || prop == &LeaderWidth
+        || prop == &LeaderLineStyle || prop == &BackgroundColor) {
+        updateLeaderAppearance();
+        return;
+    }
+    if (prop == &FrameColor || prop == &FrameWidth || prop == &FrameLineStyle) {
+        if (auto* note = getObject<Assembly::ReviewNote>()) {
+            drawImage(note->LabelText.getValues());
+        }
         return;
     }
     if (prop == &BoxWidth || prop == &BoxHeight) {
@@ -791,6 +976,7 @@ ViewProviderReviewNote::BillboardFrame ViewProviderReviewNote::currentBillboardF
 void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
 {
     refHits.clear();
+    FirstLinkHitRect.setValue("");
     if (lines.empty()) {
         pImage->image = SoSFImage();
         pImageHitProxy->image = SoSFImage();
@@ -884,16 +1070,26 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
     painter.setRenderHint(QPainter::Antialiasing);
 
     if (this->Frame.getValue()) {
+        const Base::Color& frame = FrameColor.getValue();
+        QColor frameColor;
+        frameColor.setRgbF(frame.r, frame.g, frame.b);
+        const qreal frameWidth = std::clamp<qreal>(FrameWidth.getValue(), 0.5, 64.0);
         painter.setPen(
-            QPen(QColor(0, 0, 127), FrameWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
+            QPen(
+                frameColor,
+                frameWidth,
+                qtPenStyle(FrameLineStyle.getValue()),
+                Qt::RoundCap,
+                Qt::RoundJoin
+            )
         );
         painter.setBrush(QBrush(brush, Qt::SolidPattern));
         const QRectF rectangle = QRectF(image.rect())
                                      .adjusted(
-                                         FrameWidth / 2.0,
-                                         FrameWidth / 2.0,
-                                         -FrameWidth / 2.0,
-                                         -FrameWidth / 2.0
+                                         frameWidth / 2.0,
+                                         frameWidth / 2.0,
+                                         -frameWidth / 2.0,
+                                         -frameWidth / 2.0
                                      );
         painter.drawRoundedRect(rectangle, CornerRadius, CornerRadius);
     }
@@ -944,6 +1140,13 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
                 hit.objName = full.substr(0, dot);
                 hit.subName = full.substr(dot + 1);
             }
+            if (refHits.empty()) {
+                const std::string rect = std::to_string(hit.pixelRect.x()) + ","
+                    + std::to_string(hit.pixelRect.y()) + ","
+                    + std::to_string(hit.pixelRect.width()) + ","
+                    + std::to_string(hit.pixelRect.height());
+                FirstLinkHitRect.setValue(rect);
+            }
             refHits.push_back(hit);
 
             x += linkW;
@@ -970,7 +1173,11 @@ void ViewProviderReviewNote::drawImage(const std::vector<std::string>& lines)
     Gui::BitmapFactory().convert(image, sfimage);
     pImage->image = sfimage;
 
-    QImage hitProxy(image.size(), QImage::Format_ARGB32_Premultiplied);
+    QImage hitProxy(
+        image.width() + 2 * HitPaddingPx,
+        image.height() + 2 * HitPaddingPx,
+        QImage::Format_ARGB32_Premultiplied
+    );
     hitProxy.fill(Qt::transparent);
     SoSFImage sfHitProxy;
     Gui::BitmapFactory().convert(hitProxy, sfHitProxy);
@@ -1020,7 +1227,10 @@ bool ViewProviderReviewNote::hitTestReference(SoDragger* drag, RefHit& out) cons
     return false;
 }
 
-void ViewProviderReviewNote::selectReference(const RefHit& hit) const
+void ViewProviderReviewNote::selectReference(
+    const RefHit& hit,
+    const QPoint& pressPosition
+) const
 {
     auto* note = getObject<Assembly::ReviewNote>();
     if (!note || !note->getDocument()) {
@@ -1031,16 +1241,21 @@ void ViewProviderReviewNote::selectReference(const RefHit& hit) const
         return;
     }
 
-    Gui::Selection().clearSelection();
-    if (hit.subName.empty()) {
-        Gui::Selection().addSelection(note->getDocument()->getName(), obj->getNameInDocument());
-    }
-    else {
-        Gui::Selection().addSelection(
-            note->getDocument()->getName(),
-            obj->getNameInDocument(),
-            hit.subName.c_str()
+    const std::string documentName = note->getDocument()->getName();
+    const std::string objectName = obj->getNameInDocument();
+    const std::string subName = hit.subName;
+    // Coin rejects the drag start for links and therefore emits no drag-finish
+    // callback. Observe the matching Qt release and defer the target selection
+    // one event-loop turn so the ordinary scene pick cannot overwrite it.
+    if (auto* app = QApplication::instance()) {
+        auto* selector = new ReferenceReleaseSelector(
+            documentName,
+            objectName,
+            subName,
+            pressPosition,
+            app
         );
+        app->installEventFilter(selector);
     }
 }
 
@@ -1049,10 +1264,34 @@ bool ViewProviderReviewNote::acceptLabelDragStart(SoDragger* drag, DragState& st
     (void)state;
     RefHit hit;
     if (hitTestReference(drag, hit)) {
-        selectReference(hit);
+        const SbVec2s cursor = drag->getEvent()->getPosition();
+        selectReference(hit, QPoint(cursor[0], cursor[1]));
         return false;
     }
     return true;
+}
+
+void ViewProviderReviewNote::onLabelClicked(const DragState&)
+{
+    auto* note = getObject<Assembly::ReviewNote>();
+    if (!note || !note->getDocument()) {
+        return;
+    }
+    Gui::Selection().clearSelection();
+    Gui::Selection().addSelection(
+        note->getDocument()->getName(),
+        note->getNameInDocument()
+    );
+}
+
+void ViewProviderReviewNote::updateLeaderAppearance()
+{
+    applyLeaderAppearance(
+        ShowLeader.getValue(),
+        LeaderColor.getValue(),
+        LeaderWidth.getValue(),
+        coinLinePattern(LeaderLineStyle.getValue())
+    );
 }
 
 void ViewProviderReviewNote::onLabelDragFinished(const DragState& state)

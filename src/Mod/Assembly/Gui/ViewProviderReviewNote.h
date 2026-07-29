@@ -21,6 +21,7 @@
 #include <Mod/Assembly/AssemblyGlobal.h>
 
 #include <App/PropertyGeo.h>
+#include <App/PropertyStandard.h>
 #include <App/PropertyUnits.h>
 #include <Base/Placement.h>
 #include <Base/Vector3D.h>
@@ -29,6 +30,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QPoint>
 #include <QRect>
 #include <string>
 #include <vector>
@@ -59,6 +61,20 @@ public:
     App::PropertyLength BoxWidth;
     /// Fixed box height in mm (0 = auto-size to text). Overrides the auto billboard half-height.
     App::PropertyLength BoxHeight;
+    /// Show or hide the leader from the target to the note box.
+    App::PropertyBool ShowLeader;
+    /// Leader color, independent from the note background.
+    App::PropertyColor LeaderColor;
+    /// Leader thickness in screen pixels.
+    App::PropertyFloatConstraint LeaderWidth;
+    /// Leader stroke pattern (solid, dashed, dotted, or dash-dot).
+    App::PropertyEnumeration LeaderLineStyle;
+    /// Text-box border color.
+    App::PropertyColor FrameColor;
+    /// Text-box border thickness in raster pixels.
+    App::PropertyFloatConstraint FrameWidth;
+    /// Text-box border stroke pattern.
+    App::PropertyEnumeration FrameLineStyle;
     /// Test-visible: pixel width of the last rasterized box image (capped at MaxBoxRasterPx).
     App::PropertyInteger RasterWidth;
     /// Test-visible: pixel height of the last rasterized box image (capped at MaxBoxRasterPx).
@@ -66,6 +82,8 @@ public:
     /// Test-visible: number of times drawImage has rasterized the box (incremented per raster;
     /// used to verify resize-triggered re-raster).
     App::PropertyInteger DrawImageCount;
+    /// Test-visible first @link hit rectangle as x,y,width,height raster pixels.
+    App::PropertyString FirstLinkHitRect;
 
     QIcon getIcon() const override;
     bool doubleClicked() override;
@@ -99,6 +117,7 @@ protected:
     Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const override;
     void drawImage(const std::vector<std::string>& lines) override;
     bool acceptLabelDragStart(SoDragger* drag, DragState& state) override;
+    void onLabelClicked(const DragState& state) override;
     void setLeaderCoords(const Base::Vector3d& textPosition) override;
 
 private:
@@ -130,7 +149,8 @@ private:
     void scheduleVisualFrame();
     void flushScheduledVisualFrame();
     bool hitTestReference(SoDragger* drag, RefHit& out) const;
-    void selectReference(const RefHit& hit) const;
+    void selectReference(const RefHit& hit, const QPoint& pressPosition) const;
+    void updateLeaderAppearance();
     void onLabelDragFinished(const DragState& state) override;
 
     BillboardFrame currentBillboardFrame(const Base::Vector3d& textPosition) const;
@@ -177,6 +197,9 @@ private:
     /// P3: re-entrancy guard while clamping negative BoxWidth/BoxHeight to 0.
     bool updatingBoxSize = false;
     fastsignals::scoped_connection syncLeaderConnection;
+
+    static const char* LeaderLineStyleEnums[];
+    static const char* FrameLineStyleEnums[];
 };
 
 /// P2: Qt event filter on the 3D-view GL widget. Viewport resize changes

@@ -21,10 +21,14 @@
  ***************************************************************************/
 
 
-#include <QMenu>
+#include <algorithm>
+#include <cstdlib>
+
+#include <QApplication>
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
+#include <QMenu>
 #include <QPainter>
 #include <Inventor/SbLine.h>
 #include <Inventor/SbPlane.h>
@@ -42,6 +46,7 @@
 #include <Inventor/nodes/SoPointSet.h>
 #include <Inventor/nodes/SoRotationXYZ.h>
 #include <Inventor/nodes/SoSeparator.h>
+#include <Inventor/nodes/SoSwitch.h>
 #include <Inventor/nodes/SoText2.h>
 #include <Inventor/nodes/SoTranslation.h>
 
@@ -341,6 +346,14 @@ ViewProviderAnnotationLabel::ViewProviderAnnotationLabel()
     pBaseTranslation->ref();
     pTextTranslation = new TranslateManip();
     pTextTranslation->ref();
+    pLeaderDrawStyle = new SoDrawStyle();
+    pLeaderDrawStyle->lineWidth.setValue(2.0f);
+    pLeaderDrawStyle->pointSize.setValue(3.0f);
+    pLeaderDrawStyle->linePattern.setValue(0xFFFF);
+    pLeaderDrawStyle->ref();
+    pLeaderSwitch = new SoSwitch();
+    pLeaderSwitch->whichChild = SO_SWITCH_ALL;
+    pLeaderSwitch->ref();
     pCoords = new SoCoordinate3();
     pCoords->ref();
     pImage = new SoImage();
@@ -358,6 +371,8 @@ ViewProviderAnnotationLabel::~ViewProviderAnnotationLabel()
     pColor->unref();
     pBaseTranslation->unref();
     pTextTranslation->unref();
+    pLeaderDrawStyle->unref();
+    pLeaderSwitch->unref();
     pCoords->unref();
     pImage->unref();
     pImageHitProxy->unref();
@@ -433,14 +448,13 @@ void ViewProviderAnnotationLabel::attach(App::DocumentObject* f)
     // line (SoLineSet) and pointSize for the endpoint dot (SoPointSet). Placing it
     // after SoLineSet left the leader with no thickness (Coin default ~1px, often
     // invisible against the model), so the leader "had no thickness".
-    auto ds = new SoDrawStyle();
-    ds->lineWidth.setValue(2.0f);
-    ds->pointSize.setValue(3.0f);
-    lineVisual->addChild(ds);
+    lineVisual->addChild(pLeaderDrawStyle);
     lineVisual->addChild(pCoords);
     lineVisual->addChild(new SoLineSet());
     lineVisual->addChild(new SoPointSet());
-    linesep->addChild(lineVisual);
+    pLeaderSwitch->removeAllChildren();
+    pLeaderSwitch->addChild(lineVisual);
+    linesep->addChild(pLeaderSwitch);
 
     linesep->addChild(pTextTranslation);
     linesep->addChild(createLabelDragHandle(pImage, pImageHitProxy));
@@ -510,16 +524,14 @@ void ViewProviderAnnotationLabel::dragStartCallback(void* data, SoDragger* drag)
         state.planeNormal = Base::convertTo<Base::Vector3d>(
             drag->getViewVolume().getProjectionDirection()
         );
-        if (!that->acceptLabelDragStart(drag, state)) {
-            return;
+        if (const SoEvent* event = drag->getEvent()) {
+            const SbVec2s cursor = event->getPosition();
+            state.startEventX = cursor[0];
+            state.startEventY = cursor[1];
         }
+        state.dragAccepted = that->acceptLabelDragStart(drag, state);
         that->dragState = state;
     }
-
-    // This is called when a manipulator is about to manipulating
-    Gui::Application::Instance->activeDocument()->openCommand(
-        QT_TRANSLATE_NOOP("Command", "Transform")
-    );
 }
 
 void ViewProviderAnnotationLabel::dragFinishCallback(void* data, SoDragger*)
@@ -533,13 +545,31 @@ void ViewProviderAnnotationLabel::dragFinishCallback(void* data, SoDragger*)
     // can show the new text box with the previous leader endpoint.
     const DragState finished = *that->dragState;
     that->dragState.reset();
+
+    // The dragger owns pointer capture from press to release, but a normal click
+    // must not move the image or create an undo transaction. A rejected @link
+    // press follows the same reset path so its internal manipulator translation
+    // can never remain offset ("held"/stuck) after release.
+    if (!finished.dragAccepted || !finished.moved) {
+        if (that->pTextTranslation) {
+            const Base::Vector3d& position = finished.currentTextPosition;
+            that->pTextTranslation->translation.setValue(position.x, position.y, position.z);
+        }
+        that->setLeaderCoords(finished.currentTextPosition);
+        if (finished.dragAccepted) {
+            that->onLabelClicked(finished);
+        }
+        return;
+    }
+
     that->onLabelDragFinished(finished);
     if (auto* obj = that->getObject<App::AnnotationLabel>()) {
         obj->TextPosition.setValue(finished.currentTextPosition);
     }
 
-    // This is called when a manipulator has done manipulating
-    Gui::Application::Instance->activeDocument()->commitCommand();
+    if (finished.commandOpened) {
+        Gui::Application::Instance->activeDocument()->commitCommand();
+    }
 }
 
 void ViewProviderAnnotationLabel::dragMotionCallback(void* data, SoDragger* drag)
@@ -550,8 +580,42 @@ void ViewProviderAnnotationLabel::dragMotionCallback(void* data, SoDragger* drag
     }
 
     DragState& state = *that->dragState;
+    if (!state.dragAccepted) {
+        if (that->pTextTranslation) {
+            const Base::Vector3d& position = state.currentTextPosition;
+            that->pTextTranslation->translation.setValue(position.x, position.y, position.z);
+        }
+        that->setLeaderCoords(state.currentTextPosition);
+        return;
+    }
+
+    if (!state.moved) {
+        const SoEvent* event = drag->getEvent();
+        if (!event) {
+            return;
+        }
+        const SbVec2s cursor = event->getPosition();
+        const int distance = std::abs(static_cast<int>(cursor[0]) - state.startEventX)
+            + std::abs(static_cast<int>(cursor[1]) - state.startEventY);
+        if (distance < std::max(1, QApplication::startDragDistance())) {
+            if (that->pTextTranslation) {
+                const Base::Vector3d& position = state.currentTextPosition;
+                that->pTextTranslation->translation.setValue(position.x, position.y, position.z);
+            }
+            that->setLeaderCoords(state.currentTextPosition);
+            return;
+        }
+    }
+
     Base::Vector3d pointerWorld;
     if (projectPointerToPlane(*drag, state.planePoint, state.planeNormal, pointerWorld)) {
+        if (!state.moved) {
+            state.moved = true;
+            Gui::Application::Instance->activeDocument()->openCommand(
+                QT_TRANSLATE_NOOP("Command", "Transform")
+            );
+            state.commandOpened = true;
+        }
         const Base::Vector3d pointerLocal = that->worldToAnnotationPoint(pointerWorld);
         that->previewTextPosition(
             state, pointerLocal - state.pickOffset - state.basePosition
@@ -586,6 +650,22 @@ Base::Vector3d ViewProviderAnnotationLabel::leaderEndpoint(const Base::Vector3d&
 bool ViewProviderAnnotationLabel::acceptLabelDragStart(SoDragger*, DragState&)
 {
     return true;
+}
+
+void ViewProviderAnnotationLabel::onLabelClicked(const DragState&)
+{}
+
+void ViewProviderAnnotationLabel::applyLeaderAppearance(
+    bool visible,
+    const Base::Color& color,
+    float width,
+    unsigned short linePattern
+)
+{
+    pLeaderSwitch->whichChild = visible ? SO_SWITCH_ALL : SO_SWITCH_NONE;
+    pColor->rgb.setValue(color.r, color.g, color.b);
+    pLeaderDrawStyle->lineWidth.setValue(std::clamp(width, 0.5f, 64.0f));
+    pLeaderDrawStyle->linePattern.setValue(linePattern);
 }
 
 void ViewProviderAnnotationLabel::onLabelDragFinished(const DragState&)
