@@ -5,6 +5,7 @@
 # include <BRepBuilderAPI_Copy.hxx>
 # include <QCheckBox>
 # include <QComboBox>
+# include <QDate>
 # include <QDialog>
 # include <QDialogButtonBox>
 # include <QDockWidget>
@@ -14,6 +15,7 @@
 # include <QLabel>
 # include <QMessageBox>
 # include <QPushButton>
+# include <QRegularExpression>
 # include <QTableWidget>
 # include <QVBoxLayout>
 # include <QtConcurrent>
@@ -35,6 +37,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/Property.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -78,6 +81,55 @@ namespace
 {
 
 constexpr char interferenceDockName[] = "Assembly Interference Check";
+constexpr char clearanceReportGroupName[] = "ClearanceReports";
+
+int nextClearanceReportNumber(const App::Document* document)
+{
+    if (!document) {
+        return 1;
+    }
+    const QRegularExpression pattern(
+        QStringLiteral("^Clearance_report_(\\d+)_\\d{4}-\\d{2}-\\d{2}$")
+    );
+    int maximum = 0;
+    for (const App::DocumentObject* object : document->getObjects()) {
+        if (!object) {
+            continue;
+        }
+        const auto match =
+            pattern.match(QString::fromUtf8(object->Label.getValue()));
+        if (!match.hasMatch()) {
+            continue;
+        }
+        bool valid = false;
+        const int number = match.captured(1).toInt(&valid);
+        if (valid) {
+            maximum = std::max(maximum, number);
+        }
+    }
+    return maximum + 1;
+}
+
+App::DocumentObjectGroup* clearanceReportGroup(App::Document* document)
+{
+    if (!document) {
+        return nullptr;
+    }
+    if (auto* group = freecad_cast<App::DocumentObjectGroup*>(
+            document->getObject(clearanceReportGroupName)
+        )) {
+        return group;
+    }
+    for (App::DocumentObject* object : document->getObjects()) {
+        auto* group = freecad_cast<App::DocumentObjectGroup*>(object);
+        if (group
+            && QString::fromUtf8(group->Label.getValue())
+                == QStringLiteral("Clearance report")) {
+            return group;
+        }
+    }
+    return nullptr;
+}
 
 QString kindText(Part::InterferenceKind kind, bool excluded)
 {
@@ -517,6 +569,12 @@ void TaskInterferenceCheck::setupUi()
     runButton = new QPushButton(tr("Run"), this);
     cancelButton = new QPushButton(tr("Cancel scan"), this);
     cancelButton->setEnabled(false);
+    createClearanceReportButton = new QPushButton(tr("Create clearance report…"), this);
+    createClearanceReportButton->setToolTip(
+        tr("Create an undoable spreadsheet snapshot of the currently displayed result rows "
+           "under the \"Clearance report\" tree group.")
+    );
+    createClearanceReportButton->setEnabled(false);
     selectPairButton = new QPushButton(tr("Select pair"), this);
     createReviewNoteButton = new QPushButton(tr("Create review note"), this);
     createReviewNoteButton->setToolTip(
@@ -542,6 +600,10 @@ void TaskInterferenceCheck::setupUi()
     summaryLabel = new QLabel(tr("No results."), this);
     summaryLabel->setWordWrap(true);
     layout->addWidget(summaryLabel);
+    auto* reportButtons = new QHBoxLayout;
+    reportButtons->addWidget(createClearanceReportButton);
+    reportButtons->addStretch();
+    layout->addLayout(reportButtons);
 
     resultsTable = new QTableWidget(0, 8, this);
     resultsTable->setHorizontalHeaderLabels(
@@ -562,6 +624,12 @@ void TaskInterferenceCheck::setupUi()
 
     connect(runButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onRun);
     connect(cancelButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onCancelScan);
+    connect(
+        createClearanceReportButton,
+        &QPushButton::clicked,
+        this,
+        &TaskInterferenceCheck::onCreateClearanceReport
+    );
     connect(selectPairButton, &QPushButton::clicked, this, &TaskInterferenceCheck::onSelectPair);
     connect(
         createReviewNoteButton,
@@ -793,6 +861,24 @@ bool TaskInterferenceCheck::testCreateClearanceSheet(QString* errorOut)
     return created;
 }
 
+bool TaskInterferenceCheck::testCreateClearanceReport(
+    const QDate& reportDate,
+    QString* errorOut
+)
+{
+    QString errorMessage;
+    const bool created = createClearanceReport(reportDate, errorMessage);
+    if (errorOut) {
+        *errorOut = errorMessage;
+    }
+    return created;
+}
+
+bool TaskInterferenceCheck::testIsCreateClearanceReportEnabled() const
+{
+    return createClearanceReportButton && createClearanceReportButton->isEnabled();
+}
+
 void TaskInterferenceCheck::testSetShowClearFaceChecks(bool enabled)
 {
     if (showClearFaceChecks) {
@@ -851,9 +937,11 @@ void TaskInterferenceCheck::refreshClearanceSheetUi()
     App::DocumentObject* linked = host ? Assembly::getInterferenceClearanceSheet(host) : nullptr;
     int selectIndex = 0;
     if (doc) {
+        auto* reportGroup = clearanceReportGroup(doc);
         for (App::DocumentObject* obj : doc->getObjects()) {
             auto* sheet = freecad_cast<Spreadsheet::Sheet*>(obj);
-            if (!sheet || !sheet->getNameInDocument()) {
+            if (!sheet || !sheet->getNameInDocument()
+                || (reportGroup && reportGroup->hasObject(sheet))) {
                 continue;
             }
             const QString label = QString::fromUtf8(sheet->Label.getValue());
@@ -998,6 +1086,193 @@ void TaskInterferenceCheck::onCreateClearanceSheet()
     QString errorMessage;
     if (!createClearanceSheet(errorMessage)) {
         QMessageBox::warning(this, tr("Create clearance sheet"), errorMessage);
+    }
+}
+
+bool TaskInterferenceCheck::createClearanceReport(
+    const QDate& reportDate,
+    QString& errorMessage
+)
+{
+    if (!host || !host->getDocument()) {
+        errorMessage = tr("No active document is available.");
+        return false;
+    }
+    if (session.isBusy() || !hasAcceptedScanResult) {
+        errorMessage = tr("Run the interference check before creating a clearance report.");
+        return false;
+    }
+    if (!reportDate.isValid()) {
+        errorMessage = tr("The clearance report date is invalid.");
+        return false;
+    }
+
+    App::Document* document = host->getDocument();
+    const int reportNumber = nextClearanceReportNumber(document);
+    const QString dateText = reportDate.toString(Qt::ISODate);
+    const QString reportLabel =
+        QStringLiteral("Clearance_report_%1_%2")
+            .arg(reportNumber, 3, 10, QLatin1Char('0'))
+            .arg(dateText);
+    const QString internalBase =
+        QStringLiteral("Clearance_report_%1_%2")
+            .arg(reportNumber, 3, 10, QLatin1Char('0'))
+            .arg(reportDate.toString(QStringLiteral("yyyy_MM_dd")));
+
+    const QString scopeText = scopeLabel ? scopeLabel->text() : QString();
+    const QString summaryText = summaryLabel ? summaryLabel->text() : QString();
+    const QString documentText =
+        QString::fromUtf8(document->Label.getValue()).isEmpty()
+        ? QString::fromUtf8(document->getName())
+        : QString::fromUtf8(document->Label.getValue());
+    const QString completeText = lastResult.complete ? tr("Yes") : tr("No");
+
+    QStringList headers;
+    std::vector<QStringList> rows;
+    if (resultsTable) {
+        headers.reserve(resultsTable->columnCount());
+        for (int column = 0; column < resultsTable->columnCount(); ++column) {
+            auto* header = resultsTable->horizontalHeaderItem(column);
+            headers.push_back(header ? header->text() : QString());
+        }
+        rows.reserve(resultsTable->rowCount());
+        for (int row = 0; row < resultsTable->rowCount(); ++row) {
+            QStringList values;
+            values.reserve(resultsTable->columnCount());
+            for (int column = 0; column < resultsTable->columnCount(); ++column) {
+                auto* item = resultsTable->item(row, column);
+                values.push_back(item ? item->text() : QString());
+            }
+            rows.push_back(std::move(values));
+        }
+    }
+
+    Spreadsheet::Sheet* createdSheet = nullptr;
+    {
+        ScopedBoolFlag suppressSignals(suppressResultInvalidation);
+        if (!executeInterferenceMutation(
+                hostGuiDocument(),
+                document,
+                "Create clearance report",
+                [document,
+                 reportLabel,
+                 internalBase,
+                 dateText,
+                 documentText,
+                 scopeText,
+                 summaryText,
+                 completeText,
+                 headers,
+                 rows,
+                 &createdSheet]() {
+                    auto* group = clearanceReportGroup(document);
+                    if (!group) {
+                        const std::string groupName =
+                            document->getUniqueObjectName(clearanceReportGroupName);
+                        group =
+                            document->addObject<App::DocumentObjectGroup>(groupName.c_str());
+                        if (!group) {
+                            throw Base::RuntimeError(
+                                "Could not create clearance report group"
+                            );
+                        }
+                        group->Label.setValue("Clearance report");
+                    }
+
+                    const std::string objectName = document->getUniqueObjectName(
+                        internalBase.toUtf8().constData()
+                    );
+                    createdSheet =
+                        document->addObject<Spreadsheet::Sheet>(objectName.c_str());
+                    if (!createdSheet) {
+                        throw Base::RuntimeError(
+                            "Could not create clearance report spreadsheet"
+                        );
+                    }
+                    createdSheet->Label.setValue(reportLabel.toUtf8().constData());
+
+                    auto setCell = [createdSheet](
+                                       int row,
+                                       int column,
+                                       const QString& value
+                                   ) {
+                        QString literal = value;
+                        if (!literal.startsWith(QLatin1Char('\''))) {
+                            literal.prepend(QLatin1Char('\''));
+                        }
+                        const QByteArray encoded = literal.toUtf8();
+                        createdSheet->setCell(
+                            App::CellAddress(row, column),
+                            encoded.constData()
+                        );
+                    };
+
+                    setCell(0, 0, TaskInterferenceCheck::tr("Clearance report"));
+                    setCell(0, 1, reportLabel);
+                    setCell(1, 0, TaskInterferenceCheck::tr("Date"));
+                    setCell(1, 1, dateText);
+                    setCell(2, 0, TaskInterferenceCheck::tr("Document"));
+                    setCell(2, 1, documentText);
+                    setCell(3, 0, TaskInterferenceCheck::tr("Scope"));
+                    setCell(3, 1, scopeText);
+                    setCell(4, 0, TaskInterferenceCheck::tr("Complete"));
+                    setCell(4, 1, completeText);
+                    setCell(5, 0, TaskInterferenceCheck::tr("Summary"));
+                    setCell(5, 1, summaryText);
+                    setCell(6, 0, TaskInterferenceCheck::tr("Rows included"));
+                    setCell(6, 1, QString::number(rows.size()));
+
+                    constexpr int headerRow = 8;
+                    const std::set<std::string> bold {"bold"};
+                    createdSheet->setStyle(App::CellAddress(0, 0), bold);
+                    createdSheet->setStyle(App::CellAddress(0, 1), bold);
+                    for (int column = 0; column < headers.size(); ++column) {
+                        setCell(headerRow, column, headers[column]);
+                        createdSheet->setStyle(
+                            App::CellAddress(headerRow, column),
+                            bold
+                        );
+                    }
+                    for (std::size_t row = 0; row < rows.size(); ++row) {
+                        for (int column = 0; column < rows[row].size(); ++column) {
+                            setCell(
+                                headerRow + 1 + static_cast<int>(row),
+                                column,
+                                rows[row][column]
+                            );
+                        }
+                    }
+
+                    const std::vector<int> widths {
+                        150, 260, 260, 130, 130, 150, 320, 360
+                    };
+                    for (int column = 0;
+                         column < static_cast<int>(widths.size());
+                         ++column) {
+                        createdSheet->setColumnWidth(column, widths[column]);
+                    }
+                    group->addObject(createdSheet);
+                },
+                errorMessage
+            )) {
+            return false;
+        }
+    }
+
+    if (statusLabel && createdSheet) {
+        statusLabel->setText(
+            tr("Clearance report \"%1\" created.").arg(reportLabel)
+        );
+    }
+    updateRowActionState();
+    return true;
+}
+
+void TaskInterferenceCheck::onCreateClearanceReport()
+{
+    QString errorMessage;
+    if (!createClearanceReport(QDate::currentDate(), errorMessage)) {
+        QMessageBox::warning(this, tr("Create clearance report"), errorMessage);
     }
 }
 
@@ -1581,6 +1856,11 @@ void TaskInterferenceCheck::updateRowActionState()
     }
     if (createReviewNoteButton) {
         createReviewNoteButton->setEnabled(hasPair);
+    }
+    if (createClearanceReportButton) {
+        createClearanceReportButton->setEnabled(
+            idle && hasAcceptedScanResult && host && host->getDocument()
+        );
     }
     if (excludeButton) {
         excludeButton->setEnabled(canExclude);

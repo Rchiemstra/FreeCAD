@@ -25,6 +25,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QDate;
 class QDialog;
 class QLabel;
 class QPushButton;
@@ -180,6 +181,11 @@ public:
     QString testClearanceSheetLabel() const;
     void testRefreshClearanceSheetUi();
     bool testCreateClearanceSheet(QString* errorOut = nullptr);
+    bool testCreateClearanceReport(
+        const QDate& reportDate,
+        QString* errorOut = nullptr
+    );
+    bool testIsCreateClearanceReportEnabled() const;
     void testSetShowClearFaceChecks(bool enabled);
     bool testShowClearFaceChecks() const;
     void testSetShowExcluded(bool enabled);
@@ -310,11 +316,13 @@ private Q_SLOTS:
     void onSelectionChanged();
     void onClearanceSheetChanged(int index);
     void onCreateClearanceSheet();
+    void onCreateClearanceReport();
 
 private:
     void setupUi();
     void refreshClearanceSheetUi();
     bool createClearanceSheet(QString& errorMessage);
+    bool createClearanceReport(const QDate& reportDate, QString& errorMessage);
     void refreshScanScope();
     void attachPreviewToViewer();
     /** Create previewRoot and add it to scene; optional viewer/view for live teardown hooks. */
@@ -379,6 +387,7 @@ private:
     Gui::QuantitySpinBox* clearanceSpin = nullptr;
     QComboBox* clearanceSheetCombo = nullptr;
     QPushButton* createClearanceSheetButton = nullptr;
+    QPushButton* createClearanceReportButton = nullptr;
     QLabel* clearanceSheetLabel = nullptr;
     QCheckBox* includeHiddenCheck = nullptr;
     QCheckBox* showExcludedCheck = nullptr;

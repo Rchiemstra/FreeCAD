@@ -18,12 +18,14 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 
 #include <QApplication>
+#include <QDate>
 #include <QEventLoop>
 #include <QTimer>
 #include <App/PropertyLinks.h>
 #include <QtGlobal>
 
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/Link.h>
 #include <App/Property.h>
 #include <Base/Writer.h>
@@ -1324,6 +1326,85 @@ TEST_F(TaskInterferenceCheckTest, createClearanceSheetAddsHeadersAndLinksIt)
     _doc->undo();
     EXPECT_EQ(Assembly::getInterferenceClearanceSheet(_assembly), nullptr);
     EXPECT_EQ(_doc->getObject(sheetName.c_str()), nullptr);
+}
+
+TEST_F(TaskInterferenceCheckTest, completedScanCreatesNumberedDatedClearanceReportsInTreeGroup)
+{
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    EXPECT_FALSE(task.testIsCreateClearanceReportEnabled());
+
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, makeResult(1, "Report"));
+    ASSERT_TRUE(task.hasResults());
+    ASSERT_TRUE(task.testIsCreateClearanceReportEnabled());
+
+    const QDate reportDate(2026, 7, 29);
+    QString error;
+    ASSERT_TRUE(task.testCreateClearanceReport(reportDate, &error))
+        << error.toStdString();
+    EXPECT_TRUE(error.isEmpty());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_TRUE(task.testIsCreateClearanceReportEnabled());
+
+    auto* group = freecad_cast<App::DocumentObjectGroup*>(
+        _doc->getObject("ClearanceReports")
+    );
+    ASSERT_NE(group, nullptr);
+    EXPECT_STREQ(group->Label.getValue(), "Clearance report");
+
+    auto findSheetByLabel = [this](const char* label) {
+        for (App::DocumentObject* object : _doc->getObjects()) {
+            auto* sheet = freecad_cast<Spreadsheet::Sheet*>(object);
+            if (sheet && std::string(sheet->Label.getValue()) == label) {
+                return sheet;
+            }
+        }
+        return static_cast<Spreadsheet::Sheet*>(nullptr);
+    };
+    auto cellText = [](const Spreadsheet::Sheet* sheet, const char* address) {
+        std::string content;
+        const auto* cell = sheet ? sheet->getCell(App::CellAddress(address)) : nullptr;
+        if (!cell || !cell->getStringContent(content)) {
+            return std::string();
+        }
+        if (!content.empty() && content.front() == '\'') {
+            content.erase(content.begin());
+        }
+        return content;
+    };
+
+    auto* first = findSheetByLabel("Clearance_report_001_2026-07-29");
+    ASSERT_NE(first, nullptr);
+    EXPECT_STREQ(first->getNameInDocument(), "Clearance_report_001_2026_07_29");
+    EXPECT_TRUE(group->hasObject(first));
+    EXPECT_EQ(cellText(first, "A1"), "Clearance report");
+    EXPECT_EQ(cellText(first, "B1"), "Clearance_report_001_2026-07-29");
+    EXPECT_EQ(cellText(first, "A9"), "Status");
+    EXPECT_EQ(cellText(first, "H9"), "Rule");
+    EXPECT_EQ(cellText(first, "A10"), "Penetration");
+    EXPECT_EQ(cellText(first, "B10"), "Report_A");
+    EXPECT_EQ(cellText(first, "C10"), "Report_B");
+
+    ASSERT_TRUE(task.testCreateClearanceReport(reportDate, &error))
+        << error.toStdString();
+    auto* second = findSheetByLabel("Clearance_report_002_2026-07-29");
+    ASSERT_NE(second, nullptr);
+    EXPECT_TRUE(group->hasObject(second));
+
+    const std::string secondName = second->getNameInDocument();
+    _doc->undo();
+    EXPECT_EQ(_doc->getObject(secondName.c_str()), nullptr);
+    EXPECT_NE(
+        findSheetByLabel("Clearance_report_001_2026-07-29"),
+        nullptr
+    );
+
+    _doc->undo();
+    EXPECT_EQ(_doc->getObject("ClearanceReports"), nullptr);
+    EXPECT_EQ(
+        findSheetByLabel("Clearance_report_001_2026-07-29"),
+        nullptr
+    );
 }
 
 TEST_F(TaskInterferenceCheckTest, completeZeroRowClearPairResultIsRetainedAndSummarized)
