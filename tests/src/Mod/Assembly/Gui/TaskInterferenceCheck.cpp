@@ -427,6 +427,49 @@ TEST_F(TaskInterferenceCheckTest, constructsWithoutMainWindow)
     EXPECT_FALSE(task.testHasPreviewRoot());
 }
 
+TEST_F(TaskInterferenceCheckTest, persistentPanelHideRetainsActiveScanAndOriginalScope)
+{
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    AssemblyGui::InterferenceCheckPanel panel;
+    auto* task = panel.openCheck(_assembly);
+    ASSERT_NE(task, nullptr);
+
+    panel.show();
+    QApplication::processEvents();
+    const auto scan = task->scanSession().beginScan();
+    const auto cancelFlag = scan.cancel;
+    ASSERT_TRUE(task->isScanning());
+    ASSERT_TRUE(cancelFlag);
+
+    panel.hide();
+    QApplication::processEvents();
+    EXPECT_TRUE(task->isScanning());
+    EXPECT_FALSE(cancelFlag->load(std::memory_order_relaxed));
+    EXPECT_EQ(panel.currentCheck(), task);
+
+    Assembly::InterferenceComponentOccurrence a;
+    a.component = _assembly;
+    a.occurrencePrefix = "CompA.";
+    a.displayPath = "CompA";
+    Assembly::InterferenceComponentOccurrence b;
+    b.component = _assembly;
+    b.occurrencePrefix = "CompB.";
+    b.displayPath = "CompB";
+
+    // Reopening the dock for another request must not destroy or supersede its worker.
+    EXPECT_EQ(panel.openCheck(_assembly, a, b), task);
+    EXPECT_TRUE(task->matchesContext(_assembly));
+    EXPECT_FALSE(task->matchesContext(_assembly, a, b));
+    EXPECT_FALSE(cancelFlag->load(std::memory_order_relaxed));
+    EXPECT_TRUE(
+        task->testStatusText().contains(QStringLiteral("original scope"), Qt::CaseInsensitive)
+    );
+
+    task->testDeliverScanFinished(scan.generation, makeResult(0, "retained"));
+    EXPECT_FALSE(task->isScanning());
+    EXPECT_TRUE(task->hasResults());
+}
+
 TEST_F(TaskInterferenceCheckTest, defaultScopeIsAllVisibleComponentsWhenNothingSelected)
 {
     ASSERT_EQ(Gui::getMainWindow(), nullptr);
@@ -1019,12 +1062,37 @@ TEST_F(TaskInterferenceCheckTest, previewAttachesAndDetachesFromSceneGraph)
     scene->unref();
 }
 
+TEST_F(TaskInterferenceCheckTest, attachedViewCloseDropsPreviewWithoutCancellingScan)
+{
+    ASSERT_EQ(Gui::getMainWindow(), nullptr);
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    task.testEnsureDetachedPreviewRoot();
+    ASSERT_TRUE(task.testHasPreviewRoot());
+
+    const auto scan = task.scanSession().beginScan();
+    const auto cancelFlag = scan.cancel;
+    ASSERT_TRUE(cancelFlag);
+
+    task.testNotifyAttachedViewDestroyed();
+    EXPECT_FALSE(task.testHasPreviewRoot());
+    EXPECT_TRUE(task.isScanning());
+    EXPECT_FALSE(task.scanSession().isStale());
+    EXPECT_FALSE(cancelFlag->load(std::memory_order_relaxed));
+
+    task.testDeliverScanFinished(scan.generation, makeResult(0, "view_replaced"));
+    EXPECT_FALSE(task.isScanning());
+    EXPECT_TRUE(task.hasResults());
+    EXPECT_TRUE(
+        task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive)
+    );
+}
+
 TEST_F(TaskInterferenceCheckTest, commandPathWholeObjectHiddenPairFindsPenetration)
 {
     // Command-path seam for Assembly_CheckSelectedComponents:
     // whole-object tree handles (identical to SelectionEx with empty subNames) →
     // resolveInterferenceSelectedPairRequest (same gate as command isActive/activated) →
-    // TaskInterferenceCheck(host, first, second) as activated() constructs the dialog.
+    // TaskInterferenceCheck(host, first, second) as activated() populates the dock.
     // Gui::Selection::addSelection is not used here: it requires Gui::Application::macroManager
     // which this headless AssemblyGui_tests_run binary does not bootstrap.
     auto* casePart = _doc->addObject<App::Part>("AssemblyCase");

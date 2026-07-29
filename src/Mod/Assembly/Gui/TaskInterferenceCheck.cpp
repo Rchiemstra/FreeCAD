@@ -7,6 +7,7 @@
 # include <QComboBox>
 # include <QDialog>
 # include <QDialogButtonBox>
+# include <QDockWidget>
 # include <QHBoxLayout>
 # include <QHeaderView>
 # include <QItemSelectionModel>
@@ -41,9 +42,8 @@
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
 #include <Gui/Application.h>
-#include <Gui/BitmapFactory.h>
 #include <Gui/Command.h>
-#include <Gui/Control.h>
+#include <Gui/DockWindowManager.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/QuantitySpinBox.h>
@@ -76,6 +76,8 @@ using namespace AssemblyGui;
 
 namespace
 {
+
+constexpr char interferenceDockName[] = "Assembly Interference Check";
 
 QString kindText(Part::InterferenceKind kind, bool excluded)
 {
@@ -454,6 +456,13 @@ void TaskInterferenceCheck::setupUi()
     layout->addWidget(scopeLabel);
     progressLabel = new QLabel(QString(), this);
     layout->addWidget(progressLabel);
+    auto* persistenceLabel = new QLabel(
+        tr("The scan continues if this dock is hidden, floated, or another workbench/view is "
+           "activated. Use Cancel scan to stop it."),
+        this
+    );
+    persistenceLabel->setWordWrap(true);
+    layout->addWidget(persistenceLabel);
 
     auto* controls = new QHBoxLayout;
     clearanceSpin = new Gui::QuantitySpinBox(this);
@@ -637,6 +646,49 @@ bool TaskInterferenceCheck::isExcludePairEnabled() const
 bool TaskInterferenceCheck::isCreateReviewNoteEnabled() const
 {
     return createReviewNoteButton && createReviewNoteButton->isEnabled();
+}
+
+bool TaskInterferenceCheck::matchesContext(
+    App::DocumentObject* requestedHost,
+    const InterferenceComponentOccurrence& componentA,
+    const InterferenceComponentOccurrence& componentB
+) const
+{
+    const bool requestedSelectedMode =
+        componentA.component != nullptr && componentB.component != nullptr
+        && !componentA.occurrencePrefix.empty() && !componentB.occurrencePrefix.empty()
+        && componentA.occurrencePrefix != componentB.occurrencePrefix;
+    if (host != requestedHost || scopeLockedToSelection != requestedSelectedMode) {
+        return false;
+    }
+    if (!requestedSelectedMode) {
+        return true;
+    }
+    return selectedA.occurrencePrefix == componentA.occurrencePrefix
+        && selectedB.occurrencePrefix == componentB.occurrencePrefix;
+}
+
+void TaskInterferenceCheck::activateInCurrentView()
+{
+    auto* mainWindow = Gui::getMainWindow();
+    auto* activeView =
+        mainWindow ? qobject_cast<Gui::View3DInventor*>(mainWindow->activeWindow()) : nullptr;
+    if (activeView && attachedView == activeView && previewRoot) {
+        return;
+    }
+    attachPreviewToViewer();
+    if (hasResults()) {
+        updatePreviewForCurrentRow();
+    }
+}
+
+void TaskInterferenceCheck::notifyBusyContextRetained()
+{
+    if (statusLabel) {
+        statusLabel->setText(
+            tr("Scan continues in its original scope. Cancel it before opening another scope.")
+        );
+    }
 }
 
 std::size_t TaskInterferenceCheck::testAffectedViolationPairCount() const
@@ -1240,6 +1292,11 @@ bool TaskInterferenceCheck::testIsRunEnabled() const
     return runButton && runButton->isEnabled();
 }
 
+void TaskInterferenceCheck::testNotifyAttachedViewDestroyed()
+{
+    onAttachedViewDestroyed();
+}
+
 void TaskInterferenceCheck::testAttachPreviewToScene(SoGroup* scene)
 {
     attachPreviewToScene(scene);
@@ -1410,21 +1467,29 @@ void TaskInterferenceCheck::attachPreviewToScene(
     attachedViewer = view;
     attachedView = viewWin;
     if (viewWin) {
-        connect(viewWin, &QObject::destroyed, this, [this]() {
-            attachedViewer = nullptr;
-            attachedView.clear();
-            attachedScene = nullptr;
-            if (previewRoot) {
-                previewRoot->unref();
-                previewRoot = nullptr;
-            }
-            markStale("View closed");
-        });
+        attachedViewDestroyedConnection =
+            connect(viewWin, &QObject::destroyed, this, [this]() {
+                onAttachedViewDestroyed();
+            });
+    }
+}
+
+void TaskInterferenceCheck::onAttachedViewDestroyed()
+{
+    attachedViewDestroyedConnection = {};
+    attachedViewer = nullptr;
+    attachedView.clear();
+    attachedScene = nullptr;
+    if (previewRoot) {
+        previewRoot->unref();
+        previewRoot = nullptr;
     }
 }
 
 void TaskInterferenceCheck::detachPreviewFromViewer()
 {
+    QObject::disconnect(attachedViewDestroyedConnection);
+    attachedViewDestroyedConnection = {};
     clearPreview();
     if (previewRoot && attachedScene) {
         const int idx = attachedScene->findChild(previewRoot);
@@ -3342,44 +3407,98 @@ void TaskInterferenceCheck::onManageExclusions()
     dialog->open();
 }
 
-TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(App::DocumentObject* host)
+InterferenceCheckPanel::InterferenceCheckPanel(QWidget* parent)
+    : QWidget(parent)
 {
-    widget = new TaskInterferenceCheck(host);
-    taskbox = new Gui::TaskView::TaskBox(
-        Gui::BitmapFactory().pixmap("Assembly_CheckInterference"),
-        tr("Check Interference"),
-        true,
-        nullptr
-    );
-    taskbox->groupLayout()->addWidget(widget);
-    Content.push_back(taskbox);
+    setWindowTitle(tr("Assembly Interference Check"));
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
 }
 
-TaskInterferenceCheckDialog::TaskInterferenceCheckDialog(
+InterferenceCheckPanel::~InterferenceCheckPanel() = default;
+
+TaskInterferenceCheck* InterferenceCheckPanel::openCheck(App::DocumentObject* host)
+{
+    return openCheckImpl(host, {}, {});
+}
+
+TaskInterferenceCheck* InterferenceCheckPanel::openCheck(
     App::DocumentObject* host,
     const InterferenceComponentOccurrence& componentA,
     const InterferenceComponentOccurrence& componentB
 )
 {
-    widget = new TaskInterferenceCheck(host, componentA, componentB);
-    taskbox = new Gui::TaskView::TaskBox(
-        Gui::BitmapFactory().pixmap("Assembly_CheckInterference"),
-        tr("Check Selected Components"),
-        true,
-        nullptr
-    );
-    taskbox->groupLayout()->addWidget(widget);
-    Content.push_back(taskbox);
+    return openCheckImpl(host, componentA, componentB);
 }
 
-TaskInterferenceCheckDialog::~TaskInterferenceCheckDialog() = default;
-
-bool TaskInterferenceCheckDialog::accept()
+TaskInterferenceCheck* InterferenceCheckPanel::openCheckImpl(
+    App::DocumentObject* host,
+    const InterferenceComponentOccurrence& componentA,
+    const InterferenceComponentOccurrence& componentB
+)
 {
-    return widget->accept();
+    if (widget && widget->isScanning()) {
+        if (!widget->matchesContext(host, componentA, componentB)) {
+            widget->notifyBusyContextRetained();
+        }
+        widget->activateInCurrentView();
+        return widget;
+    }
+    if (widget && widget->matchesContext(host, componentA, componentB)) {
+        widget->activateInCurrentView();
+        return widget;
+    }
+
+    if (widget) {
+        layout()->removeWidget(widget);
+        delete widget;
+        widget.clear();
+    }
+
+    widget = componentA.component && componentB.component
+        ? new TaskInterferenceCheck(host, componentA, componentB, this)
+        : new TaskInterferenceCheck(host, this);
+    layout()->addWidget(widget);
+    return widget;
 }
 
-bool TaskInterferenceCheckDialog::reject()
+TaskInterferenceCheck* InterferenceCheckPanel::currentCheck() const
 {
-    return widget->reject();
+    return widget;
+}
+
+TaskInterferenceCheck* AssemblyGui::showInterferenceCheckPanel(App::DocumentObject* host)
+{
+    return showInterferenceCheckPanel(host, {}, {});
+}
+
+TaskInterferenceCheck* AssemblyGui::showInterferenceCheckPanel(
+    App::DocumentObject* host,
+    const InterferenceComponentOccurrence& componentA,
+    const InterferenceComponentOccurrence& componentB
+)
+{
+    if (!host || !Gui::getMainWindow()) {
+        return nullptr;
+    }
+
+    auto* dockManager = Gui::DockWindowManager::instance();
+    auto* panel =
+        qobject_cast<InterferenceCheckPanel*>(dockManager->getDockWindow(interferenceDockName));
+    if (!panel) {
+        panel = new InterferenceCheckPanel;
+        auto* dock =
+            dockManager->addDockWindow(interferenceDockName, panel, Qt::RightDockWidgetArea);
+        if (!dock) {
+            delete panel;
+            return nullptr;
+        }
+        dock->setAttribute(Qt::WA_DeleteOnClose, false);
+        dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+        dock->setMinimumSize(480, 320);
+    }
+
+    auto* check = panel->openCheck(host, componentA, componentB);
+    dockManager->activate(panel);
+    return check;
 }

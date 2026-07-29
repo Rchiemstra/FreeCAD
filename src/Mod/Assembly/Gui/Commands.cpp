@@ -27,7 +27,6 @@
 #include <App/DocumentObject.h>
 #include <Gui/Application.h>
 #include <Gui/CommandT.h>
-#include <Gui/Control.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/Selection/Selection.h>
@@ -434,7 +433,7 @@ void CmdAssemblyCheckInterference::activated(int iMsg)
     if (!host) {
         return;
     }
-    Gui::Control().showDialog(new TaskInterferenceCheckDialog(host));
+    showInterferenceCheckPanel(host);
 }
 
 bool CmdAssemblyCheckInterference::isActive()
@@ -468,9 +467,7 @@ void CmdAssemblyCheckSelectedComponents::activated(int iMsg)
     if (!request.valid()) {
         return;
     }
-    Gui::Control().showDialog(
-        new TaskInterferenceCheckDialog(request.host, request.first, request.second)
-    );
+    showInterferenceCheckPanel(request.host, request.first, request.second);
 }
 
 bool CmdAssemblyCheckSelectedComponents::isActive()

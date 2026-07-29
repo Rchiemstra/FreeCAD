@@ -11,13 +11,13 @@
 #include <utility>
 #include <vector>
 
+#include <QMetaObject>
 #include <QPointer>
 #include <QString>
+#include <QWidget>
 
 #include <Base/Quantity.h>
 #include <Base/Unit.h>
-#include <Gui/TaskView/TaskDialog.h>
-#include <Gui/TaskView/TaskView.h>
 #include <Mod/Assembly/AssemblyGlobal.h>
 #include <Mod/Assembly/App/InterferenceScan.h>
 #include <Mod/Assembly/App/InterferenceScanSession.h>
@@ -267,10 +267,23 @@ public:
     bool testIsPreparing() const;
     bool testIsCancelEnabled() const;
     bool testIsRunEnabled() const;
+    /** Simulate destruction of the attached 3D view without requiring a MainWindow. */
+    void testNotifyAttachedViewDestroyed();
     /** Attach previewRoot to an arbitrary Coin scene (no MainWindow required). */
     void testAttachPreviewToScene(SoGroup* scene);
     void testDetachPreview();
     int testPreviewIndexInScene(SoGroup* scene) const;
+
+    /** True when a dock-panel request addresses this widget's current host and scope. */
+    bool matchesContext(
+        App::DocumentObject* requestedHost,
+        const Assembly::InterferenceComponentOccurrence& componentA = {},
+        const Assembly::InterferenceComponentOccurrence& componentB = {}
+    ) const;
+    /** Rebind result preview to the current 3D view after GUI navigation. */
+    void activateInCurrentView();
+    /** Explain why a different dock-panel request did not replace an active scan. */
+    void notifyBusyContextRetained();
 
 private Q_SLOTS:
     void onRun();
@@ -310,6 +323,7 @@ private:
         Gui::View3DInventorViewer* view = nullptr,
         Gui::View3DInventor* viewWin = nullptr
     );
+    void onAttachedViewDestroyed();
     void detachPreviewFromViewer();
     void clearPreview();
     void updatePreviewForCurrentRow();
@@ -396,39 +410,56 @@ private:
     SoGroup* attachedScene = nullptr;
     Gui::View3DInventorViewer* attachedViewer = nullptr;
     QPointer<Gui::View3DInventor> attachedView;
+    QMetaObject::Connection attachedViewDestroyedConnection;
     QPointer<QDialog> manageExclusionsDialog;
     std::set<const App::Document*> watchedDocuments;
 
     std::vector<fastsignals::connection> connections;
 };
 
-class AssemblyGuiExport TaskInterferenceCheckDialog: public Gui::TaskView::TaskDialog
+/**
+ * Persistent content for the Assembly interference dock.
+ *
+ * Hiding or moving the surrounding QDockWidget does not destroy this object, so
+ * an active worker continues until it completes, the user presses Cancel scan,
+ * or its source document changes.
+ */
+class AssemblyGuiExport InterferenceCheckPanel: public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit TaskInterferenceCheckDialog(App::DocumentObject* host);
-    TaskInterferenceCheckDialog(
+    explicit InterferenceCheckPanel(QWidget* parent = nullptr);
+    ~InterferenceCheckPanel() override;
+
+    TaskInterferenceCheck* openCheck(App::DocumentObject* host);
+    TaskInterferenceCheck* openCheck(
         App::DocumentObject* host,
         const Assembly::InterferenceComponentOccurrence& componentA,
         const Assembly::InterferenceComponentOccurrence& componentB
     );
-    ~TaskInterferenceCheckDialog() override;
-
-    QDialogButtonBox::StandardButtons getStandardButtons() const override
-    {
-        return QDialogButtonBox::Close;
-    }
-    bool accept() override;
-    bool reject() override;
-    bool isAllowedAlterDocument() const override
-    {
-        return true;
-    }
+    TaskInterferenceCheck* currentCheck() const;
 
 private:
-    TaskInterferenceCheck* widget = nullptr;
-    Gui::TaskView::TaskBox* taskbox = nullptr;
+    TaskInterferenceCheck* openCheckImpl(
+        App::DocumentObject* host,
+        const Assembly::InterferenceComponentOccurrence& componentA,
+        const Assembly::InterferenceComponentOccurrence& componentB
+    );
+
+    QPointer<TaskInterferenceCheck> widget;
 };
+
+/**
+ * Show or reactivate the persistent interference dock. If a different request
+ * arrives while a scan is active, the running scan and its original scope win.
+ */
+AssemblyGuiExport TaskInterferenceCheck*
+showInterferenceCheckPanel(App::DocumentObject* host);
+AssemblyGuiExport TaskInterferenceCheck* showInterferenceCheckPanel(
+    App::DocumentObject* host,
+    const Assembly::InterferenceComponentOccurrence& componentA,
+    const Assembly::InterferenceComponentOccurrence& componentB
+);
 
 }  // namespace AssemblyGui
