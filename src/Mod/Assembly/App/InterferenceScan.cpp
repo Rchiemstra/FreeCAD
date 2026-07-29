@@ -3,8 +3,11 @@
 #include "PreCompiled.h"
 #ifndef _PreComp_
 # include <BRepBndLib.hxx>
+# include <BRepBuilderAPI_MakeVertex.hxx>
 # include <BRepCheck_Analyzer.hxx>
+# include <BRepGProp.hxx>
 # include <Bnd_Box.hxx>
+# include <GProp_GProps.hxx>
 # include <TopExp_Explorer.hxx>
 # include <algorithm>
 # include <cmath>
@@ -2291,6 +2294,154 @@ bool ensureLeafFacesCached(
     return true;
 }
 
+bool penetrationRepresentativePoint(
+    const TopoDS_Shape& commonShape,
+    Base::Vector3d& point
+)
+{
+    if (commonShape.IsNull()) {
+        return false;
+    }
+    try {
+        GProp_GProps properties;
+        BRepGProp::VolumeProperties(commonShape, properties);
+        if (std::isfinite(properties.Mass()) && properties.Mass() > Precision::Confusion()) {
+            const gp_Pnt centre = properties.CentreOfMass();
+            point = Base::Vector3d(centre.X(), centre.Y(), centre.Z());
+            return true;
+        }
+    }
+    catch (...) {
+        // A valid common may still lack usable volume properties. Fall back to its bounds.
+    }
+
+    try {
+        const Base::BoundBox3d box = shapeBoundBoxLocal(commonShape);
+        if (box.IsValid()) {
+            point = box.GetCenter();
+            return true;
+        }
+    }
+    catch (...) {
+    }
+    return false;
+}
+
+struct PenetrationRepresentativeFace
+{
+    int index = 0;
+    double distance = std::numeric_limits<double>::infinity();
+    Base::Vector3d point;
+};
+
+bool nearestFaceToPenetrationPoint(
+    const InterferenceLeaf& leaf,
+    const Base::Vector3d& representativePoint,
+    double linearTolerance,
+    const std::atomic<bool>* cancelFlag,
+    PenetrationRepresentativeFace& selected
+)
+{
+    const TopoDS_Vertex marker =
+        BRepBuilderAPI_MakeVertex(gp_Pnt(
+            representativePoint.x,
+            representativePoint.y,
+            representativePoint.z
+        ))
+            .Vertex();
+
+    for (const auto& cached : leaf.cachedFaces) {
+        if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+            return false;
+        }
+        try {
+            BRepExtrema_DistShapeShape distance;
+            distance.SetDeflection(
+                linearTolerance > 0.0 ? linearTolerance : Precision::Confusion()
+            );
+#if OCC_VERSION_HEX >= 0x070600
+            distance.SetMultiThread(true);
+#endif
+            distance.LoadS1(cached.face);
+            distance.LoadS2(marker);
+            distance.Perform();
+            if (!distance.IsDone() || distance.NbSolution() <= 0
+                || !std::isfinite(distance.Value())
+                || distance.Value() >= selected.distance) {
+                continue;
+            }
+            const gp_Pnt nearest = distance.PointOnShape1(1);
+            selected.index = cached.index;
+            selected.distance = distance.Value();
+            selected.point = Base::Vector3d(nearest.X(), nearest.Y(), nearest.Z());
+        }
+        catch (...) {
+            // Localization is diagnostic only; one failed face must not change scan validity.
+        }
+    }
+    return selected.index > 0;
+}
+
+bool appendPenetrationRepresentativeFaceHit(
+    InterferencePairResult& pairResult,
+    InterferenceLeaf& leafA,
+    InterferenceLeaf& leafB,
+    double linearTolerance,
+    const std::atomic<bool>* cancelFlag
+)
+{
+    Base::Vector3d representativePoint;
+    if (!penetrationRepresentativePoint(pairResult.detection.commonShape, representativePoint)) {
+        return true;
+    }
+    if (!ensureLeafFacesCached(leafA, cancelFlag)
+        || !ensureLeafFacesCached(leafB, cancelFlag)) {
+        return false;
+    }
+
+    PenetrationRepresentativeFace faceA;
+    PenetrationRepresentativeFace faceB;
+    const bool foundA = nearestFaceToPenetrationPoint(
+        leafA,
+        representativePoint,
+        linearTolerance,
+        cancelFlag,
+        faceA
+    );
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return false;
+    }
+    const bool foundB = nearestFaceToPenetrationPoint(
+        leafB,
+        representativePoint,
+        linearTolerance,
+        cancelFlag,
+        faceB
+    );
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        return false;
+    }
+    if (!foundA || !foundB) {
+        return true;
+    }
+
+    InterferenceFaceHit hit;
+    hit.facePathA = leafFacePath(leafA, faceA.index);
+    hit.facePathB = leafFacePath(leafB, faceB.index);
+    hit.classification = Part::InterferenceKind::Penetration;
+    hit.distance = -1.0;
+    hit.appliedClearance = 0.0;
+    hit.diagnostic =
+        "Representative faces nearest the overlap centre; penetration remains occurrence-level";
+    hit.closestPointsValid = true;
+    hit.pointOnFirst = faceA.point;
+    hit.pointOnSecond = faceB.point;
+    hit.commonShape = pairResult.detection.commonShape;
+    pairResult.faceHits.push_back(std::move(hit));
+    pairResult.governingFaceHitIndex = 0;
+    return true;
+}
+
 bool boxesWithinClearance(const Base::BoundBox3d& a, const Base::BoundBox3d& b, double clearance)
 {
     if (!a.IsValid() || !b.IsValid()) {
@@ -2715,13 +2866,25 @@ bool evaluateLeafPairWithClearanceRules(
         return false;
     }
 
-    // Penetration / invalid solid geometry: one component-pair result, no faceHits.
+    // Penetration remains one component-pair result. Attach at most one representative
+    // face pair for localization; never multiply the finding by all intersecting faces.
     if (solid.kind == Part::InterferenceKind::Penetration
         || solid.kind == Part::InterferenceKind::InvalidInput) {
         InterferencePairResult pairResult;
         pairResult.leafIndexA = indexA;
         pairResult.leafIndexB = indexB;
         pairResult.detection = solid;
+        if (solid.kind == Part::InterferenceKind::Penetration
+            && !appendPenetrationRepresentativeFaceHit(
+                pairResult,
+                leafA,
+                leafB,
+                linearTolerance,
+                options.cancelFlag
+            )) {
+            result.cancelled = true;
+            return false;
+        }
         recordPairCounts(result, pairResult, sourcesExcluded);
         reportProgress(1, 1);
         return true;

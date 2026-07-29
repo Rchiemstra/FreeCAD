@@ -137,7 +137,10 @@ struct InterferenceClearanceRuleTable
     int invalidRuleCount = 0;
 };
 
-/** Face-level clearance evaluation under a component pair (includes Clear). */
+/**
+ * Face-level detail under a component pair (includes Clear). Penetrations use
+ * at most one representative face pair for localization, not per-face counting.
+ */
 struct InterferenceFaceHit
 {
     std::string facePathA;
@@ -178,11 +181,15 @@ struct InterferencePairResult
      * Does not imply InvalidInput/Inconclusive details are hidden.
      */
     bool excluded = false;
-    /** Face evaluations including Clear (App/tests); GUI filters Clear by default. */
+    /**
+     * Face evaluations including Clear (App/tests); GUI filters Clear by default.
+     * A solid penetration may have one representative localization hit.
+     */
     std::vector<InterferenceFaceHit> faceHits;
     /**
      * Face hit that determined detection.kind/minimumDistance, or npos when the
-     * whole-solid result (for example Penetration/Inconclusive) governs.
+     * whole-solid result (for example Inconclusive) governs. Penetrations may
+     * point to their single representative localization hit.
      */
     std::size_t governingFaceHitIndex = static_cast<std::size_t>(-1);
     /** Optional note when face-pair candidates were capped. */

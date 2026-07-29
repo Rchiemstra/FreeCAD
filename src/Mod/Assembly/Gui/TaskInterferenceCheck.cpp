@@ -9,6 +9,7 @@
 # include <QDialogButtonBox>
 # include <QHBoxLayout>
 # include <QHeaderView>
+# include <QItemSelectionModel>
 # include <QLabel>
 # include <QMessageBox>
 # include <QPushButton>
@@ -513,7 +514,11 @@ void TaskInterferenceCheck::setupUi()
         tr("Create a ReviewNote anchored at this result. The picked face is stored as "
            "stable metadata, not as a fragile FaceN link.")
     );
-    excludeButton = new QPushButton(tr("Exclude source pair"), this);
+    excludeButton = new QPushButton(tr("Exclude selected source pairs"), this);
+    excludeButton->setToolTip(
+        tr("Select one or more result rows and add their unique source-pair exclusions "
+           "in one undoable operation.")
+    );
     restoreButton = new QPushButton(tr("Restore source pair"), this);
     manageExclusionsButton = new QPushButton(tr("Manage exclusions…"), this);
     buttons->addWidget(runButton);
@@ -542,7 +547,7 @@ void TaskInterferenceCheck::setupUi()
     );
     resultsTable->horizontalHeader()->setStretchLastSection(true);
     resultsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    resultsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    resultsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     resultsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(resultsTable);
 
@@ -967,6 +972,33 @@ void TaskInterferenceCheck::testSelectResultRow(int row)
         return;
     }
     resultsTable->selectRow(row);
+    onRowChanged();
+}
+
+void TaskInterferenceCheck::testSelectResultRows(const std::vector<int>& rows)
+{
+    if (!resultsTable || !resultsTable->selectionModel()) {
+        return;
+    }
+    resultsTable->clearSelection();
+    QModelIndex current;
+    for (const int row : rows) {
+        if (row < 0 || row >= resultsTable->rowCount()) {
+            continue;
+        }
+        const QModelIndex index = resultsTable->model()->index(row, 0);
+        resultsTable->selectionModel()->select(
+            index,
+            QItemSelectionModel::Select | QItemSelectionModel::Rows
+        );
+        current = index;
+    }
+    if (current.isValid()) {
+        resultsTable->selectionModel()->setCurrentIndex(
+            current,
+            QItemSelectionModel::NoUpdate
+        );
+    }
     onRowChanged();
 }
 
@@ -1457,17 +1489,26 @@ void TaskInterferenceCheck::updateRowActionState()
     const bool hasPair = idle && pairIndex >= 0 && host;
     bool canExclude = false;
     bool canRestore = false;
+    if (idle && host) {
+        for (const std::size_t selectedPairIndex : selectedPairIndices()) {
+            const auto& selectedPair = lastResult.pairs[selectedPairIndex];
+            if (selectedPair.leafIndexA >= lastResult.leaves.size()
+                || selectedPair.leafIndexB >= lastResult.leaves.size()) {
+                continue;
+            }
+            if (Assembly::countInterferenceExclusionAffectedPairs(
+                    lastResult,
+                    lastResult.leaves[selectedPair.leafIndexA].sourceId,
+                    lastResult.leaves[selectedPair.leafIndexB].sourceId
+                )
+                > 0) {
+                canExclude = true;
+                break;
+            }
+        }
+    }
     if (hasPair) {
         const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
-        if (pair.leafIndexA < lastResult.leaves.size()
-            && pair.leafIndexB < lastResult.leaves.size()) {
-            canExclude = Assembly::countInterferenceExclusionAffectedPairs(
-                             lastResult,
-                             lastResult.leaves[pair.leafIndexA].sourceId,
-                             lastResult.leaves[pair.leafIndexB].sourceId
-                         )
-                > 0;
-        }
         canRestore = pair.excluded;
     }
     if (selectPairButton) {
@@ -1501,6 +1542,76 @@ int TaskInterferenceCheck::currentPairIndex() const
         return -1;
     }
     return pairIndex;
+}
+
+std::vector<std::size_t> TaskInterferenceCheck::selectedPairIndices() const
+{
+    std::vector<std::size_t> selected;
+    if (!resultsTable || !resultsTable->selectionModel()) {
+        return selected;
+    }
+    std::set<std::size_t> unique;
+    for (const QModelIndex& index : resultsTable->selectionModel()->selectedRows(0)) {
+        auto* item = resultsTable->item(index.row(), 0);
+        if (!item) {
+            continue;
+        }
+        const int pairIndex = item->data(Qt::UserRole).toInt();
+        if (pairIndex >= 0 && pairIndex < static_cast<int>(lastResult.pairs.size())) {
+            unique.insert(static_cast<std::size_t>(pairIndex));
+        }
+    }
+    selected.assign(unique.begin(), unique.end());
+    return selected;
+}
+
+std::vector<ExcludePairCommandEntry> TaskInterferenceCheck::selectedExclusionEntries(
+    std::size_t& affectedOccurrencePairs,
+    QString& errorMessage
+) const
+{
+    affectedOccurrencePairs = 0;
+    errorMessage.clear();
+    std::vector<ExcludePairCommandEntry> entries;
+    if (!host) {
+        errorMessage = tr("Cannot exclude pairs: no interference host.");
+        return entries;
+    }
+
+    std::set<std::pair<std::string, std::string>> seen;
+    for (const std::size_t pairIndex : selectedPairIndices()) {
+        const auto& pair = lastResult.pairs[pairIndex];
+        if (pair.leafIndexA >= lastResult.leaves.size()
+            || pair.leafIndexB >= lastResult.leaves.size()) {
+            continue;
+        }
+        const auto& idA = lastResult.leaves[pair.leafIndexA].sourceId;
+        const auto& idB = lastResult.leaves[pair.leafIndexB].sourceId;
+        const auto canonical = idA <= idB ? std::make_pair(idA, idB)
+                                          : std::make_pair(idB, idA);
+        if (!seen.insert(canonical).second) {
+            continue;
+        }
+        const std::size_t affected =
+            Assembly::countInterferenceExclusionAffectedPairs(lastResult, idA, idB);
+        if (affected == 0) {
+            continue;
+        }
+        auto* sourceA = resolveSourceId(idA);
+        auto* sourceB = resolveSourceId(idB);
+        if (!sourceA || !sourceB) {
+            errorMessage = tr("Could not resolve one of the selected interference source pairs.");
+            return {};
+        }
+        entries.push_back(
+            {sourceA, sourceB, matchingInterferenceReasonNote(idA, idB)}
+        );
+        affectedOccurrencePairs += affected;
+    }
+    if (entries.empty() && errorMessage.isEmpty()) {
+        errorMessage = tr("No selected rows contain an unexcluded interference violation.");
+    }
+    return entries;
 }
 
 int TaskInterferenceCheck::currentFaceHitIndex() const
@@ -2262,8 +2373,6 @@ void TaskInterferenceCheck::onScanFinished(
     statusLabel->setText(lastResult.complete ? tr("Scan complete.") : tr("Scan incomplete."));
     progressLabel->clear();
     rebuildTable();
-    updateSummary();
-    updateRowActionState();
     if (selectionDirtyWhileBusy && !scopeLockedToSelection) {
         selectionDirtyWhileBusy = false;
         refreshScanScope();
@@ -2402,7 +2511,9 @@ void TaskInterferenceCheck::rebuildTable()
         );
         QString distanceText = formatPairDistance(pair.detection);
         if (displayedHit) {
-            distanceText = displayedHit->distance >= 0.0
+            distanceText = displayedHit->classification == Part::InterferenceKind::Penetration
+                ? QStringLiteral("—")
+                : displayedHit->distance >= 0.0
                     && std::isfinite(displayedHit->distance)
                 ? formatLength(displayedHit->distance)
                 : (displayedHit->diagnostic.empty()
@@ -2414,7 +2525,9 @@ void TaskInterferenceCheck::rebuildTable()
             row,
             4,
             new QTableWidgetItem(
-                displayedHit ? QStringLiteral("—") : formatPairVolume(pair.detection)
+                solidPenetration ? formatPairVolume(pair.detection)
+                                 : (displayedHit ? QStringLiteral("—")
+                                                 : formatPairVolume(pair.detection))
             )
         );
 
@@ -2425,14 +2538,22 @@ void TaskInterferenceCheck::rebuildTable()
             appliedParts << tr("n/a");
         }
         if (displayedHit) {
-            appliedParts << formatLength(displayedHit->appliedClearance);
+            if (displayedHit->classification == Part::InterferenceKind::Penetration) {
+                appliedParts << tr("n/a");
+            }
+            else {
+                appliedParts << formatLength(displayedHit->appliedClearance);
+            }
             QString hitStatus =
                 kindText(displayedHit->classification, displayedHit->suppressedByExclusion);
             faceParts << QStringLiteral("[%1] %2 ↔ %3")
                              .arg(hitStatus)
                              .arg(QString::fromStdString(displayedHit->facePathA))
                              .arg(QString::fromStdString(displayedHit->facePathB));
-            QString rule = ruleKindText(displayedHit->ruleKind);
+            QString rule =
+                displayedHit->classification == Part::InterferenceKind::Penetration
+                ? tr("Representative localization")
+                : ruleKindText(displayedHit->ruleKind);
             QStringList provenance;
             const std::size_t n = displayedHit->sourceRows.size();
             for (std::size_t ri = 0; ri < n; ++ri) {
@@ -2510,14 +2631,19 @@ void TaskInterferenceCheck::rebuildTable()
         resultsTable->setItem(row, 7, new QTableWidgetItem(QString::fromStdString(issue.diagnostic)));
     }
     updateRowActionState();
+    if (hasAcceptedScanResult) {
+        updateSummary();
+    }
 }
 
 void TaskInterferenceCheck::updateSummary()
 {
     const auto& c = lastResult.counts;
     summaryLabel->setText(
-        tr("Penetrations: %1 | Contacts: %2 | Clearance: %3 | Excluded: %4 | Invalid geom: %5 | "
-           "Invalid rules: %6 | Inconclusive: %7 | Clear faces: %8 | Clear pairs: %9")
+        tr("Penetrating occurrence pairs: %1 | Contact face pairs: %2 | "
+           "Clearance face pairs: %3 | Excluded occurrence pairs: %4 | "
+           "Invalid geom: %5 | Invalid rules: %6 | Inconclusive occurrence pairs: %7 | "
+           "Clear face checks: %8 | Clear occurrence pairs: %9 | Rows shown: %10")
             .arg(c.penetrations)
             .arg(c.contacts)
             .arg(c.clearanceViolations)
@@ -2527,6 +2653,7 @@ void TaskInterferenceCheck::updateSummary()
             .arg(c.inconclusivePairs)
             .arg(c.clearFaceHits)
             .arg(c.clearPairs)
+            .arg(resultsTable ? resultsTable->rowCount() : 0)
     );
 }
 
@@ -2817,6 +2944,60 @@ void TaskInterferenceCheck::onCreateReviewNote()
     updateRowActionState();
 }
 
+ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairsInCommand(
+    Gui::Document* guiDocument,
+    App::DocumentObject* host,
+    const std::vector<ExcludePairCommandEntry>& entries
+)
+{
+    ExcludePairCommandResult result;
+    if (!host || entries.empty()) {
+        result.errorMessage =
+            TaskInterferenceCheck::tr("Cannot exclude pairs: missing host or source pairs.");
+        return result;
+    }
+    for (const auto& entry : entries) {
+        if (!entry.sourceA || !entry.sourceB) {
+            result.errorMessage =
+                TaskInterferenceCheck::tr("Cannot exclude pairs: missing source.");
+            return result;
+        }
+    }
+    if (!guiDocument) {
+        result.errorMessage =
+            TaskInterferenceCheck::tr("Cannot exclude pairs: no active GUI document.");
+        return result;
+    }
+
+    result.success = executeInterferenceMutation(
+        guiDocument,
+        host->getDocument(),
+        entries.size() == 1 ? "Exclude interference source pair"
+                            : "Exclude interference source pairs",
+        [host, entries]() {
+            for (const auto& entry : entries) {
+                if (entry.reason) {
+                    Assembly::addInterferenceExclusionWithReason(
+                        host,
+                        entry.sourceA,
+                        entry.sourceB,
+                        entry.reason
+                    );
+                }
+                else {
+                    Assembly::addInterferenceExclusion(
+                        host,
+                        entry.sourceA,
+                        entry.sourceB
+                    );
+                }
+            }
+        },
+        result.errorMessage
+    );
+    return result;
+}
+
 ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
     Gui::Document* guiDocument,
     App::DocumentObject* host,
@@ -2825,37 +3006,11 @@ ExcludePairCommandResult AssemblyGui::tryExcludeInterferencePairInCommand(
     Assembly::ReviewNote* reason
 )
 {
-    ExcludePairCommandResult result;
-    if (!host || !sourceA || !sourceB) {
-        result.errorMessage = TaskInterferenceCheck::tr("Cannot exclude pair: missing host or source.");
-        return result;
-    }
-    if (!guiDocument) {
-        result.errorMessage =
-            TaskInterferenceCheck::tr("Cannot exclude pair: no active GUI document.");
-        return result;
-    }
-
-    result.success = executeInterferenceMutation(
+    return tryExcludeInterferencePairsInCommand(
         guiDocument,
-        host->getDocument(),
-        "Exclude interference source pair",
-        [host, sourceA, sourceB, reason]() {
-            if (reason) {
-                Assembly::addInterferenceExclusionWithReason(
-                    host,
-                    sourceA,
-                    sourceB,
-                    reason
-                );
-            }
-            else {
-                Assembly::addInterferenceExclusion(host, sourceA, sourceB);
-            }
-        },
-        result.errorMessage
+        host,
+        {{sourceA, sourceB, reason}}
     );
-    return result;
 }
 
 bool TaskInterferenceCheck::testExecuteExcludePairCommand(
@@ -2878,31 +3033,39 @@ bool TaskInterferenceCheck::testExecuteExcludePairForSelectedRow(
     QString* errorOut
 )
 {
-    const int pairIndex = currentPairIndex();
-    if (pairIndex < 0 || !host) {
+    const auto selected = selectedPairIndices();
+    if (selected.size() != 1) {
         if (errorOut) {
-            *errorOut = tr("No interference pair selected.");
+            *errorOut = tr("Select exactly one interference pair.");
         }
         return false;
     }
-    const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
-    auto* sourceA = resolveSourceId(lastResult.leaves[pair.leafIndexA].sourceId);
-    auto* sourceB = resolveSourceId(lastResult.leaves[pair.leafIndexB].sourceId);
-    if (!sourceA || !sourceB) {
+    return testExecuteExcludePairsForSelectedRows(guiDocument, errorOut);
+}
+
+std::size_t TaskInterferenceCheck::testSelectedExclusionSourcePairCount() const
+{
+    std::size_t affected = 0;
+    QString errorMessage;
+    return selectedExclusionEntries(affected, errorMessage).size();
+}
+
+bool TaskInterferenceCheck::testExecuteExcludePairsForSelectedRows(
+    Gui::Document* guiDocument,
+    QString* errorOut
+)
+{
+    std::size_t affected = 0;
+    QString errorMessage;
+    const auto entries = selectedExclusionEntries(affected, errorMessage);
+    if (entries.empty()) {
         if (errorOut) {
-            *errorOut = tr("Could not resolve selected interference source pair.");
+            *errorOut = errorMessage;
         }
         return false;
     }
-    const auto& idA = lastResult.leaves[pair.leafIndexA].sourceId;
-    const auto& idB = lastResult.leaves[pair.leafIndexB].sourceId;
-    const auto result = tryExcludeInterferencePairInCommand(
-        guiDocument,
-        host,
-        sourceA,
-        sourceB,
-        matchingInterferenceReasonNote(idA, idB)
-    );
+    const auto result =
+        tryExcludeInterferencePairsInCommand(guiDocument, host, entries);
     if (errorOut) {
         *errorOut = result.errorMessage;
     }
@@ -2921,56 +3084,40 @@ bool TaskInterferenceCheck::testCreateReviewNoteForSelectedRow(QString* errorOut
 
 void TaskInterferenceCheck::onExcludePair()
 {
-    const int pairIndex = currentPairIndex();
-    if (pairIndex < 0 || !host) {
+    std::size_t affectedOccurrencePairs = 0;
+    QString errorMessage;
+    const auto entries =
+        selectedExclusionEntries(affectedOccurrencePairs, errorMessage);
+    if (entries.empty()) {
+        if (!errorMessage.isEmpty()) {
+            QMessageBox::warning(this, tr("Exclude selected source pairs"), errorMessage);
+        }
         return;
     }
-    const auto& pair = lastResult.pairs[static_cast<std::size_t>(pairIndex)];
-    auto* sourceA = resolveSourceId(lastResult.leaves[pair.leafIndexA].sourceId);
-    auto* sourceB = resolveSourceId(lastResult.leaves[pair.leafIndexB].sourceId);
-    if (!sourceA || !sourceB) {
-        return;
-    }
-
-    const auto& idA = lastResult.leaves[pair.leafIndexA].sourceId;
-    const auto& idB = lastResult.leaves[pair.leafIndexB].sourceId;
-    const std::size_t affected = Assembly::countInterferenceExclusionAffectedPairs(
-        lastResult,
-        idA,
-        idB
-    );
-    auto* reason = matchingInterferenceReasonNote(idA, idB);
-    const QString reasonText = reason
-        ? tr("\nReason: %1 [%2]")
-              .arg(QString::fromUtf8(reason->Label.getValue()))
-              .arg(QString::fromUtf8(reason->getNameInDocument()))
-        : tr("\nReason: none (create a review note first to link one)");
 
     const auto answer = QMessageBox::question(
         this,
-        tr("Exclude source pair"),
-        tr("Exclude sources '%1' and '%2' for all occurrences?\nThis currently affects %3 "
-           "violation row(s).%4")
-            .arg(QString::fromUtf8(sourceA->Label.getValue()))
-            .arg(QString::fromUtf8(sourceB->Label.getValue()))
-            .arg(static_cast<qulonglong>(affected))
-            .arg(reasonText)
+        tr("Exclude selected source pairs"),
+        tr("Add %1 unique source-pair exclusion rule(s)?\n"
+           "They currently affect %2 violation occurrence pair(s).\n\n"
+           "All rules will be added in one undoable operation.")
+            .arg(static_cast<qulonglong>(entries.size()))
+            .arg(static_cast<qulonglong>(affectedOccurrencePairs))
     );
     if (answer != QMessageBox::Yes) {
         return;
     }
 
     Gui::Document* guiDocument = hostGuiDocument();
-    const auto commandResult = tryExcludeInterferencePairInCommand(
-        guiDocument,
-        host,
-        sourceA,
-        sourceB,
-        reason
-    );
+    const auto commandResult =
+        tryExcludeInterferencePairsInCommand(guiDocument, host, entries);
     if (!commandResult.success) {
         if (!commandResult.errorMessage.isEmpty()) {
-            QMessageBox::warning(this, tr("Exclude source pair"), commandResult.errorMessage);
+            QMessageBox::warning(
+                this,
+                tr("Exclude selected source pairs"),
+                commandResult.errorMessage
+            );
         }
         return;
     }

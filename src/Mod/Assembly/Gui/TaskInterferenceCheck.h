@@ -57,6 +57,23 @@ struct AssemblyGuiExport ExcludePairCommandResult
     QString errorMessage;
 };
 
+struct AssemblyGuiExport ExcludePairCommandEntry
+{
+    App::DocumentObject* sourceA = nullptr;
+    App::DocumentObject* sourceB = nullptr;
+    Assembly::ReviewNote* reason = nullptr;
+};
+
+/**
+ * Add multiple exact source-pair exclusions in one undoable document command.
+ * The operation is atomic: a failure aborts the complete command.
+ */
+AssemblyGuiExport ExcludePairCommandResult tryExcludeInterferencePairsInCommand(
+    Gui::Document* guiDocument,
+    App::DocumentObject* host,
+    const std::vector<ExcludePairCommandEntry>& entries
+);
+
 /**
  * Open a GUI command, append an interference exclusion pair, and commit only on success.
  * Aborts the command on insertion/commit failures and returns a user-facing error message.
@@ -190,6 +207,12 @@ public:
         QString* errorOut = nullptr
     );
     bool testCreateReviewNoteForSelectedRow(QString* errorOut = nullptr);
+    void testSelectResultRows(const std::vector<int>& rows);
+    std::size_t testSelectedExclusionSourcePairCount() const;
+    bool testExecuteExcludePairsForSelectedRows(
+        Gui::Document* guiDocument,
+        QString* errorOut = nullptr
+    );
 
     /** Create a detached preview root without MainWindow/viewer (Inventor unit tests). */
     void testEnsureDetachedPreviewRoot();
@@ -307,6 +330,11 @@ private:
     Assembly::ReviewNote* matchingInterferenceReasonNote(
         const std::string& sourceIdA,
         const std::string& sourceIdB
+    ) const;
+    std::vector<std::size_t> selectedPairIndices() const;
+    std::vector<ExcludePairCommandEntry> selectedExclusionEntries(
+        std::size_t& affectedOccurrencePairs,
+        QString& errorMessage
     ) const;
     bool createReviewNoteForCurrentRow(QString& errorMessage);
     int currentPairIndex() const;

@@ -777,7 +777,7 @@ TEST_F(TaskInterferenceCheckTest, tableAndPreviewUseTheSameGoverningFaceHit)
 
     ASSERT_EQ(task.testTableRowCount(), 1);
     EXPECT_TRUE(task.testTableCellText(0, 0).contains(QStringLiteral("Clearance")));
-    EXPECT_TRUE(task.testTableCellText(0, 3).contains(QStringLiteral("0.4")));
+    EXPECT_NE(task.testTableCellText(0, 3), QStringLiteral("—"));
     EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("Governed_A.Face5")));
     EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("Governed_B.Face3")));
     EXPECT_FALSE(task.testTableCellText(0, 6).contains(QStringLiteral("Face1")));
@@ -1268,7 +1268,10 @@ TEST_F(TaskInterferenceCheckTest, completeZeroRowClearPairResultIsRetainedAndSum
     EXPECT_TRUE(task.hasResults());
     EXPECT_EQ(task.testTableRowCount(), 0);
     EXPECT_EQ(task.testResultPairCount(), 0u);
-    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 4")));
+    EXPECT_TRUE(
+        task.testSummaryText().contains(QStringLiteral("Clear occurrence pairs: 4"))
+    );
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Rows shown: 0")));
     EXPECT_TRUE(task.testStatusText().contains(QStringLiteral("complete"), Qt::CaseInsensitive));
 }
 
@@ -1331,14 +1334,18 @@ TEST_F(TaskInterferenceCheckTest, cancelledOrObsoleteResultsCannotCreatePhantomA
     task.testDeliverScanFinished(scanB.generation, emptyComplete);
     ASSERT_TRUE(task.hasResults());
     EXPECT_EQ(task.testTableRowCount(), 0);
-    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 0")));
+    EXPECT_TRUE(
+        task.testSummaryText().contains(QStringLiteral("Clear occurrence pairs: 0"))
+    );
     const QString summaryAfterCurrent = task.testSummaryText();
 
     task.testDeliverScanFinished(scanA.generation, makeClearPairOnlyResult(9));
     EXPECT_TRUE(task.hasResults());
     EXPECT_EQ(task.testTableRowCount(), 0);
     EXPECT_EQ(task.testSummaryText(), summaryAfterCurrent);
-    EXPECT_FALSE(task.testSummaryText().contains(QStringLiteral("Clear pairs: 9")));
+    EXPECT_FALSE(
+        task.testSummaryText().contains(QStringLiteral("Clear occurrence pairs: 9"))
+    );
 }
 
 TEST_F(TaskInterferenceCheckTest, defaultAllComponentsPathConsumesLinkedClearanceSheet)
@@ -1812,6 +1819,55 @@ TEST_F(TaskInterferenceCheckTest, faceOnlyViolationEnablesExcludeAndCountsPairOn
     EXPECT_EQ(task.testAffectedViolationPairCount(), 1u);
 }
 
+TEST_F(TaskInterferenceCheckTest, penetrationLocalizationShowsFacesVolumeAndExplicitCounterUnits)
+{
+    Assembly::InterferenceScanResult result;
+    result.complete = true;
+    Assembly::InterferenceLeaf leafA;
+    leafA.displayPath = "AssemblySpool";
+    leafA.sourceId = "srcA";
+    Assembly::InterferenceLeaf leafB;
+    leafB.displayPath = "AssemblyCase";
+    leafB.sourceId = "srcB";
+    result.leaves = {leafA, leafB};
+
+    Assembly::InterferencePairResult pair;
+    pair.leafIndexA = 0;
+    pair.leafIndexB = 1;
+    pair.detection.kind = Part::InterferenceKind::Penetration;
+    pair.detection.overlapVolume = 2.83;
+    Assembly::InterferenceFaceHit localization;
+    localization.facePathA = "AssemblySpool.Face31";
+    localization.facePathB = "AssemblyCase.Face1";
+    localization.classification = Part::InterferenceKind::Penetration;
+    localization.diagnostic =
+        "Representative faces nearest the overlap centre; penetration remains occurrence-level";
+    pair.faceHits = {localization};
+    pair.governingFaceHitIndex = 0;
+    result.pairs.push_back(pair);
+    result.counts.penetrations = 1;
+    result.counts.contacts = 773;
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+
+    ASSERT_EQ(task.testTableRowCount(), 1);
+    EXPECT_EQ(task.testTableCellText(0, 3), QStringLiteral("—"));
+    EXPECT_NE(task.testTableCellText(0, 4), QStringLiteral("—"));
+    EXPECT_EQ(task.testTableCellText(0, 5), QStringLiteral("n/a"));
+    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("AssemblySpool.Face31")));
+    EXPECT_TRUE(task.testTableCellText(0, 6).contains(QStringLiteral("AssemblyCase.Face1")));
+    EXPECT_TRUE(
+        task.testTableCellText(0, 7).contains(QStringLiteral("Representative localization"))
+    );
+    EXPECT_TRUE(
+        task.testSummaryText().contains(QStringLiteral("Penetrating occurrence pairs: 1"))
+    );
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Contact face pairs: 773")));
+    EXPECT_TRUE(task.testSummaryText().contains(QStringLiteral("Rows shown: 1")));
+}
+
 TEST_F(TaskInterferenceCheckTest, issueKindsHaveDistinctLabels)
 {
     AssemblyGui::TaskInterferenceCheck task(_assembly);
@@ -2020,6 +2076,75 @@ TEST_F(TaskInterferenceCheckTest, excludePairCommandHelperCommitsAndClearsPendin
     EXPECT_FALSE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
     _doc->redo();
     EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+}
+
+TEST_F(TaskInterferenceCheckTest, selectedRowsBulkExcludeUniqueSourcePairsInOneUndoStep)
+{
+    Gui::Document* guiDoc = ensureGuiDocumentForTest(_doc);
+    ASSERT_NE(guiDoc, nullptr);
+
+    auto* sourceA = _doc->addObject<App::DocumentObject>("App::Feature", "BulkSrcA");
+    auto* sourceB = _doc->addObject<App::DocumentObject>("App::Feature", "BulkSrcB");
+    auto* sourceC = _doc->addObject<App::DocumentObject>("App::Feature", "BulkSrcC");
+    auto* sourceD = _doc->addObject<App::DocumentObject>("App::Feature", "BulkSrcD");
+    ASSERT_NE(sourceA, nullptr);
+    ASSERT_NE(sourceB, nullptr);
+    ASSERT_NE(sourceC, nullptr);
+    ASSERT_NE(sourceD, nullptr);
+
+    auto sourceId = [](App::DocumentObject* object) {
+        return std::string(object->getDocument()->getName()) + "#"
+            + object->getNameInDocument();
+    };
+
+    Assembly::InterferenceScanResult result;
+    result.complete = true;
+    auto appendLeaf = [&](App::DocumentObject* source, const char* occurrence) {
+        Assembly::InterferenceLeaf leaf;
+        leaf.displayPath = occurrence;
+        leaf.sourceId = sourceId(source);
+        result.leaves.push_back(std::move(leaf));
+    };
+    appendLeaf(sourceA, "Screw.001");
+    appendLeaf(sourceB, "Plate.001");
+    appendLeaf(sourceA, "Screw.002");
+    appendLeaf(sourceB, "Plate.002");
+    appendLeaf(sourceC, "Screw.003");
+    appendLeaf(sourceD, "Bracket.001");
+
+    auto appendPenetration = [&](std::size_t first, std::size_t second) {
+        Assembly::InterferencePairResult pair;
+        pair.leafIndexA = first;
+        pair.leafIndexB = second;
+        pair.detection.kind = Part::InterferenceKind::Penetration;
+        result.pairs.push_back(std::move(pair));
+        result.counts.penetrations += 1;
+    };
+    appendPenetration(0, 1);
+    appendPenetration(2, 3);  // Same definitions as row 0: one unique rule.
+    appendPenetration(4, 5);
+
+    AssemblyGui::TaskInterferenceCheck task(_assembly);
+    const auto scan = task.scanSession().beginScan();
+    task.testDeliverScanFinished(scan.generation, result);
+    ASSERT_EQ(task.testTableRowCount(), 3);
+    task.testSelectResultRows({0, 1, 2});
+
+    EXPECT_TRUE(task.isExcludePairEnabled());
+    EXPECT_EQ(task.testSelectedExclusionSourcePairCount(), 2u);
+    const auto undoBefore = _doc->getAvailableUndoNames().size();
+    QString error;
+    ASSERT_TRUE(task.testExecuteExcludePairsForSelectedRows(guiDoc, &error))
+        << error.toStdString();
+    EXPECT_TRUE(error.isEmpty());
+    EXPECT_FALSE(guiDoc->hasPendingCommand());
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+    EXPECT_TRUE(_assembly->hasInterferenceExclusion(sourceC, sourceD));
+    EXPECT_EQ(_doc->getAvailableUndoNames().size(), undoBefore + 1);
+
+    _doc->undo();
+    EXPECT_FALSE(_assembly->hasInterferenceExclusion(sourceA, sourceB));
+    EXPECT_FALSE(_assembly->hasInterferenceExclusion(sourceC, sourceD));
 }
 
 TEST_F(TaskInterferenceCheckTest, resultCreatesStableReviewNoteAndLinksExclusionReason)

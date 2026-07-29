@@ -2979,7 +2979,11 @@ TEST_F(InterferenceScanTest, faceRulesKeepPenetrationAndBroadPhaseForLargeCleara
     EXPECT_EQ(result.counts.penetrations, 1);
     ASSERT_EQ(result.pairs.size(), 1u);
     EXPECT_EQ(result.pairs.front().detection.kind, Part::InterferenceKind::Penetration);
-    EXPECT_TRUE(result.pairs.front().faceHits.empty());
+    ASSERT_EQ(result.pairs.front().faceHits.size(), 1u);
+    EXPECT_EQ(
+        result.pairs.front().faceHits.front().classification,
+        Part::InterferenceKind::Penetration
+    );
 
     std::vector<Assembly::InterferenceLeaf> separated;
     separated.push_back(makeLeaf("SepA.", "srcA", gp_Pnt(0, 0, 0)));
@@ -3255,7 +3259,7 @@ TEST_F(InterferenceScanTest, acrossComponentsRejectsIntraComponentPairs)
     EXPECT_EQ(result.counts.penetrations, 0);
 }
 
-TEST_F(InterferenceScanTest, penetrationRemainsOnePairWithoutFaceHits)
+TEST_F(InterferenceScanTest, penetrationHasOneRepresentativeFacePairWithoutMultiplyingCount)
 {
     auto leafA = makeLeaf("PenOnlyA.", "srcA", gp_Pnt(0, 0, 0));
     auto leafB = makeLeaf("PenOnlyB.", "srcB", gp_Pnt(5, 0, 0));
@@ -3265,7 +3269,18 @@ TEST_F(InterferenceScanTest, penetrationRemainsOnePairWithoutFaceHits)
     ASSERT_TRUE(result.complete);
     EXPECT_EQ(result.counts.penetrations, 1);
     ASSERT_EQ(result.pairs.size(), 1u);
-    EXPECT_TRUE(result.pairs.front().faceHits.empty());
+    const auto& pair = result.pairs.front();
+    ASSERT_EQ(pair.faceHits.size(), 1u);
+    EXPECT_EQ(pair.governingFaceHitIndex, 0u);
+    const auto& hit = pair.faceHits.front();
+    EXPECT_EQ(hit.classification, Part::InterferenceKind::Penetration);
+    EXPECT_FALSE(hit.facePathA.empty());
+    EXPECT_FALSE(hit.facePathB.empty());
+    EXPECT_NE(hit.facePathA.find("PenOnlyA.Face"), std::string::npos);
+    EXPECT_NE(hit.facePathB.find("PenOnlyB.Face"), std::string::npos);
+    EXPECT_TRUE(hit.closestPointsValid);
+    EXPECT_FALSE(hit.commonShape.IsNull());
+    EXPECT_NE(hit.diagnostic.find("occurrence-level"), std::string::npos);
 }
 
 TEST_F(InterferenceScanTest, excludedFaceViolationsCountOncePerComponentPair)
