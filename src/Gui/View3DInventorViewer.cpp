@@ -2979,10 +2979,19 @@ View3DInventorViewer::RenderType View3DInventorViewer::getRenderType() const
 QImage View3DInventorViewer::grabFramebuffer()
 {
     auto gl = static_cast<QOpenGLWidget*>(this->viewport());  // NOLINT
-    gl->makeCurrent();
 
-    // QOpenGLWidget resolves multisampling and renders the live widget as
-    // necessary before reading its framebuffer.
+    // QOpenGLWidget::grabFramebuffer() invokes paintGL() before reading the
+    // backing FBO. Quarter's paintGL() schedules a deferred redraw instead of
+    // painting immediately, so NoPartialUpdate can discard the composed color
+    // buffer before it is read. Preserve the existing frame for this capture
+    // only and restore the viewer's normal update behavior afterwards.
+    const auto updateBehavior = gl->updateBehavior();
+    gl->setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+    auto restoreUpdateBehavior = qScopeGuard([gl, updateBehavior]() {
+        gl->setUpdateBehavior(updateBehavior);
+    });
+
+    // Qt resolves multisampling and manages the OpenGL context internally.
     return gl->grabFramebuffer().convertToFormat(QImage::Format_RGB32);
 }
 
