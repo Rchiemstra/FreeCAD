@@ -2387,3 +2387,402 @@ TEST_F(GeometryWorkerProcessDescendantFaultTest, FaultJobIdMismatchDoesNotInject
     QDir(ws).removeRecursively();
 #endif
 }
+
+// =========================================================================
+// Task 30A — Installed-tree GeometryWorkerProcess qualification
+//
+// Runs only when FCGEO_INSTALLED_TREE_SMOKE=1 and FCGEO_EXPECT_INSTALL_PREFIX
+// is set. The harness must be copied into the installed <prefix>/bin so the
+// production application-directory resolver loads installed FreeCADCmd,
+// GeometryWorker.py, and Part.so — never /code/build_docker.
+// =========================================================================
+
+class GeometryWorkerInstalledTreeSmokeTest : public ::testing::Test
+{
+protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+        if (!QCoreApplication::instance()) {
+            static int argc = 1;
+            static char arg0[] = "Gui_tests_run";
+            static char* argv[] = {arg0, nullptr};
+            new QCoreApplication(argc, argv);
+        }
+    }
+
+    void SetUp() override
+    {
+        _tempDir = std::make_unique<QTemporaryDir>();
+        ASSERT_TRUE(_tempDir->isValid());
+    }
+
+    std::unique_ptr<QTemporaryDir> _tempDir;
+};
+
+TEST_F(GeometryWorkerInstalledTreeSmokeTest, InstalledFaultAndMappedRecovery)
+{
+    // --- Test gating: skip before checking any installed paths ---
+    if (qgetenv("FCGEO_INSTALLED_TREE_SMOKE").toInt() != 1) {
+        GTEST_SKIP() << "FCGEO_INSTALLED_TREE_SMOKE=1 is required to run the "
+                       "installed-tree smoke test";
+    }
+
+    // --- When the gate is open, a missing/empty prefix is a fatal failure ---
+    const QByteArray rawPrefixEnv = qgetenv("FCGEO_EXPECT_INSTALL_PREFIX");
+    ASSERT_FALSE(rawPrefixEnv.isEmpty())
+        << "FCGEO_EXPECT_INSTALL_PREFIX must be set and non-empty when "
+           "FCGEO_INSTALLED_TREE_SMOKE=1";
+
+    // --- Canonicalize the supplied install prefix (no hardcoded /usr/local) ---
+    const QString rawPrefix = QString::fromUtf8(rawPrefixEnv);
+    const QString prefix = QDir(rawPrefix).canonicalPath();
+    ASSERT_FALSE(prefix.isEmpty())
+        << "FCGEO_EXPECT_INSTALL_PREFIX ('" << rawPrefix.toStdString()
+        << "') must canonicalize to an existing directory";
+
+    // Directory-boundary-aware containment: path == dir OR path starts with
+    // dir + "/". This rejects e.g. "/usr/local/bin-other" as being under
+    // "/usr/local/bin".
+    auto isStrictlyUnder = [](const QString& path, const QString& dir) {
+        if (path == dir) {
+            return true;
+        }
+        return path.startsWith(dir + QStringLiteral("/"));
+    };
+    auto isUnderPrefix = [&](const QString& path) {
+        return isStrictlyUnder(path, prefix);
+    };
+    // Reject any artifact that resolves under /code (source/build mount) or
+    // /code/build_docker (build tree).
+    auto notFromCodeOrBuildTree = [](const QString& path) {
+        if (path == QStringLiteral("/code")
+            || path.startsWith(QStringLiteral("/code/"))) {
+            return false;
+        }
+        return !path.contains(QStringLiteral("/code/build_docker"));
+    };
+
+    // --- Fatal provenance gates (before launching any job) ---
+    // 1. applicationDirPath() exactly equals <prefix>/bin
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString appDirCanonical = QDir(appDir).canonicalPath();
+    ASSERT_FALSE(appDirCanonical.isEmpty()) << "applicationDirPath() must canonicalize";
+    ASSERT_EQ(appDirCanonical, prefix + QStringLiteral("/bin"))
+        << "applicationDirPath() must equal <prefix>/bin; got "
+        << appDirCanonical.toStdString();
+
+    // 2. applicationFilePath() is strictly under <prefix>/bin
+    const QString appFile = QCoreApplication::applicationFilePath();
+    const QString appFileCanonical = QFileInfo(appFile).canonicalFilePath();
+    ASSERT_FALSE(appFileCanonical.isEmpty()) << "applicationFilePath() must canonicalize";
+    ASSERT_TRUE(isStrictlyUnder(appFileCanonical, prefix + QStringLiteral("/bin")))
+        << "applicationFilePath() must resolve strictly under <prefix>/bin; got "
+        << appFileCanonical.toStdString();
+    ASSERT_TRUE(notFromCodeOrBuildTree(appFileCanonical))
+        << "applicationFilePath() must not resolve under /code; got "
+        << appFileCanonical.toStdString();
+
+    // 3. <prefix>/bin/FreeCADCmd exists, is executable, resolves under prefix
+    const QString cmdPath = prefix + QStringLiteral("/bin/FreeCADCmd");
+    ASSERT_TRUE(QFileInfo::exists(cmdPath))
+        << "FreeCADCmd must exist at " << cmdPath.toStdString();
+    const QFileInfo cmdInfo(cmdPath);
+    ASSERT_TRUE(cmdInfo.isExecutable()) << "FreeCADCmd must be executable";
+    const QString cmdCanonical = cmdInfo.canonicalFilePath();
+    ASSERT_FALSE(cmdCanonical.isEmpty());
+    ASSERT_TRUE(isUnderPrefix(cmdCanonical))
+        << "FreeCADCmd must canonicalize under the prefix; got "
+        << cmdCanonical.toStdString();
+    ASSERT_TRUE(notFromCodeOrBuildTree(cmdCanonical))
+        << "FreeCADCmd must not resolve under /code; got " << cmdCanonical.toStdString();
+
+    // 4. <prefix>/Mod/Part/GeometryWorker.py exists, readable, resolves under prefix
+    const QString workerPyPath = prefix + QStringLiteral("/Mod/Part/GeometryWorker.py");
+    ASSERT_TRUE(QFileInfo::exists(workerPyPath))
+        << "GeometryWorker.py must exist at " << workerPyPath.toStdString();
+    const QFileInfo workerPyInfo(workerPyPath);
+    ASSERT_TRUE(workerPyInfo.isReadable()) << "GeometryWorker.py must be readable";
+    const QString workerPyCanonical = workerPyInfo.canonicalFilePath();
+    ASSERT_FALSE(workerPyCanonical.isEmpty());
+    ASSERT_TRUE(isUnderPrefix(workerPyCanonical))
+        << "GeometryWorker.py must canonicalize under the prefix; got "
+        << workerPyCanonical.toStdString();
+    ASSERT_TRUE(notFromCodeOrBuildTree(workerPyCanonical))
+        << "GeometryWorker.py must not resolve under /code; got "
+        << workerPyCanonical.toStdString();
+
+    // 5. <prefix>/Mod/Part/Part.so exists and resolves under prefix
+    const QString partSoPath = prefix + QStringLiteral("/Mod/Part/Part.so");
+    ASSERT_TRUE(QFileInfo::exists(partSoPath))
+        << "Part.so must exist at " << partSoPath.toStdString();
+    const QString partSoCanonical = QFileInfo(partSoPath).canonicalFilePath();
+    ASSERT_FALSE(partSoCanonical.isEmpty());
+    ASSERT_TRUE(isUnderPrefix(partSoCanonical))
+        << "Part.so must canonicalize under the prefix; got "
+        << partSoCanonical.toStdString();
+    ASSERT_TRUE(notFromCodeOrBuildTree(partSoCanonical))
+        << "Part.so must not resolve under /code; got " << partSoCanonical.toStdString();
+
+    // 6. Test workspace is outside the installation prefix
+    const QString tempCanonical = QDir(_tempDir->path()).canonicalPath();
+    ASSERT_FALSE(tempCanonical.isEmpty());
+    ASSERT_FALSE(isUnderPrefix(tempCanonical))
+        << "test workspace must be outside the installation prefix; got "
+        << tempCanonical.toStdString();
+
+    // Track workspace paths for the final fault-descendant.json check.
+    QStringList workspacePaths;
+
+    // --- Exercise 1: Installed mapped Boolean success (job ID 61) ---
+    {
+        long hashedId = 0;
+        auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+        ASSERT_TRUE(task);
+
+        App::GeometryJobSpec spec;
+        spec.id = 61;
+        spec.task = task;
+        spec.backend = App::GeometryBackend::FreeCADCmd;
+        spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+        const QString ws = _tempDir->path() + QStringLiteral("/installed_happy_61");
+        workspacePaths << ws;
+
+        Gui::GeometryWorkerProcess proc;
+        std::atomic<int> callbacks {0};
+        bool finished = false;
+        bool sawWorkerStart = false;
+        App::GeometryJobId callbackJobId = 0;
+        App::GeometryJobState terminal = App::GeometryJobState::Queued;
+        App::DetachedGeometryResult result;
+
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::progressUpdated, &proc,
+                         [&](double, const QString& phase) {
+                             if (phase == QStringLiteral("worker.start")) {
+                                 sawWorkerStart = true;
+                             }
+                         });
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &proc,
+                         [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                             const App::DetachedGeometryResult& res) {
+                             ++callbacks;
+                             finished = true;
+                             callbackJobId = jobId;
+                             terminal = state;
+                             result = res;
+                         });
+
+        ASSERT_TRUE(proc.startJob(spec, ws));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/request.json")));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/base.fcg")));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/tool.fcg")));
+
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop,
+                         &QEventLoop::quit);
+        timeout.start(180000);
+        if (!finished) {
+            loop.exec();
+        }
+
+        ASSERT_TRUE(finished) << "installed happy-path job did not finish";
+        EXPECT_EQ(callbacks.load(), 1);
+        EXPECT_EQ(callbackJobId, spec.id);
+        EXPECT_TRUE(sawWorkerStart);
+        EXPECT_FALSE(proc.protocolFailed());
+        EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit)
+            << result.errorCode << ": " << result.errorMessage;
+        EXPECT_NE(terminal, App::GeometryJobState::Failed);
+        EXPECT_NE(terminal, App::GeometryJobState::Completed);
+        EXPECT_TRUE(result.success);
+        ASSERT_FALSE(result.resultArchivePath.empty());
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(result.resultArchivePath)));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/result.fcg")));
+
+        Part::FrozenTopoShapeBundle recovered;
+        ASSERT_TRUE(Part::TopoShapeArchive::readArchive(result.resultArchivePath, recovered));
+        // result archive decodes; recovered shape/map share the recovered hasher
+        assertMappedBooleanRecovery(recovered, hashedId, 16);
+        // hasher closure is non-empty
+        EXPECT_FALSE(recovered.hasherSnapshot.entries.empty());
+        // long Hashable SID resolves to the original numeric ID (checked inside
+        // assertMappedBooleanRecovery); mapped history/source tag observable
+        // (also checked inside assertMappedBooleanRecovery via sawTag1/sawTag2).
+    }
+
+    // --- Exercise 2: Installed deterministic bad_alloc fault (job ID 62) ---
+    {
+        long hashedId = 0;
+        auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+        ASSERT_TRUE(task);
+
+        App::GeometryJobSpec spec;
+        spec.id = 62;
+        spec.task = task;
+        spec.backend = App::GeometryBackend::FreeCADCmd;
+        spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+        const QString ws = _tempDir->path() + QStringLiteral("/installed_fault_62");
+        workspacePaths << ws;
+
+        // Set fault env vars only for this launch.
+        TestEnvironmentGuard env;
+        env.set("FCGEO_TEST_FAULT_MODE", QByteArray("bad_alloc"));
+        std::string faultJobWire;
+        ASSERT_TRUE(App::formatGeometryJobId(spec.id, faultJobWire));
+        env.set("FCGEO_TEST_FAULT_JOB_ID", QByteArray::fromStdString(faultJobWire));
+
+        Gui::GeometryWorkerProcess proc;
+        std::atomic<int> callbacks {0};
+        bool finished = false;
+        bool sawWorkerStart = false;
+        App::GeometryJobId callbackJobId = 0;
+        App::GeometryJobState terminal = App::GeometryJobState::Queued;
+        App::DetachedGeometryResult result;
+
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::progressUpdated, &proc,
+                         [&](double, const QString& phase) {
+                             if (phase == QStringLiteral("worker.start")) {
+                                 sawWorkerStart = true;
+                             }
+                         });
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &proc,
+                         [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                             const App::DetachedGeometryResult& res) {
+                             ++callbacks;
+                             finished = true;
+                             callbackJobId = jobId;
+                             terminal = state;
+                             result = res;
+                         });
+
+        ASSERT_TRUE(proc.startJob(spec, ws));
+        // Clear both fault env vars before recovery using the exact-value-restoring
+        // RAII environment guard (destructor restores originals at scope end).
+        env.clear("FCGEO_TEST_FAULT_MODE");
+        env.clear("FCGEO_TEST_FAULT_JOB_ID");
+
+        ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/request.json")));
+        ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/base.fcg")));
+        ASSERT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/tool.fcg")));
+
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop,
+                         &QEventLoop::quit);
+        timeout.start(30000);
+        if (!finished) {
+            loop.exec();
+        }
+
+        ASSERT_TRUE(finished) << "installed bad_alloc fault job did not finish";
+        EXPECT_EQ(callbacks.load(), 1);
+        EXPECT_EQ(callbackJobId, spec.id);
+        // hello is implied by protocolFailed()==false (protocol requires hello
+        // before any other message); worker.start is observed via progress signal.
+        EXPECT_TRUE(sawWorkerStart);
+        EXPECT_FALSE(proc.protocolFailed());
+        EXPECT_EQ(terminal, App::GeometryJobState::Failed);
+        EXPECT_EQ(result.errorCode, "OutOfMemory");
+        EXPECT_NE(terminal, App::GeometryJobState::ReadyToCommit);
+        EXPECT_NE(terminal, App::GeometryJobState::Completed);
+        EXPECT_FALSE(result.success);
+        // no result terminal / no result.fcg
+        EXPECT_TRUE(result.resultArchivePath.empty());
+        EXPECT_FALSE(QFileInfo::exists(ws + QStringLiteral("/result.fcg")));
+        // request and operand archives retained
+        EXPECT_TRUE(QFileInfo::exists(ws + QStringLiteral("/request.json")));
+        EXPECT_TRUE(QFileInfo::exists(ws + QStringLiteral("/base.fcg")));
+        EXPECT_TRUE(QFileInfo::exists(ws + QStringLiteral("/tool.fcg")));
+    }
+
+    // --- Exercise 3: Fresh installed mapped Boolean recovery (job ID 63) ---
+    // Fresh workspace, task, and process controller — complete mapped happy-path
+    // semantic bar again, including SID and history checks.
+    {
+        long hashedId = 0;
+        auto task = makeMappedBooleanTask(/*threshold=*/16, &hashedId);
+        ASSERT_TRUE(task);
+
+        App::GeometryJobSpec spec;
+        spec.id = 63;
+        spec.task = task;
+        spec.backend = App::GeometryBackend::FreeCADCmd;
+        spec.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+
+        const QString ws = _tempDir->path() + QStringLiteral("/installed_recovery_63");
+        workspacePaths << ws;
+
+        Gui::GeometryWorkerProcess proc;
+        std::atomic<int> callbacks {0};
+        bool finished = false;
+        bool sawWorkerStart = false;
+        App::GeometryJobId callbackJobId = 0;
+        App::GeometryJobState terminal = App::GeometryJobState::Queued;
+        App::DetachedGeometryResult result;
+
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::progressUpdated, &proc,
+                         [&](double, const QString& phase) {
+                             if (phase == QStringLiteral("worker.start")) {
+                                 sawWorkerStart = true;
+                             }
+                         });
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &proc,
+                         [&](App::GeometryJobId jobId, App::GeometryJobState state,
+                             const App::DetachedGeometryResult& res) {
+                             ++callbacks;
+                             finished = true;
+                             callbackJobId = jobId;
+                             terminal = state;
+                             result = res;
+                         });
+
+        ASSERT_TRUE(proc.startJob(spec, ws));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/request.json")));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/base.fcg")));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/tool.fcg")));
+
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&proc, &Gui::GeometryWorkerProcess::jobFinished, &loop,
+                         &QEventLoop::quit);
+        timeout.start(180000);
+        if (!finished) {
+            loop.exec();
+        }
+
+        ASSERT_TRUE(finished) << "installed recovery job did not finish";
+        EXPECT_EQ(callbacks.load(), 1);
+        EXPECT_EQ(callbackJobId, spec.id);
+        EXPECT_TRUE(sawWorkerStart);
+        EXPECT_FALSE(proc.protocolFailed());
+        EXPECT_EQ(terminal, App::GeometryJobState::ReadyToCommit)
+            << result.errorCode << ": " << result.errorMessage;
+        EXPECT_NE(terminal, App::GeometryJobState::Failed);
+        EXPECT_NE(terminal, App::GeometryJobState::Completed);
+        EXPECT_TRUE(result.success);
+        ASSERT_FALSE(result.resultArchivePath.empty());
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(result.resultArchivePath)));
+        EXPECT_TRUE(QFileInfo::exists(proc.workspaceDir() + QStringLiteral("/result.fcg")));
+
+        Part::FrozenTopoShapeBundle recovered;
+        ASSERT_TRUE(Part::TopoShapeArchive::readArchive(result.resultArchivePath, recovered));
+        assertMappedBooleanRecovery(recovered, hashedId, 16);
+        EXPECT_FALSE(recovered.hasherSnapshot.entries.empty());
+    }
+
+    // --- Final: no fault-descendant.json in any of the three workspaces ---
+    for (const QString& ws : workspacePaths) {
+        EXPECT_FALSE(QFileInfo::exists(ws + QStringLiteral("/fault-descendant.json")))
+            << "fault-descendant.json must not survive in any installed-tree workspace: "
+            << ws.toStdString();
+    }
+}

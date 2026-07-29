@@ -1307,3 +1307,147 @@ Concrete next action for the implementing agent:
     installed-tree smoke, actual OCC crash, and host OOM remain open.
 
 ---
+
+### Step 30A — Installed-tree GeometryWorkerProcess qualification (Task 30A, blocked, this commit)
+
+* **30A (installed-tree smoke):**
+  `GeometryWorkerInstalledTreeSmokeTest.InstalledFaultAndMappedRecovery` is intended to qualify the
+  mapped detached-geometry path from an actual installed FreeCAD tree outside
+  `/code/build_docker` once a genuine CMake install succeeds. The gated test has not run against
+  such a tree yet. Its harness design copies `Gui_tests_run` into the installed `<prefix>/bin`
+  directory as `Gui_tests_run-install-smoke`, then requires installed FreeCAD libraries,
+  `FreeCADCmd`, `GeometryWorker.py`, and the `Part` module with no runtime artifact resolved from
+  `/code/build_docker`. It exercises the production `applicationDirPath()` resolver without a
+  test-only executable-path override.
+
+* **Test gating (corrective pass):**
+  - When `FCGEO_INSTALLED_TREE_SMOKE` is absent: `GTEST_SKIP` before checking any installed paths.
+  - When `FCGEO_INSTALLED_TREE_SMOKE=1`: a missing or empty `FCGEO_EXPECT_INSTALL_PREFIX` is a
+    **fatal failure** (`ASSERT_FALSE`), not a skip. A nonexistent/noncanonical prefix is also
+    fatal. This prevents a misconfigured qualification command from returning a misleading
+    skipped result.
+  - `FCGEO_EXPECT_INSTALL_PREFIX` is canonicalized; `/usr/local` is not hardcoded in the C++ test.
+  - When the gate is absent, existing build-tree tests remain unchanged and no installed prefix
+    is required by ordinary `Gui_tests_run`.
+
+* **Fatal provenance gates (before any job launch, corrective pass):**
+  Every provenance condition uses `ASSERT_*` (fatal) before the first worker launch:
+  - `QCoreApplication::applicationDirPath()` exactly equals `<prefix>/bin`.
+  - `applicationFilePath()` is strictly under `<prefix>/bin` (directory-boundary-aware check;
+    rejects `/usr/local/bin-other` as being under `/usr/local/bin`).
+  - `<prefix>/bin/FreeCADCmd` exists, is executable, and canonicalizes under the prefix.
+  - `<prefix>/Mod/Part/GeometryWorker.py` exists, is readable, and canonicalizes under the prefix.
+  - `<prefix>/Mod/Part/Part.so` exists and canonicalizes under the prefix.
+  - No artifact canonicalizes under `/code` or `/code/build_docker`.
+  - The test workspace is outside the installation prefix.
+  No job may launch after a failed provenance check.
+
+* **Exercises (all via `GeometryWorkerProcess::startJob()` only):**
+  1. **Installed mapped Boolean success (job ID 61):** shared `StringHasher`, threshold 16,
+     non-empty `ElementMap`s, long `Hashable` SID with stored numeric ID, source tags/history
+     consistent with existing recovery helpers, two-minute deadline. Requires `startJob` succeeds,
+     `worker.start` observed, exactly one callback with job ID 61, `protocolFailed()==false`,
+     `ReadyToCommit`, `success==true`, `result.fcg` exists, result archive decodes, recovered
+     shape/map share the recovered hasher, hasher closure non-empty, long Hashable SID resolves
+     to the original numeric ID, mapped history/source tag observable.
+  2. **Installed deterministic bad_alloc fault (job ID 62):** `FCGEO_TEST_FAULT_MODE=bad_alloc` and
+     `FCGEO_TEST_FAULT_JOB_ID=62` set only for this launch, cleared before recovery via the existing
+     exact-value-restoring RAII environment guard. Requires hello (implied by `protocolFailed()==false`)
+     and `worker.start` observed, exactly one callback with job ID 62, `Failed`, `errorCode==OutOfMemory`,
+     not `ReadyToCommit`/`Completed`, no result terminal, no `result.fcg`, request and operand archives
+     retained.
+  3. **Fresh installed mapped Boolean recovery (job ID 63):** fresh workspace, task, process
+     controller. Requires the complete mapped happy-path semantic bar again, including SID and
+     history checks.
+  - Requires no `fault-descendant.json` in any of the three workspaces.
+
+* **Verdict: BLOCKED — genuine `cmake --install` cannot succeed.**
+
+  The unmodified top-level install command fails:
+  ```
+  cmake --install /code/build_docker --prefix /usr/local
+  ```
+  - **Exit code:** 1
+  - **Complete error:**
+    ```
+    CMake Error at /code/build_docker/src/3rdParty/pivy/interfaces/cmake_install.cmake:52 (file):
+      file INSTALL cannot find "/code/build_docker/Mod/pivy/_coin.so": No such
+      file or directory.
+    Call Stack (most recent call first):
+      /code/build_docker/src/3rdParty/pivy/cmake_install.cmake:47 (include)
+      /code/build_docker/cmake_install.cmake:95 (include)
+    ```
+  - **Root cause:** missing install artifact after a pre-existing SWIG generation failure. The
+    `_coin.so` Ninja target exists, but cannot complete. The pivy submodule
+    (commit `1fba012c74973c78a9f7564174152ae15bc00b1a`, URL `https://github.com/Rchiemstra/pivy.git`)
+    ships corrupted Coin3D header stubs in `src/3rdParty/pivy/Inventor/` with duplicated content
+    and extraneous `#endif` directives (e.g., `SoField.h` has two `#endif // !COIN_SOFIELD_H`
+    lines; `SoType.h` has two `#endif // !COIN_SOTYPE_H` lines). SWIG (both 4.2.0 from the CI
+    image and 4.1.0 built from source) correctly reports `Error: Extraneous #endif` for each
+    corrupted header, preventing `_coin.so` generation. This is pre-existing source corruption
+    in the 3rd-party submodule, not a SWIG version-specific bug.
+  - **Other 3rd-party targets:** `salomesmesh` (SMDS/Driver/SMESH/StdMeshers/MEFISTO2),
+    `WildMagic4`, `E57Format`, and `OndselSolver` were all successfully built; only pivy
+    `_coin.so` remains unbuilt.
+  - **External pivy not available:** the CI image (`127.0.0.1:5001/freecad-ci-deps:24.04`,
+    Ubuntu 24.04) has no system Coin3D or pivy package (`apt-cache search` returns nothing;
+    `pip install pivy` finds no distribution). Setting
+    `FREECAD_USE_EXTERNAL_COIN_PIVY=ON` would skip bundled pivy but requires system Coin3D
+    and pivy, neither of which is installable in the container.
+  - **No manual install tree was used.** No FreeCAD artifacts (FreeCADCmd, GeometryWorker.py,
+    Part.so, libFreeCADGui.so, libFreeCADApp.so, libFreeCADBase.so, Mod/ directories, Ext
+    directories, Python modules) were manually copied, installed, symlinked, archived, or
+    reconstructed into `/usr/local`. The only manual copy permitted by the task (the test
+    harness `Gui_tests_run`) was not performed because the install itself failed.
+
+* **Gated test code preserved:** the `GeometryWorkerInstalledTreeSmokeTest.InstalledFaultAndMappedRecovery`
+  test compiles and is preserved in the working tree, documented as awaiting a valid installed
+  tree. When `FCGEO_INSTALLED_TREE_SMOKE` is absent, the test `GTEST_SKIP`s with a clear message
+  before checking any installed paths.
+
+* **Source hygiene:**
+  - Missing final newline added to `tests/src/Gui/TestGeometryWorkerProcess.cpp`.
+  - `git diff --check` → clean (no whitespace errors).
+
+* **Build-tree regressions** (outside the ephemeral install container, `/code/build_docker`):
+  - `Gui_tests_run --gtest_filter='GeometryWorkerProcessTest.*:GeometryWorkerProcessFaultTest.*:GeometryWorkerProcessDescendantFaultTest.*'`
+    → the implementing-agent run reported **34/36 PASSED** with timeout-sensitive failures in
+    `ParentControlledFaultThenFreshJobRecovers/Hang` and
+    `DescendantRemovedAndFreshJobRecovers/Deadline`; both passed on isolated re-run. An independent
+    fresh Docker `--init` combined rerun passed **36/36**. The installed-tree test is not included
+    by this filter.
+  - `Gui_tests_run --gtest_filter='GeometryWorkerInstalledTreeSmokeTest.*'` (without the gate)
+    → **1 SKIPPED** with message `FCGEO_INSTALLED_TREE_SMOKE=1 is required to run the installed-tree
+    smoke test` (skips before checking installed paths).
+  - `Part_tests_run --gtest_filter='CrossProcessBooleanTest.*:CrossProcessFilletTest.*:CrossProcessSweepTest.*:CrossProcessCrashRenameRecoveryTest.*'`
+    → **17/17 PASSED**.
+  - `Part_tests_run --gtest_filter='NonBlockingGeometryTest.*'` → **53 passed**, **2 skipped**
+    (LP64 narrowing guards).
+
+* **Docker `--init` usage:** the ephemeral validation container was launched with `docker run --rm
+  --init` so PID 1 reaps orphaned children; the build-tree regression containers also used `--init`.
+
+* **Files changed (expected only):**
+  - `tests/src/Gui/TestGeometryWorkerProcess.cpp` — `GeometryWorkerInstalledTreeSmokeTest`
+    (gated test code with fatal provenance gates, preserved awaiting valid installed tree)
+  - `doc/PROGRESS.md` — this step
+
+* **No production adapters or rollout changes:** `GeometryWorker.py`, codecs, adapters, rollout
+  flags, and `tools/mcp/freecad-mcp` were not modified. The installed layout already matches the
+  existing resolver (`<prefix>/bin/FreeCADCmd`, `<prefix>/Mod/Part/GeometryWorker.py`).
+
+* **Status:** blocked scaffolding and blocker evidence committed with this change on base
+  `e4507c64a2`; installed-tree qualification remains open.
+
+* Remaining gaps (Phase 2 still **not** complete):
+  - **P1:** 30 s heartbeat; non-cooperative shutdown; GIL hold.
+  - **P2:** actual OCC crash; actual host OOM; parent-controlled default-workspace relocation;
+    **installed-tree smoke beyond the Docker build tree (still open — blocked by pivy submodule
+    header corruption)**; LLP64/32-bit-long decode qualification on a non-LP64 builder.
+  - **P3:** Windows Job Object cancel; retained-success janitor; 250 ms GUI harness.
+  - **P4:** production adapters/rollout (blocked).
+* Next step:
+  - Installed-tree smoke remains open. The pivy submodule header corruption must be fixed
+    (upstream or by submodule commit update) before genuine `cmake --install` can succeed.
+    Actual OCC crash, actual host OOM, default-workspace relocation, and non-LP64 qualification
+    remain open. Phase 2 remains incomplete.
