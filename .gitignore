@@ -82,3 +82,4 @@ tsupdate_stdout.log
 *.egg-info
 .pixi
 tmp/
+/debug_logs/
