@@ -471,6 +471,7 @@ void DockWindowManager::retranslate()
  * \li Std_TreeView
  * \li Std_PropertyView
  * \li Std_ReportView
+ * \li Std_NotificationView
  * \li Std_ToolBox
  * \li Std_ComboView
  * \li Std_SelectionView

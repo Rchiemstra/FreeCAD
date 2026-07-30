@@ -1,5 +1,6 @@
 /***************************************************************************
  *   Copyright (c) 2022 Abdullah Tahiri <abdullah.tahiri.yo@gmail.com>     *
+ *   Copyright (c) 2026 FreeCAD Developers                                *
  *                                                                         *
  *   This file is part of the FreeCAD CAx development system.              *
  *                                                                         *
@@ -22,74 +23,50 @@
 
 #pragma once
 
-#include <QPushButton>
+#include <QCoreApplication>
 #include <QString>
+#include <QStringList>
 
-#include <map>
-#include <memory>
-
-#include <Base/Observer.h>
-#include <Base/Parameter.h>
-
-namespace App
-{
-class Document;
-}
+#include <Base/Console.h>
 
 namespace Gui
 {
 
-struct NotificationAreaP;
-
-class NotificationArea: public QPushButton
+/** Returns a readable, translated label for a notification log style. */
+inline QString notificationTypeToString(Base::LogStyle type)
 {
-    enum class TrayIcon
-    {
-        Normal,
-        MissedNotifications,
-    };
+    switch (type) {
+        case Base::LogStyle::Error:
+            return QCoreApplication::translate("NotificationsWidget", "Error");
+        case Base::LogStyle::Warning:
+            return QCoreApplication::translate("NotificationsWidget", "Warning");
+        case Base::LogStyle::Critical:
+            return QCoreApplication::translate("NotificationsWidget", "Critical");
+        case Base::LogStyle::Notification:
+            return QCoreApplication::translate("NotificationsWidget", "Notification");
+        case Base::LogStyle::Message:
+            return QCoreApplication::translate("NotificationsWidget", "Message");
+        case Base::LogStyle::Log:
+            return QCoreApplication::translate("NotificationsWidget", "Log");
+        default:
+            return QCoreApplication::translate("NotificationsWidget", "Notification");
+    }
+}
 
-public:
-    class ParameterObserver: public ParameterGrp::ObserverType
-    {
-    public:
-        explicit ParameterObserver(NotificationArea* notificationarea);
-        ~ParameterObserver() override;
+/** Formats one notification as Type, Notifier, Message columns separated by tabs. */
+inline QString formatNotificationClipboardLine(
+    const QString& type,
+    const QString& notifier,
+    const QString& message
+)
+{
+    return type + QLatin1Char('\t') + notifier + QLatin1Char('\t') + message;
+}
 
-        void OnChange(Base::Subject<const char*>& rCaller, const char* sReason) override;
-
-    private:
-        NotificationArea* notificationArea;
-        ParameterGrp::handle hGrp;
-        std::map<std::string, std::function<void(const std::string& string)>> parameterMap;
-    };
-
-    NotificationArea(QWidget* parent = nullptr);
-    ~NotificationArea() override;
-
-    void pushNotification(const QString& notifiername, const QString& message, Base::LogStyle level);
-
-    bool areDeveloperWarningsActive() const;
-    bool areDeveloperErrorsActive() const;
-
-    /// Shows, raises and focuses the dockable Notifications panel
-    void showNotificationsPanel();
-
-private:
-    void showInNotificationArea();
-    bool confirmationRequired(Base::LogStyle level);
-    void showConfirmationDialog(const QString& notifiername, const QString& message);
-    void slotRestoreFinished(const App::Document&);
-    void cleanupNotificationsPanel();
-    void updateUnreadIndicator();
-
-    void mousePressEvent(QMouseEvent* e) override;
-
-    void setIcon(TrayIcon trayIcon);
-
-private:
-    std::unique_ptr<NotificationAreaP> pImp;
-};
-
+/** Joins clipboard lines with newlines. Empty input yields an empty string. */
+inline QString joinNotificationClipboardLines(const QStringList& lines)
+{
+    return lines.join(QLatin1Char('\n'));
+}
 
 }  // namespace Gui

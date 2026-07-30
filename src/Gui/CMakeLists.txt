@@ -1189,6 +1189,7 @@ SET(Widget_HPP_SRCS
     MainWindowPy.h
     NotificationBox.h
     NotificationArea.h
+    NotificationClipboard.h
     PrefWidgets.h
     InputField.h
     ProgressBar.h

@@ -16,6 +16,7 @@ add_executable(Gui_tests_run
         StyleParameters/YamlParameterSourceTest.cpp
         InputHintTest.cpp
         MainWindow.cpp
+        NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
         WindowLayout.cpp
         SelectionTest.cpp
