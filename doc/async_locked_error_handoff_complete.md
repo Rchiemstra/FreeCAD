@@ -425,9 +425,10 @@ This phase is new and is a prerequisite for Phase 4's orchestration, because
 
 ## Progression
 
-The table distinguishes analysis and planning already completed from code that
-still has to be implemented. A row moves to `Complete` only when its exit
-criterion is demonstrated.
+The table records the implementation state at review commit
+`c6f3c4fef822a91564a2679c23859983e2b4d129`. A row moves to `Complete` only
+when its exit criterion is demonstrated. P2-P9 are landed; P10 is the only
+code-review follow-up identified in the 2026-07-31 post-landing review.
 
 | ID | Work item | Progress | `/multitask` lane | Exit criterion |
 | --- | --- | --- | --- | --- |
@@ -444,6 +445,7 @@ criterion is demonstrated.
 | P7 | Add boundary, race, and regression tests | Complete | S1-S6 | All success/refusal cases, the safe field-workflow regression, and all 225 existing focused tests pass deterministically. |
 | P8 | Validate in a real dirty FreeCAD document | Complete | One live validator | The agent edits, exceeds the timeout, self-recovers, continues, and saves successfully in one FreeCAD session with no restart. |
 | P9 | Land and close out self-recovery | Complete | Coordinator | The integrated `tools/mcp/freecad-mcp` tree (16 modified and 12 new files) is committed and the superproject gitlink is updated; a cancelled synchronous tool no longer emits a false `succeeded` telemetry event, covered by a regression test; P8 live-validation evidence is recorded in this document. |
+| P10 | Distinguish a healthy long call from an actual stale recovery | Not started | S4 + coordinator | A tool that exceeds the stale threshold while heartbeats remain healthy produces no false `recovered` outcome; any idempotent reconcile is classified as a no-op, while a real watchdog race still reports and performs recovery. |
 
 **P2 evidence (2026-07-31):** `tests/test_instrumented_server_worker.py` (9 tests) and Docker
 `docker compose run --rm unit|e2e|core|benchmark` all green on integrated branch;
@@ -525,7 +527,7 @@ P8): continuity now requires non-None `lease_id`/`document_session_uuid`; probe
 now requires positive `LOCKED_*` (not only `!= STALE`). Integrator summary
 above closes the missing archived-JSON gap.
 
-**P9 remaining work (closeout review, 2026-07-31):**
+**P9 closeout work (complete, 2026-07-31):**
 
 1. ~~**Land the integrated tree.**~~ Done — submodule commit and superproject
    gitlink updated (see P9 evidence below).
@@ -543,6 +545,59 @@ mtime when the filesystem reuses nanoseconds). Docker
 `docker compose run --rm unit` (1603 passed, 3 skipped, 1 xfailed),
 `e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed), and `benchmark`
 (1 passed) all green on the landed commit.
+
+### P10 code-review finding and remaining work
+
+The restart-free recovery path works, but post-tool observability currently
+cannot distinguish “the watchdog made this lease stale and it was recovered”
+from “heartbeats kept this lease healthy for the entire long call.”
+
+The false-positive path is deterministic:
+
+1. `server._post_tool_stale_recovery` treats elapsed time alone as evidence and
+   passes every held document to
+   `StaleLeaseRecoveryOrchestrator.observe_tool_completion` after the threshold.
+2. The orchestrator marks all those sessions as needing recovery and calls
+   `lease_reconcile`, even when the heartbeat loop kept the lease
+   `LOCKED_IDLE`.
+3. `_stale_reconcile_already_recovered` deliberately accepts that
+   `LOCKED_IDLE` lease as an idempotent success, but `lease_reconcile` removes
+   the `idempotent` marker when returning from its prepare phase.
+4. `_recover_one_locked` classifies every successful response as
+   `outcome: recovered`. The health record therefore claims a recovery that did
+   not happen and the normal long-call path performs an unnecessary control
+   RPC.
+
+A focused reproduction against the landed orchestrator supplied
+`success=true`, `idempotent=true`, and `lease.state=LOCKED_IDLE`; the emitted
+status was still `outcome=recovered`, `attempted=true`, and `succeeded=true`.
+This does not invalidate the P8 restart-free recovery pass, but it weakens P6
+diagnostics and makes future incidents harder to distinguish from healthy long
+operations.
+
+P10 requires:
+
+1. Preserve an explicit `idempotent` or `already_active` result from the
+   FreeCAD RPC layer through `FreeCADClient.reconcile_document_lease`.
+2. Have the orchestrator classify that result as no recovery needed, not
+   `recovered`. Prefer avoiding the reconcile call entirely when a fresh
+   heartbeat result already proves the lease remained active.
+3. Do not overwrite the last real recovery evidence with a later
+   healthy/no-op post-tool check.
+4. Add a regression test with a synchronous call longer than the accelerated
+   stale threshold while heartbeats remain successful. Assert that the lease
+   stays `LOCKED_IDLE`, recovery success is not reported, and the real stale
+   watchdog-race test still reports `recovered`.
+5. Re-run the focused orchestration/status tests and the Docker
+   `unit`, `e2e`, `core`, and `benchmark` suites before marking P10 complete.
+
+**Independent review evidence (2026-07-31):** the submodule is clean at
+`c6f3c4fef822`. Two local focused runs passed 139 tests covering worker lanes,
+orchestration, dirty reconcile, stale races, identity refresh, selector
+isolation, diagnostics, status, GUI guidance, and worker-boundary regressions.
+The first invocation without `PYTHONPATH=src` failed during collection because
+the package was not importable in that shell; rerunning with the repository's
+source path produced the passing results above and is not a product failure.
 
 ### Cursor `/multitask` concurrency budget
 
@@ -578,18 +633,22 @@ that lane's files.
 
 ### `/multitask` waves and maximum subagents
 
-| Wave | Work | Maximum worker subagents | Start condition | Finish condition |
+| Wave | Work | Maximum worker subagents | Status | Finish condition |
 | --- | --- | --- | --- | --- |
-| M0 | Independent source/design verification by S1-S7 | **7 (MAX)** | Current committed source available | Findings reconciled into D1-D9; this wave is complete. |
-| M1 | Isolated implementation by S1-S6 plus continuous read-only review by S7 | **7 (MAX)** | D1-D9 frozen and each lane has an isolated worktree | Every lane supplies a scoped diff and focused test result; no shared production file was edited by two lanes. |
-| M2 | Parallel verification on the coordinator's integrated branch: runtime, identity, reconcile, orchestration, handoff regression, static checks, and security review | **7 (MAX)** | Coordinator has merged M1 in the order below | All seven reports agree on the same integrated commit. Test agents do not patch failures. |
-| M3 | Cross-layer fixes discovered by M2 | **2** | M2 failures are grouped by owning file | Focused failures pass and the coordinator has resolved all overlapping changes. |
-| M4 | Real FreeCAD dirty-document smoke test | **1** | Automated suite is green | One validator completes the P8 workflow without restart, GUI save, or sidecar deletion. |
-| M5 | Final diff, documentation, and progression audit | **2** | M4 passes | One code auditor and one documentation auditor report clean results; coordinator marks completed rows. |
+| M0 | Independent source/design verification by S1-S7 | **7 (MAX)** | Complete | Findings reconciled into D1-D9. |
+| M1 | Isolated implementation by S1-S6 plus continuous read-only review by S7 | **7 (MAX)** | Complete | Scoped implementation landed without shared production-file ownership. |
+| M2 | Parallel verification: runtime, identity, reconcile, orchestration, handoff regression, static checks, and security review | **7 (MAX)** | Complete | Integrated test and review reports were reconciled before P8. |
+| M3 | Cross-layer fixes discovered by M2 | **2** | Complete | Focused failures and cancellation telemetry were fixed before P9 closeout. |
+| M4 | Real FreeCAD dirty-document smoke test | **1** | Complete | P8 completed without restart, GUI save, or sidecar deletion. |
+| M5 | Post-landing code, documentation, and progression audit | **2** | Complete with finding | Commit `c6f3c4fef822` passed focused review; the false-positive recovery status was opened as P10. |
+| M6 | Implement and independently verify P10 | **2** | **Next** | One S4 implementer and one read-only reviewer demonstrate accurate healthy-long-call and real-stale outcomes, then the coordinator reruns all Docker suites and marks P10 complete. |
 
-M1 and M2 are the two places where this plan intentionally uses the maximum
-seven subagents. M4 intentionally does not: multiple agents must not control
-the same FreeCAD process, document, lease, or sidecar concurrently.
+M1 and M2 were the two places where this plan intentionally used the maximum
+seven subagents. M6 must use no more than two: the remaining changes overlap in
+the orchestration/status contract, so additional editing agents would increase
+merge risk without adding an independent workstream. M4 intentionally used one
+agent because multiple agents must not control the same FreeCAD process,
+document, lease, or sidecar concurrently.
 
 ### Merge order and coordination rules
 
