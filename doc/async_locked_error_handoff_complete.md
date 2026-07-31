@@ -427,7 +427,7 @@ This phase is new and is a prerequisite for Phase 4's orchestration, because
 
 The table records the implementation state at review commit
 `c6f3c4fef822a91564a2679c23859983e2b4d129`. A row moves to `Complete` only
-when its exit criterion is demonstrated. P2-P9 are landed; P10 (healthy long-call vs stale recovery observability) is in progress after the 2026-07-31 post-landing review.
+when its exit criterion is demonstrated. P2-P10 are landed; restart-free exact-owner self-recovery is complete.
 
 | ID | Work item | Progress | `/multitask` lane | Exit criterion |
 | --- | --- | --- | --- | --- |
@@ -444,7 +444,7 @@ when its exit criterion is demonstrated. P2-P9 are landed; P10 (healthy long-cal
 | P7 | Add boundary, race, and regression tests | Complete | S1-S6 | All success/refusal cases, the safe field-workflow regression, and all 225 existing focused tests pass deterministically. |
 | P8 | Validate in a real dirty FreeCAD document | Complete | One live validator | The agent edits, exceeds the timeout, self-recovers, continues, and saves successfully in one FreeCAD session with no restart. |
 | P9 | Land and close out self-recovery | Complete | Coordinator | The integrated `tools/mcp/freecad-mcp` tree (16 modified and 12 new files) is committed and the superproject gitlink is updated; a cancelled synchronous tool no longer emits a false `succeeded` telemetry event, covered by a regression test; P8 live-validation evidence is recorded in this document. |
-| P10 | Distinguish a healthy long call from an actual stale recovery | In progress | S4 + coordinator | A tool that exceeds the stale threshold while heartbeats remain healthy produces no false `recovered` outcome; any idempotent reconcile is classified as a no-op, while a real watchdog race still reports and performs recovery. |
+| P10 | Distinguish a healthy long call from an actual stale recovery | Complete | S4 + coordinator | A tool that exceeds the stale threshold while heartbeats remain healthy produces no false `recovered` outcome; any idempotent reconcile is classified as a no-op, while a real watchdog race still reports and performs recovery. |
 
 **P2 evidence (2026-07-31):** `tests/test_instrumented_server_worker.py` (9 tests) and Docker
 `docker compose run --rm unit|e2e|core|benchmark` all green on integrated branch;
@@ -546,25 +546,25 @@ mtime when the filesystem reuses nanoseconds). Docker
 (1 passed) all green on the landed commit.
 
 
-**P10 evidence (2026-07-31, implementation landed):** Submodule commit `69f7fa1` on `tools/mcp/freecad-mcp`:
+**P10 evidence (2026-07-31):** Submodule commits `69f7fa1` and the freshness follow-up on `tools/mcp/freecad-mcp`:
 - `StaleLeaseRecoveryOrchestrator` records heartbeat-active timestamps and skips post-tool recovery when a fresh heartbeat already proves the lease stayed active across a long call.
 - Idempotent or `already_active` reconcile responses classify as `SKIPPED_UNNECESSARY` (not `recovered`); a prior real recovery outcome is not overwritten by a later healthy no-op check.
 - `rpc_server.py` preserves `idempotent: True` when returning an already-recovered lease from the reconcile prepare path.
-- `tests/test_mcp_stale_recovery_orchestration.py` adds focused regressions; `tests/test_p7_stale_recovery_races.py` updates the accelerated long-call case to expect no reconcile when heartbeats stay healthy.
+- Freshness follow-up: `observe_tool_completion` compares `last_active` against `now - stale_after` (not `now - duration + stale_after`), so mid-window renewals that are stale at completion still recover; healthy heartbeats clear `_needs_recovery`.
+- `tests/test_mcp_stale_recovery_orchestration.py` adds focused regressions (healthy-heartbeat clear, stale-after-clear, mid-window interior case); `tests/test_p7_stale_recovery_races.py` updates the accelerated long-call case to expect no reconcile when heartbeats stay healthy.
+- Critical review [P10 third critical review](15149339-4d69-48c8-8e27-dd34a2c1b9e2) **APPROVED** the freshness fix.
+- Docker `docker compose run --rm unit` (1613 passed, 3 skipped, 1 xfailed), `e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed), and `benchmark` (1 passed) all green on the landed gitlink.
 
-**P10 remaining before Complete:** one read-only reviewer signs off on the P10 diff, then the coordinator reruns Docker `unit`, `e2e`, `core`, and `benchmark` on the updated superproject gitlink.
-
-### P10 code-review finding and remaining work
+### P10 code-review finding and resolution
 
 **Finding (2026-07-31, pre-fix):** The restart-free recovery path worked, but post-tool observability could not distinguish a watchdog-driven stale recovery from a healthy long call where heartbeats kept the lease active. Elapsed time alone scheduled reconcile; idempotent `LOCKED_IDLE` success was classified as `outcome: recovered`, producing false recovery telemetry and unnecessary control RPCs.
 
-**Implementation (2026-07-31):** Addressed in submodule `69f7fa1`:
+**Implementation (2026-07-31):** Addressed in submodule `69f7fa1` plus the freshness follow-up:
 1. Preserve `idempotent` (or equivalent `already_active`) from the FreeCAD RPC layer through reconcile responses.
 2. Classify idempotent success as no recovery needed; skip reconcile when heartbeat evidence shows the lease remained active.
 3. Do not replace the last real recovery record with a later healthy post-tool no-op.
-4. Regression tests cover a synchronous call beyond the accelerated stale threshold with successful heartbeats (no false recovery) while real stale watchdog-race paths still recover.
-
-**Remaining before Complete:** independent read-only review of the P10 implementation diff, then green Docker `unit`, `e2e`, `core`, and `benchmark` suites on the landed gitlink.
+4. Correct the post-tool freshness window so mid-window renewals stale at completion still recover; healthy heartbeats clear `_needs_recovery`.
+5. Regression tests cover a synchronous call beyond the accelerated stale threshold with successful heartbeats (no false recovery), the mid-window interior case, and real stale watchdog-race paths that still recover.
 
 ### Cursor `/multitask` concurrency budget
 
@@ -608,7 +608,7 @@ that lane's files.
 | M3 | Cross-layer fixes discovered by M2 | **2** | Complete | Focused failures and cancellation telemetry were fixed before P9 closeout. |
 | M4 | Real FreeCAD dirty-document smoke test | **1** | Complete | P8 completed without restart, GUI save, or sidecar deletion. |
 | M5 | Post-landing code, documentation, and progression audit | **2** | Complete with finding | Commit `c6f3c4fef822` passed focused review; the false-positive recovery status was opened as P10. |
-| M6 | Implement and independently verify P10 | **2** | **In progress** | One S4 implementer and one read-only reviewer demonstrate accurate healthy-long-call and real-stale outcomes, then the coordinator reruns all Docker suites and marks P10 complete. |
+| M6 | Implement and independently verify P10 | **2** | Complete | S4 implementer and read-only reviewer demonstrated accurate healthy-long-call and real-stale outcomes; coordinator reran all Docker suites and marked P10 complete. |
 
 M1 and M2 were the two places where this plan intentionally used the maximum
 seven subagents. M6 must use no more than two: the remaining changes overlap in
