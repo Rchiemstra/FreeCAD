@@ -8,8 +8,10 @@ below. The superproject may carry a gitlink update, but the referenced submodule
 revision itself is clean.
 
 The handoff work described by the existing sequence diagram is implemented.
-Restart-free self-recovery is a required follow-up and is **not implemented
-yet**. Restarting FreeCAD or deleting a sidecar is not an acceptable normal
+Restart-free self-recovery is implemented through P2–P6 (heartbeat isolation,
+identity refresh, dirty reconcile, and automatic orchestration), covered by the
+P7 automated boundary suite, and validated live in a real dirty FreeCAD session
+(P8). Restarting FreeCAD or deleting a sidecar is not an acceptable normal
 recovery path.
 
 ## Requirement
@@ -115,16 +117,17 @@ first-class defect here rather than as a footnote to F1.
 | Area | Status | Current behavior | Evidence |
 | --- | --- | --- | --- |
 | Async dirty `LOCKED_ERROR` handoff | Implemented | An eligible dirty error lease can be authorized, prepared, claimed, and acknowledged through the continuation workflow below. | `rpc_server.py` handoff continuation; suite below |
-| Heartbeat loop | Implemented but starvable | Heartbeats are scheduled on the same event loop that runs every synchronous tool body, so any long tool suspends them entirely. | `server.py:234`, `server.py:420-426` |
+| Heartbeat loop | Implemented; starvation removed | Heartbeats run on the asyncio event loop while synchronous tool bodies execute on the serialized worker lanes (P2), so a long tool no longer suspends them. A watchdog scheduling race can still produce `STALE`, which P5 recovery reconciles. | `server.py:234`, `server.py:420-426`, `instrumented_server.py` worker lanes, `tests/test_instrumented_server_worker.py` |
 | Expiry watchdog | Implemented | FreeCAD independently changes an expired lease to `STALE` and persists that fenced state. It deliberately does not silently delete the lease. | `service.py:48` |
 | Credential retention across `STALE` | Implemented, and correct | `STALE` is absent from `_REVOCATION_ERROR_CODES`, so a stale heartbeat result does not discard the MCP-side credential. Self-recovery is therefore possible without any new secret exchange. | `lease_manager.py:180-188`, `lease_manager.py:428-497` |
 | Exact-owner stale reconcile, service layer | Implemented, dirty-capable | `LeaseService.reconcile_stale` accepts a dirty record; it requires the live modified flag to equal `record.dirty` and the fresh baseline to equal the persisted baseline. It does not require a save after the last mutation. | `service.py:4284-4322`, `service.py:848-928` |
-| Exact-owner stale reconcile, RPC layer | Implemented, but blocks dirty work | `lease_reconcile` adds two gates the service does not: a saved verified baseline must exist, and `last_verified_save_revision` must be at least `last_mutation_revision`. The second gate rejects precisely the dirty case that matters. | `rpc_server.py:4041-4053` |
-| Reconcile reachability under F2 | Broken | `lease_reconcile`'s prepare phase resolves its own selector through `_live_document_from_selector`, so a document wedged by F2 cannot be reconciled by any means. | `rpc_server.py:4026` |
-| Identity refresh for a leased document | Missing | `refresh_local_recovery_document_identity` is restricted to `USER_INTERVENED` and `UNLOCKED_DIRTY`. `STALE`, `LOCKED_IDLE`, and `LOCKED_ERROR` records have no in-place-save identity repair. | `service.py:3843-3878` |
-| Automatic recovery orchestration | Missing | `FreeCADClient.reconcile_document_lease` exists but has no caller anywhere in `src/`. Nothing detects a self-inflicted `STALE` state and repairs it. | `freecad_client.py:1146-1170` |
-| Save while stale | Unsafe as normal recovery | An unscoped GUI save is treated as local user intervention and can rotate ownership. Saving first also changes the file identity and the baseline, which converts an F1-only failure into F1 plus F2. | `observer.py:558-568`, `service.py:3843-3878` |
-| Restart-free requirement | Not met | Reacquisition conflicts with the persisted stale lease, and remote force release is intentionally unavailable. This is why the flow still ends in a FreeCAD restart. | Field incident above |
+| Exact-owner stale reconcile, RPC layer | Implemented, dirty-capable | `lease_reconcile` no longer requires `last_verified_save_revision >= last_mutation_revision`. Saved documents still require a verified baseline; never-saved documents use explicit D5 in-memory continuity evidence. Idempotent repeat reconcile succeeds. | `rpc_server.py:1318+`, `tests/test_rpc_dirty_stale_reconcile.py` |
+| Reconcile reachability under F2 | Implemented | Baseline-preserving identity drift no longer wedges selector resolution (P3/P3a), and dirty exact-owner reconcile is permitted at the RPC layer (P4). | `rpc_server.py:4026+`, `tests/test_rpc_dirty_stale_reconcile.py` |
+| Identity refresh for a leased document | Implemented | Baseline-preserving atomic in-place rewrites repair `file_identity` for any leased state via `register_live_document_recovery`; direct `refresh_local_recovery_document_identity` remains takeover-only. Content-changing saves, `Save As`, and proxy replacement still fail closed. | `service.py:4148+`, `observer.py:267+`, `tests/test_identity_inplace_refresh.py` |
+| Selector-scan isolation | Implemented | `_live_document_from_selector` skips unregisterable session-uuid candidates instead of aborting the scan; the selected document still surfaces the precise identity error. | `rpc_server.py:1039+`, `tests/test_rpc_selector_identity_isolation.py` |
+| Automatic recovery orchestration | Implemented | `StaleLeaseRecoveryOrchestrator` drives guarded reconcile from heartbeat, post-tool, and pre-operation triggers with per-document serialization, backoff, and D7 refusal handling. | `lease_manager.py`, `freecad_client.py`, `server.py`, `instrumented_server.py`, `tests/test_mcp_stale_recovery_orchestration.py` |
+| Save while stale | Unsafe as normal recovery | An unscoped GUI save with a dirty document or no accepted baseline still fences as takeover and can rotate ownership. A baseline-preserving atomic rewrite (clean at save start with an accepted baseline) is deferred and repaired in place (P3). Saving changed content first still changes the file identity and baseline, converting an F1-only failure into F1 plus F2, and is never a timeout-recovery prerequisite. | `observer.py` save-start deferral, `service.py` baseline-preserving refresh, `tests/test_identity_inplace_refresh.py` |
+| Restart-free requirement | Complete | P2–P8 cover timeout-induced `STALE` self-recovery without restart, GUI save, or sidecar deletion in automated and live dirty-document validation; the 2026-07-31 field incident path (long tool + unscoped GUI save) remains a documented refusal boundary. | P2–P8 evidence below |
 
 ### Existing handoff review
 
@@ -160,9 +163,10 @@ first-class defect here rather than as a footnote to F1.
   `tests/test_rpc_stale_reconcile.py` covers the two-GUI-check hash window,
   same-size/same-mtime tampering, unstable hash capture, and a sidecar
   authority change during hashing. `test_document_lease_v2_service.py:3489`
-  covers exact-owner reconcile of a *saved* lease. There is no test for a
-  dirty exact-owner reconcile, none for a drifted identity, and none for
-  automatic orchestration.
+  covers exact-owner reconcile of a *saved* lease. `tests/test_rpc_dirty_stale_reconcile.py`
+  (13 tests) covers saved and never-saved dirty exact-owner reconcile, D5
+  continuity refusal paths, and idempotent repeat reconcile. `tests/test_mcp_stale_recovery_orchestration.py`
+  (18 tests) covers automatic orchestration at the MCP client/server layer.
 
 ## Required outcome
 
@@ -431,14 +435,114 @@ criterion is demonstrated.
 | P1 | Define the restart-free recovery contract | Complete | Coordinator | This document states the eligible transitions, preserved state, non-goals, and fail-closed boundaries. |
 | P1a | Locate the identity-registration wedge | Complete | S2/S3 review | The two `register_live_document_recovery` `None` branches, the NTFS file-index drift on atomic save, and the leased-state exclusion in `refresh_local_recovery_document_identity` are identified. |
 | P1b | Resolve design and multitask decisions | Complete | Coordinator | D1-D9 define save boundaries, never-saved recovery, cancellation isolation, ownership, merge order, and maximum useful concurrency. |
-| P2 | Isolate synchronous tools from the heartbeat event loop | Not started | S1 | A non-task-aware client can run a tool beyond the lease TTL while heartbeats and the independent cancellation lane remain responsive. |
-| P3 | Baseline-preserving in-place identity refresh | Not started | S2 | A live document remains resolvable across a content-identical atomic rewrite, while changed content, `Save As`, or a replaced proxy still fails closed. |
-| P3a | Stop one wedged document poisoning selector resolution | Not started | S3 | An unregisterable document does not break resolution of a different, healthy document. |
-| P4 | Implement dirty exact-owner `STALE` recovery | Not started | S3 | The same credential recovers saved and never-saved unsaved work to `LOCKED_IDLE` without saving, takeover, or token rotation. |
-| P5 | Add automatic MCP recovery orchestration | Not started | S4 | Heartbeat, post-tool, and pre-operation paths reconcile an eligible stale lease with no agent tool call and no user action. |
-| P6 | Update status, diagnostics, and GUI guidance | Not started | S5 | Eligible timeouts no longer instruct the user to restart FreeCAD or delete a sidecar, and identity errors name what drifted. |
-| P7 | Add boundary, race, and regression tests | Not started | S1-S6 | All success/refusal cases, the safe field-workflow regression, and all 225 existing focused tests pass deterministically. |
-| P8 | Validate in a real dirty FreeCAD document | Not started | One live validator | The agent edits, exceeds the timeout, self-recovers, continues, and saves successfully in one FreeCAD session with no restart. |
+| P2 | Isolate synchronous tools from the heartbeat event loop | Complete | S1 | A non-task-aware client can run a tool beyond the lease TTL while heartbeats and the independent cancellation lane remain responsive. |
+| P3 | Baseline-preserving in-place identity refresh | Complete | S2 | A live document remains resolvable across a content-identical atomic rewrite, while changed content, `Save As`, or a replaced proxy still fails closed. |
+| P3a | Stop one wedged document poisoning selector resolution | Complete | S3 | An unregisterable document does not break resolution of a different, healthy document. |
+| P4 | Implement dirty exact-owner `STALE` recovery | Complete | S3 | The same credential recovers saved and never-saved unsaved work to `LOCKED_IDLE` without saving, takeover, or token rotation. |
+| P5 | Add automatic MCP recovery orchestration | Complete | S4 | Heartbeat, post-tool, and pre-operation paths reconcile an eligible stale lease with no agent tool call and no user action. |
+| P6 | Update status, diagnostics, and GUI guidance | Complete | S5 | Eligible timeouts no longer instruct the user to restart FreeCAD or delete a sidecar, and identity errors name what drifted. |
+| P7 | Add boundary, race, and regression tests | Complete | S1-S6 | All success/refusal cases, the safe field-workflow regression, and all 225 existing focused tests pass deterministically. |
+| P8 | Validate in a real dirty FreeCAD document | Complete | One live validator | The agent edits, exceeds the timeout, self-recovers, continues, and saves successfully in one FreeCAD session with no restart. |
+| P9 | Land and close out self-recovery | Complete | Coordinator | The integrated `tools/mcp/freecad-mcp` tree (16 modified and 12 new files) is committed and the superproject gitlink is updated; a cancelled synchronous tool no longer emits a false `succeeded` telemetry event, covered by a regression test; P8 live-validation evidence is recorded in this document. |
+
+**P2 evidence (2026-07-31):** `tests/test_instrumented_server_worker.py` (9 tests) and Docker
+`docker compose run --rm unit|e2e|core|benchmark` all green on integrated branch;
+control lane is `cancel_request` + `get_request_status`; `claim_acquisition_result`
+runs on the general serialized sync-tool lane (docs updated in
+`tools/mcp/freecad-mcp/doc/request-lifecycle.md`, `lease-recovery.md`,
+`lease-client-scenarios.md`).
+
+**P3/P3a evidence (2026-07-31):** `tests/test_identity_inplace_refresh.py` (12 tests),
+`tests/test_rpc_selector_identity_isolation.py` (8 tests), and observer save-start
+deferral regression in `tests/test_document_lease_v2_observer.py` (70 focused tests
+across the three files) all green on the integrated branch; Docker
+`docker compose run --rm unit` (1518 passed), `e2e` (115 passed), `core` (4 passed,
+7 xfailed), and `benchmark` (1 passed) all green.
+
+**P4 evidence (2026-07-31):** `tests/test_rpc_dirty_stale_reconcile.py` (13 tests)
+covers saved and never-saved dirty exact-owner `STALE -> LOCKED_IDLE` reconcile,
+D5 in-memory continuity refusal paths, and idempotent repeat reconcile; critical
+re-review approved after tests. Docker `docker compose run --rm unit` (1531 passed,
+3 skipped, 1 xfailed), `e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed),
+and `benchmark` (1 passed) all green on the integrated branch.
+
+**P5 evidence (2026-07-31):** `tests/test_mcp_stale_recovery_orchestration.py` (18 tests)
+covers heartbeat, post-tool, and pre-operation triggers, per-document recovery
+serialization, backoff/terminal refusal, D7 stale-RPC refusal handling, and
+credential retention across `STALE`; critical re-review approved after fixes.
+Docker `docker compose run --rm unit` (1549 passed, 3 skipped, 1 xfailed),
+`e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed), and `benchmark`
+(1 passed) all green on the integrated branch.
+
+**P6 evidence (2026-07-31):** `tests/test_lock_indicator.py` (38 tests),
+`tests/test_rpc_identity_registration_diagnostics.py` (5 tests), and
+`tests/test_mcp_stale_recovery_status.py` (7 tests) cover eligible-timeout GUI
+guidance (no restart/sidecar-delete advice), self-describing identity failures,
+and MCP stale-recovery status surfacing; critical re-review approved for GUI and
+diagnostics workstreams. Integrator fixed dual-import `UnknownDocumentError`
+handling in `observer.py` `_collect_identity_drift_fields`. Docker
+`docker compose run --rm unit` (1570 passed, 3 skipped, 1 xfailed),
+`e2e` (114 passed, 2 skipped), `core` (3 passed, 7 xfailed), and `benchmark`
+(1 passed) all green on the integrated branch.
+
+**P7 evidence (2026-07-31):** `tests/test_p7_identity_refresh_boundaries.py` (7 tests),
+`tests/e2e/test_p7_composite_stale_identity_recovery.py` (5 tests),
+`tests/test_p7_stale_recovery_races.py` (14 tests), and
+`tests/test_p7_worker_boundary_regressions.py` (7 tests) cover cross-layer
+identity refresh boundaries, composite stale+identity recovery, orchestration
+races, and worker-boundary regressions; S6-A and S6-B critical reviews approved.
+Integrator patched `tests/helpers/runtime_bootstrap.py` so headless Docker
+`FreeCADGui` stubs `addCommand` during collection. Docker
+`docker compose run --rm unit` (1603 passed, 3 skipped, 1 xfailed),
+`e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed), and `benchmark`
+(1 passed) all green on the integrated branch.
+
+**P8 evidence (2026-07-31):** `scripts/p8_live_dirty_smoke.py` drove the full
+field-incident sequence against a running FreeCAD listener in enforce mode
+([P8 GUI wedge investigate retry](9e899ae4-1e04-4899-99ac-5fb2d1b68b6a));
+critical review [P8 Pass evidence review](24313489-c5be-4f75-b775-b99641b82f72)
+**APPROVED** the Pass. Token-free archived summary:
+
+| Check | Result |
+| --- | --- |
+| `document_lease_mode` | `enforce` |
+| Dirty observed | `true` before STALE |
+| Long probe (primary) | **100.2 s**, success, lease `LOCKED_IDLE` (non-STALE) |
+| Watchdog race (secondary) | STALE after 95 s heartbeat pause |
+| Auto recovery | `outcome: recovered`, trigger `rpc_stale_refusal` |
+| Post-STALE edit | success |
+| Continue edit | success |
+| Credential continuity | `lease_id` + `document_session_uuid` unchanged; `generation` unchanged (1) |
+| Save | valid FCStd on disk (7471 bytes) |
+| Exit code | 0 |
+
+Sequence: `create_document` → auto-lease → dirty box → 100 s probe → STALE →
+recovery edit → continue edit → typed-lease save. No restart, GUI save, or
+sidecar deletion.
+
+Residual soft asserts from review (harness tightened post-review; not blocking
+P8): continuity now requires non-None `lease_id`/`document_session_uuid`; probe
+now requires positive `LOCKED_*` (not only `!= STALE`). Integrator summary
+above closes the missing archived-JSON gap.
+
+**P9 remaining work (closeout review, 2026-07-31):**
+
+1. ~~**Land the integrated tree.**~~ Done — submodule commit and superproject
+   gitlink updated (see P9 evidence below).
+2. ~~**Fix the cancellation-telemetry defect.**~~ Done —
+   `InstrumentedFastMCP.call_tool` captures `BaseException`, emits
+   `tool_call_completed` with `status=cancelled` for `CancelledError`, and
+   `tests/test_p7_worker_boundary_regressions.py` adds
+   `test_cancelled_sync_tool_does_not_emit_false_succeeded_telemetry`.
+3. ~~**Record P8 evidence.**~~ Done — see P8 evidence above.
+
+**P9 evidence (2026-07-31):** Cancellation telemetry fix in
+`instrumented_server.py`; deterministic `mtime_ns` in
+`tests/test_identity_inplace_refresh.py` (`_atomic_replace_same_content` bumps
+mtime when the filesystem reuses nanoseconds). Docker
+`docker compose run --rm unit` (1603 passed, 3 skipped, 1 xfailed),
+`e2e` (115 passed, 2 skipped), `core` (4 passed, 7 xfailed), and `benchmark`
+(1 passed) all green on the landed commit.
 
 ### Cursor `/multitask` concurrency budget
 
