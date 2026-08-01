@@ -151,8 +151,10 @@ SOURCE_GROUP("Pyi" FILES ${FreeCADApp_Pyi_SRCS})
 SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
+    CollaborationRegistry.cpp
     Document.cpp
     DocumentMutationAuthority.cpp
+    DocumentRevisionIndex.cpp
     MutationCapability.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
@@ -212,8 +214,10 @@ SET(Document_CPP_SRCS
 SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
+    CollaborationRegistry.h
     Document.h
     DocumentMutationAuthority.h
+    DocumentRevisionIndex.h
     MutationCapability.h
     MutationKind.h
     RecoverySnapshot.h

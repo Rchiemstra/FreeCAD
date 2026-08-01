@@ -87,6 +87,8 @@ class DocumentPy;
 class Application;
 class Transaction;
 class StringHasher;
+class DocumentRevisionIndex;
+struct DocumentIdentity;
 using StringHasherRef = Base::Reference<StringHasher>;
 
 /**
@@ -441,6 +443,17 @@ public:
 
     /// Get the document name.
     const char* getName() const;
+
+    /** Runtime identity and monotonic semantic revisions for collaboration. */
+    DocumentIdentity collaborationIdentity() const;
+    DocumentRevisionIndex& collaborationRevisions();
+    const DocumentRevisionIndex& collaborationRevisions() const;
+    bool collaborationRevisionPublicationSuppressed() const;
+    bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
+    bool collaborationRevisionPublicationSuppressed(const Property* property) const;
+    std::string collaborationObjectIdentity(const DocumentObject& object) const;
+    void publishCollaborationMutation(const PropertyContainer& container, bool structural);
+    bool collaborationPreparationSupported() const;
 
     /// Get program version the project file was created with.
     const char* getProgramVersion() const;
@@ -1456,6 +1469,7 @@ protected:
     void _abortTransaction();
 
 private:
+    void setCollaborationRevisionPublicationSuppressed(bool suppressed);
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);
 

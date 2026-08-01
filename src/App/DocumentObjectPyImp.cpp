@@ -34,6 +34,7 @@
 #include "DepEdgePy.h"
 #include "DocumentObject.h"
 #include "Document.h"
+#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
@@ -47,6 +48,28 @@
 #include <App/DocumentObjectPy.cpp>
 
 using namespace App;
+
+namespace
+{
+
+void preflightObjectStatusMutation(DocumentObject& object, const char* statusName)
+{
+    enforceDocumentMutation(
+        object.getDocument(),
+        MutationKind::PropertyWrite,
+        MutationOrigin::Python,
+        object.getNameInDocument(),
+        statusName);
+}
+
+void publishObjectStatusMutation(DocumentObject& object)
+{
+    if (auto* document = object.getDocument()) {
+        document->publishCollaborationMutation(object, false);
+    }
+}
+
+}  // namespace
 
 // returns a string which represent the object e.g. when printed in python
 std::string DocumentObjectPy::representation() const
@@ -1062,7 +1085,14 @@ Py::Boolean DocumentObjectPy::getNoTouch() const
 
 void DocumentObjectPy::setNoTouch(Py::Boolean value)
 {
-    getDocumentObjectPtr()->setStatus(ObjectStatus::NoTouch, value.isTrue());
+    auto& object = *getDocumentObjectPtr();
+    const bool enabled = value.isTrue();
+    if (object.testStatus(ObjectStatus::NoTouch) == enabled) {
+        return;
+    }
+    preflightObjectStatusMutation(object, "NoTouch");
+    object.setStatus(ObjectStatus::NoTouch, enabled);
+    publishObjectStatusMutation(object);
 }
 
 PyObject* DocumentObjectPy::getPlacementOf(PyObject* args)

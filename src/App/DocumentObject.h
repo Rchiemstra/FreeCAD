@@ -347,13 +347,7 @@ public:
     bool mustRecompute() const;
 
     /// Reset the touch flags of the document object.
-    void purgeTouched()
-    {
-        StatusBits.reset(ObjectStatus::Touch);
-        StatusBits.reset(ObjectStatus::Enforce);
-        setPropertyStatus(0, false);
-        touchedProps.clear();
-    }
+    void purgeTouched();
 
     /// Check whether this document object is in an error state.
     bool isError() const
@@ -368,10 +362,7 @@ public:
     }
 
     /// Remove the error from the object.
-    void purgeError()
-    {
-        StatusBits.reset(ObjectStatus::Error);
-    }
+    void purgeError();
 
     /// Check whether this document object is being recomputed.
     bool isRecomputing() const

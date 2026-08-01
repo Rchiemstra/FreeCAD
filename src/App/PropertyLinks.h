@@ -739,6 +739,8 @@ public:
                                 App::DocumentObject* newObj) const override;
 
 protected:
+    /** Clear link storage without notifying; callers must already be guarded or tearing down. */
+    void resetLinkNoNotify();
     App::DocumentObject* _pcLink {nullptr};
 };
 
@@ -1383,6 +1385,8 @@ public:
     void setSyncSubObject(bool enable);
 
 protected:
+    void setSubValuesNoNotify(std::vector<std::string>&& SubList,
+                              std::vector<ShadowSub>&& ShadowSubList = {});
     void unlink();
     void detach();
 
@@ -1488,8 +1492,8 @@ public:
     void append(DocumentObject* obj);
 
     /**
-     * Append two new list entries as one pair. On success exactly two endpoints are added.
-     * On any exception only the newly appended suffix is erased; existing entries are untouched.
+     * Append two new list entries as one pair. If endpoint construction fails, only the newly
+     * appended suffix is erased. Notification failures retain the already-published new pair.
      */
     void appendPair(DocumentObject* first, DocumentObject* second);
 

@@ -709,13 +709,23 @@ PropertyLink::PropertyLink() = default;
 
 PropertyLink::~PropertyLink()
 {
-    resetLink();
+    resetLinkNoNotify();
 }
 
 //**************************************************************************
 // Base class implementer
 
 void PropertyLink::resetLink()
+{
+    if (!_pcLink) {
+        return;
+    }
+    aboutToSetValue();
+    resetLinkNoNotify();
+    hasSetValue();
+}
+
+void PropertyLink::resetLinkNoNotify()
 {
     // in case this property gets dynamically removed
     // maintain the back link in the DocumentObject class if it is from a document object
@@ -944,6 +954,13 @@ PropertyLinkList::~PropertyLinkList()
 
 void PropertyLinkList::setSize(int newSize)
 {
+    if (newSize < 0) {
+        throw Base::ValueError("negative property link list size");
+    }
+    if (newSize == getSize()) {
+        return;
+    }
+    atomic_change guard(*this);
     for (int i = newSize; i < (int)_lValueList.size(); ++i) {
         auto obj = _lValueList[i];
         if (!obj || !obj->isAttachedToDocument()) {
@@ -957,19 +974,40 @@ void PropertyLinkList::setSize(int newSize)
         }
     }
     _lValueList.resize(newSize);
+    guard.tryInvoke();
 }
-
 void PropertyLinkList::setSize(int newSize, const_reference def)
 {
+    if (newSize < 0) {
+        throw Base::ValueError("negative property link list size");
+    }
     auto oldSize = getSize();
-    setSize(newSize);
+    if (newSize == oldSize) {
+        return;
+    }
+    atomic_change guard(*this);
+    for (int i = newSize; i < static_cast<int>(_lValueList.size()); ++i) {
+        auto* object = _lValueList[i];
+        if (!object || !object->isAttachedToDocument()) {
+            continue;
+        }
+        _nameMap.erase(object->getNameInDocument());
+        if (_pcScope != LinkScope::Hidden) {
+            object->_removeBackLink(static_cast<DocumentObject*>(getContainer()));
+            object->_removeBackLinkProp(getName(), static_cast<DocumentObject*>(getContainer()));
+        }
+    }
+    _lValueList.resize(newSize);
     for (auto i = oldSize; i < newSize; ++i) {
         _lValueList[i] = def;
     }
+    guard.tryInvoke();
 }
-
 void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
 {
+    if (idx < -1 || idx > getSize()) {
+        throw Base::RuntimeError("index out of bound");
+    }
     DocumentObject* obj = nullptr;
     if (idx >= 0 && idx < (int)_lValueList.size()) {
         obj = _lValueList[idx];
@@ -982,6 +1020,7 @@ void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
         throw Base::ValueError("invalid document object");
     }
 
+    atomic_change guard(*this);
     _nameMap.clear();
 
     if (getContainer() && getContainer()->isDerivedFrom<App::DocumentObject>()) {
@@ -1001,6 +1040,7 @@ void PropertyLinkList::set1Value(int idx, DocumentObject* const& value)
     }
 
     inherited::set1Value(idx, value);
+    guard.tryInvoke();
 }
 
 void PropertyLinkList::setValues(const std::vector<DocumentObject*>& value)
@@ -1020,6 +1060,7 @@ void PropertyLinkList::setValues(const std::vector<DocumentObject*>& value)
             throw Base::ValueError("PropertyLinkList does not support external object");
         }
     }
+    atomic_change guard(*this);
     _nameMap.clear();
 
     // maintain the back link in the DocumentObject class
@@ -1043,6 +1084,7 @@ void PropertyLinkList::setValues(const std::vector<DocumentObject*>& value)
     }
 
     inherited::setValues(value);
+    guard.tryInvoke();
 }
 
 PyObject* PropertyLinkList::getPyObject()
@@ -2249,9 +2291,17 @@ void PropertyLinkSubList::verifyObject(App::DocumentObject* obj, App::DocumentOb
 
 void PropertyLinkSubList::setSize(int newSize)
 {
+    if (newSize < 0) {
+        throw Base::ValueError("negative property link sub-list size");
+    }
+    if (newSize == getSize()) {
+        return;
+    }
+    aboutToSetValue();
     _lValueList.resize(newSize);
     _lSubList.resize(newSize);
     _ShadowSubList.resize(newSize);
+    hasSetValue();
 }
 
 int PropertyLinkSubList::getSize() const
@@ -2263,6 +2313,7 @@ void PropertyLinkSubList::setValue(DocumentObject* lValue, const char* SubName)
 {
     auto parent = freecad_cast<App::DocumentObject*>(getContainer());
     verifyObject(lValue, parent);
+    aboutToSetValue();
 
     // maintain backlinks
     if (parent) {
@@ -2283,14 +2334,12 @@ void PropertyLinkSubList::setValue(DocumentObject* lValue, const char* SubName)
     }
 
     if (lValue) {
-        aboutToSetValue();
         _lValueList.resize(1);
         _lValueList[0] = lValue;
         _lSubList.resize(1);
         _lSubList[0] = SubName;
     }
     else {
-        aboutToSetValue();
         _lValueList.clear();
         _lSubList.clear();
     }
@@ -2311,6 +2360,7 @@ void PropertyLinkSubList::setValues(const std::vector<DocumentObject*>& lValue,
         throw Base::ValueError(
             "PropertyLinkSubList::setValues: size of subelements list != size of objects list");
     }
+    aboutToSetValue();
 
     // maintain backlinks.
     if (parent) {
@@ -2336,8 +2386,6 @@ void PropertyLinkSubList::setValues(const std::vector<DocumentObject*>& lValue,
             }
         }
     }
-
-    aboutToSetValue();
     _lValueList = lValue;
     _lSubList.resize(lSubNames.size());
     int i = 0;
@@ -2373,6 +2421,7 @@ void PropertyLinkSubList::setValues(std::vector<DocumentObject*>&& lValue,
         throw Base::ValueError(
             "PropertyLinkSubList::setValues: size of subelements list != size of objects list");
     }
+    aboutToSetValue();
 
     // maintain backlinks.
     if (parent) {
@@ -2398,8 +2447,6 @@ void PropertyLinkSubList::setValues(std::vector<DocumentObject*>&& lValue,
             }
         }
     }
-
-    aboutToSetValue();
     _lValueList = std::move(lValue);
     _lSubList = std::move(lSubNames);
     if (ShadowSubList.size() == _lSubList.size()) {
@@ -2417,6 +2464,7 @@ void PropertyLinkSubList::setValue(DocumentObject* lValue, const std::vector<std
 {
     auto parent = dynamic_cast<App::DocumentObject*>(getContainer());
     verifyObject(lValue, parent);
+    aboutToSetValue();
 
     // maintain backlinks.
     if (parent) {
@@ -2440,8 +2488,6 @@ void PropertyLinkSubList::setValue(DocumentObject* lValue, const std::vector<std
             }
         }
     }
-
-    aboutToSetValue();
     std::size_t size = SubList.size();
     this->_lValueList.clear();
     this->_lSubList.clear();
@@ -2466,6 +2512,7 @@ void PropertyLinkSubList::addValue(App::DocumentObject* obj,
 {
     auto parent = freecad_cast<App::DocumentObject*>(getContainer());
     verifyObject(obj, parent);
+    aboutToSetValue();
 
     // maintain backlinks.
     if (parent) {
@@ -2519,8 +2566,6 @@ void PropertyLinkSubList::addValue(App::DocumentObject* obj,
         subList.insert(subList.end(), subs.begin(), subs.end());
         valueList.insert(valueList.end(), size, obj);
     }
-
-    aboutToSetValue();
     _lValueList = valueList;
     _lSubList = subList;
     updateElementReference(nullptr);
@@ -3810,14 +3855,14 @@ void PropertyXLink::unlink()
         docInfo.reset();
     }
     objectName.clear();
-    resetLink();
+    resetLinkNoNotify();
 }
 
 void PropertyXLink::detach()
 {
     if (docInfo && _pcLink) {
         aboutToSetValue();
-        resetLink();
+        resetLinkNoNotify();
         updateElementReference(nullptr);
         hasSetValue();
     }
@@ -3849,12 +3894,18 @@ void PropertyXLink::setSubName(const char* subname)
     if (!Base::Tools::isNullOrEmpty(subname)) {
         subs.emplace_back(subname);
     }
-    aboutToSetValue();
     setSubValues(std::move(subs));
-    hasSetValue();
 }
 
 void PropertyXLink::setSubValues(std::vector<std::string>&& subs, std::vector<ShadowSub>&& shadows)
+{
+    aboutToSetValue();
+    setSubValuesNoNotify(std::move(subs), std::move(shadows));
+    hasSetValue();
+}
+
+void PropertyXLink::setSubValuesNoNotify(std::vector<std::string>&& subs,
+                                         std::vector<ShadowSub>&& shadows)
 {
     _SubList = std::move(subs);
     _ShadowSubList.clear();
@@ -3980,7 +4031,7 @@ void PropertyXLink::setValue(App::DocumentObject* lValue,
         stamp = docInfo->pcDoc->LastModifiedDate.getValue();
     }
     objectName = name;
-    setSubValues(std::move(subs), std::move(shadows));
+    setSubValuesNoNotify(std::move(subs), std::move(shadows));
     hasSetValue();
 }
 
@@ -4035,7 +4086,7 @@ void PropertyXLink::setValue(std::string&& filename,
         stamp = docInfo->pcDoc->LastModifiedDate.getValue();
     }
     objectName = std::move(name);
-    setSubValues(std::move(subs), std::move(shadows));
+    setSubValuesNoNotify(std::move(subs), std::move(shadows));
     hasSetValue();
 }
 
@@ -4081,7 +4132,7 @@ void PropertyXLink::breakLink(App::DocumentObject* obj, bool clear)
     if (objectName.empty() && obj && obj->isAttachedToDocument() && obj->getNameInDocument()) {
         objectName = obj->getNameInDocument();
     }
-    resetLink();
+    resetLinkNoNotify();
     setFlag(LinkDetached);
     updateElementReference(nullptr);
     hasSetValue();
@@ -4872,6 +4923,32 @@ PropertyXLinkSubList::PropertyXLinkSubList()
 
 PropertyXLinkSubList::~PropertyXLinkSubList() = default;
 
+namespace
+{
+
+void validateXLinkSubListEndpoint(PropertyXLinkSubList& property, DocumentObject* value)
+{
+    auto* owner = freecad_cast<DocumentObject*>(property.getContainer());
+    if (!owner || !owner->isAttachedToDocument()) {
+        throw Base::RuntimeError("invalid container");
+    }
+    if (!value) {
+        return;
+    }
+    if (!value->isAttachedToDocument() || !value->getDocument()) {
+        throw Base::ValueError("Invalid object");
+    }
+    if (value == owner) {
+        throw Base::ValueError("self linking");
+    }
+    if (value->getDocument() != owner->getDocument()
+        && Base::Tools::isNullOrEmpty(value->getDocument()->getFileName())) {
+        throw Base::RuntimeError("Linked document not saved");
+    }
+}
+
+}  // namespace
+
 void PropertyXLinkSubList::setSyncSubObject(bool enable)
 {
     _Flags.set((std::size_t)LinkSyncSubObject, enable);
@@ -4947,9 +5024,10 @@ void PropertyXLinkSubList::setValues(
     std::map<App::DocumentObject*, std::vector<std::string>>&& values)
 {
     for (auto& v : values) {
-        if (!v.first || !v.first->isAttachedToDocument()) {
+        if (!v.first) {
             FC_THROWM(Base::ValueError, "invalid document object");
         }
+        validateXLinkSubListEndpoint(*this, v.first);
     }
 
     atomic_change guard(*this);
@@ -4983,11 +5061,12 @@ void PropertyXLinkSubList::addValue(App::DocumentObject* obj,
                                     std::vector<std::string>&& subs,
                                     bool reset)
 {
-
-    if (!obj || !obj->isAttachedToDocument()) {
+    if (!obj) {
         FC_THROWM(Base::ValueError, "invalid document object");
     }
+    validateXLinkSubListEndpoint(*this, obj);
 
+    atomic_change guard(*this);
     for (auto& l : _Links) {
         if (l.getValue() == obj) {
             auto s = l.getSubValues();
@@ -4999,10 +5078,10 @@ void PropertyXLinkSubList::addValue(App::DocumentObject* obj,
                 std::move(subs.begin(), subs.end(), std::back_inserter(s));
                 l.setSubValues(std::move(s));
             }
+            guard.tryInvoke();
             return;
         }
     }
-    atomic_change guard(*this);
     _Links.emplace_back(testFlag(LinkAllowPartial), this);
     _Links.back().setValue(obj, std::move(subs));
     guard.tryInvoke();
@@ -5010,14 +5089,28 @@ void PropertyXLinkSubList::addValue(App::DocumentObject* obj,
 
 void PropertyXLinkSubList::append(DocumentObject* obj)
 {
+    validateXLinkSubListEndpoint(*this, obj);
     atomic_change guard(*this);
-    _Links.emplace_back(testFlag(LinkAllowPartial), this);
-    _Links.back().setValue(obj);
+    auto appended = _Links.end();
+    try {
+        _Links.emplace_back(testFlag(LinkAllowPartial), this);
+        appended = std::prev(_Links.end());
+        _Links.back().setValue(obj);
+    }
+    catch (...) {
+        if (appended != _Links.end()) {
+            _Links.erase(appended);
+        }
+        guard.cancel();
+        throw;
+    }
     guard.tryInvoke();
 }
 
 void PropertyXLinkSubList::appendPair(DocumentObject* first, DocumentObject* second)
 {
+    validateXLinkSubListEndpoint(*this, first);
+    validateXLinkSubListEndpoint(*this, second);
     atomic_change guard(*this);
     auto firstAppended = _Links.end();
     try {
@@ -5027,15 +5120,15 @@ void PropertyXLinkSubList::appendPair(DocumentObject* first, DocumentObject* sec
 
         _Links.emplace_back(testFlag(LinkAllowPartial), this);
         _Links.back().setValue(second);
-
-        guard.tryInvoke();
     }
     catch (...) {
         if (firstAppended != _Links.end()) {
             _Links.erase(firstAppended, _Links.end());
         }
+        guard.cancel();
         throw;
     }
+    guard.tryInvoke();
 }
 
 void PropertyXLinkSubList::addLink(const PropertyXLinkSub& link)
@@ -5074,6 +5167,9 @@ void PropertyXLinkSubList::setValue(DocumentObject* lValue, const std::vector<st
 
 void PropertyXLinkSubList::setValues(const std::vector<DocumentObject*>& values)
 {
+    for (auto* value : values) {
+        validateXLinkSubListEndpoint(*this, value);
+    }
     atomic_change guard(*this);
     _Links.clear();
     for (auto obj : values) {
@@ -5090,6 +5186,7 @@ void PropertyXLinkSubList::set1Value(int idx,
     if (idx < -1 || idx > getSize()) {
         throw Base::RuntimeError("index out of bound");
     }
+    validateXLinkSubListEndpoint(*this, value);
 
     if (idx < 0 || idx + 1 == getSize()) {
         if (SubList.empty()) {
@@ -5097,8 +5194,19 @@ void PropertyXLinkSubList::set1Value(int idx,
             return;
         }
         atomic_change guard(*this);
-        _Links.emplace_back(testFlag(LinkAllowPartial), this);
-        _Links.back().setValue(value);
+        auto appended = _Links.end();
+        try {
+            _Links.emplace_back(testFlag(LinkAllowPartial), this);
+            appended = std::prev(_Links.end());
+            _Links.back().setValue(value);
+        }
+        catch (...) {
+            if (appended != _Links.end()) {
+                _Links.erase(appended);
+            }
+            guard.cancel();
+            throw;
+        }
         guard.tryInvoke();
         return;
     }

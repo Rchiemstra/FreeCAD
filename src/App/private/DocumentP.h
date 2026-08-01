@@ -43,6 +43,7 @@
 
 #include <App/DocumentObject.h>
 #include <App/DocumentObserver.h>
+#include <App/DocumentRevisionIndex.h>
 #include <App/StringHasher.h>
 #include <App/ExportInfo.h>
 #include <Base/UniqueNameManager.h>
@@ -90,6 +91,7 @@ struct DocumentP
     bool undoing {false};  ///< document in the middle of undo or redo
     bool committing {false};
     bool opentransaction {false};
+    bool suppressCollaborationRevisionPublication {true};
     std::bitset<32> StatusBits;
     unsigned int UndoMemSize {0};
     unsigned int UndoMaxStackSize {20};
@@ -103,6 +105,10 @@ struct DocumentP
     std::multimap<const App::DocumentObject*, std::unique_ptr<App::DocumentObjectExecReturn>>
         _RecomputeLog;
     ExportInfo exportInfo;
+    DocumentRevisionIndex collaborationRevisions;
+    std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
+    std::unordered_set<const DocumentObject*> collaborationInitializationSuppression;
+    std::unordered_set<const Property*> collaborationPropertyPublicationSuppression;
 
     StringHasherRef Hasher {new StringHasher};
 

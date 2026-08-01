@@ -32,13 +32,52 @@
 #include <CXX/Objects.hxx>
 
 #include "Property.h"
+#include "Document.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
-
+#include "DocumentRevisionIndex.h"
+#include "PropertyLinks.h"
 
 using namespace App;
+
+namespace
+{
+
+void publishPropertyMutation(Property& property, bool structural)
+{
+    auto* container = property.getContainer();
+    auto* document = documentFromPropertyContainer(container);
+    if (!document || document->collaborationRevisionPublicationSuppressed(&property)) {
+        return;
+    }
+
+    const bool linkStructure = property.isDerivedFrom(PropertyLinkBase::getClassTypeId());
+    std::vector<DocumentRevisionPublicationRequest> changes {
+        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    };
+    if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
+        const std::string subject = object->getNameInDocument();
+        const std::string stableObjectIdentity = document->collaborationObjectIdentity(*object);
+        if (structural || linkStructure) {
+            changes.push_back(
+                {DocumentRevisionKey::objectStructure(subject), stableObjectIdentity});
+            if (linkStructure) {
+                changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+            }
+        }
+        else {
+            changes.push_back({DocumentRevisionKey::objectModel(subject), stableObjectIdentity});
+        }
+    }
+    else if (structural || linkStructure) {
+        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    }
+    static_cast<void>(document->collaborationRevisions().publish(changes));
+}
+
+}  // namespace
 
 
 //**************************************************************************
@@ -274,11 +313,47 @@ bool Property::isNotifyEnabled() const
 void Property::touch()
 {
     PropertyCleaner guard(this);
+    if (father) {
+        if (Document* doc = documentFromPropertyContainer(father)) {
+            const char* objectName = nullptr;
+            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
+                objectName = obj->getNameInDocument();
+            }
+            enforceDocumentMutation(doc,
+                                    MutationKind::PropertyWrite,
+                                    MutationOrigin::Cpp,
+                                    objectName,
+                                    getName());
+        }
+    }
+    StatusBits.set(Touched);
+    publishPropertyMutation(*this, false);
     if (father && isNotifyEnabled()) {
         father->onEarlyChange(this);
         father->onChanged(this);
     }
-    StatusBits.set(Touched);
+}
+
+void Property::purgeTouched()
+{
+    if (!isTouched()) {
+        return;
+    }
+    if (father) {
+        if (Document* doc = documentFromPropertyContainer(father)) {
+            const char* objectName = nullptr;
+            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
+                objectName = obj->getNameInDocument();
+            }
+            enforceDocumentMutation(doc,
+                                    MutationKind::PropertyWrite,
+                                    MutationOrigin::Cpp,
+                                    objectName,
+                                    getName());
+        }
+    }
+    StatusBits.reset(Touched);
+    publishPropertyMutation(*this, false);
 }
 
 void Property::setReadOnly(bool readOnly)
@@ -289,6 +364,7 @@ void Property::setReadOnly(bool readOnly)
 void Property::hasSetValue()
 {
     PropertyCleaner guard(this);
+    publishPropertyMutation(*this, false);
     if (father) {
         if (isNotifyEnabled()) {
             father->onChanged(this);
@@ -354,11 +430,24 @@ void Property::setStatusValue(unsigned long status)
     status &= ~mask;
     status |= StatusBits.to_ulong() & mask;
     unsigned long oldStatus = StatusBits.to_ulong();
+    if (status != oldStatus && father) {
+        if (auto* document = documentFromPropertyContainer(father)) {
+            const auto* object = dynamic_cast<const DocumentObject*>(father);
+            enforceDocumentMutation(document,
+                                    MutationKind::StructuralProperty,
+                                    MutationOrigin::Cpp,
+                                    object ? object->getNameInDocument() : nullptr,
+                                    getName());
+        }
+    }
     StatusBits = decltype(StatusBits)(status);
 
     if (father) {
-        static unsigned long _signalMask = (1 << ReadOnly) | (1 << Hidden);
-        if ((status & _signalMask) != (oldStatus & _signalMask)) {
+        if (status != oldStatus) {
+            publishPropertyMutation(*this, true);
+        }
+        static unsigned long signalMask = (1 << ReadOnly) | (1 << Hidden);
+        if ((status & signalMask) != (oldStatus & signalMask)) {
             father->onPropertyStatusChanged(*this, oldStatus);
         }
     }

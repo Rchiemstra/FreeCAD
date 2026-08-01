@@ -35,8 +35,10 @@
 #include <vector>
 #include <list>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <optional>
 
 #include <boost/algorithm/string.hpp>
@@ -75,12 +77,15 @@
 #include "Application.h"
 #include "AutoTransaction.h"
 #include "BackupPolicy.h"
+#include "CollaborationRegistry.h"
 #include "DocumentMutationAuthority.h"
+#include "DocumentRevisionIndex.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
 #include "License.h"
 #include "Link.h"
 #include "MergeDocuments.h"
+#include "PropertyPythonObject.h"
 #include "StringHasher.h"
 #include "Transactions.h"
 
@@ -146,6 +151,122 @@ PROPERTY_SOURCE(App::Document, App::PropertyContainer)
 bool Document::testStatus(const Status pos) const
 {
     return d->StatusBits.test(static_cast<size_t>(pos));
+}
+
+std::atomic<std::uint64_t> nextCollaborationObjectIdentity {1};
+
+std::uint64_t allocateCollaborationObjectIdentity()
+{
+    auto candidate = nextCollaborationObjectIdentity.load(std::memory_order_relaxed);
+    while (true) {
+        if (candidate == 0 || candidate == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("collaboration object identity space exhausted");
+        }
+        if (nextCollaborationObjectIdentity.compare_exchange_weak(
+                candidate,
+                candidate + 1,
+                std::memory_order_relaxed,
+                std::memory_order_relaxed)) {
+            return candidate;
+        }
+    }
+}
+
+DocumentIdentity Document::collaborationIdentity() const
+{
+    const auto identity = GetApplication().collaborationRegistry().identity(*this);
+    if (!identity) {
+        throw Base::RuntimeError("Document is not registered for collaboration");
+    }
+    return *identity;
+}
+
+DocumentRevisionIndex& Document::collaborationRevisions()
+{
+    return d->collaborationRevisions;
+}
+
+const DocumentRevisionIndex& Document::collaborationRevisions() const
+{
+    return d->collaborationRevisions;
+}
+
+bool Document::collaborationRevisionPublicationSuppressed() const
+{
+    return d->suppressCollaborationRevisionPublication;
+}
+
+bool Document::collaborationRevisionPublicationSuppressed(
+    const PropertyContainer* container) const
+{
+    if (collaborationRevisionPublicationSuppressed()) {
+        return true;
+    }
+    const auto* object = dynamic_cast<const DocumentObject*>(container);
+    return object
+        && (!object->isAttachedToDocument() || object->getDocument() != this
+            || !containsObject(object)
+            || d->collaborationInitializationSuppression.contains(object));
+}
+
+bool Document::collaborationRevisionPublicationSuppressed(const Property* property) const
+{
+    return !property || d->collaborationPropertyPublicationSuppression.contains(property)
+        || collaborationRevisionPublicationSuppressed(property->getContainer());
+}
+
+std::string Document::collaborationObjectIdentity(const DocumentObject& object) const
+{
+    const auto found = d->collaborationObjectIdentities.find(&object);
+    if (found == d->collaborationObjectIdentities.end()) {
+        throw Base::RuntimeError("Document object has no collaboration identity");
+    }
+    return std::to_string(found->second);
+}
+
+void Document::publishCollaborationMutation(const PropertyContainer& container, bool structural)
+{
+    if (collaborationRevisionPublicationSuppressed(&container)) {
+        return;
+    }
+    std::vector<DocumentRevisionPublicationRequest> changes {
+        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    };
+    if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
+        const std::string subject = object->getNameInDocument();
+        const std::string stableObjectIdentity = collaborationObjectIdentity(*object);
+        changes.push_back(
+            {structural ? DocumentRevisionKey::objectStructure(subject)
+                        : DocumentRevisionKey::objectModel(subject),
+             stableObjectIdentity});
+    }
+    else if (structural) {
+        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    }
+    static_cast<void>(d->collaborationRevisions.publish(changes));
+}
+
+void Document::setCollaborationRevisionPublicationSuppressed(bool suppressed)
+{
+    d->suppressCollaborationRevisionPublication = suppressed;
+}
+
+bool Document::collaborationPreparationSupported() const
+{
+    auto containsMutablePythonPayload = [](const PropertyContainer& container) {
+        std::vector<Property*> properties;
+        container.getPropertyList(properties);
+        return std::ranges::any_of(properties, [](const Property* property) {
+            return property->isDerivedFrom<PropertyPythonObject>();
+        });
+    };
+
+    if (containsMutablePythonPayload(*this)) {
+        return false;
+    }
+    return std::ranges::none_of(d->objectArray, [&](const DocumentObject* object) {
+        return containsMutablePythonPayload(*object);
+    });
 }
 
 void Document::setStatus(const Status pos, const bool on) // NOLINT
@@ -727,8 +848,14 @@ bool Document::isTransactionEmpty() const
 
 }
 
+static std::vector<DocumentRevisionPublicationRequest>
+documentClearPublicationRequests(const Document& document,
+                                 const std::vector<DocumentObject*>& objects);
+
 void Document::clearDocument() // NOLINT
 {
+    enforceDocumentMutation(this, MutationKind::BulkCopy);
+    const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
     d->activeObject = nullptr;
 
     if (!d->objectArray.empty()) {
@@ -748,6 +875,11 @@ void Document::clearDocument() // NOLINT
     d->objectNameManager.clear();
     d->objectIdMap.clear();
     d->lastObjectId = 0;
+
+    if (!clearPublication.empty() && !collaborationRevisionPublicationSuppressed()) {
+        static_cast<void>(d->collaborationRevisions.publish(clearPublication));
+    }
+    d->collaborationObjectIdentities.clear();
 }
 
 
@@ -1889,6 +2021,10 @@ bool Document::saveAs(const char* _file)
     const std::string file = checkFileName(_file);
     const Base::FileInfo fi(file.c_str());
     if (this->FileName.getStrValue() != file) {
+        Base::FlagToggler<> suppressRevisions(
+            d->suppressCollaborationRevisionPublication,
+            false
+        );
         this->FileName.setValue(file);
         this->Label.setValue(fi.fileNamePure());
         this->Uid.touch();  // this forces a rename of the transient directory
@@ -1928,24 +2064,30 @@ bool Document::save()
     }
 
     if (*(FileName.getValue()) != '\0') {
-        // Save the name of the tip object in order to handle in Restore()
-        if (Tip.getValue()) {
-            TipName.setValue(Tip.getValue()->getNameInDocument());
-        }
+        {
+            Base::FlagToggler<> suppressRevisions(
+                d->suppressCollaborationRevisionPublication,
+                false
+            );
+            // Save the name of the tip object in order to handle in Restore()
+            if (Tip.getValue()) {
+                TipName.setValue(Tip.getValue()->getNameInDocument());
+            }
 
-        const std::string LastModifiedDateString = Base::Tools::currentDateTimeString();
-        LastModifiedDate.setValue(LastModifiedDateString.c_str());
-        // set author if needed
-        const bool saveAuthor =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("prefSetAuthorOnSave", false);
-        if (saveAuthor) {
-            const std::string Author =
+            const std::string LastModifiedDateString = Base::Tools::currentDateTimeString();
+            LastModifiedDate.setValue(LastModifiedDateString.c_str());
+            // set author if needed
+            const bool saveAuthor =
                 GetApplication()
                     .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                    ->GetASCII("prefAuthor", "");
-            LastModifiedBy.setValue(Author.c_str());
+                    ->GetBool("prefSetAuthorOnSave", false);
+            if (saveAuthor) {
+                const std::string Author =
+                    GetApplication()
+                        .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                        ->GetASCII("prefAuthor", "");
+                LastModifiedBy.setValue(Author.c_str());
+            }
         }
 
         bool result = saveToFile(FileName.getValue());
@@ -2139,8 +2281,10 @@ void Document::restore(const char* filename,
                        bool delaySignal,
                        const std::vector<std::string>& objNames)
 {
+    enforceDocumentMutation(this, MutationKind::ImportExport);
     clearUndos();
     d->activeObject = nullptr;
+    const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
 
     bool signal = false;
     Document* activeDoc = GetApplication().getActiveDocument();
@@ -2161,6 +2305,11 @@ void Document::restore(const char* filename,
     d->objectMap.clear();
     d->objectIdMap.clear();
     d->lastObjectId = 0;
+
+    if (!clearPublication.empty() && !collaborationRevisionPublicationSuppressed()) {
+        static_cast<void>(d->collaborationRevisions.publish(clearPublication));
+    }
+    d->collaborationObjectIdentities.clear();
 
     if (signal) {
         GetApplication().signalNewDocument(*this, true);
@@ -2958,6 +3107,7 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                     doRecompute = true;
                     ++objectCount;
                     int res = _recomputeFeature(obj);
+                    publishCollaborationMutation(*obj, false);
                     if (res != 0) {
                         if (hasError) {
                             *hasError = true;
@@ -3318,6 +3468,13 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 
 bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
+    enforceDocumentMutation(
+        this,
+        MutationKind::Recompute,
+        MutationOrigin::Cpp,
+        feature ? feature->getNameInDocument() : nullptr);
+    MutationInternalScope internalGrant(this);
+
     // delete recompute log
     d->clearRecomputeLog(feature);
 
@@ -3332,6 +3489,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         return !hasError;
     }
     _recomputeFeature(feature);
+    publishCollaborationMutation(*feature, false);
     signalRecomputedObject(*feature);
     return feature->isValid();
 }
@@ -3344,6 +3502,10 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
+    enforceDocumentMutation(this,
+                            MutationKind::AddObject,
+                            MutationOrigin::Cpp,
+                            pObjectName);
     const Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -3375,6 +3537,10 @@ DocumentObject* Document::addObject(
 std::vector<DocumentObject*>
 Document::addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew)
 {
+    enforceDocumentMutation(this,
+                            MutationKind::AddObject,
+                            MutationOrigin::Cpp,
+                            objectNames.empty() ? nullptr : objectNames.front().c_str());
     Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -3417,6 +3583,11 @@ void Document::addObject(DocumentObject* obj, const char* name)
         throw Base::RuntimeError("Document object is already added to a document");
     }
 
+    enforceDocumentMutation(this,
+                            MutationKind::AddObject,
+                            MutationOrigin::Cpp,
+                            name);
+
     obj->setDocument(this);
 
     _addObject(obj, name, AddObjectOption::SetNewStatus | AddObjectOption::ActivateObject);
@@ -3437,56 +3608,82 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
     else {
         ObjectName = getUniqueObjectName(pcObject->getTypeId().getName());
     }
-
+    const auto stableObjectIdentity = allocateCollaborationObjectIdentity();
+    const std::string stableObjectIdentityString = std::to_string(stableObjectIdentity);
+    const auto publishObjectBoundary = [&] {
+        if (collaborationRevisionPublicationSuppressed()) {
+            return;
+        }
+        static_cast<void>(d->collaborationRevisions.publish(
+            std::vector<DocumentRevisionPublicationRequest> {
+                {DocumentRevisionKey::objectExistence(ObjectName), stableObjectIdentityString},
+                {DocumentRevisionKey::objectStructure(ObjectName), stableObjectIdentityString},
+                {DocumentRevisionKey::documentStructure(), std::nullopt},
+                {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+            }));
+    };
+    d->collaborationObjectIdentities.emplace(pcObject, stableObjectIdentity);
     // insert in the name map
     d->objectMap[ObjectName] = pcObject;
-    d->objectNameManager.addExactName(ObjectName);
-    // cache the pointer to the name string in the Object (for performance of
-    // DocumentObject::getNameInDocument())
-    pcObject->pcNameInDocument = &(d->objectMap.find(ObjectName)->first);
-    // Register the current Label even though it might be about to change
-    registerLabel(pcObject->Label.getStrValue());
+    try {
+        d->objectNameManager.addExactName(ObjectName);
+        // Cache the pointer to the name string in the Object (for performance of
+        // DocumentObject::getNameInDocument()).
+        pcObject->pcNameInDocument = &(d->objectMap.find(ObjectName)->first);
+        registerLabel(pcObject->Label.getStrValue());
 
-    // generate object id and add to id map + object array
-    if (pcObject->_Id == 0) {
-        pcObject->_Id = ++d->lastObjectId;
-    }
-    d->objectIdMap[pcObject->_Id] = pcObject;
-    d->objectArray.push_back(pcObject);
-
-     // do no transactions if we do a rollback!
-    if (!d->rollback) {
-        // Undo stuff
-        _checkTransaction(nullptr, nullptr, __LINE__);
-        if (d->activeUndoTransaction) {
-            d->activeUndoTransaction->addObjectDel(pcObject);
+        if (pcObject->_Id == 0) {
+            pcObject->_Id = ++d->lastObjectId;
         }
-     }
-    // If we are restoring, don't set the Label object now; it will be restored later. This is to
-    // avoid potential duplicate label conflicts later.
-    if (options.testFlag(AddObjectOption::SetNewStatus) && !d->StatusBits.test(Restoring)) {
-        const std::string labelName = Base::Tools::isNullOrEmpty(pObjectName)
-            ? ObjectName
-            : Base::Tools::getIdentifier(pObjectName);
-        pcObject->Label.setValue(labelName);
-    }
+        d->objectIdMap[pcObject->_Id] = pcObject;
+        d->objectArray.push_back(pcObject);
+        d->collaborationInitializationSuppression.insert(pcObject);
 
-    // Call the object-specific initialization
-    if (!isPerformingTransaction() && options.testFlag(AddObjectOption::DoSetup)) {
-        pcObject->setupObject();
-    }
+        // Do no transactions if we do a rollback.
+        if (!d->rollback) {
+            _checkTransaction(nullptr, nullptr, __LINE__);
+            if (d->activeUndoTransaction) {
+                d->activeUndoTransaction->addObjectDel(pcObject);
+            }
+        }
 
-    if (options.testFlag(AddObjectOption::SetNewStatus)) {
-        pcObject->setStatus(ObjectStatus::New, true);
-    }
-    if (options.testFlag(AddObjectOption::SetPartialStatus) || options.testFlag(AddObjectOption::UnsetPartialStatus)) {
-        pcObject->setStatus(ObjectStatus::PartialObject, options.testFlag(AddObjectOption::SetPartialStatus));
-    }
+        // If we are restoring, don't set the Label object now; it will be restored later. This is
+        // to avoid potential duplicate label conflicts later.
+        if (options.testFlag(AddObjectOption::SetNewStatus) && !d->StatusBits.test(Restoring)) {
+            const std::string labelName = Base::Tools::isNullOrEmpty(pObjectName)
+                ? ObjectName
+                : Base::Tools::getIdentifier(pObjectName);
+            pcObject->Label.setValue(labelName);
+        }
 
-    if (Base::Tools::isNullOrEmpty(viewType)) {
-        viewType = pcObject->getViewProviderNameOverride();
+        // Call the object-specific initialization
+        if (!isPerformingTransaction() && options.testFlag(AddObjectOption::DoSetup)) {
+            pcObject->setupObject();
+        }
+
+        if (options.testFlag(AddObjectOption::SetNewStatus)) {
+            pcObject->setStatus(ObjectStatus::New, true);
+        }
+        if (options.testFlag(AddObjectOption::SetPartialStatus)
+            || options.testFlag(AddObjectOption::UnsetPartialStatus)) {
+            pcObject->setStatus(
+                ObjectStatus::PartialObject,
+                options.testFlag(AddObjectOption::SetPartialStatus));
+        }
+
+        if (Base::Tools::isNullOrEmpty(viewType)) {
+            viewType = pcObject->getViewProviderNameOverride();
+        }
+        pcObject->_pcViewProviderName = viewType ? viewType : "";
     }
-    pcObject->_pcViewProviderName = viewType ? viewType : "";
+    catch (...) {
+        d->collaborationInitializationSuppression.erase(pcObject);
+        publishObjectBoundary();
+        throw;
+    }
+    d->collaborationInitializationSuppression.erase(pcObject);
+
+    publishObjectBoundary();
 
     signalNewObject(*pcObject);
 
@@ -3596,59 +3793,123 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         d->activeObject = nullptr;
     }
 
-    // Mark the object as about to be removed
-    pcObject->setStatus(ObjectStatus::Remove, true);
-    if (!d->undoing && !d->rollback) {
-        pcObject->unsetupObject();
-    }
-    signalDeletedObject(*pcObject);
-    signalTransactionRemove(*pcObject, d->rollback ? nullptr : d->activeUndoTransaction);
-    breakDependency(pcObject, true);
-
-    // TODO Check me if it's needed (2015-09-01, Fat-Zer)
-    // remove the tip if needed
-    if (Tip.getValue() == pcObject) {
-        Tip.setValue(nullptr);
-        TipName.setValue("");
-    }
-
-    // remove from map
-    pcObject->setStatus(ObjectStatus::Remove, false);  // Unset the bit to be on the safe side
-    d->objectIdMap.erase(pcObject->_Id);
-    d->objectNameManager.removeExactName(pos->first);
-    unregisterLabel(pcObject->Label.getStrValue());
-
-    // do no transactions if we do a rollback!
-    if (!d->rollback && d->activeUndoTransaction) {
-        d->activeUndoTransaction->addObjectNew(pcObject);
-    }
-
-    std::unique_ptr<DocumentObject> tobedestroyed;
-    if ((options.testFlag(RemoveObjectOption::MayDestroyOutOfTransaction) && !d->rollback && !d->activeUndoTransaction)
-        || (options.testFlag(RemoveObjectOption::DestroyOnRollback) && d->rollback)) {
-        // if not saved in undo -> delete object later
-        std::unique_ptr<DocumentObject> delobj(pos->second);
-        tobedestroyed.swap(delobj);
-        tobedestroyed->setStatus(ObjectStatus::Destroy, true);
-    }
-
-    for (auto it = d->objectArray.begin();
-         it != d->objectArray.end();
-         ++it) {
-        if (*it == pcObject) {
-            d->objectArray.erase(it);
-            break;
+    const std::string removedObjectName = pos->first;
+    const std::string removedObjectIdentity = collaborationObjectIdentity(*pcObject);
+    const auto publishRemovalBoundary = [&] {
+        if (collaborationRevisionPublicationSuppressed()) {
+            return;
         }
-    }
+        static_cast<void>(d->collaborationRevisions.publish(
+            std::vector<DocumentRevisionPublicationRequest> {
+                {DocumentRevisionKey::objectExistence(removedObjectName), removedObjectIdentity},
+                {DocumentRevisionKey::objectStructure(removedObjectName), removedObjectIdentity},
+                {DocumentRevisionKey::documentStructure(), std::nullopt},
+                {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+            }));
+    };
 
-    // In case the object gets deleted the pointer must be nullified
-    if (tobedestroyed) {
-        tobedestroyed->pcNameInDocument = nullptr;
-    }
+    // Keep the object's own callbacks suppressed until every surviving structural mutation has
+    // completed. Any exception after teardown still publishes the one removal boundary.
+    d->collaborationInitializationSuppression.insert(pcObject);
+    try {
+        pcObject->setStatus(ObjectStatus::Remove, true);
+        if (!d->undoing && !d->rollback) {
+            pcObject->unsetupObject();
+        }
+        signalDeletedObject(*pcObject);
+        signalTransactionRemove(*pcObject, d->rollback ? nullptr : d->activeUndoTransaction);
+        breakDependency(pcObject, true);
 
-    // Erase last to avoid invalidating pcObject->pcNameInDocument
-    // when it is still needed in Transaction::addObjectNew
-    d->objectMap.erase(pos);
+        // TODO Check me if it's needed (2015-09-01, Fat-Zer)
+        // Tip and TipName are internal parts of the removal boundary. Suppress only these
+        // properties' own publications so observer-initiated mutations remain visible.
+        if (Tip.getValue() == pcObject) {
+            d->collaborationPropertyPublicationSuppression.insert(&Tip);
+            d->collaborationPropertyPublicationSuppression.insert(&TipName);
+            try {
+                Tip.setValue(nullptr);
+                TipName.setValue("");
+            }
+            catch (...) {
+                d->collaborationPropertyPublicationSuppression.erase(&Tip);
+                d->collaborationPropertyPublicationSuppression.erase(&TipName);
+                throw;
+            }
+            d->collaborationPropertyPublicationSuppression.erase(&Tip);
+            d->collaborationPropertyPublicationSuppression.erase(&TipName);
+        }
+
+        // remove from map
+        pcObject->setStatus(ObjectStatus::Remove, false);  // Unset the bit to be on the safe side
+        d->objectIdMap.erase(pcObject->_Id);
+        d->objectNameManager.removeExactName(pos->first);
+        unregisterLabel(pcObject->Label.getStrValue());
+
+        // do no transactions if we do a rollback!
+        if (!d->rollback && d->activeUndoTransaction) {
+            d->activeUndoTransaction->addObjectNew(pcObject);
+        }
+
+        std::unique_ptr<DocumentObject> tobedestroyed;
+        if ((options.testFlag(RemoveObjectOption::MayDestroyOutOfTransaction) && !d->rollback && !d->activeUndoTransaction)
+            || (options.testFlag(RemoveObjectOption::DestroyOnRollback) && d->rollback)) {
+            // if not saved in undo -> delete object later
+            std::unique_ptr<DocumentObject> delobj(pos->second);
+            tobedestroyed.swap(delobj);
+            tobedestroyed->setStatus(ObjectStatus::Destroy, true);
+        }
+
+        for (auto it = d->objectArray.begin(); it != d->objectArray.end(); ++it) {
+            if (*it == pcObject) {
+                d->objectArray.erase(it);
+                break;
+            }
+        }
+
+        // In case the object gets deleted the pointer must be nullified
+        if (tobedestroyed) {
+            tobedestroyed->pcNameInDocument = nullptr;
+        }
+
+        // Erase last to avoid invalidating pcObject->pcNameInDocument
+        // when it is still needed in Transaction::addObjectNew
+        d->objectMap.erase(pos);
+    }
+    catch (...) {
+        d->collaborationPropertyPublicationSuppression.erase(&Tip);
+        d->collaborationPropertyPublicationSuppression.erase(&TipName);
+        d->collaborationInitializationSuppression.erase(pcObject);
+        publishRemovalBoundary();
+        throw;
+    }
+    d->collaborationInitializationSuppression.erase(pcObject);
+
+    publishRemovalBoundary();
+    d->collaborationObjectIdentities.erase(pcObject);
+}
+
+static std::vector<DocumentRevisionPublicationRequest>
+documentClearPublicationRequests(const Document& document,
+                                 const std::vector<DocumentObject*>& objects)
+{
+    std::vector<DocumentRevisionPublicationRequest> changes;
+    changes.reserve(objects.size() * 2 + 2);
+    for (const auto* object : objects) {
+        if (!object || !object->getNameInDocument()) {
+            continue;
+        }
+        const std::string objectName = object->getNameInDocument();
+        const std::string stableObjectIdentity = document.collaborationObjectIdentity(*object);
+        changes.push_back(
+            {DocumentRevisionKey::objectExistence(objectName), stableObjectIdentity});
+        changes.push_back(
+            {DocumentRevisionKey::objectStructure(objectName), stableObjectIdentity});
+    }
+    if (!changes.empty()) {
+        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+        changes.push_back({DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+    }
+    return changes;
 }
 
 void Document::breakDependency(DocumentObject* pcObject, const bool clear) // NOLINT

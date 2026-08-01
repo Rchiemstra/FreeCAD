@@ -432,7 +432,12 @@ public:
 
     void addValue(long value)
     {
+        if (_lValueSet.contains(value)) {
+            return;
+        }
+        aboutToSetValue();
         _lValueSet.insert(value);
+        hasSetValue();
     }
     void setValues(const std::set<long>& values);
 

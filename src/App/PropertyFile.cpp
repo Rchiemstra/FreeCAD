@@ -137,9 +137,6 @@ void PropertyFileIncluded::setValue(const char* sFile, const char* sName)
             throw Base::FileSystemError("Not possible to set the same file!");
         }
 
-        // keep the path to the original file
-        _OriginalName = sFile;
-
         std::string pathTrans = getDocTransientPath();
         Base::FileInfo file(sFile);
         std::string path = file.dirPath();
@@ -150,6 +147,9 @@ void PropertyFileIncluded::setValue(const char* sFile, const char* sName)
         }
 
         aboutToSetValue();  // undo/redo by moving the file away with temp name
+
+        // keep the path to the original file
+        _OriginalName = sFile;
 
         // remove old file (if not moved by undo)
         Base::FileInfo value(_cValue);

@@ -40,6 +40,7 @@
 #include "Application.h"
 #include "ElementNamingUtils.h"
 #include "Document.h"
+#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
@@ -215,18 +216,65 @@ void DocumentObject::setTouched(const char* name)
 
 void DocumentObject::touch(bool noRecompute)
 {
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceDocumentMutation(
+            _pDoc,
+            MutationKind::PropertyWrite,
+            MutationOrigin::Cpp,
+            getNameInDocument(),
+            "Touch");
+    }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
     }
     StatusBits.set(ObjectStatus::Touch);
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
     if (_pDoc) {
         _pDoc->signalTouchedObject(*this);
     }
 }
 
+void DocumentObject::purgeTouched()
+{
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceDocumentMutation(
+            _pDoc,
+            MutationKind::PropertyWrite,
+            MutationOrigin::Cpp,
+            getNameInDocument(),
+            "Touch");
+    }
+    StatusBits.reset(ObjectStatus::Touch);
+    StatusBits.reset(ObjectStatus::Enforce);
+    std::vector<Property*> properties;
+    getPropertyList(properties);
+    for (auto* property : properties) {
+        property->StatusBits.reset(Property::Touched);
+    }
+    touchedProps.clear();
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
+}
 void DocumentObject::freeze()
 {
+    if (isFreezed()) {
+        return;
+    }
+    enforceDocumentMutation(
+        _pDoc,
+        MutationKind::PropertyWrite,
+        MutationOrigin::Cpp,
+        getNameInDocument(),
+        "Freeze");
     StatusBits.set(ObjectStatus::Freeze);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // store read-only property names
     this->readOnlyProperties.clear();
@@ -248,7 +296,17 @@ void DocumentObject::freeze()
 
 void DocumentObject::unfreeze(bool noRecompute)
 {
+    enforceDocumentMutation(
+        _pDoc,
+        MutationKind::PropertyWrite,
+        MutationOrigin::Cpp,
+        getNameInDocument(),
+        "Freeze");
+    const bool wasFrozen = isFreezed();
     StatusBits.reset(ObjectStatus::Freeze);
+    if (wasFrozen && _pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // reset read-only property status
     std::vector<std::pair<const char*, Property*>> list;
@@ -260,7 +318,30 @@ void DocumentObject::unfreeze(bool noRecompute)
         }
     }
 
-    touch(noRecompute);
+    if (!noRecompute) {
+        StatusBits.set(ObjectStatus::Enforce);
+    }
+    StatusBits.set(ObjectStatus::Touch);
+    if (_pDoc) {
+        _pDoc->signalTouchedObject(*this);
+    }
+}
+
+void DocumentObject::purgeError()
+{
+    if (!isError()) {
+        return;
+    }
+    enforceDocumentMutation(
+        _pDoc,
+        MutationKind::PropertyWrite,
+        MutationOrigin::Cpp,
+        getNameInDocument(),
+        "Error");
+    StatusBits.reset(ObjectStatus::Error);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 }
 
 bool DocumentObject::isTouched() const

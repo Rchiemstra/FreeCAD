@@ -65,6 +65,7 @@ namespace App
 
 class Document;
 class DocumentObject;
+class CollaborationRegistry;
 class ApplicationDirectories;
 class ApplicationObserver;
 class Property;
@@ -198,6 +199,9 @@ public:
      * @return Returns true if the document was found and closed, false otherwise.
      */
     bool closeDocument(const char* name);
+
+    /** Return the process-local registry for live collaboration identities. */
+    const CollaborationRegistry& collaborationRegistry() const;
     /**
      * @brief Acquire a unique document name from a proposed name.
      *
@@ -1035,6 +1039,7 @@ private:
     mutable std::map<std::string,Document*> DocFileMap;
     std::map<std::string,Base::Reference<ParameterManager>> mpcPramManager;
     std::map<std::string,std::string> &_mConfig;
+    std::unique_ptr<CollaborationRegistry> _collaborationRegistry;
     App::Document* _pActiveDoc{nullptr};
 
     std::deque<std::string> _pendingDocs;

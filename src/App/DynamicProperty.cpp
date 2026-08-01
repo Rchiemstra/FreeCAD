@@ -39,8 +39,10 @@
 
 #include "DynamicProperty.h"
 #include "Application.h"
+#include "Document.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
+#include "DocumentRevisionIndex.h"
 #include "Property.h"
 #include "PropertyContainer.h"
 
@@ -65,6 +67,27 @@ void enforceStructuralPropertyMutation(PropertyContainer& container, const char*
                                 objectName,
                                 propertyName);
     }
+}
+
+void publishStructuralPropertyMutation(PropertyContainer& container)
+{
+    auto* document = documentFromPropertyContainer(&container);
+    if (!document || document->collaborationRevisionPublicationSuppressed(&container)) {
+        return;
+    }
+
+    std::vector<DocumentRevisionPublicationRequest> changes {
+        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    };
+    if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
+        changes.push_back(
+             {DocumentRevisionKey::objectStructure(object->getNameInDocument()),
+             document->collaborationObjectIdentity(*object)});
+    }
+    else {
+        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    }
+    static_cast<void>(document->collaborationRevisions().publish(changes));
 }
 }  // namespace
 
@@ -312,6 +335,7 @@ Property* DynamicProperty::addDynamicProperty(
     pcProperty->syncType(attr);
     pcProperty->StatusBits.set((size_t)Property::PropDynamic);
 
+    publishStructuralPropertyMutation(pc);
     GetApplication().signalAppendDynamicProperty(*pcProperty);
 
     return pcProperty;
@@ -340,6 +364,9 @@ bool DynamicProperty::addProperty(Property* prop)
                   prop->getType(),
                   false,
                   false);
+    if (auto* container = prop->getContainer()) {
+        publishStructuralPropertyMutation(*container);
+    }
     return true;
 }
 
@@ -348,7 +375,11 @@ bool DynamicProperty::removeProperty(const Property* prop)
     auto& index = impl->props.get<1>();
     auto it = index.find(const_cast<Property*>(prop));
     if (it != index.end()) {
+        auto* container = it->property->getContainer();
         index.erase(it);
+        if (container) {
+            publishStructuralPropertyMutation(*container);
+        }
         return true;
     }
     return false;
@@ -369,14 +400,20 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
             throw Base::RuntimeError("property is not dynamic");
         }
         Property* prop = it->property;
+        PropertyContainer* container = prop->getContainer();
         GetApplication().signalRemoveDynamicProperty(*prop);
 
         // Handle possible recursive calls of removeDynamicProperty
+        bool removed = false;
         if (prop->myName) {
             Property::destroy(prop);
             index.erase(it);
             // memory of myName has been freed
             prop->myName = nullptr;
+            removed = true;
+        }
+        if (removed && container) {
+            publishStructuralPropertyMutation(*container);
         }
         return true;
     }
@@ -483,6 +520,9 @@ bool DynamicProperty::changeDynamicProperty(const Property* prop,
     if (doc) {
         it->doc = doc;
     }
+    if (PropertyContainer* container = it->property->getContainer()) {
+        publishStructuralPropertyMutation(*container);
+    }
     return true;
 }
 
@@ -530,6 +570,7 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
         d.property->myName = d.name.c_str();
     });
 
+    publishStructuralPropertyMutation(*container);
     GetApplication().signalRenameDynamicProperty(*prop, oldName.c_str());
 
     return true;

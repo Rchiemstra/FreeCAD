@@ -118,8 +118,9 @@ void PropertyContainer::setPropertyStatus(unsigned char bit,bool value)
 {
     std::vector<Property*> List;
     getPropertyList(List);
-    for(auto it : List)
-        it->StatusBits.set(bit,value);
+    for (auto* property : List) {
+        property->setStatus(static_cast<Property::Status>(bit), value);
+    }
 }
 
 short PropertyContainer::getPropertyType(const Property* prop) const

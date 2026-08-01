@@ -7,8 +7,11 @@ add_executable(App_tests_run
         BackupPolicy.cpp
         Branding.cpp
         ComplexGeoData.cpp
+        CollaborationRegistry.cpp
         Document.cpp
+        DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
+        DocumentRevisionIndex.cpp
         DocumentObject.cpp
         DocumentObserver.cpp
         Expression.cpp

@@ -161,6 +161,7 @@ void VRMLObject::Save(Base::Writer& writer) const
 
 void VRMLObject::Restore(Base::XMLReader& reader)
 {
+    Base::StateLocker locker(restoreData, true);
     App::GeoFeature::Restore(reader);
     Urls.setSize(Resources.getSize());
 

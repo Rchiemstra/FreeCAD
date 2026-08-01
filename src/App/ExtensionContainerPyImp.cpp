@@ -25,6 +25,9 @@
 #include <sstream>
 
 #include "Application.h"
+#include "Document.h"
+#include "DocumentMutationAuthority.h"
+#include "DocumentObject.h"
 
 #include <App/ExtensionContainerPy.h>
 #include <App/ExtensionContainerPy.cpp>
@@ -218,6 +221,16 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         PyErr_Print();
     }
 
+    auto* container = getExtensionContainerPtr();
+    auto* document = documentFromPropertyContainer(container);
+    const auto* object = dynamic_cast<const App::DocumentObject*>(container);
+    enforceDocumentMutation(
+        document,
+        MutationKind::StructuralProperty,
+        MutationOrigin::Python,
+        object ? object->getNameInDocument() : nullptr,
+        typeId);
+
     // get the extension type asked for
     Base::Type extension = Base::Type::fromName(typeId);
     if (extension.isBad() || !extension.isDerivedFrom(App::Extension::getExtensionClassTypeId())) {
@@ -236,8 +249,11 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         throw Py::TypeError(str.str());
     }
 
-    GetApplication().signalBeforeAddingDynamicExtension(*getExtensionContainerPtr(), typeId);
-    ext->initExtension(getExtensionContainerPtr());
+    GetApplication().signalBeforeAddingDynamicExtension(*container, typeId);
+    ext->initExtension(container);
+    if (document) {
+        document->publishCollaborationMutation(*container, true);
+    }
 
     // The PyTypeObject is shared by all instances of this type and therefore
     // we have to add new methods only once.
@@ -274,7 +290,7 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     Py_DECREF(obj);
 
     // throw the appropriate event
-    GetApplication().signalAddedDynamicExtension(*getExtensionContainerPtr(), typeId);
+    GetApplication().signalAddedDynamicExtension(*container, typeId);
 
     Py_Return;
 }

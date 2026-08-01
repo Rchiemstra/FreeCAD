@@ -7,6 +7,7 @@ add_subdirectory(propertyeditor)
 add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
+        CollaborationViewIsolation.cpp
         DocumentRecovery.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp

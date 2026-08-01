@@ -111,10 +111,13 @@
 #include "ApplicationDirectoriesPy.h"
 #include "ApplicationPy.h"
 #include "CleanupProcess.h"
+#include "CollaborationRegistry.h"
 #include "ComplexGeoData.h"
 #include "ConsoleQtBridge.h"
 #include "TranslationQtBridge.h"
 #include "Services.h"
+#include "Document.h"
+#include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
 #include "DocumentObjectGroup.h"
 #include "DocumentObjectGroupPy.h"
@@ -412,6 +415,7 @@ init_image_module()
 
 Application::Application(std::map<std::string,std::string> &mConfig)
   : _mConfig(mConfig)
+  , _collaborationRegistry(std::make_unique<CollaborationRegistry>())
 {
     mpcPramManager["System parameter"] = _pcSysParamMngr;
     mpcPramManager["User parameter"] = _pcUserParamMngr;
@@ -639,6 +643,10 @@ Document* Application::newDocument(const char * proposedName, const char * propo
 
     // add the document to the internal list
     DocMap[name] = doc;
+    const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
+    doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
+                                                       collaborationIdentity.lifecycleEpoch);
+    doc->setCollaborationRevisionPublicationSuppressed(false);
 
     //NOLINTBEGIN
     // clang-format off
@@ -696,6 +704,15 @@ bool Application::closeDocument(const char* name)
         return false;
 
     enforceDocumentMutation(pos->second, MutationKind::Close);
+    pos->second->setCollaborationRevisionPublicationSuppressed(true);
+    const auto closingIdentity = _collaborationRegistry->markClosing(*pos->second);
+    if (!closingIdentity) {
+        throw Base::RuntimeError("Document collaboration identity is missing during close");
+    }
+    pos->second->collaborationRevisions().bindDocumentIdentity(
+        closingIdentity->instanceId,
+        closingIdentity->lifecycleEpoch
+    );
     DocumentMutationAuthority::instance().forgetDocument(*pos->second);
 
     Base::ConsoleRefreshDisabler disabler;
@@ -711,6 +728,14 @@ bool Application::closeDocument(const char* name)
     const std::unique_ptr<Document> delDoc (pos->second);
     DocMap.erase( pos );
     DocFileMap.erase(Base::FileInfo(delDoc->FileName.getValue()).filePath());
+    const auto closedIdentity = _collaborationRegistry->closeDocument(*delDoc);
+    if (!closedIdentity) {
+        throw Base::RuntimeError("Document collaboration identity disappeared during close");
+    }
+    delDoc->collaborationRevisions().bindDocumentIdentity(
+        closedIdentity->instanceId,
+        closedIdentity->lifecycleEpoch
+    );
 
     _objCount = -1;
 
@@ -718,6 +743,11 @@ bool Application::closeDocument(const char* name)
     signalDeletedDocument();
 
     return true;
+}
+
+const CollaborationRegistry& Application::collaborationRegistry() const
+{
+    return *_collaborationRegistry;
 }
 
 void Application::closeAllDocuments()
