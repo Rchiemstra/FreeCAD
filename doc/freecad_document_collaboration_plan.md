@@ -53,6 +53,7 @@ Every moved Python symbol retains its old import path through an explicit re-exp
 
 ## 4. MCP responsibilities
 
+- MCP implementation and MCP-specific testing are deferred to final Phase 7. The MCP repository is being refactored and is currently a blocked dependency, so Phases 1–6 do not edit the MCP submodule, depend on its in-flight interfaces, or require its test suites. They instead freeze and prove the complete native FreeCAD boundary that Phase 7 will consume. The Phase 7 block does not prevent native work from progressing, but the overall collaboration program is not complete until Phase 7 passes.
 - Authenticate and identify callers, translate tools into typed FreeCAD collaboration calls, pass opaque actor/session identifiers, forward advisory cancellation, and return FreeCAD's structured success, conflict, stale, cancellation, or lifecycle result.
 - Query or subscribe to authoritative status. Read-only response caching is allowed, but cached state never authorizes a mutation.
 - Do not own documents, mutation exclusion, dirty/save state, file baselines, sidecars, recovery snapshots, close rules, administrative cancellation, conflict decisions, or rollback. Terminating or replacing the MCP cannot transfer, revoke, or corrupt document authority; no heartbeat is required for correctness.
@@ -61,35 +62,68 @@ Every moved Python symbol retains its old import path through an explicit re-exp
 
 ## 5. Multitask operating model
 
-This refactor is executed with Cursor Multitask. Maximize parallel workers **only** when file ownership is disjoint. Default to one worker when fewer than two safe independent workstreams exist, and record why in §11.4.
+This refactor is executed with Codex subagents. Parallelism is a tool for shortening independent work, not a phase-completion goal. The parent agent remains the integrator and keeps the critical path. Spawn a subagent only for a concrete, bounded, independently verifiable workstream with exclusive write ownership; otherwise the integrator performs the work directly. Keep one concurrency slot available for the integrator, so a four-slot session runs at most three subagents at once. Record the delegation decision, model, reasoning level, and ownership in §11.4.
 
 ### 5.1 Roles
 
-| Role | Model | Responsibilities |
+| Role | Model and reasoning | Responsibilities |
 | --- | --- | --- |
-| **Worker** (implementation subagent) | **Composer 2.5 only** — never Composer 2.5 Fast | Implements one workstream under exclusive file ownership. Does not edit shared files. Adds focused tests and reports changed files, tests, assumptions, and blockers. |
-| **Integrator** (parent or dedicated agent) | Same session orchestrator | Freezes interfaces, owns shared files, waits for every worker in a wave, combines outputs, runs native and Docker suites, updates §11 Progress, and creates the single phase delivery. |
-| **Reviewer** (read-only subagent) | **Cursor Grok 4.5 High** | Reviews extremely critically. After every workstream and after integration/fixes, inspects the actual diff and tests and reports blocking, important, and non-blocking findings. |
+| **Worker** (implementation subagent) | **GPT-5.6 Terra / high** by default; **GPT-5.6 Sol / high or xhigh** for the risk classes in §5.2 | Implements one frozen workstream under exclusive file ownership. Does not edit shared files. Adds focused tests and reports changed files, tests, assumptions, and blockers. |
+| **Integrator** (parent agent) | The session's parent model; use its normal reasoning for orchestration and raise effort for shared-seam integration when the runtime permits | Partitions work, freezes interfaces, owns shared files, waits for every worker in a wave, combines outputs, runs every required test through Docker, updates §11 Progress, and creates the single phase delivery. It does not delegate final integration or the completion decision. |
+| **Reviewer** (read-only subagent) | **GPT-5.6 Sol / xhigh** by default; **max** only for an unresolved correctness blocker | Reviews adversarially. After every workstream and after integration/fixes, inspects the actual diff and tests and reports blocking, important, and non-blocking findings without editing files. |
 
-### 5.2 Hard Multitask rules
+### 5.2 Delegation, model, and reasoning policy
 
-1. Use **Composer 2.5** for every implementation subagent.
-2. Never use Composer 2.5 Fast for subagents.
-3. Do not delegate an entire phase to one worker when at least two safe workstreams exist.
-4. Assign exclusive file ownership to each worker as listed in §11.2 before starting a wave.
-5. Workers must not edit shared files listed in §5.3 or integrator-only files in the phase table.
+#### 5.2.1 When to use a subagent
+
+Use an implementation subagent only when all of the following are true:
+
+1. The deliverable is concrete and bounded, with an explicit done condition and focused tests.
+2. Its write paths are exclusive and do not include a §5.3 shared file or an unresolved integration seam.
+3. Its inputs and interfaces are frozen for the duration of the workstream.
+4. It can progress independently while the integrator or another worker performs useful work.
+
+Keep work with the integrator when any of the following applies: the next decision changes a shared contract; two candidate tasks edit the same files; one task consumes an interface that has not yet been frozen; the task is small enough that delegation overhead exceeds its work; it is final integration, full-suite validation, progress logging, or delivery; or a worker has returned a blocker that requires a cross-workstream decision. A read-only reviewer may inspect overlapping files because it has no write ownership.
+
+Do not create a worker merely to satisfy a worker count. If only one safe workstream exists, use one worker or work locally and record why. Reassess after every wave or interface freeze; prior independence does not imply that the next tasks remain independent.
+
+#### 5.2.2 Which model and reasoning level to use
+
+Choose the lowest reasoning level adequate for the risk. A higher setting is an explicit correctness escalation, not a substitute for a bounded assignment or frozen interface.
+
+| Model / reasoning | Use for | Do not use for |
+| --- | --- | --- |
+| **GPT-5.6 Terra / medium** | Read-only inventory, mechanical test isolation, or a narrowly specified compatibility shim with no semantic design decision. | Concurrency, transactions, rollback, lifecycle epochs, recovery, public-contract design, or final review. |
+| **GPT-5.6 Terra / high** | Default bounded implementation: localized adapters, bindings, focused tests, and code whose contract and failure semantics are already frozen. | Choosing a cross-component contract or resolving a subtle correctness dispute. |
+| **GPT-5.6 Sol / high** | Correctness-sensitive implementation involving revision semantics, atomic commit, threads, recompute, geometry isolation, lifecycle/recovery, rollback, or a native/Python/GUI boundary. | Mechanical work that Terra can complete under the same frozen contract. |
+| **GPT-5.6 Sol / xhigh** | Contract analysis, race/deadlock diagnosis, adversarial workstream and integrated-diff review, and fixes spanning multiple invariants. | Routine first-pass implementation with a complete specification. |
+| **GPT-5.6 Sol / max** | One documented escalation when `xhigh` leaves a blocking concurrency, rollback, recovery, or integration issue unresolved. | Default workstreams or reviews. |
+| **Any model / low** | A very small read-only lookup when spawning still saves time; normally keep such work with the integrator. | Code changes, design, correctness claims, or review gates. |
+| **GPT-5.6 Sol / ultra** | Exceptional second escalation after `max` has failed and the unresolved blocker justifies the added cost; record the exact question and why narrower attempts failed. | Planned phase work, ordinary review, or speculative exploration. |
+
+The per-workstream assignments in §11.2 are the starting configuration. The integrator may raise reasoning or move a workstream from Terra to Sol when newly discovered risk matches this table. A downgrade requires re-planning before the worker starts and an explicit §11.4 explanation; never silently substitute a weaker model or reasoning level.
+
+#### 5.2.3 Hard Multitask rules
+
+1. The integrator applies §5.2.1 before every spawn and records the concrete task, done condition, model, reasoning level, exclusive paths, and dependencies.
+2. Do not delegate an entire phase to one worker when at least two safe workstreams exist, and do not split a tightly coupled workstream merely to create parallelism.
+3. Assign exclusive file ownership to each worker as listed in §11.2 before starting a wave.
+4. Workers must not edit shared files listed in §5.3 or integrator-only files in the phase table.
+5. Workers do not recursively delegate unless the integrator explicitly authorizes a separately bounded child assignment with its own non-overlapping ownership.
 6. Workers report changed files, tests added or changed, assumptions, and blockers.
-7. One integrator owns shared files, integration, native test execution, Docker execution, §11 Progress updates, and the single parent-repository phase commit.
+7. One integrator owns shared files, integration, all Docker-only test execution, §11 Progress updates, and the single parent-repository phase commit.
 8. The integrator waits for all workers in a wave before combining their changes.
-9. After every workstream, start a read-only Cursor Grok 4.5 High review of the actual diff and tests.
+9. After every workstream, start a read-only **GPT-5.6 Sol / xhigh** review of the actual diff and tests.
 10. Review findings are classified as blocking, important, or non-blocking.
-11. Fix every blocking and important finding, then review the resulting diff again.
-12. Before the phase delivery, the integrator runs branch-built native tests and all Docker services: `unit`, `e2e`, `core`, and `benchmark`.
+11. Fix every blocking and important finding, then review the resulting diff again at **GPT-5.6 Sol / xhigh** or at the documented escalation level.
+12. Before every phase delivery, the integrator uses Docker to build the current branch and run its affected FreeCAD test targets. Final Phase 7 additionally runs all MCP Docker services: `unit`, `e2e`, `core`, and `benchmark`, plus the Docker branch cross-track gate. No host-side test execution satisfies or supplements either gate.
 13. Do not mark a phase complete unless all required reviews and tests pass.
-14. If fewer than two independent workstreams remain, use one worker and explicitly record why parallelization is unsafe.
+14. If fewer than two independent workstreams remain, use one worker or work locally and explicitly record why further parallelization is unsafe or uneconomical.
 15. Create exactly one integrator commit in the parent repository per phase. Temporary workstream branches or worktrees are not delivery units; any phase that changes the MCP submodule has exactly one unavoidable squashed nested commit under §5.4.
 16. Every moved symbol keeps its old import path working through the explicit shim policy in §3.3; a removed re-export is blocking.
-17. If either required Cursor model is unavailable, mark the wave blocked; do not silently substitute a different model.
+17. Verify the assigned model and reasoning level before each wave. If unavailable, explicitly re-plan to an available equivalent under §5.2.2 and log the change; block the wave when no equivalent satisfies the risk class. Never silently downgrade.
+18. `max` and `ultra` are escalation levels only. Their §11.4 entry names the unresolved blocker, prior attempt, and question being escalated.
+19. Keep one runtime slot free for the integrator; do not start more subagents than the session can run concurrently.
 
 ### 5.3 Shared-file ownership
 
@@ -107,9 +141,9 @@ Workers may read but never edit the following cross-workstream files. They are u
 ### 5.4 Repository and delivery constraints
 
 - The `/doc/*` ignore rule that previously hid this plan is gone: commit `879f1a7c25` removed it and committed this document, so `doc/` is no longer ignored and the plan is tracked. Neither a force-add nor a `.gitignore` negation is needed, and earlier revisions of this bullet requiring one are obsolete. The integrator still confirms with `git check-ignore -v doc/freecad_document_collaboration_plan.md` before Phase 1 that the path is tracked and unignored, because every phase commit must carry the §11.3/§11.4 update.
-- `tools/mcp/freecad-mcp` is a Git submodule (`.gitmodules`; root index mode `160000`). Any phase that changes it requires exactly one squashed submodule commit and one parent phase commit containing the updated gitlink and progress log. The parent commit is the canonical phase delivery; no worker commits are delivery units. If “one commit” means literally one Git object across both repositories, that phase is blocked until the user approves splitting the phase by repository or changing the repository layout.
+- `tools/mcp/freecad-mcp` is a Git submodule (`.gitmodules`; root index mode `160000`). Only final Phase 7 is planned to change it. That phase requires exactly one squashed submodule commit and one parent phase commit containing the updated gitlink and progress log. The parent commit is the canonical phase delivery; no worker commits are delivery units. If “one commit” means literally one Git object across both repositories, Phase 7 remains blocked until the user approves splitting the phase by repository or changing the repository layout.
 - Before every wave, inspect the root and submodule worktrees for pre-existing changes that overlap assigned paths. Preserve or deliberately integrate them before delegation; an unresolved collision blocks the wave. Never overwrite user work merely to obtain exclusive ownership.
-- The four services in `tools/mcp/freecad-mcp/docker-compose.yml` use the conda-forge FreeCAD installed by `tools/mcp/freecad-mcp/Dockerfile`; they do not exercise this branch's C++ build or replace native `App_tests_run`, `Gui_tests_run`, or relevant `Part_tests_run` tests. Phases 5 and 6 must additionally pass the branch-built MCP cross-track path represented by `freecad-mcp-load-preflight`, `freecad-mcp-core-tests`, and `freecad-mcp-e2e` in `.woodpecker/ci.yml`, or a recorded equivalent using this branch's `FreeCADCmd`.
+- The four services in `tools/mcp/freecad-mcp/docker-compose.yml` use the conda-forge FreeCAD installed by `tools/mcp/freecad-mcp/Dockerfile`; they validate the MCP adapter but do not exercise this branch's C++ build. They are deferred with all other MCP-specific testing to final Phase 7 and do not gate Phases 1–6. They do not replace the separate Docker branch-build lane that compiles the current checkout and runs `App_tests_run`, `Gui_tests_run`, and relevant `Part_tests_run` binaries inside its container for every native phase. Freeze the branch-build image, source-mount/copy policy, dependency versions, configure/build command, and per-phase test command before Phase 1. Phase 7 must additionally pass the branch-built MCP cross-track path represented by `freecad-mcp-load-preflight`, `freecad-mcp-core-tests`, and `freecad-mcp-e2e` in `.woodpecker/ci.yml`, or a recorded equivalent executed in Docker against the container-built current branch's `FreeCADCmd`.
 - The progress log records the unique phase commit subject and optional annotated phase tag, not the commit's own SHA, which cannot be embedded in the same commit without self-reference.
 
 ## 6. Proposed FreeCAD classes and APIs
@@ -154,7 +188,7 @@ flowchart LR
 - Every revision is a strictly monotonic counter for the life of a document instance. It is never rewound, never derived from content, and never restored by `abortTransaction()`, undo, or redo. Undo and redo changed live values and therefore advance the affected revisions forward exactly like any other mutation. This invariant is load-bearing: the §9 revalidation compares expected against current revisions, so a revision that returned to a previously published value would let a prepared edit validate against a document that changed and changed back, which revalidation cannot detect. Restarting a document instance resets counters only together with a new instance ID and lifecycle epoch, which reject prior results independently.
 - FreeCAD derives reads and writes. They include object existence, upstream geometry, namespace entries, Body/Group membership and order, Tip, and link edges. Create/delete operations validate the relevant namespace and structure revisions.
 - A lifecycle mismatch rejects first. Changed read dependencies or write targets reject the prepared result. Same-object edits conflict by default, even if they name different properties. Phase 6 permits property-level concurrency only for typed adapters with complete dependencies and proven independent commit semantics.
-- Compatibility mutations follow §3.3 and conservatively invalidate prepared work. Local GUI, Python, undo, and redo changes publish into the same revision stream as remote operations.
+- Compatibility mutations follow §3.3 and conservatively invalidate prepared work. Local GUI, Python, undo, and redo changes publish into the native collaboration revision stream from Phase 4; final Phase 7 proves that remote MCP operations enter that same stream.
 - Conflict results return changed semantic keys and expected/current revisions. FreeCAD never silently merges; the caller rereads and reprepares.
 - FCStd timestamps/hashes, file replacement, `Gui::Document.Modified`, and a document-wide sequence are save or diagnostic evidence only, never conflict predicates.
 
@@ -196,16 +230,18 @@ The MVP guarantees atomic App-model commits only. Cross-domain App/Gui shared-pr
 
 ### 11.1 Phase gate and commit protocol
 
-For each phase, the integrator records the base revision and exclusive ownership before work starts, freezes shared interfaces before dependent parallel work, and executes the wave lifecycle in §5. Every worker supplies focused tests with its implementation. The integrator then wires shared surfaces and runs:
+**Docker-only test execution policy.** All project tests used during development, workstream verification, integration, and phase acceptance are built and run in Docker containers. Do not run FreeCAD, MCP, Python, C++, GUI, Part, benchmark, import-shim, or cross-track test suites directly on the host. A host-side result is not accepted as evidence and does not replace a failed or unavailable container run. The Docker branch-build lane must compile the current checkout inside the container so the FreeCAD binaries under test contain the phase changes. MCP Compose and MCP cross-track tests are required only in final Phase 7, after the in-progress MCP refactor is unblocked; they do not gate Phases 1–6.
 
-- the branch-built native targets affected by the phase, including `App_tests_run`, `Gui_tests_run`, and relevant Part tests;
-- from `tools/mcp/freecad-mcp`, Docker Compose services `unit`, `e2e`, `core`, and `benchmark`;
-- for Phases 5 and 6, the `.woodpecker/ci.yml` branch-built MCP load-preflight plus `core` and `e2e` cross-track jobs, or a recorded equivalent against this branch's `FreeCADCmd`;
-- import-shim/deprecation checks for every moved or retired public symbol.
+For each phase, the integrator records the base revision and exclusive ownership before work starts, freezes shared interfaces before dependent parallel work, and executes the wave lifecycle in §5. Every worker supplies focused tests with its implementation; the worker or integrator runs those tests only through the assigned Docker lane. The integrator then wires shared surfaces and runs:
 
-The integrated diff receives a final read-only Cursor Grok 4.5 High review after fixes. A phase completes only when blocking and important findings are zero, every required suite passes, §11.3/§11.4 are current, and the integrator creates the phase delivery with the listed subject. Non-blocking findings are recorded with an owner and target phase.
+- a Docker branch build of the current checkout followed, inside the same controlled container environment, by the affected FreeCAD targets, including `App_tests_run`, `Gui_tests_run`, and relevant Part tests;
+- in final Phase 7 only, from `tools/mcp/freecad-mcp`, Docker Compose services `unit`, `e2e`, `core`, and `benchmark`;
+- in final Phase 7 only, the `.woodpecker/ci.yml` branch-built MCP load-preflight plus `core` and `e2e` cross-track jobs, or a recorded Docker equivalent against the container-built current branch's `FreeCADCmd`;
+- import-shim/deprecation checks for every moved or retired public symbol, executed in the applicable Docker container.
 
-**Stop criterion.** A phase that cannot meet its gate is marked `Blocked` in §11.3 with the specific unmet condition, and the program does not proceed to the next phase. The Phase 1 gate is the one that can halt everything, so its failure mode is decided in advance: if the residual unbracketed writers in §3.2 cannot all be bracketed or rejected, Phase 1 still ships as a standalone increment — the revision index, registry, and wildcard are useful for diagnostics and conflict reporting on their own — and `PreparedEdit` stays disabled until a later phase closes the residue. Descoping past that point is a user decision, not an integrator decision.
+The integrated diff receives a final read-only **GPT-5.6 Sol / xhigh** review after fixes, escalating only under §5.2.2. A phase completes only when blocking and important findings are zero, every required suite passes, §11.3/§11.4 are current, and the integrator creates the phase delivery with the listed subject. Non-blocking findings are recorded with an owner and target phase.
+
+**Stop criterion.** A phase that cannot meet its gate is marked `Blocked` in §11.3 with the specific unmet condition, and the program does not proceed to the next phase. The known MCP refactor block is assigned to final Phase 7 by design, so it does not prevent Phases 1–6 from completing; after Phase 6 the program waits for the Phase 7 unblock criteria and cannot claim overall completion. The Phase 1 gate is the other one that can halt everything, so its failure mode is decided in advance: if the residual unbracketed writers in §3.2 cannot all be bracketed or rejected, Phase 1 still ships as a standalone increment — the revision index, registry, and wildcard are useful for diagnostics and conflict reporting on their own — and `PreparedEdit` stays disabled until a later phase closes the residue. Descoping past that point is a user decision, not an integrator decision.
 
 ### 11.2 Phase workstreams
 
@@ -213,11 +249,11 @@ The integrated diff receives a final read-only Cursor Grok 4.5 High review after
 
 **Outcome:** document instance ID and lifecycle epoch; object existence/model/structure, document-structure, and unknown-mutation wildcard revisions; strict revision monotonicity across undo, redo, and transaction abort; universal wildcard capture (or explicit disabling) for every unclassified authoritative mutation before Phase 2; personal view exclusion; focused conflict tests.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 1A / Composer 2.5 | `src/App/CollaborationRegistry.h`, `src/App/CollaborationRegistry.cpp`, `tests/src/App/CollaborationRegistry.cpp` | Small live-instance/epoch/tombstone registry and lifecycle-unit tests. |
-| A | 1B / Composer 2.5 | `src/App/DocumentRevisionIndex.h`, `src/App/DocumentRevisionIndex.cpp`, `tests/src/App/DocumentRevisionIndex.cpp` | Initial revision types, validation/publication, wildcard behavior, monotonic-counter enforcement, and conflict tests. |
-| A | 1C / Composer 2.5 | `tests/src/App/DocumentCollaborationBoundary.cpp`, `tests/src/Gui/CollaborationViewIsolation.cpp` | Prove every unclassified authoritative mutation advances the wildcard while camera/selection/tree changes do not advance model revisions, and that undo, redo, and transaction abort never rewind a revision. |
+| A | 1A / GPT-5.6 Sol / high | `src/App/CollaborationRegistry.h`, `src/App/CollaborationRegistry.cpp`, `tests/src/App/CollaborationRegistry.cpp` | Small live-instance/epoch/tombstone registry and lifecycle-unit tests. |
+| A | 1B / GPT-5.6 Sol / high | `src/App/DocumentRevisionIndex.h`, `src/App/DocumentRevisionIndex.cpp`, `tests/src/App/DocumentRevisionIndex.cpp` | Initial revision types, validation/publication, wildcard behavior, monotonic-counter enforcement, and conflict tests. |
+| A | 1C / GPT-5.6 Sol / high | `tests/src/App/DocumentCollaborationBoundary.cpp`, `tests/src/Gui/CollaborationViewIsolation.cpp` | Prove every unclassified authoritative mutation advances the wildcard while camera/selection/tree changes do not advance model revisions, and that undo, redo, and transaction abort never rewind a revision. |
 
 The integrator alone wires `App::Application`, `App::Document`, `Property.cpp`, `DynamicProperty.cpp`, and CMake/test registration. The gate covers the funnel set named in §3.2, proves each funnel increments a classified or wildcard revision on the post-change path, enumerates the residual writers that bypass `aboutToSetValue()`/`hasSetValue()`, and either brackets them or rejects them while collaboration is active. It also proves the §7 monotonicity invariant, since an ABA-capable revision would make every later phase's revalidation unsound. `PreparedEdit` remains disabled until this passes; see the §11.1 stop criterion for the failure mode. Three workers are safe after the registry/revision contract is frozen; a fourth is unsafe because all remaining production hooks converge on those shared mutation paths. Commit: `feat(collaboration): phase 1 add revision foundation`.
 
@@ -225,12 +261,12 @@ The integrator alone wires `App::Application`, `App::Document`, `Property.cpp`, 
 
 **Outcome:** immutable `PreparedEdit`, serialized `DocumentCommitCoordinator`, lifecycle/revision validation, one native transaction/recompute/postcondition path, and exactly two pilot typed operations: object-property update and Part Boolean.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 2A / Composer 2.5 | `src/App/PreparedEdit.h`, `src/App/PreparedEdit.cpp`, `src/App/CollaborativeOperation.h`, `src/App/CollaborativeOperation.cpp`, `tests/src/App/PreparedEdit.cpp` | Immutable payload and typed-operation contract tests. |
-| A | 2B / Composer 2.5 | `src/App/DocumentCommitCoordinator.h`, `src/App/DocumentCommitCoordinator.cpp`, `tests/src/App/DocumentCommitCoordinator.cpp` | Validation, rollback, observer-visibility, and serialization tests. |
-| B | 2C / Composer 2.5 | `src/App/CollaborativeSetPropertyOperation.h`, `src/App/CollaborativeSetPropertyOperation.cpp`, `tests/src/App/CollaborativeSetPropertyOperation.cpp` | Conservative object-level property-update adapter. |
-| B | 2D / Composer 2.5 | `src/Mod/Part/App/CollaborativeBooleanOperation.h`, `src/Mod/Part/App/CollaborativeBooleanOperation.cpp`, `tests/src/Mod/Part/App/CollaborativeBooleanOperation.cpp` | Boolean adapter declaring input existence/model reads and result structure/model writes. |
+| A | 2A / GPT-5.6 Sol / high | `src/App/PreparedEdit.h`, `src/App/PreparedEdit.cpp`, `src/App/CollaborativeOperation.h`, `src/App/CollaborativeOperation.cpp`, `tests/src/App/PreparedEdit.cpp` | Immutable payload and typed-operation contract tests. |
+| A | 2B / GPT-5.6 Sol / xhigh | `src/App/DocumentCommitCoordinator.h`, `src/App/DocumentCommitCoordinator.cpp`, `tests/src/App/DocumentCommitCoordinator.cpp` | Validation, rollback, observer-visibility, and serialization tests. |
+| B | 2C / GPT-5.6 Terra / high | `src/App/CollaborativeSetPropertyOperation.h`, `src/App/CollaborativeSetPropertyOperation.cpp`, `tests/src/App/CollaborativeSetPropertyOperation.cpp` | Conservative object-level property-update adapter. |
+| B | 2D / GPT-5.6 Sol / high | `src/Mod/Part/App/CollaborativeBooleanOperation.h`, `src/Mod/Part/App/CollaborativeBooleanOperation.cpp`, `tests/src/Mod/Part/App/CollaborativeBooleanOperation.cpp` | Boolean adapter declaring input existence/model reads and result structure/model writes. |
 
 Wave B starts only after the integrator merges and freezes Wave A interfaces. The integrator owns the document facade, transaction/recompute wiring, bindings, and registrations. More parallelism within either wave is unsafe because those integrations share transaction state and public interfaces. Commit: `feat(collaboration): phase 2 add prepared atomic commits`.
 
@@ -238,68 +274,78 @@ Wave B starts only after the integrator merges and freezes Wave A interfaces. Th
 
 **Outcome:** immutable inputs, concurrent non-blocking preparation, serialized commit admission, and stale rejection from actual read sets. Python-backed features are explicitly out of scope for detached preparation per §9.1 and remain synchronous.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 3A / Composer 2.5 | `src/App/PreparedEditExecutor.h`, `src/App/PreparedEditExecutor.cpp`, `tests/src/App/PreparedEditExecutor.cpp` | Bounded preparation executor, cancellation/status, and no-live-pointer tests. |
-| A | 3B / Composer 2.5 | `src/Mod/Part/App/CollaborativeBooleanOperation.h`, `src/Mod/Part/App/CollaborativeBooleanOperation.cpp`, `tests/src/Mod/Part/App/CollaborativeBooleanPreparation.cpp` | Move Boolean calculation to immutable shapes and return a prepared mutation batch. |
-| B | 3C / Composer 2.5 | `tests/src/App/DocumentCollaborationConcurrency.cpp`, `tests/src/Gui/CollaborationResponsiveness.cpp` | After Wave A integration, prove overlap, serialized final commits, stale rejection, and event-loop/camera responsiveness. |
+| A | 3A / GPT-5.6 Sol / xhigh | `src/App/PreparedEditExecutor.h`, `src/App/PreparedEditExecutor.cpp`, `tests/src/App/PreparedEditExecutor.cpp` | Bounded preparation executor, cancellation/status, and no-live-pointer tests. |
+| A | 3B / GPT-5.6 Sol / high | `src/Mod/Part/App/CollaborativeBooleanOperation.h`, `src/Mod/Part/App/CollaborativeBooleanOperation.cpp`, `tests/src/Mod/Part/App/CollaborativeBooleanPreparation.cpp` | Move Boolean calculation to immutable shapes and return a prepared mutation batch. |
+| B | 3C / GPT-5.6 Sol / high | `tests/src/App/DocumentCollaborationConcurrency.cpp`, `tests/src/Gui/CollaborationResponsiveness.cpp` | After Wave A integration, prove overlap, serialized final commits, stale rejection, and event-loop/camera responsiveness. |
 
 The integrator freezes the Phase 3 executor/adapter contracts before Wave A, then owns scheduling through `App::Application`, stable snapshot admission through `App::Document`, recompute/commit queue wiring, and registrations. Freezing the executor contract requires deciding first how `PreparedEditExecutor` relates to the existing recompute thread: `App::Application::recomputeWorker()` already runs on `_recomputeThread` (`src/App/Application.cpp`, started during initialization), and two independent off-thread recompute mechanisms would create an ordering and deadlock hazard. Record whether the executor reuses that thread, replaces it, or runs alongside it under a stated lock order, before 3A starts. Wave B starts only after 3A/3B integration. Two Wave A workers are safe; further splitting would collide in scheduler/recompute seams. If the executor/adapter contract cannot remain frozen, collapse Wave A to one worker and log why. Commit: `feat(collaboration): phase 3 detach geometry preparation`.
 
 #### Phase 4 — Existing FreeCAD mutation integration
 
-**Outcome:** selected GUI and Python paths move from the already-safe wildcard path to typed operations; every other local mutation remains on the wildcard compatibility path; local and remote work share one revision stream.
+**Outcome:** selected GUI and Python paths move from the already-safe wildcard path to typed operations; every other local mutation remains on the wildcard compatibility path; local callers and the native FreeCAD collaboration API share one revision stream. Remote MCP routing is deferred to Phase 7.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 4A / Composer 2.5 | `src/App/MutationClassification.h`, `src/App/MutationClassification.cpp`, `tests/src/App/CollaborationCompatibilityMutation.cpp` | Standalone classification helper that maps a mutation site to a typed or wildcard revision effect, with conservative wildcard fallback for every unclassified path. The integrator applies its call sites in `Property.cpp`/`DynamicProperty.cpp`. |
-| A | 4B / Composer 2.5 | `src/App/DocumentPyImp.cpp`, `src/App/Document.pyi`, `tests/src/App/DocumentCollaborationPython.cpp` | Session/prepare/commit bindings and compatibility-import tests. |
-| A | 4C / Composer 2.5 | `src/Gui/CollaborationCompatibilityAdapter.h`, `src/Gui/CollaborationCompatibilityAdapter.cpp`, `tests/src/Gui/CollaborationCompatibilityAdapter.cpp` | Short-barrier bridge for legacy GUI commands without treating personal view actions as mutations. |
+| A | 4A / GPT-5.6 Sol / high | `src/App/MutationClassification.h`, `src/App/MutationClassification.cpp`, `tests/src/App/CollaborationCompatibilityMutation.cpp` | Standalone classification helper that maps a mutation site to a typed or wildcard revision effect, with conservative wildcard fallback for every unclassified path. The integrator applies its call sites in `Property.cpp`/`DynamicProperty.cpp`. |
+| A | 4B / GPT-5.6 Terra / high | `src/App/DocumentPyImp.cpp`, `src/App/Document.pyi`, `tests/src/App/DocumentCollaborationPython.cpp` | Session/prepare/commit bindings and compatibility-import tests. |
+| A | 4C / GPT-5.6 Terra / high | `src/Gui/CollaborationCompatibilityAdapter.h`, `src/Gui/CollaborationCompatibilityAdapter.cpp`, `tests/src/Gui/CollaborationCompatibilityAdapter.cpp` | Short-barrier bridge for legacy GUI commands without treating personal view actions as mutations. |
 
 The integrator owns `App::Document`, `Gui::Document`, `src/App/Property.cpp`, `src/App/DynamicProperty.cpp`, facade wiring, and registrations. Keeping the two property files integrator-owned here is deliberate and matches §5.3 and Phase 1: they are the universal funnel, so 4A delivers a separately testable classification helper and the integrator performs the call-site surgery. Three workers are safe because the classification helper, bindings, and GUI adaptation are disjoint; command-by-command splitting is unsafe until the compatibility adapter contract is stable. Commit: `feat(collaboration): phase 4 integrate local mutations`.
 
-#### Phase 5 — Lifecycle and MCP cutover
+#### Phase 5 — FreeCAD lifecycle and recovery
 
-**Outcome:** FreeCAD owns save, close, reopen, crash recovery, interruption, administrative cancellation, and stale-result behavior; MCP calls the FreeCAD boundary; sidecars and ownership/heartbeat/credential-custody correctness logic are removed.
+**Outcome:** FreeCAD owns save, close, reopen, crash recovery, interruption, administrative cancellation, and stale-result behavior through native APIs. No MCP files are changed. The legacy MCP authority surface remains a temporary compatibility layer and the new collaboration mode is not exposed through MCP until final Phase 7.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 5A / Composer 2.5 | `src/App/RecoverySnapshot.h`, `src/App/RecoverySnapshot.cpp`, `tests/src/App/DocumentCollaborationRecovery.cpp` | Stable revision/epoch recovery metadata and crash/reopen tests. |
-| A | 5B / Composer 2.5 | `src/Gui/AutoSaver.h`, `src/Gui/AutoSaver.cpp`, `src/Gui/DocumentRecovery.h`, `src/Gui/DocumentRecovery.cpp`, `tests/src/Gui/DocumentRecovery.cpp` | Autosave/recovery UI integration and prior-epoch rejection tests. |
-| A | 5C / Composer 2.5 | `tools/mcp/freecad-mcp/src/freecad_mcp/collaboration_client.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_client.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_public_api.py` | Thin client calls, reconnect behavior, public compatibility shims, and no-client-authority tests. |
-| A | 5D / Composer 2.5 | `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/collaboration_api.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_rpc.py` | Add-on FreeCAD API bridge and structured result tests. |
-| A | 5E / Composer 2.5 | `tests/src/Gui/CollaborationAuthorityRemoval.cpp` | Prove the retired GUI authority surface is gone: an `AlterDoc` command runs without an authority check or takeover prompt, no `MutationAuthorityTLS` internal grant is required, and no code path can reach `DlgMutationTakeover`. |
+| A | 5A / GPT-5.6 Sol / high | `src/App/RecoverySnapshot.h`, `src/App/RecoverySnapshot.cpp`, `tests/src/App/DocumentCollaborationRecovery.cpp` | Stable revision/epoch recovery metadata and crash/reopen tests. |
+| A | 5B / GPT-5.6 Sol / high | `src/Gui/AutoSaver.h`, `src/Gui/AutoSaver.cpp`, `src/Gui/DocumentRecovery.h`, `src/Gui/DocumentRecovery.cpp`, `tests/src/Gui/DocumentRecovery.cpp` | Autosave/recovery UI integration and prior-epoch rejection tests. |
 
-After Wave A review, the integrator wires `Application`/`Document` lifecycle, `FreeCADRPC`, `FreeCADConnection`, `server.py`, and package exports; removes the old sidecar/observer/save-recovery paths; retires the full native `McpOwned` surface listed in §4, which spans `src/Gui/Command.cpp`, `src/Gui/Dialogs/DlgMutationTakeover.*`, and the `MutationAuthorityTLS`/`MutationInternalScope` grant mechanism as well as the App core; and preserves only the §3.3 deprecation surface. Five workers are safe across App recovery, GUI recovery, MCP client, add-on RPC, and authority-removal verification; 5E is test-only because the production seams it covers are §5.3 integrator files. Deletion and facade rewiring remain centralized because their imports overlap. Apply the submodule delivery rule in §5.4. Commit: `refactor(collaboration): phase 5 cut over lifecycle and MCP`.
+After Wave A review, the integrator wires `App::Application`, `App::Document`, native Python bindings, and GUI lifecycle/recovery seams, then proves save/close/reopen/recovery behavior through the Docker branch-build lane. Two workers are safe across App recovery and GUI recovery; lifecycle integration remains centralized. Do not edit `tools/mcp/freecad-mcp`, `FreeCADRPC`, `FreeCADConnection`, MCP package exports, the MCP sidecar/observer paths, or the temporary native `McpOwned` compatibility surface in this phase. Their cutover and removal occur atomically in Phase 7 after the MCP refactor stabilizes. Commit: `feat(collaboration): phase 5 move lifecycle authority into FreeCAD`.
 
 #### Phase 6 — Finer concurrency and presentation
 
 **Outcome:** typed property revisions, more adapters, proven same-object concurrency, first-class personal contexts, and explicit shared-presentation coordination.
 
-| Wave | Worker/model | Exclusive files | Deliverable and tests |
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
 | --- | --- | --- | --- |
-| A | 6A / Composer 2.5 | `src/App/DocumentRevisionIndex.h`, `src/App/DocumentRevisionIndex.cpp`, `tests/src/App/DocumentPropertyRevision.cpp` | Property-key revisions in the index, preserving the §7 monotonicity invariant at the finer key scope. |
-| A | 6B / Composer 2.5 | `src/Gui/SharedPresentationCoordinator.h`, `src/Gui/SharedPresentationCoordinator.cpp`, `tests/src/Gui/SharedPresentationCoordinator.cpp` | Presentation revisions and App/Gui validate/apply/rollback tests. |
-| A | 6C / Composer 2.5 | `src/Gui/PersonalViewContext.h`, `src/Gui/PersonalViewContext.cpp`, `tests/src/Gui/PersonalViewContext.cpp` | Actor-scoped personal state and exception-safe renderer apply/render/restore. |
-| B | 6E / Composer 2.5 | `src/App/CollaborativeSetPropertyOperation.h`, `src/App/CollaborativeSetPropertyOperation.cpp`, `tests/src/App/CollaborativeSetPropertyIndependence.cpp` | Typed property-independence proofs against the frozen 6A key contract; unproven same-object edits still conflict. |
-| B | 6D / Composer 2.5 | `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/collaboration_context.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/focus_helpers.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/screenshot.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/refresh_view.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_view_context.py` | After the personal-context binding contract is frozen, MCP view calls use contexts rather than global selection/active view; the integrator maintains the top-level compatibility export. |
+| A | 6A / GPT-5.6 Sol / high | `src/App/DocumentRevisionIndex.h`, `src/App/DocumentRevisionIndex.cpp`, `tests/src/App/DocumentPropertyRevision.cpp` | Property-key revisions in the index, preserving the §7 monotonicity invariant at the finer key scope. |
+| A | 6B / GPT-5.6 Sol / xhigh | `src/Gui/SharedPresentationCoordinator.h`, `src/Gui/SharedPresentationCoordinator.cpp`, `tests/src/Gui/SharedPresentationCoordinator.cpp` | Presentation revisions and App/Gui validate/apply/rollback tests. |
+| A | 6C / GPT-5.6 Sol / high | `src/Gui/PersonalViewContext.h`, `src/Gui/PersonalViewContext.cpp`, `tests/src/Gui/PersonalViewContext.cpp` | Actor-scoped personal state and exception-safe renderer apply/render/restore. |
+| B | 6E / GPT-5.6 Sol / high | `src/App/CollaborativeSetPropertyOperation.h`, `src/App/CollaborativeSetPropertyOperation.cpp`, `tests/src/App/CollaborativeSetPropertyIndependence.cpp` | Typed property-independence proofs against the frozen 6A key contract; unproven same-object edits still conflict. |
 
-The integrator owns the App/Gui provider boundary, public bindings, document serialization split, registrations, and final acceptance integration. Workers 6A–6C are safe in Wave A on separate core, presentation, and personal-view paths. The property-key producer (6A) and its consumer (6E) are deliberately in different waves: everywhere else this plan freezes a contract before dependents start, and giving one worker both sides of the key contract would break that rule at the phase where the conflict model becomes finest-grained. After integration, the integrator freezes both the property-key contract and the callable personal-context binding, then starts 6D and 6E in Wave B; running either earlier would couple unfinished interfaces. Commit: `feat(collaboration): phase 6 add fine-grained and presentation concurrency`.
+The integrator owns the App/Gui provider boundary, public bindings, document serialization split, registrations, and native acceptance integration. Workers 6A–6C are safe in Wave A on separate core, presentation, and personal-view paths. The property-key producer (6A) and its consumer (6E) are deliberately in different waves: everywhere else this plan freezes a contract before dependents start, and giving one worker both sides of the key contract would break that rule at the phase where the conflict model becomes finest-grained. After integration, the integrator freezes the property-key contract and starts 6E alone in Wave B; MCP consumption of the callable personal-context binding is deferred to Phase 7. Commit: `feat(collaboration): phase 6 add fine-grained and presentation concurrency`.
+
+#### Phase 7 — MCP adapter and cutover (final, currently blocked)
+
+**Outcome:** the stabilized MCP becomes a thin adapter over the completed FreeCAD collaboration boundary; MCP view operations consume personal contexts; sidecar, ownership, heartbeat, credential-custody, and FCStd-difference correctness logic are removed; the temporary native `McpOwned` compatibility surface is retired.
+
+| Wave | Worker / model / reasoning | Exclusive files | Deliverable and tests |
+| --- | --- | --- | --- |
+| A | 7A / GPT-5.6 Terra / high | `tools/mcp/freecad-mcp/src/freecad_mcp/collaboration_client.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_client.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_public_api.py` | Thin client calls, reconnect behavior, public compatibility shims, and no-client-authority tests against the frozen FreeCAD API. |
+| A | 7B / GPT-5.6 Terra / high | `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/collaboration_api.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_rpc.py` | Add-on FreeCAD API bridge and structured result tests. |
+| A | 7C / GPT-5.6 Terra / high | `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/collaboration_context.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/focus_helpers.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/screenshot.py`, `tools/mcp/freecad-mcp/addon/FreeCADMCP/rpc_server/view_manager_ops/refresh_view.py`, `tools/mcp/freecad-mcp/tests/test_collaboration_view_context.py` | MCP view calls use the frozen personal-context API rather than global selection or active view; the integrator maintains the top-level compatibility export. |
+| B | 7D / GPT-5.6 Sol / high | `tests/src/Gui/CollaborationAuthorityRemoval.cpp` | After Wave A integration, prove the retired GUI authority surface is gone: an `AlterDoc` command runs without an authority check or takeover prompt, no `MutationAuthorityTLS` internal grant is required, and no code path can reach `DlgMutationTakeover`. |
+
+Phase 7 is blocked until the MCP refactor has a named stable base revision, its public package/import layout is frozen, overlapping submodule worktree changes are clean or deliberately integrated, and its existing Docker `unit`, `e2e`, `core`, and `benchmark` services pass on that base. Once unblocked, the integrator wires `FreeCADRPC`, `FreeCADConnection`, `server.py`, and package exports; removes the old sidecar/observer/save-recovery paths; retires the full native `McpOwned` surface listed in §4, including `src/Gui/Command.cpp`, `src/Gui/Dialogs/DlgMutationTakeover.*`, and the `MutationAuthorityTLS`/`MutationInternalScope` mechanism; preserves only the §3.3 deprecation surface; and starts 7D after those integration seams are stable. Workers 7A–7C are safe because client, add-on RPC, and view-context paths are disjoint; deletion and facade rewiring remain centralized because their imports overlap. Phase delivery requires the Docker branch-build FreeCAD tests, all four MCP Docker services, and the Docker branch cross-track gate. Apply the submodule delivery rule in §5.4. Commit: `refactor(collaboration): phase 7 cut over MCP adapter`.
 
 ### 11.3 Progress
 
 Allowed phase states are `Not started`, `In progress`, `Blocked`, and `Complete`. The integrator replaces this snapshot in place before every phase delivery.
 
-| Phase | Status | Active wave | Workstreams/reviews | Native tests | Docker `unit/e2e/core/benchmark` | Branch cross-track | Delivery subject or tag |
+| Phase | Status | Active wave | Workstreams/reviews | Docker branch-build FreeCAD tests | MCP Docker `unit/e2e/core/benchmark` | Docker branch cross-track | Delivery subject or tag |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 — Revision foundation | Not started | — | Pending | Pending | Pending | N/A | `feat(collaboration): phase 1 add revision foundation` |
-| 2 — Prepared atomic commit | Not started | — | Pending | Pending | Pending | N/A | `feat(collaboration): phase 2 add prepared atomic commits` |
-| 3 — Detached preparation | Not started | — | Pending | Pending | Pending | N/A | `feat(collaboration): phase 3 detach geometry preparation` |
-| 4 — Existing mutation integration | Not started | — | Pending | Pending | Pending | N/A | `feat(collaboration): phase 4 integrate local mutations` |
-| 5 — Lifecycle/MCP cutover | Not started | — | Pending | Pending | Pending | Pending | `refactor(collaboration): phase 5 cut over lifecycle and MCP` |
-| 6 — Finer concurrency/presentation | Not started | — | Pending | Pending | Pending | Pending | `feat(collaboration): phase 6 add fine-grained and presentation concurrency` |
+| 1 — Revision foundation | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 1 add revision foundation` |
+| 2 — Prepared atomic commit | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 2 add prepared atomic commits` |
+| 3 — Detached preparation | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 3 detach geometry preparation` |
+| 4 — Existing mutation integration | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 4 integrate local mutations` |
+| 5 — FreeCAD lifecycle/recovery | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 5 move lifecycle authority into FreeCAD` |
+| 6 — Finer concurrency/presentation | Not started | — | Pending | Pending | N/A | N/A | `feat(collaboration): phase 6 add fine-grained and presentation concurrency` |
+| 7 — MCP adapter/cutover | Blocked | — | Blocked: MCP refactor | Pending | Pending | Pending | `refactor(collaboration): phase 7 cut over MCP adapter` |
 
-**Current snapshot:** no active wave; no implementation base recorded; no worker branches; reviews and tests pending. Root HEAD is `879f1a7c25` on `feature/assembly-interference-detection`. Before Phase 1: record the root and submodule base revisions; confirm this document is tracked and unignored, which `879f1a7c25` already arranged; resolve the untracked `tests/lib/` in the working tree, which overlaps the Phase 1 test paths; freeze the Phase 1 contracts; and assign the three exclusive path sets.
+**Current snapshot:** no active wave; no implementation base recorded; no worker branches; native reviews and tests pending. Root HEAD is `879f1a7c25` on `feature/assembly-interference-detection`. Phase 7 is blocked by the in-progress MCP refactor, but that final-phase block does not prevent Phases 1–6. Before Phase 1: record the root and submodule base revisions; confirm this document is tracked and unignored, which `879f1a7c25` already arranged; resolve the untracked `tests/lib/` in the working tree, which overlaps the Phase 1 test paths; freeze the Phase 1 contracts; and assign the three exclusive path sets. Before Phase 7: satisfy its named MCP unblock criteria.
 
 ### 11.4 Append-only phase log
 
@@ -326,7 +372,33 @@ Append entries at the end in chronological order. Each entry must be sufficient 
 - **Repository state:** commit `879f1a7c25` landed during this review, removing the `/doc/*` ignore rule and committing this plan. The tracking problem recorded in the planning-baseline entry is therefore resolved, and §5.4 no longer asks for a force-add or a `.gitignore` negation. Root HEAD is now `879f1a7c25`, not the `2cd3d396f6` in effect when the review began. Still open: `tests/lib/` is untracked and overlaps Phase 1 test paths; classify or remove it before delegating Wave A.
 - **Next:** unchanged — freeze Phase 1 interfaces and exclusive ownership, then start Wave A.
 
-For each implementation wave, append: phase/wave and date; base revision; ownership assigned; changed files; tests added/changed; each worker's assumptions/blockers; review findings by severity and re-review result; native test commands/results/counts; all four Docker results; branch cross-track result when required; decisions/deviations; unresolved non-blocking follow-ups; next action; and the planned phase commit subject/tag.
+#### 2026-08-01 — Codex subagent policy revision
+
+- **Status:** execution policy updated; implementation remains not started.
+- **Decisions:** replace the Cursor-specific worker/reviewer policy with Codex subagents; retain the parent agent as integrator; delegate only bounded, independently verifiable work with frozen inputs and exclusive write paths; reserve one runtime slot for integration.
+- **Model/reasoning policy:** GPT-5.6 Terra/high is the default for localized implementation under a frozen contract; GPT-5.6 Sol/high covers correctness-sensitive implementation; Sol/xhigh covers commit coordination, executor concurrency, shared-presentation rollback, contract analysis, and every review gate. `max` and `ultra` are logged blocker escalations, never phase defaults.
+- **Phase assignments:** every §11.2 workstream now names its starting model and reasoning level. The integrator may raise effort when discovered risk warrants it, but may not silently downgrade or substitute an unavailable model.
+- **Next:** unchanged — resolve the pre-Phase-1 repository state, freeze Phase 1 contracts and ownership, then start Wave A under §5.2.
+
+#### 2026-08-01 — Docker-only test policy revision
+
+- **Status:** test-execution policy updated; implementation remains not started.
+- **Decision:** all workstream, integration, acceptance, benchmark, shim, and cross-track tests run only in Docker. Host-side test execution is excluded from the workflow and never counts as phase evidence.
+- **Required lanes:** a Docker branch-build lane compiles and tests the current checkout; the existing MCP Compose `unit`, `e2e`, `core`, and `benchmark` services remain a separate adapter lane. Phases 5 and 6 also run the branch-built MCP cross-track gate in Docker.
+- **Pre-Phase-1 requirement:** freeze the branch-build image and digest, dependency versions, source-mount/copy policy, configure/build commands, and per-phase container test commands before implementation begins.
+- **Next:** define that reproducible Docker branch-build contract, then continue the existing Phase 1 contract and ownership freeze.
+
+#### 2026-08-01 — MCP deferred to final blocked phase
+
+- **Status:** implementation remains not started; new final Phase 7 is `Blocked` by the in-progress MCP refactor.
+- **Ordering decision:** Phases 1–6 now implement and validate only the native FreeCAD core/GUI boundary. Former MCP workers 5C/5D and 6D move to Phase 7 as 7A/7B/7C; former authority-removal verification 5E moves to 7D so removal happens with the cutover.
+- **Testing decision:** MCP Compose and cross-track suites are `N/A` for Phases 1–6. Phase 7 alone requires all four MCP Docker services and the Docker branch cross-track gate, in addition to branch-built FreeCAD tests.
+- **Compatibility decision:** Phase 5 establishes native lifecycle authority but temporarily retains the legacy MCP and native `McpOwned` compatibility surfaces. Phase 7 removes them atomically after adapting the stabilized MCP.
+- **Unblock criteria:** record a stable MCP base revision, freeze its public package/import layout, resolve overlapping submodule worktree changes, and pass its four existing Docker services on that base.
+- **Historical note:** this entry supersedes the Phase 5/6 MCP assignments and test timing recorded in the two immediately preceding planning entries; those entries remain unchanged under the append-only rule.
+- **Next:** Phases 1–6 may proceed. Phase 7 waits until its unblock criteria are satisfied.
+
+For each implementation wave, append: phase/wave and date; base revision; ownership assigned; changed files; tests added/changed; each worker's assumptions/blockers; review findings by severity and re-review result; Docker image/digest and branch-build configure/build/test commands with results/counts; in Phase 7, all four MCP Docker results and the Docker branch cross-track result; decisions/deviations; unresolved non-blocking follow-ups; next action; and the planned phase commit subject/tag. Host-side test results are never recorded as phase evidence.
 
 ## 12. Acceptance criteria and required tests
 
@@ -336,11 +408,12 @@ For each implementation wave, append: phase/wave and date; base revision; owners
 - Phase 2 tests both pilot operations; same-object concurrent edits are rejected by default. Same-key, delete-versus-write, namespace/membership/order/Tip/link, and upstream-geometry conflicts reject exactly one stale result with no partial mutation.
 - Injected apply, recompute, and postcondition failures restore the pre-commit document. Concurrent readers and observers see no intermediate values, revision publication, or success event.
 - Phase 3 proves independent preparations overlap while final live commits never overlap. Long-running geometry preparation does not block camera interaction or the FreeCAD event loop; view activity never makes model work stale. The recorded executor-versus-`recomputeWorker()` decision is exercised under concurrent preparation and commit, and snapshots read off-thread honour the declared `TopoDS_Shape` copy discipline.
-- Phase 4 proves local GUI, Python, undo/redo, and remote operations enter one revision stream; any unclassified local mutation invalidates every potentially affected prepared edit; compatibility mutations are short and conservative; all moved import paths retain shims.
-- Phase 5 proves save does not stale unchanged dependencies; close, recovery, crash/reopen, and administrative epoch advance reject prior results. MCP restart leaves the document, dirty/persisted marker, recovery data, and close policy intact, with no authority sidecar or FCStd-difference conflict check. The GUI half of the authority removal is proven too: `AlterDoc` commands run with no authority gate or takeover prompt, and no reachable path remains to `DlgMutationTakeover` or a `MutationAuthorityTLS` internal grant.
+- Phase 4 proves local GUI, Python, undo/redo, and native collaboration API operations enter one revision stream; any unclassified local mutation invalidates every potentially affected prepared edit; compatibility mutations are short and conservative; all moved import paths retain shims. Remote MCP routing is not part of this phase.
+- Phase 5 proves save does not stale unchanged dependencies; close, recovery, crash/reopen, and administrative epoch advance reject prior results through the native FreeCAD lifecycle APIs. It makes no MCP cutover or restart claim.
 - Phase 6 permits same-object concurrency only where a typed adapter proves property independence. Shared presentation uses GUI-provider revisions, while personal camera/selection/tree contexts remain isolated and renderer apply/render/restore preserves every context.
-- Use distinct suites under `tests/src/App/`, `tests/src/Gui/`, and `tests/src/Mod/Part/` to avoid shared-file collisions, plus MCP adapter tests under `tools/mcp/freecad-mcp/tests/`. Replace ownership expectations in `tests/src/App/DocumentMutationAuthority.cpp` and retain regressions for `App::Document` transactions, `Gui::AutoSaver`, `Gui::Dialog::DocumentRecovery`, snapshots, and view operations.
-- Every workstream and integrated diff passes the required critical review/re-review. Branch-built native tests and Docker `unit`, `e2e`, `core`, and `benchmark` all pass before the progress update and phase delivery; Phases 5 and 6 also pass the branch-built MCP cross-track gate.
+- Phase 7 proves remote MCP operations enter the native revision stream; MCP restart leaves the document, dirty/persisted marker, recovery data, and close policy intact; no authority sidecar or FCStd-difference conflict check remains; MCP view calls preserve personal contexts; `AlterDoc` commands run with no authority gate or takeover prompt; and no reachable path remains to `DlgMutationTakeover` or a `MutationAuthorityTLS` internal grant.
+- Use distinct suites under `tests/src/App/`, `tests/src/Gui/`, and `tests/src/Mod/Part/` to avoid shared-file collisions. Phase 7 additionally uses MCP adapter tests under `tools/mcp/freecad-mcp/tests/`, replaces ownership expectations in `tests/src/App/DocumentMutationAuthority.cpp`, and retains regressions for `App::Document` transactions, `Gui::AutoSaver`, `Gui::Dialog::DocumentRecovery`, snapshots, and view operations.
+- Every workstream and integrated diff passes the required critical review/re-review. For Phases 1–6, the current checkout is built in Docker and its applicable containerized FreeCAD tests pass before progress update and delivery; MCP suites are `N/A`. Final Phase 7 additionally passes MCP Docker `unit`, `e2e`, `core`, and `benchmark` plus the Docker branch-built MCP cross-track gate. No host-side test run counts toward any criterion.
 
 ## 13. Explicit non-goals
 
