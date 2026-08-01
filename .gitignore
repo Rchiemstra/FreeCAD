@@ -55,11 +55,6 @@ ui_*.h
 /build_docker/
 /cmake-build*/
 /conda/environment.yml
-/doc/*
-!/doc/
-!/doc/freecad-git-sidecar-strategy.md
-!/doc/interference_detection_plan.md
-!/doc/async_locked_error_handoff_complete.md
 /lib/
 /src/Tools/offlinedoc/*.txt
 /src/Tools/offlinedoc/localwiki/
