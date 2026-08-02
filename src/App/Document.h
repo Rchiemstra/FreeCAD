@@ -94,6 +94,10 @@ class DocumentCollaborationService;
 class StringHasher;
 class DocumentRevisionIndex;
 struct DocumentIdentity;
+namespace Internal
+{
+class DocumentCollaborationConcurrencyTestAccess;
+}
 using StringHasherRef = Base::Reference<StringHasher>;
 
 struct CollaborationRollbackResult
@@ -1326,6 +1330,7 @@ public:
     friend class TransactionDocumentObject;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class Internal::DocumentCollaborationConcurrencyTestAccess;
 
     ~Document() override;
 
@@ -1498,6 +1503,9 @@ private:
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
+    [[nodiscard]] bool collaborationLifecycleMutationBlocked() const noexcept;
+    void beginCollaborationStableReadCapture();
+    void finishCollaborationStableReadCapture() noexcept;
     [[nodiscard]] bool collaborationCommitPoisoned() const noexcept;
     [[nodiscard]] const char* collaborationCommitPoisonDiagnostic() const noexcept;
     void poisonCollaborationCommit(const char* diagnostic) noexcept;

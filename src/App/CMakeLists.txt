@@ -204,6 +204,7 @@ SET(Document_CPP_SRCS
     Placement.cpp
     ProjectFile.cpp
     PreparedEdit.cpp
+    PreparedEditExecutor.cpp
     Datums.cpp
     Range.cpp
     Transactions.cpp
@@ -266,6 +267,7 @@ SET(Document_HPP_SRCS
     Placement.h
     ProjectFile.h
     PreparedEdit.h
+    PreparedEditExecutor.h
     Datums.h
     Range.h
     Transactions.h

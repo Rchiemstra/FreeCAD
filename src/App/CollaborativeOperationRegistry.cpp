@@ -53,8 +53,13 @@ CollaborativeOperationPreparation CollaborativeOperationRegistry::prepare(
     }
 
     auto preparation = adapter(document, intent);
-    if (!preparation.operation
-        || preparation.operation->typeId() != intent.operationType) {
+    if (static_cast<bool>(preparation.operation)
+        == static_cast<bool>(preparation.detachedTask)) {
+        throw std::invalid_argument(
+            "registered adapter must return exactly one synchronous operation or detached task");
+    }
+    if (preparation.operation
+        && preparation.operation->typeId() != intent.operationType) {
         throw std::invalid_argument("registered adapter returned a mismatched operation type");
     }
     preparation.registrationId = foundRegistrationId;

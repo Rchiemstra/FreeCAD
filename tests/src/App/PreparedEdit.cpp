@@ -175,6 +175,35 @@ TEST(PreparedEditContractTest, canonicalizesEverySemanticSequence)
     EXPECT_EQ(canonical.publicationEffects[1].stableObjectIdentity, std::nullopt);
 }
 
+TEST(PreparedEditContractTest, validatesDetachedMetadataBeforePayloadExists)
+{
+    const auto canonical = validatePreparedEditMetadata("detached-operation",
+                                                        TestDocumentInstanceId,
+                                                        TestLifecycleEpoch,
+                                                        "test.detached",
+                                                        expectedRevisions(),
+                                                        readSet(),
+                                                        writeSet(),
+                                                        publicationEffects(),
+                                                        "native-detached-adapter");
+    EXPECT_EQ(canonical.readSet,
+              (std::vector<DocumentRevisionKey> {ReadKey, SharedKey}));
+    EXPECT_EQ(canonical.writeSet,
+              (std::vector<DocumentRevisionKey> {SharedKey, WriteKey}));
+
+    EXPECT_THROW(static_cast<void>(validatePreparedEditMetadata(
+                     "detached-operation",
+                     TestDocumentInstanceId,
+                     TestLifecycleEpoch,
+                     "test.detached",
+                     expectedRevisions(),
+                     readSet(),
+                     writeSet(),
+                     publicationEffects(),
+                     "")),
+                 std::invalid_argument);
+}
+
 TEST(PreparedEditContractTest, rejectsEmptyIdentityTypeProvenanceAndTypeMismatch)
 {
     const auto state = std::make_shared<FakeOperationState>();

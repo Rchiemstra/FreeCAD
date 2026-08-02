@@ -29,6 +29,7 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <map>
 #include <list>
 #include <mutex>
@@ -143,6 +144,7 @@ struct DocumentP
     bool collaborationTransactionControlGranted {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
+    std::atomic<unsigned int> collaborationLifecycleMutationBlockDepth {0};
     std::recursive_mutex collaborationCommitMutex;
     std::thread::id collaborationOwnerThread {std::this_thread::get_id()};
     std::array<char, 1024> collaborationCommitPoisonDiagnostic {};

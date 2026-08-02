@@ -9,6 +9,7 @@ add_executable(App_tests_run
         ComplexGeoData.cpp
         CollaborationRegistry.cpp
         CollaborativeSetPropertyOperation.cpp
+        DocumentCollaborationConcurrency.cpp
         DocumentCollaborationService.cpp
         DocumentCommitCoordinator.cpp
         Document.cpp
@@ -29,6 +30,7 @@ add_executable(App_tests_run
         Metadata.cpp
         ProjectFile.cpp
         PreparedEdit.cpp
+        PreparedEditExecutor.cpp
         PropertyFile.cpp
         Property.h
         Property.cpp

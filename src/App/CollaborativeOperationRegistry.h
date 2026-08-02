@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +31,9 @@ struct AppExport CollaborativeOperationIntent
 /** Native-adapter output consumed only inside DocumentCollaborationService. */
 struct AppExport CollaborativeOperationPreparation
 {
+    using DetachedTask =
+        std::function<std::unique_ptr<const CollaborativeOperation>(std::stop_token)>;
+
     CollaborativeOperationPreparation(
         std::vector<DocumentRevisionKey> readSet,
         std::vector<DocumentRevisionKey> writeSet,
@@ -41,10 +45,27 @@ struct AppExport CollaborativeOperationPreparation
         , operation(std::move(operation))
     {}
 
+    CollaborativeOperationPreparation(
+        std::vector<DocumentRevisionKey> readSet,
+        std::vector<DocumentRevisionKey> writeSet,
+        std::vector<DocumentRevisionPublicationRequest> publicationEffects,
+        DetachedTask detachedTask)
+        : readSet(std::move(readSet))
+        , writeSet(std::move(writeSet))
+        , publicationEffects(std::move(publicationEffects))
+        , detachedTask(std::move(detachedTask))
+    {}
+
+    [[nodiscard]] bool isDetached() const noexcept
+    {
+        return static_cast<bool>(detachedTask);
+    }
+
     std::vector<DocumentRevisionKey> readSet;
     std::vector<DocumentRevisionKey> writeSet;
     std::vector<DocumentRevisionPublicationRequest> publicationEffects;
     std::unique_ptr<const CollaborativeOperation> operation;
+    DetachedTask detachedTask;
     std::uint64_t registrationId {0};
 };
 

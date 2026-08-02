@@ -278,9 +278,35 @@ bool Document::collaborationNotificationsReplaying() const noexcept
 
 bool Document::collaborationStableReadBlocked() const noexcept
 {
-    return d->collaborationCommitNotificationBarrier || hasPendingTransaction()
+    return d->collaborationCommitNotificationBarrier
+        || d->collaborationReplayingNotifications || hasPendingTransaction()
         || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
         || mustExecute();
+}
+
+bool Document::collaborationLifecycleMutationBlocked() const noexcept
+{
+    return d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 0;
+}
+
+void Document::beginCollaborationStableReadCapture()
+{
+    const auto previous =
+        d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_acq_rel);
+    if (previous == std::numeric_limits<unsigned int>::max()) {
+        d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
+        throw Base::RuntimeError("collaboration stable-read capture depth overflow");
+    }
+}
+
+void Document::finishCollaborationStableReadCapture() noexcept
+{
+    const auto previous =
+        d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_acq_rel);
+    if (previous == 0) {
+        d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
+        FC_ERR("Collaboration stable-read capture depth underflow");
+    }
 }
 
 bool Document::collaborationCommitPoisoned() const noexcept
@@ -348,6 +374,7 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationPreparedUndoSlot.push_back(nullptr);
     GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationCommitNotificationBarrier = true;
+    d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
 }
 
 void Document::prepareCollaborationCommitFinalization()
@@ -385,6 +412,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     }
 
     if (!committed) {
+        d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
         return;
     }
 
@@ -497,6 +525,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         }
     }
     d->collaborationReplayingNotifications = false;
+    d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
 }
 
 void Document::emitCollaborationObjectBeforeChange(DocumentObject& object,

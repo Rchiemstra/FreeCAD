@@ -108,7 +108,7 @@ void validateAndSortPublicationEffects(
 
 using namespace App;
 
-PreparedEditCanonicalContract App::validatePreparedEditContract(
+PreparedEditCanonicalContract App::validatePreparedEditMetadata(
     std::string_view operationId,
     DocumentInstanceId documentInstanceId,
     DocumentLifecycleEpoch lifecycleEpoch,
@@ -117,8 +117,7 @@ PreparedEditCanonicalContract App::validatePreparedEditContract(
     std::vector<DocumentRevisionKey> readSet,
     std::vector<DocumentRevisionKey> writeSet,
     std::vector<DocumentRevisionPublicationRequest> publicationEffects,
-    std::string_view provenance,
-    const CollaborativeOperation& operation)
+    std::string_view provenance)
 {
     if (operationId.empty()) {
         throw std::invalid_argument("prepared edit operation id must be nonempty");
@@ -132,13 +131,6 @@ PreparedEditCanonicalContract App::validatePreparedEditContract(
     if (provenance.empty()) {
         throw std::invalid_argument("prepared edit provenance must be nonempty");
     }
-    if (operation.typeId().empty()) {
-        throw std::invalid_argument("prepared edit operation payload type must be nonempty");
-    }
-    if (operationType != operation.typeId()) {
-        throw std::invalid_argument("prepared edit operation type does not match its payload");
-    }
-
     validateAndSortKeySet(readSet, "prepared edit read set");
     validateAndSortKeySet(writeSet, "prepared edit write set");
     auto canonicalExpected =
@@ -148,6 +140,35 @@ PreparedEditCanonicalContract App::validatePreparedEditContract(
             std::move(readSet),
             std::move(writeSet),
             std::move(publicationEffects)};
+}
+
+PreparedEditCanonicalContract App::validatePreparedEditContract(
+    std::string_view operationId,
+    DocumentInstanceId documentInstanceId,
+    DocumentLifecycleEpoch lifecycleEpoch,
+    std::string_view operationType,
+    std::vector<DocumentRevisionObservation> expectedRevisions,
+    std::vector<DocumentRevisionKey> readSet,
+    std::vector<DocumentRevisionKey> writeSet,
+    std::vector<DocumentRevisionPublicationRequest> publicationEffects,
+    std::string_view provenance,
+    const CollaborativeOperation& operation)
+{
+    if (operation.typeId().empty()) {
+        throw std::invalid_argument("prepared edit operation payload type must be nonempty");
+    }
+    if (operationType != operation.typeId()) {
+        throw std::invalid_argument("prepared edit operation type does not match its payload");
+    }
+    return validatePreparedEditMetadata(operationId,
+                                        documentInstanceId,
+                                        lifecycleEpoch,
+                                        operationType,
+                                        std::move(expectedRevisions),
+                                        std::move(readSet),
+                                        std::move(writeSet),
+                                        std::move(publicationEffects),
+                                        provenance);
 }
 
 PreparedEdit::PreparedEdit(

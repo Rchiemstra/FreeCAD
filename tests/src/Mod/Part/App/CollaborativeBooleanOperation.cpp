@@ -20,14 +20,20 @@
 #include <gp_Pnt.hxx>
 
 #include <algorithm>
+#include <chrono>
+#include <memory>
 #include <optional>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace
 {
+
+using namespace std::chrono_literals;
 
 double volume(const TopoDS_Shape& shape)
 {
@@ -88,11 +94,46 @@ protected:
     App::PreparedEdit prepareEdit(std::string kind)
     {
         auto intent = booleanIntent(kind);
-        return _document->collaborationService().prepareEdit(
+        const auto executionId = _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
             "part-boolean-" + kind,
             intent,
             "native-part-test");
+        waitUntilTerminal(executionId);
+        auto terminal =
+            _document->collaborationService().takePreparedEdit(_session.sessionId(),
+                                                               executionId);
+        if (!terminal || terminal->status != App::PreparedEditExecutionStatus::Completed
+            || !terminal->preparedEdit) {
+            throw std::runtime_error(
+                terminal ? terminal->diagnostic : "detached Boolean did not complete");
+        }
+        return std::move(*terminal->preparedEdit);
+    }
+
+    void waitUntilTerminal(App::PreparedEditExecutionId executionId)
+    {
+        for (int attempt = 0; attempt < 5000; ++attempt) {
+            const auto status =
+                _document->collaborationService().preparedEditStatus(executionId);
+            if (status
+                && (status->status == App::PreparedEditExecutionStatus::Completed
+                    || status->status == App::PreparedEditExecutionStatus::Cancelled
+                    || status->status == App::PreparedEditExecutionStatus::Failed)) {
+                return;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        throw std::runtime_error("timed out waiting for detached Boolean preparation");
+    }
+
+    std::unique_ptr<const App::CollaborativeOperation>
+    materialize(App::CollaborativeOperationPreparation& preparation)
+    {
+        if (!preparation.isDetached()) {
+            throw std::runtime_error("Boolean adapter did not return detached work");
+        }
+        return preparation.detachedTask(std::stop_token {});
     }
 
     std::string _documentName;
@@ -201,18 +242,20 @@ TEST_F(CollaborativeBooleanOperationTest, rejectsResultToInputDependencyAtPrepar
     ASSERT_TRUE(_base->removeDynamicProperty("DependsOnResult"));
     _document->recompute();
     auto preparation = prepareAdapter("cut");
+    auto operation = materialize(preparation);
     auto* toolDependency = dynamic_cast<App::PropertyLink*>(
         _tool->addDynamicProperty("App::PropertyLink", "DependsOnResult"));
     ASSERT_NE(toolDependency, nullptr);
     toolDependency->setValue(_result);
 
-    EXPECT_THROW(preparation.operation->apply(*_document), std::runtime_error);
-    EXPECT_FALSE(preparation.operation->checkPostcondition(*_document).satisfied);
+    EXPECT_THROW(operation->apply(*_document), std::runtime_error);
+    EXPECT_FALSE(operation->checkPostcondition(*_document).satisfied);
 }
 
 TEST_F(CollaborativeBooleanOperationTest, applyRejectsStaleObjectIdentity)
 {
     auto preparation = prepareAdapter("cut");
+    auto operation = materialize(preparation);
     const auto originalIdentity = _document->collaborationObjectIdentity(*_base);
 
     _document->removeObject("Base");
@@ -220,26 +263,29 @@ TEST_F(CollaborativeBooleanOperationTest, applyRejectsStaleObjectIdentity)
     _base->Shape.setValue(BRepPrimAPI_MakeBox(2.0, 2.0, 2.0).Shape());
     ASSERT_NE(_document->collaborationObjectIdentity(*_base), originalIdentity);
 
-    EXPECT_THROW(preparation.operation->apply(*_document), std::runtime_error);
+    EXPECT_THROW(operation->apply(*_document), std::runtime_error);
 }
 
-TEST_F(CollaborativeBooleanOperationTest, applyRevalidatesLiveInputShapes)
+TEST_F(CollaborativeBooleanOperationTest, applyUsesCapturedShapeAfterLiveInputBecomesInvalid)
 {
     auto preparation = prepareAdapter("cut");
+    auto operation = materialize(preparation);
     _tool->Shape.setValue(TopoDS_Shape {});
 
-    EXPECT_THROW(preparation.operation->apply(*_document), std::runtime_error);
+    EXPECT_NO_THROW(operation->apply(*_document));
+    EXPECT_NEAR(volume(_result->Shape.getValue()), 4.0, 1e-7);
 }
 
-TEST_F(CollaborativeBooleanOperationTest, applyCalculatesFromCurrentValidInputShapes)
+TEST_F(CollaborativeBooleanOperationTest, applyDoesNotRecalculateFromCurrentInputShapes)
 {
     auto preparation = prepareAdapter("cut");
+    auto operation = materialize(preparation);
     _tool->Placement.setValue(
         Base::Placement(Base::Vector3d(3.0, 0.0, 0.0), Base::Rotation()));
 
-    preparation.operation->apply(*_document);
+    operation->apply(*_document);
 
-    EXPECT_NEAR(volume(_result->Shape.getValue()), 8.0, 1e-7);
+    EXPECT_NEAR(volume(_result->Shape.getValue()), 4.0, 1e-7);
 }
 
 TEST_F(CollaborativeBooleanOperationTest, preparedEditConflictsAfterInputModelMutation)
@@ -320,30 +366,35 @@ TEST_F(CollaborativeBooleanOperationTest,
         _document->collaborationRevisions().current(resultModel);
     const auto structureBefore =
         _document->collaborationRevisions().current(resultStructure);
-    auto prepared = prepareEdit("common");
+    auto intent = booleanIntent("common");
+    const auto executionId = _document->collaborationService().prepareEditAsync(
+        _session.sessionId(), "part-boolean-common", intent, "native-part-test");
+    waitUntilTerminal(executionId);
+    auto terminal =
+        _document->collaborationService().takePreparedEdit(_session.sessionId(), executionId);
 
-    const auto commit =
-        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
-
-    EXPECT_EQ(commit.status, App::DocumentCommitStatus::ApplyFailed);
+    ASSERT_TRUE(terminal.has_value());
+    EXPECT_EQ(terminal->status, App::PreparedEditExecutionStatus::Failed);
+    EXPECT_EQ(terminal->preparedEdit, nullptr);
     EXPECT_FALSE(_result->Shape.getValue().IsNull());
     EXPECT_NEAR(volume(_result->Shape.getValue()), 1.0, 1e-7);
     EXPECT_EQ(_document->collaborationRevisions().current(resultModel), modelBefore);
     EXPECT_EQ(_document->collaborationRevisions().current(resultStructure),
               structureBefore);
-    EXPECT_TRUE(commit.publishedRevisions.empty());
 }
 
 TEST_F(CollaborativeBooleanOperationTest, postconditionRejectsStaleOrInvalidResult)
 {
     auto invalidShape = prepareAdapter("cut");
-    invalidShape.operation->apply(*_document);
+    auto invalidOperation = materialize(invalidShape);
+    invalidOperation->apply(*_document);
     _result->Shape.setValue(TopoDS_Shape {});
-    EXPECT_FALSE(invalidShape.operation->checkPostcondition(*_document).satisfied);
+    EXPECT_FALSE(invalidOperation->checkPostcondition(*_document).satisfied);
 
     auto staleIdentity = prepareAdapter("fuse");
+    auto staleOperation = materialize(staleIdentity);
     _document->removeObject("Result");
     _result = _document->addObject<Part::Feature>("Result");
     _result->Shape.setValue(BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape());
-    EXPECT_FALSE(staleIdentity.operation->checkPostcondition(*_document).satisfied);
+    EXPECT_FALSE(staleOperation->checkPostcondition(*_document).satisfied);
 }

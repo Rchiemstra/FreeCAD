@@ -18,9 +18,11 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include <future>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -28,10 +30,58 @@
 
 using namespace App;
 
+namespace App::Internal
+{
+
+class DocumentCollaborationServiceTestAccess
+{
+public:
+    using Hook = void (*)();
+
+    static void setPostSubmitHook(Hook hook)
+    {
+        DocumentCollaborationService::_postSubmitTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPostTakeResultHook(Hook hook)
+    {
+        DocumentCollaborationService::_postTakeResultTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPostCancelSessionHook(Hook hook)
+    {
+        DocumentCollaborationService::_postCancelSessionTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPostLifecycleAdmissionHook(Hook hook)
+    {
+        DocumentCollaborationService::_postLifecycleAdmissionTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPostMarkClosingHook(Hook hook)
+    {
+        Application::_postMarkCollaborationClosingTestHook.store(
+            hook, std::memory_order_release);
+    }
+
+    static void setPostAccessDrainHook(Hook hook)
+    {
+        Application::_postCollaborationAccessDrainTestHook.store(
+            hook, std::memory_order_release);
+    }
+};
+
+}  // namespace App::Internal
+
 namespace
 {
 
 constexpr std::string_view TestOperationType = "App.Test.SetLabel";
+constexpr std::string_view DetachedTestOperationType = "App.Test.DetachedSetLabel";
 
 std::mutex InstrumentationMutex;
 std::vector<std::thread::id> ApplyThreads;
@@ -42,16 +92,18 @@ public:
     TestSetLabelOperation(std::string objectName,
                           std::string objectIdentity,
                           std::string value,
-                          std::string mode)
+                          std::string mode,
+                          std::string type = std::string(TestOperationType))
         : _objectName(std::move(objectName))
         , _objectIdentity(std::move(objectIdentity))
         , _value(std::move(value))
         , _mode(std::move(mode))
+        , _type(std::move(type))
     {}
 
     std::string_view typeId() const noexcept override
     {
-        return TestOperationType;
+        return _type;
     }
 
     void apply(Document& document) const override
@@ -173,6 +225,106 @@ private:
     const std::string _objectIdentity;
     const std::string _value;
     const std::string _mode;
+    const std::string _type;
+};
+
+class HookBarrier
+{
+public:
+    HookBarrier()
+    {
+        Active = this;
+    }
+
+    ~HookBarrier()
+    {
+        release();
+        Active = nullptr;
+    }
+
+    static void invoke()
+    {
+        std::unique_lock lock(Active->_mutex);
+        Active->_entered = true;
+        Active->_changed.notify_all();
+        Active->_changed.wait(lock, [] { return Active->_released; });
+    }
+
+    static void releaseActive()
+    {
+        if (Active) {
+            Active->release();
+        }
+    }
+
+    bool waitUntilEntered(std::chrono::milliseconds timeout = std::chrono::seconds(2))
+    {
+        std::unique_lock lock(_mutex);
+        return _changed.wait_for(lock, timeout, [&] { return _entered; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard lock(_mutex);
+            _released = true;
+        }
+        _changed.notify_all();
+    }
+
+private:
+    static inline HookBarrier* Active {nullptr};
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    bool _entered {false};
+    bool _released {false};
+};
+
+class CountedHookBarrier
+{
+public:
+    explicit CountedHookBarrier(std::size_t expected)
+        : _expected(expected)
+    {
+        Active = this;
+    }
+
+    ~CountedHookBarrier()
+    {
+        release();
+        Active = nullptr;
+    }
+
+    static void invoke()
+    {
+        std::unique_lock lock(Active->_mutex);
+        ++Active->_entered;
+        Active->_changed.notify_all();
+        Active->_changed.wait(lock, [] { return Active->_released; });
+    }
+
+    bool waitUntilExpected(std::chrono::milliseconds timeout = std::chrono::seconds(2))
+    {
+        std::unique_lock lock(_mutex);
+        return _changed.wait_for(lock, timeout, [&] { return _entered >= _expected; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard lock(_mutex);
+            _released = true;
+        }
+        _changed.notify_all();
+    }
+
+private:
+    static inline CountedHookBarrier* Active {nullptr};
+    const std::size_t _expected;
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    std::size_t _entered {0};
+    bool _released {false};
 };
 
 void ensureTestAdapterRegistered()
@@ -203,7 +355,44 @@ void ensureTestAdapterRegistered()
                     std::make_unique<const TestSetLabelOperation>(objectName,
                                                                   stableIdentity,
                                                                   value,
-                                                                  mode)};
+                                                                   mode)};
+            });
+        Internal::CollaborativeOperationRegistrar::registerAdapter(
+            std::string(DetachedTestOperationType),
+            [](const Document& document, const CollaborativeOperationIntent& intent) {
+                const auto objectName = intent.arguments.at("object");
+                const auto value = intent.arguments.at("value");
+                const auto* object = document.getObject(objectName.c_str());
+                if (!object) {
+                    throw std::invalid_argument("detached test target does not exist");
+                }
+                const std::string stableIdentity =
+                    document.collaborationObjectIdentity(*object);
+                const auto existence = DocumentRevisionKey::objectExistence(objectName);
+                const auto model = DocumentRevisionKey::objectModel(objectName);
+                const auto structure = DocumentRevisionKey::objectStructure(objectName);
+                CollaborativeOperationPreparation::DetachedTask task =
+                    [objectName,
+                     stableIdentity,
+                     value](std::stop_token stopToken) {
+                        if (stopToken.stop_requested()) {
+                            throw std::runtime_error("detached test operation cancelled");
+                        }
+                        return std::make_unique<const TestSetLabelOperation>(
+                            objectName,
+                            stableIdentity,
+                            value,
+                            std::string {},
+                            std::string(DetachedTestOperationType));
+                    };
+                return CollaborativeOperationPreparation {
+                    {existence,
+                     model,
+                     structure,
+                     DocumentRevisionKey::unknownModelMutation()},
+                    {model},
+                    {{model, stableIdentity}},
+                    std::move(task)};
             });
     });
 }
@@ -218,6 +407,14 @@ CollaborativeOperationIntent intent(std::string value,
     if (!mode.empty()) {
         result.arguments.emplace("mode", std::move(mode));
     }
+    return result;
+}
+
+CollaborativeOperationIntent detachedIntent(std::string value)
+{
+    CollaborativeOperationIntent result;
+    result.operationType = DetachedTestOperationType;
+    result.arguments = {{"object", "Target"}, {"value", std::move(value)}};
     return result;
 }
 
@@ -366,6 +563,25 @@ TEST_F(DocumentCollaborationServiceTest, sessionsAreAdvisoryAndCancellable)
     EXPECT_EQ(cancelled->cancellationReason(), std::optional<std::string>("done"));
 }
 
+TEST_F(DocumentCollaborationServiceTest, dirtyLiveDocumentKeepsStatusAndCancellationAvailable)
+{
+    const auto executionId = _document->collaborationService().prepareEditAsync(
+        _session.sessionId(),
+        "dirty-live-status",
+        detachedIntent("After"),
+        "native-detached-test");
+    _target->touch();
+
+    EXPECT_TRUE(_document->collaborationService()
+                    .sessionStatus(_session.sessionId())
+                    .has_value());
+    EXPECT_TRUE(_document->collaborationService()
+                    .preparedEditStatus(executionId)
+                    .has_value());
+    EXPECT_TRUE(_document->collaborationService().cancelEdit(
+        _session.sessionId(), "dirty document cancellation"));
+}
+
 TEST_F(DocumentCollaborationServiceTest, rejectsUnregisteredIntentBeforePreparation)
 {
     CollaborativeOperationIntent spoofed;
@@ -386,6 +602,242 @@ TEST_F(DocumentCollaborationServiceTest, snapshotIsCanonicalAndPointerFree)
     EXPECT_EQ(snapshot.documentInstanceId, _session.documentInstanceId());
     ASSERT_EQ(snapshot.revisions.size(), 2U);
     EXPECT_LT(snapshot.revisions[0].key, snapshot.revisions[1].key);
+}
+
+TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
+{
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(
+        &HookBarrier::invoke);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive);
+    BlockingTestDispatcher dispatcher;
+    auto preparationFuture = std::async(std::launch::async, [&] {
+        return _document->collaborationService().prepareEditAsync(
+            _session.sessionId(),
+            "registration-lifecycle-pin",
+            detachedIntent("After"),
+            "native-detached-test");
+    });
+    dispatcher.waitUntilQueued();
+
+    bool hookEntered = false;
+    bool closeResult = true;
+    std::thread closeThread([&] {
+        hookEntered = barrier.waitUntilEntered();
+        if (hookEntered) {
+            closeResult = App::GetApplication().closeDocument(_documentName.c_str());
+        }
+    });
+    dispatcher.runOne();
+    closeThread.join();
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+
+    EXPECT_TRUE(hookEntered);
+    EXPECT_TRUE(closeResult);
+    static_cast<void>(preparationFuture.get());
+    if (closeResult) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCallback)
+{
+    BlockingTestDispatcher dispatcher;
+    auto preparationFuture = std::async(std::launch::async, [&] {
+        return _document->collaborationService().prepareEditAsync(
+            _session.sessionId(),
+            "queued-dispatch-lifecycle-pin",
+            detachedIntent("After"),
+            "native-detached-test");
+    });
+    dispatcher.waitUntilQueued();
+
+    EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+
+    dispatcher.runOne();
+    const auto executionId = preparationFuture.get();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::optional<PreparedEditExecutionSnapshot> status;
+    do {
+        status = _document->collaborationService().preparedEditStatus(executionId);
+        if (status && status->status == PreparedEditExecutionStatus::Completed) {
+            break;
+        }
+        std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < deadline);
+    ASSERT_TRUE(status.has_value());
+    ASSERT_EQ(status->status, PreparedEditExecutionStatus::Completed);
+
+    auto result = _document->collaborationService().takePreparedEdit(
+        _session.sessionId(), executionId);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status, PreparedEditExecutionStatus::Completed);
+    EXPECT_NE(result->preparedEdit, nullptr);
+}
+
+TEST_F(DocumentCollaborationServiceTest, closeDrainsSessionCancellationGap)
+{
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostCancelSessionHook(
+        &HookBarrier::invoke);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive);
+    auto cancellation = std::async(std::launch::async, [&] {
+        return _document->collaborationService().cancelEdit(
+            _session.sessionId(), "cancel lifecycle gap");
+    });
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(cancellation.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostCancelSessionHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        return;
+    }
+
+    const bool closed = App::GetApplication().closeDocument(_documentName.c_str());
+    EXPECT_TRUE(cancellation.get());
+    Internal::DocumentCollaborationServiceTestAccess::setPostCancelSessionHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, closeDrainsResultCollectionGap)
+{
+    const auto executionId = _document->collaborationService().prepareEditAsync(
+        _session.sessionId(),
+        "collection-lifecycle-pin",
+        detachedIntent("After"),
+        "native-detached-test");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::optional<PreparedEditExecutionSnapshot> status;
+    do {
+        status = _document->collaborationService().preparedEditStatus(executionId);
+        if (status && status->status == PreparedEditExecutionStatus::Completed) {
+            break;
+        }
+        std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < deadline);
+    ASSERT_TRUE(status.has_value());
+    ASSERT_EQ(status->status, PreparedEditExecutionStatus::Completed);
+
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostTakeResultHook(
+        &HookBarrier::invoke);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive);
+    bool hookEntered = false;
+    bool closeResult = true;
+    std::thread closeThread([&] {
+        hookEntered = barrier.waitUntilEntered();
+        if (hookEntered) {
+            closeResult = App::GetApplication().closeDocument(_documentName.c_str());
+        }
+    });
+    auto result = _document->collaborationService().takePreparedEdit(
+        _session.sessionId(), executionId);
+    closeThread.join();
+    Internal::DocumentCollaborationServiceTestAccess::setPostTakeResultHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+
+    EXPECT_TRUE(hookEntered);
+    EXPECT_TRUE(closeResult);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status, PreparedEditExecutionStatus::Cancelled);
+    EXPECT_EQ(result->preparedEdit, nullptr);
+    if (closeResult) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, closeDrainsStatusAndCancellationAdmittedAfterClosing)
+{
+    HookBarrier closeAfterMarking;
+    CountedHookBarrier admittedCalls(2);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::invoke);
+
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    const bool closeMarked = closeAfterMarking.waitUntilEntered();
+
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &CountedHookBarrier::invoke);
+    auto status = std::async(std::launch::async, [&] {
+        return _document->collaborationService().sessionStatus(_session.sessionId());
+    });
+    auto cancellation = std::async(std::launch::async, [&] {
+        return _document->collaborationService().cancelEdit(
+            _session.sessionId(), "closing rejection");
+    });
+    const bool callsAdmitted = admittedCalls.waitUntilExpected();
+
+    admittedCalls.release();
+    closeAfterMarking.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+
+    EXPECT_TRUE(closeMarked);
+    EXPECT_TRUE(callsAdmitted);
+    ASSERT_EQ(status.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    ASSERT_EQ(cancellation.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    EXPECT_FALSE(status.get().has_value());
+    EXPECT_FALSE(cancellation.get());
+    ASSERT_EQ(close.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
+}
+
+TEST_F(DocumentCollaborationServiceTest, callsStartedAfterSealRejectWithoutTouchingDocument)
+{
+    auto* service = &_document->collaborationService();
+    HookBarrier afterDrain;
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(
+        &HookBarrier::invoke);
+    auto close = std::async(std::launch::async, [&] {
+        return App::GetApplication().closeDocument(_documentName.c_str());
+    });
+    const bool drained = afterDrain.waitUntilEntered();
+
+    auto status = std::async(std::launch::async, [&] {
+        return service->sessionStatus(_session.sessionId());
+    });
+    auto cancellation = std::async(std::launch::async, [&] {
+        return service->cancelEdit(_session.sessionId(), "sealed rejection");
+    });
+
+    const bool statusReady =
+        status.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    const bool cancellationReady =
+        cancellation.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    afterDrain.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostAccessDrainHook(nullptr);
+
+    EXPECT_TRUE(drained);
+    EXPECT_TRUE(statusReady);
+    EXPECT_TRUE(cancellationReady);
+    if (statusReady) {
+        EXPECT_FALSE(status.get().has_value());
+    }
+    if (cancellationReady) {
+        EXPECT_FALSE(cancellation.get());
+    }
+    ASSERT_EQ(close.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    const bool closed = close.get();
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _document = nullptr;
+    }
 }
 
 TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandleAndStructuredResults)
@@ -849,6 +1301,8 @@ TEST_F(DocumentCollaborationServiceTest, clearDocumentRejectsBeforeSignalsOrObje
     EXPECT_EQ(_document->getObjects().size(), 1U);
     EXPECT_EQ(applicationDeleted, 0);
     EXPECT_EQ(applicationCreated, 0);
+    deletedConnection.disconnect();
+    createdConnection.disconnect();
 }
 
 TEST_F(DocumentCollaborationServiceTest, recomputeFailureRestoresPreparedMutation)
@@ -906,7 +1360,8 @@ TEST_F(DocumentCollaborationServiceTest, reentrantObserverCommitReturnsBusy)
         _document->collaborationService().commitEdit(_session.sessionId(), outer);
     EXPECT_TRUE(outerResult.committed());
     ASSERT_TRUE(nestedResult.has_value());
-    EXPECT_EQ(nestedResult->status, DocumentCommitStatus::Busy);
+    EXPECT_EQ(nestedResult->status, DocumentCommitStatus::Busy)
+        << nestedResult->message;
     EXPECT_EQ(_target->Label.getStrValue(), "Outer");
 }
 

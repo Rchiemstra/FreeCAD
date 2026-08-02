@@ -26,6 +26,21 @@ struct AppExport PreparedEditCanonicalContract
 };
 
 /**
+ * Validate and canonicalize the pointer-free metadata captured before a
+ * detached operation is submitted to the executor.
+ */
+[[nodiscard]] AppExport PreparedEditCanonicalContract validatePreparedEditMetadata(
+    std::string_view operationId,
+    DocumentInstanceId documentInstanceId,
+    DocumentLifecycleEpoch lifecycleEpoch,
+    std::string_view operationType,
+    std::vector<DocumentRevisionObservation> expectedRevisions,
+    std::vector<DocumentRevisionKey> readSet,
+    std::vector<DocumentRevisionKey> writeSet,
+    std::vector<DocumentRevisionPublicationRequest> publicationEffects,
+    std::string_view provenance);
+
+/**
  * Validate the immutable portion of a proposed prepared edit and return its
  * dependency and publication fields in deterministic key order.
  *
