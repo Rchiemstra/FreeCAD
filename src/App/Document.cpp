@@ -226,6 +226,75 @@ bool Document::collaborationRevisionPublicationSuppressed(const Property* proper
         || collaborationRevisionPublicationSuppressed(property->getContainer());
 }
 
+void Document::beginCollaborationAtomicPresentationAudit(
+    std::vector<CollaborationAtomicPresentationWrite> allowedWrites)
+{
+    if (d->collaborationAtomicPresentationAuditActive) {
+        throw Base::RuntimeError("atomic presentation mutation audit is already active");
+    }
+    std::sort(allowedWrites.begin(), allowedWrites.end());
+    allowedWrites.erase(std::unique(allowedWrites.begin(), allowedWrites.end()),
+                        allowedWrites.end());
+    d->collaborationAtomicPresentationAllowedWrites = std::move(allowedWrites);
+    d->collaborationAtomicPresentationAuditViolated = false;
+    d->collaborationAtomicPresentationAuditActive = true;
+    try {
+        beginAtomicPresentationMutationTarget(*this);
+    }
+    catch (...) {
+        d->collaborationAtomicPresentationAuditActive = false;
+        d->collaborationAtomicPresentationAllowedWrites.clear();
+        throw;
+    }
+}
+
+void Document::recordCollaborationAtomicPresentationEffects(
+    const std::vector<DocumentRevisionPublicationRequest>& effects,
+    const Property* property) noexcept
+{
+    if (!d->collaborationAtomicPresentationAuditActive) {
+        return;
+    }
+    if (!effects.empty() || !property) {
+        d->collaborationAtomicPresentationAuditViolated = true;
+        return;
+    }
+
+    try {
+        const auto* object = dynamic_cast<const DocumentObject*>(property->getContainer());
+        const char* propertyName = property->getName();
+        if (!object || object->getDocument() != this || !containsObject(object)
+            || !propertyName || *propertyName == '\0') {
+            d->collaborationAtomicPresentationAuditViolated = true;
+            return;
+        }
+        const CollaborationAtomicPresentationWrite observed {
+            collaborationObjectIdentity(*object), propertyName};
+        if (!std::binary_search(d->collaborationAtomicPresentationAllowedWrites.begin(),
+                                d->collaborationAtomicPresentationAllowedWrites.end(),
+                                observed)) {
+            d->collaborationAtomicPresentationAuditViolated = true;
+        }
+    }
+    catch (...) {
+        d->collaborationAtomicPresentationAuditViolated = true;
+    }
+}
+
+bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
+{
+    return d->collaborationAtomicPresentationAuditActive
+        && d->collaborationAtomicPresentationAuditViolated;
+}
+
+void Document::endCollaborationAtomicPresentationAudit() noexcept
+{
+    endAtomicPresentationMutationTarget(*this);
+    d->collaborationAtomicPresentationAuditActive = false;
+    d->collaborationAtomicPresentationAuditViolated = false;
+    d->collaborationAtomicPresentationAllowedWrites.clear();
+}
+
 std::string Document::collaborationObjectIdentity(const DocumentObject& object) const
 {
     const auto found = d->collaborationObjectIdentities.find(&object);
@@ -237,9 +306,6 @@ std::string Document::collaborationObjectIdentity(const DocumentObject& object) 
 
 void Document::publishCollaborationMutation(const PropertyContainer& container, bool structural)
 {
-    if (collaborationRevisionPublicationSuppressed(&container)) {
-        return;
-    }
     std::vector<DocumentRevisionPublicationRequest> changes {
         {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
     };
@@ -253,6 +319,10 @@ void Document::publishCollaborationMutation(const PropertyContainer& container, 
     }
     else if (structural) {
         changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    }
+    recordCollaborationAtomicPresentationEffects(changes);
+    if (collaborationRevisionPublicationSuppressed(&container)) {
+        return;
     }
     static_cast<void>(d->collaborationRevisions.publish(changes));
 }
@@ -331,9 +401,12 @@ void Document::poisonCollaborationCommit(const char* diagnostic) noexcept
 
 void Document::ensureCollaborationStructuralMutationAllowed() const
 {
-    if (d->collaborationCommitNotificationBarrier && !d->rollback) {
+    enforceAtomicPresentationMutationTarget(*this);
+    if ((d->collaborationCommitNotificationBarrier
+         || collaborationLifecycleMutationBlocked())
+        && !d->rollback) {
         throw Base::RuntimeError(
-            "object and dynamic-property structure changes are unsupported in Phase 2 prepared edits");
+            "object and dynamic-property structure changes are unavailable across a collaboration stable boundary");
     }
 }
 
@@ -1584,6 +1657,11 @@ void Document::onChanged(const Property* prop)
 
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
+    // ViewProvider properties reach the owning App document here even though
+    // their PropertyContainer is a GUI type.  Enforce before transaction
+    // capture or the property's value change so a foreign document cannot
+    // escape an atomic presentation rollback boundary.
+    enforceAtomicPresentationMutationTarget(*this);
     if (Who->isDerivedFrom<DocumentObject>()) {
         if (d->collaborationCommitNotificationBarrier) {
             d->collaborationDeferredNotifications.push_back(
@@ -4209,6 +4287,7 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
             CollaborationContainerKind::DocumentObject,
             ObjectName,
             stableObjectIdentityString,
+            {},
         })));
     };
     d->collaborationObjectIdentities.emplace(pcObject, stableObjectIdentity);
@@ -4397,6 +4476,7 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
             CollaborationContainerKind::DocumentObject,
             removedObjectName,
             removedObjectIdentity,
+            {},
         })));
     };
 

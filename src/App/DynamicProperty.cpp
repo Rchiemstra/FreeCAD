@@ -72,7 +72,7 @@ void enforceStructuralPropertyMutation(PropertyContainer& container, const char*
 void publishStructuralPropertyMutation(PropertyContainer& container)
 {
     auto* document = documentFromPropertyContainer(&container);
-    if (!document || document->collaborationRevisionPublicationSuppressed(&container)) {
+    if (!document) {
         return;
     }
 
@@ -83,8 +83,16 @@ void publishStructuralPropertyMutation(PropertyContainer& container)
         CollaborationContainerKind::Unknown,
         {},
         std::nullopt,
+        {},
     };
     if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
+        // A removed object retained by undo still remembers its former
+        // Document.  Its detached schema is not part of the live document and
+        // must not publish a structural revision under a missing object name.
+        if (!object->isAttachedToDocument() || object->getDocument() != document
+            || !document->containsObject(object)) {
+            return;
+        }
         input.containerKind = CollaborationContainerKind::DocumentObject;
         input.objectName = object->getNameInDocument();
         input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
@@ -92,7 +100,12 @@ void publishStructuralPropertyMutation(PropertyContainer& container)
     else if (dynamic_cast<const Document*>(&container)) {
         input.containerKind = CollaborationContainerKind::Document;
     }
-    static_cast<void>(document->collaborationRevisions().publish(classifyMutation(input)));
+    const auto effects = classifyMutation(input);
+    document->recordCollaborationAtomicPresentationEffects(effects);
+    if (document->collaborationRevisionPublicationSuppressed(&container)) {
+        return;
+    }
+    static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 }  // namespace
 

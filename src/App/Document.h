@@ -53,6 +53,11 @@ namespace Base
 class Writer;
 }
 
+namespace Gui
+{
+class Document;
+}
+
 namespace App
 {
 enum class AddObjectOption
@@ -93,6 +98,8 @@ class DocumentCommitCoordinator;
 class DocumentCollaborationService;
 class StringHasher;
 class DocumentRevisionIndex;
+struct CollaborationAtomicPresentationWrite;
+struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
 struct RecoverySnapshotSaveOptions;
 AppExport bool writeRecoverySnapshotToTransientDir(
@@ -471,6 +478,13 @@ public:
     bool collaborationRevisionPublicationSuppressed() const;
     bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
     bool collaborationRevisionPublicationSuppressed(const Property* property) const;
+    void beginCollaborationAtomicPresentationAudit(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites);
+    void recordCollaborationAtomicPresentationEffects(
+        const std::vector<DocumentRevisionPublicationRequest>& effects,
+        const Property* property = nullptr) noexcept;
+    [[nodiscard]] bool collaborationAtomicPresentationAuditViolated() const noexcept;
+    void endCollaborationAtomicPresentationAudit() noexcept;
     std::string collaborationObjectIdentity(const DocumentObject& object) const;
     void publishCollaborationMutation(const PropertyContainer& container, bool structural);
     bool collaborationPreparationSupported() const;
@@ -1337,6 +1351,7 @@ public:
     friend class TransactionDocumentObject;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class Gui::Document;
     friend class Internal::DocumentCollaborationConcurrencyTestAccess;
 
     ~Document() override;

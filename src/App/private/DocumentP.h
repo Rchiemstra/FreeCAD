@@ -144,6 +144,10 @@ struct DocumentP
     bool collaborationTransactionControlGranted {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
+    bool collaborationAtomicPresentationAuditActive {false};
+    bool collaborationAtomicPresentationAuditViolated {false};
+    std::vector<CollaborationAtomicPresentationWrite>
+        collaborationAtomicPresentationAllowedWrites;
     std::atomic<unsigned int> collaborationLifecycleMutationBlockDepth {0};
     std::recursive_mutex collaborationCommitMutex;
     std::thread::id collaborationOwnerThread {std::this_thread::get_id()};

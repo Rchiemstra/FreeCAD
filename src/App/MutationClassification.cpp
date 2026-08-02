@@ -75,8 +75,19 @@ App::MutationRevisionEffects App::classifyMutation(const MutationClassificationI
             }
             switch (input.propertyFamily) {
                 case CollaborationPropertyFamily::ModelValue:
+                    if (input.propertyName.empty()) {
+                        return unknownMutation();
+                    }
+                    // App::DocumentObject::Visibility is deliberately shared
+                    // presentation state. Gui publishes its provider revision;
+                    // it must not enter the App model revision stream.
+                    if (input.propertyName == "Visibility") {
+                        return {};
+                    }
                     return canonicalEffects(
-                        {objectEffect(DocumentRevisionKey::objectModel(input.objectName), input)});
+                        {objectEffect(DocumentRevisionKey::objectProperty(
+                                          input.objectName, input.propertyName),
+                                      input)});
                 case CollaborationPropertyFamily::Link:
                     return canonicalEffects({
                         objectEffect(DocumentRevisionKey::objectStructure(input.objectName), input),

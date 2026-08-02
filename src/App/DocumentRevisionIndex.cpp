@@ -16,19 +16,12 @@ namespace
 using KeySet =
     std::unordered_set<App::DocumentRevisionKey, App::DocumentRevisionKeyHash>;
 
-void validateKey(const App::DocumentRevisionKey& key)
-{
-    if (!key.valid()) {
-        throw std::invalid_argument("invalid document revision key scope");
-    }
-}
-
 bool isContinuationByte(unsigned char byte) noexcept
 {
     return (byte & 0xc0U) == 0x80U;
 }
 
-void validateUtf8(std::string_view value)
+bool isValidUtf8(std::string_view value) noexcept
 {
     for (std::size_t index = 0; index < value.size();) {
         const auto first = static_cast<unsigned char>(value[index]);
@@ -40,7 +33,7 @@ void validateUtf8(std::string_view value)
         if (first >= 0xc2U && first <= 0xdfU) {
             if (index + 1 >= value.size()
                 || !isContinuationByte(static_cast<unsigned char>(value[index + 1]))) {
-                throw std::invalid_argument("JSON string is not valid UTF-8");
+                return false;
             }
             index += 2;
             continue;
@@ -48,7 +41,7 @@ void validateUtf8(std::string_view value)
 
         if (first >= 0xe0U && first <= 0xefU) {
             if (index + 2 >= value.size()) {
-                throw std::invalid_argument("JSON string is not valid UTF-8");
+                return false;
             }
             const auto second = static_cast<unsigned char>(value[index + 1]);
             const auto third = static_cast<unsigned char>(value[index + 2]);
@@ -58,7 +51,7 @@ void validateUtf8(std::string_view value)
                 || ((first >= 0xe1U && first <= 0xecU) && isContinuationByte(second))
                 || ((first >= 0xeeU && first <= 0xefU) && isContinuationByte(second));
             if (!validSecond || !isContinuationByte(third)) {
-                throw std::invalid_argument("JSON string is not valid UTF-8");
+                return false;
             }
             index += 3;
             continue;
@@ -66,7 +59,7 @@ void validateUtf8(std::string_view value)
 
         if (first >= 0xf0U && first <= 0xf4U) {
             if (index + 3 >= value.size()) {
-                throw std::invalid_argument("JSON string is not valid UTF-8");
+                return false;
             }
             const auto second = static_cast<unsigned char>(value[index + 1]);
             const auto third = static_cast<unsigned char>(value[index + 2]);
@@ -76,13 +69,28 @@ void validateUtf8(std::string_view value)
                 || (first == 0xf4U && second >= 0x80U && second <= 0x8fU)
                 || ((first >= 0xf1U && first <= 0xf3U) && isContinuationByte(second));
             if (!validSecond || !isContinuationByte(third) || !isContinuationByte(fourth)) {
-                throw std::invalid_argument("JSON string is not valid UTF-8");
+                return false;
             }
             index += 4;
             continue;
         }
 
+        return false;
+    }
+    return true;
+}
+
+void validateUtf8(std::string_view value)
+{
+    if (!isValidUtf8(value)) {
         throw std::invalid_argument("JSON string is not valid UTF-8");
+    }
+}
+
+void validateKey(const App::DocumentRevisionKey& key)
+{
+    if (!key.valid()) {
+        throw std::invalid_argument("invalid document revision key scope or encoding");
     }
 }
 
@@ -90,7 +98,8 @@ bool isObjectScoped(App::DocumentRevisionKind kind) noexcept
 {
     return kind == App::DocumentRevisionKind::ObjectExistence
         || kind == App::DocumentRevisionKind::ObjectModel
-        || kind == App::DocumentRevisionKind::ObjectStructure;
+        || kind == App::DocumentRevisionKind::ObjectStructure
+        || kind == App::DocumentRevisionKind::ObjectProperty;
 }
 
 std::vector<App::DocumentRevisionKey>
@@ -122,9 +131,23 @@ std::vector<App::DocumentRevisionPublicationRequest> distinctPublicationRequests
     IdentityByKey identities;
     identities.reserve(changes.size());
 
+    const auto addCanonicalRequest = [&result, &identities](
+                                         const App::DocumentRevisionPublicationRequest& change) {
+        auto [identity, inserted] =
+            identities.emplace(change.key, change.stableObjectIdentity);
+        if (!inserted && identity->second != change.stableObjectIdentity) {
+            throw std::invalid_argument(
+                "duplicate revision keys cannot carry inconsistent object identities");
+        }
+        if (inserted) {
+            result.push_back(change);
+        }
+    };
+
     for (const auto& change : changes) {
         validateKey(change.key);
         validateUtf8(change.key.subject);
+        validateUtf8(change.key.propertyName);
         if (isObjectScoped(change.key.kind)) {
             if (!change.stableObjectIdentity || change.stableObjectIdentity->empty()) {
                 throw std::invalid_argument(
@@ -139,14 +162,11 @@ std::vector<App::DocumentRevisionPublicationRequest> distinctPublicationRequests
             validateUtf8(*change.stableObjectIdentity);
         }
 
-        auto [identity, inserted] =
-            identities.emplace(change.key, change.stableObjectIdentity);
-        if (!inserted && identity->second != change.stableObjectIdentity) {
-            throw std::invalid_argument(
-                "duplicate revision keys cannot carry inconsistent object identities");
-        }
-        if (inserted) {
-            result.push_back(change);
+        addCanonicalRequest(change);
+        if (change.key.kind == App::DocumentRevisionKind::ObjectProperty) {
+            addCanonicalRequest(
+                {App::DocumentRevisionKey::objectModel(change.key.subject),
+                 change.stableObjectIdentity});
         }
     }
     return result;
@@ -165,6 +185,8 @@ std::string_view revisionKindName(App::DocumentRevisionKind kind) noexcept
             return "DocumentStructure";
         case App::DocumentRevisionKind::UnknownModelMutation:
             return "UnknownModelMutation";
+        case App::DocumentRevisionKind::ObjectProperty:
+            return "ObjectProperty";
     }
     return "Invalid";
 }
@@ -246,6 +268,13 @@ DocumentRevisionKey DocumentRevisionKey::objectStructure(std::string subject)
     return {DocumentRevisionKind::ObjectStructure, std::move(subject)};
 }
 
+DocumentRevisionKey DocumentRevisionKey::objectProperty(std::string subject,
+                                                        std::string propertyName)
+{
+    return {
+        DocumentRevisionKind::ObjectProperty, std::move(subject), std::move(propertyName)};
+}
+
 DocumentRevisionKey DocumentRevisionKey::documentStructure()
 {
     return {DocumentRevisionKind::DocumentStructure, {}};
@@ -262,10 +291,13 @@ bool DocumentRevisionKey::valid() const noexcept
         case DocumentRevisionKind::ObjectExistence:
         case DocumentRevisionKind::ObjectModel:
         case DocumentRevisionKind::ObjectStructure:
-            return !subject.empty();
+            return !subject.empty() && propertyName.empty();
+        case DocumentRevisionKind::ObjectProperty:
+            return !subject.empty() && !propertyName.empty() && isValidUtf8(subject)
+                && isValidUtf8(propertyName);
         case DocumentRevisionKind::DocumentStructure:
         case DocumentRevisionKind::UnknownModelMutation:
-            return subject.empty();
+            return subject.empty() && propertyName.empty();
     }
     return false;
 }
@@ -274,7 +306,11 @@ std::size_t DocumentRevisionKeyHash::operator()(const DocumentRevisionKey& key) 
 {
     const auto kindHash = std::hash<DocumentRevisionKind> {}(key.kind);
     const auto subjectHash = std::hash<std::string> {}(key.subject);
-    return kindHash ^ (subjectHash + 0x9e3779b9U + (kindHash << 6U) + (kindHash >> 2U));
+    const auto propertyHash = std::hash<std::string> {}(key.propertyName);
+    const auto subjectCombined =
+        kindHash ^ (subjectHash + 0x9e3779b9U + (kindHash << 6U) + (kindHash >> 2U));
+    return subjectCombined
+        ^ (propertyHash + 0x9e3779b9U + (subjectCombined << 6U) + (subjectCombined >> 2U));
 }
 
 DocumentRevisionObservation::DocumentRevisionObservation(DocumentRevisionKey key,
@@ -305,10 +341,15 @@ std::string DocumentRevisionPublicationEvent::toJson() const
             output.push_back(',');
         }
         const auto& change = changes[index];
+        validateKey(change.key);
         output += "{\"kind\":";
         appendJsonString(output, revisionKindName(change.key.kind));
         output += ",\"subject\":";
         appendJsonString(output, change.key.subject);
+        if (change.key.kind == DocumentRevisionKind::ObjectProperty) {
+            output += ",\"property_name\":";
+            appendJsonString(output, change.key.propertyName);
+        }
         output += ",\"revision\":";
         output += std::to_string(change.revision);
         output += ",\"stable_object_identity\":";
@@ -478,6 +519,11 @@ DocumentRevisionIndex::publish(const std::vector<DocumentRevisionPublicationRequ
 {
     auto reservation = reservePublication({}, changes);
     return reservation.commit();
+}
+
+std::vector<DocumentRevisionObservation> DocumentRevisionIndex::publishEmpty()
+{
+    return publish(std::vector<DocumentRevisionPublicationRequest> {});
 }
 
 DocumentRevisionPublicationReservation DocumentRevisionIndex::reservePublication(

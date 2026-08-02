@@ -18,7 +18,8 @@ bool isObjectScoped(App::DocumentRevisionKind kind) noexcept
 {
     return kind == App::DocumentRevisionKind::ObjectExistence
         || kind == App::DocumentRevisionKind::ObjectModel
-        || kind == App::DocumentRevisionKind::ObjectStructure;
+        || kind == App::DocumentRevisionKind::ObjectStructure
+        || kind == App::DocumentRevisionKind::ObjectProperty;
 }
 
 void validateAndSortKeySet(std::vector<App::DocumentRevisionKey>& keys, const char* name)

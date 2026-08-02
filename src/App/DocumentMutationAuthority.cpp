@@ -15,6 +15,13 @@
 
 using namespace App;
 
+namespace
+{
+
+thread_local const Document* atomicPresentationMutationTarget = nullptr;
+
+}  // namespace
+
 DocumentMutationAuthority& DocumentMutationAuthority::instance()
 {
     static DocumentMutationAuthority auth;
@@ -368,6 +375,31 @@ Document* App::documentFromPropertyContainer(const PropertyContainer* container)
     return nullptr;
 }
 
+void App::beginAtomicPresentationMutationTarget(Document& document)
+{
+    if (atomicPresentationMutationTarget) {
+        throw Base::RuntimeError(
+            "an atomic presentation mutation target is already active on this thread");
+    }
+    atomicPresentationMutationTarget = &document;
+}
+
+void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
+{
+    if (atomicPresentationMutationTarget == &document) {
+        atomicPresentationMutationTarget = nullptr;
+    }
+}
+
+void App::enforceAtomicPresentationMutationTarget(const Document& document)
+{
+    if (atomicPresentationMutationTarget
+        && atomicPresentationMutationTarget != &document) {
+        throw Base::RuntimeError(
+            "cross-document mutation is unavailable during an atomic presentation callback");
+    }
+}
+
 void App::enforceDocumentMutation(Document* document,
                                   MutationKind kind,
                                   MutationOrigin origin,
@@ -377,6 +409,7 @@ void App::enforceDocumentMutation(Document* document,
     if (!document) {
         return;
     }
+    enforceAtomicPresentationMutationTarget(*document);
     MutationContext context;
     context.kind = kind;
     context.origin = origin;

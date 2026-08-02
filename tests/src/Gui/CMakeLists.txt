@@ -8,8 +8,11 @@ add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
         CollaborationCompatibilityAdapter.cpp
+        CollaborationDomainIntegration.cpp
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
+        PersonalViewContext.cpp
+        SharedPresentationCoordinator.cpp
         DocumentRecovery.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp

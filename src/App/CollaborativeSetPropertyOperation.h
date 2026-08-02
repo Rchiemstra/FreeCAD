@@ -8,7 +8,30 @@
 namespace App
 {
 
-/** The registered intent type for conservative native scalar property edits. */
+namespace Internal
+{
+
+struct CollaborativeSetPropertyIndependenceFacts
+{
+    bool exactBaseObject = false;
+    bool exactDynamicProperty = false;
+    bool hasExtensions = true;
+    bool hasExpressions = true;
+    bool noRecompute = false;
+    bool hasReverseDependents = true;
+};
+
+[[nodiscard]] constexpr bool hasCollaborativeSetPropertyIndependenceProof(
+    const CollaborativeSetPropertyIndependenceFacts& facts) noexcept
+{
+    return facts.exactBaseObject && facts.exactDynamicProperty
+        && !facts.hasExtensions && !facts.hasExpressions && facts.noRecompute
+        && !facts.hasReverseDependents;
+}
+
+}  // namespace Internal
+
+/** The registered intent type for native scalar property edits. */
 inline constexpr std::string_view CollaborativeSetPropertyOperationType =
     "App.CollaborativeSetProperty";
 
@@ -17,7 +40,8 @@ inline constexpr std::string_view CollaborativeSetPropertyOperationType =
  *
  * Registration remains an App-native extension boundary: this function uses
  * the private registrar internally and does not expose arbitrary adapter
- * registration to its caller.
+ * registration to its caller. The adapter remains object-conservative unless
+ * it can prove that an exact native DocumentObject property write is isolated.
  */
 AppExport void ensureCollaborativeSetPropertyOperationRegistered();
 

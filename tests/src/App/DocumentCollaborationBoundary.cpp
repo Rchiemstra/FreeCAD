@@ -951,13 +951,19 @@ TEST_F(DocumentCollaborationBoundaryTest, classifiedPropertyPostChangeUsesTypedR
     const auto& event = publications.events.front();
     EXPECT_EQ(event.documentInstanceId, identity->instanceId);
     EXPECT_EQ(event.lifecycleEpoch, identity->lifecycleEpoch);
-    ASSERT_EQ(event.changes.size(), 1U);
+    ASSERT_EQ(event.changes.size(), 2U);
     const std::string expectedStableIdentity = document()->collaborationObjectIdentity(*object);
     const auto objectChange = std::ranges::find_if(event.changes, [](const auto& change) {
         return change.key.kind == App::DocumentRevisionKind::ObjectModel;
     });
     ASSERT_NE(objectChange, event.changes.end());
     EXPECT_EQ(objectChange->stableObjectIdentity, expectedStableIdentity);
+    const auto propertyChange = std::ranges::find_if(event.changes, [](const auto& change) {
+        return change.key
+            == App::DocumentRevisionKey::objectProperty("PropertyIngress", "Label");
+    });
+    ASSERT_NE(propertyChange, event.changes.end());
+    EXPECT_EQ(propertyChange->stableObjectIdentity, expectedStableIdentity);
     const auto serializedEvent = event.toJson();
     EXPECT_EQ(serializedEvent.find("pointer"), std::string::npos);
     EXPECT_EQ(serializedEvent.find("0x"), std::string::npos);
@@ -1073,6 +1079,8 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRetainedRemovedObjectWritesDoNotPu
     const auto before = captureFor(objectName);
     EXPECT_NO_THROW(object->Label.setValue("Detached mutation"));
     EXPECT_STREQ(object->Label.getValue(), "Detached mutation");
+    EXPECT_NE(object->addDynamicProperty("App::PropertyString", "DetachedSchema"), nullptr);
+    EXPECT_TRUE(object->removeDynamicProperty("DetachedSchema"));
     EXPECT_EQ(revisions().capture(dependencyKeysFor(objectName)), before);
 }
 

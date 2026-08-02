@@ -24,7 +24,7 @@ enum class CollaborationMutationSource
     Unknown
 };
 
-/** A deliberately coarse property family; property-level keys do not exist before Phase 6. */
+/** A deliberately coarse property family used to reject unsupported value semantics. */
 enum class CollaborationPropertyFamily
 {
     NotApplicable,
@@ -56,12 +56,14 @@ struct AppExport MutationClassificationInput
     CollaborationContainerKind containerKind {CollaborationContainerKind::Unknown};
     std::string objectName;
     std::optional<std::string> stableObjectIdentity;
+    /** Separate scalar; never concatenate it with objectName. */
+    std::string propertyName;
 };
 
 using MutationRevisionEffects = std::vector<DocumentRevisionPublicationRequest>;
 
 /**
- * Return the smallest Phase 1 revision-effect set proven by the supplied mutation site.
+ * Return the smallest revision-effect set proven by the supplied mutation site.
  *
  * An unrecognized or internally inconsistent description always returns the document wildcard.
  * This function is deterministic and has no document mutation, locking, or publication effects.

@@ -1085,6 +1085,33 @@ DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallbac
         });
 }
 
+DocumentCommitResult DocumentCollaborationService::serializeAtomicCompatibilityCallback(
+    std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+    CollaborationAtomicCompatibilityCallback callback)
+{
+    const std::string operationId = "atomic-gui-compatibility";
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::StaleDocument,
+            operationId,
+            "document close has sealed atomic compatibility access");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            operationId,
+            "off-owner atomic compatibility requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<DocumentCommitResult>(
+        [this,
+         allowedWrites = std::move(allowedWrites),
+         callback = std::move(callback)]() mutable {
+            return serializeAtomicCompatibilityCallbackOnDocumentThread(
+                std::move(allowedWrites), std::move(callback));
+        });
+}
+
 DocumentCommitResult
 DocumentCollaborationService::serializeCompatibilityCallbackOnDocumentThread(
     CollaborationCompatibilityCallback callback)
@@ -1137,4 +1164,286 @@ DocumentCollaborationService::serializeCompatibilityCallbackOnDocumentThread(
     return rejectedCompatibilityCommit(DocumentCommitStatus::Committed,
                                        operationId,
                                        "compatibility callback serialized without model revision");
+}
+
+DocumentCommitResult
+DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThread(
+    std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+    CollaborationAtomicCompatibilityCallback callback)
+{
+    const std::string operationId = "atomic-gui-compatibility";
+    if (!_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            operationId,
+            "atomic compatibility was not dispatched to the document owner thread");
+    }
+    if (!callback) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                           operationId,
+                                           "atomic compatibility callback is required");
+    }
+
+    std::lock_guard lock(_document.collaborationCommitMutex());
+    if (_document.collaborationIdentity().state != DocumentLifecycleState::Live) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::StaleDocument,
+                                           operationId,
+                                           "atomic compatibility targets a non-live document");
+    }
+    if (_document.collaborationNotificationsReplaying()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Busy,
+            operationId,
+            "a committed collaboration boundary is notifying observers");
+    }
+    if (_document.collaborationCommitPoisoned()) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::RollbackFailed,
+                                           operationId,
+                                           _document.collaborationCommitPoisonDiagnostic());
+    }
+    if (_document.hasPendingTransaction() || _document.transacting()
+        || _document.getBookedTransactionID() != 0 || _document.isTransactionLocked()) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::Busy,
+                                           operationId,
+                                           "document already has a native transaction in progress");
+    }
+    if (_document.mustExecute()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Busy,
+            operationId,
+            "document has pending recompute work outside atomic compatibility");
+    }
+
+    try {
+        _atomicCompatibilityObjectFingerprint.clear();
+        const auto objects = _document.getObjects();
+        _atomicCompatibilityObjectFingerprint.reserve(objects.size());
+        for (const auto* object : objects) {
+            if (object && object->getNameInDocument()) {
+                _atomicCompatibilityObjectFingerprint.emplace_back(
+                    object->getNameInDocument(),
+                    _document.collaborationObjectIdentity(*object));
+            }
+        }
+        std::ranges::sort(_atomicCompatibilityObjectFingerprint);
+        _document.beginCollaborationCommitNotificationBarrier();
+    }
+    catch (const Base::Exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("starting atomic compatibility failed: ") + exception.what());
+    }
+    catch (const std::exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("starting atomic compatibility failed: ") + exception.what());
+    }
+
+    const bool priorSuppression = _document.collaborationRevisionPublicationSuppressed();
+    _document.setCollaborationRevisionPublicationSuppressed(true);
+    bool cleanupRequired = true;
+    const auto clearAtomicState = [this]() noexcept {
+        _document.endCollaborationAtomicPresentationAudit();
+        _atomicCompatibilityActive = false;
+        _atomicCompatibilityCommitInvoked = false;
+        _atomicCompatibilityCommitted = false;
+        _atomicCompatibilityOwner = {};
+        _atomicCompatibilityObjectFingerprint.clear();
+    };
+    const auto emergencyCleanup = [this, priorSuppression, &clearAtomicState](
+                                      bool* required) noexcept {
+        if (!*required) {
+            return;
+        }
+        const bool committed = _atomicCompatibilityCommitted;
+        if (!committed) {
+            const auto rollback = _document.rollbackCollaborationTransaction();
+            if (!rollback.restored) {
+                _document.poisonCollaborationCommit(rollback.diagnostic.data());
+            }
+        }
+        clearAtomicState();
+        _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
+        _document.finishCollaborationCommitNotificationBarrier(committed);
+    };
+    std::unique_ptr<bool, decltype(emergencyCleanup)> cleanupGuard(&cleanupRequired,
+                                                                  emergencyCleanup);
+
+    try {
+        if (_document.openCollaborationCommitTransaction(
+                "Atomic shared-presentation compatibility")
+            == 0) {
+            clearAtomicState();
+            _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
+            _document.finishCollaborationCommitNotificationBarrier(false);
+            cleanupRequired = false;
+            return rejectedCompatibilityCommit(DocumentCommitStatus::Busy,
+                                               operationId,
+                                               "document refused to open the native transaction");
+        }
+        _document.beginCollaborationAtomicPresentationAudit(std::move(allowedWrites));
+        _atomicCompatibilityActive = true;
+        _atomicCompatibilityOwner = std::this_thread::get_id();
+    }
+    catch (const Base::Exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("opening atomic native transaction failed: ") + exception.what());
+    }
+    catch (const std::exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("opening atomic native transaction failed: ") + exception.what());
+    }
+    catch (...) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::ApplyFailed,
+                                           operationId,
+                                           "opening atomic native transaction failed");
+    }
+
+    std::string callbackFailure;
+    try {
+        callback();
+    }
+    catch (const Base::Exception& exception) {
+        callbackFailure = exception.what();
+    }
+    catch (const std::exception& exception) {
+        callbackFailure = exception.what();
+    }
+    catch (...) {
+        callbackFailure = "unknown exception";
+    }
+
+    if (_atomicCompatibilityCommitted) {
+        if (!callbackFailure.empty()) {
+            _document.poisonCollaborationCommit(
+                "atomic cross-domain callback failed after native commit");
+        }
+        clearAtomicState();
+        _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
+        _document.finishCollaborationCommitNotificationBarrier(true);
+        cleanupRequired = false;
+        if (!callbackFailure.empty()) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::RollbackFailed,
+                operationId,
+                std::string("atomic callback failed after native commit: ") + callbackFailure);
+        }
+        return rejectedCompatibilityCommit(DocumentCommitStatus::Committed,
+                                           operationId,
+                                           "atomic compatibility transaction committed");
+    }
+
+    const auto rollback = _document.rollbackCollaborationTransaction();
+    clearAtomicState();
+    _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
+    _document.finishCollaborationCommitNotificationBarrier(false);
+    cleanupRequired = false;
+    if (!rollback.restored) {
+        _document.poisonCollaborationCommit(rollback.diagnostic.data());
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::RollbackFailed,
+            operationId,
+            std::string("atomic compatibility rollback failed: ")
+                + rollback.diagnostic.data());
+    }
+    if (_document.collaborationCommitPoisoned()) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::RollbackFailed,
+                                           operationId,
+                                           _document.collaborationCommitPoisonDiagnostic());
+    }
+    return rejectedCompatibilityCommit(
+        DocumentCommitStatus::ApplyFailed,
+        operationId,
+        callbackFailure.empty()
+            ? "atomic compatibility ended before its private native commit step"
+            : std::string("atomic compatibility callback failed: ") + callbackFailure);
+}
+
+CollaborationAtomicCommitPointResult
+DocumentCollaborationService::commitAtomicCompatibilityTransaction()
+{
+    CollaborationAtomicCommitPointResult result;
+    if (!_atomicCompatibilityActive
+        || _atomicCompatibilityOwner != std::this_thread::get_id()
+        || !_document.isCollaborationOwnerThread()) {
+        result.diagnostic =
+            "atomic native commit step is not active on the document owner thread";
+        return result;
+    }
+    if (_atomicCompatibilityCommitInvoked) {
+        result.diagnostic = "atomic native commit step was invoked more than once";
+        return result;
+    }
+    _atomicCompatibilityCommitInvoked = true;
+
+    if (_document.collaborationAtomicPresentationAuditViolated()) {
+        result.diagnostic =
+            "atomic presentation callback attempted an undeclared presentation or model/structural App mutation";
+        return result;
+    }
+    if (_document.mustExecute()) {
+        result.diagnostic =
+            "atomic presentation callback left pending App recompute work";
+        return result;
+    }
+    try {
+        std::vector<std::pair<std::string, std::string>> currentFingerprint;
+        const auto objects = _document.getObjects();
+        currentFingerprint.reserve(objects.size());
+        for (const auto* object : objects) {
+            if (object && object->getNameInDocument()) {
+                currentFingerprint.emplace_back(
+                    object->getNameInDocument(),
+                    _document.collaborationObjectIdentity(*object));
+            }
+        }
+        std::ranges::sort(currentFingerprint);
+        if (currentFingerprint != _atomicCompatibilityObjectFingerprint) {
+            result.diagnostic =
+                "atomic presentation callback changed App document membership or identity";
+            return result;
+        }
+        _document.prepareCollaborationCommitFinalization();
+    }
+    catch (const Base::Exception& exception) {
+        result.diagnostic =
+            std::string("atomic commit finalization preparation failed: ") + exception.what();
+        return result;
+    }
+    catch (const std::exception& exception) {
+        result.diagnostic =
+            std::string("atomic commit finalization preparation failed: ") + exception.what();
+        return result;
+    }
+    try {
+        if (!_document.commitCollaborationCommitTransaction()) {
+            if (!_document.hasPendingTransaction()) {
+                _document.poisonCollaborationCommit(
+                    "atomic native commit was refused after consuming its transaction");
+            }
+            result.diagnostic = "atomic native transaction commit was refused";
+            return result;
+        }
+        _atomicCompatibilityCommitted = true;
+        result.committed = true;
+        return result;
+    }
+    catch (const std::exception& exception) {
+        result.diagnostic =
+            std::string("atomic native transaction commit failed: ") + exception.what();
+    }
+    catch (...) {
+        result.diagnostic = "atomic native transaction commit failed";
+    }
+    if (!_document.hasPendingTransaction()) {
+        _document.poisonCollaborationCommit(
+            "atomic native commit failed after consuming its transaction");
+    }
+    return result;
 }

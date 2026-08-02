@@ -67,6 +67,8 @@ const char* revisionKindName(DocumentRevisionKind kind)
             return "DocumentStructure";
         case DocumentRevisionKind::UnknownModelMutation:
             return "UnknownModelMutation";
+        case DocumentRevisionKind::ObjectProperty:
+            return "ObjectProperty";
     }
     return "Invalid";
 }
@@ -74,20 +76,33 @@ const char* revisionKindName(DocumentRevisionKind kind)
 DocumentRevisionKey revisionKeyFromPython(PyObject* object)
 {
     if (!PyDict_Check(object)) {
-        throw Py::TypeError("each revision key must be a dict with 'kind' and optional 'subject'");
+        throw Py::TypeError(
+            "each revision key must be a dict with 'kind', optional 'subject', and optional 'property_name'");
     }
     PyObject* kindObject = PyDict_GetItemString(object, "kind");
     PyObject* subjectObject = PyDict_GetItemString(object, "subject");
+    PyObject* propertyNameObject = PyDict_GetItemString(object, "property_name");
     if (!kindObject || !PyUnicode_Check(kindObject)) {
         throw Py::TypeError("revision key 'kind' must be a string");
     }
     if (subjectObject && !PyUnicode_Check(subjectObject)) {
         throw Py::TypeError("revision key 'subject' must be a string");
     }
+    if (propertyNameObject && !PyUnicode_Check(propertyNameObject)) {
+        throw Py::TypeError("revision key 'property_name' must be a string");
+    }
     const char* kind = PyUnicode_AsUTF8(kindObject);
     const char* subject = subjectObject ? PyUnicode_AsUTF8(subjectObject) : "";
-    if (!kind || !subject) {
+    const char* propertyName =
+        propertyNameObject ? PyUnicode_AsUTF8(propertyNameObject) : "";
+    if (!kind || !subject || !propertyName) {
         throw Py::Exception();
+    }
+    if (std::strcmp(kind, "ObjectProperty") == 0) {
+        return DocumentRevisionKey::objectProperty(subject, propertyName);
+    }
+    if (*propertyName != '\0') {
+        throw Py::ValueError("property_name is only valid for ObjectProperty revision keys");
     }
     if (std::strcmp(kind, "ObjectExistence") == 0) {
         return DocumentRevisionKey::objectExistence(subject);
@@ -104,7 +119,7 @@ DocumentRevisionKey revisionKeyFromPython(PyObject* object)
     if (std::strcmp(kind, "UnknownModelMutation") == 0 && *subject == '\0') {
         return DocumentRevisionKey::unknownModelMutation();
     }
-    throw Py::ValueError("unknown or invalid document revision key kind/subject");
+    throw Py::ValueError("unknown or invalid document revision key kind/subject/property_name");
 }
 
 std::vector<DocumentRevisionKey> revisionKeysFromPython(PyObject* object)
@@ -158,6 +173,9 @@ Py::Dict revisionObservationToPython(const DocumentRevisionObservation& observat
     Py::Dict result;
     result["kind"] = Py::String(revisionKindName(observation.key.kind));
     result["subject"] = Py::String(observation.key.subject);
+    if (observation.key.kind == DocumentRevisionKind::ObjectProperty) {
+        result["property_name"] = Py::String(observation.key.propertyName);
+    }
     result["revision"] = Py::Long(observation.revision);
     return result;
 }
@@ -192,6 +210,9 @@ Py::Dict commitResultToPython(const DocumentCommitResult& commit)
         Py::Dict item;
         item["kind"] = Py::String(revisionKindName(conflict.key.kind));
         item["subject"] = Py::String(conflict.key.subject);
+        if (conflict.key.kind == DocumentRevisionKind::ObjectProperty) {
+            item["property_name"] = Py::String(conflict.key.propertyName);
+        }
         item["expected"] = Py::Long(conflict.expected);
         item["current"] = Py::Long(conflict.current);
         conflicts.append(item);

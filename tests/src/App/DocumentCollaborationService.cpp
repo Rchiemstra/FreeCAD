@@ -73,6 +73,21 @@ public:
         Application::_postCollaborationAccessDrainTestHook.store(
             hook, std::memory_order_release);
     }
+
+    static DocumentCommitResult serializeAtomic(
+        DocumentCollaborationService& service,
+        CollaborationAtomicCompatibilityCallback callback,
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites = {})
+    {
+        return service.serializeAtomicCompatibilityCallback(
+            std::move(allowedWrites), std::move(callback));
+    }
+
+    static CollaborationAtomicCommitPointResult commitAtomic(
+        DocumentCollaborationService& service)
+    {
+        return service.commitAtomicCompatibilityTransaction();
+    }
 };
 
 }  // namespace App::Internal
@@ -1442,4 +1457,141 @@ TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwn
     ASSERT_EQ(ApplyThreads.size(), 2U);
     EXPECT_EQ(ApplyThreads[0], std::this_thread::get_id());
     EXPECT_EQ(ApplyThreads[1], std::this_thread::get_id());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationPrivateCommitStepIsExactOnceAndCannotRunOutsideBoundary)
+{
+    auto& service = _document->collaborationService();
+    const auto inactive =
+        Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service);
+    EXPECT_FALSE(inactive.committed);
+
+    std::optional<CollaborationAtomicCommitPointResult> first;
+    std::optional<CollaborationAtomicCommitPointResult> second;
+    const bool visibilityBefore = _target->Visibility.getValue();
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] {
+            _target->Visibility.setValue(!visibilityBefore);
+            first.emplace(
+                Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+            second.emplace(
+                Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+        },
+        allowedWrites);
+
+    EXPECT_TRUE(result.committed()) << result.message;
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+    EXPECT_TRUE(first->committed) << first->diagnostic;
+    EXPECT_FALSE(second->committed);
+    EXPECT_NE(second->diagnostic.find("more than once"), std::string::npos);
+    EXPECT_EQ(_target->Visibility.getValue(), !visibilityBefore);
+    const auto after =
+        Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service);
+    EXPECT_FALSE(after.committed);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationMissingPrivateCommitStepRollsBackAndPublishesNothing)
+{
+    auto& service = _document->collaborationService();
+    const bool visibilityBefore = _target->Visibility.getValue();
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto revisionBefore = _document->collaborationRevisions().current(wildcard);
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+    int observerCalls = 0;
+    auto observer = _document->signalChangedObject.connect(
+        [&](const DocumentObject&, const Property&) { ++observerCalls; });
+
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] { _target->Visibility.setValue(!visibilityBefore); },
+        allowedWrites);
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
+    EXPECT_EQ(_target->Visibility.getValue(), visibilityBefore);
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), revisionBefore);
+    EXPECT_EQ(observerCalls, 0);
+    observer.disconnect();
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationExceptionBeforePrivateCommitRollsBack)
+{
+    auto& service = _document->collaborationService();
+    const bool visibilityBefore = _target->Visibility.getValue();
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] {
+            _target->Visibility.setValue(!visibilityBefore);
+            throw std::runtime_error("injected pre-commit failure");
+        },
+        allowedWrites);
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
+    EXPECT_NE(result.message.find("injected pre-commit failure"), std::string::npos);
+    EXPECT_EQ(_target->Visibility.getValue(), visibilityBefore);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationExceptionAfterPrivateCommitPoisonsFurtherCommits)
+{
+    auto& service = _document->collaborationService();
+    const bool visibilityBefore = _target->Visibility.getValue();
+    std::optional<CollaborationAtomicCommitPointResult> committed;
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] {
+            _target->Visibility.setValue(!visibilityBefore);
+            committed.emplace(
+                Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+            throw std::runtime_error("injected post-commit failure");
+        },
+        allowedWrites);
+
+    ASSERT_TRUE(committed.has_value());
+    ASSERT_TRUE(committed->committed) << committed->diagnostic;
+    EXPECT_EQ(result.status, DocumentCommitStatus::RollbackFailed);
+    EXPECT_EQ(_target->Visibility.getValue(), !visibilityBefore);
+    const auto rejected = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service, [] {});
+    EXPECT_EQ(rejected.status, DocumentCommitStatus::RollbackFailed);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationRejectsVisibilityOutsideDeclaredStableIdentity)
+{
+    auto& service = _document->collaborationService();
+    auto* other = _document->addObject<FeatureTest>("OtherVisibilityTarget");
+    ASSERT_NE(other, nullptr);
+    const bool otherBefore = other->Visibility.getValue();
+    std::optional<CollaborationAtomicCommitPointResult> privateCommit;
+    const std::vector<CollaborationAtomicPresentationWrite> allowedWrites {
+        {_document->collaborationObjectIdentity(*_target), "Visibility"}};
+
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] {
+            other->Visibility.setValue(!otherBefore);
+            privateCommit.emplace(
+                Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service));
+        },
+        allowedWrites);
+
+    ASSERT_TRUE(privateCommit.has_value());
+    EXPECT_FALSE(privateCommit->committed);
+    EXPECT_NE(privateCommit->diagnostic.find("undeclared"), std::string::npos);
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
+    EXPECT_EQ(other->Visibility.getValue(), otherBefore);
 }

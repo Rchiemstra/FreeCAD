@@ -29,17 +29,23 @@ enum class DocumentRevisionKind
     ObjectModel,
     ObjectStructure,
     DocumentStructure,
-    UnknownModelMutation
+    UnknownModelMutation,
+    ObjectProperty
 };
 
 struct AppExport DocumentRevisionKey
 {
     DocumentRevisionKind kind;
     std::string subject;
+    // UTF-8 property name for ObjectProperty only. Kept as a trailing,
+    // defaulted scalar so existing {kind, subject} aggregate initializers
+    // remain source-compatible.
+    std::string propertyName {};
 
     static DocumentRevisionKey objectExistence(std::string subject);
     static DocumentRevisionKey objectModel(std::string subject);
     static DocumentRevisionKey objectStructure(std::string subject);
+    static DocumentRevisionKey objectProperty(std::string subject, std::string propertyName);
     static DocumentRevisionKey documentStructure();
     static DocumentRevisionKey unknownModelMutation();
 
@@ -48,7 +54,8 @@ struct AppExport DocumentRevisionKey
 
 inline bool operator==(const DocumentRevisionKey& left, const DocumentRevisionKey& right) noexcept
 {
-    return left.kind == right.kind && left.subject == right.subject;
+    return left.kind == right.kind && left.subject == right.subject
+        && left.propertyName == right.propertyName;
 }
 
 inline bool operator!=(const DocumentRevisionKey& left, const DocumentRevisionKey& right) noexcept
@@ -61,7 +68,10 @@ inline bool operator<(const DocumentRevisionKey& left, const DocumentRevisionKey
     if (left.kind != right.kind) {
         return left.kind < right.kind;
     }
-    return left.subject < right.subject;
+    if (left.subject != right.subject) {
+        return left.subject < right.subject;
+    }
+    return left.propertyName < right.propertyName;
 }
 
 struct AppExport DocumentRevisionKeyHash
@@ -147,6 +157,29 @@ struct AppExport DocumentRevisionPublicationRequest
     DocumentRevisionKey key;
     std::optional<std::string> stableObjectIdentity;
 };
+
+/** One pointer-free App property explicitly admitted by an atomic presentation request. */
+struct AppExport CollaborationAtomicPresentationWrite
+{
+    std::string stableObjectIdentity;
+    std::string propertyName;
+};
+
+inline bool operator==(const CollaborationAtomicPresentationWrite& left,
+                       const CollaborationAtomicPresentationWrite& right) noexcept
+{
+    return left.stableObjectIdentity == right.stableObjectIdentity
+        && left.propertyName == right.propertyName;
+}
+
+inline bool operator<(const CollaborationAtomicPresentationWrite& left,
+                      const CollaborationAtomicPresentationWrite& right) noexcept
+{
+    if (left.stableObjectIdentity != right.stableObjectIdentity) {
+        return left.stableObjectIdentity < right.stableObjectIdentity;
+    }
+    return left.propertyName < right.propertyName;
+}
 
 /** Serializable, pointer-free record of one atomic revision publication. */
 struct AppExport DocumentRevisionPublicationEvent
@@ -251,9 +284,15 @@ public:
     /** Convenience publication for document-scoped keys, which carry no object identity. */
     [[nodiscard]] std::vector<DocumentRevisionObservation>
     publish(const std::vector<DocumentRevisionKey>& documentScopedKeys);
-    /** Canonical mixed-scope publication with one identity decision per semantic key. */
+    /**
+     * Canonical mixed-scope publication with one identity decision per semantic key.
+     * Each ObjectProperty request also publishes the matching ObjectModel key with
+     * the same identity. Expanded duplicates advance only once per publication.
+     */
     [[nodiscard]] std::vector<DocumentRevisionObservation>
     publish(const std::vector<DocumentRevisionPublicationRequest>& changes);
+    /** Explicit empty publication path, avoiding ambiguous publish({}) calls. */
+    [[nodiscard]] std::vector<DocumentRevisionObservation> publishEmpty();
     [[nodiscard]] DocumentRevisionObservation publishUnknownModelMutation();
 
     /**

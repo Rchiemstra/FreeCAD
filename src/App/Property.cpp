@@ -50,7 +50,7 @@ void publishPropertyMutation(Property& property, bool structural)
 {
     auto* container = property.getContainer();
     auto* document = documentFromPropertyContainer(container);
-    if (!document || document->collaborationRevisionPublicationSuppressed(&property)) {
+    if (!document) {
         return;
     }
 
@@ -59,6 +59,7 @@ void publishPropertyMutation(Property& property, bool structural)
                               : CollaborationMutationSource::PropertyValue;
     input.mutationKind = structural ? MutationKind::StructuralProperty
                                     : MutationKind::PropertyWrite;
+    input.propertyName = property.getName();
     input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
     if (!structural) {
         if (property.isDerivedFrom(PropertyLinkBase::getClassTypeId())) {
@@ -76,6 +77,14 @@ void publishPropertyMutation(Property& property, bool structural)
     }
 
     if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
+        // Undo retains removed objects with their former Document pointer so
+        // they can be restored.  Mutating such detached storage is not a live
+        // document mutation and has neither a document name nor a revision
+        // identity to publish.
+        if (!object->isAttachedToDocument() || object->getDocument() != document
+            || !document->containsObject(object)) {
+            return;
+        }
         input.containerKind = CollaborationContainerKind::DocumentObject;
         input.objectName = object->getNameInDocument();
         input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
@@ -83,7 +92,12 @@ void publishPropertyMutation(Property& property, bool structural)
     else if (dynamic_cast<const Document*>(container)) {
         input.containerKind = CollaborationContainerKind::Document;
     }
-    static_cast<void>(document->collaborationRevisions().publish(classifyMutation(input)));
+    const auto effects = classifyMutation(input);
+    document->recordCollaborationAtomicPresentationEffects(effects, &property);
+    if (document->collaborationRevisionPublicationSuppressed(&property)) {
+        return;
+    }
+    static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 
 }  // namespace

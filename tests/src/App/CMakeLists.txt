@@ -9,6 +9,7 @@ add_executable(App_tests_run
         ComplexGeoData.cpp
         CollaborationRegistry.cpp
         CollaborationCompatibilityMutation.cpp
+        CollaborativeSetPropertyIndependence.cpp
         CollaborativeSetPropertyOperation.cpp
         DocumentCollaborationConcurrency.cpp
         DocumentCollaborationPython.cpp
@@ -18,6 +19,7 @@ add_executable(App_tests_run
         Document.cpp
         DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
+        DocumentPropertyRevision.cpp
         DocumentRevisionIndex.cpp
         DocumentObject.cpp
         DocumentObserver.cpp

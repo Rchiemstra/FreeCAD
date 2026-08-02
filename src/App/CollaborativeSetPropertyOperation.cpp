@@ -7,7 +7,10 @@
 #include "Document.h"
 #include "DocumentObject.h"
 #include "DocumentRevisionIndex.h"
+#include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
+#include "PropertyLinks.h"
+#include "PropertyPythonObject.h"
 #include "PropertyStandard.h"
 #include "private/CollaborativeOperationRegistryInternal.h"
 
@@ -21,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -41,6 +45,12 @@ enum class ScalarPropertyType
 };
 
 using ScalarPropertyValue = std::variant<bool, long, double, std::string>;
+
+enum class PropertyIsolation
+{
+    ConservativeObject,
+    IndependentProperty
+};
 
 constexpr std::string_view ObjectArgument = "object";
 constexpr std::string_view PropertyArgument = "property";
@@ -153,11 +163,73 @@ void validateArgumentNames(const CollaborativeOperationIntent& intent)
         && !property.isReadOnly() && !property.testStatus(Property::Output);
 }
 
+[[nodiscard]] bool objectIsPythonBacked(const DocumentObject& object)
+{
+    // Every App FeaturePython specialization owns the exact Proxy payload.
+    // Looking for that payload fails closed across all FeaturePythonT bases
+    // without guessing from a type name or invoking Python.
+    const auto* proxy = object.getPropertyByName("Proxy");
+    return proxy
+        && proxy->isDerivedFrom(PropertyPythonObject::getClassTypeId());
+}
+
+[[nodiscard]] bool propertyHasExpression(const DocumentObject& object,
+                                         const Property& property)
+{
+    return static_cast<bool>(object.getExpression(ObjectIdentifier(property)).expression);
+}
+
+[[nodiscard]] bool hasIndependentNativePropertyProof(const DocumentObject& object,
+                                                      const Property& property)
+{
+    // This proof intentionally admits only the concrete core base class. Its
+    // onChanged() implementation has no subclass hook, and the remaining
+    // predicates exclude every extension, expression, and recompute path:
+    // Prop_NoRecompute prevents execution of the object, while an empty InList
+    // proves there is no dependent to execute. documentStructure is observed
+    // during preparation so a later link cannot silently invalidate that fact.
+    return Internal::hasCollaborativeSetPropertyIndependenceProof({
+        object.getTypeId() == DocumentObject::getClassTypeId(),
+        object.getDynamicPropertyByName(property.getName()) == &property,
+        object.hasExtensions(),
+        !object.ExpressionEngine.getExpressions().empty(),
+        (property.getType() & Prop_NoRecompute) != 0,
+        !object.getInList().empty(),
+    });
+}
+
+void validateSemanticTarget(const DocumentObject& object,
+                            const Property& property,
+                            const std::string& propertyName)
+{
+    if (propertyName == "Label" || propertyName == "Label2") {
+        throw std::invalid_argument(
+            "collaborative set-property does not support semantic label properties");
+    }
+    if (propertyName == "Visibility") {
+        throw std::invalid_argument(
+            "collaborative set-property does not support shared Visibility presentation state");
+    }
+    if (property.isDerivedFrom(PropertyLinkBase::getClassTypeId())) {
+        throw std::invalid_argument(
+            "collaborative set-property does not support link properties");
+    }
+    if (objectIsPythonBacked(object)) {
+        throw std::invalid_argument(
+            "collaborative set-property does not support Python-backed objects");
+    }
+    if (propertyHasExpression(object, property)) {
+        throw std::invalid_argument(
+            "collaborative set-property does not support expression-bound properties");
+    }
+}
+
 [[nodiscard]] const Property& resolveProperty(const Document& document,
                                                const std::string& objectName,
                                                const std::string& objectIdentity,
                                                const std::string& propertyName,
-                                               ScalarPropertyType valueType)
+                                               ScalarPropertyType valueType,
+                                               PropertyIsolation isolation)
 {
     const auto* object = document.getObject(objectName.c_str());
     if (!object || document.collaborationObjectIdentity(*object) != objectIdentity) {
@@ -170,8 +242,19 @@ void validateArgumentNames(const CollaborativeOperationIntent& intent)
     if (!propertyMatchesType(*property, valueType)) {
         throw std::runtime_error("collaborative set-property target property type changed");
     }
+    try {
+        validateSemanticTarget(*object, *property, propertyName);
+    }
+    catch (const std::invalid_argument& exception) {
+        throw std::runtime_error(exception.what());
+    }
     if (!propertyIsCollaborativelyEditable(*object, *property)) {
         throw std::runtime_error("collaborative set-property target property is not editable");
+    }
+    if (isolation == PropertyIsolation::IndependentProperty
+        && !hasIndependentNativePropertyProof(*object, *property)) {
+        throw std::runtime_error(
+            "collaborative set-property independent-property proof became stale");
     }
     return *property;
 }
@@ -183,12 +266,14 @@ public:
                          std::string objectIdentity,
                          std::string propertyName,
                          ScalarPropertyType valueType,
-                         ScalarPropertyValue value)
+                         ScalarPropertyValue value,
+                         PropertyIsolation isolation)
         : _objectName(std::move(objectName))
         , _objectIdentity(std::move(objectIdentity))
         , _propertyName(std::move(propertyName))
         , _valueType(valueType)
         , _value(std::move(value))
+        , _isolation(isolation)
     {}
 
     std::string_view typeId() const noexcept override
@@ -202,7 +287,8 @@ public:
                                                    _objectName,
                                                    _objectIdentity,
                                                    _propertyName,
-                                                   _valueType);
+                                                   _valueType,
+                                                   _isolation);
         auto& property = const_cast<Property&>(resolved);
         switch (_valueType) {
             case ScalarPropertyType::Boolean:
@@ -228,7 +314,8 @@ public:
                                                        _objectName,
                                                        _objectIdentity,
                                                        _propertyName,
-                                                       _valueType);
+                                                       _valueType,
+                                                       _isolation);
             bool matches = false;
             switch (_valueType) {
                 case ScalarPropertyType::Boolean:
@@ -266,6 +353,7 @@ private:
     const std::string _propertyName;
     const ScalarPropertyType _valueType;
     const ScalarPropertyValue _value;
+    const PropertyIsolation _isolation;
 };
 
 [[nodiscard]] CollaborativeOperationPreparation prepareSetProperty(
@@ -279,10 +367,6 @@ private:
     if (objectName.empty() || propertyName.empty() || valueTypeName.empty()) {
         throw std::invalid_argument(
             "collaborative set-property object, property, and value_type must be nonempty");
-    }
-    if (propertyName == "Label") {
-        throw std::invalid_argument(
-            "collaborative set-property does not support the semantic Label property");
     }
     const ScalarPropertyType valueType = parseValueType(valueTypeName);
     const ScalarPropertyValue value = parseValue(valueType, argument(intent, ValueArgument));
@@ -299,12 +383,36 @@ private:
         throw std::invalid_argument(
             "collaborative set-property value_type does not match property");
     }
+    validateSemanticTarget(*object, *property, propertyName);
     if (!propertyIsCollaborativelyEditable(*object, *property)) {
         throw std::invalid_argument(
             "collaborative set-property target property is not editable");
     }
 
     const std::string objectIdentity = document.collaborationObjectIdentity(*object);
+    const bool independentProperty = hasIndependentNativePropertyProof(*object, *property);
+    if (independentProperty) {
+        const auto propertyKey =
+            DocumentRevisionKey::objectProperty(objectName, propertyName);
+        std::vector<DocumentRevisionKey> reads {
+            DocumentRevisionKey::objectExistence(objectName),
+            DocumentRevisionKey::objectStructure(objectName),
+            DocumentRevisionKey::documentStructure(),
+            DocumentRevisionKey::unknownModelMutation(),
+            propertyKey,
+        };
+        std::sort(reads.begin(), reads.end());
+        return {std::move(reads),
+                {propertyKey},
+                {{propertyKey, objectIdentity}},
+                std::make_unique<const SetPropertyOperation>(
+                    objectName,
+                    objectIdentity,
+                    propertyName,
+                    valueType,
+                    value,
+                    PropertyIsolation::IndependentProperty)};
+    }
 
     // Freeze the same-document reverse dependency closure. The map both
     // removes a possible cycle duplicate and gives deterministic object-name
@@ -344,6 +452,19 @@ private:
         effects.push_back(
             {DocumentRevisionKey::objectModel(affectedName), affectedIdentity});
     }
+    // An exact base DocumentObject can also host a property proven independent
+    // in a later preparation. Publish the wildcard as a conservative conflict
+    // barrier: broad-first stales a fine edit through its wildcard observation,
+    // while fine-first stales a same-object broad edit because property
+    // publication expands to ObjectModel. The wildcard deliberately
+    // over-serializes unrelated fine edits after a broad exact-base edit.
+    // Subclasses such as FeatureTest retain their established conservative
+    // object-level contract unchanged.
+    if (object->getTypeId() == DocumentObject::getClassTypeId()) {
+        const auto barrier = DocumentRevisionKey::unknownModelMutation();
+        writes.push_back(barrier);
+        effects.push_back({barrier, std::nullopt});
+    }
     // A no-touch link mutation can grow the reverse dependency closure
     // without scheduling recompute or touching the wildcard. Freeze the
     // document structure that the closure was derived from as well.
@@ -362,7 +483,8 @@ private:
                                                          objectIdentity,
                                                          propertyName,
                                                          valueType,
-                                                         value)};
+                                                         value,
+                                                         PropertyIsolation::ConservativeObject)};
 }
 
 }  // namespace

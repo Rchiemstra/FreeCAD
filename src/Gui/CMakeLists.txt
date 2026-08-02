@@ -1323,6 +1323,8 @@ SET(FreeCADGui_CPP_SRCS
     AutoSaver.cpp
     BitmapFactory.cpp
     CollaborationCompatibilityAdapter.cpp
+    PersonalViewContext.cpp
+    SharedPresentationCoordinator.cpp
     Document.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1368,6 +1370,8 @@ SET(FreeCADGui_SRCS
     AutoSaver.h
     BitmapFactory.h
     CollaborationCompatibilityAdapter.h
+    PersonalViewContext.h
+    SharedPresentationCoordinator.h
     Document.h
     DocumentModel.h
     DocumentObserver.h

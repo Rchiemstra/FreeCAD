@@ -2997,7 +2997,105 @@ QImage View3DInventorViewer::grabFramebuffer()
 
 QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
 {
-    const SbViewportRegion vp = this->getSoRenderManager()->getViewportRegion();
+    return renderToImage(options, nullptr);
+}
+
+QImage View3DInventorViewer::renderToImage(
+    const RenderImageOptions& options,
+    SoCamera* cameraOverride,
+    SoNode* transientOverlayRoot
+)
+{
+    auto* renderManager = this->getSoRenderManager();
+    SoCamera* previousManagerCamera = nullptr;
+    SoCamera* previousSceneCamera = nullptr;
+    SoGroup* cameraParent = nullptr;
+    int cameraChildIndex = -1;
+    SoField* previousLightRotationSource = nullptr;
+    bool previousLightRotationConnectionEnabled = false;
+    bool hadPreviousLightRotationSource = false;
+
+    if (cameraOverride) {
+        if (!renderManager) {
+            Base::Console().warning("renderToImage failed because no render manager is available\n");
+            return {};
+        }
+
+        previousManagerCamera = renderManager->getCamera();
+        if (!previousManagerCamera) {
+            Base::Console().warning("renderToImage failed because no camera is available\n");
+            return {};
+        }
+
+        SoNode* superscene = renderManager->getSceneGraph();
+        if (!superscene) {
+            Base::Console().warning("renderToImage failed because no render superscene is available\n");
+            return {};
+        }
+
+        SoSearchAction cameraSearch;
+        cameraSearch.setInterest(SoSearchAction::FIRST);
+        cameraSearch.setNode(previousManagerCamera);
+        cameraSearch.apply(superscene);
+        const SoPath* cameraPath = cameraSearch.getPath();
+        if (!cameraPath || cameraPath->getLength() < 2) {
+            Base::Console().warning(
+                "renderToImage failed because the render superscene has no replaceable camera\n"
+            );
+            return {};
+        }
+
+        previousSceneCamera = static_cast<SoCamera*>(cameraPath->getTail());
+        SoNode* cameraParentNode = cameraPath->getNodeFromTail(1);
+        if (!cameraParentNode->isOfType(SoGroup::getClassTypeId())) {
+            Base::Console().warning(
+                "renderToImage failed because the render camera parent is not a group\n"
+            );
+            return {};
+        }
+        cameraParent = static_cast<SoGroup*>(cameraParentNode);
+        cameraChildIndex = cameraParent->findChild(previousSceneCamera);
+        if (cameraChildIndex < 0) {
+            Base::Console().warning(
+                "renderToImage failed because the render camera has no superscene parent\n"
+            );
+            return {};
+        }
+
+        // The parent replacement may release the superscene's last references.
+        // Retain both old pointers until every piece of viewer state is restored.
+        previousManagerCamera->ref();
+        previousSceneCamera->ref();
+        previousLightRotationConnectionEnabled = lightRotation->rotation.isConnectionEnabled();
+        hadPreviousLightRotationSource =
+            lightRotation->rotation.getConnectedField(previousLightRotationSource);
+    }
+
+    auto restoreRenderOverrides = qScopeGuard([&]() {
+        if (!cameraOverride) {
+            return;
+        }
+
+        lightRotation->rotation.disconnect();
+        if (hadPreviousLightRotationSource) {
+            lightRotation->rotation.connectFrom(previousLightRotationSource);
+        }
+        lightRotation->rotation.enableConnection(previousLightRotationConnectionEnabled);
+
+        renderManager->setCamera(previousManagerCamera);
+        cameraParent->replaceChild(cameraChildIndex, previousSceneCamera);
+        previousSceneCamera->unref();
+        previousManagerCamera->unref();
+    });
+
+    if (cameraOverride) {
+        cameraParent->replaceChild(cameraChildIndex, cameraOverride);
+        renderManager->setCamera(cameraOverride);
+        lightRotation->rotation.connectFrom(&cameraOverride->orientation);
+        lightRotation->rotation.enableConnection(true);
+    }
+
+    const SbViewportRegion vp = renderManager->getViewportRegion();
     const SbVec2s size = vp.getViewportSizePixels();
     const int width = options.width > 0 ? options.width : size[0];
     const int height = options.height > 0 ? options.height : size[1];
@@ -3066,7 +3164,7 @@ QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
         setGradientBackground(Background::NoGradient);
     }
 
-    if (!renderToFramebuffer(&fbo, options.includeViewerLighting)) {
+    if (!renderToFramebuffer(&fbo, options.includeViewerLighting, transientOverlayRoot)) {
         return {};
     }
     img = fbo.toImage();
@@ -3103,7 +3201,11 @@ QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
     return img;
 }
 
-bool View3DInventorViewer::renderToFramebuffer(QOpenGLFramebufferObject* fbo, bool includeViewerLighting)
+bool View3DInventorViewer::renderToFramebuffer(
+    QOpenGLFramebufferObject* fbo,
+    bool includeViewerLighting,
+    SoNode* transientOverlayRoot
+)
 {
     static_cast<QOpenGLWidget*>(this->viewport())->makeCurrent();  // NOLINT
     if (!fbo->bind()) {
@@ -3148,6 +3250,9 @@ bool View3DInventorViewer::renderToFramebuffer(QOpenGLFramebufferObject* fbo, bo
         gl.apply(scene == this->viewerSceneRoot ? this->selectionRoot : scene);
     }
     renderDelayedAnnotations(&gl);
+    if (transientOverlayRoot) {
+        gl.apply(transientOverlayRoot);
+    }
     gl.apply(this->foregroundroot);
     if (shouldRenderDecorations(currentRenderIntent())) {
         gl.apply(this->decorationroot);

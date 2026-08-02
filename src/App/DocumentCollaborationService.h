@@ -20,6 +20,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace Gui
+{
+class Document;
+}
+
 namespace App
 {
 
@@ -74,6 +79,21 @@ struct AppExport CollaborationCompatibilityMutation
 
 using CollaborationCompatibilityCallback = std::function<void()>;
 
+/** Result of the service-owned native transaction commit point. */
+struct AppExport CollaborationAtomicCommitPointResult
+{
+    bool committed {false};
+    std::string diagnostic;
+};
+
+/**
+ * Runs synchronously inside one native transaction and notification barrier.
+ * The trusted Gui integration invokes the private exact-once commit step;
+ * no transaction capability is handed to or retainable by this callback.
+ */
+using CollaborationAtomicCompatibilityCallback =
+    std::function<void()>;
+
 /**
  * The single Document-owned native collaboration facade.
  *
@@ -126,6 +146,7 @@ public:
         CollaborationCompatibilityCallback callback);
 
 private:
+    friend class Gui::Document;
     friend class Application;
     friend class Document;
     friend class Internal::DocumentCollaborationServiceTestAccess;
@@ -180,6 +201,14 @@ private:
         CollaborationCompatibilityCallback callback);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult serializeAtomicCompatibilityCallback(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+        CollaborationAtomicCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult serializeAtomicCompatibilityCallbackOnDocumentThread(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+        CollaborationAtomicCompatibilityCallback callback);
+    [[nodiscard]] CollaborationAtomicCommitPointResult
+    commitAtomicCompatibilityTransaction();
     /**
      * Cancel every session and detach every executor job while the caller owns
      * the document lifecycle serialization boundary. Executor abandonment is
@@ -192,6 +221,11 @@ private:
 
     Document& _document;
     DocumentCommitCoordinator _coordinator;
+    bool _atomicCompatibilityActive {false};
+    bool _atomicCompatibilityCommitInvoked {false};
+    bool _atomicCompatibilityCommitted {false};
+    std::thread::id _atomicCompatibilityOwner;
+    std::vector<std::pair<std::string, std::string>> _atomicCompatibilityObjectFingerprint;
 
     struct PendingDetachedPreparation
     {

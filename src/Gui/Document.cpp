@@ -20,9 +20,12 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <algorithm>
+#include <initializer_list>
 #include <tuple>
 #include <memory>
 #include <list>
+#include <ranges>
 #include <string>
 #include <map>
 #include <set>
@@ -30,7 +33,9 @@
 #include <vector>
 #include <cctype>
 #include <mutex>
+#include <stdexcept>
 #include <QApplication>
+#include <QBuffer>
 #include <QCheckBox>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -39,6 +44,18 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <Inventor/actions/SoSearchAction.h>
+#include <Inventor/SoDB.h>
+#include <Inventor/SoInput.h>
+#include <Inventor/SoRenderManager.h>
+#include <Inventor/nodes/SoBaseColor.h>
+#include <Inventor/nodes/SoCamera.h>
+#include <Inventor/nodes/SoCoordinate3.h>
+#include <Inventor/nodes/SoDrawStyle.h>
+#include <Inventor/nodes/SoGroup.h>
+#include <Inventor/nodes/SoLineSet.h>
+#include <Inventor/nodes/SoMaterial.h>
+#include <Inventor/nodes/SoOrthographicCamera.h>
+#include <Inventor/nodes/SoPerspectiveCamera.h>
 #include <Inventor/nodes/SoSeparator.h>
 
 #include <App/AutoTransaction.h>
@@ -69,6 +86,7 @@
 #include "Tree.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
+#include "ViewProvider.h"
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderDocumentObjectGroup.h"
 #include "WaitCursor.h"
@@ -87,6 +105,11 @@ namespace Gui
 struct DocumentP
 {
     CollaborationCompatibilityAdapter collaborationCompatibilityAdapter;
+    SharedPresentationCoordinator sharedPresentationCoordinator;
+    mutable SharedPresentationRevisionIndex sharedPresentationRevisions;
+    mutable std::optional<SharedPresentationPersistenceCapture> pendingPresentationSave;
+    PersonalViewContextStore personalViewContexts;
+    bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
     int _iWinCount;
     int _iDocId;
@@ -127,6 +150,7 @@ struct DocumentP
     Connection connectNewObject;
     Connection connectDelObject;
     Connection connectCngObject;
+    Connection connectChangedViewObject;
     Connection connectRenObject;
     AdvancedConnection connectActObject;
     Connection connectSaveDocument;
@@ -452,6 +476,10 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->_editWantsRestore = false;
     d->_editWantsRestorePrevious = false;
 
+    const auto collaborationIdentity = pcDocument->collaborationIdentity();
+    d->sharedPresentationRevisions.bindDocumentIdentity(
+        collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch);
+
     // NOLINTBEGIN
     //  Setup the connections
     d->connectNewObject = pcDocument->signalNewObject.connect(
@@ -462,6 +490,9 @@ Document::Document(App::Document* pcDocument, Application* app)
     );
     d->connectCngObject = pcDocument->signalChangedObject.connect(
         std::bind(&Gui::Document::slotChangedObject, this, sp::_1, sp::_2)
+    );
+    d->connectChangedViewObject = app->signalChangedObject.connect(
+        std::bind(&Gui::Document::slotChangedViewObject, this, sp::_1, sp::_2)
     );
     d->connectRenObject = pcDocument->signalRelabelObject.connect(
         std::bind(&Gui::Document::slotRelabelObject, this, sp::_1)
@@ -557,6 +588,7 @@ Document::~Document()
     d->connectNewObject.disconnect();
     d->connectDelObject.disconnect();
     d->connectCngObject.disconnect();
+    d->connectChangedViewObject.disconnect();
     d->connectRenObject.disconnect();
     d->connectActObject.disconnect();
     d->connectSaveDocument.disconnect();
@@ -814,6 +846,9 @@ void Document::setInEdit(ViewProviderDocumentObject* parentVp, const char* subna
 
 void Document::setAnnotationViewProvider(const char* name, ViewProvider* pcProvider)
 {
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
     // already in ?
     std::map<std::string, ViewProvider*>::iterator it = d->_ViewProviderMapAnnotation.find(name);
     if (it != d->_ViewProviderMapAnnotation.end()) {
@@ -856,6 +891,9 @@ bool Document::isAnnotationViewProvider(const ViewProvider* vp) const
 
 ViewProvider* Document::takeAnnotationViewProvider(const char* name)
 {
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
     auto it = d->_ViewProviderMapAnnotation.find(name);
     if (it == d->_ViewProviderMapAnnotation.end()) {
         return nullptr;
@@ -1392,6 +1430,58 @@ App::Document* Document::getDocument() const
     return d->_pcDocument;
 }
 
+void Document::slotChangedViewObject(const Gui::ViewProvider& viewProvider,
+                                     const App::Property& property)
+{
+    if (d->sharedPresentationPublicationSuppressed
+        && (!Application::Instance
+            || Application::Instance->suppressCurrentSharedPresentationPublication())) {
+        return;
+    }
+    // Gui::Document forwards App-property changes through the same application
+    // signal after updating the ViewProvider.  Count only the provider-owned
+    // property notification so a synchronized Visibility change publishes one
+    // presentation revision rather than both the change and its App echo.
+    if (property.getContainer() != &viewProvider) {
+        return;
+    }
+
+    std::string stableIdentity;
+    if (const auto* objectView =
+            dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider)) {
+        const auto* object = objectView->getObject();
+        if (!object || object->getDocument() != d->_pcDocument) {
+            return;
+        }
+        stableIdentity = d->_pcDocument->collaborationObjectIdentity(*object);
+    }
+    else {
+        // Annotation map names are reusable and currently have no incarnation
+        // identity.  Exclude them until their provider lifecycle can supply a
+        // stable identity that cannot validate across replacement.
+        return;
+    }
+
+    const char* propertyName = property.getName();
+    if (stableIdentity.empty() || !propertyName || *propertyName == '\0') {
+        return;
+    }
+
+    try {
+        syncSharedPresentationIdentity();
+        static_cast<void>(d->sharedPresentationRevisions.publish(
+            {{std::move(stableIdentity), propertyName}}));
+    }
+    catch (const Base::Exception& exception) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot publish shared-presentation revision: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot publish shared-presentation revision: " << exception.what());
+    }
+}
+
 CollaborationCompatibilityMutationOutcome Document::executeCompatibilityMutation(
     CollaborationCompatibilityMutationDeclaration declaration,
     CollaborationCompatibilityMutationCallback callback)
@@ -1460,6 +1550,753 @@ CollaborationCompatibilityMutationOutcome Document::executeCompatibilityMutation
             }
         },
         std::move(callback));
+}
+
+void Document::syncSharedPresentationIdentity() const
+{
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    d->sharedPresentationRevisions.bindDocumentIdentity(
+        identity.instanceId, identity.lifecycleEpoch);
+}
+
+SharedPresentationRevisionIndex& Document::sharedPresentationRevisions()
+{
+    syncSharedPresentationIdentity();
+    return d->sharedPresentationRevisions;
+}
+
+const SharedPresentationRevisionIndex& Document::sharedPresentationRevisions() const
+{
+    syncSharedPresentationIdentity();
+    return d->sharedPresentationRevisions;
+}
+
+void Document::publishSharedPresentationSchemaMutation(
+    const Gui::ViewProvider& viewProvider,
+    std::string_view propertyName,
+    std::string_view secondPropertyName) noexcept
+{
+    try {
+        const auto* objectView =
+            dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
+        const auto* object = objectView ? objectView->getObject() : nullptr;
+        if (!object || object->getDocument() != d->_pcDocument
+            || propertyName.empty()) {
+            return;
+        }
+        const std::string stableIdentity =
+            d->_pcDocument->collaborationObjectIdentity(*object);
+        std::vector<SharedPresentationRevisionKey> keys;
+        keys.reserve(secondPropertyName.empty() ? 1U : 2U);
+        keys.push_back({stableIdentity, std::string(propertyName)});
+        if (!secondPropertyName.empty() && secondPropertyName != propertyName) {
+            keys.push_back({stableIdentity, std::string(secondPropertyName)});
+        }
+        syncSharedPresentationIdentity();
+        static_cast<void>(d->sharedPresentationRevisions.publish(keys));
+    }
+    catch (const Base::Exception& exception) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot publish shared-presentation schema revision: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot publish shared-presentation schema revision: " << exception.what());
+    }
+    catch (...) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot publish shared-presentation schema revision");
+    }
+}
+
+SharedPresentationCommitResult Document::commitSharedPresentation(
+    SharedPresentationCommitRequest request,
+    SharedPresentationCommitCallbacks callbacks)
+{
+    try {
+        Gui::requireMainThread("Gui::Document::commitSharedPresentation");
+    }
+    catch (const Base::Exception& exception) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = exception.what();
+        return result;
+    }
+    auto lifecyclePin = d->_pcDocument->collaborationService().pinDocumentAccess();
+    if (!lifecyclePin) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::StaleDocument;
+        result.diagnostic = "document close has sealed shared-presentation access";
+        return result;
+    }
+    try {
+        d->_pcDocument->beginCollaborationStableReadCapture();
+    }
+    catch (const Base::Exception& exception) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = exception.what();
+        return result;
+    }
+    App::Document* const structurallyPinnedDocument = d->_pcDocument;
+    const auto structuralReplayBlock = qScopeGuard([structurallyPinnedDocument]() {
+        structurallyPinnedDocument->finishCollaborationStableReadCapture();
+    });
+    if (d->sharedPresentationPublicationSuppressed) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = "nested shared-presentation commits are not admitted";
+        return result;
+    }
+
+    syncSharedPresentationIdentity();
+    callbacks.currentIdentity = [this]() {
+        return std::optional<App::DocumentIdentity> {d->_pcDocument->collaborationIdentity()};
+    };
+    callbacks.validateAppRevisions = [this](const auto& observations) {
+        return d->_pcDocument->collaborationRevisions().validate(observations);
+    };
+    std::optional<App::DocumentCommitResult> atomicBoundaryResult;
+    auto allowedGuiWrites = request.presentationWrites;
+    std::sort(allowedGuiWrites.begin(), allowedGuiWrites.end());
+    allowedGuiWrites.erase(
+        std::unique(allowedGuiWrites.begin(), allowedGuiWrites.end()),
+        allowedGuiWrites.end());
+    std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
+    allowedAppWrites.reserve(request.presentationWrites.size());
+    for (const auto& write : request.presentationWrites) {
+        allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
+    }
+    callbacks.makeAppDurable = [this]() {
+        if (Application::Instance
+            && Application::Instance->sharedPresentationNotificationAuditViolated()) {
+            return SharedPresentationStepResult {
+                false,
+                "atomic presentation callback changed an undeclared GUI property"};
+        }
+        const auto committed = d->_pcDocument->collaborationService()
+                                   .commitAtomicCompatibilityTransaction();
+        if (committed.committed && Application::Instance) {
+            Application::Instance->markSharedPresentationAppDurable();
+        }
+        return SharedPresentationStepResult {
+            committed.committed,
+            committed.diagnostic.empty() && !committed.committed
+                ? "native App transaction could not commit"
+                : committed.diagnostic};
+    };
+    callbacks.serialize = [this,
+                            &atomicBoundaryResult,
+                            allowedAppWrites = std::move(allowedAppWrites)](
+                               SharedPresentationCommitWork&& work,
+                               SharedPresentationCommitCompletion&& complete) mutable {
+        auto serialized = d->_pcDocument->collaborationService()
+                              .serializeAtomicCompatibilityCallback(
+                                        std::move(allowedAppWrites),
+                                        [&]() {
+                                            work();
+                                            complete({true, {}});
+                                        });
+        atomicBoundaryResult.emplace(std::move(serialized));
+    };
+
+    struct PublicationSuppression final
+    {
+        explicit PublicationSuppression(bool& flag)
+            : flag(flag)
+        {
+            flag = true;
+        }
+        ~PublicationSuppression()
+        {
+            flag = false;
+        }
+        bool& flag;
+    } suppression(d->sharedPresentationPublicationSuppressed);
+
+    if (!Application::Instance) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = "GUI application is unavailable";
+        return result;
+    }
+    try {
+        App::Document* const appDocument = d->_pcDocument;
+        Application::Instance->beginSharedPresentationNotificationBarrier(
+            [appDocument,
+             allowedGuiWrites = std::move(allowedGuiWrites)](
+                const Gui::ViewProvider& viewProvider,
+                const App::Property& property) {
+                // App-property echoes use the same application signal but are
+                // audited independently by the App transaction boundary.
+                if (property.getContainer() != &viewProvider) {
+                    return true;
+                }
+                const auto* objectView =
+                    dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
+                const auto* object = objectView ? objectView->getObject() : nullptr;
+                const char* propertyName = property.getName();
+                if (!object || object->getDocument() != appDocument
+                    || !propertyName || *propertyName == '\0') {
+                    return false;
+                }
+                const SharedPresentationRevisionKey observed {
+                    appDocument->collaborationObjectIdentity(*object), propertyName};
+                return std::binary_search(allowedGuiWrites.begin(),
+                                          allowedGuiWrites.end(),
+                                          observed);
+            });
+    }
+    catch (const Base::Exception& exception) {
+        SharedPresentationCommitResult result;
+        result.status = SharedPresentationCommitStatus::SerializationFailed;
+        result.diagnostic = exception.what();
+        return result;
+    }
+    struct NotificationBarrier final
+    {
+        ~NotificationBarrier()
+        {
+            if (active) {
+                application.finishSharedPresentationNotificationBarrier(false);
+            }
+        }
+        void finish(bool committed) noexcept
+        {
+            application.finishSharedPresentationNotificationBarrier(committed);
+            active = false;
+        }
+        Application& application;
+        bool active {true};
+    } notificationBarrier {*Application::Instance};
+
+    auto result = d->sharedPresentationCoordinator.commit(
+        d->sharedPresentationRevisions, request, callbacks);
+    if (atomicBoundaryResult
+        && atomicBoundaryResult->status == App::DocumentCommitStatus::RollbackFailed) {
+        result.status = SharedPresentationCommitStatus::RollbackFailed;
+        result.diagnostic = App::documentCommitStatusName(atomicBoundaryResult->status);
+        if (!atomicBoundaryResult->message.empty()) {
+            result.diagnostic += ": ";
+            result.diagnostic += atomicBoundaryResult->message;
+        }
+    }
+    notificationBarrier.finish(result.publishedPresentation.has_value());
+    return result;
+}
+
+void Document::storePersonalViewContext(std::string actorId, PersonalViewContext context)
+{
+    d->personalViewContexts.store(std::move(actorId), std::move(context));
+}
+
+std::optional<PersonalViewContext>
+Document::personalViewContext(const std::string& actorId) const
+{
+    return d->personalViewContexts.snapshot(actorId);
+}
+
+bool Document::removePersonalViewContext(const std::string& actorId)
+{
+    return d->personalViewContexts.remove(actorId);
+}
+
+PersonalViewRenderStatus Document::applyPersonalViewContext(
+    const std::string& actorId,
+    const PersonalViewRendererCallbacks& renderer) const
+{
+    Gui::requireMainThread("Gui::Document::applyPersonalViewContext");
+    return d->personalViewContexts.applyAndRender(actorId, renderer);
+}
+
+namespace
+{
+
+struct PersonalSelectionTarget
+{
+    std::string document;
+    std::string object;
+    std::string subname;
+};
+
+PersonalSelectionTarget parsePersonalSelectionTarget(const App::Document& document,
+                                                     const PersonalViewContext& context,
+                                                     const std::string& encoded)
+{
+    if (encoded.empty()) {
+        throw Base::ValueError("personal selection path must not be empty");
+    }
+    PersonalSelectionTarget target;
+    const auto separator = encoded.find('#');
+    const std::string objectPath = separator == std::string::npos
+        ? encoded
+        : encoded.substr(separator + 1);
+    target.document = separator == std::string::npos
+        ? (context.activeDocument.empty() ? document.getName() : context.activeDocument)
+        : encoded.substr(0, separator);
+    if (target.document != document.getName()) {
+        throw Base::ValueError("personal selection path targets a foreign document");
+    }
+    const auto subSeparator = objectPath.find('.');
+    target.object = objectPath.substr(0, subSeparator);
+    target.subname = subSeparator == std::string::npos
+        ? std::string {}
+        : objectPath.substr(subSeparator + 1);
+    auto* object = document.getObject(target.object.c_str());
+    if (!object) {
+        throw Base::ValueError("personal selection path targets an unknown object");
+    }
+    if (!target.subname.empty() && !object->getSubObject(target.subname.c_str())) {
+        throw Base::ValueError("personal selection path targets an unknown subobject");
+    }
+    return target;
+}
+
+std::vector<PersonalSelectionTarget> personalSelectionTargets(
+    const App::Document& document,
+    const PersonalViewContext& context)
+{
+    std::vector<PersonalSelectionTarget> targets;
+    targets.reserve(context.selectionPaths.size());
+    for (const auto& path : context.selectionPaths) {
+        targets.push_back(parsePersonalSelectionTarget(document, context, path));
+    }
+    return targets;
+}
+
+PersonalViewContext captureViewerSelection(const App::Document& document)
+{
+    PersonalViewContext context;
+    context.activeDocument = document.getName();
+    const auto selected = Selection().getSelectionEx(
+        document.getName(), App::DocumentObject::getClassTypeId(), ResolveMode::NoResolve);
+    for (const auto& item : selected) {
+        if (item.getSubNames().empty()) {
+            context.selectionPaths.emplace_back(item.getFeatName());
+        }
+        else {
+            for (const auto& subname : item.getSubNames()) {
+                context.selectionPaths.emplace_back(
+                    std::string(item.getFeatName()) + "." + subname);
+            }
+        }
+    }
+    const auto& preselection = Selection().getPreselection();
+    if (preselection.pDocName && preselection.pObjectName
+        && std::string_view(document.getName()) == preselection.pDocName) {
+        std::string path(preselection.pObjectName);
+        if (preselection.pSubName && *preselection.pSubName) {
+            path += ".";
+            path += preselection.pSubName;
+        }
+        context.preselectionPath = std::move(path);
+    }
+    return context;
+}
+
+void projectViewerSelection(View3DInventorViewer& viewer,
+                            const App::Document& document,
+                            const PersonalViewContext& context)
+{
+    const auto targets = personalSelectionTargets(document, context);
+    std::optional<PersonalSelectionTarget> preselection;
+    if (context.preselectionPath) {
+        preselection.emplace(
+            parsePersonalSelectionTarget(document, context, *context.preselectionPath));
+    }
+
+    viewer.onSelectionChanged(
+        SelectionChanges(SelectionChanges::RmvPreselect, document.getName()));
+    viewer.onSelectionChanged(
+        SelectionChanges(SelectionChanges::ClrSelection, document.getName()));
+    for (const auto& target : targets) {
+        viewer.onSelectionChanged(SelectionChanges(SelectionChanges::AddSelection,
+                                                   target.document,
+                                                   target.object,
+                                                   target.subname));
+    }
+    if (preselection) {
+        viewer.onSelectionChanged(SelectionChanges(SelectionChanges::SetPreselect,
+                                                   preselection->document,
+                                                   preselection->object,
+                                                   preselection->subname,
+                                                   {},
+                                                   0,
+                                                   0,
+                                                   0,
+                                                   SelectionChanges::MsgSource::Internal));
+    }
+}
+
+View3DInventor* resolvePersonalRenderView(const Document& document,
+                                         const PersonalViewContext& context)
+{
+    if (!context.activeDocument.empty()
+        && context.activeDocument != document.getDocument()->getName()) {
+        throw Base::ValueError("personal context targets a foreign active document");
+    }
+    const auto views = document.getMDIViews();
+    if (!context.activeView.empty()) {
+        for (auto* candidate : views) {
+            auto* view = dynamic_cast<View3DInventor*>(candidate);
+            if (view
+                && (view->objectName().toStdString() == context.activeView
+                    || view->windowTitle().toStdString() == context.activeView)) {
+                return view;
+            }
+        }
+        throw Base::ValueError("personal context targets an unknown 3D view");
+    }
+    if (auto* active = dynamic_cast<View3DInventor*>(document.getActiveView())) {
+        return active;
+    }
+    for (auto* candidate : views) {
+        if (auto* view = dynamic_cast<View3DInventor*>(candidate)) {
+            return view;
+        }
+    }
+    throw Base::RuntimeError("personal context rendering requires an existing 3D view");
+}
+
+void validatePersonalInventorText(
+    std::string_view payload,
+    std::initializer_list<std::string_view> allowedNodeTypes,
+    std::size_t maximumNodes)
+{
+    std::size_t braceDepth = 0;
+    std::size_t bracketDepth = 0;
+    std::size_t nodeCount = 0;
+    std::string_view lastIdentifier;
+    bool inComment = false;
+    for (std::size_t index = 0; index < payload.size();) {
+        const unsigned char byte = static_cast<unsigned char>(payload[index]);
+        if (inComment) {
+            if (byte == '\n' || byte == '\r') {
+                inComment = false;
+            }
+            ++index;
+            continue;
+        }
+        if (byte == '#') {
+            inComment = true;
+            ++index;
+            continue;
+        }
+        if (byte == '"' || byte == '\'' || byte == '\0'
+            || (byte < 0x20 && byte != '\n' && byte != '\r' && byte != '\t')
+            || byte >= 0x7f) {
+            throw Base::ValueError(
+                "personal Inventor payload must be bounded plain ASCII without strings");
+        }
+        if (std::isalpha(byte) || byte == '_') {
+            const auto start = index++;
+            while (index < payload.size()) {
+                const unsigned char next = static_cast<unsigned char>(payload[index]);
+                if (!std::isalnum(next) && next != '_') {
+                    break;
+                }
+                ++index;
+            }
+            lastIdentifier = payload.substr(start, index - start);
+            if (lastIdentifier == "DEF" || lastIdentifier == "USE"
+                || lastIdentifier == "PROTO" || lastIdentifier == "EXTERNPROTO"
+                || lastIdentifier == "ROUTE" || lastIdentifier == "IMPORT"
+                || lastIdentifier == "EXPORT") {
+                throw Base::ValueError(
+                    "personal Inventor payload cannot contain references or prototypes");
+            }
+            continue;
+        }
+        if (byte == '{') {
+            if (std::ranges::find(allowedNodeTypes, lastIdentifier)
+                == allowedNodeTypes.end()) {
+                throw Base::ValueError(
+                    "personal Inventor payload names a disallowed node type");
+            }
+            if (++nodeCount > maximumNodes || ++braceDepth > 64) {
+                throw Base::ValueError("personal Inventor payload exceeds graph limits");
+            }
+            lastIdentifier = {};
+        }
+        else if (byte == '}') {
+            if (braceDepth == 0) {
+                throw Base::ValueError("personal Inventor payload has unbalanced braces");
+            }
+            --braceDepth;
+            lastIdentifier = {};
+        }
+        else if (byte == '[') {
+            if (++bracketDepth > 64) {
+                throw Base::ValueError("personal Inventor payload exceeds field nesting limits");
+            }
+            lastIdentifier = {};
+        }
+        else if (byte == ']') {
+            if (bracketDepth == 0) {
+                throw Base::ValueError("personal Inventor payload has unbalanced brackets");
+            }
+            --bracketDepth;
+            lastIdentifier = {};
+        }
+        ++index;
+    }
+    if (nodeCount == 0 || braceDepth != 0 || bracketDepth != 0) {
+        throw Base::ValueError("personal Inventor payload is empty or unbalanced");
+    }
+}
+
+CoinPtr<SoNode> parsePersonalCamera(const PersonalViewContext& context)
+{
+    if (context.camera.empty()) {
+        if (!context.projection.empty()) {
+            throw Base::ValueError(
+                "personal projection requires a complete serialized camera");
+        }
+        return {};
+    }
+    validatePersonalInventorText(
+        context.camera,
+        {"OrthographicCamera",
+         "PerspectiveCamera",
+         "SoOrthographicCamera",
+         "SoPerspectiveCamera"},
+        1);
+    SoInput input;
+    input.setBuffer(context.camera.data(), context.camera.size());
+    SoNode* parsed = nullptr;
+    if (!SoDB::read(&input, parsed) || !parsed
+        || !parsed->isOfType(SoCamera::getClassTypeId())) {
+        throw Base::ValueError("personal camera is not a valid Inventor camera");
+    }
+    CoinPtr<SoNode> camera(parsed);
+    const auto type = parsed->getTypeId();
+    const bool orthographic = type == SoOrthographicCamera::getClassTypeId();
+    const bool perspective = type == SoPerspectiveCamera::getClassTypeId();
+    if (!orthographic && !perspective) {
+        throw Base::ValueError("personal camera type is not supported");
+    }
+    if (!context.projection.empty()
+        && context.projection != (orthographic ? "Orthographic" : "Perspective")) {
+        throw Base::ValueError("personal projection does not match the serialized camera");
+    }
+    return camera;
+}
+
+bool safePersonalOverlayNode(const SoNode& node,
+                             std::size_t depth,
+                             std::size_t& count) noexcept
+{
+    if (depth > 64 || ++count > 10000) {
+        return false;
+    }
+    const auto type = node.getTypeId();
+    const bool group = type == SoSeparator::getClassTypeId()
+        || type == SoGroup::getClassTypeId();
+    const bool leaf = type == SoBaseColor::getClassTypeId()
+        || type == SoMaterial::getClassTypeId()
+        || type == SoDrawStyle::getClassTypeId()
+        || type == SoCoordinate3::getClassTypeId()
+        || type == SoLineSet::getClassTypeId();
+    if (!group && !leaf) {
+        return false;
+    }
+    if (group) {
+        const auto& children = static_cast<const SoGroup&>(node);
+        for (int index = 0; index < children.getNumChildren(); ++index) {
+            if (!safePersonalOverlayNode(*children.getChild(index), depth + 1, count)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+CoinPtr<SoSeparator> parsePersonalOverlays(const PersonalViewContext& context)
+{
+    if (context.temporaryOverlays.empty()) {
+        return {};
+    }
+    std::unordered_set<std::string> identifiers;
+    identifiers.reserve(context.temporaryOverlays.size());
+    std::size_t payloadBytes = 0;
+    CoinPtr<SoSeparator> combined(new SoSeparator);
+    for (const auto& overlay : context.temporaryOverlays) {
+        if (overlay.identifier.empty() || !identifiers.insert(overlay.identifier).second) {
+            throw Base::ValueError("personal overlays require distinct nonempty identifiers");
+        }
+        if (overlay.kind != "coin-v1") {
+            throw Base::ValueError("personal overlay kind is not supported");
+        }
+        payloadBytes += overlay.payload.size();
+        if (payloadBytes > 1024 * 1024) {
+            throw Base::ValueError("personal overlay payload exceeds the native limit");
+        }
+        validatePersonalInventorText(
+            overlay.payload,
+            {"Separator",
+             "Group",
+             "BaseColor",
+             "Material",
+             "DrawStyle",
+             "Coordinate3",
+             "LineSet",
+             "SoSeparator",
+             "SoGroup",
+             "SoBaseColor",
+             "SoMaterial",
+             "SoDrawStyle",
+             "SoCoordinate3",
+             "SoLineSet"},
+            10000);
+        SoInput input;
+        input.setBuffer(overlay.payload.data(), overlay.payload.size());
+        CoinPtr<SoSeparator> parsed(SoDB::readAll(&input));
+        std::size_t nodeCount = 0;
+        if (!parsed || !safePersonalOverlayNode(*parsed, 0, nodeCount)) {
+            throw Base::ValueError("personal overlay contains an invalid or unsafe node graph");
+        }
+        combined->addChild(parsed.get());
+    }
+    return combined;
+}
+
+QColor personalRenderBackground(const std::string& value)
+{
+    if (value == "Current") {
+        return {};
+    }
+    if (value == "Transparent") {
+        return QColor(255, 255, 255, 0);
+    }
+    const QColor color(QString::fromStdString(value));
+    if (!color.isValid()) {
+        throw Base::ValueError("personal render background is invalid");
+    }
+    return color;
+}
+
+}  // namespace
+
+std::optional<std::vector<std::uint8_t>> Document::renderPersonalViewContext(
+    const std::string& actorId,
+    const PersonalViewImageOptions& options) const
+{
+    Gui::requireMainThread("Gui::Document::renderPersonalViewContext");
+    if ((options.width != -1 && (options.width < 1 || options.width > 4096))
+        || (options.height != -1 && (options.height < 1 || options.height > 4096))
+        || (options.width > 0 && options.height > 0
+            && static_cast<std::uint64_t>(options.width)
+                    * static_cast<std::uint64_t>(options.height)
+                > 16U * 1024U * 1024U)
+        || options.samples < -1 || options.samples > 64) {
+        throw Base::ValueError("personal render image options exceed native limits");
+    }
+    const auto expected = d->personalViewContexts.snapshot(actorId);
+    if (!expected) {
+        return std::nullopt;
+    }
+
+    auto* view = resolvePersonalRenderView(*this, *expected);
+    auto* viewer = view->getViewer();
+    if (!viewer) {
+        throw Base::RuntimeError("personal context target has no renderer");
+    }
+    auto* renderManager = viewer->getSoRenderManager();
+    if (!renderManager) {
+        throw Base::RuntimeError("personal context target has no render manager");
+    }
+    const auto viewport = renderManager->getViewportRegion().getViewportSizePixels();
+    PersonalViewImageOptions effectiveOptions = options;
+    effectiveOptions.width = options.width > 0 ? options.width : viewport[0];
+    effectiveOptions.height = options.height > 0 ? options.height : viewport[1];
+    effectiveOptions.samples = options.samples >= 0
+        ? options.samples
+        : View3DInventorViewer::getNumSamples();
+    if (effectiveOptions.width < 1 || effectiveOptions.width > 4096
+        || effectiveOptions.height < 1 || effectiveOptions.height > 4096
+        || static_cast<std::uint64_t>(effectiveOptions.width)
+                * static_cast<std::uint64_t>(effectiveOptions.height)
+            > 16U * 1024U * 1024U
+        || effectiveOptions.samples < 0 || effectiveOptions.samples > 64) {
+        throw Base::ValueError(
+            "effective personal render image options exceed native limits");
+    }
+    std::size_t selectionPayloadBytes = 0;
+    if (expected->camera.size() > 1024 * 1024
+        || expected->selectionPaths.size() > 10000
+        || expected->temporaryOverlays.size() > 10000) {
+        throw Base::ValueError("personal render context exceeds native limits");
+    }
+    for (const auto& path : expected->selectionPaths) {
+        selectionPayloadBytes += path.size();
+        if (path.size() > 4096 || selectionPayloadBytes > 1024 * 1024) {
+            throw Base::ValueError("personal selection paths exceed native limits");
+        }
+    }
+    if (expected->preselectionPath && expected->preselectionPath->size() > 4096) {
+        throw Base::ValueError("personal preselection path exceeds native limits");
+    }
+    auto camera = parsePersonalCamera(*expected);
+    auto overlays = parsePersonalOverlays(*expected);
+    const QColor background = personalRenderBackground(options.background);
+    std::vector<std::uint8_t> png;
+
+    PersonalViewRendererCallbacks renderer;
+    renderer.captureState = [this] {
+        return captureViewerSelection(*d->_pcDocument);
+    };
+    renderer.applyState = [this, viewer, expected](const PersonalViewContext& context) {
+        if (context != *expected) {
+            throw Base::RuntimeError("personal context changed during render admission");
+        }
+        projectViewerSelection(*viewer, *d->_pcDocument, context);
+    };
+    renderer.render = [viewer,
+                       &camera,
+                       &overlays,
+                       &png,
+                       effectiveOptions,
+                       background] {
+        View3DInventorViewer::RenderImageOptions renderOptions;
+        renderOptions.width = effectiveOptions.width;
+        renderOptions.height = effectiveOptions.height;
+        renderOptions.samples = effectiveOptions.samples;
+        renderOptions.background = background;
+        renderOptions.intent = View3DInventorViewer::RenderIntent::RasterCapture;
+        const QImage image = viewer->renderToImage(
+            renderOptions,
+            dynamic_cast<SoCamera*>(camera.get()),
+            overlays.get());
+        if (image.isNull()) {
+            throw Base::RuntimeError("personal context renderer returned an empty image");
+        }
+        QByteArray encoded;
+        QBuffer buffer(&encoded);
+        if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
+            throw Base::RuntimeError("personal context PNG encoding failed");
+        }
+        const auto* first = reinterpret_cast<const std::uint8_t*>(encoded.constData());
+        png.assign(first, first + encoded.size());
+    };
+    renderer.restoreState = PersonalViewRestoreCallback(
+        [this, viewer](const PersonalViewContext& prior) noexcept {
+            try {
+                projectViewerSelection(*viewer, *d->_pcDocument, prior);
+            }
+            catch (const std::exception& exception) {
+                FC_ERR("Cannot restore viewer selection after personal render: "
+                       << exception.what());
+            }
+            catch (...) {
+                FC_ERR("Cannot restore viewer selection after personal render");
+            }
+        });
+
+    const auto status = d->personalViewContexts.applyAndRender(actorId, renderer);
+    if (status == PersonalViewRenderStatus::ActorNotFound) {
+        return std::nullopt;
+    }
+    return png;
 }
 
 void Document::setIsActive(bool active)
@@ -2008,6 +2845,9 @@ void Document::Restore(Base::XMLReader& reader)
  */
 void Document::RestoreDocFile(Base::Reader& reader)
 {
+    // GuiDocument.xml retains the legacy local-human camera/tree defaults for
+    // file compatibility. Actor-scoped PersonalViewContext values are never
+    // restored from the shared document and remain transient.
     // We must create an XML parser to read from the input stream
     std::shared_ptr<Base::XMLReader> localreader
         = std::make_shared<Base::XMLReader>("GuiDocument.xml", reader);
@@ -2134,6 +2974,19 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
     // reset modified flag
     setModified(doc.testStatus(App::Document::LinkStampChanged));
 
+    // Loading establishes the durable presentation baseline for this document
+    // epoch.  Subsequent ViewProvider publications are dirty until a save
+    // advances this marker again.
+    syncSharedPresentationIdentity();
+    const auto restoredPresentation =
+        d->sharedPresentationRevisions.capturePersistence();
+    const auto persisted = d->sharedPresentationRevisions.markPersisted(
+        restoredPresentation, SharedPresentationSaveDisposition::Succeeded);
+    if (persisted != SharedPresentationPersistStatus::Marked) {
+        d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+        FC_ERR("Cannot establish shared-presentation persisted marker after restore");
+    }
+
     const std::string documentName = doc.getName();
     QTimer::singleShot(0, [documentName]() {
         if (!Gui::Application::Instance || !Gui::getMainWindow()) {
@@ -2153,6 +3006,16 @@ void Document::slotFinishSaveDocument(
 )
 {
     if (d->_pcDocument == &doc) {
+        if (d->pendingPresentationSave) {
+            const auto status = d->sharedPresentationRevisions.markPersisted(
+                *d->pendingPresentationSave,
+                SharedPresentationSaveDisposition::Succeeded);
+            d->pendingPresentationSave.reset();
+            if (status != SharedPresentationPersistStatus::Marked) {
+                d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+                FC_ERR("Cannot advance shared-presentation persisted marker after save");
+            }
+        }
         WindowLayout::save(*this, fileName);
     }
 }
@@ -2171,6 +3034,11 @@ void Document::slotShowHidden(const App::Document& doc)
  */
 void Document::SaveDocFile(Base::Writer& writer) const
 {
+    syncSharedPresentationIdentity();
+    d->pendingPresentationSave = d->sharedPresentationRevisions.capturePersistence();
+
+    // Persist ViewProvider presentation as before, but never serialize the
+    // actor-scoped PersonalViewContext store or let it affect modified state.
     writer.Stream() << "<?xml version='1.0' encoding='utf-8'?>" << std::endl
                     << "<!--" << std::endl
                     << " FreeCAD Document, see https://www.freecad.org for more information…"

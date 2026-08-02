@@ -26,6 +26,7 @@ MutationClassificationInput objectSite(CollaborationMutationSource source,
         CollaborationContainerKind::DocumentObject,
         "Cube",
         "object-41",
+        "Length",
     };
 }
 
@@ -46,14 +47,24 @@ void expectOnlyWildcard(const MutationClassificationInput& input)
 
 }  // namespace
 
-TEST(MutationClassificationTest, classifiesObjectModelValueWithoutWildcard)
+TEST(MutationClassificationTest, classifiesObjectPropertyValueWithoutWildcard)
 {
     const auto effects = classifyMutation(objectSite(CollaborationMutationSource::PropertyValue,
                                                      MutationKind::PropertyWrite,
                                                      CollaborationPropertyFamily::ModelValue));
 
     ASSERT_EQ(effects.size(), 1U);
-    expectEffect(effects.front(), DocumentRevisionKey::objectModel("Cube"), "object-41");
+    expectEffect(
+        effects.front(), DocumentRevisionKey::objectProperty("Cube", "Length"), "object-41");
+}
+
+TEST(MutationClassificationTest, knownSharedVisibilityIsModelRevisionNeutral)
+{
+    auto input = objectSite(CollaborationMutationSource::PropertyValue,
+                            MutationKind::PropertyWrite,
+                            CollaborationPropertyFamily::ModelValue);
+    input.propertyName = "Visibility";
+    EXPECT_TRUE(classifyMutation(input).empty());
 }
 
 TEST(MutationClassificationTest, classifiesLinkValueAsObjectAndDocumentStructure)
@@ -84,6 +95,7 @@ TEST(MutationClassificationTest, classifiesPropertyStatusAtItsContainerScope)
         CollaborationContainerKind::Document,
         {},
         std::nullopt,
+        {},
     };
     const auto documentEffects = classifyMutation(documentSite);
     ASSERT_EQ(documentEffects.size(), 1U);
@@ -106,6 +118,7 @@ TEST(MutationClassificationTest, classifiesDynamicPropertySchemaAtItsContainerSc
         CollaborationContainerKind::Document,
         {},
         std::nullopt,
+        {},
     };
     const auto documentEffects = classifyMutation(documentSite);
     ASSERT_EQ(documentEffects.size(), 1U);
@@ -210,6 +223,7 @@ TEST(MutationClassificationTest, incompleteOrContradictoryObjectIdentityFallsBac
         CollaborationContainerKind::Document,
         "Cube",
         std::nullopt,
+        {},
     };
     expectOnlyWildcard(documentSite);
     documentSite.objectName.clear();
@@ -288,6 +302,7 @@ TEST(MutationClassificationTest, everyUnrecognizedValidTupleFallsBackToWildcard)
                         container,
                         objectContainer ? "Cube" : "",
                         objectContainer ? std::optional<std::string> {"object-41"} : std::nullopt,
+                        objectContainer ? "Length" : "",
                     };
                     const bool supportedPropertyValue =
                         source == CollaborationMutationSource::PropertyValue

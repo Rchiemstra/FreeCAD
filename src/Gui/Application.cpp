@@ -227,6 +227,14 @@ public:
 // Pimpl class
 struct ApplicationP
 {
+    struct DeferredPresentationNotification
+    {
+        const Gui::ViewProvider* viewProvider {nullptr};
+        const App::Property* property {nullptr};
+        bool beforeChange {false};
+        bool delayActions {false};
+    };
+
     explicit ApplicationP(bool GUIenabled)
     {
         // create the macro manager
@@ -266,6 +274,14 @@ struct ApplicationP
     /// Handles all commands
     CommandManager commandManager;
     ViewProviderMap viewproviderMap;
+    bool sharedPresentationNotificationBarrier {false};
+    bool sharedPresentationNotificationAuditViolated {false};
+    bool sharedPresentationAppDurable {false};
+    bool sharedPresentationNotificationReplay {false};
+    bool sharedPresentationStructureMutationBlocked {false};
+    bool suppressCurrentSharedPresentationPublication {true};
+    Application::SharedPresentationNotificationAudit sharedPresentationNotificationAudit;
+    std::vector<DeferredPresentationNotification> deferredPresentationNotifications;
     std::bitset<32> StatusBits;
 };
 
@@ -1386,8 +1402,199 @@ void Application::slotDeletedObject(const ViewProvider& vp)
 
 void Application::slotChangedObject(const ViewProvider& vp, const App::Property& prop)
 {
-    this->signalChangedObject(vp, prop);
-    updateActions(true);
+    notifyChangedObject(vp, prop, true);
+}
+
+void Application::beginSharedPresentationNotificationBarrier(
+    SharedPresentationNotificationAudit audit)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        throw Base::RuntimeError("nested shared-presentation notification barrier");
+    }
+    d->deferredPresentationNotifications.clear();
+    d->deferredPresentationNotifications.reserve(64);
+    d->sharedPresentationNotificationAudit = std::move(audit);
+    d->sharedPresentationNotificationAuditViolated = false;
+    d->sharedPresentationAppDurable = false;
+    d->sharedPresentationStructureMutationBlocked = true;
+    d->sharedPresentationNotificationBarrier = true;
+}
+
+bool Application::sharedPresentationNotificationAuditViolated() const noexcept
+{
+    return d->sharedPresentationNotificationBarrier
+        && d->sharedPresentationNotificationAuditViolated;
+}
+
+void Application::markSharedPresentationAppDurable() noexcept
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        d->sharedPresentationAppDurable = true;
+    }
+}
+
+bool Application::suppressCurrentSharedPresentationPublication() const noexcept
+{
+    return !d->sharedPresentationNotificationReplay
+        || d->suppressCurrentSharedPresentationPublication;
+}
+
+void Application::ensureSharedPresentationStructureMutationAllowed() const
+{
+    if (d->sharedPresentationStructureMutationBlocked) {
+        throw Base::RuntimeError(
+            "GUI provider and dynamic-property structure changes are unavailable across a shared-presentation boundary");
+    }
+}
+
+void Application::finishSharedPresentationNotificationBarrier(bool committed) noexcept
+{
+    if (!d->sharedPresentationNotificationBarrier) {
+        return;
+    }
+    d->sharedPresentationNotificationBarrier = false;
+    d->sharedPresentationNotificationAudit = {};
+    d->sharedPresentationNotificationAuditViolated = false;
+    d->sharedPresentationAppDurable = false;
+    auto notifications = std::move(d->deferredPresentationNotifications);
+    d->deferredPresentationNotifications.clear();
+    if (!committed) {
+        d->sharedPresentationStructureMutationBlocked = false;
+        return;
+    }
+
+    d->sharedPresentationNotificationReplay = true;
+    const auto finishReplay = qScopeGuard([this]() {
+        d->sharedPresentationNotificationReplay = false;
+        d->suppressCurrentSharedPresentationPublication = true;
+        d->sharedPresentationStructureMutationBlocked = false;
+    });
+    for (const auto& notification : notifications) {
+        if (!notification.viewProvider || !notification.property) {
+            continue;
+        }
+        d->suppressCurrentSharedPresentationPublication = true;
+        try {
+            if (notification.beforeChange) {
+                signalBeforeChangeObject(*notification.viewProvider, *notification.property);
+            }
+            else {
+                signalChangedObject(*notification.viewProvider, *notification.property);
+                updateActions(notification.delayActions);
+            }
+        }
+        catch (const Base::Exception& exception) {
+            FC_ERR("Deferred shared-presentation GUI observer failed: " << exception.what());
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Deferred shared-presentation GUI observer failed: " << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Deferred shared-presentation GUI observer failed with an unknown exception");
+        }
+    }
+}
+
+void Application::preflightSharedPresentationPropertyMutation(
+    const ViewProvider& viewProvider,
+    const App::Property& property)
+{
+    if (!d->sharedPresentationNotificationBarrier
+        || d->sharedPresentationAppDurable) {
+        return;
+    }
+    try {
+        if (d->sharedPresentationNotificationAudit
+            && !d->sharedPresentationNotificationAudit(viewProvider, property)) {
+            d->sharedPresentationNotificationAuditViolated = true;
+            throw Base::RuntimeError(
+                "atomic presentation callback attempted an undeclared GUI property mutation");
+        }
+    }
+    catch (const Base::Exception&) {
+        d->sharedPresentationNotificationAuditViolated = true;
+        throw;
+    }
+    catch (...) {
+        d->sharedPresentationNotificationAuditViolated = true;
+        throw Base::RuntimeError(
+            "atomic presentation GUI property audit failed before mutation");
+    }
+}
+
+void Application::notifyBeforeChangeObject(const ViewProvider& vp, const App::Property& prop)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        if (!d->sharedPresentationAppDurable) {
+            preflightSharedPresentationPropertyMutation(vp, prop);
+            d->deferredPresentationNotifications.push_back({&vp, &prop, true, false});
+            return;
+        }
+        const bool priorReplay = d->sharedPresentationNotificationReplay;
+        const bool priorSuppression = d->suppressCurrentSharedPresentationPublication;
+        d->sharedPresentationNotificationReplay = true;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, priorReplay, priorSuppression]() {
+            d->sharedPresentationNotificationReplay = priorReplay;
+            d->suppressCurrentSharedPresentationPublication = priorSuppression;
+        });
+        signalBeforeChangeObject(vp, prop);
+        return;
+    }
+    if (d->sharedPresentationNotificationReplay) {
+        const bool prior = d->suppressCurrentSharedPresentationPublication;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, prior]() {
+            d->suppressCurrentSharedPresentationPublication = prior;
+        });
+        signalBeforeChangeObject(vp, prop);
+        return;
+    }
+    signalBeforeChangeObject(vp, prop);
+}
+
+void Application::notifyChangedObject(const ViewProvider& vp,
+                                      const App::Property& prop,
+                                      bool delayActions)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        if (d->sharedPresentationAppDurable) {
+            const bool priorReplay = d->sharedPresentationNotificationReplay;
+            const bool priorSuppression = d->suppressCurrentSharedPresentationPublication;
+            d->sharedPresentationNotificationReplay = true;
+            d->suppressCurrentSharedPresentationPublication = false;
+            const auto restore = qScopeGuard([this, priorReplay, priorSuppression]() {
+                d->sharedPresentationNotificationReplay = priorReplay;
+                d->suppressCurrentSharedPresentationPublication = priorSuppression;
+            });
+            signalChangedObject(vp, prop);
+            updateActions(delayActions);
+            return;
+        }
+        try {
+            if (d->sharedPresentationNotificationAudit
+                && !d->sharedPresentationNotificationAudit(vp, prop)) {
+                d->sharedPresentationNotificationAuditViolated = true;
+            }
+        }
+        catch (...) {
+            d->sharedPresentationNotificationAuditViolated = true;
+        }
+        d->deferredPresentationNotifications.push_back({&vp, &prop, false, delayActions});
+        return;
+    }
+    if (d->sharedPresentationNotificationReplay) {
+        const bool prior = d->suppressCurrentSharedPresentationPublication;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, prior]() {
+            d->suppressCurrentSharedPresentationPublication = prior;
+        });
+        signalChangedObject(vp, prop);
+        updateActions(delayActions);
+        return;
+    }
+    signalChangedObject(vp, prop);
+    updateActions(delayActions);
 }
 
 void Application::slotRelabelObject(const ViewProvider& vp)

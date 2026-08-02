@@ -212,6 +212,33 @@ class Document(Persistence):
         Aborts the current transaction of the document
         """
         ...
+
+    def storePersonalViewContext(self, actor_id: str, context: dict[str, object], /) -> None:
+        """Store an actor-scoped, transient personal view context by value."""
+        ...
+
+    @constmethod
+    def getPersonalViewContext(self, actor_id: str, /) -> Optional[dict[str, object]]:
+        """Return a copied personal view context, or None when the actor is absent."""
+        ...
+
+    def removePersonalViewContext(self, actor_id: str, /) -> bool:
+        """Remove one actor context without changing document revisions or dirty state."""
+        ...
+
+    @constmethod
+    def renderPersonalViewContext(
+        self,
+        actor_id: str,
+        width: int = -1,
+        height: int = -1,
+        background: str = "Current",
+        samples: int = -1,
+        /,
+    ) -> Optional[bytes]:
+        """Render a stored actor context to PNG bytes through the native renderer."""
+        ...
+
     ActiveObject: Any = ...
     """The active object of the document."""
 

@@ -546,6 +546,26 @@ PyMethodDef ApplicationPy::Methods[] = {
      "Get a document.\n"
      "\n"
      "doc : str, App.Document\n    `App.Document` name or `App.Document` object."},
+    {"storePersonalViewContext",
+     (PyCFunction)ApplicationPy::sStorePersonalViewContext,
+     METH_VARARGS,
+     "storePersonalViewContext(document_name, actor_id, context) -> None\n"
+     "Store a transient actor-scoped view context on one GUI document."},
+    {"getPersonalViewContext",
+     (PyCFunction)ApplicationPy::sGetPersonalViewContext,
+     METH_VARARGS,
+     "getPersonalViewContext(document_name, actor_id) -> dict or None\n"
+     "Return a copied transient actor-scoped view context."},
+    {"removePersonalViewContext",
+     (PyCFunction)ApplicationPy::sRemovePersonalViewContext,
+     METH_VARARGS,
+     "removePersonalViewContext(document_name, actor_id) -> bool\n"
+     "Remove a transient actor-scoped view context."},
+    {"renderPersonalViewContext",
+     (PyCFunction)ApplicationPy::sRenderPersonalViewContext,
+     METH_VARARGS,
+     "renderPersonalViewContext(document_name, actor_id, width=-1, height=-1, background='Current', samples=-1) -> bytes or None\n"
+     "Render one stored personal context to PNG through the native renderer."},
     {"doCommand",
      (PyCFunction)ApplicationPy::sDoCommand,
      METH_VARARGS,
@@ -909,6 +929,104 @@ PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
 
     PyErr_SetString(PyExc_TypeError, "Either string or App.Document expected");
     return nullptr;
+}
+
+PyObject* ApplicationPy::sStorePersonalViewContext(PyObject* /*self*/, PyObject* args)
+{
+    requirePythonMainThread("FreeCADGui.storePersonalViewContext");
+    const char* documentName = nullptr;
+    const char* actorId = nullptr;
+    PyObject* context = nullptr;
+    if (!PyArg_ParseTuple(args, "ssO", &documentName, &actorId, &context)) {
+        return nullptr;
+    }
+    Document* document = Application::Instance->getDocument(documentName);
+    if (!document) {
+        PyErr_Format(PyExc_NameError, "Unknown document '%s'", documentName);
+        return nullptr;
+    }
+    PyObject* documentObject = document->getPyObject();
+    PyObject* result =
+        PyObject_CallMethod(documentObject, "storePersonalViewContext", "sO", actorId, context);
+    Py_DECREF(documentObject);
+    return result;
+}
+
+PyObject* ApplicationPy::sGetPersonalViewContext(PyObject* /*self*/, PyObject* args)
+{
+    requirePythonMainThread("FreeCADGui.getPersonalViewContext");
+    const char* documentName = nullptr;
+    const char* actorId = nullptr;
+    if (!PyArg_ParseTuple(args, "ss", &documentName, &actorId)) {
+        return nullptr;
+    }
+    Document* document = Application::Instance->getDocument(documentName);
+    if (!document) {
+        PyErr_Format(PyExc_NameError, "Unknown document '%s'", documentName);
+        return nullptr;
+    }
+    PyObject* documentObject = document->getPyObject();
+    PyObject* result = PyObject_CallMethod(documentObject, "getPersonalViewContext", "s", actorId);
+    Py_DECREF(documentObject);
+    return result;
+}
+
+PyObject* ApplicationPy::sRemovePersonalViewContext(PyObject* /*self*/, PyObject* args)
+{
+    requirePythonMainThread("FreeCADGui.removePersonalViewContext");
+    const char* documentName = nullptr;
+    const char* actorId = nullptr;
+    if (!PyArg_ParseTuple(args, "ss", &documentName, &actorId)) {
+        return nullptr;
+    }
+    Document* document = Application::Instance->getDocument(documentName);
+    if (!document) {
+        PyErr_Format(PyExc_NameError, "Unknown document '%s'", documentName);
+        return nullptr;
+    }
+    PyObject* documentObject = document->getPyObject();
+    PyObject* result =
+        PyObject_CallMethod(documentObject, "removePersonalViewContext", "s", actorId);
+    Py_DECREF(documentObject);
+    return result;
+}
+
+PyObject* ApplicationPy::sRenderPersonalViewContext(PyObject* /*self*/, PyObject* args)
+{
+    requirePythonMainThread("FreeCADGui.renderPersonalViewContext");
+    const char* documentName = nullptr;
+    const char* actorId = nullptr;
+    const char* background = "Current";
+    int width = -1;
+    int height = -1;
+    int samples = -1;
+    if (!PyArg_ParseTuple(args,
+                          "ss|iisi",
+                          &documentName,
+                          &actorId,
+                          &width,
+                          &height,
+                          &background,
+                          &samples)) {
+        return nullptr;
+    }
+    Document* document = Application::Instance->getDocument(documentName);
+    if (!document) {
+        PyErr_Format(PyExc_NameError, "Unknown document '%s'", documentName);
+        return nullptr;
+    }
+    PyObject* documentObject = document->getPyObject();
+    PyObject* result = PyObject_CallMethod(
+        documentObject,
+        "renderPersonalViewContext",
+        "siisi",
+        actorId,
+        width,
+        height,
+        background,
+        samples);
+    Py_DECREF(documentObject);
+    return result;
 }
 
 PyObject* ApplicationPy::sHide(PyObject* /*self*/, PyObject* args)

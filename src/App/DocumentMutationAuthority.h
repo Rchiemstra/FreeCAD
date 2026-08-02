@@ -134,6 +134,15 @@ private:
 /** Resolve owning document from a property container, if any. */
 AppExport Document* documentFromPropertyContainer(const class PropertyContainer* container);
 
+/**
+ * Bind one atomic presentation callback to its target document on this thread.
+ * Mutation funnels use this guard to reject cross-document side effects before
+ * they can escape the target document's native rollback transaction.
+ */
+AppExport void beginAtomicPresentationMutationTarget(Document& document);
+AppExport void endAtomicPresentationMutationTarget(const Document& document) noexcept;
+AppExport void enforceAtomicPresentationMutationTarget(const Document& document);
+
 /** Build a minimal context and enforce for the given document/kind. */
 AppExport void enforceDocumentMutation(Document* document,
                                        MutationKind kind,
