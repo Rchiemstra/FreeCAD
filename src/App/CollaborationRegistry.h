@@ -14,6 +14,7 @@ namespace App
 {
 
 class Document;
+class Application;
 
 using DocumentInstanceId = std::uint64_t;
 using DocumentLifecycleEpoch = std::uint64_t;
@@ -83,11 +84,18 @@ public:
         DocumentLifecycleEpoch lifecycleEpoch) const;
 
 private:
+    friend class Application;
+
     using IdentityByDocument = std::unordered_map<const Document*, DocumentIdentity>;
     using IdentityByInstance = std::unordered_map<DocumentInstanceId, DocumentIdentity>;
 
     [[nodiscard]] static DocumentInstanceId allocateInstanceId();
     [[nodiscard]] static DocumentLifecycleEpoch allocateLifecycleEpoch();
+
+    [[nodiscard]] DocumentLifecycleEpoch reserveLifecycleEpoch();
+    [[nodiscard]] std::optional<DocumentIdentity> advanceEpoch(
+        const Document& document,
+        DocumentLifecycleEpoch reservedEpoch);
 
     void updateIdentityLocked(const Document* document, const DocumentIdentity& identity);
     void retainTombstoneLocked(const DocumentIdentity& identity);

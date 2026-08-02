@@ -128,6 +128,7 @@
 #include "DocumentCollaborationService.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
+#include "RecoverySnapshot.h"
 #include "FeaturePython.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
@@ -951,6 +952,81 @@ bool Application::closeDocument(const char* name)
 const CollaborationRegistry& Application::collaborationRegistry() const
 {
     return *_collaborationRegistry;
+}
+
+DocumentIdentity Application::advanceDocumentCollaborationEpoch(
+    Document& document,
+    const RecoverySnapshotSaveOptions& recoveryOptions,
+    std::string reason)
+{
+    auto lifecycleAccess = document.collaborationService().pinDocumentAccess();
+    if (!lifecycleAccess) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery cannot start while close is sealed");
+    }
+    if (!document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires the document owner thread");
+    }
+
+    const auto found = DocMap.find(document.getName());
+    if (found == DocMap.end() || found->second != &document) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires a live registered document");
+    }
+
+    std::vector<PreparedEditExecutionId> executionIds;
+    DocumentIdentity advancedIdentity;
+    bool lifecyclePinned = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (lifecyclePinned) {
+            document.finishCollaborationStableReadCapture();
+        }
+    };
+    {
+        std::lock_guard serialized(document.collaborationCommitMutex());
+        const auto identity = _collaborationRegistry->identity(document);
+        if (!identity || identity->state != DocumentLifecycleState::Live) {
+            throw Base::RuntimeError(
+                "administrative collaboration recovery targets a non-live document");
+        }
+        if (document.collaborationNotificationsReplaying()
+            || document.collaborationStableReadBlocked()
+            || document.collaborationLifecycleMutationBlocked()) {
+            throw Base::RuntimeError(
+                "administrative collaboration recovery requires a stable document boundary");
+        }
+
+        if (!writeRecoverySnapshotToTransientDir(document, recoveryOptions)) {
+            throw Base::RuntimeError("failed to preserve administrative recovery snapshot");
+        }
+
+        // Reserve the only potentially-throwing lifecycle resource before
+        // cancelling sessions. This prevents epoch exhaustion from leaving an
+        // old live epoch with partially cancelled work.
+        const auto reservedEpoch = _collaborationRegistry->reserveLifecycleEpoch();
+        executionIds = document.collaborationService().cancelAllForLifecycle(
+            std::move(reason));
+        const auto advanced = _collaborationRegistry->advanceEpoch(document, reservedEpoch);
+        if (!advanced) {
+            throw Base::RuntimeError(
+                "document collaboration epoch could not be advanced");
+        }
+        advancedIdentity = *advanced;
+        document.collaborationRevisions().bindDocumentIdentity(
+            advancedIdentity.instanceId,
+            advancedIdentity.lifecycleEpoch);
+
+        // Keep close/teardown excluded after releasing the serialization mutex
+        // until executor jobs no longer retain results for the old epoch.
+        document.beginCollaborationStableReadCapture();
+        lifecyclePinned = true;
+    }
+
+    // Never acquire the executor queue while the document serialization
+    // boundary is held. Old detached results are already stale by epoch.
+    document.collaborationService().abandonLifecyclePreparations(executionIds);
+    return advancedIdentity;
 }
 
 void Application::closeAllDocuments()

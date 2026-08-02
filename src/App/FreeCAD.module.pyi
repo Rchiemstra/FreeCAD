@@ -159,6 +159,27 @@ def closeDocument(document: str | Document, /) -> None:
     """Close one document by name or object."""
     ...
 
+def writeRecoverySnapshotToTransientDir(
+    document: Document,
+    *,
+    compressed: bool = True,
+    save_binary_brep: bool = True,
+    save_thumbnail: bool = False,
+) -> bool:
+    """Write one stable recovery snapshot into the document's transient directory."""
+    ...
+
+def advanceDocumentCollaborationEpoch(
+    document: Document,
+    *,
+    reason: str = "administrative recovery",
+    compressed: bool = True,
+    save_binary_brep: bool = True,
+    save_thumbnail: bool = False,
+) -> dict[str, int]:
+    """Preserve recovery state, cancel collaboration work, and advance the live epoch."""
+    ...
+
 # Document queries and observers
 def activeDocument() -> Document | None:
     """Return the current active document, if any."""

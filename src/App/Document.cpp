@@ -2598,7 +2598,7 @@ bool Document::canWriteRecoverySnapshot() const
 {
     return !testStatus(Document::PartialDoc) && !testStatus(Document::TempDoc)
         && !testStatus(Document::Recomputing) && !transactionStateBlocksRecoveryWrite(*d)
-        && !isPerformingTransaction();
+        && !isPerformingTransaction() && !mustExecute();
 }
 
 // Save the document under the name it has been opened

@@ -75,6 +75,8 @@ class ApplicationObserver;
 class Property;
 class AutoTransaction;
 class ExtensionContainer;
+struct DocumentIdentity;
+struct RecoverySnapshotSaveOptions;
 
 namespace Internal
 {
@@ -215,6 +217,17 @@ public:
 
     /** Return the process-local registry for live collaboration identities. */
     const CollaborationRegistry& collaborationRegistry() const;
+
+    /**
+     * Preserve a stable native recovery point, cancel collaboration work, and
+     * advance the live document epoch without replacing its runtime instance.
+     * This owner-thread administrative operation never restores persisted
+     * recovery provenance as a live identity.
+     */
+    DocumentIdentity advanceDocumentCollaborationEpoch(
+        Document& document,
+        const RecoverySnapshotSaveOptions& recoveryOptions,
+        std::string reason = "administrative recovery");
     /**
      * @brief Acquire a unique document name from a proposed name.
      *

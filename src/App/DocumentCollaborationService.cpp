@@ -126,58 +126,48 @@ private:
 
 using namespace App;
 
-class DocumentCollaborationService::LifecyclePin
+DocumentCollaborationService::LifecyclePin::LifecyclePin(
+    const DocumentCollaborationService& service)
+    : _gate(service.lifetimeGate())
 {
-public:
-    explicit LifecyclePin(const DocumentCollaborationService& service)
-        : _gate(service.lifetimeGate())
+    if (!_gate) {
+        return;
+    }
     {
-        if (!_gate) {
+        std::lock_guard lock(_gate->mutex);
+        if (_gate->sealed) {
             return;
         }
-        {
-            std::lock_guard lock(_gate->mutex);
-            if (_gate->sealed) {
-                return;
-            }
-            ++_gate->activeAccesses;
-            ++_gate->accessOwners[std::this_thread::get_id()];
-        }
-        _pinned = true;
-        if (const auto hook = _postLifecycleAdmissionTestHook.load(
-                std::memory_order_acquire)) {
-            hook();
-        }
+        ++_gate->activeAccesses;
+        ++_gate->accessOwners[std::this_thread::get_id()];
     }
+    _pinned = true;
+    if (const auto hook = _postLifecycleAdmissionTestHook.load(
+            std::memory_order_acquire)) {
+        hook();
+    }
+}
 
-    ~LifecyclePin()
-    {
-        if (_pinned) {
-            std::lock_guard lock(_gate->mutex);
-            const auto owner = _gate->accessOwners.find(std::this_thread::get_id());
-            if (owner == _gate->accessOwners.end() || _gate->activeAccesses == 0) {
-                return;
-            }
-            if (--owner->second == 0) {
-                _gate->accessOwners.erase(owner);
-            }
-            --_gate->activeAccesses;
-            _gate->changed.notify_all();
+DocumentCollaborationService::LifecyclePin::~LifecyclePin()
+{
+    if (_pinned) {
+        std::lock_guard lock(_gate->mutex);
+        const auto owner = _gate->accessOwners.find(std::this_thread::get_id());
+        if (owner == _gate->accessOwners.end() || _gate->activeAccesses == 0) {
+            return;
         }
+        if (--owner->second == 0) {
+            _gate->accessOwners.erase(owner);
+        }
+        --_gate->activeAccesses;
+        _gate->changed.notify_all();
     }
+}
 
-    LifecyclePin(const LifecyclePin&) = delete;
-    LifecyclePin& operator=(const LifecyclePin&) = delete;
-
-    explicit operator bool() const noexcept
-    {
-        return _pinned;
-    }
-
-private:
-    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
-    bool _pinned {false};
-};
+DocumentCollaborationService::LifecyclePin::operator bool() const noexcept
+{
+    return _pinned;
+}
 
 DocumentCollaborationService::LifecyclePin
 DocumentCollaborationService::pinDocumentAccess() const
@@ -339,6 +329,57 @@ bool DocumentCollaborationService::cancelEdit(const std::string& sessionId, std:
         static_cast<void>(GetApplication().preparedEditExecutor().cancel(executionId));
     }
     return true;
+}
+
+std::vector<PreparedEditExecutionId>
+DocumentCollaborationService::cancelAllForLifecycle(std::string reason)
+{
+    if (reason.empty()) {
+        reason = "cancelled by document lifecycle change";
+    }
+
+    std::vector<PreparedEditExecutionId> executionIds;
+    {
+        std::lock_guard lock(_preparationMutex);
+        executionIds.reserve(_pendingDetachedPreparations.size());
+        for (const auto& [executionId, pending] : _pendingDetachedPreparations) {
+            static_cast<void>(pending);
+            executionIds.push_back(executionId);
+        }
+    }
+
+    {
+        std::lock_guard lock(_sessionMutex);
+        // Allocate every cancellation reason before changing the first
+        // session, so an allocation failure cannot leave a partial lifecycle
+        // cancellation behind.
+        std::vector<std::string> cancellationReasons;
+        cancellationReasons.reserve(_sessions.size());
+        for (std::size_t index = 0; index < _sessions.size(); ++index) {
+            cancellationReasons.push_back(reason);
+        }
+        std::size_t index = 0;
+        for (auto& [sessionId, session] : _sessions) {
+            static_cast<void>(sessionId);
+            session._status = EditSessionStatus::Cancelled;
+            session._cancellationReason = std::move(cancellationReasons[index++]);
+        }
+    }
+
+    {
+        std::lock_guard lock(_preparationMutex);
+        _pendingDetachedPreparations.clear();
+    }
+    return executionIds;
+}
+
+void DocumentCollaborationService::abandonLifecyclePreparations(
+    const std::vector<PreparedEditExecutionId>& executionIds) noexcept
+{
+    auto& executor = GetApplication().preparedEditExecutor();
+    for (const auto executionId : executionIds) {
+        static_cast<void>(executor.abandon(executionId));
+    }
 }
 
 EditSession DocumentCollaborationService::requireActiveSession(
@@ -871,6 +912,14 @@ DocumentCommitResult DocumentCollaborationService::commitEditOnDocumentThread(
         return rejectedCommit(DocumentCommitStatus::Busy,
                               edit,
                               "a committed collaboration boundary is notifying observers");
+    }
+    const auto identity = _document.collaborationIdentity();
+    if (identity.state != DocumentLifecycleState::Live
+        || identity.instanceId != edit.documentInstanceId()
+        || identity.lifecycleEpoch != edit.lifecycleEpoch()) {
+        return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                              edit,
+                              "prepared edit targets a stale document lifecycle epoch");
     }
     const auto session = sessionStatus(sessionId);
     if (!session) {

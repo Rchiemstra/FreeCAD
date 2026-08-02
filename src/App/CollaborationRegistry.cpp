@@ -107,6 +107,27 @@ std::optional<DocumentIdentity> CollaborationRegistry::advanceEpoch(const Docume
     return advanced;
 }
 
+DocumentLifecycleEpoch CollaborationRegistry::reserveLifecycleEpoch()
+{
+    return allocateLifecycleEpoch();
+}
+
+std::optional<DocumentIdentity> CollaborationRegistry::advanceEpoch(
+    const Document& document,
+    const DocumentLifecycleEpoch reservedEpoch)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _byDocument.find(&document);
+    if (found == _byDocument.end() || found->second.state != DocumentLifecycleState::Live) {
+        return std::nullopt;
+    }
+
+    auto advanced = found->second;
+    advanced.lifecycleEpoch = reservedEpoch;
+    updateIdentityLocked(&document, advanced);
+    return advanced;
+}
+
 std::optional<DocumentIdentity> CollaborationRegistry::markClosing(const Document& document)
 {
     std::lock_guard<std::mutex> lock(_mutex);

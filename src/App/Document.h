@@ -94,6 +94,10 @@ class DocumentCollaborationService;
 class StringHasher;
 class DocumentRevisionIndex;
 struct DocumentIdentity;
+struct RecoverySnapshotSaveOptions;
+AppExport bool writeRecoverySnapshotToTransientDir(
+    const Document& document,
+    const RecoverySnapshotSaveOptions& options);
 namespace Internal
 {
 class DocumentCollaborationConcurrencyTestAccess;
@@ -1322,6 +1326,9 @@ public:
     std::string makeUniqueLabel(std::string_view modelLabel);
 
     friend class Application;
+    friend bool writeRecoverySnapshotToTransientDir(
+        const Document& document,
+        const RecoverySnapshotSaveOptions& options);
     // because of transaction handling
     friend class TransactionalObject;
     friend class DocumentObject;

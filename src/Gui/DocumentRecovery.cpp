@@ -42,6 +42,7 @@
 #include <QTextStream>
 #include <QTreeWidgetItem>
 #include <QXmlStreamReader>
+#include <QXmlStreamWriter>
 #include <QVector>
 #include <memory>
 #include <sstream>
@@ -170,6 +171,7 @@ public:
         QString fileName;
         QString tooltip;
         Status status = Unknown;
+        std::optional<App::RecoverySnapshotMetadata> collaborationProvenance;
     };
     Ui_DocumentRecovery ui;
     bool recovered;
@@ -178,7 +180,10 @@ public:
     Info getRecoveryInfo(const QFileInfo&) const;
     bool isValidProject(const QFileInfo&) const;
     void writeRecoveryInfo(const Info&) const;
-    XmlConfig readXmlFile(const QString& fn) const;
+    XmlConfig readXmlFile(
+        const QString& fn,
+        std::optional<App::RecoverySnapshotMetadata>& collaborationProvenance
+    ) const;
 };
 
 }  // namespace Dialog
@@ -378,35 +383,60 @@ void DocumentRecoveryPrivate::writeRecoveryInfo(const DocumentRecoveryPrivate::I
     // Write recovery meta file
     QFile file(info.xmlFile);
     if (file.open(QFile::WriteOnly)) {
-        QTextStream str(&file);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        str.setCodec("UTF-8");
-#endif
-        str << "<?xml version='1.0' encoding='utf-8'?>\n"
-            << "<AutoRecovery SchemaVersion=\"1\">\n";
+        QXmlStreamWriter xml(&file);
+        xml.setAutoFormatting(true);
+        xml.writeStartDocument();
+        xml.writeStartElement(QStringLiteral("AutoRecovery"));
+        xml.writeAttribute(QStringLiteral("SchemaVersion"), QStringLiteral("1"));
+        QString status;
         switch (info.status) {
             case Created:
-                str << "  <Status>Created</Status>\n";
+                status = QStringLiteral("Created");
                 break;
             case Overage:
-                str << "  <Status>Deprecated</Status>\n";
+                status = QStringLiteral("Deprecated");
                 break;
             case Corrupted:
-                str << "  <Status>Corrupted</Status>\n";
+                status = QStringLiteral("Corrupted");
                 break;
             case Success:
-                str << "  <Status>Success</Status>\n";
+                status = QStringLiteral("Success");
                 break;
             case Failure:
-                str << "  <Status>Failure</Status>\n";
+                status = QStringLiteral("Failure");
                 break;
             default:
-                str << "  <Status>Unknown</Status>\n";
+                status = QStringLiteral("Unknown");
                 break;
         }
-        str << "  <Label>" << info.label << "</Label>\n";
-        str << "  <FileName>" << info.fileName << "</FileName>\n";
-        str << "</AutoRecovery>\n";
+        xml.writeTextElement(QStringLiteral("Status"), status);
+        xml.writeTextElement(QStringLiteral("Label"), info.label);
+        xml.writeTextElement(QStringLiteral("FileName"), info.fileName);
+
+        if (info.collaborationProvenance) {
+            const auto& provenance = *info.collaborationProvenance;
+            xml.writeStartElement(QStringLiteral("CollaborationProvenance"));
+            xml.writeAttribute(
+                QStringLiteral("SchemaVersion"),
+                QString::number(provenance.schemaVersion)
+            );
+            xml.writeTextElement(
+                QStringLiteral("SourceDocumentInstanceId"),
+                QString::number(static_cast<qulonglong>(provenance.sourceDocumentInstanceId))
+            );
+            xml.writeTextElement(
+                QStringLiteral("SourceLifecycleEpoch"),
+                QString::number(static_cast<qulonglong>(provenance.sourceLifecycleEpoch))
+            );
+            xml.writeTextElement(
+                QStringLiteral("LatestPublicationSequence"),
+                QString::number(static_cast<qulonglong>(provenance.latestPublicationSequence))
+            );
+            xml.writeEndElement();
+        }
+
+        xml.writeEndElement();
+        xml.writeEndDocument();
         file.close();
     }
 }
@@ -438,7 +468,7 @@ DocumentRecoveryPrivate::Info DocumentRecoveryPrivate::getRecoveryInfo(const QFi
     // when the Xml meta exists get some relevant information
     info.xmlFile = doc_dir.absoluteFilePath(QLatin1String("fc_recovery_file.xml"));
     if (doc_dir.exists(QLatin1String("fc_recovery_file.xml"))) {
-        XmlConfig cfg = readXmlFile(info.xmlFile);
+        XmlConfig cfg = readXmlFile(info.xmlFile, info.collaborationProvenance);
 
         if (cfg.contains(QStringLiteral("Label"))) {
             info.label = cfg[QStringLiteral("Label")];
@@ -486,6 +516,22 @@ DocumentRecoveryPrivate::Info DocumentRecoveryPrivate::getRecoveryInfo(const QFi
                                << " (unreadable or corrupted): " << info.fileName << "\n";
                 }
             }
+        }
+
+        if (info.collaborationProvenance) {
+            const auto& provenance = *info.collaborationProvenance;
+            info.tooltip += qApp->translate(
+                                "DocumentRecovery",
+                                "\nSource collaboration instance: %1"
+                                "\nSource lifecycle epoch: %2"
+                                "\nLatest publication sequence: %3"
+                            )
+                                .arg(QString::number(static_cast<qulonglong>(
+                                    provenance.sourceDocumentInstanceId)))
+                                .arg(QString::number(static_cast<qulonglong>(
+                                    provenance.sourceLifecycleEpoch)))
+                                .arg(QString::number(static_cast<qulonglong>(
+                                    provenance.latestPublicationSequence)));
         }
     }
 
@@ -646,7 +692,10 @@ bool DocumentRecoveryPrivate::isValidProject(const QFileInfo& fi) const
     return true;
 }
 
-DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(const QString& fn) const
+DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(
+    const QString& fn,
+    std::optional<App::RecoverySnapshotMetadata>& collaborationProvenance
+) const
 {
     DocumentRecoveryPrivate::XmlConfig cfg;
     QDomDocument domDocument;
@@ -655,8 +704,16 @@ DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(const QS
         return cfg;
     }
 
+    const QByteArray metadataXml = file.readAll();
+    collaborationProvenance = DocumentRecoveryInternal::parseRecoveryCollaborationProvenance(
+        std::string_view(metadataXml.constData(), static_cast<std::size_t>(metadataXml.size()))
+    );
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    if (!domDocument.setContent(&file, QDomDocument::ParseOption::UseNamespaceProcessing)) {
+    if (!domDocument.setContent(
+            metadataXml,
+            QDomDocument::ParseOption::UseNamespaceProcessing
+        )) {
         return cfg;
     }
 #else
@@ -664,7 +721,7 @@ DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(const QS
     int errorLine;
     int errorColumn;
 
-    if (!domDocument.setContent(&file, true, &errorStr, &errorLine, &errorColumn)) {
+    if (!domDocument.setContent(metadataXml, true, &errorStr, &errorLine, &errorColumn)) {
         return cfg;
     }
 #endif
@@ -695,6 +752,14 @@ DocumentRecoveryPrivate::XmlConfig DocumentRecoveryPrivate::readXmlFile(const QS
     }
 
     return cfg;
+}
+
+std::optional<App::RecoverySnapshotMetadata>
+Gui::Dialog::DocumentRecoveryInternal::parseRecoveryCollaborationProvenance(
+    std::string_view metadataXml
+) noexcept
+{
+    return App::parseRecoverySnapshotMetadata(metadataXml);
 }
 
 void DocumentRecovery::contextMenuEvent(QContextMenuEvent* ev)

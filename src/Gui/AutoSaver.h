@@ -23,9 +23,11 @@
 
 #pragma once
 
+#include <FCGlobal.h>
 #include <QObject>
 
 #include <map>
+#include <cstdint>
 #include <string>
 #include <fastsignals/signal.h>
 
@@ -42,6 +44,10 @@ namespace Gui
  *
  * State model:
  * - dirty: the document changed since the last successful autosave.
+ * - saveInProgress: one recovery write is currently consuming a snapshot of
+ *   the dirty state.
+ * - dirtyDuringSaveAttempt: a re-entrant notification reported newer work
+ *   while that snapshot was being serialized.
  * - blockedUntilStable: a save was attempted while the document could not write
  *   a consistent recovery snapshot, so signalBecameStable() should queue one
  *   retry.
@@ -49,8 +55,10 @@ namespace Gui
  * Save flow:
  * 1. Document/object changes call markDirtyForAutosave().
  * 2. A timer pass, explicit flush, or queued stable-state retry calls
- *    beginSaveAttempt() to claim the dirty state for one save attempt.
+ *    beginSaveAttempt() to start one save attempt without clearing dirty.
  * 3. saveDocument() writes a full recovery snapshot through App::Document.
+ *    Only finishSuccessfulSaveAttempt() consumes the work represented by that
+ *    snapshot; newer re-entrant changes remain dirty.
  * 4. If the document is unstable, deferSaveUntilStable() keeps the dirty
  *    state and retries once the document becomes stable. Ordinary document
  *    changes only mark dirty state; they do not bypass the autosave timeout.
@@ -59,7 +67,7 @@ namespace Gui
  * via MainThreadSignal, and timer/retry callbacks run on AutoSaver's thread.
  * No additional locking is required.
  */
-class AutoSaveProperty
+class GuiExport AutoSaveProperty
 {
 public:
     friend class AutoSaver;
@@ -68,11 +76,12 @@ public:
     int timerId;
     void markDirtyForAutosave();
     bool beginSaveAttempt();
+    void finishSuccessfulSaveAttempt();
     void deferSaveUntilStable();
     void restoreFailedSaveAttempt();
 
 private:
-    void scheduleQueuedRetry();
+    void scheduleQueuedRetry(const App::Document& document);
     void slotDocumentBecameStable(const App::Document&);
     using Connection = fastsignals::connection;
     Connection documentChanged;
@@ -85,6 +94,10 @@ private:
     std::string documentName;
     // True when newer document state still needs a recovery snapshot.
     bool dirty {false};
+    // True while saveDocument() is serializing one claimed snapshot.
+    bool saveInProgress {false};
+    // True when a change arrived after beginSaveAttempt().
+    bool dirtyDuringSaveAttempt {false};
     // True when a save attempt is waiting for a stable document.
     bool blockedUntilStable {false};
 };
@@ -93,7 +106,7 @@ private:
  The class AutoSaver is used to automatically save a document to a temporary file.
  @author Werner Mayer
  */
-class AutoSaver: public QObject
+class GuiExport AutoSaver: public QObject
 {
     Q_OBJECT
 
@@ -123,6 +136,10 @@ public Q_SLOTS:
     void flushPendingSave(const QString& documentName);
 
 private:
+    friend class AutoSaveProperty;
+    void flushPendingSaveForIdentity(const QString& documentName,
+                                     std::uint64_t documentInstanceId,
+                                     std::uint64_t lifecycleEpoch);
     int timeout; /*!< Timeout in milliseconds */
     bool compressed;
     std::map<std::string, AutoSaveProperty*> saverMap;

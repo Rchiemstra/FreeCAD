@@ -65,6 +65,8 @@ public:
     static PyObject* sSaveDocument           (PyObject *self,PyObject *args);
     static PyObject* sWriteRecoverySnapshotToTransientDir
                                                (PyObject *self,PyObject *args, PyObject *kwd);
+    static PyObject* sAdvanceDocumentCollaborationEpoch
+                                               (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sNewDocument            (PyObject *self,PyObject *args, PyObject *kwd);
     static PyObject* sCloseDocument          (PyObject *self,PyObject *args);
     static PyObject* sActiveDocument         (PyObject *self,PyObject *args);

@@ -157,10 +157,8 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
         return;
     }
 
-    // Claim the currently dirty work for this save attempt. If new document
-    // changes arrive while the snapshot is being written they will call
-    // markDirtyForAutosave() again, and the post-save check below will schedule
-    // another pass.
+    // Start an attempt without consuming dirty work. A recovery point becomes
+    // authoritative only after the complete stable write succeeds.
     if (!saver.beginSaveAttempt()) {
         return;
     }
@@ -189,18 +187,54 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
 
     Base::TimeElapsed startTime;
     try {
-        App::writeRecoverySnapshotToTransientDir(*doc, options);
+        if (!App::writeRecoverySnapshotToTransientDir(*doc, options)) {
+            saver.restoreFailedSaveAttempt();
+            Base::Console().warning(
+                "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
+                name.c_str()
+            );
+            return;
+        }
     }
     catch (...) {
         saver.restoreFailedSaveAttempt();
         throw;
     }
 
+    saver.finishSuccessfulSaveAttempt();
+
     Base::Console().log(
         "Save auto-recovery file in %fs\n",
         Base::TimeElapsed::diffTimeF(startTime, Base::TimeElapsed())
     );
-    saver.scheduleQueuedRetry();
+}
+
+void AutoSaver::flushPendingSaveForIdentity(const QString& documentName,
+                                            const std::uint64_t documentInstanceId,
+                                            const std::uint64_t lifecycleEpoch)
+{
+    const auto name = documentName.toStdString();
+    const auto saver = saverMap.find(name);
+    if (saver == saverMap.end()) {
+        return;
+    }
+    const auto* document = App::GetApplication().getDocument(name.c_str());
+    if (!document) {
+        return;
+    }
+    const auto identity = document->collaborationIdentity();
+    if (identity.state != App::DocumentLifecycleState::Live
+        || identity.instanceId != documentInstanceId
+        || identity.lifecycleEpoch != lifecycleEpoch) {
+        return;
+    }
+
+    try {
+        saveDocument(saver->first, *saver->second);
+    }
+    catch (...) {
+        Base::Console().error("Failed to auto-save document '%s'\n", saver->first.c_str());
+    }
 }
 
 void AutoSaver::timerEvent(QTimerEvent* event)
@@ -266,49 +300,74 @@ void AutoSaveProperty::markDirtyForAutosave()
     // Ordinary document changes are saved by the next timer pass. They do not
     // start a save attempt by themselves.
     dirty = true;
+    if (saveInProgress) {
+        dirtyDuringSaveAttempt = true;
+    }
 }
 
 bool AutoSaveProperty::beginSaveAttempt()
 {
-    if (!dirty) {
+    if (!dirty || saveInProgress) {
         blockedUntilStable = false;
         return false;
     }
 
-    dirty = false;
+    saveInProgress = true;
+    dirtyDuringSaveAttempt = false;
     blockedUntilStable = false;
     return true;
+}
+
+void AutoSaveProperty::finishSuccessfulSaveAttempt()
+{
+    if (!saveInProgress) {
+        return;
+    }
+
+    // The snapshot covers the dirty state that existed when the attempt
+    // started. A re-entrant notification represents newer state and must be
+    // retried instead of being consumed by this success.
+    dirty = dirtyDuringSaveAttempt;
+    saveInProgress = false;
+    dirtyDuringSaveAttempt = false;
+    blockedUntilStable = false;
 }
 
 void AutoSaveProperty::deferSaveUntilStable()
 {
     dirty = true;
+    saveInProgress = false;
+    dirtyDuringSaveAttempt = false;
     blockedUntilStable = true;
 }
 
 void AutoSaveProperty::restoreFailedSaveAttempt()
 {
     dirty = true;
+    saveInProgress = false;
+    dirtyDuringSaveAttempt = false;
     blockedUntilStable = false;
 }
 
-void AutoSaveProperty::scheduleQueuedRetry()
+void AutoSaveProperty::scheduleQueuedRetry(const App::Document& document)
 {
     if (!dirty) {
         return;
     }
 
     const QString qDocumentName = QString::fromStdString(documentName);
+    const auto identity = document.collaborationIdentity();
 
     // Queue a later GUI-thread pass instead of flushing inline from
     // signalBecameStable(). beginSaveAttempt() re-checks dirty state when the
     // queued retry runs.
-    QTimer::singleShot(0, AutoSaver::instance(), [qDocumentName]() {
-        AutoSaver::instance()->flushPendingSave(qDocumentName);
+    QTimer::singleShot(0, AutoSaver::instance(), [qDocumentName, identity]() {
+        AutoSaver::instance()->flushPendingSaveForIdentity(
+            qDocumentName, identity.instanceId, identity.lifecycleEpoch);
     });
 }
 
-void AutoSaveProperty::slotDocumentBecameStable(const App::Document&)
+void AutoSaveProperty::slotDocumentBecameStable(const App::Document& document)
 {
     // Stability only means "it is now legal to try again". Only retry saves that
     // were already due and then blocked by an unstable state; ordinary dirty
@@ -318,7 +377,7 @@ void AutoSaveProperty::slotDocumentBecameStable(const App::Document&)
     }
 
     blockedUntilStable = false;
-    scheduleQueuedRetry();
+    scheduleQueuedRetry(document);
 }
 
 

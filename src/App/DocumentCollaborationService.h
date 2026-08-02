@@ -24,6 +24,8 @@ namespace App
 {
 
 class Document;
+class Application;
+struct RecoverySnapshotSaveOptions;
 
 namespace Internal
 {
@@ -124,10 +126,28 @@ public:
         CollaborationCompatibilityCallback callback);
 
 private:
+    friend class Application;
     friend class Document;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+    friend bool writeRecoverySnapshotToTransientDir(
+        const Document& doc,
+        const RecoverySnapshotSaveOptions& options);
 
-    class LifecyclePin;
+    class LifecyclePin
+    {
+    public:
+        explicit LifecyclePin(const DocumentCollaborationService& service);
+        ~LifecyclePin();
+
+        LifecyclePin(const LifecyclePin&) = delete;
+        LifecyclePin& operator=(const LifecyclePin&) = delete;
+
+        explicit operator bool() const noexcept;
+
+    private:
+        std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
+        bool _pinned {false};
+    };
 
     explicit DocumentCollaborationService(Document& document);
 
@@ -160,6 +180,15 @@ private:
         CollaborationCompatibilityCallback callback);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
         CollaborationCompatibilityCallback callback);
+    /**
+     * Cancel every session and detach every executor job while the caller owns
+     * the document lifecycle serialization boundary. Executor abandonment is
+     * deliberately split out so no executor lock is taken under that boundary.
+     */
+    [[nodiscard]] std::vector<PreparedEditExecutionId>
+    cancelAllForLifecycle(std::string reason);
+    void abandonLifecyclePreparations(
+        const std::vector<PreparedEditExecutionId>& executionIds) noexcept;
 
     Document& _document;
     DocumentCommitCoordinator _coordinator;
