@@ -233,6 +233,35 @@ class Document(PropertyContainer):
         """Prepare a registered native operation and return an opaque immutable handle."""
         ...
 
+    def prepareEditAsync(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        provenance: str = "python",
+        /,
+    ) -> int:
+        """Submit detached preparation and return its opaque numeric execution ID."""
+        ...
+
+    def preparedEditStatus(self, execution_id: int, /) -> dict[str, object] | None:
+        """Return copied status for a pending detached preparation, or None when unknown."""
+        ...
+
+    def cancelPreparedEdit(self, execution_id: int, /) -> bool:
+        """Request cooperative cancellation of a detached preparation."""
+        ...
+
+    def takePreparedEdit(
+        self,
+        session_id: str,
+        execution_id: int,
+        /,
+    ) -> dict[str, object] | None:
+        """Take a terminal result, optionally containing an opaque prepared-edit handle."""
+        ...
+
     def commitEdit(
         self,
         session_id: str,

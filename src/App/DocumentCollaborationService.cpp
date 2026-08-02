@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
+#include "DocumentObject.h"
 #include "MainThreadSignal.h"
 
 #include <Base/Exception.h>
@@ -82,6 +83,44 @@ App::DocumentCommitResult rejectedCommit(App::DocumentCommitStatus status,
     result.message = std::move(message);
     return result;
 }
+
+App::DocumentCommitResult rejectedCompatibilityCommit(App::DocumentCommitStatus status,
+                                                       std::string operationId,
+                                                       std::string message)
+{
+    App::DocumentCommitResult result;
+    result.status = status;
+    result.operationId = std::move(operationId);
+    result.message = std::move(message);
+    return result;
+}
+
+class CompatibilityMutationOperation final : public App::CollaborativeOperation
+{
+public:
+    explicit CompatibilityMutationOperation(App::CollaborationCompatibilityCallback callback)
+        : _callback(std::move(callback))
+    {}
+
+    [[nodiscard]] std::string_view typeId() const noexcept override
+    {
+        return "App.LegacyCompatibilityMutation.v1";
+    }
+
+    void apply(App::Document&) const override
+    {
+        _callback();
+    }
+
+    [[nodiscard]] App::CollaborativePostconditionResult
+    checkPostcondition(const App::Document&) const override
+    {
+        return {true, {}};
+    }
+
+private:
+    App::CollaborationCompatibilityCallback _callback;
+};
 
 }  // namespace
 
@@ -856,4 +895,197 @@ DocumentCommitResult DocumentCollaborationService::commitEditOnDocumentThread(
                               "prepared edit adapter registration is no longer trusted");
     }
     return _coordinator.commit(edit);
+}
+
+DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback)
+{
+    const std::string rejectedOperationId = "legacy-compatibility";
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::StaleDocument,
+            rejectedOperationId,
+            "document close has sealed compatibility mutation access");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            rejectedOperationId,
+            "off-owner compatibility mutation requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<DocumentCommitResult>(
+        [this, mutation = std::move(mutation), callback = std::move(callback)]() mutable {
+            return commitCompatibilityMutationOnDocumentThread(std::move(mutation),
+                                                               std::move(callback));
+        });
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback)
+{
+    const std::string rejectedOperationId = "legacy-compatibility";
+    if (!_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            rejectedOperationId,
+            "compatibility mutation was not dispatched to the document owner thread");
+    }
+    if (!callback) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                           rejectedOperationId,
+                                           "compatibility mutation callback is required");
+    }
+
+    std::lock_guard lock(_document.collaborationCommitMutex());
+    const auto identity = _document.collaborationIdentity();
+    if (identity.state != DocumentLifecycleState::Live) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::StaleDocument,
+                                           rejectedOperationId,
+                                           "compatibility mutation targets a non-live document");
+    }
+
+    std::vector<DocumentRevisionPublicationRequest> effects {
+        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    };
+    switch (mutation.scope) {
+        case CollaborationCompatibilityScope::ObjectModel: {
+            if (mutation.objectName.empty() || mutation.stableObjectIdentity.empty()) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::InvalidPreparedEdit,
+                    rejectedOperationId,
+                    "object compatibility mutation requires name and stable identity");
+            }
+            const auto* object = _document.getObject(mutation.objectName.c_str());
+            if (!object
+                || _document.collaborationObjectIdentity(*object)
+                    != mutation.stableObjectIdentity) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::StaleDocument,
+                    rejectedOperationId,
+                    "object compatibility mutation targets a stale object identity");
+            }
+            effects.push_back({DocumentRevisionKey::objectModel(mutation.objectName),
+                               mutation.stableObjectIdentity});
+            break;
+        }
+        case CollaborationCompatibilityScope::UnknownModel:
+            if (!mutation.objectName.empty() || !mutation.stableObjectIdentity.empty()) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::InvalidPreparedEdit,
+                    rejectedOperationId,
+                    "unknown compatibility mutation cannot declare object scope");
+            }
+            break;
+        default:
+            return rejectedCompatibilityCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                               rejectedOperationId,
+                                               "unknown compatibility mutation scope");
+    }
+
+    std::sort(effects.begin(), effects.end(), [](const auto& left, const auto& right) {
+        return left.key < right.key;
+    });
+    std::vector<DocumentRevisionKey> writeSet;
+    writeSet.reserve(effects.size());
+    for (const auto& effect : effects) {
+        writeSet.push_back(effect.key);
+    }
+    const auto expected = _document.collaborationRevisions().capture(writeSet);
+    const std::string operationId = Base::Uuid::createUuid();
+    auto operation = std::make_unique<CompatibilityMutationOperation>(std::move(callback));
+    const std::string operationType(operation->typeId());
+    PreparedEdit edit(PreparedEdit::ConstructionKey {},
+                      1,
+                      operationId,
+                      identity.instanceId,
+                      identity.lifecycleEpoch,
+                      operationType,
+                      expected,
+                      {},
+                      writeSet,
+                      std::move(effects),
+                      "legacy-gui-compatibility",
+                      std::move(operation));
+    return _coordinator.commitCompatibility(edit);
+}
+
+DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(
+    CollaborationCompatibilityCallback callback)
+{
+    const std::string operationId = "serialized-gui-compatibility";
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::StaleDocument,
+            operationId,
+            "document close has sealed serialized compatibility access");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            operationId,
+            "off-owner serialized compatibility requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<DocumentCommitResult>(
+        [this, callback = std::move(callback)]() mutable {
+            return serializeCompatibilityCallbackOnDocumentThread(std::move(callback));
+        });
+}
+
+DocumentCommitResult
+DocumentCollaborationService::serializeCompatibilityCallbackOnDocumentThread(
+    CollaborationCompatibilityCallback callback)
+{
+    const std::string operationId = "serialized-gui-compatibility";
+    if (!_document.isCollaborationOwnerThread()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Unsupported,
+            operationId,
+            "serialized compatibility was not dispatched to the document owner thread");
+    }
+    if (!callback) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                                           operationId,
+                                           "serialized compatibility callback is required");
+    }
+
+    std::lock_guard lock(_document.collaborationCommitMutex());
+    if (_document.collaborationIdentity().state != DocumentLifecycleState::Live) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::StaleDocument,
+                                           operationId,
+                                           "serialized compatibility targets a non-live document");
+    }
+    if (_document.collaborationNotificationsReplaying()) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::Busy,
+            operationId,
+            "a committed collaboration boundary is notifying observers");
+    }
+    try {
+        callback();
+    }
+    catch (const Base::Exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("serialized compatibility callback failed: ") + exception.what());
+    }
+    catch (const std::exception& exception) {
+        return rejectedCompatibilityCommit(
+            DocumentCommitStatus::ApplyFailed,
+            operationId,
+            std::string("serialized compatibility callback failed: ") + exception.what());
+    }
+    catch (...) {
+        return rejectedCompatibilityCommit(DocumentCommitStatus::ApplyFailed,
+                                           operationId,
+                                           "unknown serialized compatibility callback failure");
+    }
+    return rejectedCompatibilityCommit(DocumentCommitStatus::Committed,
+                                       operationId,
+                                       "compatibility callback serialized without model revision");
 }

@@ -87,6 +87,7 @@
 #include "License.h"
 #include "Link.h"
 #include "MergeDocuments.h"
+#include "MutationClassification.h"
 #include "PropertyPythonObject.h"
 #include "StringHasher.h"
 #include "Transactions.h"
@@ -4201,13 +4202,14 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
         if (collaborationRevisionPublicationSuppressed()) {
             return;
         }
-        static_cast<void>(d->collaborationRevisions.publish(
-            std::vector<DocumentRevisionPublicationRequest> {
-                {DocumentRevisionKey::objectExistence(ObjectName), stableObjectIdentityString},
-                {DocumentRevisionKey::objectStructure(ObjectName), stableObjectIdentityString},
-                {DocumentRevisionKey::documentStructure(), std::nullopt},
-                {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
-            }));
+        static_cast<void>(d->collaborationRevisions.publish(classifyMutation({
+            CollaborationMutationSource::ObjectAddition,
+            MutationKind::AddObject,
+            CollaborationPropertyFamily::NotApplicable,
+            CollaborationContainerKind::DocumentObject,
+            ObjectName,
+            stableObjectIdentityString,
+        })));
     };
     d->collaborationObjectIdentities.emplace(pcObject, stableObjectIdentity);
     // insert in the name map
@@ -4388,13 +4390,14 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         if (collaborationRevisionPublicationSuppressed()) {
             return;
         }
-        static_cast<void>(d->collaborationRevisions.publish(
-            std::vector<DocumentRevisionPublicationRequest> {
-                {DocumentRevisionKey::objectExistence(removedObjectName), removedObjectIdentity},
-                {DocumentRevisionKey::objectStructure(removedObjectName), removedObjectIdentity},
-                {DocumentRevisionKey::documentStructure(), std::nullopt},
-                {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
-            }));
+        static_cast<void>(d->collaborationRevisions.publish(classifyMutation({
+            CollaborationMutationSource::ObjectRemoval,
+            MutationKind::RemoveObject,
+            CollaborationPropertyFamily::NotApplicable,
+            CollaborationContainerKind::DocumentObject,
+            removedObjectName,
+            removedObjectIdentity,
+        })));
     };
 
     // Keep the object's own callbacks suppressed until every surviving structural mutation has

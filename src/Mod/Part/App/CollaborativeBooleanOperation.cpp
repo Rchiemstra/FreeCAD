@@ -1278,8 +1278,11 @@ App::CollaborativeOperationPreparation prepareBooleanImpl(
     std::vector<App::DocumentRevisionKey> reads {
         App::DocumentRevisionKey::objectExistence(baseName),
         App::DocumentRevisionKey::objectModel(baseName),
+        App::DocumentRevisionKey::objectStructure(baseName),
         App::DocumentRevisionKey::objectExistence(toolName),
         App::DocumentRevisionKey::objectModel(toolName),
+        App::DocumentRevisionKey::objectStructure(toolName),
+        App::DocumentRevisionKey::documentStructure(),
         App::DocumentRevisionKey::unknownModelMutation()};
     std::vector<App::DocumentRevisionKey> writes;
     std::vector<App::DocumentRevisionPublicationRequest> effects;

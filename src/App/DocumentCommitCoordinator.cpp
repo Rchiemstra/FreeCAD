@@ -138,16 +138,28 @@ Document& DocumentCommitCoordinator::document() const noexcept
 
 DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
 {
+    return commitWithPreparationPolicy(edit, true);
+}
+
+DocumentCommitResult DocumentCommitCoordinator::commitCompatibility(const PreparedEdit& edit)
+{
+    return commitWithPreparationPolicy(edit, false);
+}
+
+DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
+    const PreparedEdit& edit,
+    const bool requireDetachedPreparationSupport)
+{
     if (!MainThreadSignalConfig::hasHooks()) {
         if (!_document.isCollaborationOwnerThread()) {
             return makeResult(DocumentCommitStatus::Unsupported,
                               edit,
                               "off-owner collaboration commit requires a document-thread dispatcher");
         }
-        return commitOnDocumentThread(edit);
+        return commitOnDocumentThread(edit, requireDetachedPreparationSupport);
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThread(edit);
+        return commitOnDocumentThread(edit, requireDetachedPreparationSupport);
     }
 
     std::optional<DocumentCommitResult> result;
@@ -158,9 +170,10 @@ DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
             release.emplace();
         }
         MainThreadSignalConfig::invoke(
-            [this, &edit, &result, &failure] {
+            [this, &edit, &result, &failure, requireDetachedPreparationSupport] {
                 try {
-                    result.emplace(commitOnDocumentThread(edit));
+                    result.emplace(
+                        commitOnDocumentThread(edit, requireDetachedPreparationSupport));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -177,7 +190,9 @@ DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
     return std::move(*result);
 }
 
-DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(const PreparedEdit& edit)
+DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
+    const PreparedEdit& edit,
+    const bool requireDetachedPreparationSupport)
 {
     if (!_document.isCollaborationOwnerThread()) {
         return makeResult(DocumentCommitStatus::Unsupported,
@@ -222,7 +237,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(const Pre
                           _document.collaborationCommitPoisonDiagnostic());
     }
 
-    if (!_document.collaborationPreparationSupported()) {
+    if (requireDetachedPreparationSupport && !_document.collaborationPreparationSupported()) {
         return makeResult(DocumentCommitStatus::Unsupported,
                           edit,
                           "document contains a mutable Python payload that cannot be prepared");

@@ -926,7 +926,7 @@ TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedReje
     expectExactInventory(lifecycleInventory, expectedLifecycleMutators, "lifecycle writer");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, propertyPostChangeAdvancesButRejectedAuthorityWriteDoesNot)
+TEST_F(DocumentCollaborationBoundaryTest, classifiedPropertyPostChangeUsesTypedRevisionOnly)
 {
     auto* object = document()->addObject("App::FeatureTest", "PropertyIngress");
     ASSERT_NE(object, nullptr);
@@ -942,7 +942,7 @@ TEST_F(DocumentCollaborationBoundaryTest, propertyPostChangeAdvancesButRejectedA
         revisions().pollPublications(publicationCursor, 0).latestSequence;
     const auto beforeWrite = captureFor(object->getNameInDocument());
     object->Label.setValue("Accepted");
-    expectExactDeltasAndConflicts(beforeWrite, {0, 1, 0, 0, 1}, "Property::hasSetValue");
+    expectExactDeltasAndConflicts(beforeWrite, {0, 1, 0, 0, 0}, "Property::hasSetValue");
 
     const auto publications = revisions().pollPublications(publicationCursor);
     ASSERT_EQ(publications.status, App::DocumentRevisionCursorStatus::Valid);
@@ -951,18 +951,13 @@ TEST_F(DocumentCollaborationBoundaryTest, propertyPostChangeAdvancesButRejectedA
     const auto& event = publications.events.front();
     EXPECT_EQ(event.documentInstanceId, identity->instanceId);
     EXPECT_EQ(event.lifecycleEpoch, identity->lifecycleEpoch);
-    ASSERT_EQ(event.changes.size(), 2U);
+    ASSERT_EQ(event.changes.size(), 1U);
     const std::string expectedStableIdentity = document()->collaborationObjectIdentity(*object);
     const auto objectChange = std::ranges::find_if(event.changes, [](const auto& change) {
         return change.key.kind == App::DocumentRevisionKind::ObjectModel;
     });
-    const auto wildcardChange = std::ranges::find_if(event.changes, [](const auto& change) {
-        return change.key.kind == App::DocumentRevisionKind::UnknownModelMutation;
-    });
     ASSERT_NE(objectChange, event.changes.end());
-    ASSERT_NE(wildcardChange, event.changes.end());
     EXPECT_EQ(objectChange->stableObjectIdentity, expectedStableIdentity);
-    EXPECT_FALSE(wildcardChange->stableObjectIdentity.has_value());
     const auto serializedEvent = event.toJson();
     EXPECT_EQ(serializedEvent.find("pointer"), std::string::npos);
     EXPECT_EQ(serializedEvent.find("0x"), std::string::npos);
@@ -976,7 +971,7 @@ TEST_F(DocumentCollaborationBoundaryTest, propertyPostChangeAdvancesButRejectedA
     EXPECT_STREQ(object->Label.getValue(), "Accepted");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, dynamicPropertySchemaAddRenameAndRemoveAdvanceWildcard)
+TEST_F(DocumentCollaborationBoundaryTest, dynamicPropertySchemaUsesTypedStructureRevision)
 {
     auto* object = document()->addObject("App::FeatureTest", "DynamicIngress");
     ASSERT_NE(object, nullptr);
@@ -984,15 +979,15 @@ TEST_F(DocumentCollaborationBoundaryTest, dynamicPropertySchemaAddRenameAndRemov
     auto before = captureFor(object->getNameInDocument());
     App::Property* property = object->addDynamicProperty("App::PropertyFloat", "DynamicValue");
     ASSERT_NE(property, nullptr);
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 1}, "DynamicProperty add");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "DynamicProperty add");
 
     before = captureFor(object->getNameInDocument());
     ASSERT_TRUE(object->renameDynamicProperty(property, "RenamedDynamicValue"));
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 1}, "DynamicProperty rename");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "DynamicProperty rename");
 
     before = captureFor(object->getNameInDocument());
     ASSERT_TRUE(object->removeDynamicProperty("RenamedDynamicValue"));
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 1}, "DynamicProperty remove");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "DynamicProperty remove");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, recursiveDynamicPropertyRemovalPublishesExactlyOnce)
@@ -1021,12 +1016,12 @@ TEST_F(DocumentCollaborationBoundaryTest, recursiveDynamicPropertyRemovalPublish
     EXPECT_EQ(object->getPropertyByName("RecursiveValue"), nullptr);
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 0, 1},
+        {0, 0, 1, 0, 0},
         "recursive dynamic property removal"
     );
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, documentAddAndRemoveObjectAdvanceWildcard)
+TEST_F(DocumentCollaborationBoundaryTest, documentAddAndRemoveObjectUseTypedLifecycleRevisions)
 {
     const std::string objectName = "ObjectIngress";
     const auto identity = document()->collaborationIdentity();
@@ -1041,7 +1036,7 @@ TEST_F(DocumentCollaborationBoundaryTest, documentAddAndRemoveObjectAdvanceWildc
     auto before = captureFor(objectName);
     auto* object = document()->addObject("App::FeatureTest", "ObjectIngress");
     ASSERT_NE(object, nullptr);
-    expectExactDeltasAndConflicts(before, {1, 0, 1, 1, 1}, "Document::addObject");
+    expectExactDeltasAndConflicts(before, {1, 0, 0, 1, 0}, "Document::addObject");
 
     const auto added = revisions().pollPublications(cursor);
     ASSERT_EQ(added.status, App::DocumentRevisionCursorStatus::Valid);
@@ -1059,7 +1054,7 @@ TEST_F(DocumentCollaborationBoundaryTest, documentAddAndRemoveObjectAdvanceWildc
 
     before = captureFor(objectName);
     document()->removeObject("ObjectIngress");
-    expectExactDeltasAndConflicts(before, {1, 0, 1, 1, 1}, "Document::removeObject");
+    expectExactDeltasAndConflicts(before, {1, 0, 0, 1, 0}, "Document::removeObject");
     EXPECT_EQ(document()->getObject("ObjectIngress"), nullptr);
 }
 
@@ -1081,7 +1076,7 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRetainedRemovedObjectWritesDoNotPu
     EXPECT_EQ(revisions().capture(dependencyKeysFor(objectName)), before);
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, directContainerMembershipMutationAdvancesWildcard)
+TEST_F(DocumentCollaborationBoundaryTest, directContainerMembershipUsesTypedStructureRevisions)
 {
     auto* group = document()->addObject<App::DocumentObjectGroup>("ContainerIngress");
     auto* child = document()->addObject("App::FeatureTest", "ContainerChild");
@@ -1090,14 +1085,14 @@ TEST_F(DocumentCollaborationBoundaryTest, directContainerMembershipMutationAdvan
 
     auto before = captureFor(group->getNameInDocument());
     ASSERT_FALSE(group->addObject(child).empty());
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 1}, "direct group/container add");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "direct group/container add");
 
     before = captureFor(group->getNameInDocument());
     ASSERT_FALSE(group->removeObject(child).empty());
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 1}, "direct group/container remove");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "direct group/container remove");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, recomputeResultPropertyMutationAdvancesWildcard)
+TEST_F(DocumentCollaborationBoundaryTest, recomputeResultClassifiesKnownAndUnknownProperties)
 {
     auto* feature = document()->addObject<App::FeatureTest>("RecomputeIngress");
     ASSERT_NE(feature, nullptr);
@@ -1108,7 +1103,7 @@ TEST_F(DocumentCollaborationBoundaryTest, recomputeResultPropertyMutationAdvance
     ASSERT_GT(document()->recompute(), 0);
 
     EXPECT_GT(feature->ExecCount.getValue(), executionsBefore);
-    expectExactDeltasAndConflicts(before, {0, 4, 0, 0, 4}, "recompute output writes");
+    expectExactDeltasAndConflicts(before, {0, 4, 0, 0, 2}, "recompute output writes");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, errorOnlyFeatureRecomputePublishesAndRejectsAuthority)
@@ -1152,7 +1147,7 @@ TEST_F(DocumentCollaborationBoundaryTest, propertyStatusMutationIsStructuralAndE
 
     property->setStatus(App::Property::Hidden, true);
 
-    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 1}, "Property::setStatusValue");
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "Property::setStatusValue");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, freezeStatePublishesAndRejectsAuthorityBeforeMutation)
@@ -1254,17 +1249,17 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonObjectPublicSettersAreBracketedA
     first.append(Py::Long(1));
     auto before = captureFor(object->getNameInDocument());
     property->setValue(first);
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "PropertyPythonObject::setValue");
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "PropertyPythonObject::setValue");
 
     Py::List second;
     second.append(Py::Long(2));
     before = captureFor(object->getNameInDocument());
     property->setPyObject(second.ptr());
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "PropertyPythonObject::setPyObject");
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "PropertyPythonObject::setPyObject");
 
     before = captureFor(object->getNameInDocument());
     property->fromString("[3, 4]");
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "PropertyPythonObject::fromString");
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "PropertyPythonObject::fromString");
 
     before = captureFor(object->getNameInDocument());
     const auto valueBeforeMalformedInput = property->toString();
@@ -1298,7 +1293,7 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonObjectDocFileRestorePublishesExa
     EXPECT_EQ(property->toString(), "[7, 8]");
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "PropertyPythonObject::RestoreDocFile"
     );
 
@@ -1341,7 +1336,7 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonObjectInPlaceExposureFailsClosed
     ASSERT_TRUE(object->removeDynamicProperty("PythonValue"));
     expectExactDeltasAndConflicts(
         beforeRemove,
-        {0, 0, 1, 0, 1},
+        {0, 0, 1, 0, 0},
         "remove PropertyPythonObject fail-closed marker"
     );
     EXPECT_TRUE(document()->collaborationPreparationSupported());
@@ -1376,7 +1371,7 @@ TEST_F(DocumentCollaborationBoundaryTest, hostileDirectStatusAndListStorageWrite
     list->set1Value(-1, target);
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 1, 1},
+        {0, 0, 1, 1, 0},
         "PropertyLinkList::set1Value"
     );
     ASSERT_EQ(list->getSize(), 1);
@@ -1419,7 +1414,7 @@ TEST_F(DocumentCollaborationBoundaryTest, hostileDirectStatusAndListStorageWrite
     list->set1Value(0, replacement);
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 1, 1},
+        {0, 0, 1, 1, 0},
         "AtomicPropertyChange reject then recover"
     );
     ASSERT_EQ((*list)[0], replacement);
@@ -1442,7 +1437,7 @@ TEST_F(DocumentCollaborationBoundaryTest, directLinkResetPublishesExactlyOnceAnd
     EXPECT_EQ(link->getValue(), nullptr);
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 1, 1},
+        {0, 0, 1, 1, 0},
         "PropertyLink::resetLink"
     );
 
@@ -1472,7 +1467,7 @@ TEST_F(DocumentCollaborationBoundaryTest, directXLinkSubValuesPublishAndRejectAu
     link->setSubValues(std::vector<std::string> {"Face1"});
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 1, 1},
+        {0, 0, 1, 1, 0},
         "PropertyXLink::setSubValues"
     );
     ASSERT_EQ(link->getSubValues(), (std::vector<std::string> {"Face1"}));
@@ -1505,7 +1500,7 @@ TEST_F(DocumentCollaborationBoundaryTest, existingXLinkSubListAddPublishesAndRej
     links->addValue(target, std::vector<std::string> {"Face2"}, false);
     expectExactDeltasAndConflicts(
         before,
-        {0, 0, 1, 1, 1},
+        {0, 0, 1, 1, 0},
         "PropertyXLinkSubList::addValue existing link"
     );
     ASSERT_EQ(
@@ -1586,7 +1581,7 @@ TEST_F(DocumentCollaborationBoundaryTest, listResizeAndNestedAppendPublishExactl
     list->setSize(1);
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "PropertyListsT::setSize direct resize"
     );
     ASSERT_EQ(list->getSize(), 1);
@@ -1595,7 +1590,7 @@ TEST_F(DocumentCollaborationBoundaryTest, listResizeAndNestedAppendPublishExactl
     list->set1Value(-1, 42);
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "PropertyListsT::set1Value nested setSize append"
     );
     ASSERT_EQ(list->getSize(), 2);
@@ -1639,7 +1634,7 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingPropertyObserverPublishesOnceA
     EXPECT_EQ((*list)[0], 42);
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "throwing property observer"
     );
 
@@ -1649,7 +1644,7 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingPropertyObserverPublishesOnceA
     EXPECT_EQ((*list)[1], 43);
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "atomic property guard after observer failure"
     );
 }
@@ -1678,7 +1673,7 @@ TEST_F(DocumentCollaborationBoundaryTest, touchRejectsAuthorityAndPublishesBefor
     before = captureFor(object->getNameInDocument());
     EXPECT_THROW(property->touch(), Base::RuntimeError);
     connection.disconnect();
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "throwing touch observer");
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "throwing touch observer");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, directPropertyPurgeRejectsAuthorityAndPublishes)
@@ -1693,7 +1688,7 @@ TEST_F(DocumentCollaborationBoundaryTest, directPropertyPurgeRejectsAuthorityAnd
     auto before = captureFor(object->getNameInDocument());
     property->purgeTouched();
     EXPECT_FALSE(property->isTouched());
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "Property::purgeTouched");
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "Property::purgeTouched");
 
     property->touch();
     ASSERT_TRUE(property->isTouched());
@@ -1734,12 +1729,12 @@ TEST_F(DocumentCollaborationBoundaryTest, materialListAppendPublishesOnceAfterFi
     EXPECT_TRUE(observerSawFinalState);
     expectExactDeltasAndConflicts(
         before,
-        {0, 1, 0, 0, 1},
+        {0, 0, 0, 0, 1},
         "PropertyMaterialList append"
     );
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, undoRedoAndOrdinaryAbortAreStrictlyMonotonicAndRejectStaleObservations)
+TEST_F(DocumentCollaborationBoundaryTest, typedUndoRedoAndAbortAdvanceModelWithoutWildcard)
 {
     auto* object = document()->addObject("App::FeatureTest", "TransactionIngress");
     ASSERT_NE(object, nullptr);
@@ -1759,22 +1754,20 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRedoAndOrdinaryAbortAreStrictlyMon
     const auto modelAfterEdit = revisions().current(modelKey);
     const auto revisionAfterEdit = wildcardRevision();
     EXPECT_GT(modelAfterEdit, modelBeforeEdit);
-    EXPECT_GT(revisionAfterEdit, revisionBeforeEdit);
+    EXPECT_EQ(revisionAfterEdit, revisionBeforeEdit);
     auto conflicts = revisions().validate(preparedBeforeEdit);
-    ASSERT_EQ(conflicts.size(), 2U);
+    ASSERT_EQ(conflicts.size(), 1U);
     EXPECT_EQ(conflicts[0].expected, modelBeforeEdit);
     EXPECT_EQ(conflicts[0].current, modelAfterEdit);
-    EXPECT_EQ(conflicts[1].expected, revisionBeforeEdit);
-    EXPECT_EQ(conflicts[1].current, revisionAfterEdit);
 
     const auto preparedBeforeUndo = revisions().capture({modelKey, wildcardKey()});
     ASSERT_TRUE(document()->undo());
     const auto modelAfterUndo = revisions().current(modelKey);
     const auto revisionAfterUndo = wildcardRevision();
     EXPECT_GT(modelAfterUndo, modelAfterEdit);
-    EXPECT_GT(revisionAfterUndo, revisionAfterEdit);
+    EXPECT_EQ(revisionAfterUndo, revisionAfterEdit);
     EXPECT_STREQ(object->Label.getValue(), originalLabel.c_str());
-    EXPECT_EQ(revisions().validate(preparedBeforeUndo).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeUndo).size(), 1U);
     EXPECT_FALSE(revisions().validate(preparedBeforeEdit).empty());
 
     const auto preparedBeforeRedo = revisions().capture({modelKey, wildcardKey()});
@@ -1782,9 +1775,9 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRedoAndOrdinaryAbortAreStrictlyMon
     const auto modelAfterRedo = revisions().current(modelKey);
     const auto revisionAfterRedo = wildcardRevision();
     EXPECT_GT(modelAfterRedo, modelAfterUndo);
-    EXPECT_GT(revisionAfterRedo, revisionAfterUndo);
+    EXPECT_EQ(revisionAfterRedo, revisionAfterUndo);
     EXPECT_STREQ(object->Label.getValue(), "Edited");
-    EXPECT_EQ(revisions().validate(preparedBeforeRedo).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeRedo).size(), 1U);
     EXPECT_FALSE(revisions().validate(preparedBeforeEdit).empty());
 
     const auto preparedBeforeAbortSequence = revisions().capture({modelKey, wildcardKey()});
@@ -1793,14 +1786,14 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRedoAndOrdinaryAbortAreStrictlyMon
     const auto modelDuringAbortedEdit = revisions().current(modelKey);
     const auto revisionDuringAbortedEdit = wildcardRevision();
     EXPECT_GT(modelDuringAbortedEdit, modelAfterRedo);
-    EXPECT_GT(revisionDuringAbortedEdit, revisionAfterRedo);
+    EXPECT_EQ(revisionDuringAbortedEdit, revisionAfterRedo);
     document()->abortTransaction();
     const auto modelAfterAbort = revisions().current(modelKey);
     const auto revisionAfterAbort = wildcardRevision();
     EXPECT_GT(modelAfterAbort, modelDuringAbortedEdit);
-    EXPECT_GT(revisionAfterAbort, revisionDuringAbortedEdit);
+    EXPECT_EQ(revisionAfterAbort, revisionDuringAbortedEdit);
     EXPECT_STREQ(object->Label.getValue(), "Edited");
-    EXPECT_EQ(revisions().validate(preparedBeforeAbortSequence).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeAbortSequence).size(), 1U);
     EXPECT_EQ(revisions().current(structureKey), structureBefore);
 
     const std::array publishedWildcard {
@@ -1820,14 +1813,14 @@ TEST_F(DocumentCollaborationBoundaryTest, undoRedoAndOrdinaryAbortAreStrictlyMon
         modelAfterAbort,
     };
     for (std::size_t i = 1; i < publishedWildcard.size(); ++i) {
-        EXPECT_GT(publishedWildcard[i], publishedWildcard[i - 1])
-            << "wildcard revision ABA at step " << i;
+        EXPECT_EQ(publishedWildcard[i], publishedWildcard[i - 1])
+            << "typed label mutation unexpectedly advanced the wildcard at step " << i;
         EXPECT_GT(publishedModel[i], publishedModel[i - 1])
             << "object-model revision ABA at step " << i;
     }
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, dynamicSchemaUndoRedoAndAbortKeepStructureRevisionMonotonic)
+TEST_F(DocumentCollaborationBoundaryTest, typedDynamicSchemaUndoRedoAndAbortAdvanceStructureOnly)
 {
     auto* object = document()->addObject("App::FeatureTest", "StructureTransactionIngress");
     ASSERT_NE(object, nullptr);
@@ -1847,26 +1840,26 @@ TEST_F(DocumentCollaborationBoundaryTest, dynamicSchemaUndoRedoAndAbortKeepStruc
     const auto structureAfterEdit = revisions().current(structureKey);
     const auto wildcardAfterEdit = wildcardRevision();
     EXPECT_GT(structureAfterEdit, structureBeforeEdit);
-    EXPECT_GT(wildcardAfterEdit, wildcardBeforeEdit);
-    EXPECT_EQ(revisions().validate(preparedBeforeEdit).size(), 2U);
+    EXPECT_EQ(wildcardAfterEdit, wildcardBeforeEdit);
+    EXPECT_EQ(revisions().validate(preparedBeforeEdit).size(), 1U);
 
     const auto preparedBeforeUndo = revisions().capture({structureKey, wildcardKey()});
     ASSERT_TRUE(document()->undo());
     const auto structureAfterUndo = revisions().current(structureKey);
     const auto wildcardAfterUndo = wildcardRevision();
     EXPECT_GT(structureAfterUndo, structureAfterEdit);
-    EXPECT_GT(wildcardAfterUndo, wildcardAfterEdit);
+    EXPECT_EQ(wildcardAfterUndo, wildcardAfterEdit);
     EXPECT_EQ(object->getPropertyByName("TransactionalDynamic"), nullptr);
-    EXPECT_EQ(revisions().validate(preparedBeforeUndo).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeUndo).size(), 1U);
 
     const auto preparedBeforeRedo = revisions().capture({structureKey, wildcardKey()});
     ASSERT_TRUE(document()->redo());
     const auto structureAfterRedo = revisions().current(structureKey);
     const auto wildcardAfterRedo = wildcardRevision();
     EXPECT_GT(structureAfterRedo, structureAfterUndo);
-    EXPECT_GT(wildcardAfterRedo, wildcardAfterUndo);
+    EXPECT_EQ(wildcardAfterRedo, wildcardAfterUndo);
     ASSERT_NE(object->getPropertyByName("TransactionalDynamic"), nullptr);
-    EXPECT_EQ(revisions().validate(preparedBeforeRedo).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeRedo).size(), 1U);
 
     const auto preparedBeforeAbort = revisions().capture({structureKey, wildcardKey()});
     document()->openTransaction("dynamic schema abort");
@@ -1874,14 +1867,14 @@ TEST_F(DocumentCollaborationBoundaryTest, dynamicSchemaUndoRedoAndAbortKeepStruc
     const auto structureDuringAbort = revisions().current(structureKey);
     const auto wildcardDuringAbort = wildcardRevision();
     EXPECT_GT(structureDuringAbort, structureAfterRedo);
-    EXPECT_GT(wildcardDuringAbort, wildcardAfterRedo);
+    EXPECT_EQ(wildcardDuringAbort, wildcardAfterRedo);
     document()->abortTransaction();
     const auto structureAfterAbort = revisions().current(structureKey);
     const auto wildcardAfterAbort = wildcardRevision();
     EXPECT_GT(structureAfterAbort, structureDuringAbort);
-    EXPECT_GT(wildcardAfterAbort, wildcardDuringAbort);
+    EXPECT_EQ(wildcardAfterAbort, wildcardDuringAbort);
     EXPECT_NE(object->getPropertyByName("TransactionalDynamic"), nullptr);
-    EXPECT_EQ(revisions().validate(preparedBeforeAbort).size(), 2U);
+    EXPECT_EQ(revisions().validate(preparedBeforeAbort).size(), 1U);
 
     EXPECT_GT(revisions().current(modelKey), modelBefore)
         << "undo/redo/abort may classify recompute-admission status as object model state";
@@ -1931,7 +1924,7 @@ TEST_F(DocumentCollaborationBoundaryTest, saveObserverMutationIsNotSuppressed)
 
     EXPECT_EQ(observerCalls, 1);
     EXPECT_STREQ(object->Label.getValue(), "ChangedBySaveObserver");
-    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "save start observer");
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "save start observer");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, documentTipPublishesDocumentStructureAndRejectsAuthority)
@@ -1941,7 +1934,7 @@ TEST_F(DocumentCollaborationBoundaryTest, documentTipPublishesDocumentStructureA
 
     auto before = captureFor(object->getNameInDocument());
     document()->Tip.setValue(object);
-    expectExactDeltasAndConflicts(before, {0, 0, 0, 1, 1}, "Document::Tip");
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "Document::Tip");
 
     auto& authority = App::DocumentMutationAuthority::instance();
     authority.setOwner(*document(), App::MutationOwner::McpOwned, 34, "document-tip-test");
@@ -2036,7 +2029,7 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingAddObserverStillPublishesSurvi
     EXPECT_FALSE(document()->collaborationObjectIdentity(*surviving).empty());
     expectExactDeltasAndConflicts(
         before,
-        {1, 0, 1, 1, 1},
+        {1, 0, 0, 1, 0},
         "throwing add observer surviving state"
     );
 }
@@ -2060,7 +2053,7 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingDeleteObserverPublishesSurvivi
     EXPECT_EQ(document()->getObject(objectName.c_str()), object);
     expectExactDeltasAndConflicts(
         before,
-        {1, 0, 1, 1, 1},
+        {1, 0, 0, 1, 0},
         "throwing delete observer surviving state"
     );
 }
@@ -2087,7 +2080,7 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingTipObserverPublishesLateRemova
     EXPECT_EQ(document()->Tip.getValue(), nullptr);
     expectExactDeltasAndConflicts(
         before,
-        {1, 0, 1, 1, 1},
+        {1, 0, 0, 1, 0},
         "late throwing Tip observer removal state"
     );
 }

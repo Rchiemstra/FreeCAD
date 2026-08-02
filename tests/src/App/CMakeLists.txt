@@ -8,8 +8,10 @@ add_executable(App_tests_run
         Branding.cpp
         ComplexGeoData.cpp
         CollaborationRegistry.cpp
+        CollaborationCompatibilityMutation.cpp
         CollaborativeSetPropertyOperation.cpp
         DocumentCollaborationConcurrency.cpp
+        DocumentCollaborationPython.cpp
         DocumentCollaborationService.cpp
         DocumentCommitCoordinator.cpp
         Document.cpp

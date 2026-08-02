@@ -37,8 +37,9 @@
 #include "PropertyContainer.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
-#include "DocumentRevisionIndex.h"
+#include "MutationClassification.h"
 #include "PropertyLinks.h"
+#include "PropertyStandard.h"
 
 using namespace App;
 
@@ -53,28 +54,36 @@ void publishPropertyMutation(Property& property, bool structural)
         return;
     }
 
-    const bool linkStructure = property.isDerivedFrom(PropertyLinkBase::getClassTypeId());
-    std::vector<DocumentRevisionPublicationRequest> changes {
-        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
-    };
-    if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
-        const std::string subject = object->getNameInDocument();
-        const std::string stableObjectIdentity = document->collaborationObjectIdentity(*object);
-        if (structural || linkStructure) {
-            changes.push_back(
-                {DocumentRevisionKey::objectStructure(subject), stableObjectIdentity});
-            if (linkStructure) {
-                changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
-            }
+    MutationClassificationInput input;
+    input.source = structural ? CollaborationMutationSource::PropertyStatus
+                              : CollaborationMutationSource::PropertyValue;
+    input.mutationKind = structural ? MutationKind::StructuralProperty
+                                    : MutationKind::PropertyWrite;
+    input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
+    if (!structural) {
+        if (property.isDerivedFrom(PropertyLinkBase::getClassTypeId())) {
+            input.propertyFamily = CollaborationPropertyFamily::Link;
         }
         else {
-            changes.push_back({DocumentRevisionKey::objectModel(subject), stableObjectIdentity});
+            const auto type = property.getTypeId();
+            const bool exactModelValue = type == PropertyBool::getClassTypeId()
+                || type == PropertyInteger::getClassTypeId()
+                || type == PropertyFloat::getClassTypeId()
+                || type == PropertyString::getClassTypeId();
+            input.propertyFamily = exactModelValue ? CollaborationPropertyFamily::ModelValue
+                                                   : CollaborationPropertyFamily::Unknown;
         }
     }
-    else if (structural || linkStructure) {
-        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+
+    if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
+        input.containerKind = CollaborationContainerKind::DocumentObject;
+        input.objectName = object->getNameInDocument();
+        input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
     }
-    static_cast<void>(document->collaborationRevisions().publish(changes));
+    else if (dynamic_cast<const Document*>(container)) {
+        input.containerKind = CollaborationContainerKind::Document;
+    }
+    static_cast<void>(document->collaborationRevisions().publish(classifyMutation(input)));
 }
 
 }  // namespace

@@ -43,6 +43,7 @@
 
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/Transactions.h>
@@ -85,6 +86,7 @@ namespace Gui
 // Pimpl class
 struct DocumentP
 {
+    CollaborationCompatibilityAdapter collaborationCompatibilityAdapter;
     Thumbnail thumb;
     int _iWinCount;
     int _iDocId;
@@ -1389,6 +1391,77 @@ App::Document* Document::getDocument() const
 {
     return d->_pcDocument;
 }
+
+CollaborationCompatibilityMutationOutcome Document::executeCompatibilityMutation(
+    CollaborationCompatibilityMutationDeclaration declaration,
+    CollaborationCompatibilityMutationCallback callback)
+{
+    return d->collaborationCompatibilityAdapter.execute(
+        std::move(declaration),
+        [this](const CollaborationCompatibilityMutationDeclaration& admitted,
+               CollaborationCompatibilityMutationCallback&& mutationCallback) {
+            try {
+                App::DocumentCommitResult result;
+                if (admitted.kind
+                    == CollaborationCompatibilityMutationKind::SharedPresentation) {
+                    result = d->_pcDocument->collaborationService()
+                                 .serializeCompatibilityCallback(
+                                     std::move(mutationCallback));
+                }
+                else {
+                    App::CollaborationCompatibilityMutation mutation;
+                    if (admitted.kind == CollaborationCompatibilityMutationKind::Model) {
+                        mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
+                        mutation.objectName = admitted.objectName;
+                        mutation.stableObjectIdentity = admitted.stableObjectIdentity;
+                    }
+                    else {
+                        mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
+                    }
+                    result = d->_pcDocument->collaborationService()
+                                 .commitCompatibilityMutation(
+                                     std::move(mutation),
+                                     std::move(mutationCallback));
+                }
+                if (result.committed()) {
+                    return CollaborationCompatibilityMutationOutcome {
+                        CollaborationCompatibilityMutationStatus::Completed,
+                        result.message};
+                }
+                std::string diagnostic = App::documentCommitStatusName(result.status);
+                if (!result.message.empty()) {
+                    diagnostic += ": ";
+                    diagnostic += result.message;
+                }
+                const bool failed = result.status == App::DocumentCommitStatus::ApplyFailed
+                    || result.status == App::DocumentCommitStatus::RecomputeFailed
+                    || result.status == App::DocumentCommitStatus::PostconditionFailed
+                    || result.status == App::DocumentCommitStatus::PublicationFailed
+                    || result.status == App::DocumentCommitStatus::RollbackFailed;
+                return CollaborationCompatibilityMutationOutcome {
+                    failed ? CollaborationCompatibilityMutationStatus::CommitFailed
+                           : CollaborationCompatibilityMutationStatus::CommitRejected,
+                    std::move(diagnostic)};
+            }
+            catch (const Base::Exception& exception) {
+                return CollaborationCompatibilityMutationOutcome {
+                    CollaborationCompatibilityMutationStatus::CommitFailed,
+                    exception.what()};
+            }
+            catch (const std::exception& exception) {
+                return CollaborationCompatibilityMutationOutcome {
+                    CollaborationCompatibilityMutationStatus::CommitFailed,
+                    exception.what()};
+            }
+            catch (...) {
+                return CollaborationCompatibilityMutationOutcome {
+                    CollaborationCompatibilityMutationStatus::CommitFailed,
+                    "unknown compatibility mutation failure"};
+            }
+        },
+        std::move(callback));
+}
+
 void Document::setIsActive(bool active)
 {
     d->_isActive = active;

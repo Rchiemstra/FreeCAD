@@ -102,6 +102,7 @@ TEST_F(CollaborativeSetPropertyOperationTest, preparesConservativeContractAndCom
               (std::vector<DocumentRevisionKey> {DocumentRevisionKey::objectExistence("Target"),
                                                   DocumentRevisionKey::objectModel("Target"),
                                                   DocumentRevisionKey::objectStructure("Target"),
+                                                  DocumentRevisionKey::documentStructure(),
                                                   DocumentRevisionKey::unknownModelMutation()}));
     EXPECT_EQ(prepared.writeSet(),
               (std::vector<DocumentRevisionKey> {DocumentRevisionKey::objectModel("Target")}));
@@ -317,6 +318,32 @@ TEST_F(CollaborativeSetPropertyOperationTest, independentObjectEditsDoNotConflic
     EXPECT_TRUE(independentResult.committed());
     EXPECT_EQ(_count->getValue(), 4);
     EXPECT_EQ(independent->Integer.getValue(), 8);
+}
+
+TEST_F(CollaborativeSetPropertyOperationTest,
+       noTouchLateReverseDependencyConflictsThroughDocumentStructure)
+{
+    auto* lateDependent = _document->addObject<FeatureTest>("LateDependent");
+    ASSERT_NE(lateDependent, nullptr);
+    lateDependent->setStatus(ObjectStatus::NoTouch, true);
+    _document->recompute();
+
+    auto prepared = prepare("late-dependent", intent("Count", "integer", "9"));
+    ASSERT_NE(std::ranges::find(prepared.readSet(),
+                               DocumentRevisionKey::documentStructure()),
+              prepared.readSet().end());
+    lateDependent->Source1.setValue(_target);
+    EXPECT_FALSE(_document->mustExecute())
+        << "NoTouch fixture must exercise the no-pending-recompute admission path";
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    EXPECT_EQ(result.status, DocumentCommitStatus::Conflict);
+    EXPECT_NE(std::ranges::find_if(result.conflicts, [](const auto& conflict) {
+                  return conflict.key == DocumentRevisionKey::documentStructure();
+              }),
+              result.conflicts.end());
+    EXPECT_EQ(_count->getValue(), 3);
 }
 
 TEST_F(CollaborativeSetPropertyOperationTest, sameObjectPreparedEditsConflict)

@@ -333,7 +333,7 @@ private:
     std::vector<DocumentRevisionKey> reads;
     std::vector<DocumentRevisionKey> writes;
     std::vector<DocumentRevisionPublicationRequest> effects;
-    reads.reserve(affectedObjects.size() * 3 + 1);
+    reads.reserve(affectedObjects.size() * 3 + 2);
     writes.reserve(affectedObjects.size());
     effects.reserve(affectedObjects.size());
     for (const auto& [affectedName, affectedIdentity] : affectedObjects) {
@@ -344,6 +344,10 @@ private:
         effects.push_back(
             {DocumentRevisionKey::objectModel(affectedName), affectedIdentity});
     }
+    // A no-touch link mutation can grow the reverse dependency closure
+    // without scheduling recompute or touching the wildcard. Freeze the
+    // document structure that the closure was derived from as well.
+    reads.push_back(DocumentRevisionKey::documentStructure());
     reads.push_back(DocumentRevisionKey::unknownModelMutation());
     std::sort(reads.begin(), reads.end());
     std::sort(writes.begin(), writes.end());

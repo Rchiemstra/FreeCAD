@@ -161,6 +161,7 @@ SET(Document_CPP_SRCS
     DocumentMutationAuthority.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
+    MutationClassification.cpp
     MutationCapability.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
@@ -232,6 +233,7 @@ SET(Document_HPP_SRCS
     DocumentMutationAuthority.h
     DocumentRevisionIndex.h
     EditSession.h
+    MutationClassification.h
     MutationCapability.h
     MutationKind.h
     RecoverySnapshot.h

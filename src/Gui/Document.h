@@ -29,6 +29,7 @@
 #include <QString>
 
 #include <Base/Persistence.h>
+#include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/TreeItemMode.h>
 
 class SoNode;
@@ -200,6 +201,12 @@ public:
 
     /// Getter for the App Document
     App::Document* getDocument() const;
+
+    /** Execute one short legacy GUI mutation through the integration-owned boundary. */
+    [[nodiscard]] CollaborationCompatibilityMutationOutcome
+    executeCompatibilityMutation(
+        CollaborationCompatibilityMutationDeclaration declaration,
+        CollaborationCompatibilityMutationCallback callback);
 
     /// Notify the document when it becomes
     /// the active document/stops being the active document

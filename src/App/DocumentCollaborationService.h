@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -53,6 +54,23 @@ struct AppExport CollaborationPreparedEditResult
     std::unique_ptr<PreparedEdit> preparedEdit;
     std::string diagnostic;
 };
+
+/** App-owned scope for one synchronous legacy model mutation. */
+enum class CollaborationCompatibilityScope
+{
+    ObjectModel,
+    UnknownModel
+};
+
+/** Pointer-free declaration for the short synchronous compatibility path. */
+struct AppExport CollaborationCompatibilityMutation
+{
+    CollaborationCompatibilityScope scope {CollaborationCompatibilityScope::UnknownModel};
+    std::string objectName;
+    std::string stableObjectIdentity;
+};
+
+using CollaborationCompatibilityCallback = std::function<void()>;
 
 /**
  * The single Document-owned native collaboration facade.
@@ -99,6 +117,11 @@ public:
         PreparedEditExecutionId executionId);
     [[nodiscard]] DocumentCommitResult commitEdit(const std::string& sessionId,
                                                   const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutation(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
+        CollaborationCompatibilityCallback callback);
 
 private:
     friend class Document;
@@ -132,6 +155,11 @@ private:
     [[nodiscard]] DocumentCommitResult commitEditOnDocumentThread(
         const std::string& sessionId,
         const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
+        CollaborationCompatibilityCallback callback);
 
     Document& _document;
     DocumentCommitCoordinator _coordinator;

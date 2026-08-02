@@ -614,24 +614,31 @@ TEST_F(CollaborativeBooleanPreparationTest,
 }
 
 TEST_F(CollaborativeBooleanPreparationTest,
-       frozenReadRevisionsDetectInputMutationBeforeEventualCommit)
+       frozenReadRevisionsDetectUnclassifiedShapeMutationThroughWildcard)
 {
     auto preparation = prepare();
     const auto capturedRevisions =
         _document->collaborationRevisions().capture(preparation.readSet);
     const auto baseModel = App::DocumentRevisionKey::objectModel("Base");
+    const auto wildcard = App::DocumentRevisionKey::unknownModelMutation();
     ASSERT_NE(std::ranges::find(preparation.readSet, baseModel),
+              preparation.readSet.end());
+    ASSERT_NE(std::ranges::find(preparation.readSet, wildcard),
               preparation.readSet.end());
 
     _base->Shape.setValue(BRepPrimAPI_MakeBox(3.0, 2.0, 2.0).Shape());
     const auto conflicts =
         _document->collaborationRevisions().validate(capturedRevisions);
 
-    const auto baseConflict = std::ranges::find_if(conflicts, [&](const auto& conflict) {
-        return conflict.key == baseModel;
+    const auto wildcardConflict = std::ranges::find_if(conflicts, [&](const auto& conflict) {
+        return conflict.key == wildcard;
     });
-    ASSERT_NE(baseConflict, conflicts.end());
-    EXPECT_LT(baseConflict->expected, baseConflict->current);
+    ASSERT_NE(wildcardConflict, conflicts.end());
+    EXPECT_LT(wildcardConflict->expected, wildcardConflict->current);
+    EXPECT_EQ(std::ranges::find_if(conflicts, [&](const auto& conflict) {
+                  return conflict.key == baseModel;
+              }),
+              conflicts.end());
     EXPECT_TRUE(_result->Shape.getValue().IsNull());
 }
 

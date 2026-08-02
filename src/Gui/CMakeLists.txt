@@ -1322,6 +1322,7 @@ SET(FreeCADGui_CPP_SRCS
     ApplicationPy.cpp
     AutoSaver.cpp
     BitmapFactory.cpp
+    CollaborationCompatibilityAdapter.cpp
     Document.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1366,6 +1367,7 @@ SET(FreeCADGui_SRCS
     Application.h
     AutoSaver.h
     BitmapFactory.h
+    CollaborationCompatibilityAdapter.h
     Document.h
     DocumentModel.h
     DocumentObserver.h

@@ -28,6 +28,7 @@
 
 #include <cstring>
 #include <map>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -205,6 +206,32 @@ Py::Dict commitResultToPython(const DocumentCommitResult& commit)
     return result;
 }
 
+const char* preparedEditExecutionStatusName(PreparedEditExecutionStatus status)
+{
+    switch (status) {
+        case PreparedEditExecutionStatus::Queued:
+            return "Queued";
+        case PreparedEditExecutionStatus::Running:
+            return "Running";
+        case PreparedEditExecutionStatus::Completed:
+            return "Completed";
+        case PreparedEditExecutionStatus::Cancelled:
+            return "Cancelled";
+        case PreparedEditExecutionStatus::Failed:
+            return "Failed";
+    }
+    return "Invalid";
+}
+
+Py::Dict preparedEditExecutionSnapshotToPython(const PreparedEditExecutionSnapshot& snapshot)
+{
+    Py::Dict result;
+    result["execution_id"] = Py::Long(snapshot.id);
+    result["status"] = Py::String(preparedEditExecutionStatusName(snapshot.status));
+    result["diagnostic"] = Py::String(snapshot.diagnostic);
+    return result;
+}
+
 void preparedEditCapsuleDestructor(PyObject* capsule)
 {
     auto* edit = static_cast<PreparedEdit*>(PyCapsule_GetPointer(capsule,
@@ -222,6 +249,36 @@ PreparedEdit& preparedEditFromCapsule(PyObject* object)
         throw Py::TypeError("prepared_edit must be an App.PreparedEdit handle");
     }
     return *static_cast<PreparedEdit*>(PyCapsule_GetPointer(object, PreparedEditCapsuleName));
+}
+
+PyObject* preparedEditToCapsule(std::unique_ptr<PreparedEdit> edit)
+{
+    auto* rawEdit = edit.release();
+    PyObject* capsule =
+        PyCapsule_New(rawEdit, PreparedEditCapsuleName, preparedEditCapsuleDestructor);
+    if (!capsule) {
+        delete rawEdit;
+    }
+    return capsule;
+}
+
+Py::Dict preparedEditResultToPython(CollaborationPreparedEditResult result)
+{
+    Py::Dict pythonResult;
+    pythonResult["execution_id"] = Py::Long(result.executionId);
+    pythonResult["status"] = Py::String(preparedEditExecutionStatusName(result.status));
+    pythonResult["diagnostic"] = Py::String(result.diagnostic);
+    if (result.preparedEdit) {
+        PyObject* capsule = preparedEditToCapsule(std::move(result.preparedEdit));
+        if (!capsule) {
+            throw Py::Exception();
+        }
+        pythonResult["prepared_edit"] = Py::Object(capsule, true);
+    }
+    else {
+        pythonResult["prepared_edit"] = Py::None();
+    }
+    return pythonResult;
 }
 
 }  // namespace
@@ -900,13 +957,87 @@ PyObject* DocumentPy::prepareEdit(PyObject* args)
                                                                              operationId,
                                                                              intent,
                                                                              provenance);
-        auto* handle = new PreparedEdit(std::move(prepared));
-        PyObject* capsule =
-            PyCapsule_New(handle, PreparedEditCapsuleName, preparedEditCapsuleDestructor);
-        if (!capsule) {
-            delete handle;
+        return preparedEditToCapsule(std::make_unique<PreparedEdit>(std::move(prepared)));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::prepareEditAsync(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    const char* operationId = nullptr;
+    const char* operationType = nullptr;
+    PyObject* arguments = nullptr;
+    const char* provenance = "python";
+    if (!PyArg_ParseTuple(args,
+                          "sssO|s",
+                          &sessionId,
+                          &operationId,
+                          &operationType,
+                          &arguments,
+                          &provenance)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        CollaborativeOperationIntent intent;
+        intent.operationType = operationType;
+        intent.arguments = stringMapFromPython(arguments);
+        const auto executionId = getDocumentPtr()->collaborationService().prepareEditAsync(
+            sessionId, operationId, intent, provenance);
+        return Py::new_reference_to(Py::Long(executionId));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::preparedEditStatus(PyObject* args)
+{
+    unsigned long long executionId = 0;
+    if (!PyArg_ParseTuple(args, "K", &executionId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto status = getDocumentPtr()->collaborationService().preparedEditStatus(
+            static_cast<PreparedEditExecutionId>(executionId));
+        if (!status) {
+            Py_RETURN_NONE;
         }
-        return capsule;
+        return Py::new_reference_to(preparedEditExecutionSnapshotToPython(*status));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::cancelPreparedEdit(PyObject* args)
+{
+    unsigned long long executionId = 0;
+    if (!PyArg_ParseTuple(args, "K", &executionId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        return Py::new_reference_to(Py::Boolean(
+            getDocumentPtr()->collaborationService().cancelPreparedEdit(
+                static_cast<PreparedEditExecutionId>(executionId))));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::takePreparedEdit(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    unsigned long long executionId = 0;
+    if (!PyArg_ParseTuple(args, "sK", &sessionId, &executionId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        auto result = getDocumentPtr()->collaborationService().takePreparedEdit(
+            sessionId, static_cast<PreparedEditExecutionId>(executionId));
+        if (!result) {
+            Py_RETURN_NONE;
+        }
+        return Py::new_reference_to(preparedEditResultToPython(std::move(*result)));
     }
     PY_CATCH;
 }

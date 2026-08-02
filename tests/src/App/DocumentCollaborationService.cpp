@@ -1099,7 +1099,8 @@ TEST_F(DocumentCollaborationServiceTest, deleteVersusWriteRejectsBeforeApply)
     EXPECT_EQ(_document->getObject("Target"), nullptr);
 }
 
-TEST_F(DocumentCollaborationServiceTest, namespaceMembershipOrderTipAndLinkMutationsStaleEdits)
+TEST_F(DocumentCollaborationServiceTest,
+       wildcardMutationsConflictWhileTypedStructureRequiresRecomputeFirst)
 {
     auto expectOneRejectedEdit = [&](std::string operationId, auto&& mutate) {
         _document->recompute();
@@ -1110,19 +1111,31 @@ TEST_F(DocumentCollaborationServiceTest, namespaceMembershipOrderTipAndLinkMutat
         EXPECT_EQ(result.status, DocumentCommitStatus::Conflict);
         EXPECT_EQ(_target->Label.getStrValue(), "Before");
     };
+    auto expectTypedMutationRequiresRecompute =
+        [&](std::string operationId, auto&& mutate) {
+            _document->recompute();
+            auto pending = prepare(operationId, "Must Not Apply");
+            std::forward<decltype(mutate)>(mutate)();
+            const auto busy =
+                _document->collaborationService().commitEdit(_session.sessionId(), pending);
+            EXPECT_EQ(busy.status, DocumentCommitStatus::Busy);
+            _document->recompute();
+            const auto stale =
+                _document->collaborationService().commitEdit(_session.sessionId(), pending);
+            EXPECT_EQ(stale.status, DocumentCommitStatus::Conflict);
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+        };
 
-    DocumentObject* namespaceObject = nullptr;
-    expectOneRejectedEdit("namespace", [&] {
-        namespaceObject = _document->addObject<FeatureTest>("NamespaceMember");
-    });
+    auto* namespaceObject = _document->addObject<FeatureTest>("NamespaceMember");
     ASSERT_NE(namespaceObject, nullptr);
 
     auto* group = _document->addObject<DocumentObjectGroup>("Group");
     auto* firstMember = _document->addObject<FeatureTest>("FirstMember");
     auto* secondMember = _document->addObject<FeatureTest>("SecondMember");
     ASSERT_NE(group, nullptr);
-    expectOneRejectedEdit("membership", [&] { group->addObject(firstMember); });
-    expectOneRejectedEdit("order", [&] {
+    expectTypedMutationRequiresRecompute(
+        "membership", [&] { group->addObject(firstMember); });
+    expectTypedMutationRequiresRecompute("order", [&] {
         group->addObject(secondMember);
         group->removeObject(firstMember);
         group->addObject(firstMember);
@@ -1134,7 +1147,8 @@ TEST_F(DocumentCollaborationServiceTest, namespaceMembershipOrderTipAndLinkMutat
     auto* link = dynamic_cast<PropertyLink*>(
         linkOwner->addDynamicProperty("App::PropertyLink", "TargetLink"));
     ASSERT_NE(link, nullptr);
-    expectOneRejectedEdit("link", [&] { link->setValue(namespaceObject); });
+    expectTypedMutationRequiresRecompute(
+        "link", [&] { link->setValue(namespaceObject); });
 }
 
 TEST_F(DocumentCollaborationServiceTest, cancellationRejectsPreparedCommit)

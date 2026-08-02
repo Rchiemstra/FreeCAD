@@ -190,7 +190,10 @@ TEST_F(CollaborativeBooleanOperationTest, declaresCompleteConservativeDependenci
                   App::DocumentRevisionKey::objectModel("Base"),
                   App::DocumentRevisionKey::objectModel("Result"),
                   App::DocumentRevisionKey::objectModel("Tool"),
+                  App::DocumentRevisionKey::objectStructure("Base"),
                   App::DocumentRevisionKey::objectStructure("Result"),
+                  App::DocumentRevisionKey::objectStructure("Tool"),
+                  App::DocumentRevisionKey::documentStructure(),
                   App::DocumentRevisionKey::unknownModelMutation()}));
     EXPECT_EQ(prepared.writeSet(),
               (std::vector<App::DocumentRevisionKey> {
@@ -228,6 +231,31 @@ TEST_F(CollaborativeBooleanOperationTest, rejectsResultFeatureSubclass)
     _result = _document->addObject<Part::Box>("Result");
 
     EXPECT_THROW(static_cast<void>(prepareAdapter("cut")), std::invalid_argument);
+}
+
+TEST_F(CollaborativeBooleanOperationTest,
+       noTouchInputLinkMutationConflictsThroughFrozenStructure)
+{
+    auto* dependency = dynamic_cast<App::PropertyLink*>(
+        _base->addDynamicProperty("App::PropertyLink", "LateDependency"));
+    ASSERT_NE(dependency, nullptr);
+    _base->setStatus(App::ObjectStatus::NoTouch, true);
+    _document->recompute();
+
+    auto prepared = prepareEdit("cut");
+    dependency->setValue(_tool);
+    EXPECT_FALSE(_document->mustExecute())
+        << "NoTouch fixture must exercise the no-pending-recompute admission path";
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Conflict);
+    EXPECT_NE(std::ranges::find_if(result.conflicts, [](const auto& conflict) {
+                  return conflict.key
+                      == App::DocumentRevisionKey::objectStructure("Base");
+              }),
+              result.conflicts.end());
+    EXPECT_TRUE(_result->Shape.getValue().IsNull());
 }
 
 TEST_F(CollaborativeBooleanOperationTest, rejectsResultToInputDependencyAtPrepareAndApply)

@@ -42,7 +42,7 @@
 #include "Document.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
-#include "DocumentRevisionIndex.h"
+#include "MutationClassification.h"
 #include "Property.h"
 #include "PropertyContainer.h"
 
@@ -76,18 +76,23 @@ void publishStructuralPropertyMutation(PropertyContainer& container)
         return;
     }
 
-    std::vector<DocumentRevisionPublicationRequest> changes {
-        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    MutationClassificationInput input {
+        CollaborationMutationSource::DynamicPropertySchema,
+        MutationKind::StructuralProperty,
+        CollaborationPropertyFamily::NotApplicable,
+        CollaborationContainerKind::Unknown,
+        {},
+        std::nullopt,
     };
     if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
-        changes.push_back(
-             {DocumentRevisionKey::objectStructure(object->getNameInDocument()),
-             document->collaborationObjectIdentity(*object)});
+        input.containerKind = CollaborationContainerKind::DocumentObject;
+        input.objectName = object->getNameInDocument();
+        input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
     }
-    else {
-        changes.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    else if (dynamic_cast<const Document*>(&container)) {
+        input.containerKind = CollaborationContainerKind::Document;
     }
-    static_cast<void>(document->collaborationRevisions().publish(changes));
+    static_cast<void>(document->collaborationRevisions().publish(classifyMutation(input)));
 }
 }  // namespace
 
