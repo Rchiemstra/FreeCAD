@@ -759,6 +759,69 @@ TEST(DocumentRevisionPublicationEventTest, boundedEvictionReportsGapWithoutBlock
     EXPECT_EQ(atRetentionBoundary.events.size(), 2U);
 }
 
+TEST(DocumentRevisionPublicationReservationTest, cancellationLeavesNoRevisionOrEvent)
+{
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+    const std::vector expected {DocumentRevisionObservation(model, 0)};
+
+    {
+        auto reservation = index.reservePublication(expected, {objectChange(model)});
+        ASSERT_TRUE(reservation.ready());
+        EXPECT_TRUE(reservation.conflicts().empty());
+        reservation.cancel();
+    }
+
+    EXPECT_EQ(index.current(model), 0U);
+    const auto poll = index.pollPublications(testCursor(0));
+    EXPECT_EQ(poll.latestSequence, 0U);
+    EXPECT_TRUE(poll.events.empty());
+}
+
+TEST(DocumentRevisionPublicationReservationTest, commitPublishesPreallocatedBoundary)
+{
+    static_assert(noexcept(
+        std::declval<DocumentRevisionPublicationReservation&>().commit()));
+
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+    auto reservation = index.reservePublication(
+        {DocumentRevisionObservation(model, 0)},
+        {objectChange(model, "incarnation-7")});
+    ASSERT_TRUE(reservation.ready());
+
+    const auto observations = reservation.commit();
+    ASSERT_EQ(observations.size(), 1U);
+    EXPECT_EQ(observations.front(), DocumentRevisionObservation(model, 1));
+    EXPECT_EQ(index.current(model), 1U);
+    const auto poll = index.pollPublications(testCursor(0));
+    ASSERT_EQ(poll.events.size(), 1U);
+    EXPECT_EQ(poll.events.front().publicationSequence, 1U);
+    ASSERT_EQ(poll.events.front().changes.size(), 1U);
+    EXPECT_EQ(poll.events.front().changes.front().stableObjectIdentity,
+              std::optional<std::string>("incarnation-7"));
+}
+
+TEST(DocumentRevisionPublicationReservationTest, staleExpectationRejectsWithoutReservation)
+{
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+    static_cast<void>(index.publish({objectChange(model)}));
+
+    auto reservation = index.reservePublication(
+        {DocumentRevisionObservation(model, 0)},
+        {objectChange(model)});
+    EXPECT_FALSE(reservation.ready());
+    ASSERT_EQ(reservation.conflicts().size(), 1U);
+    EXPECT_EQ(reservation.conflicts().front(), DocumentRevisionConflict(model, 0, 1));
+    EXPECT_TRUE(reservation.commit().empty());
+    EXPECT_EQ(index.current(model), 1U);
+    EXPECT_EQ(index.pollPublications(testCursor(0)).events.size(), 1U);
+}
+
 TEST(DocumentRevisionPublicationEventTest, concurrentEventsAreJournaledInSequenceOrder)
 {
     constexpr int threadCount = 4;

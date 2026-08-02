@@ -233,7 +233,7 @@ void DocumentObject::touch(bool noRecompute)
         _pDoc->publishCollaborationMutation(*this, false);
     }
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
@@ -290,7 +290,7 @@ void DocumentObject::freeze()
 
     // use the signalTouchedObject to refresh the Gui
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
@@ -323,7 +323,7 @@ void DocumentObject::unfreeze(bool noRecompute)
     }
     StatusBits.set(ObjectStatus::Touch);
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
@@ -905,6 +905,9 @@ void DocumentObject::setDocument(App::Document* doc)
 
 bool DocumentObject::removeDynamicProperty(const char* name)
 {
+    if (_pDoc) {
+        _pDoc->ensureCollaborationStructuralMutationAllowed();
+    }
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
@@ -938,6 +941,9 @@ bool DocumentObject::removeDynamicProperty(const char* name)
 
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
 {
+    if (_pDoc) {
+        _pDoc->ensureCollaborationStructuralMutationAllowed();
+    }
     std::string oldName = prop->getName();
 
     auto expressions = ExpressionEngine.getExpressions();
@@ -979,6 +985,9 @@ App::Property* DocumentObject::addDynamicProperty(
     bool hidden
 )
 {
+    if (_pDoc) {
+        _pDoc->ensureCollaborationStructuralMutationAllowed();
+    }
     auto prop = TransactionalObject::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
     if (prop && _pDoc) {
         _pDoc->addOrRemovePropertyOfObject(this, prop, true);
@@ -1001,7 +1010,12 @@ void DocumentObject::onBeforeChange(const Property* prop)
         onBeforeChangeProperty(_pDoc, prop);
     }
 
-    signalBeforeChange(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectBeforeChange(*this, *prop);
+    }
+    else {
+        signalBeforeChange(*this, *prop);
+    }
 }
 
 std::vector<std::pair<Property*, std::unique_ptr<Property>>>
@@ -1090,7 +1104,12 @@ void DocumentObject::onEarlyChange(const Property* prop)
         }
     }
 
-    signalEarlyChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectEarlyChanged(*this, *prop);
+    }
+    else {
+        signalEarlyChanged(*this, *prop);
+    }
 }
 
 /// get called by the container when a Property was changed
@@ -1125,7 +1144,7 @@ void DocumentObject::onChanged(const Property* prop)
     //     _pDoc->onChangedProperty(this,prop);
 
     if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
-        _pDoc->signalRelabelObject(*this);
+        _pDoc->emitCollaborationRelabelObject(*this);
     }
 
     bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
@@ -1173,7 +1192,12 @@ void DocumentObject::onChanged(const Property* prop)
         _pDoc->onChangedProperty(this, prop);
     }
 
-    signalChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectChanged(*this, *prop);
+    }
+    else {
+        signalChanged(*this, *prop);
+    }
 }
 
 void DocumentObject::clearOutListCache() const

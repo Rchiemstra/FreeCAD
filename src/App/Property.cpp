@@ -371,7 +371,12 @@ void Property::hasSetValue()
         }
         if (!testStatus(Busy)) {
             Base::BitsetLocker<decltype(StatusBits)> guard(StatusBits, Busy);
-            signalChanged(*this);
+            if (Document* doc = documentFromPropertyContainer(father)) {
+                doc->emitCollaborationPropertyChanged(*this);
+            }
+            else {
+                signalChanged(*this);
+            }
         }
     }
     StatusBits.set(Touched);

@@ -208,6 +208,53 @@ class Document(PropertyContainer):
         """
         ...
 
+    def beginEditSession(self, actor_id: str, /) -> dict[str, object]:
+        """Start an advisory collaboration edit session."""
+        ...
+
+    def snapshotForEdit(
+        self,
+        session_id: str,
+        revision_keys: Sequence[dict[str, str]],
+        /,
+    ) -> dict[str, object]:
+        """Capture pointer-free semantic revisions for an active edit session."""
+        ...
+
+    def prepareEdit(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        provenance: str = "python",
+        /,
+    ) -> object:
+        """Prepare a registered native operation and return an opaque immutable handle."""
+        ...
+
+    def commitEdit(
+        self,
+        session_id: str,
+        prepared_edit: object,
+        /,
+    ) -> dict[str, object]:
+        """Commit a prepared edit and return a structured terminal result."""
+        ...
+
+    def cancelEdit(
+        self,
+        session_id: str,
+        reason: str = "cancelled by caller",
+        /,
+    ) -> bool:
+        """Advisorially cancel an edit session."""
+        ...
+
+    def editSessionStatus(self, session_id: str, /) -> dict[str, object] | None:
+        """Return advisory session metadata, or None when the ID is unknown."""
+        ...
+
     @overload
     def addObject(
         self,

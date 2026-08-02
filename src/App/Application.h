@@ -970,6 +970,7 @@ protected:
         ~TransactionSignaller();
     private:
         bool abort;
+        bool suppressed {false};
     };
 
 private:
@@ -985,6 +986,8 @@ private:
             const char *label, bool isMainDoc, DocumentInitFlags initFlags, std::vector<std::string> &&objNames);
 
     void setActiveDocumentNoSignal(App::Document* pDoc);
+    void beginCollaborationTransactionSignalSuppression();
+    void endCollaborationTransactionSignalSuppression();
 
     static Base::Reference<ParameterManager> _pcSysParamMngr;
     static Base::Reference<ParameterManager> _pcUserParamMngr;
@@ -1078,6 +1081,7 @@ private:
     int _objCount{-1};
 
     friend class AutoTransaction;
+    friend class Document;
 
     std::map<int, TransactionDescription> _activeTransactionDescriptions; // Maps transaction ID to transaction name
     

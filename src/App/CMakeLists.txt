@@ -152,9 +152,15 @@ SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
     CollaborationRegistry.cpp
+    CollaborativeOperation.cpp
+    CollaborativeOperationRegistry.cpp
+    CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    DocumentCollaborationService.cpp
+    DocumentCommitCoordinator.cpp
     DocumentMutationAuthority.cpp
     DocumentRevisionIndex.cpp
+    EditSession.cpp
     MutationCapability.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
@@ -197,6 +203,7 @@ SET(Document_CPP_SRCS
     InventorObject.cpp
     Placement.cpp
     ProjectFile.cpp
+    PreparedEdit.cpp
     Datums.cpp
     Range.cpp
     Transactions.cpp
@@ -215,9 +222,15 @@ SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
     CollaborationRegistry.h
+    CollaborativeOperation.h
+    CollaborativeOperationRegistry.h
+    CollaborativeSetPropertyOperation.h
     Document.h
+    DocumentCollaborationService.h
+    DocumentCommitCoordinator.h
     DocumentMutationAuthority.h
     DocumentRevisionIndex.h
+    EditSession.h
     MutationCapability.h
     MutationKind.h
     RecoverySnapshot.h
@@ -252,6 +265,7 @@ SET(Document_HPP_SRCS
     InventorObject.h
     Placement.h
     ProjectFile.h
+    PreparedEdit.h
     Datums.h
     Range.h
     Transactions.h

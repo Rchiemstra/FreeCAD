@@ -8,6 +8,9 @@ add_executable(App_tests_run
         Branding.cpp
         ComplexGeoData.cpp
         CollaborationRegistry.cpp
+        CollaborativeSetPropertyOperation.cpp
+        DocumentCollaborationService.cpp
+        DocumentCommitCoordinator.cpp
         Document.cpp
         DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
@@ -25,6 +28,7 @@ add_executable(App_tests_run
         MappedName.cpp
         Metadata.cpp
         ProjectFile.cpp
+        PreparedEdit.cpp
         PropertyFile.cpp
         Property.h
         Property.cpp

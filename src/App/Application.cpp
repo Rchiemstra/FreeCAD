@@ -1369,9 +1369,28 @@ void Application::setActiveDocument(const char* Name)
 
 static int _TransSignalCount;
 static bool _TransSignalled;
+static thread_local unsigned collaborationTransactionSignalSuppressionDepth;
+
+void Application::beginCollaborationTransactionSignalSuppression()
+{
+    ++collaborationTransactionSignalSuppressionDepth;
+}
+
+void Application::endCollaborationTransactionSignalSuppression()
+{
+    if (collaborationTransactionSignalSuppressionDepth == 0) {
+        throw Base::RuntimeError("collaboration transaction signal suppression underflow");
+    }
+    --collaborationTransactionSignalSuppressionDepth;
+}
+
 Application::TransactionSignaller::TransactionSignaller(bool abort, bool signal)
     :abort(abort)
 {
+    if (collaborationTransactionSignalSuppressionDepth != 0) {
+        suppressed = true;
+        return;
+    }
     ++_TransSignalCount;
     if(signal && !_TransSignalled) {
         _TransSignalled = true;
@@ -1380,6 +1399,9 @@ Application::TransactionSignaller::TransactionSignaller(bool abort, bool signal)
 }
 
 Application::TransactionSignaller::~TransactionSignaller() {
+    if (suppressed) {
+        return;
+    }
     if(--_TransSignalCount == 0 && _TransSignalled) {
         _TransSignalled = false;
         try {

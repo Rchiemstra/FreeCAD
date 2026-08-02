@@ -36,6 +36,7 @@
 #include <list>
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -79,6 +80,7 @@
 #include "BackupPolicy.h"
 #include "CollaborationRegistry.h"
 #include "DocumentMutationAuthority.h"
+#include "DocumentCollaborationService.h"
 #include "DocumentRevisionIndex.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
@@ -191,6 +193,14 @@ const DocumentRevisionIndex& Document::collaborationRevisions() const
     return d->collaborationRevisions;
 }
 
+DocumentCollaborationService& Document::collaborationService()
+{
+    if (!d->collaborationService) {
+        d->collaborationService.reset(new DocumentCollaborationService(*this));
+    }
+    return *d->collaborationService;
+}
+
 bool Document::collaborationRevisionPublicationSuppressed() const
 {
     return d->suppressCollaborationRevisionPublication;
@@ -246,9 +256,307 @@ void Document::publishCollaborationMutation(const PropertyContainer& container, 
     static_cast<void>(d->collaborationRevisions.publish(changes));
 }
 
-void Document::setCollaborationRevisionPublicationSuppressed(bool suppressed)
+void Document::setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept
 {
     d->suppressCollaborationRevisionPublication = suppressed;
+}
+
+std::recursive_mutex& Document::collaborationCommitMutex() noexcept
+{
+    return d->collaborationCommitMutex;
+}
+
+bool Document::isCollaborationOwnerThread() const noexcept
+{
+    return std::this_thread::get_id() == d->collaborationOwnerThread;
+}
+
+bool Document::collaborationNotificationsReplaying() const noexcept
+{
+    return d->collaborationReplayingNotifications;
+}
+
+bool Document::collaborationStableReadBlocked() const noexcept
+{
+    return d->collaborationCommitNotificationBarrier || hasPendingTransaction()
+        || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
+        || mustExecute();
+}
+
+bool Document::collaborationCommitPoisoned() const noexcept
+{
+    return d->collaborationCommitPoisoned;
+}
+
+const char* Document::collaborationCommitPoisonDiagnostic() const noexcept
+{
+    return d->collaborationCommitPoisonDiagnostic.data();
+}
+
+void Document::poisonCollaborationCommit(const char* diagnostic) noexcept
+{
+    d->collaborationCommitPoisoned = true;
+    std::snprintf(d->collaborationCommitPoisonDiagnostic.data(),
+                  d->collaborationCommitPoisonDiagnostic.size(),
+                  "%s",
+                  diagnostic ? diagnostic : "collaboration rollback was incomplete");
+}
+
+void Document::ensureCollaborationStructuralMutationAllowed() const
+{
+    if (d->collaborationCommitNotificationBarrier && !d->rollback) {
+        throw Base::RuntimeError(
+            "object and dynamic-property structure changes are unsupported in Phase 2 prepared edits");
+    }
+}
+
+void Document::ensureCollaborationTransactionControlAllowed() const
+{
+    if (d->collaborationCommitNotificationBarrier
+        && !d->collaborationTransactionControlGranted) {
+        throw Base::RuntimeError(
+            "transaction, undo, and redo control is unavailable during a prepared commit");
+    }
+}
+
+int Document::openCollaborationCommitTransaction(std::string name)
+{
+    if (!d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError("collaboration commit notification barrier is not active");
+    }
+    Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
+    return _openTransaction(std::move(name));
+}
+
+bool Document::commitCollaborationCommitTransaction()
+{
+    if (!d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError("collaboration commit notification barrier is not active");
+    }
+    Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
+    return _commitTransaction(false);
+}
+
+void Document::beginCollaborationCommitNotificationBarrier()
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError("collaboration commit notification barrier is already active");
+    }
+    d->collaborationDeferredNotifications.clear();
+    d->collaborationDeferredNotifications.reserve(64);
+    d->collaborationPreparedUndoSlot.clear();
+    d->collaborationPreparedUndoSlot.push_back(nullptr);
+    GetApplication().beginCollaborationTransactionSignalSuppression();
+    d->collaborationCommitNotificationBarrier = true;
+}
+
+void Document::prepareCollaborationCommitFinalization()
+{
+    if (!d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError("collaboration commit notification barrier is not active");
+    }
+    d->collaborationDeferredNotifications.reserve(
+        d->collaborationDeferredNotifications.size() + 4);
+    if (d->collaborationPreparedUndoSlot.empty()) {
+        d->collaborationPreparedUndoSlot.push_back(nullptr);
+    }
+}
+
+void Document::finishCollaborationCommitNotificationBarrier(bool committed) noexcept
+{
+    if (!d->collaborationCommitNotificationBarrier) {
+        return;
+    }
+
+    auto notifications = std::move(d->collaborationDeferredNotifications);
+    d->collaborationDeferredNotifications.clear();
+    d->collaborationPreparedUndoSlot.clear();
+    d->collaborationTransactionControlGranted = false;
+    d->collaborationCommitNotificationBarrier = false;
+    try {
+        GetApplication().endCollaborationTransactionSignalSuppression();
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("Failed to end collaboration transaction signal suppression: "
+               << exception.what());
+    }
+    catch (...) {
+        FC_ERR("Failed to end collaboration transaction signal suppression");
+    }
+
+    if (!committed) {
+        return;
+    }
+
+    d->collaborationReplayingNotifications = true;
+
+    bool globalBeforeCloseEmitted = false;
+    const auto reportNotificationFailure = [](const char* stage, const std::exception* exception) {
+        if (exception) {
+            FC_ERR("Deferred collaboration " << stage << " notification failed: "
+                                               << exception->what());
+        }
+        else {
+            FC_ERR("Deferred collaboration " << stage
+                                               << " notification failed with unknown exception");
+        }
+    };
+    const auto emit = [&](const CollaborationDeferredNotification& notification) {
+        switch (notification.kind) {
+            case CollaborationDeferredNotificationKind::DocumentBeforeChange:
+                signalBeforeChange(*this, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::DocumentChanged:
+                signalChanged(*this, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::ObjectBeforeChange:
+                signalBeforeChangeObject(*notification.object, *notification.property);
+                notification.object->signalBeforeChange(
+                    *notification.object, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::ObjectEarlyChanged:
+                notification.object->signalEarlyChanged(
+                    *notification.object, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::ObjectChanged:
+                signalChangedObject(*notification.object, *notification.property);
+                notification.object->signalChanged(*notification.object, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::PropertyChanged:
+                notification.property->signalChanged(*notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::TouchedObject:
+                signalTouchedObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::RelabelObject:
+                signalRelabelObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::BeforeRecompute:
+                signalBeforeRecompute(*this);
+                break;
+            case CollaborationDeferredNotificationKind::RecomputedObject:
+                signalRecomputedObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::Recomputed:
+                signalRecomputed(*this, notification.objects);
+                break;
+            case CollaborationDeferredNotificationKind::OpenTransaction:
+                signalOpenTransaction(*this, notification.text);
+                break;
+            case CollaborationDeferredNotificationKind::CommitTransaction:
+                if (!globalBeforeCloseEmitted) {
+                    globalBeforeCloseEmitted = true;
+                    GetApplication().signalBeforeCloseTransaction(false);
+                }
+                signalCommitTransaction(*this);
+                break;
+            case CollaborationDeferredNotificationKind::AbortTransaction:
+                signalAbortTransaction(*this);
+                break;
+            case CollaborationDeferredNotificationKind::BecameStable:
+                signalBecameStable(*this);
+                break;
+        }
+    };
+
+    for (const auto& notification : notifications) {
+        try {
+            emit(notification);
+        }
+        catch (const std::exception& exception) {
+            reportNotificationFailure("observer", &exception);
+        }
+        catch (...) {
+            reportNotificationFailure("observer", nullptr);
+        }
+        if (notification.kind == CollaborationDeferredNotificationKind::CommitTransaction
+            && globalBeforeCloseEmitted) {
+            try {
+                GetApplication().signalCloseTransaction(false);
+            }
+            catch (const std::exception& exception) {
+                reportNotificationFailure("transaction-close", &exception);
+            }
+            catch (...) {
+                reportNotificationFailure("transaction-close", nullptr);
+            }
+            globalBeforeCloseEmitted = false;
+        }
+    }
+    // Defensive fallback if a future replay path separates the paired global
+    // close from its document commit notification.
+    if (globalBeforeCloseEmitted) {
+        try {
+            GetApplication().signalCloseTransaction(false);
+        }
+        catch (const std::exception& exception) {
+            reportNotificationFailure("transaction-close", &exception);
+        }
+        catch (...) {
+            reportNotificationFailure("transaction-close", nullptr);
+        }
+    }
+    d->collaborationReplayingNotifications = false;
+}
+
+void Document::emitCollaborationObjectBeforeChange(DocumentObject& object,
+                                                   const Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        return;  // onBeforeChangeProperty queued the combined document/object boundary.
+    }
+    object.signalBeforeChange(object, property);
+}
+
+void Document::emitCollaborationObjectEarlyChanged(DocumentObject& object,
+                                                   const Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::ObjectEarlyChanged,
+             &object,
+             const_cast<Property*>(&property)});
+        return;
+    }
+    object.signalEarlyChanged(object, property);
+}
+
+void Document::emitCollaborationObjectChanged(DocumentObject& object, const Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        return;  // onChangedProperty queued the combined document/object boundary.
+    }
+    object.signalChanged(object, property);
+}
+
+void Document::emitCollaborationPropertyChanged(Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::PropertyChanged, nullptr, &property});
+        return;
+    }
+    property.signalChanged(property);
+}
+
+void Document::emitCollaborationTouchedObject(DocumentObject& object)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::TouchedObject, &object});
+        return;
+    }
+    signalTouchedObject(object);
+}
+
+void Document::emitCollaborationRelabelObject(DocumentObject& object)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::RelabelObject, &object});
+        return;
+    }
+    signalRelabelObject(object);
 }
 
 bool Document::collaborationPreparationSupported() const
@@ -267,6 +575,30 @@ bool Document::collaborationPreparationSupported() const
     return std::ranges::none_of(d->objectArray, [&](const DocumentObject* object) {
         return containsMutablePythonPayload(*object);
     });
+}
+
+Property* Document::addDynamicProperty(std::string_view type,
+                                       const char* name,
+                                       const char* group,
+                                       const char* doc,
+                                       short attr,
+                                       bool ro,
+                                       bool hidden)
+{
+    ensureCollaborationStructuralMutationAllowed();
+    return PropertyContainer::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
+}
+
+bool Document::renameDynamicProperty(Property* property, const char* name)
+{
+    ensureCollaborationStructuralMutationAllowed();
+    return PropertyContainer::renameDynamicProperty(property, name);
+}
+
+bool Document::removeDynamicProperty(const char* name)
+{
+    ensureCollaborationStructuralMutationAllowed();
+    return PropertyContainer::removeDynamicProperty(name);
 }
 
 void Document::setStatus(const Status pos, const bool on) // NOLINT
@@ -295,6 +627,7 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    ensureCollaborationTransactionControlAllowed();
     enforceDocumentMutation(this, MutationKind::Undo);
     MutationInternalScope internalGrant(this);
 
@@ -351,6 +684,7 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    ensureCollaborationTransactionControlAllowed();
     enforceDocumentMutation(this, MutationKind::Redo);
     MutationInternalScope internalGrant(this);
 
@@ -470,6 +804,7 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
+    ensureCollaborationTransactionControlAllowed();
     enforceDocumentMutation(this, MutationKind::TransactionOpen, MutationOrigin::Cpp, nullptr,
                             name.name.c_str());
 
@@ -500,6 +835,7 @@ int Document::openTransaction(std::string name, int tid)
 
 int Document::_openTransaction(std::string name, int id)
 {
+    ensureCollaborationTransactionControlAllowed();
     if (isTransactionLocked() && id != d->bookedTransaction) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Transaction locked, ignore new transaction '" << name << "'");
@@ -540,7 +876,16 @@ int Document::_openTransaction(std::string name, int id)
     mUndoMap[d->activeUndoTransaction->getID()] = d->activeUndoTransaction;
     id = d->activeUndoTransaction->getID();
 
-    signalOpenTransaction(*this, name);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::OpenTransaction,
+             nullptr,
+             nullptr,
+             name});
+    }
+    else {
+        signalOpenTransaction(*this, name);
+    }
 
     Document* transactionInitiator = GetApplication().transactionInitiator(id);
     if (transactionInitiator && transactionInitiator != this && !transactionInitiator->hasPendingTransaction()) {
@@ -553,6 +898,7 @@ int Document::_openTransaction(std::string name, int id)
 
 void Document::renameTransaction(const std::string& name, const int id) const
 {
+    ensureCollaborationTransactionControlAllowed();
     if (!name.empty() && d->activeUndoTransaction && d->activeUndoTransaction->getID() == id) {
         if (boost::starts_with(d->activeUndoTransaction->Name, "-> ")) {
             d->activeUndoTransaction->Name.resize(3);
@@ -565,6 +911,7 @@ void Document::renameTransaction(const std::string& name, const int id) const
 }
 int Document::setActiveTransaction(TransactionName name, int tid)
 {
+    ensureCollaborationTransactionControlAllowed();
     // Probably a group transaction situation
     if (tid != NullTransaction) {
         if (!GetApplication().transactionIsActive(tid)) {
@@ -600,10 +947,12 @@ int Document::setActiveTransaction(TransactionName name, int tid)
 
 void Document::lockTransaction()
 {
+    ensureCollaborationTransactionControlAllowed();
     d->TransactionLock++;
 }
 void Document::unlockTransaction()
 {
+    ensureCollaborationTransactionControlAllowed();
     if (d->TransactionLock > 0) {
         d->TransactionLock--;
     }
@@ -671,6 +1020,7 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
 
 void Document::_clearRedos()
 {
+    ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear redo while transacting");
         return;
@@ -685,6 +1035,7 @@ void Document::_clearRedos()
 
 void Document::commitTransaction() // NOLINT
 {
+    ensureCollaborationTransactionControlAllowed();
     enforceDocumentMutation(this, MutationKind::TransactionCommit);
 
     if (isPerformingTransaction() || d->committing) {
@@ -709,6 +1060,7 @@ void Document::commitTransaction() // NOLINT
 
 bool Document::_commitTransaction(const bool notify)
 {
+    ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction()) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot commit transaction while transacting");
@@ -728,7 +1080,19 @@ bool Document::_commitTransaction(const bool notify)
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
-            mUndoTransactions.push_back(d->activeUndoTransaction);
+            if (d->collaborationCommitNotificationBarrier) {
+                if (d->collaborationPreparedUndoSlot.empty()) {
+                    throw Base::RuntimeError(
+                        "collaboration commit finalization was not prepared");
+                }
+                d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                mUndoTransactions.splice(mUndoTransactions.end(),
+                                         d->collaborationPreparedUndoSlot,
+                                         d->collaborationPreparedUndoSlot.begin());
+            }
+            else {
+                mUndoTransactions.push_back(d->activeUndoTransaction);
+            }
             d->activeUndoTransaction = nullptr;
 
             // check the stack for the limits
@@ -737,7 +1101,13 @@ bool Document::_commitTransaction(const bool notify)
                 delete mUndoTransactions.front();
                 mUndoTransactions.pop_front();
             }
-            signalCommitTransaction(*this);
+            if (d->collaborationCommitNotificationBarrier) {
+                d->collaborationDeferredNotifications.push_back(
+                    {CollaborationDeferredNotificationKind::CommitTransaction});
+            }
+            else {
+                signalCommitTransaction(*this);
+            }
 
             // commitTransaction() may call again _commitTransaction()
             if (notify) {
@@ -747,13 +1117,20 @@ bool Document::_commitTransaction(const bool notify)
         committed = true;
     }
     if (committed) {
-        signalBecameStable(*this);
+        if (d->collaborationCommitNotificationBarrier) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::BecameStable});
+        }
+        else {
+            signalBecameStable(*this);
+        }
     }
     return true;
 }
 
 void Document::abortTransaction() const
 {
+    ensureCollaborationTransactionControlAllowed();
     enforceDocumentMutation(const_cast<Document*>(this), MutationKind::TransactionAbort);
 
     if (isPerformingTransaction() || d->committing) {
@@ -775,6 +1152,7 @@ void Document::abortTransaction() const
 
 void Document::_abortTransaction()
 {
+    ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
             FC_WARN("Cannot abort transaction while transacting");
@@ -795,13 +1173,119 @@ void Document::_abortTransaction()
             mUndoMap.erase(d->activeUndoTransaction->getID());
             delete d->activeUndoTransaction;
             d->activeUndoTransaction = nullptr;
-            signalAbortTransaction(*this);
+            if (d->collaborationCommitNotificationBarrier) {
+                d->collaborationDeferredNotifications.push_back(
+                    {CollaborationDeferredNotificationKind::AbortTransaction});
+            }
+            else {
+                signalAbortTransaction(*this);
+            }
         }
         aborted = true;
     }
     if (aborted) {
-        signalBecameStable(*this);
+        if (d->collaborationCommitNotificationBarrier) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::BecameStable});
+        }
+        else {
+            signalBecameStable(*this);
+        }
     }
+}
+
+CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcept
+{
+    CollaborationRollbackResult result;
+    std::size_t diagnosticSize = 0;
+    const auto appendDiagnostic = [&](const char* stage, const char* detail = nullptr) noexcept {
+        result.restored = false;
+        if (diagnosticSize >= result.diagnostic.size() - 1) {
+            return;
+        }
+        const int written = std::snprintf(result.diagnostic.data() + diagnosticSize,
+                                          result.diagnostic.size() - diagnosticSize,
+                                          "%s%s%s",
+                                          diagnosticSize == 0 ? "" : "; ",
+                                          stage,
+                                          detail ? detail : "");
+        if (written <= 0) {
+            return;
+        }
+        diagnosticSize = std::min(result.diagnostic.size() - 1,
+                                  diagnosticSize + static_cast<std::size_t>(written));
+    };
+
+    if (!d->activeUndoTransaction) {
+        d->bookedTransaction = 0;
+        return result;
+    }
+
+    Transaction* transaction = d->activeUndoTransaction;
+    {
+        Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted,
+                                                  false);
+        Base::FlagToggler<bool> rollbackFlag(d->rollback);
+        try {
+            transaction->applyChecked(*this, false);
+        }
+        catch (const Base::Exception& exception) {
+            appendDiagnostic("checked transaction restore failed: ", exception.what());
+        }
+        catch (const std::exception& exception) {
+            appendDiagnostic("checked transaction restore failed: ", exception.what());
+        }
+        catch (...) {
+            appendDiagnostic("checked transaction restore failed with an unknown exception");
+        }
+    }
+
+    mUndoMap.erase(transaction->getID());
+    delete transaction;
+    d->activeUndoTransaction = nullptr;
+    d->bookedTransaction = 0;
+
+    try {
+        if (d->collaborationCommitNotificationBarrier) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::AbortTransaction});
+        }
+        else {
+            signalAbortTransaction(*this);
+        }
+    }
+    catch (const std::exception& exception) {
+        appendDiagnostic("abort notification failed: ", exception.what());
+    }
+    catch (...) {
+        appendDiagnostic("abort notification failed with an unknown exception");
+    }
+
+    bool recomputeHasError = false;
+    try {
+        static_cast<void>(recompute({}, true, &recomputeHasError));
+    }
+    catch (const Base::Exception& exception) {
+        appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
+    }
+    catch (const std::exception& exception) {
+        appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
+    }
+    catch (...) {
+        appendDiagnostic("rollback stabilization recompute failed with an unknown exception");
+    }
+    if (recomputeHasError) {
+        appendDiagnostic("rollback stabilization recompute reported an object error");
+    }
+
+    for (const auto* object : d->objectArray) {
+        if (object->isTouched() || object->isError()) {
+            appendDiagnostic("rollback left object unstable: ", object->getNameInDocument());
+            break;
+        }
+    }
+
+    return result;
 }
 
 bool Document::hasPendingTransaction() const
@@ -854,6 +1338,7 @@ documentClearPublicationRequests(const Document& document,
 
 void Document::clearDocument() // NOLINT
 {
+    ensureCollaborationStructuralMutationAllowed();
     enforceDocumentMutation(this, MutationKind::BulkCopy);
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
     d->activeObject = nullptr;
@@ -885,6 +1370,7 @@ void Document::clearDocument() // NOLINT
 
 void Document::clearUndos()
 {
+    ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear undos while transacting");
         return;
@@ -965,11 +1451,13 @@ unsigned int Document::getUndoMemSize() const
 
 void Document::setUndoLimit(const unsigned int UndoMemSize) // NOLINT
 {
+    ensureCollaborationTransactionControlAllowed();
     d->UndoMemSize = UndoMemSize;
 }
 
 void Document::setMaxUndoStackSize(const unsigned int UndoMaxStackSize) // NOLINT
 {
+    ensureCollaborationTransactionControlAllowed();
     d->UndoMaxStackSize = UndoMaxStackSize;
 }
 
@@ -983,12 +1471,28 @@ void Document::onBeforeChange(const Property* prop)
     if (prop == &Label) {
         oldLabel = Label.getValue();
     }
-    signalBeforeChange(*this, *prop);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::DocumentBeforeChange,
+             nullptr,
+             const_cast<Property*>(prop)});
+    }
+    else {
+        signalBeforeChange(*this, *prop);
+    }
 }
 
 void Document::onChanged(const Property* prop)
 {
-    signalChanged(*this, *prop);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::DocumentChanged,
+             nullptr,
+             const_cast<Property*>(prop)});
+    }
+    else {
+        signalChanged(*this, *prop);
+    }
 
     // the Name property is a label for display purposes
     if (prop == &Label) {
@@ -1051,7 +1555,15 @@ void Document::onChanged(const Property* prop)
 void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Property* What)
 {
     if (Who->isDerivedFrom<DocumentObject>()) {
-        signalBeforeChangeObject(*static_cast<const DocumentObject*>(Who), *What);
+        if (d->collaborationCommitNotificationBarrier) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::ObjectBeforeChange,
+                 const_cast<DocumentObject*>(static_cast<const DocumentObject*>(Who)),
+                 const_cast<Property*>(What)});
+        }
+        else {
+            signalBeforeChangeObject(*static_cast<const DocumentObject*>(Who), *What);
+        }
     }
     if (!d->rollback && !globalIsRelabeling) {
         _checkTransaction(nullptr, What, __LINE__);
@@ -1063,11 +1575,20 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
 
 void Document::onChangedProperty(const DocumentObject* Who, const Property* What)
 {
-    signalChangedObject(*Who, *What);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::ObjectChanged,
+             const_cast<DocumentObject*>(Who),
+             const_cast<Property*>(What)});
+    }
+    else {
+        signalChangedObject(*Who, *What);
+    }
 }
 
 void Document::setTransactionMode(const int iMode) // NOLINT
 {
+    ensureCollaborationTransactionControlAllowed();
     d->iTransactionMode = iMode;
 }
 
@@ -1077,6 +1598,7 @@ void Document::setTransactionMode(const int iMode) // NOLINT
 Document::Document(const char* documentName)
     : d(new DocumentP), myName(documentName)
 {
+    d->collaborationService.reset(new DocumentCollaborationService(*this));
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
     // get a reference then the object wouldn't get deleted in the destructor.
@@ -3048,7 +3570,13 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
     std::optional<Base::ObjectStatusLocker<Document::Status, Document>> recomputingStatus;
     recomputingStatus.emplace(Document::Recomputing, this);
 
-    signalBeforeRecompute(*this);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::BeforeRecompute});
+    }
+    else {
+        signalBeforeRecompute(*this);
+    }
 
     bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
 
@@ -3124,7 +3652,13 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                     }
                 }
                 if (obj->isTouched() || doRecompute) {
-                    signalRecomputedObject(*obj);
+                    if (d->collaborationCommitNotificationBarrier) {
+                        d->collaborationDeferredNotifications.push_back(
+                            {CollaborationDeferredNotificationKind::RecomputedObject, obj});
+                    }
+                    else {
+                        signalRecomputedObject(*obj);
+                    }
                     if (fineGrained) {
                         // set all dependent objects touched based on properties
                         std::vector<DepEdge> inList = obj->getInListProp();
@@ -3187,9 +3721,23 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
     // recompute teardown has finished. signalBecameStable() is the first
     // point where observers may treat the document as stable again.
 
-    signalRecomputed(*this, topoSortedObjects);
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::Recomputed};
+        notification.objects = topoSortedObjects;
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+    }
+    else {
+        signalRecomputed(*this, topoSortedObjects);
+    }
     recomputingStatus.reset();
-    signalBecameStable(*this);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::BecameStable});
+    }
+    else {
+        signalBecameStable(*this);
+    }
 
     tracker.checkpoint("Recompute total");
 
@@ -3490,7 +4038,13 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     }
     _recomputeFeature(feature);
     publishCollaborationMutation(*feature, false);
-    signalRecomputedObject(*feature);
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::RecomputedObject, feature});
+    }
+    else {
+        signalRecomputedObject(*feature);
+    }
     return feature->isValid();
 }
 
@@ -3502,6 +4056,7 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
+    ensureCollaborationStructuralMutationAllowed();
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -3537,6 +4092,7 @@ DocumentObject* Document::addObject(
 std::vector<DocumentObject*>
 Document::addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew)
 {
+    ensureCollaborationStructuralMutationAllowed();
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -3579,6 +4135,7 @@ Document::addObjects(const char* sType, const std::vector<std::string>& objectNa
 
 void Document::addObject(DocumentObject* obj, const char* name)
 {
+    ensureCollaborationStructuralMutationAllowed();
     if (obj->getDocument()) {
         throw Base::RuntimeError("Document object is already added to a document");
     }
@@ -3595,6 +4152,7 @@ void Document::addObject(DocumentObject* obj, const char* name)
 
 void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
 {
+    ensureCollaborationStructuralMutationAllowed();
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -3718,6 +4276,7 @@ void Document::removeObject(const DocumentObject* object)
 /// Remove an object out of the document
 void Document::removeObject(const char* sName)
 {
+    ensureCollaborationStructuralMutationAllowed();
     auto pos = d->objectMap.find(sName);
     if (pos == d->objectMap.end()){
         FC_MSG("Object " << sName << " already deleted in document " << getName());
@@ -3746,6 +4305,7 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
+    ensureCollaborationStructuralMutationAllowed();
     enforceDocumentMutation(this,
                             MutationKind::RemoveObject,
                             MutationOrigin::Cpp,

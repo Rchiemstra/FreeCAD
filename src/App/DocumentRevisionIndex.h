@@ -21,6 +21,8 @@ namespace App
 using DocumentRevision = std::uint64_t;
 using DocumentPublicationSequence = std::uint64_t;
 
+class DocumentRevisionPublicationReservation;
+
 enum class DocumentRevisionKind
 {
     ObjectExistence,
@@ -255,6 +257,20 @@ public:
     [[nodiscard]] DocumentRevisionObservation publishUnknownModelMutation();
 
     /**
+     * Atomically revalidate expected revisions and reserve a publication.
+     *
+     * A ready reservation owns the index lock and has already performed every
+     * potentially-throwing allocation needed by publication. Until it is
+     * committed or cancelled, readers and other publishers wait and the
+     * reserved event is not observable. This lets a document transaction
+     * finish before the revision boundary becomes visible without leaving an
+     * allocation-failure window after the live commit.
+     */
+    [[nodiscard]] DocumentRevisionPublicationReservation reservePublication(
+        const std::vector<DocumentRevisionObservation>& expectedRevisions,
+        const std::vector<DocumentRevisionPublicationRequest>& changes);
+
+    /**
      * Return journal events newer than cursor.afterSequence, in publication
      * order. A zero maxEvents returns metadata only and leaves nextCursor
      * unchanged. gap is true when retained history no longer reaches the
@@ -266,6 +282,8 @@ public:
         std::size_t maxEvents = UnlimitedPollEvents) const;
 
 private:
+    friend class DocumentRevisionPublicationReservation;
+
     using RevisionMap =
         std::unordered_map<DocumentRevisionKey, DocumentRevision, DocumentRevisionKeyHash>;
 
@@ -279,6 +297,48 @@ private:
     std::optional<DocumentRevisionIdentityBinding> _documentIdentity;
     DocumentPublicationSequence _publicationSequence {0};
     std::deque<DocumentRevisionPublicationEvent> _journal;
+};
+
+/** Move-only, exception-safe reservation for one atomic revision publication. */
+class AppExport DocumentRevisionPublicationReservation
+{
+public:
+    DocumentRevisionPublicationReservation() = delete;
+    DocumentRevisionPublicationReservation(const DocumentRevisionPublicationReservation&) = delete;
+    DocumentRevisionPublicationReservation& operator=(
+        const DocumentRevisionPublicationReservation&) = delete;
+
+    DocumentRevisionPublicationReservation(DocumentRevisionPublicationReservation&& other) noexcept;
+    DocumentRevisionPublicationReservation& operator=(
+        DocumentRevisionPublicationReservation&& other) noexcept;
+    ~DocumentRevisionPublicationReservation() noexcept;
+
+    [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] const std::vector<DocumentRevisionConflict>& conflicts() const noexcept;
+
+    /** Publish the already-reserved event and release the index lock. */
+    [[nodiscard]] std::vector<DocumentRevisionObservation> commit() noexcept;
+
+    /** Discard the hidden event and release the index lock. Idempotent. */
+    void cancel() noexcept;
+
+private:
+    friend class DocumentRevisionIndex;
+
+    DocumentRevisionPublicationReservation(
+        DocumentRevisionIndex* owner,
+        std::unique_lock<std::mutex>&& lock,
+        std::vector<DocumentRevisionConflict> conflicts,
+        std::vector<DocumentRevisionObservation> observations,
+        std::vector<DocumentRevision*> revisionSlots,
+        bool journalPrepared) noexcept;
+
+    DocumentRevisionIndex* _owner {nullptr};
+    std::unique_lock<std::mutex> _lock;
+    std::vector<DocumentRevisionConflict> _conflicts;
+    std::vector<DocumentRevisionObservation> _observations;
+    std::vector<DocumentRevision*> _revisionSlots;
+    bool _journalPrepared {false};
 };
 
 }  // namespace App

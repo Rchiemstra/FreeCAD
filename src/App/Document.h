@@ -38,10 +38,13 @@
 #include "ExportInfo.h"
 #include "TransactionDefs.h"
 
+#include <array>
 #include <map>
 #include <vector>
 #include <utility>
 #include <list>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -86,10 +89,18 @@ class Document;
 class DocumentPy;
 class Application;
 class Transaction;
+class DocumentCommitCoordinator;
+class DocumentCollaborationService;
 class StringHasher;
 class DocumentRevisionIndex;
 struct DocumentIdentity;
 using StringHasherRef = Base::Reference<StringHasher>;
+
+struct CollaborationRollbackResult
+{
+    bool restored {true};
+    std::array<char, 1024> diagnostic {};
+};
 
 /**
  * @brief A class that represents a FreeCAD document.
@@ -448,12 +459,23 @@ public:
     DocumentIdentity collaborationIdentity() const;
     DocumentRevisionIndex& collaborationRevisions();
     const DocumentRevisionIndex& collaborationRevisions() const;
+    DocumentCollaborationService& collaborationService();
     bool collaborationRevisionPublicationSuppressed() const;
     bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
     bool collaborationRevisionPublicationSuppressed(const Property* property) const;
     std::string collaborationObjectIdentity(const DocumentObject& object) const;
     void publishCollaborationMutation(const PropertyContainer& container, bool structural);
     bool collaborationPreparationSupported() const;
+
+    Property* addDynamicProperty(std::string_view type,
+                                 const char* name = nullptr,
+                                 const char* group = nullptr,
+                                 const char* doc = nullptr,
+                                 short attr = 0,
+                                 bool ro = false,
+                                 bool hidden = false) override;
+    bool renameDynamicProperty(Property* property, const char* name) override;
+    bool removeDynamicProperty(const char* name) override;
 
     /// Get program version the project file was created with.
     const char* getProgramVersion() const;
@@ -1299,8 +1321,11 @@ public:
     // because of transaction handling
     friend class TransactionalObject;
     friend class DocumentObject;
+    friend class Property;
     friend class Transaction;
     friend class TransactionDocumentObject;
+    friend class DocumentCommitCoordinator;
+    friend class DocumentCollaborationService;
 
     ~Document() override;
 
@@ -1469,7 +1494,28 @@ protected:
     void _abortTransaction();
 
 private:
-    void setCollaborationRevisionPublicationSuppressed(bool suppressed);
+    std::recursive_mutex& collaborationCommitMutex() noexcept;
+    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
+    [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
+    [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
+    [[nodiscard]] bool collaborationCommitPoisoned() const noexcept;
+    [[nodiscard]] const char* collaborationCommitPoisonDiagnostic() const noexcept;
+    void poisonCollaborationCommit(const char* diagnostic) noexcept;
+    void ensureCollaborationStructuralMutationAllowed() const;
+    void ensureCollaborationTransactionControlAllowed() const;
+    int openCollaborationCommitTransaction(std::string name);
+    bool commitCollaborationCommitTransaction();
+    void setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept;
+    void beginCollaborationCommitNotificationBarrier();
+    void prepareCollaborationCommitFinalization();
+    void finishCollaborationCommitNotificationBarrier(bool committed) noexcept;
+    void emitCollaborationObjectBeforeChange(DocumentObject& object, const Property& property);
+    void emitCollaborationObjectEarlyChanged(DocumentObject& object, const Property& property);
+    void emitCollaborationObjectChanged(DocumentObject& object, const Property& property);
+    void emitCollaborationPropertyChanged(Property& property);
+    void emitCollaborationTouchedObject(DocumentObject& object);
+    void emitCollaborationRelabelObject(DocumentObject& object);
+    CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);
 

@@ -26,7 +26,13 @@
 #include <Base/Interpreter.h>
 #include <Base/Stream.h>
 
+#include <cstring>
+#include <map>
+#include <utility>
+#include <vector>
+
 #include "Document.h"
+#include "DocumentCollaborationService.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
 #include "DocumentMutationAuthority.h"
@@ -41,6 +47,184 @@
 #include <Base/PyWrapParseTupleAndKeywords.h>
 
 using namespace App;
+
+namespace
+{
+
+constexpr const char* PreparedEditCapsuleName = "App.PreparedEdit";
+
+const char* revisionKindName(DocumentRevisionKind kind)
+{
+    switch (kind) {
+        case DocumentRevisionKind::ObjectExistence:
+            return "ObjectExistence";
+        case DocumentRevisionKind::ObjectModel:
+            return "ObjectModel";
+        case DocumentRevisionKind::ObjectStructure:
+            return "ObjectStructure";
+        case DocumentRevisionKind::DocumentStructure:
+            return "DocumentStructure";
+        case DocumentRevisionKind::UnknownModelMutation:
+            return "UnknownModelMutation";
+    }
+    return "Invalid";
+}
+
+DocumentRevisionKey revisionKeyFromPython(PyObject* object)
+{
+    if (!PyDict_Check(object)) {
+        throw Py::TypeError("each revision key must be a dict with 'kind' and optional 'subject'");
+    }
+    PyObject* kindObject = PyDict_GetItemString(object, "kind");
+    PyObject* subjectObject = PyDict_GetItemString(object, "subject");
+    if (!kindObject || !PyUnicode_Check(kindObject)) {
+        throw Py::TypeError("revision key 'kind' must be a string");
+    }
+    if (subjectObject && !PyUnicode_Check(subjectObject)) {
+        throw Py::TypeError("revision key 'subject' must be a string");
+    }
+    const char* kind = PyUnicode_AsUTF8(kindObject);
+    const char* subject = subjectObject ? PyUnicode_AsUTF8(subjectObject) : "";
+    if (!kind || !subject) {
+        throw Py::Exception();
+    }
+    if (std::strcmp(kind, "ObjectExistence") == 0) {
+        return DocumentRevisionKey::objectExistence(subject);
+    }
+    if (std::strcmp(kind, "ObjectModel") == 0) {
+        return DocumentRevisionKey::objectModel(subject);
+    }
+    if (std::strcmp(kind, "ObjectStructure") == 0) {
+        return DocumentRevisionKey::objectStructure(subject);
+    }
+    if (std::strcmp(kind, "DocumentStructure") == 0 && *subject == '\0') {
+        return DocumentRevisionKey::documentStructure();
+    }
+    if (std::strcmp(kind, "UnknownModelMutation") == 0 && *subject == '\0') {
+        return DocumentRevisionKey::unknownModelMutation();
+    }
+    throw Py::ValueError("unknown or invalid document revision key kind/subject");
+}
+
+std::vector<DocumentRevisionKey> revisionKeysFromPython(PyObject* object)
+{
+    PyObject* fast = PySequence_Fast(object, "revision_keys must be a sequence of dicts");
+    if (!fast) {
+        throw Py::Exception();
+    }
+    std::vector<DocumentRevisionKey> keys;
+    try {
+        const auto count = PySequence_Fast_GET_SIZE(fast);
+        keys.reserve(static_cast<std::size_t>(count));
+        PyObject** items = PySequence_Fast_ITEMS(fast);
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            keys.push_back(revisionKeyFromPython(items[index]));
+        }
+    }
+    catch (...) {
+        Py_DECREF(fast);
+        throw;
+    }
+    Py_DECREF(fast);
+    return keys;
+}
+
+std::map<std::string, std::string> stringMapFromPython(PyObject* object)
+{
+    if (!PyDict_Check(object)) {
+        throw Py::TypeError("operation arguments must be a dict[str, str]");
+    }
+    std::map<std::string, std::string> result;
+    PyObject* key = nullptr;
+    PyObject* value = nullptr;
+    Py_ssize_t position = 0;
+    while (PyDict_Next(object, &position, &key, &value)) {
+        if (!PyUnicode_Check(key) || !PyUnicode_Check(value)) {
+            throw Py::TypeError("operation arguments must be a dict[str, str]");
+        }
+        const char* keyText = PyUnicode_AsUTF8(key);
+        const char* valueText = PyUnicode_AsUTF8(value);
+        if (!keyText || !valueText) {
+            throw Py::Exception();
+        }
+        result.emplace(keyText, valueText);
+    }
+    return result;
+}
+
+Py::Dict revisionObservationToPython(const DocumentRevisionObservation& observation)
+{
+    Py::Dict result;
+    result["kind"] = Py::String(revisionKindName(observation.key.kind));
+    result["subject"] = Py::String(observation.key.subject);
+    result["revision"] = Py::Long(observation.revision);
+    return result;
+}
+
+Py::Dict editSessionToPython(const EditSession& session)
+{
+    Py::Dict result;
+    result["session_id"] = Py::String(session.sessionId());
+    result["actor_id"] = Py::String(session.actorId());
+    result["document_instance_id"] = Py::Long(session.documentInstanceId());
+    result["status"] = Py::String(session.status() == EditSessionStatus::Active ? "Active"
+                                                                              : "Cancelled");
+    if (session.cancellationReason()) {
+        result["cancellation_reason"] = Py::String(*session.cancellationReason());
+    }
+    else {
+        result["cancellation_reason"] = Py::None();
+    }
+    return result;
+}
+
+Py::Dict commitResultToPython(const DocumentCommitResult& commit)
+{
+    Py::Dict result;
+    result["status"] = Py::String(documentCommitStatusName(commit.status));
+    result["committed"] = Py::Boolean(commit.committed());
+    result["operation_id"] = Py::String(commit.operationId);
+    result["message"] = Py::String(commit.message);
+
+    Py::List conflicts;
+    for (const auto& conflict : commit.conflicts) {
+        Py::Dict item;
+        item["kind"] = Py::String(revisionKindName(conflict.key.kind));
+        item["subject"] = Py::String(conflict.key.subject);
+        item["expected"] = Py::Long(conflict.expected);
+        item["current"] = Py::Long(conflict.current);
+        conflicts.append(item);
+    }
+    result["conflicts"] = conflicts;
+
+    Py::List published;
+    for (const auto& observation : commit.publishedRevisions) {
+        published.append(revisionObservationToPython(observation));
+    }
+    result["published_revisions"] = published;
+    return result;
+}
+
+void preparedEditCapsuleDestructor(PyObject* capsule)
+{
+    auto* edit = static_cast<PreparedEdit*>(PyCapsule_GetPointer(capsule,
+                                                                 PreparedEditCapsuleName));
+    if (!edit) {
+        PyErr_Clear();
+        return;
+    }
+    delete edit;
+}
+
+PreparedEdit& preparedEditFromCapsule(PyObject* object)
+{
+    if (!PyCapsule_IsValid(object, PreparedEditCapsuleName)) {
+        throw Py::TypeError("prepared_edit must be an App.PreparedEdit handle");
+    }
+    return *static_cast<PreparedEdit*>(PyCapsule_GetPointer(object, PreparedEditCapsuleName));
+}
+
+}  // namespace
 
 
 PyObject* DocumentPy::addProperty(PyObject* args, PyObject* kwd)
@@ -648,6 +832,133 @@ PyObject* DocumentPy::commitTransaction(PyObject* args)
     }
     getDocumentPtr()->commitTransaction();
     Py_Return;
+}
+
+PyObject* DocumentPy::beginEditSession(PyObject* args)
+{
+    const char* actorId = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &actorId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto session =
+            getDocumentPtr()->collaborationService().beginEditSession(actorId);
+        return Py::new_reference_to(editSessionToPython(session));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::snapshotForEdit(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    PyObject* revisionKeys = nullptr;
+    if (!PyArg_ParseTuple(args, "sO", &sessionId, &revisionKeys)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto snapshot = getDocumentPtr()->collaborationService().snapshotForEdit(
+            sessionId,
+            revisionKeysFromPython(revisionKeys));
+        Py::Dict result;
+        result["session_id"] = Py::String(snapshot.sessionId);
+        result["document_instance_id"] = Py::Long(snapshot.documentInstanceId);
+        result["lifecycle_epoch"] = Py::Long(snapshot.lifecycleEpoch);
+        Py::List revisions;
+        for (const auto& observation : snapshot.revisions) {
+            revisions.append(revisionObservationToPython(observation));
+        }
+        result["revisions"] = revisions;
+        return Py::new_reference_to(result);
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::prepareEdit(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    const char* operationId = nullptr;
+    const char* operationType = nullptr;
+    PyObject* arguments = nullptr;
+    const char* provenance = "python";
+    if (!PyArg_ParseTuple(args,
+                          "sssO|s",
+                          &sessionId,
+                          &operationId,
+                          &operationType,
+                          &arguments,
+                          &provenance)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        CollaborativeOperationIntent intent;
+        intent.operationType = operationType;
+        intent.arguments = stringMapFromPython(arguments);
+        auto prepared = getDocumentPtr()->collaborationService().prepareEdit(sessionId,
+                                                                             operationId,
+                                                                             intent,
+                                                                             provenance);
+        auto* handle = new PreparedEdit(std::move(prepared));
+        PyObject* capsule =
+            PyCapsule_New(handle, PreparedEditCapsuleName, preparedEditCapsuleDestructor);
+        if (!capsule) {
+            delete handle;
+        }
+        return capsule;
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::commitEdit(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    PyObject* prepared = nullptr;
+    if (!PyArg_ParseTuple(args, "sO", &sessionId, &prepared)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto result = getDocumentPtr()->collaborationService().commitEdit(
+            sessionId,
+            preparedEditFromCapsule(prepared));
+        return Py::new_reference_to(commitResultToPython(result));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::cancelEdit(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    const char* reason = "cancelled by caller";
+    if (!PyArg_ParseTuple(args, "s|s", &sessionId, &reason)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        return Py::new_reference_to(Py::Boolean(
+            getDocumentPtr()->collaborationService().cancelEdit(sessionId, reason)));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::editSessionStatus(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &sessionId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto status =
+            getDocumentPtr()->collaborationService().sessionStatus(sessionId);
+        if (!status) {
+            Py_RETURN_NONE;
+        }
+        return Py::new_reference_to(editSessionToPython(*status));
+    }
+    PY_CATCH;
 }
 
 Py::Boolean DocumentPy::getHasPendingTransaction() const

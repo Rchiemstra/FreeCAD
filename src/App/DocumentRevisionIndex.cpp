@@ -476,59 +476,90 @@ DocumentRevisionIndex::publish(const std::vector<DocumentRevisionKey>& documentS
 std::vector<DocumentRevisionObservation>
 DocumentRevisionIndex::publish(const std::vector<DocumentRevisionPublicationRequest>& changes)
 {
+    auto reservation = reservePublication({}, changes);
+    return reservation.commit();
+}
+
+DocumentRevisionPublicationReservation DocumentRevisionIndex::reservePublication(
+    const std::vector<DocumentRevisionObservation>& expectedRevisions,
+    const std::vector<DocumentRevisionPublicationRequest>& changes)
+{
+    KeySet expectedKeys;
+    expectedKeys.reserve(expectedRevisions.size());
+    for (const auto& expected : expectedRevisions) {
+        validateKey(expected.key);
+        if (!expectedKeys.insert(expected.key).second) {
+            throw std::invalid_argument("expected revisions must not contain duplicate keys");
+        }
+    }
     const auto uniqueChanges = distinctPublicationRequests(changes);
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::unique_lock<std::mutex> lock(_mutex);
     if (!_documentIdentity) {
         throw std::logic_error("document revision identity must be bound before publication");
     }
+
+    std::vector<DocumentRevisionConflict> conflicts;
+    conflicts.reserve(expectedRevisions.size());
+    for (const auto& expected : expectedRevisions) {
+        const auto revision = currentLocked(expected.key);
+        if (revision != expected.revision) {
+            conflicts.emplace_back(expected.key, expected.revision, revision);
+        }
+    }
+    if (!conflicts.empty()) {
+        lock.unlock();
+        return DocumentRevisionPublicationReservation(
+            nullptr, std::move(lock), std::move(conflicts), {}, {}, false);
+    }
+
     if (uniqueChanges.empty()) {
-        return {};
+        return DocumentRevisionPublicationReservation(
+            this, std::move(lock), {}, {}, {}, false);
     }
     if (_publicationSequence == _maximumPublicationSequence) {
         throw std::overflow_error("document publication sequence overflow");
     }
-
     for (const auto& change : uniqueChanges) {
         if (currentLocked(change.key) == _maximumRevision) {
             throw std::overflow_error("document revision counter overflow");
         }
     }
 
-    std::vector<DocumentRevisionObservation> result;
-    result.reserve(uniqueChanges.size());
-    for (const auto& change : uniqueChanges) {
-        result.emplace_back(change.key, currentLocked(change.key) + 1);
-    }
-
+    std::vector<DocumentRevisionObservation> observations;
+    observations.reserve(uniqueChanges.size());
     DocumentRevisionPublicationEvent event;
     event.documentInstanceId = _documentIdentity->documentInstanceId;
     event.lifecycleEpoch = _documentIdentity->lifecycleEpoch;
     event.publicationSequence = _publicationSequence + 1;
     event.changes.reserve(uniqueChanges.size());
     for (const auto& change : uniqueChanges) {
-        event.changes.push_back({change.key,
-                                 currentLocked(change.key) + 1,
-                                 change.stableObjectIdentity});
+        const auto nextRevision = currentLocked(change.key) + 1;
+        observations.emplace_back(change.key, nextRevision);
+        event.changes.push_back(
+            {change.key, nextRevision, change.stableObjectIdentity});
     }
 
     std::vector<DocumentRevision*> revisionSlots;
     revisionSlots.reserve(uniqueChanges.size());
+    // References to unordered_map elements survive rehash by the standard, but
+    // reserving once also makes the no-allocation commit guarantee explicit.
+    _revisions.reserve(_revisions.size() + uniqueChanges.size());
     for (const auto& change : uniqueChanges) {
         auto [revision, inserted] = _revisions.try_emplace(change.key, 0);
         static_cast<void>(inserted);
         revisionSlots.push_back(&revision->second);
     }
 
+    // This event stays hidden because the reservation retains the index lock.
+    // Cancellation removes it; commit only performs non-throwing state changes.
     _journal.push_back(std::move(event));
-    for (auto* revision : revisionSlots) {
-        ++(*revision);
-    }
-    ++_publicationSequence;
-    if (_journal.size() > _journalCapacity) {
-        _journal.pop_front();
-    }
-    return result;
+    return DocumentRevisionPublicationReservation(this,
+                                                  std::move(lock),
+                                                  {},
+                                                  std::move(observations),
+                                                  std::move(revisionSlots),
+                                                  true);
 }
 
 DocumentRevisionObservation DocumentRevisionIndex::publishUnknownModelMutation()
@@ -592,4 +623,97 @@ DocumentRevision DocumentRevisionIndex::currentLocked(const DocumentRevisionKey&
 {
     const auto revision = _revisions.find(key);
     return revision == _revisions.end() ? 0 : revision->second;
+}
+
+DocumentRevisionPublicationReservation::DocumentRevisionPublicationReservation(
+    DocumentRevisionIndex* owner,
+    std::unique_lock<std::mutex>&& lock,
+    std::vector<DocumentRevisionConflict> conflicts,
+    std::vector<DocumentRevisionObservation> observations,
+    std::vector<DocumentRevision*> revisionSlots,
+    bool journalPrepared) noexcept
+    : _owner(owner)
+    , _lock(std::move(lock))
+    , _conflicts(std::move(conflicts))
+    , _observations(std::move(observations))
+    , _revisionSlots(std::move(revisionSlots))
+    , _journalPrepared(journalPrepared)
+{}
+
+DocumentRevisionPublicationReservation::DocumentRevisionPublicationReservation(
+    DocumentRevisionPublicationReservation&& other) noexcept
+    : _owner(std::exchange(other._owner, nullptr))
+    , _lock(std::move(other._lock))
+    , _conflicts(std::move(other._conflicts))
+    , _observations(std::move(other._observations))
+    , _revisionSlots(std::move(other._revisionSlots))
+    , _journalPrepared(std::exchange(other._journalPrepared, false))
+{}
+
+DocumentRevisionPublicationReservation& DocumentRevisionPublicationReservation::operator=(
+    DocumentRevisionPublicationReservation&& other) noexcept
+{
+    if (this == &other) {
+        return *this;
+    }
+    cancel();
+    _owner = std::exchange(other._owner, nullptr);
+    _lock = std::move(other._lock);
+    _conflicts = std::move(other._conflicts);
+    _observations = std::move(other._observations);
+    _revisionSlots = std::move(other._revisionSlots);
+    _journalPrepared = std::exchange(other._journalPrepared, false);
+    return *this;
+}
+
+DocumentRevisionPublicationReservation::~DocumentRevisionPublicationReservation() noexcept
+{
+    cancel();
+}
+
+bool DocumentRevisionPublicationReservation::ready() const noexcept
+{
+    return _owner && _conflicts.empty() && _lock.owns_lock();
+}
+
+const std::vector<DocumentRevisionConflict>&
+DocumentRevisionPublicationReservation::conflicts() const noexcept
+{
+    return _conflicts;
+}
+
+std::vector<DocumentRevisionObservation>
+DocumentRevisionPublicationReservation::commit() noexcept
+{
+    if (!ready()) {
+        return {};
+    }
+
+    if (_journalPrepared) {
+        for (auto* revision : _revisionSlots) {
+            ++(*revision);
+        }
+        ++_owner->_publicationSequence;
+        if (_owner->_journal.size() > _owner->_journalCapacity) {
+            _owner->_journal.pop_front();
+        }
+    }
+
+    auto observations = std::move(_observations);
+    _journalPrepared = false;
+    _owner = nullptr;
+    _lock.unlock();
+    return observations;
+}
+
+void DocumentRevisionPublicationReservation::cancel() noexcept
+{
+    if (_owner && _lock.owns_lock()) {
+        if (_journalPrepared) {
+            _owner->_journal.pop_back();
+        }
+        _journalPrepared = false;
+        _owner = nullptr;
+        _lock.unlock();
+    }
 }
