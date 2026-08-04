@@ -6,7 +6,7 @@ from Base.Metadata import constmethod
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
-from typing import TYPE_CHECKING, Final, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload
 
 if TYPE_CHECKING:
     from Part import Feature as _PartFeature
@@ -269,6 +269,14 @@ class Document(PropertyContainer):
         /,
     ) -> dict[str, object]:
         """Commit a prepared edit and return a structured terminal result."""
+        ...
+
+    def commitCompatibilityMutation(
+        self,
+        callback: Callable[[], object],
+        /,
+    ) -> dict[str, object]:
+        """Commit one synchronous unknown-model compatibility mutation."""
         ...
 
     def cancelEdit(

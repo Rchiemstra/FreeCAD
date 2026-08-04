@@ -348,9 +348,17 @@ Allowed phase states are `Not started`, `Unblocked`, `In progress`, `Blocked`, `
 | 4 — Existing mutation integration | Complete | — | 4A/4B/4C complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 694 executed/0 failed; Gui 169/169; Part 342/342 | N/A | N/A | `feat(collaboration): phase 4 integrate local mutations` |
 | 5 — FreeCAD lifecycle/recovery | Complete | — | 5A/5B complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 712 executed/0 failed; Gui 179/179; Part 342/342 | N/A | N/A | `feat(collaboration): phase 5 move lifecycle authority into FreeCAD` |
 | 6 — Finer concurrency/presentation | Complete | — | 6A/6B/6C/6E complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 747 executed/0 failed (745 passed, 2 skipped); Gui 240/240 and shuffled 240/240; Part 342/342 | N/A | N/A | `feat(collaboration): phase 6 add fine-grained and presentation concurrency` |
-| 7 — MCP adapter/cutover | Absorbed | — | Owned by MCP refactor Phases 6, 8, 11–18 | Deferred to MCP Phase 18 | Deferred to MCP Phase 18 | Deferred to MCP Phase 18 | `refactor(collaboration): cut over native MCP authority` |
+| 7 — MCP adapter/cutover | Absorbed | MCP Phase 13 next | MCP Phase 12 client/bridge/lease/native/integrated reviews PASS (0 blocking, 0 important) | PASS: App 754 executed/0 failed; Gui 240/240; Part 342/342 | PASS: unit 2,229; e2e 115; core 4; benchmark 1, with documented skips/xfails | PASS: preflight; core 7 passed/5 xfailed; e2e 117/117; strict verdicts 0 | Phase 12 `refactor(mcp): inject collaboration collaborators`; final Phase 18 cutover remains |
 
-**Current snapshot:** Phases 1–6 are complete. Phase 6 passed its final integrated review and Docker App/Gui/Part gates. The parent records MCP gitlink `fa98ad32a4dd80076200e1850a3169a67132566a`; the selected nested base is `49b2dfda63caa9915e15949889d8612c7816fbc2`, whose committed content tree matches the gitlink. This documentation update changes only the two plan files; untracked `tests/lib/` remains excluded. Phase 7 has been absorbed into the MCP architecture refactor. The next implementation action is MCP Phase 1; no separate collaboration Phase 7 start occurs.
+**Current snapshot:** Native collaboration Phases 1–6 remain complete and the
+former Phase 7 remains absorbed into the MCP architecture refactor. MCP Phase 12
+is complete at nested revision `8d6a56957bfc2a3f9753416749ca0684900481e2`.
+The canonical parent Phase 12 delivery adds only the synchronous UnknownModel
+compatibility-mutation Python binding and its focused native tests, advances the
+gitlink to that nested revision, and records the passed integration gate below.
+The legacy MCP/native authority surface remains intentionally present until MCP
+Phase 18. Pre-existing untracked `tests/lib/` remains excluded. The next action is
+MCP Phase 13; no separate collaboration Phase 7 delivery occurs.
 
 ### 11.4 Append-only phase log
 
@@ -576,6 +584,62 @@ Append entries at the end in chronological order. Each entry must be sufficient 
 - **Required final gate:** MCP Phase 18 publishes the compatibility manifest; proves remote revision routing, restart/lifecycle safety, personal-context preservation, and authority removal; and passes branch-built FreeCAD tests, all four MCP Docker services, import/deprecation contracts, and the Docker branch cross-track lane.
 - **Repository state:** the parent gitlink remains `fa98ad32a4dd80076200e1850a3169a67132566a`; the selected nested base is `49b2dfda63caa9915e15949889d8612c7816fbc2`, whose committed content tree matches the gitlink. This decision edits only the two plan files; pre-existing untracked `tests/lib/` remains excluded.
 - **Next:** execute MCP architecture refactor Phase 1 only; do not perform the authority removal before its routed-ingress and bootstrap prerequisites are complete.
+
+#### 2026-08-04 — MCP Phase 12 native compatibility binding complete
+
+- **Phase/base and two-object delivery:** the parent started from
+  `6cbd05adfce1240339fe74b850c2ec96bbdf27ab`; the nested MCP Phase 12 object is
+  `8d6a56957bfc2a3f9753416749ca0684900481e2`. The canonical parent delivery adds
+  the minimal native binding and focused test, advances the gitlink, and updates
+  both plans under the exact subject `refactor(mcp): inject collaboration
+  collaborators`. Pre-existing untracked `tests/lib/` was preserved and excluded.
+- **Native boundary:** `Document.commitCompatibilityMutation(callback)` accepts one
+  callable and exposes only the existing synchronous UnknownModel compatibility
+  barrier. It dispatches through the document owner thread, releases the GIL while
+  waiting, transports Python exceptions safely across the thread boundary so native
+  rollback completes before exact Python re-raise, releases callback ownership, and
+  returns the structured native result. It exposes no caller stable identity, owner,
+  token, generation, confirmation boolean, TLS/capability grant, or
+  revision-neutral serialization callback.
+- **MCP integration:** the add-on bridge is the exact-once native delegator; the
+  installed client retains its eight existing RPC collaboration operations without
+  gaining document authority. `FreeCADRPC` eagerly captures the injected
+  collaboration graph and startup binds the authenticated manifest before
+  publication/listener start. Acquisition, adoption, handoff, reconciliation, and
+  recovery paths no longer resolve their assigned RPC module locators. The census
+  fell by 163 nodes, from 514 to 351, while all six frozen authority totals remain
+  unchanged; later phases own remaining native routing and Phase 18 cutover.
+- **Reviews:** independent client, bridge, lease-injection, native, integrated, and
+  final post-gate delta reviews are clear with zero blocking and zero important
+  findings. Corrections covered live manifest staging, cross-thread Python exception
+  custody, deterministic manifest serialization, eager default collaborator capture,
+  fixture ordering/cleanup, and exact evidence wording. No finding was waived.
+- **Docker native lane:** image
+  `freecad-collaboration-ci:ubuntu24.04-20260801` at
+  `sha256:b34e0e1ecabafa22c760850548b7e8239c4a3428c7d4084927ed5d1109f5142f`;
+  exact current sources were copied into `freecad-collaboration-workspace` and built
+  there. Focused binding tests passed 7/7. Full App executed 754: 752 passed and two
+  known BackupPolicy cases skipped; GUI passed 240/240 under `docker run --init`
+  plus Xvfb; Part passed 342/342.
+- **Docker MCP integration gate:** final Compose image
+  `freecad-mcp-tests:latest` at
+  `sha256:d5c6a2c1360e0afd5dc5b5f0199784a4cd273c538925577013588e5e2dccca88`.
+  Production lint checked 979 files. `unit` selected 2,233: 2,229 passed, three
+  Windows-DACL skips, one existing screenshot xfail, and 129 deselected; `e2e`
+  passed 115 with two native-API skips; `core` passed four with one adapter-only
+  skip and seven documented xfails; `benchmark` passed 1/1. Every service exited
+  zero. The hardened child-result pytest entrypoint also propagated a deliberate
+  missing-test probe as code 4.
+- **Docker branch cross-track:** image `freecad-ci-mcp:24.04-phase1` at
+  `sha256:4ea79d64874ce74eddd8689bbcb8560cc7215a8603d28e6a0b45da8f64defcc3`.
+  Current native sources plus the current nested tree emitted `PREFLIGHT_OK` for
+  FreeCAD 26.3.0; with strict native collaboration enabled, core selected 12:
+  seven passed and five expected xfailed, while e2e passed 117/117. Both strict
+  verdict files contained zero and generated result/XML files were removed after
+  recording.
+- **Next:** create the canonical parent Phase 12 commit, then continue automatically
+  with MCP Phase 13 lifecycle collaborator injection. Do not remove any legacy
+  authority surface before MCP Phase 18.
 
 For each implementation wave, append: phase/wave and date; base revision; ownership assigned; changed files; tests added/changed; each worker's assumptions/blockers; review findings by severity and re-review result; Docker image/digest and branch-build configure/build/test commands with results/counts; at the MCP collaboration-cutover phase, all four MCP Docker results and the Docker branch cross-track result; decisions/deviations; unresolved non-blocking follow-ups; next action; and the planned phase commit subject/tag. Host-side test results are never recorded as phase evidence.
 

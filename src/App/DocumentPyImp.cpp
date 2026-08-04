@@ -54,6 +54,47 @@ namespace
 
 constexpr const char* PreparedEditCapsuleName = "App.PreparedEdit";
 
+class PythonCompatibilityCallbackFailure final
+{};
+
+class PythonCompatibilityCallbackError final
+{
+public:
+    ~PythonCompatibilityCallbackError()
+    {
+        if ((!_type && !_value && !_traceback) || !Py_IsInitialized()) {
+            return;
+        }
+        Base::PyGILStateLocker gil;
+        Py_XDECREF(_type);
+        Py_XDECREF(_value);
+        Py_XDECREF(_traceback);
+    }
+
+    void capture()
+    {
+        PyErr_Fetch(&_type, &_value, &_traceback);
+        if (_type) {
+            return;
+        }
+        PyErr_SetString(PyExc_RuntimeError,
+                        "compatibility callback failed without a Python exception");
+        PyErr_Fetch(&_type, &_value, &_traceback);
+    }
+
+    void restore()
+    {
+        PyErr_Restore(std::exchange(_type, nullptr),
+                      std::exchange(_value, nullptr),
+                      std::exchange(_traceback, nullptr));
+    }
+
+private:
+    PyObject* _type {nullptr};
+    PyObject* _value {nullptr};
+    PyObject* _traceback {nullptr};
+};
+
 const char* revisionKindName(DocumentRevisionKind kind)
 {
     switch (kind) {
@@ -1076,6 +1117,54 @@ PyObject* DocumentPy::commitEdit(PyObject* args)
             sessionId,
             preparedEditFromCapsule(prepared));
         return Py::new_reference_to(commitResultToPython(result));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args)
+{
+    PyObject* callback = nullptr;
+    if (!PyArg_ParseTuple(args, "O:commitCompatibilityMutation", &callback)) {
+        return nullptr;
+    }
+    if (!PyCallable_Check(callback)) {
+        PyErr_SetString(PyExc_TypeError, "callback must be callable");
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        Py_INCREF(callback);
+        auto retainedCallback = std::shared_ptr<PyObject>(callback, [](PyObject* object) {
+            if (!object || !Py_IsInitialized()) {
+                return;
+            }
+            Base::PyGILStateLocker gil;
+            Py_DECREF(object);
+        });
+        auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
+        try {
+            CollaborationCompatibilityMutation mutation;
+            mutation.scope = CollaborationCompatibilityScope::UnknownModel;
+            const auto result =
+                getDocumentPtr()->collaborationService().commitCompatibilityMutation(
+                    std::move(mutation),
+                    [retainedCallback = std::move(retainedCallback), callbackError] {
+                        Base::PyGILStateLocker gil;
+                        PyObject* callbackResult =
+                            PyObject_CallNoArgs(retainedCallback.get());
+                        if (!callbackResult) {
+                            callbackError->capture();
+                            throw PythonCompatibilityCallbackFailure();
+                        }
+                        Py_DECREF(callbackResult);
+                    });
+            return Py::new_reference_to(commitResultToPython(result));
+        }
+        catch (const PythonCompatibilityCallbackFailure&) {
+            callbackError->restore();
+            return nullptr;
+        }
     }
     PY_CATCH;
 }

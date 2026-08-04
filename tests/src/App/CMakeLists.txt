@@ -13,6 +13,7 @@ add_executable(App_tests_run
         CollaborativeSetPropertyOperation.cpp
         DocumentCollaborationConcurrency.cpp
         DocumentCollaborationPython.cpp
+        DocumentCollaborationPythonCompatibility.cpp
         DocumentCollaborationRecovery.cpp
         DocumentCollaborationService.cpp
         DocumentCommitCoordinator.cpp
