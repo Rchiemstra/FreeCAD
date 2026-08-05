@@ -124,8 +124,8 @@
 #include "DocumentObserver.h"
 #include "DocumentPy.h"
 #include "DocumentSettingsPy.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentCollaborationService.h"
+#include "MutationClassification.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
 #include "RecoverySnapshot.h"
@@ -868,7 +868,7 @@ bool Application::closeDocument(const char* name)
         return false;
     }
 
-    enforceDocumentMutation(pos->second, MutationKind::Close);
+    enforceAtomicPresentationMutationTarget(pos->second);
     pos->second->setCollaborationRevisionPublicationSuppressed(true);
     const auto closingIdentity = _collaborationRegistry->markClosing(*pos->second);
     if (!closingIdentity) {
@@ -878,7 +878,6 @@ bool Application::closeDocument(const char* name)
         closingIdentity->instanceId,
         closingIdentity->lifecycleEpoch
     );
-    DocumentMutationAuthority::instance().forgetDocument(*pos->second);
     if (const auto hook = _postMarkCollaborationClosingTestHook.load(
             std::memory_order_acquire)) {
         hook();

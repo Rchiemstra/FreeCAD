@@ -8,6 +8,7 @@ add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
         CollaborationCompatibilityAdapter.cpp
+        CollaborationAuthorityRemoval.cpp
         CollaborationDomainIntegration.cpp
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
@@ -36,3 +37,5 @@ target_link_libraries(Gui_tests_run PRIVATE
     FreeCADApp
     FreeCADGui
 )
+
+target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

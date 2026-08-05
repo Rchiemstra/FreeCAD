@@ -27,8 +27,8 @@
 #include "Application.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
+#include "MutationClassification.h"
 
 #include <App/ExtensionContainerPy.h>
 #include <App/ExtensionContainerPy.cpp>
@@ -224,13 +224,7 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
 
     auto* container = getExtensionContainerPtr();
     auto* document = documentFromPropertyContainer(container);
-    const auto* object = dynamic_cast<const App::DocumentObject*>(container);
-    enforceDocumentMutation(
-        document,
-        MutationKind::StructuralProperty,
-        MutationOrigin::Python,
-        object ? object->getNameInDocument() : nullptr,
-        typeId);
+    enforceAtomicPresentationMutationTarget(document);
     if (document) {
         Internal::CollaborationStructuralMutationRecorder::ensureDynamicExtensionAllowed(
             *document, *container);

@@ -33,7 +33,6 @@
 #include "Transactions.h"
 #include "Document.h"
 #include "DocumentObject.h"
-#include "DocumentMutationAuthority.h"
 #include "Property.h"
 
 
@@ -189,8 +188,6 @@ void Transaction::applyChecked(Document& Doc, bool forward)
 
 void Transaction::applyImpl(Document& Doc, bool forward, bool propagateErrors)
 {
-    MutationInternalScope internalGrant(&Doc);
-
     std::string errMsg;
     try {
         auto& index = _Objects.get<0>();

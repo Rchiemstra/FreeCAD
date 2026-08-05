@@ -361,16 +361,13 @@ Allowed phase states are `Not started`, `Unblocked`, `In progress`, `Blocked`, `
 | 4 — Existing mutation integration | Complete | — | 4A/4B/4C complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 694 executed/0 failed; Gui 169/169; Part 342/342 | N/A | N/A | `feat(collaboration): phase 4 integrate local mutations` |
 | 5 — FreeCAD lifecycle/recovery | Complete | — | 5A/5B complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 712 executed/0 failed; Gui 179/179; Part 342/342 | N/A | N/A | `feat(collaboration): phase 5 move lifecycle authority into FreeCAD` |
 | 6 — Finer concurrency/presentation | Complete | — | 6A/6B/6C/6E complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 747 executed/0 failed (745 passed, 2 skipped); Gui 240/240 and shuffled 240/240; Part 342/342 | N/A | N/A | `feat(collaboration): phase 6 add fine-grained and presentation concurrency` |
-| 7 — MCP adapter/cutover | Absorbed | MCP Phase 16 next | MCP Phase 15 CAD/FEM/native/integrated reviews CLEAR (0 blocking, 0 important) | PASS: App 778 executed/0 failed (776 passed, 2 skipped); Gui 242/242; Spreadsheet 8/8 | PASS: unit 2,330 with documented skips/xfail; later services remain scheduled by their phase gates | PASS: preflight; core 8 passed/5 xfailed; e2e 117/117; strict verdicts 0 | Phase 15 `refactor(mcp): inject CAD collaborators`; final Phase 18 cutover remains |
+| 7 — MCP adapter/cutover | **Complete** | — | MCP Phase 18 integrator delivery; coordinator integrated re-review pending | PASS: App **760/760** (2 skipped); Gui **244/244**; Part **342/342** | PASS: unit **1863/1863**; e2e **111/111**; core **4** + documented xfails; benchmark **1/1**; lint **978** files | PASS: `PREFLIGHT_OK`; core **0**; e2e **0** | `refactor(collaboration): cut over native MCP authority` at nested `246d4991e6e8cc45cb0d6eecba5f1c16e2e864a4` |
 
-**Current snapshot:** Native collaboration Phases 1–6 remain complete and the
-former Phase 7 remains absorbed into the MCP architecture refactor. MCP Phase 15
-is complete at nested revision `a8fa9ab19883195ffe87d0f51795db4956d22804`.
-The canonical parent Phase 15 delivery adds the §3.8 structural compatibility
-boundary and native tests, advances the gitlink to that nested revision, and records
-the passed upgraded phase gate below. The legacy MCP/native authority surface remains
-intentionally present until MCP Phase 18. Pre-existing untracked `tests/lib/` remains
-excluded.
+**Current snapshot:** Native collaboration Phases 1–6 remain complete. Former Phase 7 /
+MCP Phase 18 cutover is **complete** at nested revision
+`246d4991e6e8cc45cb0d6eecba5f1c16e2e864a4` (gitlink bumped in the parent Phase 18
+delivery). Live MCP and native mutation-authority surfaces are removed; only frozen
+decoder/deprecation shims remain. Pre-existing untracked `tests/lib/` remains excluded.
 
 **Amendment delivered, 2026-08-05 — structural compatibility boundary.** MCP Phase 15
 now admits explicitly opted-in structure through the scoped grant, deferred replay,
@@ -707,6 +704,27 @@ Append entries at the end in chronological order. Each entry must be sufficient 
   result/XML files were removed.
 - **Next:** continue automatically with MCP Phase 16 GUI and view collaborator
   injection. Do not remove the frozen authority surface before MCP Phase 18.
+
+#### 2026-08-05 — MCP Phase 18 / former Phase 7 cutover complete
+
+- **Status:** Complete. Agent lane: Cursor Multitask (Composer 2.5 + Grok 4.5 High).
+- **Delivery:** nested `refactor(collaboration): cut over native MCP authority` at
+  `246d4991e6e8cc45cb0d6eecba5f1c16e2e864a4`; parent canonical commit removes native
+  `DocumentMutationAuthority` / `MutationCapability`, GUI takeover dialog, and Python
+  ownership surfaces; adds App freeze/`setPropertyStatus` publication fixes and native
+  `saveAsWithPolicy`; bumps gitlink; updates both plans.
+- **Docker native lane:** `freecad-collaboration-ci:ubuntu24.04-20260801` at
+  `sha256:b34e0e1ecabafa22c760850548b7e8239c4a3428c7d4084927ed5d1109f5142f`;
+  `App_tests_run` **760 passed / 2 skipped / 0 failed**; `Gui_tests_run` **244/244**;
+  `Part_tests_run` **342/342**.
+- **Docker MCP integration gate:** `freecad-mcp-tests:latest` at
+  `sha256:e8164e5ce0b5`; unit **1863/1863**; e2e **111/111**; core **4** with documented
+  xfails; benchmark **1/1**; lint **978** files.
+- **Docker branch cross-track:** `freecad-ci-mcp:24.04-phase1` at
+  `sha256:4ea79d64874ce74eddd8689bbcb8560cc7215a8603d28e6a0b45da8f64defcc3`;
+  `PREFLIGHT_OK`; core verdict **0**; e2e verdict **0**.
+- **Review:** coordinator integrated re-review pending after this delivery; integrator
+  does not self-claim CLEAR.
 
 For each implementation wave, append: phase/wave and date; base revision; ownership assigned; changed files; tests added/changed; each worker's assumptions/blockers; review findings by severity and re-review result; Docker image/digest and branch-build configure/build/test commands with results/counts; at the MCP collaboration-cutover phase, all four MCP Docker results and the Docker branch cross-track result; decisions/deviations; unresolved non-blocking follow-ups; next action; and the planned phase commit subject/tag. Host-side test results are never recorded as phase evidence.
 

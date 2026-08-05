@@ -2,10 +2,18 @@
 
 #include "MutationClassification.h"
 
+#include "Document.h"
+#include "DocumentObject.h"
+#include "PropertyContainer.h"
+
+#include <Base/Exception.h>
+
 #include <algorithm>
 
 namespace
 {
+
+thread_local const App::Document* atomicPresentationMutationTarget = nullptr;
 
 using App::CollaborationContainerKind;
 using App::CollaborationMutationSource;
@@ -65,6 +73,51 @@ DocumentRevisionPublicationRequest objectEffect(const DocumentRevisionKey& key,
 }
 
 }  // namespace
+
+App::Document* App::documentFromPropertyContainer(const PropertyContainer* container)
+{
+    if (!container) {
+        return nullptr;
+    }
+    if (const auto* document = dynamic_cast<const Document*>(container)) {
+        return const_cast<Document*>(document);
+    }
+    if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
+        return object->getDocument();
+    }
+    return nullptr;
+}
+
+void App::beginAtomicPresentationMutationTarget(Document& document)
+{
+    if (atomicPresentationMutationTarget) {
+        throw Base::RuntimeError(
+            "an atomic presentation mutation target is already active on this thread");
+    }
+    atomicPresentationMutationTarget = &document;
+}
+
+void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
+{
+    if (atomicPresentationMutationTarget == &document) {
+        atomicPresentationMutationTarget = nullptr;
+    }
+}
+
+void App::enforceAtomicPresentationMutationTarget(const Document& document)
+{
+    if (atomicPresentationMutationTarget && atomicPresentationMutationTarget != &document) {
+        throw Base::RuntimeError(
+            "cross-document mutation is unavailable during an atomic presentation callback");
+    }
+}
+
+void App::enforceAtomicPresentationMutationTarget(const Document* document)
+{
+    if (document) {
+        enforceAtomicPresentationMutationTarget(*document);
+    }
+}
 
 App::MutationRevisionEffects App::classifyMutation(const MutationClassificationInput& input)
 {

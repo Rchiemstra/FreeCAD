@@ -13,6 +13,25 @@
 namespace App
 {
 
+class Document;
+class PropertyContainer;
+
+/** Resolve the document that owns a mutation funnel's property container. */
+[[nodiscard]] AppExport Document*
+documentFromPropertyContainer(const PropertyContainer* container);
+
+/**
+ * Bind and enforce the document targeted by one atomic presentation callback.
+ *
+ * This is a collaboration-integrity guard, not document mutation authority.
+ * It survives retirement of the legacy MCP owner/capability gate so a callback
+ * still cannot write through a second document.
+ */
+AppExport void beginAtomicPresentationMutationTarget(Document& document);
+AppExport void endAtomicPresentationMutationTarget(const Document& document) noexcept;
+AppExport void enforceAtomicPresentationMutationTarget(const Document& document);
+AppExport void enforceAtomicPresentationMutationTarget(const Document* document);
+
 /** The post-change funnel that observed a compatibility mutation. */
 enum class CollaborationMutationSource
 {

@@ -41,13 +41,13 @@
 #include "ElementNamingUtils.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
 #include "GeoFeatureGroupExtension.h"
 #include "Link.h"
+#include "MutationClassification.h"
 #include "ObjectIdentifier.h"
 #include "PropertyExpressionEngine.h"
 #include "PropertyLinks.h"
@@ -219,12 +219,7 @@ void DocumentObject::touch(bool noRecompute)
 {
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     if (publish) {
-        enforceDocumentMutation(
-            _pDoc,
-            MutationKind::PropertyWrite,
-            MutationOrigin::Cpp,
-            getNameInDocument(),
-            "Touch");
+        enforceAtomicPresentationMutationTarget(_pDoc);
     }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
@@ -242,12 +237,7 @@ void DocumentObject::purgeTouched()
 {
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
     if (publish) {
-        enforceDocumentMutation(
-            _pDoc,
-            MutationKind::PropertyWrite,
-            MutationOrigin::Cpp,
-            getNameInDocument(),
-            "Touch");
+        enforceAtomicPresentationMutationTarget(_pDoc);
     }
     StatusBits.reset(ObjectStatus::Touch);
     StatusBits.reset(ObjectStatus::Enforce);
@@ -266,12 +256,7 @@ void DocumentObject::freeze()
     if (isFreezed()) {
         return;
     }
-    enforceDocumentMutation(
-        _pDoc,
-        MutationKind::PropertyWrite,
-        MutationOrigin::Cpp,
-        getNameInDocument(),
-        "Freeze");
+    enforceAtomicPresentationMutationTarget(_pDoc);
     StatusBits.set(ObjectStatus::Freeze);
     if (_pDoc) {
         _pDoc->publishCollaborationMutation(*this, false);
@@ -285,7 +270,8 @@ void DocumentObject::freeze()
         if (pair.second->isReadOnly()){
             this->readOnlyProperties.push_back(pair.first);
         } else {
-            pair.second->setReadOnly(true);
+            // Freeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, true);
         }
     }
 
@@ -297,12 +283,7 @@ void DocumentObject::freeze()
 
 void DocumentObject::unfreeze(bool noRecompute)
 {
-    enforceDocumentMutation(
-        _pDoc,
-        MutationKind::PropertyWrite,
-        MutationOrigin::Cpp,
-        getNameInDocument(),
-        "Freeze");
+    enforceAtomicPresentationMutationTarget(_pDoc);
     const bool wasFrozen = isFreezed();
     StatusBits.reset(ObjectStatus::Freeze);
     if (wasFrozen && _pDoc) {
@@ -315,7 +296,8 @@ void DocumentObject::unfreeze(bool noRecompute)
 
     for (auto pair: list){
         if (! std::count(readOnlyProperties.begin(), readOnlyProperties.end(), pair.first)){
-            pair.second->setReadOnly(false);
+            // Unfreeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, false);
         }
     }
 
@@ -333,12 +315,7 @@ void DocumentObject::purgeError()
     if (!isError()) {
         return;
     }
-    enforceDocumentMutation(
-        _pDoc,
-        MutationKind::PropertyWrite,
-        MutationOrigin::Cpp,
-        getNameInDocument(),
-        "Error");
+    enforceAtomicPresentationMutationTarget(_pDoc);
     StatusBits.reset(ObjectStatus::Error);
     if (_pDoc) {
         _pDoc->publishCollaborationMutation(*this, false);

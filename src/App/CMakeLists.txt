@@ -159,11 +159,9 @@ SET(Document_CPP_SRCS
     Document.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
-    DocumentMutationAuthority.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
     MutationClassification.cpp
-    MutationCapability.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
     DepEdgePyImp.cpp
@@ -232,11 +230,9 @@ SET(Document_HPP_SRCS
     Document.h
     DocumentCollaborationService.h
     DocumentCommitCoordinator.h
-    DocumentMutationAuthority.h
     DocumentRevisionIndex.h
     EditSession.h
     MutationClassification.h
-    MutationCapability.h
     MutationKind.h
     RecoverySnapshot.h
     DepEdge.h

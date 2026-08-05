@@ -36,7 +36,6 @@
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "MutationClassification.h"
 #include "PropertyLinks.h"
@@ -342,15 +341,7 @@ void Property::touch()
     PropertyCleaner guard(this);
     if (father) {
         if (Document* doc = documentFromPropertyContainer(father)) {
-            const char* objectName = nullptr;
-            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
-                objectName = obj->getNameInDocument();
-            }
-            enforceDocumentMutation(doc,
-                                    MutationKind::PropertyWrite,
-                                    MutationOrigin::Cpp,
-                                    objectName,
-                                    getName());
+            enforceAtomicPresentationMutationTarget(doc);
         }
     }
     StatusBits.set(Touched);
@@ -368,15 +359,7 @@ void Property::purgeTouched()
     }
     if (father) {
         if (Document* doc = documentFromPropertyContainer(father)) {
-            const char* objectName = nullptr;
-            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
-                objectName = obj->getNameInDocument();
-            }
-            enforceDocumentMutation(doc,
-                                    MutationKind::PropertyWrite,
-                                    MutationOrigin::Cpp,
-                                    objectName,
-                                    getName());
+            enforceAtomicPresentationMutationTarget(doc);
         }
     }
     StatusBits.reset(Touched);
@@ -413,15 +396,7 @@ void Property::aboutToSetValue()
 {
     if (father) {
         if (Document* doc = documentFromPropertyContainer(father)) {
-            const char* objectName = nullptr;
-            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
-                objectName = obj->getNameInDocument();
-            }
-            enforceDocumentMutation(doc,
-                                    MutationKind::PropertyWrite,
-                                    MutationOrigin::Cpp,
-                                    objectName,
-                                    getName());
+            enforceAtomicPresentationMutationTarget(doc);
         }
         father->onBeforeChange(this);
     }
@@ -464,12 +439,7 @@ void Property::setStatusValue(unsigned long status)
     unsigned long oldStatus = StatusBits.to_ulong();
     if (status != oldStatus && father) {
         if (auto* document = documentFromPropertyContainer(father)) {
-            const auto* object = dynamic_cast<const DocumentObject*>(father);
-            enforceDocumentMutation(document,
-                                    MutationKind::StructuralProperty,
-                                    MutationOrigin::Cpp,
-                                    object ? object->getNameInDocument() : nullptr,
-                                    getName());
+            enforceAtomicPresentationMutationTarget(document);
             Internal::CollaborationStructuralMutationRecorder::
                 ensurePropertySchemaMutationAllowed(*document, *father);
         }

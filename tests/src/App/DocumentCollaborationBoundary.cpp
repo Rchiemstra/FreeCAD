@@ -20,7 +20,6 @@
 #include <App/Application.h>
 #include <App/CollaborationRegistry.h>
 #include <App/Document.h>
-#include <App/DocumentMutationAuthority.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
 #include <App/DocumentObjectGroup.h>
@@ -70,7 +69,7 @@ constexpr std::array reviewedDelegations {
     ReviewedDelegation {"Property.cpp:Property::setStatus", "setStatusValue(", 1},
     ReviewedDelegation {
         "PropertyContainer.cpp:PropertyContainer::setPropertyStatus",
-        "property->setStatus(",
+        "classifyMutation(input)",
         1
     },
     ReviewedDelegation {
@@ -610,7 +609,7 @@ bool directlyBracketedOrRejected(std::string_view sanitizedBody)
         return true;
     }
 
-    const auto enforced = sanitizedBody.find("enforceDocumentMutation");
+    const auto enforced = sanitizedBody.find("enforceAtomicPresentationMutationTarget");
     const auto published = sanitizedBody.rfind("publishPropertyMutation");
     if (enforced != std::string_view::npos) {
         const auto mutation = probableMutation(sanitizedBody, enforced, sanitizedBody.size());
@@ -683,7 +682,6 @@ protected:
     void TearDown() override
     {
         if (_document) {
-            App::DocumentMutationAuthority::instance().clearOwner(*_document);
             if (App::GetApplication().getDocument(_documentName.c_str())) {
                 App::GetApplication().closeDocument(_documentName.c_str());
             }
@@ -968,13 +966,11 @@ TEST_F(DocumentCollaborationBoundaryTest, classifiedPropertyPostChangeUsesTypedR
     EXPECT_EQ(serializedEvent.find("pointer"), std::string::npos);
     EXPECT_EQ(serializedEvent.find("0x"), std::string::npos);
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 17, "boundary-test");
-    const auto beforeRejectedWrite = captureFor(object->getNameInDocument());
-    EXPECT_THROW(object->Label.setValue("Rejected"), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), beforeRejectedWrite)
-        << "the pre-change authority guard must not publish any semantic revision";
-    EXPECT_STREQ(object->Label.getValue(), "Accepted");
+    const auto beforeSecondWrite = captureFor(object->getNameInDocument());
+    EXPECT_NO_THROW(object->Label.setValue("Second write"));
+    expectExactDeltasAndConflicts(
+        beforeSecondWrite, {0, 1, 0, 0, 0}, "second Property::hasSetValue");
+    EXPECT_STREQ(object->Label.getValue(), "Second write");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, dynamicPropertySchemaUsesTypedStructureRevision)
@@ -1114,7 +1110,7 @@ TEST_F(DocumentCollaborationBoundaryTest, recomputeResultClassifiesKnownAndUnkno
     expectExactDeltasAndConflicts(before, {0, 4, 0, 0, 2}, "recompute output writes");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, errorOnlyFeatureRecomputePublishesAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, errorOnlyFeatureRecomputePublishesEveryAttempt)
 {
     auto* feature = document()->addObject<App::FeatureTestException>("ErrorRecomputeIngress");
     ASSERT_NE(feature, nullptr);
@@ -1134,15 +1130,10 @@ TEST_F(DocumentCollaborationBoundaryTest, errorOnlyFeatureRecomputePublishesAndR
     EXPECT_TRUE(feature->isValid());
     expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "purge recompute error");
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 41, "recompute-error-test");
     before = captureFor(feature->getNameInDocument());
-    EXPECT_THROW(
-        document()->recomputeFeature(feature, false),
-        Base::MutationDeniedException
-    );
-    EXPECT_TRUE(feature->isValid());
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*feature)), before);
+    EXPECT_FALSE(document()->recomputeFeature(feature, false));
+    EXPECT_FALSE(feature->isValid());
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "second error recompute");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, propertyStatusMutationIsStructuralAndExactlyRevisioned)
@@ -1158,7 +1149,7 @@ TEST_F(DocumentCollaborationBoundaryTest, propertyStatusMutationIsStructuralAndE
     expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "Property::setStatusValue");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, freezeStatePublishesAndRejectsAuthorityBeforeMutation)
+TEST_F(DocumentCollaborationBoundaryTest, freezeStatePublishesForEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "FreezeIngress");
     ASSERT_NE(object, nullptr);
@@ -1176,15 +1167,14 @@ TEST_F(DocumentCollaborationBoundaryTest, freezeStatePublishesAndRejectsAuthorit
     EXPECT_EQ(afterUnfreeze[1].revision, afterFreeze[1].revision + 1);
     EXPECT_GT(afterUnfreeze[4].revision, afterFreeze[4].revision);
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 38, "freeze-test");
-    const auto beforeRejected = captureFor(object->getNameInDocument());
-    EXPECT_THROW(object->freeze(), Base::MutationDeniedException);
-    EXPECT_FALSE(object->isFreezed());
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), beforeRejected);
+    const auto beforeSecondFreeze = captureFor(object->getNameInDocument());
+    EXPECT_NO_THROW(object->freeze());
+    EXPECT_TRUE(object->isFreezed());
+    expectExactDeltasAndConflicts(
+        beforeSecondFreeze, {0, 1, 0, 0, 1}, "second freeze mutation");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, pythonRecomputeStatusIngressPublishesAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, pythonRecomputeStatusIngressPublishesEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "PythonStatusIngress");
     ASSERT_NE(object, nullptr);
@@ -1202,15 +1192,13 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonRecomputeStatusIngressPublishesA
     Py::Object touchResult(pythonObject->touch(noArguments.ptr()), true);
     expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "Python object touch");
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 40, "python-status-test");
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(pythonObject->setNoTouch(Py::Boolean(false)), Base::MutationDeniedException);
-    EXPECT_TRUE(object->testStatus(App::ObjectStatus::NoTouch));
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(pythonObject->setNoTouch(Py::Boolean(false)));
+    EXPECT_FALSE(object->testStatus(App::ObjectStatus::NoTouch));
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "Python NoTouch clear");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, dynamicExtensionPublishesAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, dynamicExtensionPublishesForEveryObject)
 {
     auto* object = document()->addObject("App::FeatureTest", "DynamicExtensionIngress");
     ASSERT_NE(object, nullptr);
@@ -1231,16 +1219,14 @@ TEST_F(DocumentCollaborationBoundaryTest, dynamicExtensionPublishesAndRejectsAut
         "ExtensionContainerPy::addExtension"
     );
 
-    auto* rejected = document()->addObject("App::FeatureTest", "RejectedExtensionIngress");
-    ASSERT_NE(rejected, nullptr);
-    Py::Object rejectedPython(rejected->getPyObject(), true);
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 39, "extension-test");
-    before = captureFor(rejected->getNameInDocument());
-    EXPECT_THROW(rejectedPython.callMemberFunction("addExtension", args), Py::Exception);
-    PyErr_Clear();
-    EXPECT_FALSE(rejected->hasExtension(extensionType, false));
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*rejected)), before);
+    auto* second = document()->addObject("App::FeatureTest", "SecondExtensionIngress");
+    ASSERT_NE(second, nullptr);
+    Py::Object secondPython(second->getPyObject(), true);
+    before = captureFor(second->getNameInDocument());
+    EXPECT_NO_THROW(secondPython.callMemberFunction("addExtension", args));
+    EXPECT_TRUE(second->hasExtension(extensionType, false));
+    expectExactDeltasAndConflicts(
+        before, {0, 0, 1, 0, 1}, "second ExtensionContainerPy::addExtension");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, pythonObjectPublicSettersAreBracketedAndExactlyRevisioned)
@@ -1276,13 +1262,10 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonObjectPublicSettersAreBracketedA
     EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before)
         << "malformed input rejected before mutation must not publish";
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 19, "python-from-string-test");
-    const auto valueBeforeRejection = property->toString();
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(property->fromString("[5]"), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    EXPECT_EQ(property->toString(), valueBeforeRejection);
+    EXPECT_NO_THROW(property->fromString("[5]"));
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "second fromString");
+    EXPECT_EQ(property->toString(), "[5]");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, pythonObjectDocFileRestorePublishesExactlyOnce)
@@ -1350,7 +1333,7 @@ TEST_F(DocumentCollaborationBoundaryTest, pythonObjectInPlaceExposureFailsClosed
     EXPECT_TRUE(document()->collaborationPreparationSupported());
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, hostileDirectStatusAndListStorageWritersAreRejected)
+TEST_F(DocumentCollaborationBoundaryTest, directStatusAndListStorageWritersAreExactlyRevisioned)
 {
     auto* object = document()->addObject("App::FeatureTest", "HostileIngress");
     ASSERT_NE(object, nullptr);
@@ -1385,50 +1368,31 @@ TEST_F(DocumentCollaborationBoundaryTest, hostileDirectStatusAndListStorageWrite
     ASSERT_EQ(list->getSize(), 1);
     ASSERT_EQ((*list)[0], target);
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 29, "hostile-direct-test");
+    before = captureFor(object->getNameInDocument());
+    EXPECT_NO_THROW(object->setPropertyStatus(App::Property::Hidden, true));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 0, 0}, "direct property status");
 
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(
-        object->setPropertyStatus(App::Property::Hidden, true),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(list->setSize(2));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "direct link-list resize");
+    EXPECT_EQ(list->getSize(), 2);
 
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(list->setSize(2), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    EXPECT_EQ(list->getSize(), 1);
+    EXPECT_NO_THROW(list->set1Value(0, replacement));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "direct link-list replace");
+    ASSERT_EQ((*list)[0], replacement);
 
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(list->set1Value(0, replacement), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    ASSERT_EQ((*list)[0], target);
-
-    before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(
-        list->setValues(std::vector<App::DocumentObject*> {replacement}),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(list->setValues(std::vector<App::DocumentObject*> {target}));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "direct link-list values");
     ASSERT_EQ((*list)[0], target);
     const auto targetInList = target->getInList();
     const auto replacementInList = replacement->getInList();
     EXPECT_TRUE(std::ranges::find(targetInList, object) != targetInList.end());
     EXPECT_TRUE(std::ranges::find(replacementInList, object) == replacementInList.end());
-
-    authority.clearOwner(*document());
-    before = captureFor(object->getNameInDocument());
-    list->set1Value(0, replacement);
-    expectExactDeltasAndConflicts(
-        before,
-        {0, 0, 1, 1, 0},
-        "AtomicPropertyChange reject then recover"
-    );
-    ASSERT_EQ((*list)[0], replacement);
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, directLinkResetPublishesExactlyOnceAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, directLinkResetPublishesExactlyOnceEveryTime)
 {
     auto* object = document()->addObject("App::FeatureTest", "DirectLinkResetIngress");
     auto* target = document()->addObject("App::FeatureTest", "DirectLinkResetTarget");
@@ -1450,16 +1414,13 @@ TEST_F(DocumentCollaborationBoundaryTest, directLinkResetPublishesExactlyOnceAnd
     );
 
     link->setValue(target);
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 30, "link-reset-test");
-
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(link->resetLink(), Base::MutationDeniedException);
-    EXPECT_EQ(link->getValue(), target);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(link->resetLink());
+    EXPECT_EQ(link->getValue(), nullptr);
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "second PropertyLink::resetLink");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, directXLinkSubValuesPublishAndRejectAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, directXLinkSubValuesPublishEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "DirectXLinkSubIngress");
     auto* target = document()->addObject("App::FeatureTest", "DirectXLinkSubTarget");
@@ -1480,19 +1441,13 @@ TEST_F(DocumentCollaborationBoundaryTest, directXLinkSubValuesPublishAndRejectAu
     );
     ASSERT_EQ(link->getSubValues(), (std::vector<std::string> {"Face1"}));
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 32, "xlink-sub-test");
-
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(
-        link->setSubValues(std::vector<std::string> {"Face2"}),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    EXPECT_EQ(link->getSubValues(), (std::vector<std::string> {"Face1"}));
+    EXPECT_NO_THROW(link->setSubValues(std::vector<std::string> {"Face2"}));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "second XLink sub-values");
+    EXPECT_EQ(link->getSubValues(), (std::vector<std::string> {"Face2"}));
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, existingXLinkSubListAddPublishesAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, existingXLinkSubListAddPublishesEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "XLinkSubListIngress");
     auto* target = document()->addObject("App::FeatureTest", "XLinkSubListTarget");
@@ -1516,18 +1471,12 @@ TEST_F(DocumentCollaborationBoundaryTest, existingXLinkSubListAddPublishesAndRej
         (std::vector<std::string> {"Face1", "Face2"})
     );
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 33, "xlink-list-test");
-
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(
-        links->addValue(target, std::vector<std::string> {"Face3"}, true),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(links->addValue(target, std::vector<std::string> {"Face3"}, false));
+    expectExactDeltasAndConflicts(before, {0, 0, 1, 1, 0}, "third XLinkSubList value");
     EXPECT_EQ(
         links->getSubValues(target),
-        (std::vector<std::string> {"Face1", "Face2"})
+        (std::vector<std::string> {"Face1", "Face2", "Face3"})
     );
 }
 
@@ -1571,7 +1520,7 @@ TEST_F(DocumentCollaborationBoundaryTest, xLinkSubListRejectsInvalidEndpointsWit
     EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, listResizeAndNestedAppendPublishExactlyOnceAndRejectAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, listResizeAndNestedAppendPublishExactlyOnce)
 {
     auto* object = document()->addObject("App::FeatureTest", "ListMutationIngress");
     ASSERT_NE(object, nullptr);
@@ -1604,19 +1553,16 @@ TEST_F(DocumentCollaborationBoundaryTest, listResizeAndNestedAppendPublishExactl
     ASSERT_EQ(list->getSize(), 2);
     EXPECT_EQ((*list)[1], 42);
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 31, "list-boundary-test");
+    before = captureFor(object->getNameInDocument());
+    EXPECT_NO_THROW(list->setSize(3));
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "second direct resize");
+    EXPECT_EQ(list->getSize(), 3);
 
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(list->setSize(3), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    EXPECT_EQ(list->getSize(), 2);
-
-    before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(list->set1Value(-1, 99), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    EXPECT_EQ(list->getSize(), 2);
-    EXPECT_EQ((*list)[1], 42);
+    EXPECT_NO_THROW(list->set1Value(-1, 99));
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "second nested append");
+    EXPECT_EQ(list->getSize(), 4);
+    EXPECT_EQ((*list)[3], 99);
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, throwingPropertyObserverPublishesOnceAndGuardRecovers)
@@ -1657,19 +1603,12 @@ TEST_F(DocumentCollaborationBoundaryTest, throwingPropertyObserverPublishesOnceA
     );
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, touchRejectsAuthorityAndPublishesBeforeThrowingObserver)
+TEST_F(DocumentCollaborationBoundaryTest, touchPublishesBeforeThrowingObserver)
 {
     auto* object = document()->addObject("App::FeatureTest", "TouchIngress");
     ASSERT_NE(object, nullptr);
     auto* property = object->addDynamicProperty("App::PropertyInteger", "TouchValue");
     ASSERT_NE(property, nullptr);
-
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 36, "touch-test");
-    auto before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(property->touch(), Base::MutationDeniedException);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
-    authority.clearOwner(*document());
 
     auto connection = document()->signalChangedObject.connect(
         [&](const App::DocumentObject& changedObject, const App::Property& changedProperty) {
@@ -1678,13 +1617,13 @@ TEST_F(DocumentCollaborationBoundaryTest, touchRejectsAuthorityAndPublishesBefor
             }
         }
     );
-    before = captureFor(object->getNameInDocument());
+    auto before = captureFor(object->getNameInDocument());
     EXPECT_THROW(property->touch(), Base::RuntimeError);
     connection.disconnect();
     expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "throwing touch observer");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, directPropertyPurgeRejectsAuthorityAndPublishes)
+TEST_F(DocumentCollaborationBoundaryTest, directPropertyPurgePublishesEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "PropertyPurgeIngress");
     ASSERT_NE(object, nullptr);
@@ -1700,12 +1639,10 @@ TEST_F(DocumentCollaborationBoundaryTest, directPropertyPurgeRejectsAuthorityAnd
 
     property->touch();
     ASSERT_TRUE(property->isTouched());
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 38, "property-purge-test");
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(property->purgeTouched(), Base::MutationDeniedException);
-    EXPECT_TRUE(property->isTouched());
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(property->purgeTouched());
+    EXPECT_FALSE(property->isTouched());
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "second property purge");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, materialListAppendPublishesOnceAfterFinalState)
@@ -1911,6 +1848,27 @@ TEST_F(DocumentCollaborationBoundaryTest, unchangedSaveDoesNotStaleModelOrStruct
         << "unchanged save must not stale model dependencies";
 }
 
+TEST_F(DocumentCollaborationBoundaryTest, nativeSaveAsPolicyDoesNotClobberByDefault)
+{
+    ScopedTemporaryDirectory temporary("fc_native_save_as_policy_");
+    const auto occupiedPath = (temporary.path / "occupied.FCStd").string();
+    const auto availablePath = (temporary.path / "available.FCStd").string();
+    {
+        std::ofstream occupied(occupiedPath, std::ios::binary);
+        occupied << "preserve existing destination";
+    }
+
+    EXPECT_EQ(document()->saveAsWithPolicy(occupiedPath.c_str(), false),
+              App::DocumentSaveAsStatus::DestinationExists);
+    EXPECT_TRUE(document()->FileName.getStrValue().empty());
+    EXPECT_EQ(document()->saveAsWithPolicy(availablePath.c_str(), false),
+              App::DocumentSaveAsStatus::Saved);
+    EXPECT_EQ(document()->FileName.getStrValue(), availablePath);
+    EXPECT_EQ(document()->saveAsWithPolicy(availablePath.c_str(), false),
+              App::DocumentSaveAsStatus::Saved)
+        << "saving the document's current path is not an overwrite conflict";
+}
+
 TEST_F(DocumentCollaborationBoundaryTest, saveObserverMutationIsNotSuppressed)
 {
     auto* object = document()->addObject("App::FeatureTest", "SaveObserverIngress");
@@ -1935,7 +1893,7 @@ TEST_F(DocumentCollaborationBoundaryTest, saveObserverMutationIsNotSuppressed)
     expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 0}, "save start observer");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, documentTipPublishesDocumentStructureAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, documentTipPublishesEveryMutation)
 {
     auto* object = document()->addObject("App::FeatureTest", "DocumentTipIngress");
     ASSERT_NE(object, nullptr);
@@ -1944,15 +1902,13 @@ TEST_F(DocumentCollaborationBoundaryTest, documentTipPublishesDocumentStructureA
     document()->Tip.setValue(object);
     expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "Document::Tip");
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 34, "document-tip-test");
     before = captureFor(object->getNameInDocument());
-    EXPECT_THROW(document()->Tip.setValue(nullptr), Base::MutationDeniedException);
-    EXPECT_EQ(document()->Tip.getValue(), object);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor(*object)), before);
+    EXPECT_NO_THROW(document()->Tip.setValue(nullptr));
+    EXPECT_EQ(document()->Tip.getValue(), nullptr);
+    expectExactDeltasAndConflicts(before, {0, 0, 0, 0, 1}, "Document::Tip clear");
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, clearDocumentPublishesRemovalsAndRejectsAuthority)
+TEST_F(DocumentCollaborationBoundaryTest, clearDocumentPublishesRemovals)
 {
     auto* object = document()->addObject("App::FeatureTest", "ClearDocumentIngress");
     ASSERT_NE(object, nullptr);
@@ -1960,16 +1916,8 @@ TEST_F(DocumentCollaborationBoundaryTest, clearDocumentPublishesRemovalsAndRejec
     const std::string firstIncarnation = document()->collaborationObjectIdentity(*object);
     const auto keys = dependencyKeysFor(objectName);
 
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 35, "clear-document-test");
     auto before = revisions().capture(keys);
-    EXPECT_THROW(document()->clearDocument(), Base::MutationDeniedException);
-    EXPECT_NE(document()->getObject(objectName.c_str()), nullptr);
-    EXPECT_EQ(revisions().capture(keys), before);
-
-    authority.clearOwner(*document());
-    before = revisions().capture(keys);
-    document()->clearDocument();
+    EXPECT_NO_THROW(document()->clearDocument());
     EXPECT_EQ(document()->getObject(objectName.c_str()), nullptr);
     expectExactDeltasAndConflicts(
         before,
@@ -1982,36 +1930,28 @@ TEST_F(DocumentCollaborationBoundaryTest, clearDocumentPublishesRemovalsAndRejec
     EXPECT_NE(document()->collaborationObjectIdentity(*replacement), firstIncarnation);
 }
 
-TEST_F(DocumentCollaborationBoundaryTest, rejectedAddEntryPointsDoNotAttachOrPublish)
+TEST_F(DocumentCollaborationBoundaryTest, addEntryPointsAttachAndPublishWithoutExternalCapability)
 {
-    auto& authority = App::DocumentMutationAuthority::instance();
-    authority.setOwner(*document(), App::MutationOwner::McpOwned, 37, "add-object-test");
+    auto before = captureFor("CapabilityFreeTypedObject");
+    auto* typed = document()->addObject("App::FeatureTest", "CapabilityFreeTypedObject");
+    ASSERT_NE(typed, nullptr);
+    expectExactDeltasAndConflicts(before, {1, 0, 0, 1, 0}, "typed add entry point");
 
-    auto before = captureFor("RejectedTypedObject");
-    EXPECT_THROW(
-        document()->addObject("App::FeatureTest", "RejectedTypedObject"),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(document()->getObject("RejectedTypedObject"), nullptr);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor("RejectedTypedObject")), before);
-
-    before = captureFor("RejectedBatchObject");
-    EXPECT_THROW(
-        document()->addObjects("App::FeatureTest", {"RejectedBatchObject"}),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(document()->getObject("RejectedBatchObject"), nullptr);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor("RejectedBatchObject")), before);
+    before = captureFor("CapabilityFreeBatchObject");
+    const auto batch =
+        document()->addObjects("App::FeatureTest", {"CapabilityFreeBatchObject"});
+    ASSERT_EQ(batch.size(), 1U);
+    EXPECT_EQ(document()->getObject("CapabilityFreeBatchObject"), batch.front());
+    expectExactDeltasAndConflicts(before, {1, 0, 0, 1, 0}, "batch add entry point");
 
     auto external = std::make_unique<App::FeatureTest>();
-    before = captureFor("RejectedExternalObject");
-    EXPECT_THROW(
-        document()->addObject(external.get(), "RejectedExternalObject"),
-        Base::MutationDeniedException
-    );
-    EXPECT_EQ(external->getDocument(), nullptr);
-    EXPECT_EQ(document()->getObject("RejectedExternalObject"), nullptr);
-    EXPECT_EQ(revisions().capture(dependencyKeysFor("RejectedExternalObject")), before);
+    auto* externalRaw = external.get();
+    before = captureFor("CapabilityFreeExternalObject");
+    EXPECT_NO_THROW(document()->addObject(externalRaw, "CapabilityFreeExternalObject"));
+    external.release();
+    EXPECT_EQ(externalRaw->getDocument(), document());
+    EXPECT_EQ(document()->getObject("CapabilityFreeExternalObject"), externalRaw);
+    expectExactDeltasAndConflicts(before, {1, 0, 0, 1, 0}, "external add entry point");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, throwingAddObserverStillPublishesSurvivingObject)

@@ -79,7 +79,6 @@
 #include "AutoTransaction.h"
 #include "BackupPolicy.h"
 #include "CollaborationRegistry.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentRevisionIndex.h"
 #include "ExpressionParser.h"
@@ -1285,8 +1284,7 @@ bool Document::checkOnCycle()
 bool Document::undo(const int id)
 {
     ensureCollaborationTransactionControlAllowed();
-    enforceDocumentMutation(this, MutationKind::Undo);
-    MutationInternalScope internalGrant(this);
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (id != 0) {
         const auto it = mUndoMap.find(id);
@@ -1342,8 +1340,7 @@ bool Document::undo(const int id)
 bool Document::redo(const int id)
 {
     ensureCollaborationTransactionControlAllowed();
-    enforceDocumentMutation(this, MutationKind::Redo);
-    MutationInternalScope internalGrant(this);
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (id != 0) {
         const auto it = mRedoMap.find(id);
@@ -1462,8 +1459,7 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
     ensureCollaborationTransactionControlAllowed();
-    enforceDocumentMutation(this, MutationKind::TransactionOpen, MutationOrigin::Cpp, nullptr,
-                            name.name.c_str());
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (tid != NullTransaction && tid == d->bookedTransaction) {
         return tid; // Early exit without warning
@@ -1715,7 +1711,7 @@ void Document::_clearRedos()
 void Document::commitTransaction() // NOLINT
 {
     ensureCollaborationTransactionControlAllowed();
-    enforceDocumentMutation(this, MutationKind::TransactionCommit);
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -1811,7 +1807,7 @@ bool Document::_commitTransaction(const bool notify)
 void Document::abortTransaction() const
 {
     ensureCollaborationTransactionControlAllowed();
-    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::TransactionAbort);
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -2049,7 +2045,6 @@ documentClearPublicationRequests(const Document& document,
 void Document::clearDocument() // NOLINT
 {
     ensureCollaborationStructuralMutationAllowed();
-    enforceDocumentMutation(this, MutationKind::BulkCopy);
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
     d->activeObject = nullptr;
 
@@ -2422,8 +2417,6 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
-
-    DocumentMutationAuthority::instance().forgetDocument(*this);
 
     try {
         clearUndos();
@@ -3281,11 +3274,18 @@ static std::string checkFileName(const char* file)
 
 bool Document::saveAs(const char* _file)
 {
-    enforceDocumentMutation(this, MutationKind::SaveAs);
-    MutationInternalScope internalGrant(this);
+    return saveAsWithPolicy(_file, true) == DocumentSaveAsStatus::Saved;
+}
+
+DocumentSaveAsStatus Document::saveAsWithPolicy(const char* _file, const bool overwrite)
+{
+    enforceAtomicPresentationMutationTarget(*this);
 
     const std::string file = checkFileName(_file);
     const Base::FileInfo fi(file.c_str());
+    if (!overwrite && this->FileName.getStrValue() != file && fi.exists()) {
+        return DocumentSaveAsStatus::DestinationExists;
+    }
     if (this->FileName.getStrValue() != file) {
         Base::FlagToggler<> suppressRevisions(
             d->suppressCollaborationRevisionPublication,
@@ -3296,13 +3296,12 @@ bool Document::saveAs(const char* _file)
         this->Uid.touch();  // this forces a rename of the transient directory
     }
 
-    return save();
+    return save() ? DocumentSaveAsStatus::Saved : DocumentSaveAsStatus::SaveFailed;
 }
 
 bool Document::saveCopy(const char* file) const
 {
-    enforceDocumentMutation(const_cast<Document*>(this), MutationKind::SaveAs);
-    MutationInternalScope internalGrant(const_cast<Document*>(this));
+    enforceAtomicPresentationMutationTarget(*this);
 
     const std::string checked = checkFileName(file);
     return this->FileName.getStrValue() != checked ? saveToFile(checked.c_str()) : false;
@@ -3318,8 +3317,7 @@ bool Document::canWriteRecoverySnapshot() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
-    enforceDocumentMutation(this, MutationKind::Save);
-    MutationInternalScope internalGrant(this);
+    enforceAtomicPresentationMutationTarget(*this);
 
     if (testStatus(Document::PartialDoc)) {
         FC_ERR("Partial loaded document '" << Label.getValue() << "' cannot be saved");
@@ -3547,7 +3545,7 @@ void Document::restore(const char* filename,
                        bool delaySignal,
                        const std::vector<std::string>& objNames)
 {
-    enforceDocumentMutation(this, MutationKind::ImportExport);
+    enforceAtomicPresentationMutationTarget(*this);
     clearUndos();
     d->activeObject = nullptr;
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
@@ -4275,7 +4273,7 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
 {
     ZoneScoped;
 
-    enforceDocumentMutation(this, MutationKind::Recompute);
+    enforceAtomicPresentationMutationTarget(*this);
 
     // Compatibility callbacks frequently retain historical, eager recompute
     // calls.  Running them here would execute arbitrary object code while the
@@ -4288,8 +4286,6 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
         }
         return 0;
     }
-
-    MutationInternalScope internalGrant(this);
 
     // Recompute can execute Python-backed features. Keep the GIL for the full
     // recompute so async recompute still serializes Python execution the same
@@ -4779,19 +4775,13 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 
 bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
-    enforceDocumentMutation(
-        this,
-        MutationKind::Recompute,
-        MutationOrigin::Cpp,
-        feature ? feature->getNameInDocument() : nullptr);
+    enforceAtomicPresentationMutationTarget(*this);
 
     // Match Document::recompute(): the coordinator owns the only recompute
     // that may execute object code for a structural compatibility commit.
     if (d->collaborationCompatibilityStructuralMutationGranted) {
         return true;
     }
-
-    MutationInternalScope internalGrant(this);
 
     // delete recompute log
     d->clearRecomputeLog(feature);
@@ -4828,10 +4818,6 @@ DocumentObject* Document::addObject(
 {
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Object);
-    enforceDocumentMutation(this,
-                            MutationKind::AddObject,
-                            MutationOrigin::Cpp,
-                            pObjectName);
     const Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -4865,10 +4851,6 @@ Document::addObjects(const char* sType, const std::vector<std::string>& objectNa
 {
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Object);
-    enforceDocumentMutation(this,
-                            MutationKind::AddObject,
-                            MutationOrigin::Cpp,
-                            objectNames.empty() ? nullptr : objectNames.front().c_str());
     Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -4913,11 +4895,6 @@ void Document::addObject(DocumentObject* obj, const char* name)
         throw Base::RuntimeError("Document object is already added to a document");
     }
 
-    enforceDocumentMutation(this,
-                            MutationKind::AddObject,
-                            MutationOrigin::Cpp,
-                            name);
-
     obj->setDocument(this);
 
     _addObject(obj, name, AddObjectOption::SetNewStatus | AddObjectOption::ActivateObject);
@@ -4927,11 +4904,6 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
 {
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Object);
-    enforceDocumentMutation(this,
-                            MutationKind::AddObject,
-                            MutationOrigin::Cpp,
-                            pObjectName);
-
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -5081,12 +5053,6 @@ void Document::removeObject(const char* sName)
         return;
     }
 
-    enforceDocumentMutation(this,
-                            MutationKind::RemoveObject,
-                            MutationOrigin::Cpp,
-                            pos->second->getNameInDocument());
-    MutationInternalScope internalGrant(this);
-
     if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
         if (d->collaborationCompatibilityStructuralMutationGranted) {
             throw Base::RuntimeError(
@@ -5104,11 +5070,6 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
 {
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Object);
-    enforceDocumentMutation(this,
-                            MutationKind::RemoveObject,
-                            MutationOrigin::Cpp,
-                            pcObject ? pcObject->getNameInDocument() : nullptr);
-
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing) && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
         return;

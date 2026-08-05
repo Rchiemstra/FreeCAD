@@ -34,12 +34,12 @@
 #include "DepEdgePy.h"
 #include "DocumentObject.h"
 #include "Document.h"
-#include "DocumentMutationAuthority.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
 #include "GroupExtension.h"
 #include "MainThreadSignal.h"
+#include "MutationClassification.h"
 #include "Services.h"
 
 
@@ -54,12 +54,8 @@ namespace
 
 void preflightObjectStatusMutation(DocumentObject& object, const char* statusName)
 {
-    enforceDocumentMutation(
-        object.getDocument(),
-        MutationKind::PropertyWrite,
-        MutationOrigin::Python,
-        object.getNameInDocument(),
-        statusName);
+    static_cast<void>(statusName);
+    enforceAtomicPresentationMutationTarget(object.getDocument());
 }
 
 void publishObjectStatusMutation(DocumentObject& object)

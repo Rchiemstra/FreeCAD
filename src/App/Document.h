@@ -79,6 +79,13 @@ enum class AddObjectOption
 };
 using AddObjectOptions = Base::Flags<AddObjectOption>;
 
+enum class DocumentSaveAsStatus
+{
+    Saved,
+    DestinationExists,
+    SaveFailed,
+};
+
 enum class RemoveObjectOption
 {
     None = 0,
@@ -347,6 +354,15 @@ public:
      * @param[in] file: The file name to save the document to.
      */
     bool saveAs(const char* file);
+
+    /**
+     * @brief Save the document to a specified file under a native overwrite policy.
+     *
+     * Existing destinations other than the document's current file are rejected
+     * when @p overwrite is false.  The policy check and persistence decision stay
+     * inside App so adapter code never becomes filesystem authority.
+     */
+    DocumentSaveAsStatus saveAsWithPolicy(const char* file, bool overwrite);
 
     /**
      * @brief Save a copy of the document to a specified file.

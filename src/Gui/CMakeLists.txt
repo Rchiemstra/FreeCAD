@@ -523,7 +523,6 @@ SET(Dialog_CPP_SRCS
     TaskElementColors.cpp
     Dialogs/DlgObjectSelection.cpp
     Dialogs/DlgAddProperty.cpp
-    Dialogs/DlgMutationTakeover.cpp
     VectorListEditor.cpp
 )
 
@@ -568,7 +567,6 @@ SET(Dialog_HPP_SRCS
     TaskElementColors.h
     Dialogs/DlgObjectSelection.h
     Dialogs/DlgAddProperty.h
-    Dialogs/DlgMutationTakeover.h
     VectorListEditor.h
 )
 

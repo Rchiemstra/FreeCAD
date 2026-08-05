@@ -42,7 +42,6 @@
 #include "Application.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "MutationClassification.h"
 #include "Property.h"
@@ -56,18 +55,10 @@ using namespace App;
 
 namespace
 {
-void enforceStructuralPropertyMutation(PropertyContainer& container, const char* propertyName)
+void enforceStructuralPropertyMutation(PropertyContainer& container, const char*)
 {
     if (Document* doc = documentFromPropertyContainer(&container)) {
-        const char* objectName = nullptr;
-        if (const auto* obj = dynamic_cast<const DocumentObject*>(&container)) {
-            objectName = obj->getNameInDocument();
-        }
-        enforceDocumentMutation(doc,
-                                MutationKind::StructuralProperty,
-                                MutationOrigin::Cpp,
-                                objectName,
-                                propertyName);
+        enforceAtomicPresentationMutationTarget(doc);
     }
 }
 
