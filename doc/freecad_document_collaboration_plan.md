@@ -1,10 +1,10 @@
 # FreeCAD Document Collaboration Architecture and Implementation Plan
 
-> **Living status:** native collaboration Phases 1–6 complete; the former Phase 7 delivery is absorbed into the MCP architecture refactor.
+> **Living status:** native collaboration Phases 1–6 and former Phase 7 (MCP Phase 18 cutover) complete; coordinator integrated re-review pending.
 >
-> **Next action:** start Phase 1 of `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md` from the completed native foundation.
+> **Next action:** begin MCP Phase 19 (`refactor(mcp): pass a typed tool registration context`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
 >
-> **Last updated:** 2026-08-03.
+> **Last updated:** 2026-08-05.
 >
 > **Update rule:** the integrator updates §11.3 and §11.4 in the same delivery commit that completes each phase. A phase is not complete while its progress entry, reviews, or test evidence is missing.
 
