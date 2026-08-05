@@ -275,8 +275,13 @@ class Document(PropertyContainer):
         self,
         callback: Callable[[], object],
         /,
+        *,
+        structural: bool = False,
     ) -> dict[str, object]:
-        """Commit one synchronous unknown-model compatibility mutation."""
+        """Commit one synchronous compatibility mutation.
+
+        Object creation and removal require the explicit ``structural=True`` scope.
+        """
         ...
 
     def cancelEdit(

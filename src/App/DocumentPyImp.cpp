@@ -1121,10 +1121,19 @@ PyObject* DocumentPy::commitEdit(PyObject* args)
     PY_CATCH;
 }
 
-PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args)
+PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
 {
     PyObject* callback = nullptr;
-    if (!PyArg_ParseTuple(args, "O:commitCompatibilityMutation", &callback)) {
+    PyObject* structural = Py_False;
+    static const std::array<const char*, 3> kwlist {
+        "", "structural", nullptr};
+    if (!Base::Wrapped_ParseTupleAndKeywords(args,
+                                             kwd,
+                                             "O|$O!:commitCompatibilityMutation",
+                                             kwlist,
+                                             &callback,
+                                             &PyBool_Type,
+                                             &structural)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
@@ -1145,7 +1154,9 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args)
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
-            mutation.scope = CollaborationCompatibilityScope::UnknownModel;
+            mutation.scope = Base::asBoolean(structural)
+                ? CollaborationCompatibilityScope::Structural
+                : CollaborationCompatibilityScope::UnknownModel;
             const auto result =
                 getDocumentPtr()->collaborationService().commitCompatibilityMutation(
                     std::move(mutation),

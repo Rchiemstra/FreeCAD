@@ -1029,6 +1029,14 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
                     "unknown compatibility mutation cannot declare object scope");
             }
             break;
+        case CollaborationCompatibilityScope::Structural:
+            if (!mutation.objectName.empty() || !mutation.stableObjectIdentity.empty()) {
+                return rejectedCompatibilityCommit(
+                    DocumentCommitStatus::InvalidPreparedEdit,
+                    rejectedOperationId,
+                    "structural compatibility mutation cannot declare object scope");
+            }
+            break;
         default:
             return rejectedCompatibilityCommit(DocumentCommitStatus::InvalidPreparedEdit,
                                                rejectedOperationId,
@@ -1045,7 +1053,8 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
     }
     const auto expected = _document.collaborationRevisions().capture(writeSet);
     const std::string operationId = Base::Uuid::createUuid();
-    auto operation = std::make_unique<CompatibilityMutationOperation>(std::move(callback));
+    auto operation =
+        std::make_unique<CompatibilityMutationOperation>(std::move(callback));
     const std::string operationType(operation->typeId());
     PreparedEdit edit(PreparedEdit::ConstructionKey {},
                       1,
@@ -1059,7 +1068,8 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
                       std::move(effects),
                       "legacy-gui-compatibility",
                       std::move(operation));
-    return _coordinator.commitCompatibility(edit);
+    return _coordinator.commitCompatibility(
+        edit, mutation.scope == CollaborationCompatibilityScope::Structural);
 }
 
 DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(

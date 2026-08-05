@@ -281,6 +281,35 @@ void Document::recordCollaborationAtomicPresentationEffects(
     }
 }
 
+void Document::recordCollaborationObservedStructuralEffects(
+    const std::vector<DocumentRevisionPublicationRequest>& effects)
+{
+    if (!d->collaborationCompatibilityStructuralMutationGranted
+        && !d->collaborationSpreadsheetRecomputeSchemaObject) {
+        return;
+    }
+    d->collaborationObservedStructuralEffects.insert(
+        d->collaborationObservedStructuralEffects.end(), effects.begin(), effects.end());
+}
+
+void Document::recordCollaborationObservedStructuralMutation(
+    const PropertyContainer& container)
+{
+    std::vector<DocumentRevisionPublicationRequest> effects {
+        {DocumentRevisionKey::unknownModelMutation(), std::nullopt},
+    };
+    if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
+        const std::string subject = object->getNameInDocument();
+        effects.push_back(
+            {DocumentRevisionKey::objectStructure(subject),
+             collaborationObjectIdentity(*object)});
+    }
+    else {
+        effects.push_back({DocumentRevisionKey::documentStructure(), std::nullopt});
+    }
+    recordCollaborationObservedStructuralEffects(effects);
+}
+
 bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
 {
     return d->collaborationAtomicPresentationAuditActive
@@ -399,15 +428,244 @@ void Document::poisonCollaborationCommit(const char* diagnostic) noexcept
                   diagnostic ? diagnostic : "collaboration rollback was incomplete");
 }
 
-void Document::ensureCollaborationStructuralMutationAllowed() const
+void Document::ensureCollaborationStructuralMutationAllowed(
+    CollaborationStructuralMutationKind kind) const
 {
     enforceAtomicPresentationMutationTarget(*this);
+    if (d->rollback) {
+        return;
+    }
+    if (d->collaborationAtomicPresentationAuditActive) {
+        throw Base::RuntimeError(
+            "object and dynamic-property structure changes are unavailable during an atomic presentation audit");
+    }
+    const bool grantableKind = kind == CollaborationStructuralMutationKind::Object
+        || kind == CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
+    const bool compatibilityGrant = grantableKind
+        && d->collaborationCompatibilityStructuralMutationGranted
+        && isCollaborationOwnerThread()
+        && d->collaborationCommitNotificationBarrier
+        && d->activeUndoTransaction
+        && d->suppressCollaborationRevisionPublication
+        && d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) == 1
+        && !d->collaborationAtomicPresentationAuditActive
+        && !d->collaborationCommitPoisoned
+        && !d->collaborationReplayingNotifications;
     if ((d->collaborationCommitNotificationBarrier
          || collaborationLifecycleMutationBlocked())
-        && !d->rollback) {
+        && !compatibilityGrant) {
         throw Base::RuntimeError(
             "object and dynamic-property structure changes are unavailable across a collaboration stable boundary");
     }
+}
+
+void Document::ensureCollaborationDynamicPropertyMutationAllowed(
+    const DocumentObject& object,
+    short propertyType) const
+{
+    const bool spreadsheetTransientSchema =
+        d->collaborationSpreadsheetRecomputeSchemaObject == &object
+        && (propertyType & Prop_NoPersist) != 0;
+    if (spreadsheetTransientSchema) {
+        return;
+    }
+
+    const bool deferredNewObject = std::ranges::any_of(
+        d->collaborationDeferredNotifications,
+        [&object](const CollaborationDeferredNotification& notification) {
+            return notification.kind == CollaborationDeferredNotificationKind::NewObject
+                && notification.object == &object;
+        });
+    const auto kind = (d->collaborationNewObjectStructuralSetup.contains(&object)
+                       || d->collaborationImportNewObjects.contains(&object)
+                       || deferredNewObject)
+        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
+        : CollaborationStructuralMutationKind::Restricted;
+    ensureCollaborationStructuralMutationAllowed(kind);
+}
+
+void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
+    const DocumentObject& object,
+    const Property* property) const
+{
+    const bool spreadsheetTransientSchema = property
+        && d->collaborationSpreadsheetRecomputeSchemaObject == &object
+        && (property->getType() & Prop_NoPersist) != 0;
+    if (spreadsheetTransientSchema) {
+        return;
+    }
+    const bool deferredNewObject = std::ranges::any_of(
+        d->collaborationDeferredNotifications,
+        [&object](const CollaborationDeferredNotification& notification) {
+            return notification.kind == CollaborationDeferredNotificationKind::NewObject
+                && notification.object == &object;
+        });
+    const auto kind = (d->collaborationNewObjectStructuralSetup.contains(&object)
+                       || d->collaborationImportNewObjects.contains(&object)
+                       || deferredNewObject)
+        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
+        : CollaborationStructuralMutationKind::Restricted;
+    ensureCollaborationStructuralMutationAllowed(kind);
+}
+
+Document::CollaborationSpreadsheetRecomputeSchemaScope::
+    CollaborationSpreadsheetRecomputeSchemaScope(
+        Document* document,
+        DocumentObject& object)
+    : _document(document)
+{
+    if (!document || !document->d->collaborationCommitNotificationBarrier) {
+        _document = nullptr;
+        return;
+    }
+
+    auto& state = *document->d;
+    const bool authoritativeCommitRecompute = state.activeUndoTransaction
+        && state.suppressCollaborationRevisionPublication;
+    if (!document->isCollaborationOwnerThread()
+        || !document->testStatus(Document::Recomputing)
+        || state.collaborationCompatibilityStructuralMutationGranted
+        || state.collaborationReplayingNotifications
+        || state.collaborationCommitPoisoned
+        || object.getDocument() != document
+        || !document->containsObject(&object)
+        || (!authoritativeCommitRecompute && !state.collaborationRollbackStabilizing)) {
+        throw Base::RuntimeError(
+            "spreadsheet transient schema requires the authoritative collaboration recompute");
+    }
+    if (state.collaborationSpreadsheetRecomputeSchemaObject) {
+        throw Base::RuntimeError("spreadsheet transient schema scope is not reentrant");
+    }
+    state.collaborationSpreadsheetRecomputeSchemaObject = &object;
+}
+
+Document::CollaborationSpreadsheetRecomputeSchemaScope::
+    ~CollaborationSpreadsheetRecomputeSchemaScope()
+{
+    if (_document) {
+        _document->d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
+    }
+}
+
+Document::CollaborationStructuralMutationGrant::CollaborationStructuralMutationGrant(
+    Document& document)
+    : _document(document)
+{
+    auto& state = *document.d;
+    if (!document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation requires the document owner thread");
+    }
+    if (!state.collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation requires the coordinator notification barrier");
+    }
+    if (!state.activeUndoTransaction) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation requires the coordinator native transaction");
+    }
+    if (!state.suppressCollaborationRevisionPublication) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation requires revision publication suppression");
+    }
+    if (state.collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 1) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation is blocked by a foreign stable read");
+    }
+    if (state.collaborationAtomicPresentationAuditActive) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation is unavailable during an atomic presentation audit");
+    }
+    if (state.collaborationCommitPoisoned) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation is unavailable on a poisoned document");
+    }
+    if (state.collaborationCompatibilityStructuralMutationGranted) {
+        throw Base::RuntimeError("structural compatibility mutation grant is not reentrant");
+    }
+    if (state.collaborationReplayingNotifications) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation is unavailable while notifications replay");
+    }
+    if (state.rollback) {
+        throw Base::RuntimeError(
+            "structural compatibility mutation cannot begin during rollback");
+    }
+    state.collaborationCompatibilityStructuralMutationGranted = true;
+}
+
+Document::CollaborationStructuralMutationGrant::~CollaborationStructuralMutationGrant()
+{
+    _document.d->collaborationImportNewObjects.clear();
+    _document.d->collaborationCompatibilityStructuralMutationGranted = false;
+}
+
+Document::CollaborationStructuralMutationGrant
+Document::openCollaborationStructuralMutationGrant()
+{
+    return CollaborationStructuralMutationGrant(*this);
+}
+
+bool Document::collaborationStructuralImportDeferralRequired() const noexcept
+{
+    return d->collaborationCompatibilityStructuralMutationGranted
+        && d->collaborationCommitNotificationBarrier;
+}
+
+bool Document::collaborationImportBoundaryActive() const noexcept
+{
+    return d->collaborationCommitNotificationBarrier;
+}
+
+Document::CollaborationImportDeferralScope::CollaborationImportDeferralScope(
+    Document& document,
+    std::shared_ptr<Internal::CollaborationImportReplay> replay)
+    : _document(document)
+{
+    auto& state = *document.d;
+    if (!document.collaborationStructuralImportDeferralRequired()) {
+        throw Base::RuntimeError(
+            "import notification deferral requires an active structural compatibility grant");
+    }
+    if (state.collaborationImportDeferralActive) {
+        throw Base::RuntimeError("collaboration import notification deferral is not reentrant");
+    }
+    if (!replay) {
+        throw Base::RuntimeError("collaboration import notification deferral requires replay state");
+    }
+    state.collaborationImportNewObjects.clear();
+    state.collaborationActiveImportReplay = std::move(replay);
+    state.collaborationImportDeferralActive = true;
+}
+
+Document::CollaborationImportDeferralScope::~CollaborationImportDeferralScope()
+{
+    _document.d->collaborationImportNewObjects.clear();
+    _document.d->collaborationActiveImportReplay.reset();
+    _document.d->collaborationImportDeferralActive = false;
+}
+
+Document::CollaborationImportDeferralScope
+Document::openCollaborationImportDeferralScope(
+    std::shared_ptr<Internal::CollaborationImportReplay> replay)
+{
+    return CollaborationImportDeferralScope(*this, std::move(replay));
+}
+
+std::vector<DocumentRevisionPublicationRequest>
+Document::takeCollaborationObservedStructuralEffects()
+{
+    if (!d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError(
+            "observed structural effects require the coordinator notification barrier");
+    }
+    if (d->collaborationCompatibilityStructuralMutationGranted) {
+        throw Base::RuntimeError(
+            "observed structural effects cannot be taken while the grant is active");
+    }
+    auto effects = std::move(d->collaborationObservedStructuralEffects);
+    d->collaborationObservedStructuralEffects.clear();
+    return effects;
 }
 
 void Document::ensureCollaborationTransactionControlAllowed() const
@@ -416,6 +674,10 @@ void Document::ensureCollaborationTransactionControlAllowed() const
         && !d->collaborationTransactionControlGranted) {
         throw Base::RuntimeError(
             "transaction, undo, and redo control is unavailable during a prepared commit");
+    }
+    if (d->collaborationReplayingNotifications) {
+        throw Base::RuntimeError(
+            "transaction, undo, and redo control is unavailable while collaboration notifications replay");
     }
 }
 
@@ -442,10 +704,29 @@ void Document::beginCollaborationCommitNotificationBarrier()
     if (d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is already active");
     }
+
+    // The native transaction restores membership and properties, but its
+    // generic object re-add path appends and activates restored objects.  Keep
+    // the exact stable boundary state so rollback can restore identity, order,
+    // and activation without allocating in the noexcept recovery path.
+    auto boundaryObjectOrder = d->objectArray;
+    auto boundaryObjectIdentities = d->collaborationObjectIdentities;
+    auto* boundaryActiveObject = d->activeObject;
+
     d->collaborationDeferredNotifications.clear();
     d->collaborationDeferredNotifications.reserve(64);
+    d->collaborationObservedStructuralEffects.clear();
+    d->collaborationObservedStructuralEffects.reserve(16);
+    d->collaborationImportNewObjects.clear();
+    d->collaborationActiveImportReplay.reset();
+    d->collaborationImportDeferralActive = false;
+    d->collaborationRollbackStabilizing = false;
+    d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
+    d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
+    d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
+    d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationCommitNotificationBarrier = true;
     d->collaborationLifecycleMutationBlockDepth.fetch_add(1, std::memory_order_release);
@@ -471,9 +752,19 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
 
     auto notifications = std::move(d->collaborationDeferredNotifications);
     d->collaborationDeferredNotifications.clear();
+    d->collaborationObservedStructuralEffects.clear();
+    d->collaborationImportNewObjects.clear();
+    d->collaborationActiveImportReplay.reset();
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationTransactionControlGranted = false;
+    d->collaborationCompatibilityStructuralMutationGranted = false;
+    d->collaborationImportDeferralActive = false;
+    d->collaborationRollbackStabilizing = false;
+    d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationCommitNotificationBarrier = false;
+    d->collaborationBoundaryObjectOrder.clear();
+    d->collaborationBoundaryObjectIdentities.clear();
+    d->collaborationBoundaryActiveObject = nullptr;
     try {
         GetApplication().endCollaborationTransactionSignalSuppression();
     }
@@ -558,6 +849,128 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             case CollaborationDeferredNotificationKind::BecameStable:
                 signalBecameStable(*this);
                 break;
+            case CollaborationDeferredNotificationKind::NewObject:
+                signalNewObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::DeletedObject: {
+                const auto* previousName = notification.object->pcNameInDocument;
+                if (!previousName && !notification.text.empty()) {
+                    notification.object->pcNameInDocument = &notification.text;
+                }
+                try {
+                    signalDeletedObject(*notification.object);
+                }
+                catch (...) {
+                    notification.object->pcNameInDocument = previousName;
+                    throw;
+                }
+                notification.object->pcNameInDocument = previousName;
+                break;
+            }
+            case CollaborationDeferredNotificationKind::TransactionAppendObject:
+                signalTransactionAppend(*notification.object, notification.transaction);
+                break;
+            case CollaborationDeferredNotificationKind::TransactionRemoveObject: {
+                const auto* previousName = notification.object->pcNameInDocument;
+                if (!previousName && !notification.text.empty()) {
+                    notification.object->pcNameInDocument = &notification.text;
+                }
+                try {
+                    signalTransactionRemove(*notification.object, notification.transaction);
+                }
+                catch (...) {
+                    notification.object->pcNameInDocument = previousName;
+                    throw;
+                }
+                notification.object->pcNameInDocument = previousName;
+                break;
+            }
+            case CollaborationDeferredNotificationKind::ActivatedObject:
+                signalActivatedObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::AppendDynamicProperty:
+                GetApplication().signalAppendDynamicProperty(*notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::RemoveDynamicProperty:
+                GetApplication().signalRemoveDynamicProperty(*notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::RenameDynamicProperty:
+                GetApplication().signalRenameDynamicProperty(
+                    *notification.property, notification.text.c_str());
+                break;
+            case CollaborationDeferredNotificationKind::ChangePropertyEditor:
+                signalChangePropertyEditor(*this, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::BeforeAddingDynamicExtension: {
+                const auto* container = dynamic_cast<const ExtensionContainer*>(
+                    notification.propertyContainer);
+                if (!container) {
+                    throw std::logic_error(
+                        "deferred dynamic-extension notification lost its container");
+                }
+                GetApplication().signalBeforeAddingDynamicExtension(
+                    *container, notification.text);
+                break;
+            }
+            case CollaborationDeferredNotificationKind::AddedDynamicExtension: {
+                const auto* container = dynamic_cast<const ExtensionContainer*>(
+                    notification.propertyContainer);
+                if (!container) {
+                    throw std::logic_error(
+                        "deferred dynamic-extension notification lost its container");
+                }
+                GetApplication().signalAddedDynamicExtension(
+                    *container, notification.text);
+                break;
+            }
+            case CollaborationDeferredNotificationKind::ImportObjects: {
+                const auto setImporting = [&](bool importing) {
+                    for (auto* object : notification.objects) {
+                        if (object && object->isAttachedToDocument()
+                            && object->getDocument() == this && containsObject(object)) {
+                            object->setStatus(ObjImporting, importing);
+                        }
+                    }
+                };
+                setImporting(true);
+                try {
+                    signalImportObjects(
+                        notification.objects, notification.importReplay->reader());
+                }
+                catch (...) {
+                    try {
+                        notification.importReplay->restoreImportedFiles(
+                            notification.objects);
+                    }
+                    catch (...) {
+                    }
+                    throw;
+                }
+                notification.importReplay->restoreImportedFiles(notification.objects);
+                break;
+            }
+            case CollaborationDeferredNotificationKind::FinishRestoreObject:
+                signalFinishRestoreObject(*notification.object);
+                break;
+            case CollaborationDeferredNotificationKind::FinishImportObjects: {
+                const auto clearImporting = [&] {
+                    for (auto* object : notification.objects) {
+                        if (object && object->isAttachedToDocument()
+                            && object->getDocument() == this && containsObject(object)) {
+                            object->setStatus(ObjImporting, false);
+                        }
+                    }
+                };
+                try {
+                    signalFinishImportObjects(notification.objects);
+                }
+                catch (...) {
+                    clearImporting();
+                    throw;
+                }
+                clearImporting();
+                break;
+            }
         }
     };
 
@@ -599,6 +1012,11 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         }
     }
     d->collaborationReplayingNotifications = false;
+    if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+        mUndoMap.erase(mUndoTransactions.front()->getID());
+        delete mUndoTransactions.front();
+        mUndoTransactions.pop_front();
+    }
     d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
 }
 
@@ -635,8 +1053,12 @@ void Document::emitCollaborationObjectChanged(DocumentObject& object, const Prop
 void Document::emitCollaborationPropertyChanged(Property& property)
 {
     if (d->collaborationCommitNotificationBarrier) {
-        d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::PropertyChanged, nullptr, &property});
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::PropertyChanged,
+            dynamic_cast<DocumentObject*>(property.getContainer()),
+            &property};
+        notification.propertyContainer = property.getContainer();
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
         return;
     }
     property.signalChanged(property);
@@ -660,6 +1082,138 @@ void Document::emitCollaborationRelabelObject(DocumentObject& object)
         return;
     }
     signalRelabelObject(object);
+}
+
+void Document::emitCollaborationNewObject(DocumentObject& object)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        const auto firstObjectNotification = std::ranges::find_if(
+            d->collaborationDeferredNotifications,
+            [&object](const CollaborationDeferredNotification& notification) {
+                return notification.object == &object
+                    || notification.propertyContainer == &object;
+            });
+        d->collaborationDeferredNotifications.insert(
+            firstObjectNotification,
+            {CollaborationDeferredNotificationKind::NewObject, &object});
+        return;
+    }
+    signalNewObject(object);
+}
+
+void Document::emitCollaborationDeletedObject(DocumentObject& object)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::DeletedObject, &object};
+        if (object.getNameInDocument()) {
+            notification.text = object.getNameInDocument();
+        }
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+        return;
+    }
+    signalDeletedObject(object);
+}
+
+void Document::emitCollaborationTransactionAppendObject(DocumentObject& object,
+                                                        Transaction* transaction)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::TransactionAppendObject, &object});
+        d->collaborationDeferredNotifications.back().transaction = transaction;
+        return;
+    }
+    signalTransactionAppend(object, transaction);
+}
+
+void Document::emitCollaborationTransactionRemoveObject(DocumentObject& object,
+                                                        Transaction* transaction)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::TransactionRemoveObject, &object};
+        notification.transaction = transaction;
+        if (object.getNameInDocument()) {
+            notification.text = object.getNameInDocument();
+        }
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+        return;
+    }
+    signalTransactionRemove(object, transaction);
+}
+
+void Document::emitCollaborationActivatedObject(DocumentObject& object)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::ActivatedObject, &object});
+        return;
+    }
+    signalActivatedObject(object);
+}
+
+void Document::emitCollaborationAppendDynamicProperty(Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::AppendDynamicProperty,
+            dynamic_cast<DocumentObject*>(property.getContainer()),
+            &property};
+        // The property can be destroyed when a just-created object is removed
+        // before publication.  Retain the owning object identity so transient
+        // notification coalescing removes this entry without touching the
+        // property pointer.
+        notification.propertyContainer = property.getContainer();
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+        return;
+    }
+    GetApplication().signalAppendDynamicProperty(property);
+}
+
+void Document::emitCollaborationChangePropertyEditor(const Property& property)
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::ChangePropertyEditor,
+            dynamic_cast<DocumentObject*>(property.getContainer()),
+            const_cast<Property*>(&property)};
+        notification.propertyContainer = property.getContainer();
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+        return;
+    }
+    signalChangePropertyEditor(*this, property);
+}
+
+bool Document::discardCollaborationTransientObjectNotifications(DocumentObject& object)
+{
+    const bool wasAdded = std::ranges::any_of(
+        d->collaborationDeferredNotifications,
+        [&object](const CollaborationDeferredNotification& notification) {
+            return notification.kind == CollaborationDeferredNotificationKind::NewObject
+                && notification.object == &object;
+        });
+    if (!wasAdded) {
+        return false;
+    }
+
+    auto& notifications = d->collaborationDeferredNotifications;
+    for (auto& notification : notifications) {
+        auto& objects = notification.objects;
+        objects.erase(std::remove(objects.begin(), objects.end(), &object), objects.end());
+    }
+    notifications.erase(
+        std::remove_if(
+            notifications.begin(),
+            notifications.end(),
+            [&object](const CollaborationDeferredNotification& notification) {
+                if (notification.object == &object) {
+                    return true;
+                }
+                return notification.propertyContainer == &object;
+            }),
+        notifications.end());
+    return true;
 }
 
 bool Document::collaborationPreparationSupported() const
@@ -1051,15 +1605,37 @@ int Document::setActiveTransaction(TransactionName name, int tid)
 void Document::lockTransaction()
 {
     ensureCollaborationTransactionControlAllowed();
+    lockTransactionInternal();
+}
+
+void Document::lockTransactionInternal()
+{
     d->TransactionLock++;
 }
 void Document::unlockTransaction()
 {
     ensureCollaborationTransactionControlAllowed();
+    unlockTransactionInternal();
+}
+
+void Document::unlockTransactionInternal()
+{
     if (d->TransactionLock > 0) {
         d->TransactionLock--;
     }
 }
+
+Document::InternalTransactionLockScope::InternalTransactionLockScope(Document& document)
+    : _document(document)
+{
+    _document.lockTransactionInternal();
+}
+
+Document::InternalTransactionLockScope::~InternalTransactionLockScope()
+{
+    _document.unlockTransactionInternal();
+}
+
 bool Document::isTransactionLocked() const
 {
     return d->TransactionLock > 0;
@@ -1199,7 +1775,8 @@ bool Document::_commitTransaction(const bool notify)
             d->activeUndoTransaction = nullptr;
 
             // check the stack for the limits
-            if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+            if (!d->collaborationCommitNotificationBarrier
+                && mUndoTransactions.size() > d->UndoMaxStackSize) {
                 mUndoMap.erase(mUndoTransactions.front()->getID());
                 delete mUndoTransactions.front();
                 mUndoTransactions.pop_front();
@@ -1325,6 +1902,7 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
     }
 
     Transaction* transaction = d->activeUndoTransaction;
+    bool transactionRestoreSucceeded = true;
     {
         Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted,
                                                   false);
@@ -1333,13 +1911,40 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
             transaction->applyChecked(*this, false);
         }
         catch (const Base::Exception& exception) {
+            transactionRestoreSucceeded = false;
             appendDiagnostic("checked transaction restore failed: ", exception.what());
         }
         catch (const std::exception& exception) {
+            transactionRestoreSucceeded = false;
             appendDiagnostic("checked transaction restore failed: ", exception.what());
         }
         catch (...) {
+            transactionRestoreSucceeded = false;
             appendDiagnostic("checked transaction restore failed with an unknown exception");
+        }
+    }
+
+    if (transactionRestoreSucceeded) {
+        const auto exactBoundaryMembership =
+            d->objectArray.size() == d->collaborationBoundaryObjectOrder.size()
+            && std::ranges::all_of(
+                d->collaborationBoundaryObjectOrder,
+                [&](const DocumentObject* object) {
+                    return std::ranges::count(d->objectArray, object) == 1;
+                });
+        const auto activeObjectRestored = !d->collaborationBoundaryActiveObject
+            || std::ranges::find(
+                   d->collaborationBoundaryObjectOrder,
+                   d->collaborationBoundaryActiveObject)
+                != d->collaborationBoundaryObjectOrder.end();
+        if (!exactBoundaryMembership || !activeObjectRestored) {
+            appendDiagnostic("checked transaction restore changed the collaboration object boundary");
+        }
+        else {
+            d->objectArray.swap(d->collaborationBoundaryObjectOrder);
+            d->collaborationObjectIdentities.swap(
+                d->collaborationBoundaryObjectIdentities);
+            d->activeObject = d->collaborationBoundaryActiveObject;
         }
     }
 
@@ -1366,6 +1971,8 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
 
     bool recomputeHasError = false;
     try {
+        Base::FlagToggler<bool> rollbackStabilizing(
+            d->collaborationRollbackStabilizing);
         static_cast<void>(recompute({}, true, &recomputeHasError));
     }
     catch (const Base::Exception& exception) {
@@ -2526,6 +3133,11 @@ void Document::addRecomputeObject(DocumentObject* obj) // NOLINT
 std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
 {
     d->hashers.clear();
+    if (collaborationStructuralImportDeferralRequired()
+        && !d->collaborationImportDeferralActive) {
+        throw Base::RuntimeError(
+            "structural compatibility import requires an owned import replay scope");
+    }
     Base::FlagToggler<> flag(globalIsRestoring, false);
     Base::ObjectStatusLocker<Status, Document> restoreBit(Status::Restoring, this);
     Base::ObjectStatusLocker<Status, Document> restoreBit2(Status::Importing, this);
@@ -2573,10 +3185,34 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
 
     reader.readEndElement("Document");
 
-    signalImportObjects(objs, reader);
+    const bool deferImportCompletion = d->collaborationImportDeferralActive;
+    if (deferImportCompletion) {
+        d->collaborationActiveImportReplay->restoreImportedModelFiles();
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::ImportObjects,
+            nullptr,
+            nullptr,
+            {},
+            objs};
+        notification.importReplay = d->collaborationActiveImportReplay;
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+    }
+    else {
+        signalImportObjects(objs, reader);
+    }
     afterRestore(objs, true);
 
-    signalFinishImportObjects(objs);
+    if (deferImportCompletion) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::FinishImportObjects,
+             nullptr,
+             nullptr,
+             {},
+             objs});
+    }
+    else {
+        signalFinishImportObjects(objs);
+    }
 
     for (const auto o : objs) {
         if (o && o->isAttachedToDocument()) {
@@ -3132,7 +3768,13 @@ bool Document::afterRestore(const std::vector<DocumentObject*>& objArray, bool c
             obj->purgeTouched();
         }
 
-        signalFinishRestoreObject(*obj);
+        if (d->collaborationImportDeferralActive) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::FinishRestoreObject, obj});
+        }
+        else {
+            signalFinishRestoreObject(*obj);
+        }
     }
 
     d->touchedObjs.clear();
@@ -3634,6 +4276,19 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
     ZoneScoped;
 
     enforceDocumentMutation(this, MutationKind::Recompute);
+
+    // Compatibility callbacks frequently retain historical, eager recompute
+    // calls.  Running them here would execute arbitrary object code while the
+    // narrowly scoped structural grant is live.  The commit coordinator always
+    // performs the authoritative recompute after the callback and after the
+    // grant has closed, so treat this request as deferred.
+    if (d->collaborationCompatibilityStructuralMutationGranted) {
+        if (hasError) {
+            *hasError = false;
+        }
+        return 0;
+    }
+
     MutationInternalScope internalGrant(this);
 
     // Recompute can execute Python-backed features. Keep the GIL for the full
@@ -4129,6 +4784,13 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         MutationKind::Recompute,
         MutationOrigin::Cpp,
         feature ? feature->getNameInDocument() : nullptr);
+
+    // Match Document::recompute(): the coordinator owns the only recompute
+    // that may execute object code for a structural compatibility commit.
+    if (d->collaborationCompatibilityStructuralMutationGranted) {
+        return true;
+    }
+
     MutationInternalScope internalGrant(this);
 
     // delete recompute log
@@ -4164,7 +4826,8 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -4200,7 +4863,8 @@ DocumentObject* Document::addObject(
 std::vector<DocumentObject*>
 Document::addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -4243,7 +4907,8 @@ Document::addObjects(const char* sType, const std::vector<std::string>& objectNa
 
 void Document::addObject(DocumentObject* obj, const char* name)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     if (obj->getDocument()) {
         throw Base::RuntimeError("Document object is already added to a document");
     }
@@ -4260,7 +4925,8 @@ void Document::addObject(DocumentObject* obj, const char* name)
 
 void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     enforceDocumentMutation(this,
                             MutationKind::AddObject,
                             MutationOrigin::Cpp,
@@ -4276,21 +4942,34 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
     }
     const auto stableObjectIdentity = allocateCollaborationObjectIdentity();
     const std::string stableObjectIdentityString = std::to_string(stableObjectIdentity);
+    const auto objectBoundaryEffects = classifyMutation({
+        CollaborationMutationSource::ObjectAddition,
+        MutationKind::AddObject,
+        CollaborationPropertyFamily::NotApplicable,
+        CollaborationContainerKind::DocumentObject,
+        ObjectName,
+        stableObjectIdentityString,
+        {},
+    });
     const auto publishObjectBoundary = [&] {
+        if (d->collaborationCompatibilityStructuralMutationGranted) {
+            d->collaborationObservedStructuralEffects.insert(
+                d->collaborationObservedStructuralEffects.end(),
+                objectBoundaryEffects.begin(),
+                objectBoundaryEffects.end());
+            d->collaborationObservedStructuralEffects.push_back(
+                {DocumentRevisionKey::objectStructure(ObjectName),
+                 stableObjectIdentityString});
+        }
         if (collaborationRevisionPublicationSuppressed()) {
             return;
         }
-        static_cast<void>(d->collaborationRevisions.publish(classifyMutation({
-            CollaborationMutationSource::ObjectAddition,
-            MutationKind::AddObject,
-            CollaborationPropertyFamily::NotApplicable,
-            CollaborationContainerKind::DocumentObject,
-            ObjectName,
-            stableObjectIdentityString,
-            {},
-        })));
+        static_cast<void>(d->collaborationRevisions.publish(objectBoundaryEffects));
     };
     d->collaborationObjectIdentities.emplace(pcObject, stableObjectIdentity);
+    if (d->collaborationImportDeferralActive && testStatus(Status::Importing)) {
+        d->collaborationImportNewObjects.insert(pcObject);
+    }
     // insert in the name map
     d->objectMap[ObjectName] = pcObject;
     try {
@@ -4326,7 +5005,9 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
 
         // Call the object-specific initialization
         if (!isPerformingTransaction() && options.testFlag(AddObjectOption::DoSetup)) {
+            d->collaborationNewObjectStructuralSetup.insert(pcObject);
             pcObject->setupObject();
+            d->collaborationNewObjectStructuralSetup.erase(pcObject);
         }
 
         if (options.testFlag(AddObjectOption::SetNewStatus)) {
@@ -4345,6 +5026,7 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
         pcObject->_pcViewProviderName = viewType ? viewType : "";
     }
     catch (...) {
+        d->collaborationNewObjectStructuralSetup.erase(pcObject);
         d->collaborationInitializationSuppression.erase(pcObject);
         publishObjectBoundary();
         throw;
@@ -4353,16 +5035,16 @@ void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, Add
 
     publishObjectBoundary();
 
-    signalNewObject(*pcObject);
+    emitCollaborationNewObject(*pcObject);
 
     // do no transactions if we do a rollback!
     if (!d->rollback && d->activeUndoTransaction) {
-        signalTransactionAppend(*pcObject, d->activeUndoTransaction);
+        emitCollaborationTransactionAppendObject(*pcObject, d->activeUndoTransaction);
     }
 
     if (options.testFlag(AddObjectOption::ActivateObject)) {
         d->activeObject = pcObject;
-        signalActivatedObject(*pcObject);
+        emitCollaborationActivatedObject(*pcObject);
     }
 }
 
@@ -4386,7 +5068,8 @@ void Document::removeObject(const DocumentObject* object)
 /// Remove an object out of the document
 void Document::removeObject(const char* sName)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     auto pos = d->objectMap.find(sName);
     if (pos == d->objectMap.end()){
         FC_MSG("Object " << sName << " already deleted in document " << getName());
@@ -4405,6 +5088,10 @@ void Document::removeObject(const char* sName)
     MutationInternalScope internalGrant(this);
 
     if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
+        if (d->collaborationCompatibilityStructuralMutationGranted) {
+            throw Base::RuntimeError(
+                "structural compatibility mutation cannot defer removal of a pending-recompute object");
+        }
         // TODO: shall we allow removal if there is active undo transaction?
         FC_MSG("pending remove of " << sName << " after recomputing document " << getName());
         d->pendingRemove.emplace_back(pos->second);
@@ -4415,7 +5102,8 @@ void Document::removeObject(const char* sName)
 }
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Object);
     enforceDocumentMutation(this,
                             MutationKind::RemoveObject,
                             MutationOrigin::Cpp,
@@ -4426,7 +5114,7 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         return;
     }
 
-    TransactionLocker tlock(this);
+    InternalTransactionLockScope tlock(*this);
 
     _checkTransaction(pcObject, nullptr, __LINE__);
 
@@ -4465,19 +5153,29 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
 
     const std::string removedObjectName = pos->first;
     const std::string removedObjectIdentity = collaborationObjectIdentity(*pcObject);
+    const auto removalBoundaryEffects = classifyMutation({
+        CollaborationMutationSource::ObjectRemoval,
+        MutationKind::RemoveObject,
+        CollaborationPropertyFamily::NotApplicable,
+        CollaborationContainerKind::DocumentObject,
+        removedObjectName,
+        removedObjectIdentity,
+        {},
+    });
     const auto publishRemovalBoundary = [&] {
+        if (d->collaborationCompatibilityStructuralMutationGranted) {
+            d->collaborationObservedStructuralEffects.insert(
+                d->collaborationObservedStructuralEffects.end(),
+                removalBoundaryEffects.begin(),
+                removalBoundaryEffects.end());
+            d->collaborationObservedStructuralEffects.push_back(
+                {DocumentRevisionKey::objectStructure(removedObjectName),
+                 removedObjectIdentity});
+        }
         if (collaborationRevisionPublicationSuppressed()) {
             return;
         }
-        static_cast<void>(d->collaborationRevisions.publish(classifyMutation({
-            CollaborationMutationSource::ObjectRemoval,
-            MutationKind::RemoveObject,
-            CollaborationPropertyFamily::NotApplicable,
-            CollaborationContainerKind::DocumentObject,
-            removedObjectName,
-            removedObjectIdentity,
-            {},
-        })));
+        static_cast<void>(d->collaborationRevisions.publish(removalBoundaryEffects));
     };
 
     // Keep the object's own callbacks suppressed until every surviving structural mutation has
@@ -4488,8 +5186,19 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         if (!d->undoing && !d->rollback) {
             pcObject->unsetupObject();
         }
-        signalDeletedObject(*pcObject);
-        signalTransactionRemove(*pcObject, d->rollback ? nullptr : d->activeUndoTransaction);
+        const bool transientObject = d->collaborationCommitNotificationBarrier
+            && std::ranges::any_of(
+                d->collaborationDeferredNotifications,
+                [pcObject](const CollaborationDeferredNotification& notification) {
+                    return notification.kind
+                            == CollaborationDeferredNotificationKind::NewObject
+                        && notification.object == pcObject;
+                });
+        if (!transientObject) {
+            emitCollaborationDeletedObject(*pcObject);
+            emitCollaborationTransactionRemoveObject(
+                *pcObject, d->rollback ? nullptr : d->activeUndoTransaction);
+        }
         breakDependency(pcObject, true);
 
         // TODO Check me if it's needed (2015-09-01, Fat-Zer)
@@ -4546,6 +5255,10 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
         // Erase last to avoid invalidating pcObject->pcNameInDocument
         // when it is still needed in Transaction::addObjectNew
         d->objectMap.erase(pos);
+        d->collaborationImportNewObjects.erase(pcObject);
+        if (transientObject) {
+            static_cast<void>(discardCollaborationTransientObjectNotifications(*pcObject));
+        }
     }
     catch (...) {
         d->collaborationPropertyPublicationSuppression.erase(&Tip);

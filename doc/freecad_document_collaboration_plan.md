@@ -50,6 +50,19 @@ Personal camera, selection, tree, and other view changes are excluded from those
 
 Existing GUI commands, macros, and Python code that make App model/structural changes but cannot declare complete dependencies use one fallback: enter the short commit barrier, perform the existing mutation, recompute as required, increment the applicable object/structure revisions and `Document.UnknownModelMutationRevision`, then publish and release. This is commit-time exclusion only; it grants no ownership and correctness does not depend on a heartbeat. Known personal-view changes bypass this path. Known shared-presentation changes use a separate serialized GUI compatibility path and do not advance the model wildcard unless they also mutate App state.
 
+**Structural compatibility mutations (amendment, 2026-08-04).** Phases 1–6 admitted only non-structural work on this fallback: `Document::ensureCollaborationStructuralMutationAllowed()` rejects `addObject`, `removeObject`, and dynamic-property schema changes for the whole commit barrier. That was correct for local GUI and Python callers, which create objects outside a prepared commit, but it blocks the remote CAD ingress that the MCP refactor's Phase 15 must route through this same boundary. The boundary is therefore extended, under MCP refactor §3.8 and delivered as the parent half of its Phase 15, with four mechanisms that must land together: a scoped structural mutation grant issued only on the compatibility path and only inside the coordinator's own barrier and transaction; deferral of the object new/deleted/activated and transaction append/remove signals, which are the structural analogue of the property notifications already deferred since Phase 2; a per-commit ledger of classified structural effects that the coordinator unions with the declared effects before reserving publication, so a structural commit publishes `documentStructure`, `objectStructure`, and `objectExistence` with stable identities instead of only the wildcard; and an explicit opt-in scope, so a caller that does not declare structural intent keeps today's rejection. The §7 monotonicity invariant, the §9 abort semantics, and the rule that an observer never sees an intermediate state are all preserved — a rolled-back structural callback publishes nothing and replays nothing. Undo, redo, nested transaction control, `clearDocument()`, ordinary prepared operations, and any callback running under a foreign stable-read capture remain rejected.
+
+**Delivered Phase 15 boundary (2026-08-05).** The implementation also covers exact
+new/import dynamic-property schema, status, metadata, extension and observer replay;
+owned App/Gui bulk-import archive/replay; exact rollback of membership order, stable
+identity and activation; authoritative-recompute effect capture; and a Sheet-only
+transient `Prop_NoPersist` schema scope. Deferred property records carry their owning
+container, coalesce to the stable committed state, and prune a destroyed transient
+object by non-dereferenced pointer identity. Create/edit, Pad/Pocket, and FEM
+presentation effects move after confirmed native publication. The default bridge
+remains UnknownModel; Structural authority exists only through explicit keyword-only
+`structural=True`.
+
 Every moved Python symbol retains its old import path through an explicit re-export shim during the migration window. A deliberately retired ownership API is not silently re-exported: it returns the documented deprecation/replacement error until its removal gate is met. Reviewers treat an accidental removed import path as blocking.
 
 ## 4. MCP responsibilities
@@ -348,17 +361,24 @@ Allowed phase states are `Not started`, `Unblocked`, `In progress`, `Blocked`, `
 | 4 — Existing mutation integration | Complete | — | 4A/4B/4C complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 694 executed/0 failed; Gui 169/169; Part 342/342 | N/A | N/A | `feat(collaboration): phase 4 integrate local mutations` |
 | 5 — FreeCAD lifecycle/recovery | Complete | — | 5A/5B complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 712 executed/0 failed; Gui 179/179; Part 342/342 | N/A | N/A | `feat(collaboration): phase 5 move lifecycle authority into FreeCAD` |
 | 6 — Finer concurrency/presentation | Complete | — | 6A/6B/6C/6E complete; final Sol/xhigh review PASS (0 blocking, 0 important) | PASS: App 747 executed/0 failed (745 passed, 2 skipped); Gui 240/240 and shuffled 240/240; Part 342/342 | N/A | N/A | `feat(collaboration): phase 6 add fine-grained and presentation concurrency` |
-| 7 — MCP adapter/cutover | Absorbed | MCP Phase 13 next | MCP Phase 12 client/bridge/lease/native/integrated reviews PASS (0 blocking, 0 important) | PASS: App 754 executed/0 failed; Gui 240/240; Part 342/342 | PASS: unit 2,229; e2e 115; core 4; benchmark 1, with documented skips/xfails | PASS: preflight; core 7 passed/5 xfailed; e2e 117/117; strict verdicts 0 | Phase 12 `refactor(mcp): inject collaboration collaborators`; final Phase 18 cutover remains |
+| 7 — MCP adapter/cutover | Absorbed | MCP Phase 16 next | MCP Phase 15 CAD/FEM/native/integrated reviews CLEAR (0 blocking, 0 important) | PASS: App 778 executed/0 failed (776 passed, 2 skipped); Gui 242/242; Spreadsheet 8/8 | PASS: unit 2,330 with documented skips/xfail; later services remain scheduled by their phase gates | PASS: preflight; core 8 passed/5 xfailed; e2e 117/117; strict verdicts 0 | Phase 15 `refactor(mcp): inject CAD collaborators`; final Phase 18 cutover remains |
 
 **Current snapshot:** Native collaboration Phases 1–6 remain complete and the
-former Phase 7 remains absorbed into the MCP architecture refactor. MCP Phase 12
-is complete at nested revision `8d6a56957bfc2a3f9753416749ca0684900481e2`.
-The canonical parent Phase 12 delivery adds only the synchronous UnknownModel
-compatibility-mutation Python binding and its focused native tests, advances the
-gitlink to that nested revision, and records the passed integration gate below.
-The legacy MCP/native authority surface remains intentionally present until MCP
-Phase 18. Pre-existing untracked `tests/lib/` remains excluded. The next action is
-MCP Phase 13; no separate collaboration Phase 7 delivery occurs.
+former Phase 7 remains absorbed into the MCP architecture refactor. MCP Phase 15
+is complete at nested revision `a8fa9ab19883195ffe87d0f51795db4956d22804`.
+The canonical parent Phase 15 delivery adds the §3.8 structural compatibility
+boundary and native tests, advances the gitlink to that nested revision, and records
+the passed upgraded phase gate below. The legacy MCP/native authority surface remains
+intentionally present until MCP Phase 18. Pre-existing untracked `tests/lib/` remains
+excluded.
+
+**Amendment delivered, 2026-08-05 — structural compatibility boundary.** MCP Phase 15
+now admits explicitly opted-in structure through the scoped grant, deferred replay,
+observed effect ledger, and keyword-only Structural scope authorized in §3.3. Native
+App/Gui/Spreadsheet tests prove success, rollback, import, schema, stable-identity,
+observer, recompute, and pointer-lifetime behavior. It does not reopen Phases 1–6;
+their ordinary prepared-operation and stable-read exclusions still pass. Continue with
+MCP Phase 16 only; no separate collaboration Phase 7 delivery occurs.
 
 ### 11.4 Append-only phase log
 
@@ -640,6 +660,53 @@ Append entries at the end in chronological order. Each entry must be sufficient 
 - **Next:** create the canonical parent Phase 12 commit, then continue automatically
   with MCP Phase 13 lifecycle collaborator injection. Do not remove any legacy
   authority surface before MCP Phase 18.
+
+#### 2026-08-05 — MCP Phase 15 native structural compatibility boundary complete
+
+- **Phase/base and two-object delivery:** the parent started from
+  `b9d12b8811` and the nested MCP Phase 15 object is
+  `a8fa9ab19883195ffe87d0f51795db4956d22804`, committed as
+  `refactor(mcp): inject CAD collaborators`. The canonical parent delivery advances
+  the gitlink, updates both plans, and uses the exact subject
+  `fix(collaboration): admit compatibility structural mutations`. Pre-existing
+  untracked `tests/lib/` is preserved and excluded.
+- **Native boundary:** M1–M4 admit structure only for an explicit keyword-only
+  `structural=True` callback inside the coordinator's own barrier and transaction.
+  Deferred object/property/schema/extension/import notifications replay only after
+  publication; declared and observed semantic effects publish once with stable
+  identities. Failure restores exact membership order, activation, identities,
+  imported state, Spreadsheet cells/schema, and emits no observer or revision event.
+  Undo, redo, nested transaction control, `clearDocument()`, prepared operations,
+  atomic presentation, reentry, poisoned commits, and foreign stable reads still reject.
+- **MCP integration:** eager `CadCollaborators` route document, object, sketch,
+  feature, FEM, transaction, and reference-repair operations through the injected
+  native boundary. Structural call sites opt in explicitly. Create/edit
+  `ShapeColor`/`ViewObject`, Pad/Pocket sketch visibility, and FEM ViewProxy setup run
+  exactly once only after confirmed publication; every native failure path leaves
+  presentation untouched.
+- **Reviews:** independent CAD/FEM workers and native/integrated reviewers closed
+  import/recompute/schema rollback, transient property lifetime, FEM provider
+  resolution, and pre-commit presentation defects. Final source and progress-delta
+  reviews are CLEAR with zero remaining blocking or important finding.
+- **Docker native lane:** image
+  `freecad-collaboration-ci:ubuntu24.04-20260801` at
+  `sha256:b34e0e1ecabafa22c760850548b7e8239c4a3428c7d4084927ed5d1109f5142f`;
+  all 28 changed native source/test files byte-match the Docker workspace. App ran
+  778: 776 passed and the two known BackupPolicy tests skipped. Gui passed 242/242
+  under Xvfb/xcb/llvmpipe; Spreadsheet passed 8/8.
+- **Docker MCP phase gate:** final Compose image
+  `freecad-mcp-tests:latest` at
+  `sha256:af598e307043b5a35c2e60760c1271af8ed248c794a6fbe12bbe903533e360c0`.
+  Production lint checked 983 files. Unit selected 2,334: 2,330 passed, three
+  Windows-DACL tests skipped, the existing screenshot test xfailed, and 130 were
+  deselected. The final focused Phase 15 selection passed 63/63.
+- **Docker branch cross-track:** image `freecad-ci-mcp:24.04-phase1` at
+  `sha256:4ea79d64874ce74eddd8689bbcb8560cc7215a8603d28e6a0b45da8f64defcc3`.
+  Preflight emitted `PREFLIGHT_OK`; strict core passed eight with five documented
+  xfails and strict e2e passed 117/117. Both verdict files were zero and generated
+  result/XML files were removed.
+- **Next:** continue automatically with MCP Phase 16 GUI and view collaborator
+  injection. Do not remove the frozen authority surface before MCP Phase 18.
 
 For each implementation wave, append: phase/wave and date; base revision; ownership assigned; changed files; tests added/changed; each worker's assumptions/blockers; review findings by severity and re-review result; Docker image/digest and branch-build configure/build/test commands with results/counts; at the MCP collaboration-cutover phase, all four MCP Docker results and the Docker branch cross-track result; decisions/deviations; unresolved non-blocking follow-ups; next action; and the planned phase commit subject/tag. Host-side test results are never recorded as phase evidence.
 

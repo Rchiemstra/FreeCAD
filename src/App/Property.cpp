@@ -33,6 +33,7 @@
 
 #include "Property.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
 #include "DocumentMutationAuthority.h"
@@ -94,6 +95,9 @@ void publishPropertyMutation(Property& property, bool structural)
     }
     const auto effects = classifyMutation(input);
     document->recordCollaborationAtomicPresentationEffects(effects, &property);
+    if (structural || input.propertyFamily == CollaborationPropertyFamily::Link) {
+        Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
+    }
     if (document->collaborationRevisionPublicationSuppressed(&property)) {
         return;
     }
@@ -466,6 +470,8 @@ void Property::setStatusValue(unsigned long status)
                                     MutationOrigin::Cpp,
                                     object ? object->getNameInDocument() : nullptr,
                                     getName());
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *father);
         }
     }
     StatusBits = decltype(StatusBits)(status);

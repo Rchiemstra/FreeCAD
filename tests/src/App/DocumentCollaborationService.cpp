@@ -90,6 +90,99 @@ public:
     }
 };
 
+class DocumentStructuralCompatibilityTestAccess
+{
+public:
+    static std::string grantDiagnostic(Document& document)
+    {
+        try {
+            auto grant = document.openCollaborationStructuralMutationGrant();
+            return "accepted";
+        }
+        catch (const Base::Exception& exception) {
+            return exception.what();
+        }
+    }
+
+    static std::string withoutTransaction(Document& document)
+    {
+        document.beginCollaborationCommitNotificationBarrier();
+        document.setCollaborationRevisionPublicationSuppressed(true);
+        const auto diagnostic = grantDiagnostic(document);
+        document.setCollaborationRevisionPublicationSuppressed(false);
+        document.finishCollaborationCommitNotificationBarrier(false);
+        return diagnostic;
+    }
+
+    static std::string withoutRevisionSuppression(Document& document)
+    {
+        beginBoundary(document, false);
+        const auto diagnostic = grantDiagnostic(document);
+        endBoundary(document);
+        return diagnostic;
+    }
+
+    static std::string withForeignStableRead(Document& document)
+    {
+        beginBoundary(document, true);
+        document.beginCollaborationStableReadCapture();
+        const auto diagnostic = grantDiagnostic(document);
+        document.finishCollaborationStableReadCapture();
+        endBoundary(document);
+        return diagnostic;
+    }
+
+    static std::string duringAtomicPresentationAudit(Document& document)
+    {
+        beginBoundary(document, true);
+        document.beginCollaborationAtomicPresentationAudit({});
+        const auto diagnostic = grantDiagnostic(document);
+        document.endCollaborationAtomicPresentationAudit();
+        endBoundary(document);
+        return diagnostic;
+    }
+
+    static std::string onPoisonedDocument(Document& document)
+    {
+        beginBoundary(document, true);
+        document.poisonCollaborationCommit("test poison");
+        const auto diagnostic = grantDiagnostic(document);
+        endBoundary(document);
+        return diagnostic;
+    }
+
+    static std::string reentrant(Document& document)
+    {
+        beginBoundary(document, true);
+        std::string diagnostic;
+        {
+            auto grant = document.openCollaborationStructuralMutationGrant();
+            diagnostic = grantDiagnostic(document);
+        }
+        endBoundary(document);
+        return diagnostic;
+    }
+
+private:
+    static void beginBoundary(Document& document, bool suppressRevisions)
+    {
+        document.beginCollaborationCommitNotificationBarrier();
+        document.setCollaborationRevisionPublicationSuppressed(suppressRevisions);
+        if (document.openCollaborationCommitTransaction("structural grant test") == 0) {
+            throw std::runtime_error("test failed to open collaboration transaction");
+        }
+    }
+
+    static void endBoundary(Document& document)
+    {
+        if (document.hasPendingTransaction()) {
+            static_cast<void>(document.rollbackCollaborationTransaction());
+        }
+        document.setCollaborationRevisionPublicationSuppressed(false);
+        document.finishCollaborationCommitNotificationBarrier(false);
+    }
+};
+
 }  // namespace App::Internal
 
 namespace
@@ -129,6 +222,10 @@ public:
         }
         if (_mode == "structural-add") {
             static_cast<void>(document.addObject<FeatureTest>("Transient"));
+            return;
+        }
+        if (_mode == "structural-remove") {
+            document.removeObject(_objectName.c_str());
             return;
         }
         if (_mode == "schema-add") {
@@ -223,7 +320,8 @@ public:
         if (_mode == "postcondition-failure") {
             return {false, "injected postcondition failure"};
         }
-        if (_mode == "structural-add" || _mode == "schema-add"
+        if (_mode == "structural-add" || _mode == "structural-remove"
+            || _mode == "schema-add"
             || _mode == "document-schema-add"
             || _mode == "clear-document"
             || _mode == "recompute-failure") {
@@ -1286,6 +1384,18 @@ TEST_F(DocumentCollaborationServiceTest, structuralAndSchemaMutationRejectBefore
     EXPECT_EQ(created, 0);
     EXPECT_EQ(deleted, 0);
 
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto wildcardBefore =
+        _document->collaborationRevisions().current(wildcard);
+    auto removal = prepare("structural-remove", "unused", "structural-remove");
+    const auto removalResult =
+        _document->collaborationService().commitEdit(_session.sessionId(), removal);
+    EXPECT_EQ(removalResult.status, DocumentCommitStatus::ApplyFailed);
+    EXPECT_EQ(_document->getObject("Target"), _target);
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), wildcardBefore);
+    EXPECT_EQ(created, 0);
+    EXPECT_EQ(deleted, 0);
+
     auto schema = prepare("schema", "unused", "schema-add");
     const auto schemaResult =
         _document->collaborationService().commitEdit(_session.sessionId(), schema);
@@ -1302,6 +1412,37 @@ TEST_F(DocumentCollaborationServiceTest, structuralAndSchemaMutationRejectBefore
     EXPECT_EQ(_document->getPropertyByName("TransientDocumentProperty"), nullptr);
     EXPECT_EQ(created, 0);
     EXPECT_EQ(deleted, 0);
+}
+
+TEST_F(DocumentCollaborationServiceTest, structuralGrantPreconditionsHaveDistinctDiagnostics)
+{
+    using Access = Internal::DocumentStructuralCompatibilityTestAccess;
+
+    EXPECT_NE(Access::grantDiagnostic(*_document).find("notification barrier"),
+              std::string::npos);
+    EXPECT_NE(Access::withoutTransaction(*_document).find("native transaction"),
+              std::string::npos);
+    EXPECT_NE(Access::withoutRevisionSuppression(*_document).find("publication suppression"),
+              std::string::npos);
+    EXPECT_NE(Access::withForeignStableRead(*_document).find("foreign stable read"),
+              std::string::npos);
+    EXPECT_NE(Access::duringAtomicPresentationAudit(*_document).find(
+                  "atomic presentation audit"),
+              std::string::npos);
+    EXPECT_NE(Access::reentrant(*_document).find("not reentrant"),
+              std::string::npos);
+
+    auto ownerDiagnostic = std::async(std::launch::async, [&] {
+        return Access::grantDiagnostic(*_document);
+    });
+    EXPECT_NE(ownerDiagnostic.get().find("owner thread"), std::string::npos);
+}
+
+TEST_F(DocumentCollaborationServiceTest, poisonedDocumentCannotAcquireStructuralGrant)
+{
+    const auto diagnostic =
+        Internal::DocumentStructuralCompatibilityTestAccess::onPoisonedDocument(*_document);
+    EXPECT_NE(diagnostic.find("poisoned document"), std::string::npos);
 }
 
 TEST_F(DocumentCollaborationServiceTest, clearDocumentRejectsBeforeSignalsOrObjectLoss)
@@ -1493,6 +1634,22 @@ TEST_F(DocumentCollaborationServiceTest,
     const auto after =
         Internal::DocumentCollaborationServiceTestAccess::commitAtomic(service);
     EXPECT_FALSE(after.committed);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       atomicPresentationCannotBorrowStructuralCompatibilityAuthority)
+{
+    auto& service = _document->collaborationService();
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    const auto revisionBefore = _document->collaborationRevisions().current(wildcard);
+
+    const auto result = Internal::DocumentCollaborationServiceTestAccess::serializeAtomic(
+        service,
+        [&] { static_cast<void>(_document->addObject<FeatureTest>("AtomicTransient")); });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::ApplyFailed);
+    EXPECT_EQ(_document->getObject("AtomicTransient"), nullptr);
+    EXPECT_EQ(_document->collaborationRevisions().current(wildcard), revisionBefore);
 }
 
 TEST_F(DocumentCollaborationServiceTest,

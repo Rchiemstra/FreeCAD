@@ -26,6 +26,7 @@
 
 #include "Application.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 
@@ -230,6 +231,10 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         MutationOrigin::Python,
         object ? object->getNameInDocument() : nullptr,
         typeId);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::ensureDynamicExtensionAllowed(
+            *document, *container);
+    }
 
     // get the extension type asked for
     Base::Type extension = Base::Type::fromName(typeId);
@@ -249,9 +254,17 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         throw Py::TypeError(str.str());
     }
 
-    GetApplication().signalBeforeAddingDynamicExtension(*container, typeId);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitBeforeAddingDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalBeforeAddingDynamicExtension(*container, typeId);
+    }
     ext->initExtension(container);
     if (document) {
+        Internal::CollaborationStructuralMutationRecorder::recordContainer(
+            *document, *container);
         document->publishCollaborationMutation(*container, true);
     }
 
@@ -290,7 +303,13 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     Py_DECREF(obj);
 
     // throw the appropriate event
-    GetApplication().signalAddedDynamicExtension(*container, typeId);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitAddedDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalAddedDynamicExtension(*container, typeId);
+    }
 
     Py_Return;
 }

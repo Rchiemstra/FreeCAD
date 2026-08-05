@@ -138,17 +138,20 @@ Document& DocumentCommitCoordinator::document() const noexcept
 
 DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
 {
-    return commitWithPreparationPolicy(edit, true);
+    return commitWithPreparationPolicy(edit, true, false);
 }
 
-DocumentCommitResult DocumentCommitCoordinator::commitCompatibility(const PreparedEdit& edit)
+DocumentCommitResult DocumentCommitCoordinator::commitCompatibility(
+    const PreparedEdit& edit,
+    const bool structural)
 {
-    return commitWithPreparationPolicy(edit, false);
+    return commitWithPreparationPolicy(edit, false, structural);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
     const PreparedEdit& edit,
-    const bool requireDetachedPreparationSupport)
+    const bool requireDetachedPreparationSupport,
+    const bool structuralCompatibility)
 {
     if (!MainThreadSignalConfig::hasHooks()) {
         if (!_document.isCollaborationOwnerThread()) {
@@ -156,10 +159,12 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
                               edit,
                               "off-owner collaboration commit requires a document-thread dispatcher");
         }
-        return commitOnDocumentThread(edit, requireDetachedPreparationSupport);
+        return commitOnDocumentThread(
+            edit, requireDetachedPreparationSupport, structuralCompatibility);
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThread(edit, requireDetachedPreparationSupport);
+        return commitOnDocumentThread(
+            edit, requireDetachedPreparationSupport, structuralCompatibility);
     }
 
     std::optional<DocumentCommitResult> result;
@@ -170,10 +175,17 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
             release.emplace();
         }
         MainThreadSignalConfig::invoke(
-            [this, &edit, &result, &failure, requireDetachedPreparationSupport] {
+            [this,
+             &edit,
+             &result,
+             &failure,
+             requireDetachedPreparationSupport,
+             structuralCompatibility] {
                 try {
-                    result.emplace(
-                        commitOnDocumentThread(edit, requireDetachedPreparationSupport));
+                    result.emplace(commitOnDocumentThread(
+                        edit,
+                        requireDetachedPreparationSupport,
+                        structuralCompatibility));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -192,7 +204,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
 
 DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
     const PreparedEdit& edit,
-    const bool requireDetachedPreparationSupport)
+    const bool requireDetachedPreparationSupport,
+    const bool structuralCompatibility)
 {
     if (!_document.isCollaborationOwnerThread()) {
         return makeResult(DocumentCommitStatus::Unsupported,
@@ -255,8 +268,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
                           "prepared operation payload does not match its declared type");
     }
 
-    const auto& effects = edit.publicationEffects();
-    if (!effectsExactlyCoverWrites(effects, edit.writeSet())) {
+    const auto& declaredEffects = edit.publicationEffects();
+    if (!effectsExactlyCoverWrites(declaredEffects, edit.writeSet())) {
         return makeResult(
             DocumentCommitStatus::InvalidPreparedEdit,
             edit,
@@ -380,7 +393,15 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
     }
 
     try {
-        operation.apply(_document);
+        if (structuralCompatibility) {
+            {
+                auto grant = _document.openCollaborationStructuralMutationGrant();
+                operation.apply(_document);
+            }
+        }
+        else {
+            operation.apply(_document);
+        }
     }
     catch (const Base::Exception& exception) {
         return abortAndRestore(makeResult(DocumentCommitStatus::ApplyFailed,
@@ -456,6 +477,49 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
                                           postcondition.message.empty()
                                               ? "operation postcondition was not satisfied"
                                               : std::move(postcondition.message)));
+    }
+
+    std::vector<DocumentRevisionPublicationRequest> effects;
+    try {
+        // Recompute can perform narrowly admitted, model-specific transient
+        // schema work (Spreadsheet cell properties).  Read the native ledger
+        // only after both recompute and the postcondition so the publication
+        // covers every structural effect in the complete prepared operation.
+        auto observedStructuralEffects =
+            _document.takeCollaborationObservedStructuralEffects();
+        effects = declaredEffects;
+        effects.insert(effects.end(),
+                       observedStructuralEffects.begin(),
+                       observedStructuralEffects.end());
+        const auto effectLess = [](const DocumentRevisionPublicationRequest& left,
+                                   const DocumentRevisionPublicationRequest& right) {
+            if (left.key != right.key) {
+                return left.key < right.key;
+            }
+            return left.stableObjectIdentity < right.stableObjectIdentity;
+        };
+        const auto effectEqual = [](const DocumentRevisionPublicationRequest& left,
+                                    const DocumentRevisionPublicationRequest& right) {
+            return left.key == right.key
+                && left.stableObjectIdentity == right.stableObjectIdentity;
+        };
+        std::sort(effects.begin(), effects.end(), effectLess);
+        effects.erase(std::unique(effects.begin(), effects.end(), effectEqual), effects.end());
+    }
+    catch (const Base::Exception& exception) {
+        return abortAndRestore(makeResult(
+            DocumentCommitStatus::PublicationFailed,
+            edit,
+            stageFailure("structural effect ledger collection failed", exception.what())));
+    }
+    catch (const std::exception& exception) {
+        return abortAndRestore(makeResult(
+            DocumentCommitStatus::PublicationFailed,
+            edit,
+            stageFailure("structural effect ledger collection failed", exception.what())));
+    }
+    catch (...) {
+        abortRestoreAndRethrow("unknown structural effect ledger collection failure");
     }
 
     try {

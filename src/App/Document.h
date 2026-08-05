@@ -39,6 +39,7 @@
 #include "TransactionDefs.h"
 
 #include <array>
+#include <functional>
 #include <map>
 #include <vector>
 #include <utility>
@@ -50,12 +51,19 @@
 
 namespace Base
 {
+class XMLReader;
 class Writer;
 }
 
 namespace Gui
 {
 class Document;
+class MergeDocuments;
+}
+
+namespace Spreadsheet
+{
+class Sheet;
 }
 
 namespace App
@@ -108,6 +116,17 @@ AppExport bool writeRecoverySnapshotToTransientDir(
 namespace Internal
 {
 class DocumentCollaborationConcurrencyTestAccess;
+class DocumentStructuralCompatibilityTestAccess;
+class CollaborationStructuralMutationRecorder;
+class AppExport CollaborationImportReplay
+{
+public:
+    virtual ~CollaborationImportReplay() = default;
+    [[nodiscard]] virtual Base::XMLReader& reader() noexcept = 0;
+    virtual void restoreImportedModelFiles() = 0;
+    virtual void restoreImportedFiles(
+        const std::vector<DocumentObject*>& objects) = 0;
+};
 }
 using StringHasherRef = Base::Reference<StringHasher>;
 
@@ -1346,13 +1365,19 @@ public:
     // because of transaction handling
     friend class TransactionalObject;
     friend class DocumentObject;
+    friend class DynamicProperty;
     friend class Property;
     friend class Transaction;
     friend class TransactionDocumentObject;
+    friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
     friend class Gui::Document;
+    friend class Gui::MergeDocuments;
     friend class Internal::DocumentCollaborationConcurrencyTestAccess;
+    friend class Internal::DocumentStructuralCompatibilityTestAccess;
+    friend class Internal::CollaborationStructuralMutationRecorder;
+    friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
 
@@ -1521,6 +1546,75 @@ protected:
     void _abortTransaction();
 
 private:
+    enum class CollaborationStructuralMutationKind
+    {
+        Restricted,
+        Object,
+        DynamicPropertyOnNewObject
+    };
+
+    class CollaborationStructuralMutationGrant final
+    {
+    public:
+        explicit CollaborationStructuralMutationGrant(Document& document);
+        ~CollaborationStructuralMutationGrant();
+
+        CollaborationStructuralMutationGrant(
+            const CollaborationStructuralMutationGrant&) = delete;
+        CollaborationStructuralMutationGrant& operator=(
+            const CollaborationStructuralMutationGrant&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationImportDeferralScope final
+    {
+    public:
+        CollaborationImportDeferralScope(
+            Document& document,
+            std::shared_ptr<Internal::CollaborationImportReplay> replay);
+        ~CollaborationImportDeferralScope();
+
+        CollaborationImportDeferralScope(
+            const CollaborationImportDeferralScope&) = delete;
+        CollaborationImportDeferralScope& operator=(
+            const CollaborationImportDeferralScope&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class InternalTransactionLockScope final
+    {
+    public:
+        explicit InternalTransactionLockScope(Document& document);
+        ~InternalTransactionLockScope();
+
+        InternalTransactionLockScope(const InternalTransactionLockScope&) = delete;
+        InternalTransactionLockScope& operator=(const InternalTransactionLockScope&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationSpreadsheetRecomputeSchemaScope final
+    {
+    public:
+        CollaborationSpreadsheetRecomputeSchemaScope(
+            Document* document,
+            DocumentObject& object);
+        ~CollaborationSpreadsheetRecomputeSchemaScope();
+
+        CollaborationSpreadsheetRecomputeSchemaScope(
+            const CollaborationSpreadsheetRecomputeSchemaScope&) = delete;
+        CollaborationSpreadsheetRecomputeSchemaScope& operator=(
+            const CollaborationSpreadsheetRecomputeSchemaScope&) = delete;
+
+    private:
+        Document* _document {nullptr};
+    };
+
     std::recursive_mutex& collaborationCommitMutex() noexcept;
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
@@ -1531,8 +1625,31 @@ private:
     [[nodiscard]] bool collaborationCommitPoisoned() const noexcept;
     [[nodiscard]] const char* collaborationCommitPoisonDiagnostic() const noexcept;
     void poisonCollaborationCommit(const char* diagnostic) noexcept;
-    void ensureCollaborationStructuralMutationAllowed() const;
+    void ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind kind =
+            CollaborationStructuralMutationKind::Restricted) const;
+    void ensureCollaborationDynamicPropertyMutationAllowed(
+        const DocumentObject& object,
+        short propertyType) const;
+    void ensureCollaborationDynamicPropertyRemovalAllowed(
+        const DocumentObject& object,
+        const Property* property) const;
+    void recordCollaborationObservedStructuralEffects(
+        const std::vector<DocumentRevisionPublicationRequest>& effects);
+    void recordCollaborationObservedStructuralMutation(
+        const PropertyContainer& container);
+    [[nodiscard]] CollaborationStructuralMutationGrant
+    openCollaborationStructuralMutationGrant();
+    [[nodiscard]] bool collaborationStructuralImportDeferralRequired() const noexcept;
+    [[nodiscard]] bool collaborationImportBoundaryActive() const noexcept;
+    [[nodiscard]] CollaborationImportDeferralScope
+    openCollaborationImportDeferralScope(
+        std::shared_ptr<Internal::CollaborationImportReplay> replay);
+    [[nodiscard]] std::vector<DocumentRevisionPublicationRequest>
+    takeCollaborationObservedStructuralEffects();
     void ensureCollaborationTransactionControlAllowed() const;
+    void lockTransactionInternal();
+    void unlockTransactionInternal();
     int openCollaborationCommitTransaction(std::string name);
     bool commitCollaborationCommitTransaction();
     void setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept;
@@ -1545,6 +1662,17 @@ private:
     void emitCollaborationPropertyChanged(Property& property);
     void emitCollaborationTouchedObject(DocumentObject& object);
     void emitCollaborationRelabelObject(DocumentObject& object);
+    void emitCollaborationNewObject(DocumentObject& object);
+    void emitCollaborationDeletedObject(DocumentObject& object);
+    void emitCollaborationTransactionAppendObject(DocumentObject& object,
+                                                  Transaction* transaction);
+    void emitCollaborationTransactionRemoveObject(DocumentObject& object,
+                                                  Transaction* transaction);
+    void emitCollaborationActivatedObject(DocumentObject& object);
+    void emitCollaborationAppendDynamicProperty(Property& property);
+    void emitCollaborationChangePropertyEditor(const Property& property);
+    [[nodiscard]] bool discardCollaborationTransientObjectNotifications(
+        DocumentObject& object);
     CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);

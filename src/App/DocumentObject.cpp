@@ -40,6 +40,7 @@
 #include "Application.h"
 #include "ElementNamingUtils.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
@@ -905,15 +906,18 @@ void DocumentObject::setDocument(App::Document* doc)
 
 bool DocumentObject::removeDynamicProperty(const char* name)
 {
+    Property* prop = getDynamicPropertyByName(name);
+    if (!prop) {
+        return false;
+    }
     if (_pDoc) {
-        _pDoc->ensureCollaborationStructuralMutationAllowed();
+        _pDoc->ensureCollaborationDynamicPropertyRemovalAllowed(*this, prop);
     }
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
 
-    Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
+    if (prop->testStatus(App::Property::LockDynamic)) {
         return false;
     }
 
@@ -942,7 +946,8 @@ bool DocumentObject::removeDynamicProperty(const char* name)
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
 {
     if (_pDoc) {
-        _pDoc->ensureCollaborationStructuralMutationAllowed();
+        Internal::CollaborationStructuralMutationRecorder::
+            ensurePropertySchemaMutationAllowed(*_pDoc, *this);
     }
     std::string oldName = prop->getName();
 
@@ -986,7 +991,7 @@ App::Property* DocumentObject::addDynamicProperty(
 )
 {
     if (_pDoc) {
-        _pDoc->ensureCollaborationStructuralMutationAllowed();
+        _pDoc->ensureCollaborationDynamicPropertyMutationAllowed(*this, attr);
     }
     auto prop = TransactionalObject::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
     if (prop && _pDoc) {
@@ -1860,7 +1865,7 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
 {
     (void)oldStatus;
     if (!Document::isAnyRestoring() && isAttachedToDocument() && getDocument()) {
-        getDocument()->signalChangePropertyEditor(*getDocument(), prop);
+        getDocument()->emitCollaborationChangePropertyEditor(prop);
     }
 }
 

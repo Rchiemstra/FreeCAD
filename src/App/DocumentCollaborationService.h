@@ -66,7 +66,8 @@ struct AppExport CollaborationPreparedEditResult
 enum class CollaborationCompatibilityScope
 {
     ObjectModel,
-    UnknownModel
+    UnknownModel,
+    Structural
 };
 
 /** Pointer-free declaration for the short synchronous compatibility path. */

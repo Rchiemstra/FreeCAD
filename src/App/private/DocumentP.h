@@ -92,7 +92,21 @@ enum class CollaborationDeferredNotificationKind
     OpenTransaction,
     CommitTransaction,
     AbortTransaction,
-    BecameStable
+    BecameStable,
+    NewObject,
+    DeletedObject,
+    TransactionAppendObject,
+    TransactionRemoveObject,
+    ActivatedObject,
+    AppendDynamicProperty,
+    RemoveDynamicProperty,
+    RenameDynamicProperty,
+    ChangePropertyEditor,
+    BeforeAddingDynamicExtension,
+    AddedDynamicExtension,
+    ImportObjects,
+    FinishRestoreObject,
+    FinishImportObjects
 };
 
 struct CollaborationDeferredNotification
@@ -106,6 +120,7 @@ struct CollaborationDeferredNotification
         : kind(kind)
         , object(object)
         , property(property)
+        , propertyContainer(property ? property->getContainer() : nullptr)
         , text(std::move(text))
         , objects(std::move(objects))
     {}
@@ -113,8 +128,13 @@ struct CollaborationDeferredNotification
     CollaborationDeferredNotificationKind kind;
     DocumentObject* object {nullptr};
     Property* property {nullptr};
+    const PropertyContainer* propertyContainer {nullptr};
+    Transaction* transaction {nullptr};
     std::string text;
     std::vector<DocumentObject*> objects;
+    std::shared_ptr<Internal::CollaborationImportReplay> importReplay;
+    std::shared_ptr<std::string> retainedText;
+    std::shared_ptr<Property> retainedProperty;
 };
 
 // Pimpl class
@@ -142,6 +162,9 @@ struct DocumentP
     bool suppressCollaborationRevisionPublication {true};
     bool collaborationCommitNotificationBarrier {false};
     bool collaborationTransactionControlGranted {false};
+    bool collaborationCompatibilityStructuralMutationGranted {false};
+    bool collaborationImportDeferralActive {false};
+    bool collaborationRollbackStabilizing {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
     bool collaborationAtomicPresentationAuditActive {false};
@@ -168,9 +191,18 @@ struct DocumentP
     DocumentRevisionIndex collaborationRevisions;
     std::unique_ptr<DocumentCollaborationService> collaborationService;
     std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
+    std::unordered_map<const DocumentObject*, std::uint64_t>
+        collaborationBoundaryObjectIdentities;
+    std::vector<DocumentObject*> collaborationBoundaryObjectOrder;
+    DocumentObject* collaborationBoundaryActiveObject {nullptr};
     std::unordered_set<const DocumentObject*> collaborationInitializationSuppression;
+    std::unordered_set<const DocumentObject*> collaborationNewObjectStructuralSetup;
+    std::unordered_set<const DocumentObject*> collaborationImportNewObjects;
     std::unordered_set<const Property*> collaborationPropertyPublicationSuppression;
     std::vector<CollaborationDeferredNotification> collaborationDeferredNotifications;
+    std::vector<DocumentRevisionPublicationRequest> collaborationObservedStructuralEffects;
+    std::shared_ptr<Internal::CollaborationImportReplay> collaborationActiveImportReplay;
+    const DocumentObject* collaborationSpreadsheetRecomputeSchemaObject {nullptr};
     std::list<Transaction*> collaborationPreparedUndoSlot;
 
     StringHasherRef Hasher {new StringHasher};

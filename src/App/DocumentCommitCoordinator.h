@@ -69,13 +69,17 @@ private:
 
     [[nodiscard]] Document& document() const noexcept;
     [[nodiscard]] DocumentCommitResult commit(const PreparedEdit& edit);
-    [[nodiscard]] DocumentCommitResult commitCompatibility(const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitCompatibility(
+        const PreparedEdit& edit,
+        bool structural);
     [[nodiscard]] DocumentCommitResult commitWithPreparationPolicy(
         const PreparedEdit& edit,
-        bool requireDetachedPreparationSupport);
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility);
     [[nodiscard]] DocumentCommitResult commitOnDocumentThread(
         const PreparedEdit& edit,
-        bool requireDetachedPreparationSupport);
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility);
 
     Document& _document;
 };

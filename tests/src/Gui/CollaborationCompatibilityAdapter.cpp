@@ -10,11 +10,16 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/MergeDocuments.h>
+#include <Base/Stream.h>
 #include <Gui/Application.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Document.h>
+#include <Gui/MergeDocuments.h>
+#include <Gui/ViewProviderDocumentObject.h>
 #include <src/App/InitApplication.h>
 
 namespace App::Internal
@@ -418,6 +423,151 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     ASSERT_EQ(after.size(), before.size());
     EXPECT_EQ(after[0].revision, before[0].revision);
     EXPECT_EQ(after[1].revision, before[1].revision + 1);
+}
+
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       structuralCreateDefersViewProviderUntilCommittedNewObjectReplay)
+{
+    App::DocumentObject* created = nullptr;
+    bool callbackRan = false;
+    bool callbackSawNoViewProvider = false;
+
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {App::CollaborationCompatibilityScope::Structural, {}, {}},
+        [&] {
+            callbackRan = true;
+            created = _document->addObject("App::FeatureTest", "DeferredGuiObject");
+            callbackSawNoViewProvider = created
+                && _guiDocument->getViewProvider(created) == nullptr;
+        });
+
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_TRUE(callbackRan);
+    ASSERT_NE(created, nullptr);
+    EXPECT_TRUE(callbackSawNoViewProvider)
+        << "Gui observed the object before the structural commit completed";
+    EXPECT_EQ(_document->getObject("DeferredGuiObject"), created);
+    EXPECT_NE(_guiDocument->getViewProvider(created), nullptr)
+        << "deferred NewObject replay did not create the ViewProvider";
+}
+
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       structuralBulkImportDefersViewProviderAndRestoresGuiDataAfterCommit)
+{
+    const auto sourceName =
+        App::GetApplication().getUniqueDocumentName("structuralGuiImportSource");
+    App::DocumentInitFlags sourceFlags;
+    sourceFlags.createView = false;
+    auto* source = App::GetApplication().newDocument(
+        sourceName.c_str(), "GUI import source", sourceFlags);
+    ASSERT_NE(source, nullptr);
+    auto* sourceObject = source->addObject("App::FeatureTest", "ImportedGuiFeature");
+    ASSERT_NE(sourceObject, nullptr);
+    auto* sourceGui = Gui::Application::Instance->getDocument(source);
+    ASSERT_NE(sourceGui, nullptr);
+    auto* sourceView = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        sourceGui->getViewProvider(sourceObject));
+    ASSERT_NE(sourceView, nullptr);
+    sourceView->ShowInTree.setValue(false);
+
+    std::string archive;
+    {
+        Base::StringOStreambuf buffer(archive);
+        std::ostream output(&buffer);
+        Gui::MergeDocuments exportHooks(source);
+        source->exportObjects({sourceObject}, output);
+    }
+    App::GetApplication().closeDocument(sourceName.c_str());
+    QApplication::processEvents();
+
+    int importSignals = 0;
+    int finishSignals = 0;
+    int finishRestoreSignals = 0;
+    int newObjectSignals = 0;
+    fastsignals::scoped_connection importConnection = _document->signalImportObjects.connect(
+        [&](const auto&, Base::XMLReader&) { ++importSignals; });
+    fastsignals::scoped_connection finishConnection = _document->signalFinishImportObjects.connect(
+        [&](const auto&) { ++finishSignals; });
+    fastsignals::scoped_connection finishRestoreConnection =
+        _document->signalFinishRestoreObject.connect(
+        [&](const App::DocumentObject& object) {
+            if (object.getNameInDocument()
+                && std::string_view(object.getNameInDocument()) == "ImportedGuiFeature") {
+                ++finishRestoreSignals;
+            }
+        });
+    fastsignals::scoped_connection newConnection = _document->signalNewObject.connect(
+        [&](const App::DocumentObject& object) {
+            if (object.getNameInDocument()
+                && std::string_view(object.getNameInDocument()) == "ImportedGuiFeature") {
+                ++newObjectSignals;
+            }
+        });
+    App::DocumentObject* imported = nullptr;
+    bool callbackSawNoObservers = false;
+    bool callbackSawNoViewProvider = false;
+    Gui::MergeDocuments retainedImporter(_document);
+
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        {App::CollaborationCompatibilityScope::Structural, {}, {}},
+        [&] {
+            Base::StringIStreambuf buffer(archive);
+            std::istream input(&buffer);
+            const auto importedObjects = retainedImporter.importObjects(input);
+            imported = importedObjects.size() == 1U ? importedObjects.front() : nullptr;
+            callbackSawNoObservers = importSignals == 0 && finishSignals == 0
+                && finishRestoreSignals == 0 && newObjectSignals == 0;
+            callbackSawNoViewProvider = imported
+                && _guiDocument->getViewProvider(imported) == nullptr;
+        });
+
+    ASSERT_TRUE(result.committed()) << result.message;
+    ASSERT_NE(imported, nullptr);
+    EXPECT_TRUE(callbackSawNoObservers);
+    EXPECT_TRUE(callbackSawNoViewProvider);
+    EXPECT_EQ(importSignals, 1);
+    EXPECT_EQ(finishSignals, 1);
+    EXPECT_EQ(finishRestoreSignals, 1);
+    EXPECT_EQ(newObjectSignals, 1);
+    auto* importedView = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(imported));
+    ASSERT_NE(importedView, nullptr);
+    EXPECT_FALSE(importedView->ShowInTree.getValue());
+
+    int importViewSignals = 0;
+    bool appCallbackSawNoImportViewSignal = false;
+    App::DocumentObject* appImported = nullptr;
+    fastsignals::scoped_connection importViewConnection =
+        _document->signalImportViewObjects.connect(
+        [&](const auto&, Base::Reader&, const auto&) { ++importViewSignals; });
+    const auto appResult = _document->collaborationService().commitCompatibilityMutation(
+        {App::CollaborationCompatibilityScope::Structural, {}, {}},
+        [&] {
+            Base::StringIStreambuf buffer(archive);
+            std::istream input(&buffer);
+            App::MergeDocuments importer(_document);
+            const auto importedObjects = importer.importObjects(input);
+            appImported = importedObjects.size() == 1U ? importedObjects.front() : nullptr;
+            appCallbackSawNoImportViewSignal = importViewSignals == 0;
+        });
+
+    ASSERT_TRUE(appResult.committed()) << appResult.message;
+    ASSERT_NE(appImported, nullptr);
+    EXPECT_TRUE(appCallbackSawNoImportViewSignal);
+    EXPECT_EQ(importViewSignals, 1);
+    auto* appImportedView = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(appImported));
+    ASSERT_NE(appImportedView, nullptr);
+    EXPECT_FALSE(appImportedView->ShowInTree.getValue());
+
+    Base::StringIStreambuf reimportBuffer(archive);
+    std::istream reimportInput(&reimportBuffer);
+    const auto reimported = retainedImporter.importObjects(reimportInput);
+    ASSERT_EQ(reimported.size(), 1U);
+    auto* reimportedView = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(reimported.front()));
+    ASSERT_NE(reimportedView, nullptr);
+    EXPECT_FALSE(reimportedView->ShowInTree.getValue());
 }
 
 TEST_F(CollaborationCompatibilityIntegrationTest,

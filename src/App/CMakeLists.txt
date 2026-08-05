@@ -152,6 +152,7 @@ SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
     CollaborationRegistry.cpp
+    private/CollaborationStructuralMutationRecorder.cpp
     CollaborativeOperation.cpp
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
@@ -224,6 +225,7 @@ SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
     CollaborationRegistry.h
+    private/CollaborationStructuralMutationRecorder.h
     CollaborativeOperation.h
     CollaborativeOperationRegistry.h
     CollaborativeSetPropertyOperation.h

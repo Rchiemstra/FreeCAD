@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <map>
+#include <memory>
 #include <vector>
 #include <string>
 
@@ -40,6 +41,7 @@
 #include "DynamicProperty.h"
 #include "Application.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
 #include "MutationClassification.h"
@@ -102,6 +104,7 @@ void publishStructuralPropertyMutation(PropertyContainer& container)
     }
     const auto effects = classifyMutation(input);
     document->recordCollaborationAtomicPresentationEffects(effects);
+    Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
     if (document->collaborationRevisionPublicationSuppressed(&container)) {
         return;
     }
@@ -354,7 +357,12 @@ Property* DynamicProperty::addDynamicProperty(
     pcProperty->StatusBits.set((size_t)Property::PropDynamic);
 
     publishStructuralPropertyMutation(pc);
-    GetApplication().signalAppendDynamicProperty(*pcProperty);
+    if (auto* document = documentFromPropertyContainer(&pc)) {
+        document->emitCollaborationAppendDynamicProperty(*pcProperty);
+    }
+    else {
+        GetApplication().signalAppendDynamicProperty(*pcProperty);
+    }
 
     return pcProperty;
 }
@@ -410,6 +418,11 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
     if (it != index.end()) {
         if (PropertyContainer* container = it->property->getContainer()) {
             enforceStructuralPropertyMutation(*container, name);
+            if (Document* document = documentFromPropertyContainer(container)) {
+                Internal::CollaborationStructuralMutationRecorder::
+                    ensureDynamicPropertyRemovalAllowed(
+                        *document, *container, it->property);
+            }
         }
         if (it->property->testStatus(Property::LockDynamic)) {
             throw Base::RuntimeError("property is locked");
@@ -419,15 +432,70 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
         }
         Property* prop = it->property;
         PropertyContainer* container = prop->getContainer();
-        GetApplication().signalRemoveDynamicProperty(*prop);
+        Document* document = documentFromPropertyContainer(container);
+        bool notificationDeferred = document
+            && Internal::CollaborationStructuralMutationRecorder::
+                dynamicPropertyNotificationDeferralRequired(*document);
+        std::shared_ptr<std::string> retainedName;
+        std::shared_ptr<bool> retainedPropertyArmed;
+        std::shared_ptr<Property> retainedProperty;
+        const char* indexedName = prop->myName;
+        if (notificationDeferred) {
+            retainedName = std::make_shared<std::string>(prop->getName());
+            retainedPropertyArmed = std::make_shared<bool>(false);
+            retainedProperty = std::shared_ptr<Property>(
+                prop,
+                [retainedPropertyArmed](Property* removed) {
+                    if (*retainedPropertyArmed) {
+                        removed->myName = nullptr;
+                        // Deferred ownership outlives every removal observer,
+                        // so PropertyCleaner recursion protection is no longer
+                        // needed. Direct destruction is allocation-free and
+                        // keeps post-commit barrier finalization noexcept.
+                        removed->setContainer(nullptr);
+                        delete removed;
+                    }
+                });
+            prop->myName = retainedName->c_str();
+            try {
+                const bool deferred = Internal::CollaborationStructuralMutationRecorder::
+                    emitRemoveDynamicProperty(
+                        *document,
+                        *container,
+                        *prop,
+                        retainedProperty,
+                        retainedName);
+                if (!deferred) {
+                    notificationDeferred = false;
+                    prop->myName = indexedName;
+                    retainedProperty.reset();
+                    retainedName.reset();
+                }
+                else {
+                    prop->myName = retainedName->c_str();
+                    *retainedPropertyArmed = true;
+                }
+            }
+            catch (...) {
+                prop->myName = indexedName;
+                throw;
+            }
+        }
+        else {
+            GetApplication().signalRemoveDynamicProperty(*prop);
+        }
 
         // Handle possible recursive calls of removeDynamicProperty
         bool removed = false;
         if (prop->myName) {
-            Property::destroy(prop);
+            if (!notificationDeferred) {
+                Property::destroy(prop);
+            }
             index.erase(it);
-            // memory of myName has been freed
-            prop->myName = nullptr;
+            if (!notificationDeferred) {
+                // memory of myName has been freed
+                prop->myName = nullptr;
+            }
             removed = true;
         }
         if (removed && container) {
@@ -531,6 +599,10 @@ bool DynamicProperty::changeDynamicProperty(const Property* prop,
     }
     if (PropertyContainer* container = it->property->getContainer()) {
         enforceStructuralPropertyMutation(*container, prop ? prop->getName() : nullptr);
+        if (Document* document = documentFromPropertyContainer(container)) {
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *container);
+        }
     }
     if (group) {
         it->group = group;
@@ -556,6 +628,10 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
 
     if (PropertyContainer* container = prop->getContainer()) {
         enforceStructuralPropertyMutation(*container, newName);
+        if (Document* document = documentFromPropertyContainer(container)) {
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *container);
+        }
     }
 
     if (propIt->property->testStatus(Property::LockDynamic)) {
@@ -589,7 +665,13 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
     });
 
     publishStructuralPropertyMutation(*container);
-    GetApplication().signalRenameDynamicProperty(*prop, oldName.c_str());
+    if (Document* document = documentFromPropertyContainer(container)) {
+        Internal::CollaborationStructuralMutationRecorder::emitRenameDynamicProperty(
+            *document, *container, *prop, std::move(oldName));
+    }
+    else {
+        GetApplication().signalRenameDynamicProperty(*prop, oldName.c_str());
+    }
 
     return true;
 }

@@ -707,9 +707,15 @@ Cell* PropertySheet::nonNullCellAt(CellAddress address)
 
 void PropertySheet::setContent(CellAddress address, const char* value)
 {
+    // Capture the transaction snapshot before nonNullCellAt() can allocate a
+    // new, still-empty Cell. Otherwise rollback records that allocation as
+    // pre-existing and cannot restore exact cell membership after a failed
+    // collaboration callback.
+    PropertySheet::AtomicPropertyChange signaller(*this);
     Cell* cell = nonNullCellAt(address);
     assert(cell);
     cell->setContent(value);
+    signaller.tryInvoke();
 }
 
 void PropertySheet::setAlignment(CellAddress address, int _alignment)
