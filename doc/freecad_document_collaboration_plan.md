@@ -1,10 +1,10 @@
 # FreeCAD Document Collaboration Architecture and Implementation Plan
 
-> **Living status:** native collaboration Phases 1–6 and former Phase 7 (MCP Phase 18 cutover) complete; coordinator integrated re-review pending.
+> **Living status:** native collaboration Phases 1–6, MCP Phase 18 cutover, and MCP Phase 19 typed tool registration are complete; coordinator integrated re-review pending.
 >
-> **Next action:** begin MCP Phase 19 (`refactor(mcp): pass a typed tool registration context`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
+> **Next action:** begin MCP Phase 20 (`refactor(mcp): extract the tool manifest module`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
 >
-> **Last updated:** 2026-08-05.
+> **Last updated:** 2026-08-06.
 >
 > **Update rule:** the integrator updates §11.3 and §11.4 in the same delivery commit that completes each phase. A phase is not complete while its progress entry, reviews, or test evidence is missing.
 
@@ -366,7 +366,10 @@ Allowed phase states are `Not started`, `Unblocked`, `In progress`, `Blocked`, `
 **Current snapshot:** Native collaboration Phases 1–6 remain complete. Former Phase 7 /
 MCP Phase 18 cutover is **complete** at nested revision
 `246d4991e6e8cc45cb0d6eecba5f1c16e2e864a4` (gitlink bumped in the parent Phase 18
-delivery). Live MCP and native mutation-authority surfaces are removed; only frozen
+delivery). MCP Phase 19 typed tool registration is **complete** at nested revision
+`ee9d1da81d0473c79a1800fa6f05f49769c88ec2` (gitlink `75d2f8a314`); §5.7
+integration gate includes all four Compose services plus branch-built cross-track
+preflight/core/e2e. Live MCP and native mutation-authority surfaces are removed; only frozen
 decoder/deprecation shims remain. Pre-existing untracked `tests/lib/` remains excluded.
 
 **Amendment delivered, 2026-08-05 — structural compatibility boundary.** MCP Phase 15
