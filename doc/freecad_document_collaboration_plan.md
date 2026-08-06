@@ -367,7 +367,7 @@ Allowed phase states are `Not started`, `Unblocked`, `In progress`, `Blocked`, `
 MCP Phase 18 cutover is **complete** at nested revision
 `246d4991e6e8cc45cb0d6eecba5f1c16e2e864a4` (gitlink bumped in the parent Phase 18
 delivery). MCP Phase 19 typed tool registration is **complete** at nested delivery
-revision `ee9d1da81d0473c79a1800fa6f05f49769c88ec2` (parent gitlink records cross-track
+revision `ee9d1da81d0473c79a1800fa6f05f49769c88ec2` (parent gitlink `e085975a`; cross-track
 evidence follow-up at nested `7d77ed91`); §5.7 integration gate includes all four Compose services
 plus branch-built cross-track preflight/core/e2e. Live MCP and native mutation-authority
 surfaces are removed; only frozen
