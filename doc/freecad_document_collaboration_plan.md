@@ -1,10 +1,10 @@
 # FreeCAD Document Collaboration Architecture and Implementation Plan
 
-> **Living status:** native collaboration Phases 1–6 complete; MCP Stage 7 (Phases 20–22: capability manifests, generated registration, capability mirror deletion) complete.
+> **Living status:** native collaboration Phases 1–6 complete; MCP architecture refactor **Stage 8 / Phase 23 complete** (final architecture policy enforced at nested `0820cd97`, parent gitlink `968b9ba96b`).
 >
-> **Next action:** begin MCP Phase 23 (`build(mcp): enforce the final architecture policy`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
+> **Next action:** coordinator final Grok review of Phase 23 integration gate, then FreeCAD chess piece.
 >
-> **Last review:** MCP Phase 22 / Stage 7 final integrated clearance **46d578b3 CLEAR**.
+> **Last review:** MCP Phase 23 package tighten re-review **94bd5f51 CLEAR**; Phase 22 integrated clearance **46d578b3 CLEAR**.
 >
 > **Last updated:** 2026-08-07.
 >
