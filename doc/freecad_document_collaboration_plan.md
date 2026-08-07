@@ -1,10 +1,10 @@
 # FreeCAD Document Collaboration Architecture and Implementation Plan
 
-> **Living status:** native collaboration Phases 1–6, MCP Phase 18 cutover, MCP Phase 19 typed tool registration, MCP Phase 20 capability manifests, and MCP Phase 21 generated registration are complete.
+> **Living status:** native collaboration Phases 1–6, MCP Phase 18 cutover, MCP Phase 19 typed tool registration, MCP Phase 20 capability manifests, MCP Phase 21 generated registration, and MCP Phase 22 capability mirror deletion are complete.
 >
-> **Next action:** begin MCP Phase 22 (`refactor(mcp): delete the hand-written capability mirrors`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
+> **Next action:** begin MCP Phase 23 (`build(mcp): enforce the final architecture policy`) in `tools/mcp/freecad-mcp/doc/freecad_mcp_architecture_refactor_plan.md`.
 >
-> **Last updated:** 2026-08-06.
+> **Last updated:** 2026-08-07.
 >
 > **Update rule:** the integrator updates §11.3 and §11.4 in the same delivery commit that completes each phase. A phase is not complete while its progress entry, reviews, or test evidence is missing.
 
