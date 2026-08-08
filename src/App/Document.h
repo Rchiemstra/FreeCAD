@@ -117,9 +117,6 @@ struct CollaborationAtomicPresentationWrite;
 struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
 struct RecoverySnapshotSaveOptions;
-AppExport bool writeRecoverySnapshotToTransientDir(
-    const Document& document,
-    const RecoverySnapshotSaveOptions& options);
 namespace Internal
 {
 class DocumentCollaborationConcurrencyTestAccess;
@@ -1375,7 +1372,7 @@ public:
     std::string makeUniqueLabel(std::string_view modelLabel);
 
     friend class Application;
-    friend bool writeRecoverySnapshotToTransientDir(
+    friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& document,
         const RecoverySnapshotSaveOptions& options);
     // because of transaction handling
@@ -1569,7 +1566,7 @@ private:
         DynamicPropertyOnNewObject
     };
 
-    class CollaborationStructuralMutationGrant final
+    class AppExport CollaborationStructuralMutationGrant final
     {
     public:
         explicit CollaborationStructuralMutationGrant(Document& document);
@@ -1584,7 +1581,7 @@ private:
         Document& _document;
     };
 
-    class CollaborationImportDeferralScope final
+    class AppExport CollaborationImportDeferralScope final
     {
     public:
         CollaborationImportDeferralScope(
@@ -1614,7 +1611,7 @@ private:
         Document& _document;
     };
 
-    class CollaborationSpreadsheetRecomputeSchemaScope final
+    class AppExport CollaborationSpreadsheetRecomputeSchemaScope final
     {
     public:
         CollaborationSpreadsheetRecomputeSchemaScope(

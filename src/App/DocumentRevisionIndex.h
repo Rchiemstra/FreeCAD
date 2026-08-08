@@ -83,8 +83,9 @@ struct AppExport DocumentRevisionObservation
 {
     DocumentRevisionObservation(DocumentRevisionKey key, DocumentRevision revision);
 
-    const DocumentRevisionKey key;
-    const DocumentRevision revision;
+    // Non-const so these remain Assignable for std::vector / DocumentCommitResult.
+    DocumentRevisionKey key;
+    DocumentRevision revision;
 };
 
 inline bool operator==(const DocumentRevisionObservation& left,
@@ -105,9 +106,10 @@ struct AppExport DocumentRevisionConflict
                              DocumentRevision expected,
                              DocumentRevision current);
 
-    const DocumentRevisionKey key;
-    const DocumentRevision expected;
-    const DocumentRevision current;
+    // Non-const so these remain Assignable for std::vector / DocumentCommitResult.
+    DocumentRevisionKey key;
+    DocumentRevision expected;
+    DocumentRevision current;
 };
 
 inline bool operator==(const DocumentRevisionConflict& left,

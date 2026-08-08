@@ -151,11 +151,11 @@ private:
     friend class Application;
     friend class Document;
     friend class Internal::DocumentCollaborationServiceTestAccess;
-    friend bool writeRecoverySnapshotToTransientDir(
+    friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& doc,
         const RecoverySnapshotSaveOptions& options);
 
-    class LifecyclePin
+    class AppExport LifecyclePin
     {
     public:
         explicit LifecyclePin(const DocumentCollaborationService& service);
