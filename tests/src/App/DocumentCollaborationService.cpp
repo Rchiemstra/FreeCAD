@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -1487,6 +1488,24 @@ TEST_F(DocumentCollaborationServiceTest, recomputeFailureRestoresPreparedMutatio
     EXPECT_EQ(result.status, DocumentCommitStatus::RecomputeFailed);
     EXPECT_EQ(static_cast<FeatureTest*>(_target)->ExceptionType.getValue(), 0);
     EXPECT_EQ(_document->collaborationRevisions().current(modelKey), before);
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeFailureMessageNamesInvalidObject)
+{
+    auto prepared = prepare("recompute-failure", "unused", "recompute-failure");
+    ASSERT_EQ(static_cast<FeatureTest*>(_target)->ExceptionType.getValue(), 0);
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::RecomputeFailed);
+    // Enriched message from DocumentCommitCoordinator::commitOnDocumentThread
+    // must name the invalid object and carry its failure-time description
+    // (FeatureTest ExceptionType=1 throws std::runtime_error("Test Exception")).
+    EXPECT_NE(result.message.find("Target"), std::string::npos) << result.message;
+    EXPECT_NE(result.message.find("Test Exception"), std::string::npos) << result.message;
+    EXPECT_EQ(result.message.rfind("document recompute reported an object error", 0), 0)
+        << result.message;
 }
 
 TEST_F(DocumentCollaborationServiceTest, pendingRecomputeOutsidePreparedClosureReturnsBusy)
