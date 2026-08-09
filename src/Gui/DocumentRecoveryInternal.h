@@ -3,7 +3,11 @@
 #pragma once
 
 #include <FCGlobal.h>
+#include <App/RecoverySnapshot.h>
 #include <QString>
+
+#include <optional>
+#include <string_view>
 
 namespace Gui::Dialog::DocumentRecoveryInternal
 {
@@ -24,5 +28,13 @@ ProjectValidationResult GuiExport checkXmlFiles(const QString& fcstdFile);
 
 /// Recovery pre-check: checkZipData then checkXmlFiles; returns the first non-Ok result.
 ProjectValidationResult GuiExport validateProjectArchive(const QString& fcstdFile);
+
+/**
+ * Parse optional source collaboration provenance as copied diagnostic values.
+ * Legacy or malformed optional provenance is ignored and is never adopted as
+ * a live document identity.
+ */
+GuiExport std::optional<App::RecoverySnapshotMetadata>
+parseRecoveryCollaborationProvenance(std::string_view metadataXml) noexcept;
 
 }  // namespace Gui::Dialog::DocumentRecoveryInternal

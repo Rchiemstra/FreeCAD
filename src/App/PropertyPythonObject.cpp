@@ -288,10 +288,22 @@ std::string PropertyPythonObject::toString() const
 void PropertyPythonObject::fromString(const std::string& repr)
 {
     Base::PyGILStateLocker lock;
+    Py::Object parsed;
+    if (!parseString(repr, parsed)) {
+        return;
+    }
+
+    aboutToSetValue();
+    applyParsedString(parsed);
+    hasSetValue();
+}
+
+bool PropertyPythonObject::parseString(const std::string& repr, Py::Object& parsed) const
+{
+    if (repr.empty()) {
+        return false;
+    }
     try {
-        if (repr.empty()) {
-            return;
-        }
         Py::Module pickle(PyImport_ImportModule("json"), true);
         if (pickle.isNull()) {
             throw Py::Exception();
@@ -299,11 +311,22 @@ void PropertyPythonObject::fromString(const std::string& repr)
         Py::Callable method(pickle.getAttr(std::string("loads")));
         Py::Tuple args(1);
         args.setItem(0, Py::String(repr));
-        Py::Object res = method.apply(args);
+        parsed = method.apply(args);
+    }
+    catch (Py::Exception&) {
+        Base::PyException e;  // extract the Python error text
+        e.reportException();
+        return false;
+    }
+    return true;
+}
 
+void PropertyPythonObject::applyParsedString(const Py::Object& parsed)
+{
+    try {
         if (this->object.hasAttr("loads")) {
             Py::Tuple args(1);
-            args.setItem(0, res);
+            args.setItem(0, parsed);
             Py::Callable state(this->object.getAttr("loads"));
             state.apply(args);
         }
@@ -314,17 +337,17 @@ void PropertyPythonObject::fromString(const std::string& repr)
 #endif
         ) {
             Py::Tuple args(1);
-            args.setItem(0, res);
+            args.setItem(0, parsed);
             Py::Callable state(this->object.getAttr("__setstate__"));
             state.apply(args);
         }
         else if (this->object.hasAttr("__dict__")) {
-            if (!res.isNone()) {
-                this->object.setAttr("__dict__", res);
+            if (!parsed.isNone()) {
+                this->object.setAttr("__dict__", parsed);
             }
         }
         else {
-            this->object = res;
+            this->object = parsed;
         }
     }
     catch (Py::Exception&) {
@@ -470,6 +493,8 @@ void PropertyPythonObject::Restore(Base::XMLReader& reader)
     else {
         bool load_json = false;
         bool load_failed = false;
+        bool replace_object = false;
+        Py::Object restored_object;
         std::string buffer = reader.getAttribute<const char*>("value");
         if (reader.hasAttribute("encoded") && strcmp(reader.getAttribute<const char*>("encoded"), "yes") == 0) {
             buffer = Base::base64_decode(buffer);
@@ -502,7 +527,8 @@ void PropertyPythonObject::Restore(Base::XMLReader& reader)
                     throw Py::AttributeError(s.str());
                 }
                 if (PyType_Check(cls)) {
-                    this->object = PyType_GenericAlloc((PyTypeObject*)cls, 0);
+                    restored_object = PyType_GenericAlloc((PyTypeObject*)cls, 0);
+                    replace_object = true;
                 }
                 else {
                     throw Py::TypeError("neither class nor type object");
@@ -516,18 +542,33 @@ void PropertyPythonObject::Restore(Base::XMLReader& reader)
         catch (Py::Exception&) {
             Base::PyException e;  // extract the Python error text
             e.reportException();
-            this->object = Py::None();
+            restored_object = Py::None();
+            replace_object = true;
             load_failed = true;
         }
 
-        aboutToSetValue();
         if (load_json) {
-            this->fromString(buffer);
+            Py::Object parsed;
+            if (!parseString(buffer, parsed)) {
+                return;
+            }
+            aboutToSetValue();
+            if (replace_object) {
+                this->object = restored_object;
+            }
+            applyParsedString(parsed);
         }
         else if (!load_failed) {
+            aboutToSetValue();
             Base::Console().warning(
                 "PropertyPythonObject::Restore: unsupported serialisation: %s\n",
                 buffer.c_str());
+        }
+        else {
+            aboutToSetValue();
+            if (replace_object) {
+                this->object = restored_object;
+            }
         }
         restoreObject(reader);
         hasSetValue();
@@ -544,13 +585,18 @@ void PropertyPythonObject::SaveDocFile(Base::Writer& writer) const
 
 void PropertyPythonObject::RestoreDocFile(Base::Reader& reader)
 {
-    aboutToSetValue();
     std::string buffer;
     char ch {};
     while (reader.get(ch)) {
         buffer.push_back(ch);
     }
-    this->fromString(buffer);
+    Base::PyGILStateLocker lock;
+    Py::Object parsed;
+    if (!parseString(buffer, parsed)) {
+        return;
+    }
+    aboutToSetValue();
+    applyParsedString(parsed);
     hasSetValue();
 }
 

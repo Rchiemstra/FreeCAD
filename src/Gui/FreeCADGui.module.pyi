@@ -527,6 +527,34 @@ def getDocument(doc: str | App.Document, /) -> Document:
     """Return one GUI document by name or application document."""
     ...
 
+def storePersonalViewContext(
+    document_name: str, actor_id: str, context: dict[str, object], /
+) -> None:
+    """Store a transient actor-scoped personal view context."""
+    ...
+
+def getPersonalViewContext(
+    document_name: str, actor_id: str, /
+) -> dict[str, object] | None:
+    """Return a copied actor context, or None when absent."""
+    ...
+
+def removePersonalViewContext(document_name: str, actor_id: str, /) -> bool:
+    """Remove one actor context without modifying the document."""
+    ...
+
+def renderPersonalViewContext(
+    document_name: str,
+    actor_id: str,
+    width: int = -1,
+    height: int = -1,
+    background: str = "Current",
+    samples: int = -1,
+    /,
+) -> bytes | None:
+    """Render one stored actor context to PNG bytes through the native renderer."""
+    ...
+
 def reload(name: str, /) -> App.Document | None:
     """Reload one document by name through the GUI layer."""
     ...

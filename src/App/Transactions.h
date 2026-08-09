@@ -85,6 +85,15 @@ public:
      */
     void apply(Document& Doc, bool forward);
 
+    /**
+     * Apply this transaction and propagate every restore failure.
+     *
+     * Ordinary undo/redo retains the historical logging behavior of apply().
+     * Collaboration rollback uses this checked path because a silently partial
+     * restore cannot satisfy atomic commit semantics.
+     */
+    void applyChecked(Document& Doc, bool forward);
+
     /// The UTF-8 name of the transaction
     std::string Name;
 
@@ -153,6 +162,8 @@ public:
     void addObjectChange(const TransactionalObject* Obj, const Property* Prop);
 
 private:
+    void applyImpl(Document& doc, bool forward, bool propagateErrors);
+
     void changeProperty(TransactionalObject* Obj,
                         std::function<void(TransactionObject* to)> changeFunc);
 
@@ -209,6 +220,9 @@ public:
      */
     virtual void applyChn(Document& doc, TransactionalObject* obj, bool forward);
 
+    /** Checked counterpart used only by Transaction::applyChecked(). */
+    void applyChnChecked(Document& doc, TransactionalObject* obj, bool forward);
+
     /**
      * @brief Set the property of the object that is affected by the transaction.
      *
@@ -261,6 +275,9 @@ protected:
 
     /// The name of the object in the document.
     std::string _NameInDocument;
+
+private:
+    void applyChnImpl(TransactionalObject* obj, bool propagateErrors);
 };
 
 /**

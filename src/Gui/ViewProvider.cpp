@@ -59,6 +59,7 @@
 #include "View3DInventorViewer.h"
 #include "ViewParams.h"
 #include "ViewProviderExtension.h"
+#include "ViewProviderDocumentObject.h"
 #include "ViewProviderLink.h"
 #include "ViewProviderPy.h"
 
@@ -93,6 +94,37 @@ void coinRemoveAllChildren(SoGroup* group)
 }
 
 }  // namespace Gui
+
+namespace
+{
+
+Gui::Document* presentationDocumentFor(Gui::ViewProvider& provider) noexcept
+{
+    try {
+        auto* objectProvider =
+            dynamic_cast<Gui::ViewProviderDocumentObject*>(&provider);
+        auto* object = objectProvider ? objectProvider->getObject() : nullptr;
+        auto* appDocument = object ? object->getDocument() : nullptr;
+        return appDocument && Gui::Application::Instance
+            ? Gui::Application::Instance->getDocument(appDocument)
+            : nullptr;
+    }
+    catch (...) {
+        return nullptr;
+    }
+}
+
+void publishSchemaMutation(Gui::ViewProvider& provider,
+                           std::string_view propertyName,
+                           std::string_view secondPropertyName = {}) noexcept
+{
+    if (auto* guiDocument = presentationDocumentFor(provider)) {
+        guiDocument->publishSharedPresentationSchemaMutation(
+            provider, propertyName, secondPropertyName);
+    }
+}
+
+}  // namespace
 
 //**************************************************************************
 //**************************************************************************
@@ -595,17 +627,82 @@ int ViewProvider::getActualMode() const
     return _iActualMode;
 }
 
+App::Property* ViewProvider::addDynamicProperty(std::string_view type,
+                                                const char* name,
+                                                const char* group,
+                                                const char* doc,
+                                                short attr,
+                                                bool ro,
+                                                bool hidden)
+{
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
+    auto* property = App::TransactionalObject::addDynamicProperty(
+        type, name, group, doc, attr, ro, hidden);
+    if (property) {
+        publishSchemaMutation(*this, property->getName());
+    }
+    return property;
+}
+
+bool ViewProvider::changeDynamicProperty(const App::Property* property,
+                                         const char* group,
+                                         const char* doc)
+{
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
+    const bool changed =
+        App::TransactionalObject::changeDynamicProperty(property, group, doc);
+    if (changed) {
+        publishSchemaMutation(*this, property->getName());
+    }
+    return changed;
+}
+
+bool ViewProvider::renameDynamicProperty(App::Property* property, const char* name)
+{
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
+    const std::string oldName = property && property->getName()
+        ? property->getName()
+        : std::string {};
+    const bool renamed =
+        App::TransactionalObject::renameDynamicProperty(property, name);
+    if (renamed) {
+        publishSchemaMutation(*this, oldName, property->getName());
+    }
+    return renamed;
+}
+
+bool ViewProvider::removeDynamicProperty(const char* name)
+{
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
+    const auto* property = getDynamicPropertyByName(name);
+    const std::string oldName = property && property->getName()
+        ? property->getName()
+        : std::string {};
+    const bool removed = App::TransactionalObject::removeDynamicProperty(name);
+    if (removed) {
+        publishSchemaMutation(*this, oldName);
+    }
+    return removed;
+}
+
 void ViewProvider::onBeforeChange(const App::Property* prop)
 {
-    Application::Instance->signalBeforeChangeObject(*this, *prop);
+    Application::Instance->notifyBeforeChangeObject(*this, *prop);
 
     App::TransactionalObject::onBeforeChange(prop);
 }
 
 void ViewProvider::onChanged(const App::Property* prop)
 {
-    Application::Instance->signalChangedObject(*this, *prop);
-    Application::Instance->updateActions();
+    Application::Instance->notifyChangedObject(*this, *prop);
 
     App::TransactionalObject::onChanged(prop);
 }

@@ -23,6 +23,7 @@
 
 #include <boost/core/ignore_unused.hpp>
 #include <cmath>
+#include <set>
 #include <vector>
 #include <unordered_map>
 
@@ -35,6 +36,7 @@
 #include <App/FeaturePythonPyImp.h>
 #include <App/Link.h>
 #include <App/PropertyPythonObject.h>
+#include <App/PropertyUnits.h>
 #include <Base/Console.h>
 #include <Base/Placement.h>
 #include <Base/Rotation.h>
@@ -109,6 +111,39 @@ AssemblyObject::AssemblyObject()
     , lastSolverStatus(0)
 {
     mbdAssembly->externalSystem->freecadAssemblyObject = this;
+
+    ADD_PROPERTY_TYPE(
+        InterferenceClearance,
+        (0.0),
+        "Interference",
+        (App::PropertyType)(App::Prop_NoRecompute),
+        "Minimum clearance for interference checks (0 still reports contact/penetration)"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceClearanceSheet,
+        (nullptr),
+        "Interference",
+        (App::PropertyType)(App::Prop_NoRecompute),
+        "Optional spreadsheet of face-specific design clearances"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceExcludedSources,
+        (nullptr),
+        "Interference",
+        (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Alternating source-definition endpoints for excluded unordered pairs"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceExclusionReasons,
+        (std::vector<std::string> {}),
+        "Interference",
+        (App::PropertyType)(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Stable ReviewNote identities aligned one-to-one with interference exclusions"
+    );
+    // Exclusions are review records rather than dependency links. Opt into partial-link
+    // persistence so deleted or temporarily closed endpoints keep enough identity to be
+    // displayed and explicitly removed without changing ordinary XLink behavior.
+    InterferenceExcludedSources.setAllowPartial(true);
 
     lastDoF = numberOfComponents() * 6;
     signalSolverUpdate();
@@ -2205,4 +2240,122 @@ int AssemblyObject::numberOfComponents() const
 bool AssemblyObject::isEmpty() const
 {
     return numberOfComponents() == 0;
+}
+
+namespace
+{
+std::string sourceIdentity(const App::DocumentObject* obj)
+{
+    if (!obj || !obj->isAttachedToDocument()) {
+        return {};
+    }
+    return std::string(obj->getDocument()->getName()) + "#" + obj->getNameInDocument();
+}
+
+std::pair<App::DocumentObject*, App::DocumentObject*> canonicalPair(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    if (!first || !second) {
+        return {first, second};
+    }
+    if (sourceIdentity(first) <= sourceIdentity(second)) {
+        return {first, second};
+    }
+    return {second, first};
+}
+}  // namespace
+
+double AssemblyObject::getInterferenceClearance() const
+{
+    return Assembly::getInterferenceClearance(this);
+}
+
+void AssemblyObject::setInterferenceClearance(double clearanceMm)
+{
+    Assembly::setInterferenceClearance(this, clearanceMm);
+}
+
+App::DocumentObject* AssemblyObject::getInterferenceClearanceSheet() const
+{
+    return Assembly::getInterferenceClearanceSheet(this);
+}
+
+void AssemblyObject::setInterferenceClearanceSheet(App::DocumentObject* sheetOrNull)
+{
+    Assembly::setInterferenceClearanceSheet(this, sheetOrNull);
+}
+
+std::vector<InterferenceExclusionRule> AssemblyObject::getInterferenceExclusionRules() const
+{
+    return Assembly::getInterferenceExclusionRules(this);
+}
+
+bool AssemblyObject::hasInterferenceExclusion(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+) const
+{
+    return Assembly::hasInterferenceExclusion(this, first, second);
+}
+
+void AssemblyObject::setInterferenceExclusions(
+    const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
+)
+{
+    // Full replace via DocumentObject* cannot express detached XLink identity.
+    // Prefer addInterferenceExclusion / removeInterferenceExclusion(At) which preserve
+    // existing PropertyXLinkSub entries.
+    std::vector<App::DocumentObject*> flat;
+    flat.reserve(pairs.size() * 2);
+    std::set<std::pair<std::string, std::string>> seen;
+    for (const auto& pair : pairs) {
+        // Preserve fully unresolved placeholder pairs for review.
+        if (!pair.first && !pair.second) {
+            flat.push_back(nullptr);
+            flat.push_back(nullptr);
+            continue;
+        }
+        if (pair.first && pair.second && pair.first->isAttachedToDocument()
+            && pair.second->isAttachedToDocument()) {
+            auto canon = canonicalPair(pair.first, pair.second);
+            const auto key =
+                std::make_pair(sourceIdentity(canon.first), sourceIdentity(canon.second));
+            if (!seen.insert(key).second) {
+                continue;
+            }
+            flat.push_back(canon.first);
+            flat.push_back(canon.second);
+        }
+        else {
+            flat.push_back(pair.first);
+            flat.push_back(pair.second);
+        }
+    }
+    if (flat.size() % 2 != 0) {
+        throw Base::ValueError("Exclusion endpoints must form even pairs");
+    }
+    InterferenceExcludedSources.setValues(flat);
+    // A full source-pair replacement cannot infer review reasons. Clear the
+    // aligned metadata rather than accidentally assigning old reasons by index.
+    InterferenceExclusionReasons.setValues(std::vector<std::string> {});
+}
+
+void AssemblyObject::addInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second)
+{
+    Assembly::addInterferenceExclusion(this, first, second);
+}
+
+void AssemblyObject::removeInterferenceExclusionAt(std::size_t ruleIndex)
+{
+    Assembly::removeInterferenceExclusionAt(this, ruleIndex);
+}
+
+void AssemblyObject::removeInterferenceExclusion(
+    App::DocumentObject* first,
+    App::DocumentObject* second
+)
+{
+    Assembly::removeInterferenceExclusion(this, first, second);
 }

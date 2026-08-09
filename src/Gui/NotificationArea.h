@@ -72,11 +72,16 @@ public:
     bool areDeveloperWarningsActive() const;
     bool areDeveloperErrorsActive() const;
 
+    /// Shows, raises and focuses the dockable Notifications panel
+    void showNotificationsPanel();
+
 private:
     void showInNotificationArea();
     bool confirmationRequired(Base::LogStyle level);
     void showConfirmationDialog(const QString& notifiername, const QString& message);
     void slotRestoreFinished(const App::Document&);
+    void cleanupNotificationsPanel();
+    void updateUnreadIndicator();
 
     void mousePressEvent(QMouseEvent* e) override;
 

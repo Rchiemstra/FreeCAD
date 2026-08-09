@@ -30,6 +30,8 @@
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
 
+#include <exception>
+
 #include <FCConfig.h>
 
 #include <App/Application.h>
@@ -60,6 +62,7 @@
 #include "CirclePy.h"
 #include "ConePy.h"
 #include "ConicPy.h"
+#include "CollaborativeBooleanOperation.h"
 #include "CustomFeature.h"
 #include "CylinderPy.h"
 #include "Datums.h"
@@ -240,6 +243,14 @@ PyMOD_INIT_FUNC(Part)
 #endif
 
     PyObject* partModule = Part::initModule();
+    try {
+        Part::ensureCollaborativeBooleanOperationRegistered();
+    }
+    catch (const std::exception& exception) {
+        Py_XDECREF(partModule);
+        PyErr_SetString(PyExc_ImportError, exception.what());
+        PyMOD_Return(nullptr);
+    }
     Base::Console().log("Loading Part module... done\n");
 
     Py::Object module(partModule);

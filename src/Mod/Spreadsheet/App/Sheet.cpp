@@ -1070,6 +1070,8 @@ void Sheet::updateBindings()
 
 DocumentObjectExecReturn* Sheet::execute()
 {
+    App::Document::CollaborationSpreadsheetRecomputeSchemaScope collaborationSchemaScope(
+        getDocument(), *this);
     updateBindings();
 
     // Get dirty cells that we have to recompute

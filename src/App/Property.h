@@ -382,10 +382,7 @@ public:
     }
 
     /// Reset this property as being touched.
-    inline void purgeTouched()
-    {
-        StatusBits.reset(Touched);
-    }
+    void purgeTouched();
 
     /**
      * @brief Get the status of this property.
@@ -540,6 +537,7 @@ public:
     friend class PropertyContainer;
     friend struct PropertyData;
     friend class DynamicProperty;
+    friend class DocumentObject;
 
 protected:
     /** @brief %Status bits of the property.
@@ -679,10 +677,17 @@ public:
          */
         explicit AtomicPropertyChange(P& prop, bool markChange = true)
             : mProp(prop)
+            , mWasChanged(prop.hasChanged)
         {
             mProp.signalCounter++;
-            if (markChange) {
-                aboutToChange();
+            try {
+                if (markChange) {
+                    aboutToChange();
+                }
+            }
+            catch (...) {
+                --mProp.signalCounter;
+                throw;
             }
         }
 
@@ -696,7 +701,13 @@ public:
         {
             if (!mProp.hasChanged) {
                 mProp.hasChanged = true;
-                mProp.aboutToSetValue();
+                try {
+                    mProp.aboutToSetValue();
+                }
+                catch (...) {
+                    mProp.hasChanged = false;
+                    throw;
+                }
             }
         }
 
@@ -741,7 +752,14 @@ public:
         void tryInvoke()
         {
             if (mProp.signalCounter == 1 && mProp.hasChanged) {
-                mProp.hasSetValue();
+                try {
+                    mProp.hasSetValue();
+                }
+                catch (...) {
+                    --mProp.signalCounter;
+                    mProp.hasChanged = mWasChanged;
+                    throw;
+                }
                 if (mProp.signalCounter > 0) {
                     --mProp.signalCounter;
                 }
@@ -749,8 +767,15 @@ public:
             }
         }
 
+        /** Restore the pre-guard notification state after rolling back this guard's mutation. */
+        void cancel() noexcept
+        {
+            mProp.hasChanged = mWasChanged;
+        }
+
     private:
         P& mProp; /**< Referenced to property we work on */
+        bool mWasChanged;
     };
 
 protected:
@@ -935,7 +960,15 @@ public:
      */
     virtual void setSize(int newSize, const_reference def)
     {
+        if (newSize < 0) {
+            throw Base::ValueError("negative property list size");
+        }
+        if (newSize == getSize()) {
+            return;
+        }
+        atomic_change guard(*this);
         _lValueList.resize(newSize, def);
+        guard.tryInvoke();
     }
 
     /**
@@ -949,7 +982,15 @@ public:
      */
     void setSize(int newSize) override
     {
+        if (newSize < 0) {
+            throw Base::ValueError("negative property list size");
+        }
+        if (newSize == getSize()) {
+            return;
+        }
+        atomic_change guard(*this);
         _lValueList.resize(newSize);
+        guard.tryInvoke();
     }
 
     /**

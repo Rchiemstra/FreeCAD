@@ -921,6 +921,43 @@ def _same_document(assembly, obj):
     )
 
 
+def review_note_source_identity(obj, sub_name=""):
+    """Return the stable ``document#object`` identity behind an anchor.
+
+    For a nested occurrence path, resolve the path to its shape owner before
+    following links. The picked Face/Edge/Vertex token is deliberately metadata
+    only and is never included in the identity.
+    """
+    if obj is None:
+        return ""
+
+    source = obj
+    parts = [part for part in str(sub_name or "").split(".") if part]
+    if parts and _SHAPE_ELEMENT_NAME_RE.match(parts[-1]):
+        parts.pop()
+    if parts:
+        try:
+            resolved = obj.getSubObject(".".join(parts) + ".")
+            if resolved is not None:
+                source = resolved
+        except Exception:
+            pass
+
+    try:
+        if hasattr(source, "getLinkedObject"):
+            linked = source.getLinkedObject(True)
+            if linked is not None:
+                source = linked
+    except Exception:
+        pass
+
+    doc = getattr(source, "Document", None)
+    name = getattr(source, "Name", "")
+    if doc is None or not name:
+        return ""
+    return "{}#{}".format(doc.Name, name)
+
+
 def _target_in_assembly(assembly, obj):
     if assembly is None or obj is None:
         return False
@@ -1102,6 +1139,8 @@ def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=N
             "target_obj": joint,
             "sub_list": ["Main"] if element == "Main" else [],
             "local_anchor": App.Vector(0, 0, 0),
+            "anchor_source_identity": "",
+            "anchor_subelement": element,
             "joint_side": side,
             "jcs_placement": jcs_plc,
         }
@@ -1166,6 +1205,8 @@ def normalize_review_note_target(assembly, root_obj, sub_name="", picked_point=N
         "target_obj": comp,
         "sub_list": sub_list,
         "local_anchor": local_anchor,
+        "anchor_source_identity": review_note_source_identity(comp, rel_sub),
+        "anchor_subelement": rel_sub,
         "joint_side": JOINT_SIDE_NONE,
         "jcs_placement": None,
     }
@@ -1485,6 +1526,16 @@ class TaskAssemblyReviewNote:
                 "target_obj": target_data["target_obj"],
                 "sub_list": list(target_data.get("sub_list") or []),
                 "local_anchor": App.Vector(target_data["local_anchor"]),
+                "anchor_source_identity": target_data.get(
+                    "anchor_source_identity", ""
+                ),
+                "anchor_subelement": target_data.get("anchor_subelement", ""),
+                "interference_source_a": target_data.get(
+                    "interference_source_a", ""
+                ),
+                "interference_source_b": target_data.get(
+                    "interference_source_b", ""
+                ),
                 "joint_side": target_data.get("joint_side", JOINT_SIDE_NONE),
             }
             existing = []
@@ -1790,9 +1841,27 @@ def create_review_note(assembly, target_data, text_lines, text_offset=None, open
         group = UtilsAssembly.getReviewNoteGroup(assembly)
         note = group.newObject("Assembly::ReviewNote", "ReviewNote")
         note.LabelText = list(text_lines)
-        note.Target = (target_data["target_obj"], list(target_data["sub_list"]))
+        joint_side = target_data.get("joint_side", JOINT_SIDE_NONE)
+        # All picked subelements are intentionally provenance-only. Keeping
+        # FaceN and the synthetic joint "Main" token out of PropertyXLinkSub
+        # prevents strict-load references from going stale; LocalAnchor and
+        # JointSide carry the actual attachment state.
+        note.Target = (target_data["target_obj"], [])
         note.LocalAnchor = App.Vector(target_data["local_anchor"])
-        note.JointSide = target_data["joint_side"]
+        note.AnchorSourceIdentity = target_data.get(
+            "anchor_source_identity",
+            review_note_source_identity(
+                target_data["target_obj"],
+                target_data.get("anchor_subelement")
+                or ".".join(target_data.get("sub_list") or []),
+            ),
+        )
+        note.AnchorSubelement = target_data.get(
+            "anchor_subelement", ".".join(target_data.get("sub_list") or [])
+        )
+        note.InterferenceSourceA = target_data.get("interference_source_a", "")
+        note.InterferenceSourceB = target_data.get("interference_source_b", "")
+        note.JointSide = joint_side
         note.Resolved = False
 
         # Ensure attachment tracking is live and BasePosition is current.
@@ -1809,6 +1878,55 @@ def create_review_note(assembly, target_data, text_lines, text_offset=None, open
         if open_transaction:
             doc.abortTransaction()
         raise
+
+
+def create_interference_review_note(
+    document_name,
+    owner_name,
+    anchor_path,
+    picked_point,
+    anchor_source_identity,
+    source_a_identity,
+    source_b_identity,
+    text_lines,
+):
+    """Create an undoable ReviewNote from one interference-result row.
+
+    This is the narrow bridge used by the C++ task panel. The live scan passes
+    occurrence-local provenance and a worker-computed world anchor, while this
+    function reuses the normal ReviewNote normalization and creation lifecycle.
+    No recompute or exclusion is performed here.
+    """
+    doc = App.getDocument(str(document_name)) if document_name else None
+    owner = doc.getObject(str(owner_name)) if doc is not None else None
+    if owner is None or not owner.isDerivedFrom("App::Part"):
+        raise ValueError("Interference ReviewNote owner is unavailable")
+
+    point = App.Vector(picked_point)
+    data = normalize_review_note_target(owner, owner, str(anchor_path or ""), point)
+    if data is None:
+        path = str(anchor_path or "")
+        first_name = next((part for part in path.split(".") if part), "")
+        candidate = doc.getObject(first_name) if first_name else None
+        detail = (
+            "{} ({}, in owner={})".format(
+                first_name,
+                getattr(candidate, "TypeId", "missing"),
+                bool(candidate and owner.hasObject(candidate, True)),
+            )
+            if first_name
+            else "empty path"
+        )
+        raise ValueError(
+            "Interference result anchor could not be resolved: {!r}; {}".format(
+                path, detail
+            )
+        )
+
+    data["anchor_source_identity"] = str(anchor_source_identity or "")
+    data["interference_source_a"] = str(source_a_identity or "")
+    data["interference_source_b"] = str(source_b_identity or "")
+    return create_review_note(owner, data, list(text_lines or []), open_transaction=True)
 
 
 def edit_review_note(note, new_lines=None):

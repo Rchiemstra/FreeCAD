@@ -23,12 +23,12 @@
 
 #pragma once
 
+#include <FCGlobal.h>
 #include <QDialog>
 #include <QFileInfo>
 #include <QFileInfoList>
 #include <QList>
 #include <QScopedPointer>
-
 
 namespace Gui
 {
@@ -40,7 +40,7 @@ class DocumentRecoveryPrivate;
 /*!
  @author Werner Mayer
  */
-class DocumentRecovery: public QDialog
+class GuiExport DocumentRecovery: public QDialog
 {
     Q_OBJECT
 

@@ -43,6 +43,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
+#include <unordered_map>
 
 #include <Base/Exception.h>
 
@@ -65,11 +67,23 @@ namespace App
 
 class Document;
 class DocumentObject;
+class DocumentCollaborationService;
+class PreparedEditExecutor;
+class CollaborationRegistry;
 class ApplicationDirectories;
 class ApplicationObserver;
 class Property;
 class AutoTransaction;
 class ExtensionContainer;
+struct DocumentIdentity;
+struct RecoverySnapshotSaveOptions;
+
+namespace Internal
+{
+class AsyncRecomputeTestAccess;
+class DocumentCollaborationServiceTestAccess;
+struct CollaborationServiceLifetimeGate;
+}
 
 /// Options for acquiring links.
 enum GetLinkOption {
@@ -129,10 +143,12 @@ struct AppExport RecomputeRequest
     // Stable identifiers are queued instead of raw pointers so worker-side
     // resolution cannot dereference destroyed documents or objects. The
     // internal document name is assigned once at creation time and does not
-    // change afterwards, so queued requests do not need to track
-    // signalRenameDocument.
+    // change afterwards. Instance/epoch binding prevents delayed work from
+    // resolving a replacement document that later reuses the same name.
     std::string documentName;
     std::string documentObjectName;
+    std::uint64_t documentInstanceId {0};
+    std::uint64_t documentLifecycleEpoch {0};
     bool force {false};
     int options {0};
     bool recursive {false};
@@ -198,6 +214,20 @@ public:
      * @return Returns true if the document was found and closed, false otherwise.
      */
     bool closeDocument(const char* name);
+
+    /** Return the process-local registry for live collaboration identities. */
+    const CollaborationRegistry& collaborationRegistry() const;
+
+    /**
+     * Preserve a stable native recovery point, cancel collaboration work, and
+     * advance the live document epoch without replacing its runtime instance.
+     * This owner-thread administrative operation never restores persisted
+     * recovery provenance as a live identity.
+     */
+    DocumentIdentity advanceDocumentCollaborationEpoch(
+        Document& document,
+        const RecoverySnapshotSaveOptions& recoveryOptions,
+        std::string reason = "administrative recovery");
     /**
      * @brief Acquire a unique document name from a proposed name.
      *
@@ -966,6 +996,7 @@ protected:
         ~TransactionSignaller();
     private:
         bool abort;
+        bool suppressed {false};
     };
 
 private:
@@ -981,6 +1012,9 @@ private:
             const char *label, bool isMainDoc, DocumentInitFlags initFlags, std::vector<std::string> &&objNames);
 
     void setActiveDocumentNoSignal(App::Document* pDoc);
+    void beginCollaborationTransactionSignalSuppression();
+    void endCollaborationTransactionSignalSuppression();
+    PreparedEditExecutor& preparedEditExecutor() noexcept;
 
     static Base::Reference<ParameterManager> _pcSysParamMngr;
     static Base::Reference<ParameterManager> _pcUserParamMngr;
@@ -1035,6 +1069,12 @@ private:
     mutable std::map<std::string,Document*> DocFileMap;
     std::map<std::string,Base::Reference<ParameterManager>> mpcPramManager;
     std::map<std::string,std::string> &_mConfig;
+    std::unique_ptr<CollaborationRegistry> _collaborationRegistry;
+    std::unique_ptr<PreparedEditExecutor> _preparedEditExecutor;
+    std::mutex _collaborationServiceLifetimeMutex;
+    std::unordered_map<const DocumentCollaborationService*,
+                       std::shared_ptr<Internal::CollaborationServiceLifetimeGate>>
+        _collaborationServiceLifetimeGates;
     App::Document* _pActiveDoc{nullptr};
 
     std::deque<std::string> _pendingDocs;
@@ -1050,7 +1090,11 @@ private:
     // Protects the queued/in-progress recompute state below
     std::mutex _recomputeMutex;
     std::deque<RecomputeRequest> _recomputeRequests;
-    std::set<std::string> _recomputeDocumentsInProgress;
+    std::map<std::string, std::size_t> _recomputeDocumentActivityCounts;
+    std::map<std::string, std::map<std::thread::id, std::size_t>>
+        _recomputeDocumentActivityOwners;
+    std::set<std::string> _recomputeDocumentsClosing;
+    std::set<std::string> _recomputeDocumentsSealed;
     std::condition_variable _recomputeRequestAvailable;
     std::condition_variable _recomputeStateChanged;
     // Separate from the mutex-protected queue state so shutdown can request a
@@ -1059,11 +1103,17 @@ private:
 
     // Worker thread function that processes _recomputeRequests
     void recomputeWorker();
+    RecomputeResult processRecomputeRequestSerialized(RecomputeRequest& request);
     // Helper to notify the worker thread when new requests are available
     void notifyRecomputeWorker();
     // Drop queued requests for a document and wait for any active recompute of
     // that document to finish before closing it
-    void cancelRecomputeRequestsForDocument(const std::string& documentName);
+    [[nodiscard]] bool cancelRecomputeRequestsForDocument(
+        const std::string& documentName);
+    void registerCollaborationServiceLifetime(DocumentCollaborationService& service);
+    [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
+    collaborationServiceLifetimeGate(const DocumentCollaborationService& service);
+    void unregisterCollaborationServiceLifetime(const DocumentCollaborationService* service);
 
     bool _isRestoring{false};
     bool _allowPartial{false};
@@ -1073,6 +1123,15 @@ private:
     int _objCount{-1};
 
     friend class AutoTransaction;
+    friend class Document;
+    friend class DocumentCollaborationService;
+    friend class Internal::AsyncRecomputeTestAccess;
+    friend class Internal::DocumentCollaborationServiceTestAccess;
+
+    using CloseTestHook = void (*)();
+    inline static std::atomic<CloseTestHook> _postRecomputeClosingAdmissionTestHook {nullptr};
+    inline static std::atomic<CloseTestHook> _postMarkCollaborationClosingTestHook {nullptr};
+    inline static std::atomic<CloseTestHook> _postCollaborationAccessDrainTestHook {nullptr};
 
     std::map<int, TransactionDescription> _activeTransactionDescriptions; // Maps transaction ID to transaction name
     

@@ -35,9 +35,11 @@
 #include <Mod/Assembly/App/AssemblyLink.h>
 #include <Mod/Assembly/App/AssemblyObject.h>
 #include <Mod/Assembly/App/AssemblyUtils.h>
+#include <Mod/Assembly/App/InterferenceScan.h>
 
 #include "Commands.h"
 #include "ViewProviderAssembly.h"
+#include "TaskInterferenceCheck.h"
 
 
 using namespace Assembly;
@@ -57,6 +59,48 @@ static AssemblyObject* getActiveAssembly()
     }
 
     return nullptr;
+}
+
+static std::vector<InterferenceSelectionHandle> currentInterferenceSelectionHandles()
+{
+    std::vector<InterferenceSelectionHandle> handles;
+    auto selection = Gui::Selection().getSelectionEx(
+        "",
+        App::DocumentObject::getClassTypeId(),
+        Gui::ResolveMode::NoResolve
+    );
+    for (auto& sel : selection) {
+        App::DocumentObject* obj = sel.getObject();
+        if (!obj) {
+            continue;
+        }
+        const auto subs = sel.getSubNames();
+        if (subs.empty()) {
+            handles.push_back({obj, {}});
+            continue;
+        }
+        for (const auto& sub : subs) {
+            handles.push_back({obj, sub});
+        }
+    }
+    return handles;
+}
+
+/** Active assembly, else a selected App::Part interference root (e.g. plain Part).
+ * Explicit selection-backed roots take priority over unrelated edit-mode assemblies.
+ */
+static App::DocumentObject* getInterferenceHost()
+{
+    const auto handles = currentInterferenceSelectionHandles();
+    return resolveInterferenceHostFromHandles(handles, getActiveAssembly());
+}
+
+static InterferenceSelectedPairRequest currentSelectedPairRequest()
+{
+    return resolveInterferenceSelectedPairRequest(
+        currentInterferenceSelectionHandles(),
+        getActiveAssembly()
+    );
 }
 
 void selectObjects(const std::vector<App::DocumentObject*>& objectsToSelect)
@@ -363,6 +407,75 @@ bool CmdAssemblySelectJointsOfComponent::isActive()
 }
 
 
+DEF_STD_CMD_A(CmdAssemblyCheckInterference)
+
+CmdAssemblyCheckInterference::CmdAssemblyCheckInterference()
+    : Command("Assembly_CheckInterference")
+{
+    sAppModule = "Assembly";
+    sGroup = QT_TR_NOOP("Assembly");
+    sMenuText = QT_TR_NOOP("Check Interference");
+    sToolTipText = QT_TR_NOOP(
+        "Check interference for the active App::Part or assembly: with exactly two selected "
+        "subelements, check that component pair; otherwise check all applicable component "
+        "occurrences (hidden omitted unless Include hidden)"
+    );
+    sWhatsThis = "Assembly_CheckInterference";
+    sStatusTip = sToolTipText;
+    sPixmap = "Assembly_CheckInterference";
+    eType = AlterDoc;
+}
+
+void CmdAssemblyCheckInterference::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    App::DocumentObject* host = getInterferenceHost();
+    if (!host) {
+        return;
+    }
+    showInterferenceCheckPanel(host);
+}
+
+bool CmdAssemblyCheckInterference::isActive()
+{
+    return getInterferenceHost() != nullptr;
+}
+
+
+DEF_STD_CMD_A(CmdAssemblyCheckSelectedComponents)
+
+CmdAssemblyCheckSelectedComponents::CmdAssemblyCheckSelectedComponents()
+    : Command("Assembly_CheckSelectedComponents")
+{
+    sAppModule = "Assembly";
+    sGroup = QT_TR_NOOP("Assembly");
+    sMenuText = QT_TR_NOOP("Check Selected Components");
+    sToolTipText = QT_TR_NOOP(
+        "Check interference between the two selected component occurrences under the active "
+        "part or assembly (selected faces are pick handles only)"
+    );
+    sWhatsThis = "Assembly_CheckSelectedComponents";
+    sStatusTip = sToolTipText;
+    sPixmap = "Assembly_CheckInterference";
+    eType = AlterDoc;
+}
+
+void CmdAssemblyCheckSelectedComponents::activated(int iMsg)
+{
+    Q_UNUSED(iMsg);
+    const auto request = currentSelectedPairRequest();
+    if (!request.valid()) {
+        return;
+    }
+    showInterferenceCheckPanel(request.host, request.first, request.second);
+}
+
+bool CmdAssemblyCheckSelectedComponents::isActive()
+{
+    return currentSelectedPairRequest().valid();
+}
+
+
 // ================================================================================
 // Command Creation
 // ================================================================================
@@ -377,4 +490,6 @@ void AssemblyGui::CreateAssemblyCommands()
     rcCmdMgr.addCommand(new CmdAssemblySelectMalformedConstraints());
     rcCmdMgr.addCommand(new CmdAssemblySelectComponentsWithDoFs());
     rcCmdMgr.addCommand(new CmdAssemblySelectJointsOfComponent());
+    rcCmdMgr.addCommand(new CmdAssemblyCheckInterference());
+    rcCmdMgr.addCommand(new CmdAssemblyCheckSelectedComponents());
 }

@@ -27,6 +27,9 @@
 
 #include <Base/Persistence.h>
 #include <fastsignals/signal.h>
+#include <memory>
+
+#include "Document.h"
 
 namespace zipios
 {
@@ -37,7 +40,9 @@ namespace App
 {
 class Document;
 class DocumentObject;
-class AppExport MergeDocuments: public Base::Persistence
+class AppExport MergeDocuments:
+    public Base::Persistence,
+    public Internal::CollaborationImportReplay
 {
 public:
     explicit MergeDocuments(App::Document* doc);
@@ -65,9 +70,21 @@ public:
     }
 
 private:
+    std::vector<App::DocumentObject*> importObjectsDeferred(
+        std::istream&,
+        const std::shared_ptr<MergeDocuments>& owner);
+    Base::XMLReader& reader() noexcept override;
+    void restoreImportedModelFiles() override;
+    void restoreImportedFiles(
+        const std::vector<App::DocumentObject*>& importedObjects) override;
+
     bool guiup {false};
     bool verbose {true};
-    zipios::ZipInputStream* stream {nullptr};
+    std::unique_ptr<std::istream> deferredInput;
+    std::unique_ptr<zipios::ZipInputStream> stream;
+    std::shared_ptr<Base::XMLReader> deferredReader;
+    std::string deferredArchive;
+    std::size_t precommitFileCount {0};
     App::Document* appdoc {nullptr};
     std::vector<App::DocumentObject*> objects;
     std::map<std::string, std::string> nameMap;

@@ -28,13 +28,19 @@
 #pragma warning(disable : 4834)
 #endif
 
+#include <array>
+#include <atomic>
 #include <map>
+#include <list>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <memory>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
+#include <utility>
 
 #include <boost/bimap.hpp>
 #include <boost/graph/adjacency_list.hpp>
@@ -43,6 +49,7 @@
 
 #include <App/DocumentObject.h>
 #include <App/DocumentObserver.h>
+#include <App/DocumentRevisionIndex.h>
 #include <App/StringHasher.h>
 #include <App/ExportInfo.h>
 #include <Base/UniqueNameManager.h>
@@ -67,6 +74,68 @@ namespace App
 {
 using HasherMap = boost::bimap<StringHasherRef, int>;
 class Transaction;
+class DocumentCollaborationService;
+
+enum class CollaborationDeferredNotificationKind
+{
+    DocumentBeforeChange,
+    DocumentChanged,
+    ObjectBeforeChange,
+    ObjectEarlyChanged,
+    ObjectChanged,
+    PropertyChanged,
+    TouchedObject,
+    RelabelObject,
+    BeforeRecompute,
+    RecomputedObject,
+    Recomputed,
+    OpenTransaction,
+    CommitTransaction,
+    AbortTransaction,
+    BecameStable,
+    NewObject,
+    DeletedObject,
+    TransactionAppendObject,
+    TransactionRemoveObject,
+    ActivatedObject,
+    AppendDynamicProperty,
+    RemoveDynamicProperty,
+    RenameDynamicProperty,
+    ChangePropertyEditor,
+    BeforeAddingDynamicExtension,
+    AddedDynamicExtension,
+    ImportObjects,
+    FinishRestoreObject,
+    FinishImportObjects
+};
+
+struct CollaborationDeferredNotification
+{
+    CollaborationDeferredNotification(
+        CollaborationDeferredNotificationKind kind,
+        DocumentObject* object = nullptr,
+        Property* property = nullptr,
+        std::string text = {},
+        std::vector<DocumentObject*> objects = {})
+        : kind(kind)
+        , object(object)
+        , property(property)
+        , propertyContainer(property ? property->getContainer() : nullptr)
+        , text(std::move(text))
+        , objects(std::move(objects))
+    {}
+
+    CollaborationDeferredNotificationKind kind;
+    DocumentObject* object {nullptr};
+    Property* property {nullptr};
+    const PropertyContainer* propertyContainer {nullptr};
+    Transaction* transaction {nullptr};
+    std::string text;
+    std::vector<DocumentObject*> objects;
+    std::shared_ptr<Internal::CollaborationImportReplay> importReplay;
+    std::shared_ptr<std::string> retainedText;
+    std::shared_ptr<Property> retainedProperty;
+};
 
 // Pimpl class
 struct DocumentP
@@ -90,6 +159,22 @@ struct DocumentP
     bool undoing {false};  ///< document in the middle of undo or redo
     bool committing {false};
     bool opentransaction {false};
+    bool suppressCollaborationRevisionPublication {true};
+    bool collaborationCommitNotificationBarrier {false};
+    bool collaborationTransactionControlGranted {false};
+    bool collaborationCompatibilityStructuralMutationGranted {false};
+    bool collaborationImportDeferralActive {false};
+    bool collaborationRollbackStabilizing {false};
+    bool collaborationReplayingNotifications {false};
+    bool collaborationCommitPoisoned {false};
+    bool collaborationAtomicPresentationAuditActive {false};
+    bool collaborationAtomicPresentationAuditViolated {false};
+    std::vector<CollaborationAtomicPresentationWrite>
+        collaborationAtomicPresentationAllowedWrites;
+    std::atomic<unsigned int> collaborationLifecycleMutationBlockDepth {0};
+    std::recursive_mutex collaborationCommitMutex;
+    std::thread::id collaborationOwnerThread {std::this_thread::get_id()};
+    std::array<char, 1024> collaborationCommitPoisonDiagnostic {};
     std::bitset<32> StatusBits;
     unsigned int UndoMemSize {0};
     unsigned int UndoMaxStackSize {20};
@@ -103,6 +188,22 @@ struct DocumentP
     std::multimap<const App::DocumentObject*, std::unique_ptr<App::DocumentObjectExecReturn>>
         _RecomputeLog;
     ExportInfo exportInfo;
+    DocumentRevisionIndex collaborationRevisions;
+    std::unique_ptr<DocumentCollaborationService> collaborationService;
+    std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
+    std::unordered_map<const DocumentObject*, std::uint64_t>
+        collaborationBoundaryObjectIdentities;
+    std::vector<DocumentObject*> collaborationBoundaryObjectOrder;
+    DocumentObject* collaborationBoundaryActiveObject {nullptr};
+    std::unordered_set<const DocumentObject*> collaborationInitializationSuppression;
+    std::unordered_set<const DocumentObject*> collaborationNewObjectStructuralSetup;
+    std::unordered_set<const DocumentObject*> collaborationImportNewObjects;
+    std::unordered_set<const Property*> collaborationPropertyPublicationSuppression;
+    std::vector<CollaborationDeferredNotification> collaborationDeferredNotifications;
+    std::vector<DocumentRevisionPublicationRequest> collaborationObservedStructuralEffects;
+    std::shared_ptr<Internal::CollaborationImportReplay> collaborationActiveImportReplay;
+    const DocumentObject* collaborationSpreadsheetRecomputeSchemaObject {nullptr};
+    std::list<Transaction*> collaborationPreparedUndoSlot;
 
     StringHasherRef Hasher {new StringHasher};
 

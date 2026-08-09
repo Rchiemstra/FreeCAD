@@ -3008,7 +3008,7 @@ void PropertyMaterialList::setValues(const std::vector<App::Material>& newValues
     }
     else {
         aboutToSetValue();
-        setSize(1);
+        _lValueList.resize(1);
         hasSetValue();
     }
 }
@@ -3036,7 +3036,7 @@ void PropertyMaterialList::setMinimumSizeOne()
 {
     int size = getSize();
     if (size < 1) {
-        setSize(1);
+        _lValueList.resize(1);
     }
 }
 
@@ -3045,7 +3045,7 @@ int PropertyMaterialList::resizeByOneIfNeeded(int index)
     int size = getSize();
     if (index == -1 || index == size) {
         index = size;
-        setSize(size + 1);
+        _lValueList.resize(size + 1);
     }
 
     return index;
@@ -3060,7 +3060,7 @@ void PropertyMaterialList::setValue()
 void PropertyMaterialList::setValue(const Material& mat)
 {
     aboutToSetValue();
-    setSize(1);
+    _lValueList.resize(1);
     for (auto& material : _lValueList) {
         material = mat;
     }
@@ -3200,7 +3200,7 @@ void PropertyMaterialList::setDiffuseColor(int index, uint32_t rgba)
 void PropertyMaterialList::setDiffuseColors(const std::vector<Base::Color>& colors)
 {
     aboutToSetValue();
-    setSize(colors.size(), _lValueList[0]);
+    _lValueList.resize(colors.size(), _lValueList[0]);
 
     for (std::size_t i = 0; i < colors.size(); i++) {
         _lValueList[i].diffuseColor = colors[i];
@@ -3371,7 +3371,7 @@ void PropertyMaterialList::setTransparency(int index, float val)
 void PropertyMaterialList::setTransparencies(const std::vector<float>& transparencies)
 {
     aboutToSetValue();
-    setSize(transparencies.size(), _lValueList[0]);
+    _lValueList.resize(transparencies.size(), _lValueList[0]);
 
     for (std::size_t i = 0; i < transparencies.size(); i++) {
         _lValueList[i].transparency = transparencies[i];

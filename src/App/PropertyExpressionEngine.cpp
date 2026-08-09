@@ -84,6 +84,12 @@ void PropertyExpressionContainer::slotRelabelDocument(const App::Document& doc)
 
 void PropertyExpressionContainer::slotRenameDynamicProperty(const App::Property& prop, const char* oldName)
 {
+    // ObjectIdentifier paths are App::DocumentObject-scoped. GUI-owned
+    // ViewProvider properties share the rename signal but cannot participate
+    // in App expression paths.
+    if (!dynamic_cast<const App::DocumentObject*>(prop.getContainer())) {
+        return;
+    }
     for (auto container : _ExprContainers) {
         container->onRenameDynamicProperty(prop, oldName);
     }

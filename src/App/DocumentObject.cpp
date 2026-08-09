@@ -40,12 +40,14 @@
 #include "Application.h"
 #include "ElementNamingUtils.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
 #include "GeoFeatureGroupExtension.h"
 #include "Link.h"
+#include "MutationClassification.h"
 #include "ObjectIdentifier.h"
 #include "PropertyExpressionEngine.h"
 #include "PropertyLinks.h"
@@ -215,18 +217,50 @@ void DocumentObject::setTouched(const char* name)
 
 void DocumentObject::touch(bool noRecompute)
 {
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
     }
     StatusBits.set(ObjectStatus::Touch);
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
+void DocumentObject::purgeTouched()
+{
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
+    StatusBits.reset(ObjectStatus::Touch);
+    StatusBits.reset(ObjectStatus::Enforce);
+    std::vector<Property*> properties;
+    getPropertyList(properties);
+    for (auto* property : properties) {
+        property->StatusBits.reset(Property::Touched);
+    }
+    touchedProps.clear();
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
+}
 void DocumentObject::freeze()
 {
+    if (isFreezed()) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
     StatusBits.set(ObjectStatus::Freeze);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // store read-only property names
     this->readOnlyProperties.clear();
@@ -236,19 +270,25 @@ void DocumentObject::freeze()
         if (pair.second->isReadOnly()){
             this->readOnlyProperties.push_back(pair.first);
         } else {
-            pair.second->setReadOnly(true);
+            // Freeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, true);
         }
     }
 
     // use the signalTouchedObject to refresh the Gui
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
 void DocumentObject::unfreeze(bool noRecompute)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    const bool wasFrozen = isFreezed();
     StatusBits.reset(ObjectStatus::Freeze);
+    if (wasFrozen && _pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // reset read-only property status
     std::vector<std::pair<const char*, Property*>> list;
@@ -256,11 +296,30 @@ void DocumentObject::unfreeze(bool noRecompute)
 
     for (auto pair: list){
         if (! std::count(readOnlyProperties.begin(), readOnlyProperties.end(), pair.first)){
-            pair.second->setReadOnly(false);
+            // Unfreeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, false);
         }
     }
 
-    touch(noRecompute);
+    if (!noRecompute) {
+        StatusBits.set(ObjectStatus::Enforce);
+    }
+    StatusBits.set(ObjectStatus::Touch);
+    if (_pDoc) {
+        _pDoc->emitCollaborationTouchedObject(*this);
+    }
+}
+
+void DocumentObject::purgeError()
+{
+    if (!isError()) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    StatusBits.reset(ObjectStatus::Error);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 }
 
 bool DocumentObject::isTouched() const
@@ -824,12 +883,18 @@ void DocumentObject::setDocument(App::Document* doc)
 
 bool DocumentObject::removeDynamicProperty(const char* name)
 {
+    Property* prop = getDynamicPropertyByName(name);
+    if (!prop) {
+        return false;
+    }
+    if (_pDoc) {
+        _pDoc->ensureCollaborationDynamicPropertyRemovalAllowed(*this, prop);
+    }
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
 
-    Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
+    if (prop->testStatus(App::Property::LockDynamic)) {
         return false;
     }
 
@@ -857,6 +922,10 @@ bool DocumentObject::removeDynamicProperty(const char* name)
 
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
 {
+    if (_pDoc) {
+        Internal::CollaborationStructuralMutationRecorder::
+            ensurePropertySchemaMutationAllowed(*_pDoc, *this);
+    }
     std::string oldName = prop->getName();
 
     auto expressions = ExpressionEngine.getExpressions();
@@ -898,6 +967,9 @@ App::Property* DocumentObject::addDynamicProperty(
     bool hidden
 )
 {
+    if (_pDoc) {
+        _pDoc->ensureCollaborationDynamicPropertyMutationAllowed(*this, attr);
+    }
     auto prop = TransactionalObject::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
     if (prop && _pDoc) {
         _pDoc->addOrRemovePropertyOfObject(this, prop, true);
@@ -920,7 +992,12 @@ void DocumentObject::onBeforeChange(const Property* prop)
         onBeforeChangeProperty(_pDoc, prop);
     }
 
-    signalBeforeChange(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectBeforeChange(*this, *prop);
+    }
+    else {
+        signalBeforeChange(*this, *prop);
+    }
 }
 
 std::vector<std::pair<Property*, std::unique_ptr<Property>>>
@@ -1009,7 +1086,12 @@ void DocumentObject::onEarlyChange(const Property* prop)
         }
     }
 
-    signalEarlyChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectEarlyChanged(*this, *prop);
+    }
+    else {
+        signalEarlyChanged(*this, *prop);
+    }
 }
 
 /// get called by the container when a Property was changed
@@ -1044,7 +1126,7 @@ void DocumentObject::onChanged(const Property* prop)
     //     _pDoc->onChangedProperty(this,prop);
 
     if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
-        _pDoc->signalRelabelObject(*this);
+        _pDoc->emitCollaborationRelabelObject(*this);
     }
 
     bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
@@ -1092,7 +1174,12 @@ void DocumentObject::onChanged(const Property* prop)
         _pDoc->onChangedProperty(this, prop);
     }
 
-    signalChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectChanged(*this, *prop);
+    }
+    else {
+        signalChanged(*this, *prop);
+    }
 }
 
 void DocumentObject::clearOutListCache() const
@@ -1755,7 +1842,7 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
 {
     (void)oldStatus;
     if (!Document::isAnyRestoring() && isAttachedToDocument() && getDocument()) {
-        getDocument()->signalChangePropertyEditor(*getDocument(), prop);
+        getDocument()->emitCollaborationChangePropertyEditor(prop);
     }
 }
 

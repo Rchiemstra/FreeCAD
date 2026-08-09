@@ -25,6 +25,10 @@
 #include <sstream>
 
 #include "Application.h"
+#include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
+#include "DocumentObject.h"
+#include "MutationClassification.h"
 
 #include <App/ExtensionContainerPy.h>
 #include <App/ExtensionContainerPy.cpp>
@@ -218,6 +222,14 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         PyErr_Print();
     }
 
+    auto* container = getExtensionContainerPtr();
+    auto* document = documentFromPropertyContainer(container);
+    enforceAtomicPresentationMutationTarget(document);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::ensureDynamicExtensionAllowed(
+            *document, *container);
+    }
+
     // get the extension type asked for
     Base::Type extension = Base::Type::fromName(typeId);
     if (extension.isBad() || !extension.isDerivedFrom(App::Extension::getExtensionClassTypeId())) {
@@ -236,8 +248,19 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         throw Py::TypeError(str.str());
     }
 
-    GetApplication().signalBeforeAddingDynamicExtension(*getExtensionContainerPtr(), typeId);
-    ext->initExtension(getExtensionContainerPtr());
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitBeforeAddingDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalBeforeAddingDynamicExtension(*container, typeId);
+    }
+    ext->initExtension(container);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::recordContainer(
+            *document, *container);
+        document->publishCollaborationMutation(*container, true);
+    }
 
     // The PyTypeObject is shared by all instances of this type and therefore
     // we have to add new methods only once.
@@ -274,7 +297,13 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     Py_DECREF(obj);
 
     // throw the appropriate event
-    GetApplication().signalAddedDynamicExtension(*getExtensionContainerPtr(), typeId);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitAddedDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalAddedDynamicExtension(*container, typeId);
+    }
 
     Py_Return;
 }

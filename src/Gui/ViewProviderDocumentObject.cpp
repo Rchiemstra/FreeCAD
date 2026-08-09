@@ -141,6 +141,9 @@ const char* ViewProviderDocumentObject::detachFromDocument()
 
 bool ViewProviderDocumentObject::removeDynamicProperty(const char* name)
 {
+    if (Application::Instance) {
+        Application::Instance->ensureSharedPresentationStructureMutationAllowed();
+    }
     App::Property* prop = getDynamicPropertyByName(name);
     if (!prop || prop->testStatus(App::Property::LockDynamic)) {
         return false;
@@ -180,6 +183,10 @@ App::Property* ViewProviderDocumentObject::addDynamicProperty(
 
 void ViewProviderDocumentObject::onBeforeChange(const App::Property* prop)
 {
+    if (Application::Instance) {
+        Application::Instance->preflightSharedPresentationPropertyMutation(
+            *this, *prop);
+    }
     if (isAttachedToDocument()) {
         App::DocumentObject* obj = getObject();
         App::Document* doc = obj ? obj->getDocument() : nullptr;

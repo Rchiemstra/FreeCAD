@@ -190,6 +190,14 @@ PyMethodDef ApplicationPy::Methods[] = {
      "writeRecoverySnapshotToTransientDir(document, *, compressed=True, "
      "save_binary_brep=True, save_thumbnail=False) -> bool\n\n"
      "Write a recovery snapshot for the given document into its transient directory."},
+    {"advanceDocumentCollaborationEpoch",
+     reinterpret_cast<PyCFunction>(
+         reinterpret_cast<void (*)()>(ApplicationPy::sAdvanceDocumentCollaborationEpoch)
+     ),
+     METH_VARARGS | METH_KEYWORDS,
+     "advanceDocumentCollaborationEpoch(document, *, reason='administrative recovery', "
+     "compressed=True, save_binary_brep=True, save_thumbnail=False) -> dict\n\n"
+     "Preserve a stable recovery point, cancel collaboration work, and advance the live epoch."},
     {"activeDocument",
      (PyCFunction)ApplicationPy::sActiveDocument,
      METH_VARARGS,
@@ -561,6 +569,62 @@ PyObject* ApplicationPy::sWriteRecoverySnapshotToTransientDir(PyObject* /*self*/
         return Py::new_reference_to(
             Py::Boolean(App::writeRecoverySnapshotToTransientDir(*doc, options))
         );
+    }
+    PY_CATCH
+}
+
+PyObject* ApplicationPy::sAdvanceDocumentCollaborationEpoch(PyObject* /*self*/,
+                                                            PyObject* args,
+                                                            PyObject* kwd)
+{
+    PyObject* document {};
+    const char* reason = "administrative recovery";
+    PyObject* compressed = Py_True;
+    PyObject* saveBinaryBrep = Py_True;
+    PyObject* saveThumbnail = Py_False;
+    static constexpr std::array<const char*, 6> kwlist {
+        "document",
+        "reason",
+        "compressed",
+        "save_binary_brep",
+        "save_thumbnail",
+        nullptr
+    };
+    if (!Base::Wrapped_ParseTupleAndKeywords(args,
+                                             kwd,
+                                             "O!|sO!O!O!",
+                                             kwlist,
+                                             &App::DocumentPy::Type,
+                                             &document,
+                                             &reason,
+                                             &PyBool_Type,
+                                             &compressed,
+                                             &PyBool_Type,
+                                             &saveBinaryBrep,
+                                             &PyBool_Type,
+                                             &saveThumbnail)) {
+        return nullptr;
+    }
+
+    auto* doc = static_cast<App::DocumentPy*>(document)->getDocumentPtr();
+    if (!doc) {
+        PyErr_SetString(PyExc_RuntimeError, "Invalid document");
+        return nullptr;
+    }
+
+    PY_TRY
+    {
+        App::RecoverySnapshotSaveOptions options;
+        options.compressed = Base::asBoolean(compressed);
+        options.saveBinaryBrep = Base::asBoolean(saveBinaryBrep);
+        options.saveThumbnail = Base::asBoolean(saveThumbnail);
+
+        const auto identity = App::GetApplication().advanceDocumentCollaborationEpoch(
+            *doc, options, reason);
+        Py::Dict result;
+        result["document_instance_id"] = Py::Long(identity.instanceId);
+        result["lifecycle_epoch"] = Py::Long(identity.lifecycleEpoch);
+        return Py::new_reference_to(result);
     }
     PY_CATCH
 }

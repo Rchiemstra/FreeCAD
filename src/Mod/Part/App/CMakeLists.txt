@@ -166,6 +166,8 @@ generate_from_py(ShapeFix/ShapeFix_SplitTool)
 generate_from_py(ShapeUpgrade/UnifySameDomain)
 
 SET(Features_SRCS
+    CollaborativeBooleanOperation.cpp
+    CollaborativeBooleanOperation.h
     FeaturePartBoolean.cpp
     FeaturePartBoolean.h
     FeaturePartBox.cpp
@@ -222,6 +224,8 @@ SET(Features_SRCS
     PartFeatures.h
     PartFeature.cpp
     PartFeature.h
+    InterferenceDetection.cpp
+    InterferenceDetection.h
     PartFeatureReference.cpp
     PartFeatureReference.h
     Part2DObject.cpp

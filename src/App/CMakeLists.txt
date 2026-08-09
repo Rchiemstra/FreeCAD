@@ -151,9 +151,17 @@ SOURCE_GROUP("Pyi" FILES ${FreeCADApp_Pyi_SRCS})
 SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
+    CollaborationRegistry.cpp
+    private/CollaborationStructuralMutationRecorder.cpp
+    CollaborativeOperation.cpp
+    CollaborativeOperationRegistry.cpp
+    CollaborativeSetPropertyOperation.cpp
     Document.cpp
-    DocumentMutationAuthority.cpp
-    MutationCapability.cpp
+    DocumentCollaborationService.cpp
+    DocumentCommitCoordinator.cpp
+    DocumentRevisionIndex.cpp
+    EditSession.cpp
+    MutationClassification.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
     DepEdgePyImp.cpp
@@ -195,6 +203,8 @@ SET(Document_CPP_SRCS
     InventorObject.cpp
     Placement.cpp
     ProjectFile.cpp
+    PreparedEdit.cpp
+    PreparedEditExecutor.cpp
     Datums.cpp
     Range.cpp
     Transactions.cpp
@@ -212,9 +222,17 @@ SET(Document_CPP_SRCS
 SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
+    CollaborationRegistry.h
+    private/CollaborationStructuralMutationRecorder.h
+    CollaborativeOperation.h
+    CollaborativeOperationRegistry.h
+    CollaborativeSetPropertyOperation.h
     Document.h
-    DocumentMutationAuthority.h
-    MutationCapability.h
+    DocumentCollaborationService.h
+    DocumentCommitCoordinator.h
+    DocumentRevisionIndex.h
+    EditSession.h
+    MutationClassification.h
     MutationKind.h
     RecoverySnapshot.h
     DepEdge.h
@@ -248,6 +266,8 @@ SET(Document_HPP_SRCS
     InventorObject.h
     Placement.h
     ProjectFile.h
+    PreparedEdit.h
+    PreparedEditExecutor.h
     Datums.h
     Range.h
     Transactions.h

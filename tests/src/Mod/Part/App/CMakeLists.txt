@@ -4,6 +4,8 @@ add_executable(Part_tests_run
         Attacher.cpp
         AttachExtension.cpp
         BRepMesh.cpp
+        CollaborativeBooleanOperation.cpp
+        CollaborativeBooleanPreparation.cpp
         FaceMakerBullseye.cpp
         FaceMakerUnified.cpp
         FeatureChamfer.cpp
@@ -19,6 +21,7 @@ add_executable(Part_tests_run
         FeatureRevolution.cpp
         FuzzyBoolean.cpp
         Geometry.cpp
+        InterferenceDetection.cpp
         PartFeature.cpp
         PartFeatures.cpp
         PartTestHelpers.cpp

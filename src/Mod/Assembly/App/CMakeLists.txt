@@ -64,6 +64,11 @@ SET(Assembly_SRCS
     Groups.h
     ReviewNote.cpp
     ReviewNote.h
+    InterferenceScan.cpp
+    InterferenceScan.h
+    InterferenceScanSession.cpp
+    InterferenceScanSession.h
+
     ${Module_SRCS}
     ${Python_SRCS}
 )

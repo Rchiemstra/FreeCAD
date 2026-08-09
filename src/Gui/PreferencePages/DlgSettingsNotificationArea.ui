@@ -17,7 +17,7 @@
    <item row="0" column="0">
     <widget class="QGroupBox" name="NotificationAreaEnabled">
      <property name="toolTip">
-      <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, show the notification area in the status bar: a button with the current notification count, which can expand the detailed notification list. Optionally, with additional pop-up notifications.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+      <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, show the notification area in the status bar: a button with the current notification count. Clicking it opens the dockable Notifications panel, where messages can be selected and copied. Optionally, additional pop-up notifications are also shown.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
      </property>
      <property name="title">
       <string>Enable Notification Area</string>

@@ -25,6 +25,7 @@
 #include <bitset>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <memory>
 #include <QIcon>
@@ -787,6 +788,19 @@ public:
      *  (e.g. a container that owns this feature). The default implementation toggles self.
      */
     virtual void toggleVisibility();
+
+    App::Property* addDynamicProperty(std::string_view type,
+                                     const char* name = nullptr,
+                                     const char* group = nullptr,
+                                     const char* doc = nullptr,
+                                     short attr = 0,
+                                     bool ro = false,
+                                     bool hidden = false) override;
+    bool changeDynamicProperty(const App::Property* property,
+                               const char* group,
+                               const char* doc) override;
+    bool renameDynamicProperty(App::Property* property, const char* name) override;
+    bool removeDynamicProperty(const char* name) override;
 
 protected:
     /** Helper method to check that the node is valid, i.e. it must not cause

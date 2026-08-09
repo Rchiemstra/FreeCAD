@@ -68,6 +68,8 @@ class SoTranslation;
 class SoTransform;
 class SoText2;
 class SoAnnotation;
+class SoCamera;
+class SoNode;
 
 class SoSeparator;
 class SoShapeHints;
@@ -244,6 +246,17 @@ public:
 
     /** Render the scene into a new image using the requested capture policy. */
     QImage renderToImage(const RenderImageOptions& options);
+
+    /**
+     * Render the scene using render-local camera and overlay state.
+     *
+     * Neither override is attached to the live viewer after this call returns.
+     */
+    QImage renderToImage(
+        const RenderImageOptions& options,
+        SoCamera* cameraOverride,
+        SoNode* transientOverlayRoot = nullptr
+    );
 
     /** Capture the live viewport framebuffer as a raster-oriented image. */
     QImage grabFramebuffer();
@@ -634,7 +647,11 @@ private:
     void recoverFromRenderMemoryException();
     void renderDelayedAnnotations(SoGLRenderAction* glra);
     void renderGLActionScene(const QColor& backgroundColor, SoGLRenderAction* glra);
-    bool renderToFramebuffer(QOpenGLFramebufferObject*, bool includeViewerLighting = true);
+    bool renderToFramebuffer(
+        QOpenGLFramebufferObject*,
+        bool includeViewerLighting = true,
+        SoNode* transientOverlayRoot = nullptr
+    );
     void setCursorRepresentation(int mode);
     void aboutToDestroyGLContext();
     void createStandardCursors();

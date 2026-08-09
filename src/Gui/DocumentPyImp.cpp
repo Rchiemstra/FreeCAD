@@ -20,7 +20,9 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <optional>
 #include <sstream>
+#include <vector>
 
 #include <App/Document.h>
 #include <App/DocumentObjectPy.h>
@@ -31,6 +33,7 @@
 #include "Application.h"
 #include "MergeDocuments.h"
 #include "MDIView.h"
+#include "PersonalViewContext.h"
 #include "Tree.h"
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderExtern.h"
@@ -43,6 +46,182 @@
 #include "ViewProviderDocumentObjectPy.h"
 
 using namespace Gui;
+
+namespace
+{
+
+std::string personalContextString(PyObject* mapping, const char* key)
+{
+    PyObject* value = PyDict_GetItemString(mapping, key);
+    if (!value) {
+        return {};
+    }
+    if (!PyUnicode_Check(value)) {
+        throw Py::TypeError(std::string("personal view context '") + key + "' must be a string");
+    }
+    const char* text = PyUnicode_AsUTF8(value);
+    if (!text) {
+        throw Py::Exception();
+    }
+    return text;
+}
+
+std::optional<std::string> personalContextOptionalString(PyObject* mapping, const char* key)
+{
+    PyObject* value = PyDict_GetItemString(mapping, key);
+    if (!value || value == Py_None) {
+        return std::nullopt;
+    }
+    if (!PyUnicode_Check(value)) {
+        throw Py::TypeError(std::string("personal view context '") + key
+                            + "' must be a string or None");
+    }
+    const char* text = PyUnicode_AsUTF8(value);
+    if (!text) {
+        throw Py::Exception();
+    }
+    return std::string(text);
+}
+
+std::vector<std::string> personalContextStringList(PyObject* mapping, const char* key)
+{
+    PyObject* value = PyDict_GetItemString(mapping, key);
+    if (!value) {
+        return {};
+    }
+    PyObject* sequence =
+        PySequence_Fast(value, "personal view context path fields must be sequences");
+    if (!sequence) {
+        throw Py::Exception();
+    }
+    std::vector<std::string> result;
+    try {
+        const auto count = PySequence_Fast_GET_SIZE(sequence);
+        result.reserve(static_cast<std::size_t>(count));
+        auto** items = PySequence_Fast_ITEMS(sequence);
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            if (!PyUnicode_Check(items[index])) {
+                throw Py::TypeError(std::string("personal view context '") + key
+                                    + "' entries must be strings");
+            }
+            const char* text = PyUnicode_AsUTF8(items[index]);
+            if (!text) {
+                throw Py::Exception();
+            }
+            result.emplace_back(text);
+        }
+    }
+    catch (...) {
+        Py_DECREF(sequence);
+        throw;
+    }
+    Py_DECREF(sequence);
+    return result;
+}
+
+std::int64_t personalContextInteger(PyObject* mapping, const char* key)
+{
+    PyObject* value = PyDict_GetItemString(mapping, key);
+    if (!value) {
+        return 0;
+    }
+    if (!PyLong_Check(value)) {
+        throw Py::TypeError(std::string("personal view context '") + key + "' must be an integer");
+    }
+    const auto result = PyLong_AsLongLong(value);
+    if (PyErr_Occurred()) {
+        throw Py::Exception();
+    }
+    return result;
+}
+
+PersonalViewContext personalViewContextFromPython(PyObject* value)
+{
+    if (!PyDict_Check(value)) {
+        throw Py::TypeError("personal view context must be a dict");
+    }
+    PersonalViewContext context;
+    context.camera = personalContextString(value, "camera");
+    context.projection = personalContextString(value, "projection");
+    context.selectionPaths = personalContextStringList(value, "selection_paths");
+    context.preselectionPath = personalContextOptionalString(value, "preselection_path");
+    context.expandedTreePaths = personalContextStringList(value, "expanded_tree_paths");
+    context.treeHorizontalScroll = personalContextInteger(value, "tree_horizontal_scroll");
+    context.treeVerticalScroll = personalContextInteger(value, "tree_vertical_scroll");
+    context.activeDocument = personalContextString(value, "active_document");
+    context.activeView = personalContextString(value, "active_view");
+    context.activeWorkbench = personalContextString(value, "active_workbench");
+    context.editFocus = personalContextString(value, "edit_focus");
+
+    PyObject* overlays = PyDict_GetItemString(value, "temporary_overlays");
+    if (overlays) {
+        PyObject* sequence = PySequence_Fast(overlays, "temporary_overlays must be a sequence");
+        if (!sequence) {
+            throw Py::Exception();
+        }
+        try {
+            const auto count = PySequence_Fast_GET_SIZE(sequence);
+            context.temporaryOverlays.reserve(static_cast<std::size_t>(count));
+            auto** items = PySequence_Fast_ITEMS(sequence);
+            for (Py_ssize_t index = 0; index < count; ++index) {
+                if (!PyDict_Check(items[index])) {
+                    throw Py::TypeError("temporary overlay entries must be dicts");
+                }
+                context.temporaryOverlays.push_back(
+                    {personalContextString(items[index], "identifier"),
+                     personalContextString(items[index], "kind"),
+                     personalContextString(items[index], "payload")});
+            }
+        }
+        catch (...) {
+            Py_DECREF(sequence);
+            throw;
+        }
+        Py_DECREF(sequence);
+    }
+    return context;
+}
+
+Py::Dict personalViewContextToPython(const PersonalViewContext& context)
+{
+    Py::Dict result;
+    result["camera"] = Py::String(context.camera);
+    result["projection"] = Py::String(context.projection);
+    Py::List selection;
+    for (const auto& path : context.selectionPaths) {
+        selection.append(Py::String(path));
+    }
+    result["selection_paths"] = selection;
+    if (context.preselectionPath) {
+        result["preselection_path"] = Py::String(*context.preselectionPath);
+    }
+    else {
+        result["preselection_path"] = Py::None();
+    }
+    Py::List expanded;
+    for (const auto& path : context.expandedTreePaths) {
+        expanded.append(Py::String(path));
+    }
+    result["expanded_tree_paths"] = expanded;
+    result["tree_horizontal_scroll"] = Py::Long(context.treeHorizontalScroll);
+    result["tree_vertical_scroll"] = Py::Long(context.treeVerticalScroll);
+    result["active_document"] = Py::String(context.activeDocument);
+    result["active_view"] = Py::String(context.activeView);
+    result["active_workbench"] = Py::String(context.activeWorkbench);
+    result["edit_focus"] = Py::String(context.editFocus);
+    Py::List overlays;
+    for (const auto& overlay : context.temporaryOverlays) {
+        Py::Dict item;
+        item["identifier"] = Py::String(overlay.identifier);
+        item["kind"] = Py::String(overlay.kind);
+        item["payload"] = Py::String(overlay.payload);
+        overlays.append(item);
+    }
+    result["temporary_overlays"] = overlays;
+    return result;
+}
+
+}  // namespace
 
 // returns a string which represent the object e.g. when printed in python
 std::string DocumentPy::representation() const
@@ -605,6 +784,82 @@ PyObject* DocumentPy::abortCommand(PyObject* args)
 
     Py_Return;
 }
+
+PyObject* DocumentPy::storePersonalViewContext(PyObject* args)
+{
+    const char* actorId = nullptr;
+    PyObject* context = nullptr;
+    if (!PyArg_ParseTuple(args, "sO", &actorId, &context)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        getDocumentPtr()->storePersonalViewContext(
+            actorId, personalViewContextFromPython(context));
+        Py_Return;
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::getPersonalViewContext(PyObject* args) const
+{
+    const char* actorId = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &actorId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto context = getDocumentPtr()->personalViewContext(actorId);
+        if (!context) {
+            Py_Return;
+        }
+        return Py::new_reference_to(personalViewContextToPython(*context));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::removePersonalViewContext(PyObject* args)
+{
+    const char* actorId = nullptr;
+    if (!PyArg_ParseTuple(args, "s", &actorId)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        return Py::new_reference_to(
+            Py::Boolean(getDocumentPtr()->removePersonalViewContext(actorId)));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::renderPersonalViewContext(PyObject* args) const
+{
+    const char* actorId = nullptr;
+    const char* background = "Current";
+    Gui::PersonalViewImageOptions options;
+    if (!PyArg_ParseTuple(args,
+                          "s|iisi",
+                          &actorId,
+                          &options.width,
+                          &options.height,
+                          &background,
+                          &options.samples)) {
+        return nullptr;
+    }
+    options.background = background;
+    PY_TRY
+    {
+        const auto png = getDocumentPtr()->renderPersonalViewContext(actorId, options);
+        if (!png) {
+            Py_Return;
+        }
+        return PyBytes_FromStringAndSize(
+            reinterpret_cast<const char*>(png->data()),
+            static_cast<Py_ssize_t>(png->size()));
+    }
+    PY_CATCH;
+}
+
 Py::Boolean DocumentPy::getTransacting() const
 {
     return {getDocumentPtr()->isPerformingTransaction()};

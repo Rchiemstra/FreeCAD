@@ -38,7 +38,7 @@ namespace App
 {
 
 /// The testing feature
-class FeatureTest: public DocumentObject
+class AppExport FeatureTest: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTest);
 
@@ -122,7 +122,7 @@ public:
 };
 
 /// The exception testing feature
-class FeatureTestException: public FeatureTest
+class AppExport FeatureTestException: public FeatureTest
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestException);
 
@@ -141,7 +141,7 @@ public:
     }
 };
 
-class FeatureTestColumn: public DocumentObject
+class AppExport FeatureTestColumn: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestColumn);
 
@@ -159,7 +159,7 @@ public:
     //@}
 };
 
-class FeatureTestRow: public DocumentObject
+class AppExport FeatureTestRow: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestRow);
 
@@ -177,7 +177,7 @@ public:
     //@}
 };
 
-class FeatureTestAbsAddress: public DocumentObject
+class AppExport FeatureTestAbsAddress: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestAbsAddress);
 
@@ -189,7 +189,7 @@ public:
     App::PropertyBool Valid;
 };
 
-class FeatureTestPlacement: public DocumentObject
+class AppExport FeatureTestPlacement: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestPlacement);
 
@@ -208,7 +208,7 @@ public:
     //@}
 };
 
-class FeatureTestAttribute: public DocumentObject
+class AppExport FeatureTestAttribute: public DocumentObject
 {
     PROPERTY_HEADER_WITH_OVERRIDE(App::FeatureTestAttribute);
 

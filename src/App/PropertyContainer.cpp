@@ -37,8 +37,12 @@
 #include <Base/Reader.h>
 #include <Base/Writer.h>
 
+#include "Document.h"
+#include "DocumentObject.h"
+#include "MutationClassification.h"
 #include "Property.h"
 #include "PropertyContainer.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 
 
 FC_LOG_LEVEL_INIT("App",true,true)
@@ -114,12 +118,58 @@ void PropertyContainer::getPropertyNamedList(std::vector<std::pair<const char*, 
     getPropertyData().getPropertyNamedList(this,List);
 }
 
-void PropertyContainer::setPropertyStatus(unsigned char bit,bool value)
+void PropertyContainer::setPropertyStatus(unsigned char bit, bool value)
 {
-    std::vector<Property*> List;
-    getPropertyList(List);
-    for(auto it : List)
-        it->StatusBits.set(bit,value);
+    std::vector<Property*> list;
+    getPropertyList(list);
+    const auto status = static_cast<Property::Status>(bit);
+    bool changed = false;
+    for (auto* property : list) {
+        if (property->testStatus(status) == value) {
+            continue;
+        }
+        if (!changed) {
+            if (Document* document = documentFromPropertyContainer(this)) {
+                enforceAtomicPresentationMutationTarget(document);
+                Internal::CollaborationStructuralMutationRecorder::
+                    ensurePropertySchemaMutationAllowed(*document, *this);
+            }
+            changed = true;
+        }
+        const unsigned long oldStatus = property->StatusBits.to_ulong();
+        property->StatusBits.set(status, value);
+        static const unsigned long signalMask = (1 << Property::ReadOnly) | (1 << Property::Hidden);
+        const unsigned long newStatus = property->StatusBits.to_ulong();
+        if ((newStatus & signalMask) != (oldStatus & signalMask)) {
+            onPropertyStatusChanged(*property, oldStatus);
+        }
+    }
+    if (changed) {
+        if (Document* document = documentFromPropertyContainer(this)) {
+            MutationClassificationInput input;
+            input.source = CollaborationMutationSource::PropertyStatus;
+            input.mutationKind = MutationKind::StructuralProperty;
+            input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
+            if (const auto* object = dynamic_cast<const DocumentObject*>(this)) {
+                if (!object->isAttachedToDocument() || object->getDocument() != document
+                    || !document->containsObject(object)) {
+                    return;
+                }
+                input.containerKind = CollaborationContainerKind::DocumentObject;
+                input.objectName = object->getNameInDocument();
+                input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
+            }
+            else if (dynamic_cast<const Document*>(this)) {
+                input.containerKind = CollaborationContainerKind::Document;
+            }
+            const auto effects = classifyMutation(input);
+            document->recordCollaborationAtomicPresentationEffects(effects);
+            Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
+            if (!document->collaborationRevisionPublicationSuppressed(this)) {
+                static_cast<void>(document->collaborationRevisions().publish(effects));
+            }
+        }
+    }
 }
 
 short PropertyContainer::getPropertyType(const Property* prop) const

@@ -31,6 +31,12 @@
 #include <App/FeaturePython.h>
 #include <App/Part.h>
 #include <App/PropertyLinks.h>
+#include <App/PropertyStandard.h>
+
+#include <App/PropertyUnits.h>
+#include <App/PropertyLinks.h>
+
+#include <Mod/Assembly/App/InterferenceScan.h>
 
 #include <OndselSolver/enum.h>
 
@@ -85,6 +91,33 @@ public:
     {
         return "AssemblyGui::ViewProviderAssembly";
     }
+
+    App::PropertyLength InterferenceClearance;
+    /** Optional Spreadsheet::Sheet of face-specific design clearances. */
+    App::PropertyLink InterferenceClearanceSheet;
+    /** Hidden alternating source-definition endpoints for excluded unordered pairs. */
+    App::PropertyXLinkSubList InterferenceExcludedSources;
+    /** Stable ReviewNote identities aligned one-to-one with exclusion pairs. */
+    App::PropertyStringList InterferenceExclusionReasons;
+
+    /** Minimum clearance used by interference checks (nonnegative length). */
+    double getInterferenceClearance() const;
+    void setInterferenceClearance(double clearanceMm);
+    App::DocumentObject* getInterferenceClearanceSheet() const;
+    void setInterferenceClearanceSheet(App::DocumentObject* sheetOrNull);
+
+    std::vector<InterferenceExclusionRule> getInterferenceExclusionRules() const;
+    bool hasInterferenceExclusion(
+        App::DocumentObject* first,
+        App::DocumentObject* second
+    ) const;
+    void addInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second);
+    void removeInterferenceExclusion(App::DocumentObject* first, App::DocumentObject* second);
+    /** Remove one stored pair by rule index without destroying other XLink identities. */
+    void removeInterferenceExclusionAt(std::size_t ruleIndex);
+    void setInterferenceExclusions(
+        const std::vector<std::pair<App::DocumentObject*, App::DocumentObject*>>& pairs
+    );
 
     App::DocumentObjectExecReturn* execute() override;
     void onChanged(const App::Property* prop) override;

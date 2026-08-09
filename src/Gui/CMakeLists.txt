@@ -523,7 +523,6 @@ SET(Dialog_CPP_SRCS
     TaskElementColors.cpp
     Dialogs/DlgObjectSelection.cpp
     Dialogs/DlgAddProperty.cpp
-    Dialogs/DlgMutationTakeover.cpp
     VectorListEditor.cpp
 )
 
@@ -568,7 +567,6 @@ SET(Dialog_HPP_SRCS
     TaskElementColors.h
     Dialogs/DlgObjectSelection.h
     Dialogs/DlgAddProperty.h
-    Dialogs/DlgMutationTakeover.h
     VectorListEditor.h
 )
 
@@ -1189,6 +1187,7 @@ SET(Widget_HPP_SRCS
     MainWindowPy.h
     NotificationBox.h
     NotificationArea.h
+    NotificationClipboard.h
     PrefWidgets.h
     InputField.h
     ProgressBar.h
@@ -1321,6 +1320,9 @@ SET(FreeCADGui_CPP_SRCS
     ApplicationPy.cpp
     AutoSaver.cpp
     BitmapFactory.cpp
+    CollaborationCompatibilityAdapter.cpp
+    PersonalViewContext.cpp
+    SharedPresentationCoordinator.cpp
     Document.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1365,6 +1367,9 @@ SET(FreeCADGui_SRCS
     Application.h
     AutoSaver.h
     BitmapFactory.h
+    CollaborationCompatibilityAdapter.h
+    PersonalViewContext.h
+    SharedPresentationCoordinator.h
     Document.h
     DocumentModel.h
     DocumentObserver.h

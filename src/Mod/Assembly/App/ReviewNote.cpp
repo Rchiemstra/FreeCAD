@@ -454,7 +454,7 @@ ReviewNote::ReviewNote()
         (nullptr),
         "ReviewNote",
         App::Prop_None,
-        "Component-rooted geometry target or linked joint"
+        "Object-only component occurrence target or linked joint"
     );
     ADD_PROPERTY_TYPE(
         LocalAnchor,
@@ -462,6 +462,34 @@ ReviewNote::ReviewNote()
         "ReviewNote",
         App::Prop_None,
         "Picked point in target-local coordinates"
+    );
+    ADD_PROPERTY_TYPE(
+        AnchorSourceIdentity,
+        (""),
+        "ReviewNote",
+        static_cast<App::PropertyType>(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Stable source-definition identity captured when the note was created"
+    );
+    ADD_PROPERTY_TYPE(
+        AnchorSubelement,
+        (""),
+        "ReviewNote",
+        static_cast<App::PropertyType>(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Informational picked subelement; not a live geometry link"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceSourceA,
+        (""),
+        "ReviewNote",
+        static_cast<App::PropertyType>(App::Prop_Hidden | App::Prop_NoRecompute),
+        "First source identity when this note records an interference result"
+    );
+    ADD_PROPERTY_TYPE(
+        InterferenceSourceB,
+        (""),
+        "ReviewNote",
+        static_cast<App::PropertyType>(App::Prop_Hidden | App::Prop_NoRecompute),
+        "Second source identity when this note records an interference result"
     );
     ADD_PROPERTY_TYPE(
         JointSide,

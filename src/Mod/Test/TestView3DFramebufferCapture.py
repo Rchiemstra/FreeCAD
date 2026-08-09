@@ -10,9 +10,18 @@ import FreeCAD
 import FreeCADGui
 
 try:
-    from PySide6 import QtWidgets
+    from PySide6 import QtOpenGLWidgets, QtWidgets
+
+    QOpenGLWidget = QtOpenGLWidgets.QOpenGLWidget
 except ImportError:
     from PySide import QtGui as QtWidgets  # type: ignore
+
+    QOpenGLWidget = QtWidgets.QOpenGLWidget
+
+try:
+    NO_PARTIAL_UPDATE = QOpenGLWidget.UpdateBehavior.NoPartialUpdate
+except AttributeError:
+    NO_PARTIAL_UPDATE = QOpenGLWidget.NoPartialUpdate
 
 
 class TestView3DFramebufferCapture(unittest.TestCase):
@@ -21,6 +30,10 @@ class TestView3DFramebufferCapture(unittest.TestCase):
         FreeCADGui.ActiveDocument = FreeCADGui.getDocument(self.doc.Name)
         self.view = FreeCADGui.ActiveDocument.ActiveView
         self.viewer = self.view.getViewer()
+        self.viewport = self.view.graphicsView().viewport()
+
+        self._update_behavior = self.viewport.updateBehavior()
+        self.viewport.setUpdateBehavior(NO_PARTIAL_UPDATE)
 
         self._had_axis_cross = self.view.hasAxisCross()
         self.view.setAxisCross(False)
@@ -29,6 +42,8 @@ class TestView3DFramebufferCapture(unittest.TestCase):
         self.viewer.setEnabledNaviCube(False)
 
     def tearDown(self):
+        with suppress(Exception):
+            self.viewport.setUpdateBehavior(self._update_behavior)
         with suppress(Exception):
             self.view.setAxisCross(self._had_axis_cross)
         with suppress(Exception):
@@ -55,13 +70,34 @@ class TestView3DFramebufferCapture(unittest.TestCase):
         self.viewer.setGradientBackgroundColor((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
         self._flush_gui()
 
-        image = self.viewer.grabFramebuffer()
+        images = [self.viewer.grabFramebuffer() for _ in range(2)]
+        for image in images:
+            self.assertFalse(image.isNull())
+            self.assertEqual(self.viewport.updateBehavior(), NO_PARTIAL_UPDATE)
+            self._assert_gradient_pixels_are_preserved(image)
+
+        image = images[-1]
         x = image.width() // 2
         top = image.pixelColor(x, image.height() // 8)
         bottom = image.pixelColor(x, image.height() * 7 // 8)
 
         self.assertGreater(top.red(), top.blue())
         self.assertGreater(bottom.blue(), bottom.red())
+
+    def _assert_gradient_pixels_are_preserved(self, image):
+        step_x = max(1, image.width() // 24)
+        step_y = max(1, image.height() // 14)
+        samples = [
+            image.pixelColor(x, y)
+            for y in range(step_y // 2, image.height(), step_y)
+            for x in range(step_x // 2, image.width(), step_x)
+        ]
+        preserved = sum(color.red() + color.blue() >= 96 for color in samples)
+        self.assertGreaterEqual(
+            preserved / len(samples),
+            0.95,
+            "Live framebuffer capture contains discarded or black pixels",
+        )
 
     def _flush_gui(self):
         for _ in range(4):

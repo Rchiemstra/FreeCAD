@@ -935,6 +935,11 @@ DockWindowItems* StdWorkbench::setupDockWindows() const
     root->addDockWidget("Std_TaskView", Qt::RightDockWidgetArea, Gui::DockWindowOption::VisibleTabbed);
     root->addDockWidget("Std_ReportView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
     root->addDockWidget("Std_PythonView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
+    root->addDockWidget(
+        "Std_NotificationView",
+        Qt::BottomDockWidgetArea,
+        Gui::DockWindowOption::HiddenTabbed
+    );
 
     // Dagview through parameter.
     ParameterGrp::handle group = App::GetApplication()

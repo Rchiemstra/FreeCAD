@@ -118,7 +118,7 @@ SoPreviewShape::SoPreviewShape()
 
 void SoPreviewShape::initClass()
 {
-    SO_NODE_INIT_CLASS(SoPreviewShape, SoSeparator, "Separator");
+    SO_NODE_INIT_CLASS(SoPreviewShape, SoFCShape, "SoFCShape");
 }
 
 EXTENSION_PROPERTY_SOURCE(PartGui::ViewProviderPreviewExtension, Gui::ViewProviderExtension)

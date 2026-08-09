@@ -32,13 +32,78 @@
 #include <CXX/Objects.hxx>
 
 #include "Property.h"
+#include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "ObjectIdentifier.h"
 #include "PropertyContainer.h"
-#include "DocumentMutationAuthority.h"
 #include "DocumentObject.h"
-
+#include "MutationClassification.h"
+#include "PropertyLinks.h"
+#include "PropertyStandard.h"
 
 using namespace App;
+
+namespace
+{
+
+void publishPropertyMutation(Property& property, bool structural)
+{
+    auto* container = property.getContainer();
+    auto* document = documentFromPropertyContainer(container);
+    if (!document) {
+        return;
+    }
+
+    MutationClassificationInput input;
+    input.source = structural ? CollaborationMutationSource::PropertyStatus
+                              : CollaborationMutationSource::PropertyValue;
+    input.mutationKind = structural ? MutationKind::StructuralProperty
+                                    : MutationKind::PropertyWrite;
+    input.propertyName = property.getName();
+    input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
+    if (!structural) {
+        if (property.isDerivedFrom(PropertyLinkBase::getClassTypeId())) {
+            input.propertyFamily = CollaborationPropertyFamily::Link;
+        }
+        else {
+            const auto type = property.getTypeId();
+            const bool exactModelValue = type == PropertyBool::getClassTypeId()
+                || type == PropertyInteger::getClassTypeId()
+                || type == PropertyFloat::getClassTypeId()
+                || type == PropertyString::getClassTypeId();
+            input.propertyFamily = exactModelValue ? CollaborationPropertyFamily::ModelValue
+                                                   : CollaborationPropertyFamily::Unknown;
+        }
+    }
+
+    if (const auto* object = dynamic_cast<const DocumentObject*>(container)) {
+        // Undo retains removed objects with their former Document pointer so
+        // they can be restored.  Mutating such detached storage is not a live
+        // document mutation and has neither a document name nor a revision
+        // identity to publish.
+        if (!object->isAttachedToDocument() || object->getDocument() != document
+            || !document->containsObject(object)) {
+            return;
+        }
+        input.containerKind = CollaborationContainerKind::DocumentObject;
+        input.objectName = object->getNameInDocument();
+        input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
+    }
+    else if (dynamic_cast<const Document*>(container)) {
+        input.containerKind = CollaborationContainerKind::Document;
+    }
+    const auto effects = classifyMutation(input);
+    document->recordCollaborationAtomicPresentationEffects(effects, &property);
+    if (structural || input.propertyFamily == CollaborationPropertyFamily::Link) {
+        Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
+    }
+    if (document->collaborationRevisionPublicationSuppressed(&property)) {
+        return;
+    }
+    static_cast<void>(document->collaborationRevisions().publish(effects));
+}
+
+}  // namespace
 
 
 //**************************************************************************
@@ -274,11 +339,31 @@ bool Property::isNotifyEnabled() const
 void Property::touch()
 {
     PropertyCleaner guard(this);
+    if (father) {
+        if (Document* doc = documentFromPropertyContainer(father)) {
+            enforceAtomicPresentationMutationTarget(doc);
+        }
+    }
+    StatusBits.set(Touched);
+    publishPropertyMutation(*this, false);
     if (father && isNotifyEnabled()) {
         father->onEarlyChange(this);
         father->onChanged(this);
     }
-    StatusBits.set(Touched);
+}
+
+void Property::purgeTouched()
+{
+    if (!isTouched()) {
+        return;
+    }
+    if (father) {
+        if (Document* doc = documentFromPropertyContainer(father)) {
+            enforceAtomicPresentationMutationTarget(doc);
+        }
+    }
+    StatusBits.reset(Touched);
+    publishPropertyMutation(*this, false);
 }
 
 void Property::setReadOnly(bool readOnly)
@@ -289,13 +374,19 @@ void Property::setReadOnly(bool readOnly)
 void Property::hasSetValue()
 {
     PropertyCleaner guard(this);
+    publishPropertyMutation(*this, false);
     if (father) {
         if (isNotifyEnabled()) {
             father->onChanged(this);
         }
         if (!testStatus(Busy)) {
             Base::BitsetLocker<decltype(StatusBits)> guard(StatusBits, Busy);
-            signalChanged(*this);
+            if (Document* doc = documentFromPropertyContainer(father)) {
+                doc->emitCollaborationPropertyChanged(*this);
+            }
+            else {
+                signalChanged(*this);
+            }
         }
     }
     StatusBits.set(Touched);
@@ -305,15 +396,7 @@ void Property::aboutToSetValue()
 {
     if (father) {
         if (Document* doc = documentFromPropertyContainer(father)) {
-            const char* objectName = nullptr;
-            if (const auto* obj = dynamic_cast<const DocumentObject*>(father)) {
-                objectName = obj->getNameInDocument();
-            }
-            enforceDocumentMutation(doc,
-                                    MutationKind::PropertyWrite,
-                                    MutationOrigin::Cpp,
-                                    objectName,
-                                    getName());
+            enforceAtomicPresentationMutationTarget(doc);
         }
         father->onBeforeChange(this);
     }
@@ -354,11 +437,21 @@ void Property::setStatusValue(unsigned long status)
     status &= ~mask;
     status |= StatusBits.to_ulong() & mask;
     unsigned long oldStatus = StatusBits.to_ulong();
+    if (status != oldStatus && father) {
+        if (auto* document = documentFromPropertyContainer(father)) {
+            enforceAtomicPresentationMutationTarget(document);
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *father);
+        }
+    }
     StatusBits = decltype(StatusBits)(status);
 
     if (father) {
-        static unsigned long _signalMask = (1 << ReadOnly) | (1 << Hidden);
-        if ((status & _signalMask) != (oldStatus & _signalMask)) {
+        if (status != oldStatus) {
+            publishPropertyMutation(*this, true);
+        }
+        static unsigned long signalMask = (1 << ReadOnly) | (1 << Hidden);
+        if ((status & signalMask) != (oldStatus & signalMask)) {
             father->onPropertyStatusChanged(*this, oldStatus);
         }
     }
