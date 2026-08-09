@@ -10,6 +10,9 @@
 #include <thread>
 
 #include <QApplication>
+#include <QOpenGLContext>
+#include <QOpenGLFramebufferObject>
+#include <QOpenGLWidget>
 #include <QScopeGuard>
 #include <QTemporaryDir>
 
@@ -1153,6 +1156,39 @@ TEST_F(CollaborationDomainIntegrationTest,
     view->show();
     guiDocument->setActiveWindow(view);
     QApplication::processEvents();
+
+    const QByteArray qtPlatform = qgetenv("QT_QPA_PLATFORM");
+    const bool offscreenPlatform =
+        qtPlatform.isEmpty() || qtPlatform == "offscreen";
+
+    auto* viewer = view->getViewer();
+    ASSERT_NE(viewer, nullptr);
+    auto* glViewport = dynamic_cast<QOpenGLWidget*>(viewer->viewport());
+    if (!glViewport) {
+        if (offscreenPlatform) {
+            GTEST_SKIP() << "OpenGL viewport unavailable for native personal render";
+        }
+        FAIL() << "OpenGL viewport unavailable for native personal render";
+    }
+    glViewport->makeCurrent();
+    QOpenGLContext* glContext = QOpenGLContext::currentContext();
+    if (!glContext || !glContext->isValid()) {
+        if (offscreenPlatform) {
+            GTEST_SKIP() << "OpenGL context unavailable (use X11/xcb or Xvfb; "
+                            "QT_QPA_PLATFORM=offscreen cannot capture FBOs)";
+        }
+        FAIL() << "OpenGL context unavailable (use X11/xcb or Xvfb; "
+                  "QT_QPA_PLATFORM=offscreen cannot capture FBOs)";
+    }
+    QOpenGLFramebufferObjectFormat fboFormat;
+    fboFormat.setSamples(0);
+    QOpenGLFramebufferObject fboProbe(8, 8, fboFormat);
+    if (!fboProbe.isValid()) {
+        if (offscreenPlatform) {
+            GTEST_SKIP() << "OpenGL framebuffer capture unavailable in this environment";
+        }
+        FAIL() << "OpenGL framebuffer capture unavailable in this environment";
+    }
 
     Gui::Selection().clearSelection(documentName.c_str());
     Gui::Selection().rmvPreselect();

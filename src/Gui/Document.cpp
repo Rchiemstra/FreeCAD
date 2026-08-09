@@ -2268,7 +2268,9 @@ std::optional<std::vector<std::uint8_t>> Document::renderPersonalViewContext(
             dynamic_cast<SoCamera*>(camera.get()),
             overlays.get());
         if (image.isNull()) {
-            throw Base::RuntimeError("personal context renderer returned an empty image");
+            throw Base::RuntimeError(
+                "personal context renderer returned an empty image "
+                "(OpenGL framebuffer capture unavailable or renderToImage failed)");
         }
         QByteArray encoded;
         QBuffer buffer(&encoded);
