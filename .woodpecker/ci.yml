@@ -306,6 +306,9 @@ steps:
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: core
+      # Branch-built FreeCADCmd exposes native collaboration; without this the
+      # core marker still collects those tests and they skip → verdict=1.
+      FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [push, tag, manual]
     commands:
