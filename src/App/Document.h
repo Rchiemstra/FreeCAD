@@ -1640,7 +1640,8 @@ private:
     void poisonCollaborationCommit(const char* diagnostic) noexcept;
     void ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind kind =
-            CollaborationStructuralMutationKind::Restricted) const;
+            CollaborationStructuralMutationKind::Restricted,
+        const char* mutation = nullptr) const;
     void ensureCollaborationDynamicPropertyMutationAllowed(
         const DocumentObject& object,
         short propertyType) const;

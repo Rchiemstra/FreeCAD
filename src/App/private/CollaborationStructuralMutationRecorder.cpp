@@ -3,6 +3,7 @@
 #include "CollaborationStructuralMutationRecorder.h"
 
 #include <algorithm>
+#include <string>
 
 #include "App/Application.h"
 #include "App/DocumentObject.h"
@@ -70,7 +71,15 @@ void CollaborationStructuralMutationRecorder::ensurePropertySchemaMutationAllowe
             && document.containsObject(object) && isNewStructuralObject(*document.d, *object)
         ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
         : Document::CollaborationStructuralMutationKind::Restricted;
-    document.ensureCollaborationStructuralMutationAllowed(kind);
+    std::string mutation = "propertySchema on ";
+    if (object) {
+        const char* objectName = object->getNameInDocument();
+        mutation += (objectName && *objectName) ? objectName : "<unnamed>";
+    }
+    else {
+        mutation += container.getTypeId().getName();
+    }
+    document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
 }
 
 void CollaborationStructuralMutationRecorder::ensureDynamicPropertyRemovalAllowed(

@@ -4,6 +4,7 @@
 
 #include "CollaborativeOperation.h"
 #include "Document.h"
+#include "DocumentObject.h"
 #include "MainThreadSignal.h"
 #include "PreparedEdit.h"
 
@@ -14,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -447,9 +449,24 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
         abortRestoreAndRethrow("unknown document recompute failure");
     }
     if (recomputeHasError) {
+        std::ostringstream detail;
+        detail << "document recompute reported an object error";
+        bool first = true;
+        for (App::DocumentObject* object : _document.getObjects()) {
+            if (!object || object->isValid()) {
+                continue;
+            }
+            detail << (first ? ": " : ", ");
+            first = false;
+            const char* name = object->getNameInDocument();
+            detail << (name && *name ? name : "<unnamed>");
+            if (const char* why = _document.getErrorDescription(object); why && *why) {
+                detail << " (" << why << ")";
+            }
+        }
         return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
                                           edit,
-                                          "document recompute reported an object error"));
+                                          detail.str()));
     }
 
     CollaborativePostconditionResult postcondition;

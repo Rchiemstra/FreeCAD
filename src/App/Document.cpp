@@ -26,6 +26,7 @@
 #include <stack>
 #include <deque>
 #include <iostream>
+#include <sstream>
 #include <utility>
 #include <set>
 #include <memory>
@@ -428,7 +429,8 @@ void Document::poisonCollaborationCommit(const char* diagnostic) noexcept
 }
 
 void Document::ensureCollaborationStructuralMutationAllowed(
-    CollaborationStructuralMutationKind kind) const
+    CollaborationStructuralMutationKind kind,
+    const char* mutation) const
 {
     enforceAtomicPresentationMutationTarget(*this);
     if (d->rollback) {
@@ -453,8 +455,26 @@ void Document::ensureCollaborationStructuralMutationAllowed(
     if ((d->collaborationCommitNotificationBarrier
          || collaborationLifecycleMutationBlocked())
         && !compatibilityGrant) {
-        throw Base::RuntimeError(
-            "object and dynamic-property structure changes are unavailable across a collaboration stable boundary");
+        const char* kindName = "Unknown";
+        switch (kind) {
+            case CollaborationStructuralMutationKind::Restricted:
+                kindName = "Restricted";
+                break;
+            case CollaborationStructuralMutationKind::Object:
+                kindName = "Object";
+                break;
+            case CollaborationStructuralMutationKind::DynamicPropertyOnNewObject:
+                kindName = "DynamicPropertyOnNewObject";
+                break;
+        }
+        std::stringstream message;
+        message << "object and dynamic-property structure changes are unavailable "
+                   "across a collaboration stable boundary (kind="
+                << kindName << ")";
+        if (mutation && *mutation) {
+            message << " (mutation=" << mutation << ")";
+        }
+        throw Base::RuntimeError(message.str());
     }
 }
 
@@ -480,7 +500,10 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
                        || deferredNewObject)
         ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
         : CollaborationStructuralMutationKind::Restricted;
-    ensureCollaborationStructuralMutationAllowed(kind);
+    const char* objectName = object.getNameInDocument();
+    std::string mutation = "addDynamicProperty on ";
+    mutation += (objectName && *objectName) ? objectName : "<unnamed>";
+    ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
 }
 
 void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
@@ -504,7 +527,17 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
                        || deferredNewObject)
         ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
         : CollaborationStructuralMutationKind::Restricted;
-    ensureCollaborationStructuralMutationAllowed(kind);
+    const char* objectName = object.getNameInDocument();
+    std::string mutation = "removeDynamicProperty on ";
+    mutation += (objectName && *objectName) ? objectName : "<unnamed>";
+    if (property) {
+        const char* propertyName = property->getName();
+        if (propertyName && *propertyName) {
+            mutation += ".";
+            mutation += propertyName;
+        }
+    }
+    ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
 }
 
 Document::CollaborationSpreadsheetRecomputeSchemaScope::
@@ -1241,19 +1274,25 @@ Property* Document::addDynamicProperty(std::string_view type,
                                        bool ro,
                                        bool hidden)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Restricted,
+        "Document::addDynamicProperty");
     return PropertyContainer::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
 }
 
 bool Document::renameDynamicProperty(Property* property, const char* name)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Restricted,
+        "Document::renameDynamicProperty");
     return PropertyContainer::renameDynamicProperty(property, name);
 }
 
 bool Document::removeDynamicProperty(const char* name)
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Restricted,
+        "Document::removeDynamicProperty");
     return PropertyContainer::removeDynamicProperty(name);
 }
 
@@ -2044,7 +2083,9 @@ documentClearPublicationRequests(const Document& document,
 
 void Document::clearDocument() // NOLINT
 {
-    ensureCollaborationStructuralMutationAllowed();
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Restricted,
+        "Document::clearDocument");
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
     d->activeObject = nullptr;
 
@@ -4816,8 +4857,11 @@ DocumentObject* Document::addObject(
     const bool isPartial
 )
 {
+    std::string mutation = "addObject(";
+    mutation += sType;
+    mutation += ")";
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, mutation.c_str());
     const Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -4849,8 +4893,11 @@ DocumentObject* Document::addObject(
 std::vector<DocumentObject*>
 Document::addObjects(const char* sType, const std::vector<std::string>& objectNames, bool isNew)
 {
+    std::string mutation = "addObjects(";
+    mutation += sType ? sType : "?";
+    mutation += ")";
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, mutation.c_str());
     Base::Type type =
         Base::Type::getTypeIfDerivedFrom(sType, DocumentObject::getClassTypeId(), true);
     if (type.isBad()) {
@@ -4890,7 +4937,7 @@ Document::addObjects(const char* sType, const std::vector<std::string>& objectNa
 void Document::addObject(DocumentObject* obj, const char* name)
 {
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, "addObject(DocumentObject*)");
     if (obj->getDocument()) {
         throw Base::RuntimeError("Document object is already added to a document");
     }
@@ -4903,7 +4950,7 @@ void Document::addObject(DocumentObject* obj, const char* name)
 void Document::_addObject(DocumentObject* pcObject, const char* pObjectName, AddObjectOptions options, const char* viewType)
 {
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, "_addObject");
     // get unique name
     string ObjectName;
     if (!Base::Tools::isNullOrEmpty(pObjectName)) {
@@ -5040,8 +5087,11 @@ void Document::removeObject(const DocumentObject* object)
 /// Remove an object out of the document
 void Document::removeObject(const char* sName)
 {
+    std::string mutation = "removeObject(";
+    mutation += sName ? sName : "?";
+    mutation += ")";
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, mutation.c_str());
     auto pos = d->objectMap.find(sName);
     if (pos == d->objectMap.end()){
         FC_MSG("Object " << sName << " already deleted in document " << getName());
@@ -5069,7 +5119,7 @@ void Document::removeObject(const char* sName)
 void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions options)
 {
     ensureCollaborationStructuralMutationAllowed(
-        CollaborationStructuralMutationKind::Object);
+        CollaborationStructuralMutationKind::Object, "_removeObject");
     if (!options.testFlag(RemoveObjectOption::MayRemoveWhileRecomputing) && testStatus(Document::Recomputing)) {
         FC_ERR("Cannot delete " << pcObject->getFullName() << " while recomputing");
         return;
