@@ -140,7 +140,7 @@ echo "== Run Phase 0 tests ==" | tee -a "${LOG_DIR}/steps.log"
   --gtest_filter='PhotoInspection*' \
   | tee "${LOG_DIR}/tests.log"
 
-grep -Eq '\[  PASSED  \] 78 tests?\.' "${LOG_DIR}/tests.log"
+grep -Eq '\[  PASSED  \] 79 tests?\.' "${LOG_DIR}/tests.log"
 echo "== Run digital print-path tests ==" | tee -a "${LOG_DIR}/steps.log"
 QT_QPA_PLATFORM=offscreen "${BUILD_DIR}/tests/InspectionGui_tests_run" \
   --gtest_filter='PhotoInspection*' \

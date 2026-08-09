@@ -80,6 +80,7 @@ struct InspectionExport SheetDraft
     VectorScene scene;
     std::string qrPayload;
     std::string projectionGeometrySha256;
+    std::string qrContentSha256;
     std::string sheetContentSha256;
 };
 

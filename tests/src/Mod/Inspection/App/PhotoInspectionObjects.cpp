@@ -31,6 +31,7 @@ SheetDraft draft()
     value.projection.bytes = {0x01, 0xa2};
     value.projection.sha256 = std::string(64, 'a');
     value.projectionGeometrySha256 = value.projection.sha256;
+    value.qrContentSha256 = std::string(64, 'c');
     value.sheetContentSha256 = std::string(64, 'b');
     value.scene.widthMm = 210.0;
     value.scene.heightMm = 297.0;
@@ -76,6 +77,8 @@ TEST(PhotoInspectionObjectTest, sheetInitializesOnceAndSealsImmutableProperties)
     EXPECT_EQ(object.Revision.getValue(), 2);
     EXPECT_EQ(object.CanonicalProjectionHex.getStrValue(), "01a2");
     EXPECT_TRUE(object.SheetContentSha256.testStatus(App::Property::ReadOnly));
+    EXPECT_EQ(object.QrContentSha256.getStrValue(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+    EXPECT_TRUE(object.QrContentSha256.testStatus(App::Property::ReadOnly));
     EXPECT_TRUE(object.SceneSvg.testStatus(App::Property::ReadOnly));
 
     EXPECT_FALSE(object.initializeFromDraft(draft(), reason));
@@ -91,6 +94,14 @@ TEST(PhotoInspectionObjectTest, invalidDraftCannotSealSheet)
     std::string reason;
     EXPECT_FALSE(object.initializeFromDraft(invalid, reason));
     EXPECT_FALSE(object.Sealed.getValue());
+    EXPECT_FALSE(reason.empty());
+
+    PhotoInspectionSheet objectMissingQr;
+    invalid = draft();
+    invalid.qrContentSha256.clear();
+    reason.clear();
+    EXPECT_FALSE(objectMissingQr.initializeFromDraft(invalid, reason));
+    EXPECT_FALSE(objectMissingQr.Sealed.getValue());
     EXPECT_FALSE(reason.empty());
 }
 

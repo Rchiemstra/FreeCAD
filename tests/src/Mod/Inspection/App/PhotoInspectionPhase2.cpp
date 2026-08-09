@@ -76,7 +76,11 @@ TEST(PhotoInspectionSheetTest, buildsDeterministicA4VectorSceneWhenCapabilityExi
     ASSERT_EQ(first.status, OperationStatus::Complete) << first.diagnostic.message;
     ASSERT_EQ(second.status, OperationStatus::Complete) << second.diagnostic.message;
     EXPECT_EQ(first.projectionGeometrySha256.size(), 64);
+    EXPECT_EQ(first.qrContentSha256.size(), 64);
     EXPECT_EQ(first.sheetContentSha256.size(), 64);
+    EXPECT_NE(first.qrContentSha256, first.sheetContentSha256);
+    EXPECT_NE(first.qrPayload.find(first.qrContentSha256), std::string::npos);
+    EXPECT_EQ(first.qrContentSha256, second.qrContentSha256);
     EXPECT_EQ(first.sheetContentSha256, second.sheetContentSha256);
     EXPECT_EQ(first.qrPayload, second.qrPayload);
     EXPECT_EQ(renderPhotoInspectionSvg(first.scene), renderPhotoInspectionSvg(second.scene));
@@ -100,6 +104,32 @@ TEST(PhotoInspectionSheetTest, svgUsesExactMillimetresAndVectorOnlyCriticalLayer
     EXPECT_NE(svg.find("data-layer=\"identity\""), std::string::npos);
     EXPECT_EQ(svg.find("<image"), std::string::npos);
     EXPECT_EQ(svg.find("transform=\"scale("), std::string::npos);
+}
+
+TEST(PhotoInspectionSheetTest, identityLabelClearsBottomLeftMarkerQuietZone)
+{
+    const auto draft = buildPhotoInspectionSheet(rectangleProjection(), identity(), {});
+    if (!OpenCVPhotoInspectionCompat::capability().available) {
+        EXPECT_EQ(draft.status, OperationStatus::Unavailable);
+        return;
+    }
+    ASSERT_EQ(draft.status, OperationStatus::Complete);
+
+    constexpr double marginMm = 5.0;
+    constexpr double markerQuietZone = 2.0;
+    constexpr double markerSize = 12.0;
+    constexpr double fontSizeMm = 3.0;
+    const double bottomMarkerTopY = draft.scene.heightMm - marginMm - markerQuietZone - markerSize;
+    const double minimumLabelBaselineY = bottomMarkerTopY - markerQuietZone - fontSizeMm;
+
+    const auto label = std::find_if(
+        draft.scene.primitives.begin(),
+        draft.scene.primitives.end(),
+        [](const ScenePrimitive& primitive) { return primitive.id == "sheet-identity-label"; }
+    );
+    ASSERT_NE(label, draft.scene.primitives.end());
+    ASSERT_FALSE(label->points.empty());
+    EXPECT_LE(label->points.front().y, minimumLabelBaselineY);
 }
 
 TEST(PhotoInspectionSheetTest, rejectsOversizeProjectionBeforeMarkerGeneration)

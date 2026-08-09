@@ -2,6 +2,7 @@
 
 set(InspectionGui_LIBS
     Inspection
+    Points
     FreeCADGui
 )
 

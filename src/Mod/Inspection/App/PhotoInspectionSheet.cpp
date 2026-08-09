@@ -262,10 +262,13 @@ SheetDraft buildPhotoInspectionSheet(
 
     const double furnitureInset = options.marginMm + markerQuietZoneMm + markerSizeMm
         + options.clearanceMm;
+    const double qrCornerGapMm = markerSizeMm + 2.0 * markerQuietZoneMm;
+    const double estimatedQrTopY = pageHeight - options.marginMm - qrBoxMm;
+    const double estimatedQrLeftX = pageWidth - options.marginMm - qrBoxMm - qrCornerGapMm;
     const double roiLeft = furnitureInset;
     const double roiTop = furnitureInset;
-    const double roiRight = pageWidth - furnitureInset;
-    const double roiBottom = pageHeight - furnitureInset;
+    const double roiRight = std::min(pageWidth - furnitureInset, estimatedQrLeftX - options.clearanceMm);
+    const double roiBottom = std::min(pageHeight - furnitureInset, estimatedQrTopY - options.clearanceMm);
     if (roiRight <= roiLeft || roiBottom <= roiTop) {
         result.diagnostic
             = error(DiagnosticCode::InvalidGeometry, "page has no usable measurement region");
@@ -353,25 +356,30 @@ SheetDraft buildPhotoInspectionSheet(
         );
     }
 
-    std::ostringstream semanticRecipe;
-    semanticRecipe.imbue(std::locale::classic());
-    semanticRecipe << "photo-inspection-sheet-v1\n"
-                   << projection.sha256 << '\n'
-                   << identity.seriesUuid << '\n'
-                   << identity.revisionUuid << '\n'
-                   << identity.sourceToken << '\n'
-                   << identity.revision << '\n'
-                   << toString(options.media) << '\n'
-                   << toString(options.orientation) << '\n'
-                   << number(options.marginMm) << '\n'
-                   << number(options.clearanceMm) << '\n'
-                   << number(options.userRotationDegrees) << '\n'
-                   << renderPhotoInspectionSvg(result.scene);
-    result.sheetContentSha256 = sha256Hex(bytes(semanticRecipe.str()));
+    const auto buildSemanticRecipe = [&](const VectorScene& scene) {
+        std::ostringstream semanticRecipe;
+        semanticRecipe.imbue(std::locale::classic());
+        semanticRecipe << "photo-inspection-sheet-v1\n"
+                       << projection.sha256 << '\n'
+                       << identity.seriesUuid << '\n'
+                       << identity.revisionUuid << '\n'
+                       << identity.sourceToken << '\n'
+                       << identity.revision << '\n'
+                       << toString(options.media) << '\n'
+                       << toString(options.orientation) << '\n'
+                       << number(options.marginMm) << '\n'
+                       << number(options.clearanceMm) << '\n'
+                       << number(options.userRotationDegrees) << '\n'
+                       << renderPhotoInspectionSvg(scene);
+        return semanticRecipe.str();
+    };
+
+    // QR embeds the pre-identity hash because the identity graphic cannot include itself.
+    result.qrContentSha256 = sha256Hex(bytes(buildSemanticRecipe(result.scene)));
     result.qrPayload = buildQrPayload(
         identity,
         result.projectionGeometrySha256,
-        result.sheetContentSha256,
+        result.qrContentSha256,
         options.media,
         options.orientation
     );
@@ -388,7 +396,7 @@ SheetDraft buildPhotoInspectionSheet(
     }
     const double qrModule = qrBoxMm / static_cast<double>(qr.rows + 8);
     const double encodedQrSize = qr.rows * qrModule;
-    const double qrX = pageWidth - options.marginMm - qrBoxMm + 4.0 * qrModule;
+    const double qrX = pageWidth - options.marginMm - qrBoxMm - qrCornerGapMm + 4.0 * qrModule;
     const double qrY = pageHeight - options.marginMm - qrBoxMm + 4.0 * qrModule;
     addBinaryGrid(result.scene, qr, *commandFromPhysical, "identity-qr", "identity", qrX, qrY, encodedQrSize);
 
@@ -397,9 +405,10 @@ SheetDraft buildPhotoInspectionSheet(
     referenceHorizontal.layer = "references";
     referenceHorizontal.kind = ScenePrimitiveKind::Polyline;
     referenceHorizontal.strokeWidthMm = 0.20;
+    const double referenceLineY = pageHeight - markerInset - markerSizeMm - 4.0;
     referenceHorizontal.points = {
-        compensate(*commandFromPhysical, {targetCenterX - 50.0, pageHeight - options.marginMm - 3.0}),
-        compensate(*commandFromPhysical, {targetCenterX + 50.0, pageHeight - options.marginMm - 3.0}),
+        compensate(*commandFromPhysical, {targetCenterX - 50.0, referenceLineY}),
+        compensate(*commandFromPhysical, {targetCenterX + 50.0, referenceLineY}),
     };
     result.scene.primitives.push_back(std::move(referenceHorizontal));
 
@@ -407,11 +416,14 @@ SheetDraft buildPhotoInspectionSheet(
     label.id = "sheet-identity-label";
     label.layer = "annotations";
     label.kind = ScenePrimitiveKind::Text;
+    const double labelBaselineY = referenceLineY - 4.0;
     label.points = {
-        compensate(*commandFromPhysical, {options.marginMm, pageHeight - options.marginMm - 1.0}),
+        compensate(*commandFromPhysical, {options.marginMm, labelBaselineY}),
     };
     label.text = "PHOTO INSPECTION " + identity.revisionUuid;
     result.scene.primitives.push_back(std::move(label));
+
+    result.sheetContentSha256 = sha256Hex(bytes(buildSemanticRecipe(result.scene)));
 
     result.status = OperationStatus::Complete;
     return result;

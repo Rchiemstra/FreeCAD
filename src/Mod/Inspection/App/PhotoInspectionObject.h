@@ -28,6 +28,7 @@ public:
     App::PropertyString SourceToken;
     App::PropertyLinkSub Source;
     App::PropertyString ProjectionGeometrySha256;
+    App::PropertyString QrContentSha256;
     App::PropertyString SheetContentSha256;
     App::PropertyString CanonicalProjectionHex;
     App::PropertyString SceneSvg;

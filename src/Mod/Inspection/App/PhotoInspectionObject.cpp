@@ -55,7 +55,20 @@ PhotoInspectionSheet::PhotoInspectionSheet()
         immutable,
         "Canonical projected geometry SHA-256"
     );
-    ADD_PROPERTY_TYPE(SheetContentSha256, (""), "Identity", immutable, "Canonical sheet content SHA-256");
+    ADD_PROPERTY_TYPE(
+        QrContentSha256,
+        (""),
+        "Identity",
+        immutable,
+        "SHA-256 of the pre-identity sheet semantic recipe; matches the sh field in the printed QR code"
+    );
+    ADD_PROPERTY_TYPE(
+        SheetContentSha256,
+        (""),
+        "Identity",
+        immutable,
+        "SHA-256 of the sealed sheet semantic recipe including identity graphics and the final SVG"
+    );
     ADD_PROPERTY_TYPE(
         CanonicalProjectionHex,
         (""),
@@ -80,6 +93,7 @@ PhotoInspectionSheet::PhotoInspectionSheet()
     SourceToken.setStatus(App::Property::ReadOnly, true);
     Source.setStatus(App::Property::ReadOnly, true);
     ProjectionGeometrySha256.setStatus(App::Property::ReadOnly, true);
+    QrContentSha256.setStatus(App::Property::ReadOnly, true);
     SheetContentSha256.setStatus(App::Property::ReadOnly, true);
     CanonicalProjectionHex.setStatus(App::Property::ReadOnly, true);
     SceneSvg.setStatus(App::Property::ReadOnly, true);
@@ -97,7 +111,8 @@ bool PhotoInspectionSheet::initializeFromDraft(const SheetDraft& draft, std::str
         return false;
     }
     if (draft.status != OperationStatus::Complete || draft.projection.bytes.empty()
-        || draft.projectionGeometrySha256.size() != 64 || draft.sheetContentSha256.size() != 64
+        || draft.projectionGeometrySha256.size() != 64 || draft.qrContentSha256.size() != 64
+        || draft.sheetContentSha256.size() != 64
         || !safeIdentity(draft.identity.seriesUuid) || !safeIdentity(draft.identity.revisionUuid)
         || draft.identity.revision < 1) {
         reason = "sheet draft is incomplete or invalid";
@@ -114,6 +129,7 @@ bool PhotoInspectionSheet::initializeFromDraft(const SheetDraft& draft, std::str
     Revision.setValue(draft.identity.revision);
     SourceToken.setValue(draft.identity.sourceToken);
     ProjectionGeometrySha256.setValue(draft.projectionGeometrySha256);
+    QrContentSha256.setValue(draft.qrContentSha256);
     SheetContentSha256.setValue(draft.sheetContentSha256);
     CanonicalProjectionHex.setValue(hex(draft.projection.bytes));
     SceneSvg.setValue(svg);
