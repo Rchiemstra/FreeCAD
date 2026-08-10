@@ -7,15 +7,42 @@ set(Inspection_LIBS
     Part
 )
 
-SET(Inspection_SRCS
+set(Inspection_SRCS
     AppInspection.cpp
     InspectionFeature.cpp
     InspectionFeature.h
+    OpenCVPhotoInspectionCompat.h
+    OpenCVPhotoInspectionCompat.cpp
+    PhotoInspectionTransform.h
+    PhotoInspectionTransform.cpp
+    PhotoInspectionSheet.h
+    PhotoInspectionSheet.cpp
+    PhotoInspectionProfiles.h
+    PhotoInspectionProfiles.cpp
+    PhotoInspectionEngine.h
+    PhotoInspectionEngine.cpp
+    PhotoInspectionImage.h
+    PhotoInspectionImage.cpp
+    PhotoInspectionMeasurement.h
+    PhotoInspectionMeasurement.cpp
+    PhotoInspectionReport.h
+    PhotoInspectionReport.cpp
+    PhotoInspectionSession.h
+    PhotoInspectionSession.cpp
+    PhotoInspectionStorage.h
+    PhotoInspectionStorage.cpp
+    PhotoInspectionObject.h
+    PhotoInspectionObject.cpp
+    PhotoInspectionProjection.h
+    PhotoInspectionProjection.cpp
+    PhotoInspectionTypes.h
+    PhotoInspectionTypes.cpp
     PreCompiled.h
 )
 
 set(Inspection_Scripts
     ../Init.py
+    ../PhotoInspectionMcpContract.json
 )
 
 add_library(Inspection SHARED ${Inspection_SRCS} ${Inspection_Scripts})
@@ -34,7 +61,29 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(Inspection ${Inspection_LIBS})
+target_link_libraries(Inspection PRIVATE ${Inspection_LIBS})
+
+if (PHOTO_INSPECTION_OPENCV_AVAILABLE)
+    target_include_directories(Inspection SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(Inspection PRIVATE ${OpenCV_LIBS})
+    set(
+        PhotoInspectionOpenCVDefinitions
+        FREECAD_PHOTO_INSPECTION_OPENCV_AVAILABLE=1
+        FREECAD_PHOTO_INSPECTION_OPENCV_VERSION="${PHOTO_INSPECTION_OPENCV_VERSION}"
+        FREECAD_PHOTO_INSPECTION_OPENCV_COMPONENTS="${PHOTO_INSPECTION_OPENCV_COMPONENTS}"
+        FREECAD_PHOTO_INSPECTION_OPENCV_COMPAT_BRANCH="${PHOTO_INSPECTION_OPENCV_COMPAT_BRANCH}"
+    )
+else()
+    set(
+        PhotoInspectionOpenCVDefinitions
+        FREECAD_PHOTO_INSPECTION_OPENCV_AVAILABLE=0
+        FREECAD_PHOTO_INSPECTION_OPENCV_VERSION=""
+        FREECAD_PHOTO_INSPECTION_OPENCV_COMPONENTS=""
+        FREECAD_PHOTO_INSPECTION_OPENCV_COMPAT_BRANCH="${PHOTO_INSPECTION_OPENCV_COMPAT_BRANCH}"
+        FREECAD_PHOTO_INSPECTION_OPENCV_REASON="${PHOTO_INSPECTION_OPENCV_REASON}"
+    )
+endif()
+target_compile_definitions(Inspection PRIVATE ${PhotoInspectionOpenCVDefinitions})
 
 if (MSVC)
     target_compile_options(Inspection PRIVATE /wd4251)

@@ -152,6 +152,11 @@ macro(InitializeFreeCADBuildOptions)
     option(BUILD_HELP "Build the FreeCAD help module" ON)
     option(BUILD_IMPORT "Build the FreeCAD import module" ON)
     option(BUILD_INSPECTION "Build the FreeCAD inspection module" ON)
+    option(
+        FREECAD_USE_OPENCV_PHOTO_INSPECTION
+        "Probe for OpenCV >=4.6,<5 and enable photo-inspection CV capabilities when complete"
+        OFF
+    )
     option(BUILD_JTREADER "Build the FreeCAD jt reader module" OFF)
     option(BUILD_MATERIAL "Build the FreeCAD material module" ON)
     option(BUILD_MATERIAL_EXTERNAL "Build the FreeCAD material external interface module" OFF)
