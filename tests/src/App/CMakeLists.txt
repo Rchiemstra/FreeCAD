@@ -18,6 +18,7 @@ add_executable(App_tests_run
         DocumentCollaborationService.cpp
         DocumentCommitCoordinator.cpp
         Document.cpp
+        DocumentFileWriter.cpp
         DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
         DocumentPropertyRevision.cpp
@@ -47,9 +48,14 @@ add_executable(App_tests_run
 )
 
 target_compile_definitions(App_tests_run PRIVATE DATADIR="${CMAKE_SOURCE_DIR}/data")
+target_compile_definitions(App_tests_run PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
 
 target_link_libraries(App_tests_run PRIVATE
     GTest::gmock_main
     ${Python3_LIBRARIES}
     FreeCADApp
 )
+
+if(WIN32)
+    target_link_libraries(App_tests_run PRIVATE advapi32)
+endif()

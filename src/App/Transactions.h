@@ -122,6 +122,19 @@ public:
     bool hasObject(const TransactionalObject* Obj) const;
 
     /**
+     * @brief Check whether the live object was introduced by this transaction.
+     *
+     * A newly attached object is stored internally as a deletion action because
+     * reversing the transaction removes it.  This query exposes that semantic
+     * state without making callers depend on TransactionObject's private
+     * representation.
+     *
+     * @param[in] Obj The live object to check.
+     * @return true if undoing this transaction removes the object.
+     */
+    bool isObjectNew(const TransactionalObject* Obj) const;
+
+    /**
      * @brief Record renaming a property.
      *
      * @param[in] Obj The object of which the property to rename.

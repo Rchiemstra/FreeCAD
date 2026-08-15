@@ -9,23 +9,31 @@
 #include "App/Application.h"
 #include "App/AutoTransaction.h"
 #include "App/Document.h"
+#include "App/DocumentObserverPython.h"
 #include "App/DocumentPy.h"
 #include "App/DocumentRevisionIndex.h"
 #include "App/FeatureTest.h"
 #include "App/MainThreadSignal.h"
 #include "App/MergeDocuments.h"
+#include "App/MutationClassification.h"
 #include "App/PropertyLinks.h"
 #include "App/PropertyStandard.h"
+#include "App/RecoverySnapshot.h"
 #include "App/Transactions.h"
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <sstream>
 #include <string>
@@ -83,6 +91,149 @@ public:
     bool rejected {false};
 };
 
+class LazyStructuralExecuteFeature final: public App::FeatureTest
+{
+public:
+    App::DocumentObjectExecReturn* execute() override
+    {
+        ++executeCalls;
+        if (addOwnSchema && !getPropertyByName("LazyExecuteProperty")) {
+            addDynamicProperty("App::PropertyString", "LazyExecuteProperty");
+        }
+        if (changeEditorStatus && editorTarget) {
+            auto* property = editorTarget->getPropertyByName("ExistingMetadataProperty");
+            try {
+                if (!property) {
+                    throw std::runtime_error("missing editor-status target property");
+                }
+                property->setStatus(App::Property::ReadOnly, true);
+                editorStatusChanged = true;
+            }
+            catch (const Base::Exception&) {
+                editorStatusRejected = true;
+            }
+        }
+        if (attemptRestrictedMutations && editorTarget) {
+            try {
+                static_cast<void>(editorTarget->addDynamicProperty(
+                    "App::PropertyString", "ForbiddenExistingSchema"));
+            }
+            catch (const Base::Exception&) {
+                existingSchemaRejected = true;
+            }
+            try {
+                static_cast<void>(getDocument()->addObject<App::FeatureTest>(
+                    "ForbiddenExecuteObject"));
+            }
+            catch (const Base::Exception&) {
+                objectAddRejected = true;
+            }
+            try {
+                getDocument()->removeObject(editorTarget->getNameInDocument());
+            }
+            catch (const Base::Exception&) {
+                objectRemoveRejected = true;
+            }
+            try {
+                static_cast<void>(getDocument()->openTransaction("forbidden execute transaction"));
+            }
+            catch (const Base::Exception&) {
+                transactionControlRejected = true;
+            }
+            try {
+                static_cast<void>(getDocument()->undo());
+            }
+            catch (const Base::Exception&) {
+                historyControlRejected = true;
+            }
+        }
+        return App::DocumentObject::StdReturn;
+    }
+
+    App::FeatureTest* editorTarget {nullptr};
+    int executeCalls {0};
+    bool addOwnSchema {false};
+    bool changeEditorStatus {false};
+    bool attemptRestrictedMutations {false};
+    bool editorStatusChanged {false};
+    bool editorStatusRejected {false};
+    bool existingSchemaRejected {false};
+    bool objectAddRejected {false};
+    bool objectRemoveRejected {false};
+    bool transactionControlRejected {false};
+    bool historyControlRejected {false};
+};
+
+class RawStatusFeature final: public App::FeatureTest
+{
+public:
+    void setNoTouchWithoutMutationGuard(const bool enabled)
+    {
+        StatusBits.set(App::ObjectStatus::NoTouch, enabled);
+    }
+};
+
+class DetachedTransactionFeature final: public App::FeatureTest
+{
+public:
+    const char* detachFromDocument() override
+    {
+        return "Detached";
+    }
+};
+
+class ScopedTemporaryPath final
+{
+public:
+    explicit ScopedTemporaryPath(const std::string& stem)
+        : path(std::filesystem::temp_directory_path()
+               / (stem + "_"
+                  + std::to_string(
+                      std::chrono::steady_clock::now().time_since_epoch().count())
+                  + ".FCStd"))
+    {}
+
+    ~ScopedTemporaryPath()
+    {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+
+    std::filesystem::path path;
+};
+
+std::string readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("failed to read save-boundary test file");
+    }
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
+}
+
+class ScopedDocumentClose final
+{
+public:
+    explicit ScopedDocumentClose(std::string name)
+        : _name(std::move(name))
+    {}
+
+    ~ScopedDocumentClose()
+    {
+        try {
+            if (App::GetApplication().getDocument(_name.c_str())) {
+                static_cast<void>(App::GetApplication().closeDocument(_name.c_str()));
+            }
+        }
+        catch (...) {
+        }
+    }
+
+private:
+    std::string _name;
+};
+
 class PyObjectRef final
 {
 public:
@@ -106,6 +257,96 @@ public:
 private:
     PyObject* _object;
 };
+
+class PythonDocumentObserverGuard final
+{
+public:
+    explicit PythonDocumentObserverGuard(PyObject* observer)
+        : _observer(observer)
+    {
+        App::DocumentObserverPython::addObserver(_observer);
+    }
+
+    ~PythonDocumentObserverGuard()
+    {
+        App::DocumentObserverPython::removeObserver(_observer);
+    }
+
+    PythonDocumentObserverGuard(const PythonDocumentObserverGuard&) = delete;
+    PythonDocumentObserverGuard& operator=(const PythonDocumentObserverGuard&) = delete;
+
+private:
+    Py::Object _observer;
+};
+
+struct PythonErrorInfo
+{
+    bool present {false};
+    bool matchesExpected {false};
+    std::string type;
+    std::string message;
+};
+
+PythonErrorInfo takePythonError(PyObject* expectedType = nullptr)
+{
+    PythonErrorInfo info;
+    info.present = PyErr_Occurred() != nullptr;
+    info.matchesExpected = info.present && expectedType
+        && PyErr_ExceptionMatches(expectedType);
+    if (!info.present) {
+        info.message = "<no Python exception>";
+        return info;
+    }
+
+    PyObject* errorType = nullptr;
+    PyObject* errorValue = nullptr;
+    PyObject* errorTraceback = nullptr;
+    PyErr_Fetch(&errorType, &errorValue, &errorTraceback);
+    PyErr_NormalizeException(&errorType, &errorValue, &errorTraceback);
+
+    if (errorValue) {
+        if (const char* typeName = Py_TYPE(errorValue)->tp_name) {
+            info.type = typeName;
+        }
+    }
+    else if (errorType && PyType_Check(errorType)) {
+        if (const char* typeName = reinterpret_cast<PyTypeObject*>(errorType)->tp_name) {
+            info.type = typeName;
+        }
+    }
+
+    PyObject* displayObject = errorValue ? errorValue : errorType;
+    if (displayObject) {
+        PyObjectRef errorText(PyObject_Str(displayObject));
+        if (errorText.get()) {
+            if (const char* utf8 = PyUnicode_AsUTF8(errorText.get())) {
+                info.message = utf8;
+            }
+        }
+    }
+    if (info.message.empty()) {
+        info.message = "<unable to format Python exception>";
+    }
+
+    Py_XDECREF(errorType);
+    Py_XDECREF(errorValue);
+    Py_XDECREF(errorTraceback);
+    // Formatting an exception can itself fail. Never let a test assertion or
+    // fixture teardown run with a stale Python exception pending.
+    PyErr_Clear();
+    return info;
+}
+
+::testing::AssertionResult pythonObjectAvailable(PyObject* object)
+{
+    if (object) {
+        return ::testing::AssertionSuccess();
+    }
+    const auto error = takePythonError();
+    return ::testing::AssertionFailure()
+        << (error.type.empty() ? "Python call failed" : error.type) << ": "
+        << error.message;
+}
 
 bool addGroupExtension(App::DocumentObject& object)
 {
@@ -178,10 +419,165 @@ bool removeDynamicProperty(App::DocumentObject& object, const char* propertyName
     return result.get() && PyObject_IsTrue(result.get()) == 1;
 }
 
+enum class SaveAttempt
+{
+    None,
+    LegacyCanonical,
+    OutcomeCanonical,
+    ForceCanonical,
+    LegacySaveAs,
+    PolicySaveAs,
+    OutcomeSaveAs,
+    LegacyCopy,
+    OutcomeCopy,
+    RecoverySnapshot,
+    RecoveryOutcomeReport
+};
+
+void performSaveAttempt(App::Document& document,
+                        const SaveAttempt attempt,
+                        const std::string& saveAsPath,
+                        const std::string& copyPath)
+{
+    switch (attempt) {
+        case SaveAttempt::None:
+            return;
+        case SaveAttempt::LegacyCanonical:
+            static_cast<void>(document.save());
+            return;
+        case SaveAttempt::OutcomeCanonical:
+            static_cast<void>(document.saveWithOutcome());
+            return;
+        case SaveAttempt::ForceCanonical:
+            static_cast<void>(document.forceSave());
+            return;
+        case SaveAttempt::LegacySaveAs:
+            static_cast<void>(document.saveAs(saveAsPath.c_str()));
+            return;
+        case SaveAttempt::PolicySaveAs:
+            static_cast<void>(document.saveAsWithPolicy(saveAsPath.c_str(), true));
+            return;
+        case SaveAttempt::OutcomeSaveAs:
+            static_cast<void>(document.saveAsWithOutcome(saveAsPath.c_str(), true));
+            return;
+        case SaveAttempt::LegacyCopy:
+            static_cast<void>(document.saveCopy(copyPath.c_str()));
+            return;
+        case SaveAttempt::OutcomeCopy:
+            static_cast<void>(document.saveCopyWithOutcome(copyPath.c_str()));
+            return;
+        case SaveAttempt::RecoverySnapshot:
+            static_cast<void>(App::writeRecoverySnapshotToTransientDir(
+                document, App::RecoverySnapshotSaveOptions {}));
+            return;
+        case SaveAttempt::RecoveryOutcomeReport:
+            document.reportRecoverySaveOutcome(copyPath, true);
+            return;
+    }
+}
+
+void expectNoRecoveryArtifacts(const App::Document& document)
+{
+    const auto directory = std::filesystem::path(document.TransientDir.getStrValue());
+    constexpr std::array names {
+        "fc_recovery_file.xml",
+        "fc_recovery_file.xml.tmp",
+        "fc_recovery_file.fcstd",
+        "fc_recovery_file.fcstd.tmp",
+        "fc_recovery_files",
+        "fc_recovery_files.tmp",
+    };
+    for (const auto* name : names) {
+        EXPECT_FALSE(std::filesystem::exists(directory / name)) << name;
+    }
+}
+
+struct DirectRevisionMutationProbe
+{
+    App::Document* targetDocument {nullptr};
+    App::Document* foreignDocument {nullptr};
+    App::DocumentRevisionPublicationReservation* foreignReservation {nullptr};
+    bool targetPublishRejected {false};
+    bool targetReserveRejected {false};
+    bool targetBindRejected {false};
+    bool foreignPublishRejected {false};
+    bool foreignReserveRejected {false};
+    bool foreignBindRejected {false};
+    bool legacyNoIndexAdmissionRejected {false};
+    bool foreignCancelCompleted {false};
+};
+
+void attemptDirectRevisionMutations(DirectRevisionMutationProbe& probe)
+{
+    try {
+        App::enforceCollaborationRevisionMutationAllowed();
+    }
+    catch (const Base::Exception&) {
+        probe.legacyNoIndexAdmissionRejected = true;
+    }
+    const auto attempt = [](App::Document& document,
+                            bool& publishRejected,
+                            bool& reserveRejected,
+                            bool& bindRejected) {
+        try {
+            static_cast<void>(document.collaborationRevisions()
+                                  .publishUnknownModelMutation());
+        }
+        catch (const Base::Exception&) {
+            publishRejected = true;
+        }
+        try {
+            auto reservation = document.collaborationRevisions().reservePublication({}, {});
+            static_cast<void>(reservation.ready());
+        }
+        catch (const Base::Exception&) {
+            reserveRejected = true;
+        }
+        try {
+            const auto identity = document.collaborationIdentity();
+            document.collaborationRevisions().bindDocumentIdentity(
+                identity.instanceId, identity.lifecycleEpoch);
+        }
+        catch (const Base::Exception&) {
+            bindRejected = true;
+        }
+    };
+
+    if (probe.targetDocument) {
+        attempt(*probe.targetDocument,
+                probe.targetPublishRejected,
+                probe.targetReserveRejected,
+                probe.targetBindRejected);
+    }
+    if (probe.foreignDocument) {
+        attempt(*probe.foreignDocument,
+                probe.foreignPublishRejected,
+                probe.foreignReserveRejected,
+                probe.foreignBindRejected);
+    }
+    if (probe.foreignReservation) {
+        probe.foreignReservation->cancel();
+        probe.foreignCancelCompleted = !probe.foreignReservation->ready();
+    }
+}
+
+void expectAllDirectRevisionMutationsRejected(
+    const DirectRevisionMutationProbe& probe)
+{
+    EXPECT_TRUE(probe.targetPublishRejected);
+    EXPECT_TRUE(probe.targetReserveRejected);
+    EXPECT_TRUE(probe.targetBindRejected);
+    EXPECT_TRUE(probe.foreignPublishRejected);
+    EXPECT_TRUE(probe.foreignReserveRejected);
+    EXPECT_TRUE(probe.foreignBindRejected);
+    EXPECT_TRUE(probe.legacyNoIndexAdmissionRejected);
+}
+
 struct CallbackProbe
 {
     App::Document* nativeDocument {nullptr};
     App::FeatureTest* target {nullptr};
+    App::FeatureTest* foreignTarget {nullptr};
     PyObject* document {nullptr};
     int calls {0};
     int nestedCalls {0};
@@ -189,6 +585,11 @@ struct CallbackProbe
     bool raisePythonError {false};
     bool reenter {false};
     bool addTransient {false};
+    bool addLazyStructuralFeature {false};
+    bool mutateForeignTarget {false};
+    bool lazyAddOwnSchema {false};
+    bool lazyChangeEditorStatus {false};
+    bool lazyAttemptRestrictedMutations {false};
     bool changeTransientStaticProperty {false};
     bool addDynamicProperty {false};
     bool addDynamicPropertyToTransient {false};
@@ -215,6 +616,20 @@ struct CallbackProbe
     bool touchTarget {false};
     bool recomputeDocument {false};
     bool recomputeTarget {false};
+    bool changeTargetLabel {false};
+    bool attemptThreadedMutations {false};
+    bool threadedTargetMutationRejected {false};
+    bool threadedForeignMutationRejected {false};
+    bool threadedLifecycleMutationRejected {false};
+    bool attemptHostileBoundaryRelease {false};
+    bool hostileForeignMutationRejected {false};
+    bool hostileLifecycleMutationRejected {false};
+    bool hostileRevisionMutationRejected {false};
+    DirectRevisionMutationProbe* revisionMutationProbe {nullptr};
+    SaveAttempt saveAttempt {SaveAttempt::None};
+    std::string saveAsPath;
+    std::string copyPath;
+    std::string threadedLifecycleDocumentName;
     int* executeCalls {nullptr};
     int executeCallsObservedAfterCallbackRecompute {-1};
     const std::string* importArchive {nullptr};
@@ -283,11 +698,101 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
     }
 
     try {
+        if (probe->attemptHostileBoundaryRelease && probe->nativeDocument) {
+            // ABI-preserved public teardown surfaces do not own the prepared
+            // coordinator target/audit and therefore cannot release it.
+            App::endAtomicPresentationMutationTarget(*probe->nativeDocument);
+            App::endCollaborationReadOnlyMutationTarget(*probe->nativeDocument);
+            probe->nativeDocument->endCollaborationAtomicPresentationAudit();
+            try {
+                if (!probe->foreignTarget) {
+                    throw std::runtime_error("missing hostile foreign target");
+                }
+                probe->foreignTarget->Label.setValue("Forbidden after hostile end");
+            }
+            catch (const Base::Exception&) {
+                probe->hostileForeignMutationRejected = true;
+            }
+            try {
+                static_cast<void>(App::GetApplication().newDocument(
+                    probe->threadedLifecycleDocumentName.c_str()));
+            }
+            catch (const Base::Exception&) {
+                probe->hostileLifecycleMutationRejected = true;
+            }
+            try {
+                static_cast<void>(probe->nativeDocument->collaborationRevisions()
+                                      .publishUnknownModelMutation());
+            }
+            catch (const Base::Exception&) {
+                probe->hostileRevisionMutationRejected = true;
+            }
+        }
+        if (probe->attemptThreadedMutations) {
+            std::thread worker([probe] {
+                try {
+                    if (!probe->target) {
+                        throw std::runtime_error("missing threaded target");
+                    }
+                    probe->target->Label.setValue("Forbidden threaded target label");
+                }
+                catch (const Base::Exception&) {
+                    probe->threadedTargetMutationRejected = true;
+                }
+                catch (...) {
+                }
+                try {
+                    if (!probe->foreignTarget) {
+                        throw std::runtime_error("missing threaded foreign target");
+                    }
+                    probe->foreignTarget->Label.setValue(
+                        "Forbidden threaded foreign label");
+                }
+                catch (const Base::Exception&) {
+                    probe->threadedForeignMutationRejected = true;
+                }
+                catch (...) {
+                }
+                try {
+                    static_cast<void>(App::GetApplication().newDocument(
+                        probe->threadedLifecycleDocumentName.c_str()));
+                }
+                catch (const Base::Exception&) {
+                    probe->threadedLifecycleMutationRejected = true;
+                }
+                catch (...) {
+                }
+            });
+            worker.join();
+        }
+        if (probe->mutateForeignTarget) {
+            if (!probe->foreignTarget) {
+                throw std::runtime_error("missing foreign mutation target");
+            }
+            probe->foreignTarget->Label.setValue("Forbidden foreign callback label");
+        }
+        if (probe->revisionMutationProbe) {
+            attemptDirectRevisionMutations(*probe->revisionMutationProbe);
+        }
         if (probe->addTransient) {
             if (!probe->nativeDocument
                 || !probe->nativeDocument->addObject<App::FeatureTest>("Transient")) {
                 throw std::runtime_error("failed to add transient object");
             }
+        }
+        if (probe->addLazyStructuralFeature) {
+            if (!probe->nativeDocument) {
+                throw std::runtime_error("missing document for lazy structural feature");
+            }
+            auto feature = std::make_unique<LazyStructuralExecuteFeature>();
+            feature->editorTarget = probe->target;
+            feature->addOwnSchema = probe->lazyAddOwnSchema;
+            feature->changeEditorStatus = probe->lazyChangeEditorStatus;
+            feature->attemptRestrictedMutations =
+                probe->lazyAttemptRestrictedMutations;
+            probe->nativeDocument->addObject(feature.get(), "LazyStructuralFeature");
+            feature->touch();
+            static_cast<void>(feature.release());
         }
         if (probe->addDynamicProperty) {
             if (!probe->target
@@ -456,6 +961,18 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
                 ? *probe->executeCalls
                 : -1;
         }
+        if (probe->changeTargetLabel && probe->target) {
+            probe->target->Label.setValue("Compatibility callback");
+        }
+        if (probe->saveAttempt != SaveAttempt::None) {
+            if (!probe->nativeDocument) {
+                throw std::runtime_error("missing document for save attempt");
+            }
+            performSaveAttempt(*probe->nativeDocument,
+                               probe->saveAttempt,
+                               probe->saveAsPath,
+                               probe->copyPath);
+        }
         if (probe->directImportReader) {
             static_cast<void>(
                 probe->nativeDocument->importObjects(*probe->directImportReader));
@@ -550,6 +1067,7 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
         }
         if (!probe->removeTarget && !probe->removeTransient
             && !probe->addDynamicProperty && !probe->clearDocument
+            && !probe->addLazyStructuralFeature && !probe->mutateForeignTarget
             && !probe->addDynamicPropertyToTransient
             && !probe->changeTransientStaticProperty
             && !probe->setPropertyStatusOnTarget
@@ -567,6 +1085,9 @@ PyObject* runCompatibilityCallback(PyObject* self, PyObject*)
             && !probe->openTransaction && !probe->undo && !probe->redo
             && !probe->recomputeDocument
             && !probe->recomputeTarget
+            && !probe->changeTargetLabel
+            && !probe->attemptThreadedMutations
+            && probe->saveAttempt == SaveAttempt::None
             && !probe->importArchive
             && probe->target) {
             probe->target->Label.setValue("Compatibility callback");
@@ -597,6 +1118,311 @@ PyObject* makeCompatibilityCallback(CallbackProbe& probe)
     };
     PyObjectRef capsule(
         PyCapsule_New(&probe, "App.DocumentCompatibilityCallbackProbe", nullptr));
+    if (!capsule.get()) {
+        return nullptr;
+    }
+    return PyCFunction_NewEx(&definition, capsule.get(), nullptr);
+}
+
+struct PostconditionProbe
+{
+    App::Document* document {nullptr};
+    App::FeatureTest* target {nullptr};
+    App::Document* foreignDocument {nullptr};
+    App::FeatureTest* foreignTarget {nullptr};
+    RawStatusFeature* rawStatusTarget {nullptr};
+    int calls {0};
+    bool satisfied {true};
+    bool returnFalseyInteger {false};
+    bool raisePythonError {false};
+    bool requireLazyFeature {false};
+    bool attemptRestrictedMutations {false};
+    bool attemptOrdinaryValueMutation {false};
+    bool attemptTouch {false};
+    bool attemptRecompute {false};
+    bool attemptForeignMutation {false};
+    bool attemptNewDocument {false};
+    bool attemptCloseDocument {false};
+    bool attemptActiveDocumentChange {false};
+    bool attemptRevisionPublication {false};
+    DirectRevisionMutationProbe* revisionMutationProbe {nullptr};
+    bool bypassNoTouchGuard {false};
+    bool attemptThreadedMutations {false};
+    bool threadedTargetMutationRejected {false};
+    bool threadedForeignMutationRejected {false};
+    bool threadedLifecycleMutationRejected {false};
+    bool attemptHostileBoundaryRelease {false};
+    bool hostileTargetMutationRejected {false};
+    bool hostileForeignMutationRejected {false};
+    bool hostileLifecycleMutationRejected {false};
+    bool hostileRevisionMutationRejected {false};
+    SaveAttempt saveAttempt {SaveAttempt::None};
+    std::string saveAsPath;
+    std::string copyPath;
+    std::string threadedLifecycleDocumentName;
+    bool saveRejected {false};
+    bool existingSchemaRejected {false};
+    bool newObjectSchemaRejected {false};
+    bool objectAddRejected {false};
+    bool objectRemoveRejected {false};
+    bool transactionControlRejected {false};
+    bool historyControlRejected {false};
+    bool ordinaryValueRejected {false};
+    bool touchRejected {false};
+    bool recomputeRejected {false};
+    bool foreignMutationRejected {false};
+    bool newDocumentRejected {false};
+    bool closeDocumentRejected {false};
+    bool activeDocumentChangeRejected {false};
+    bool revisionPublicationRejected {false};
+};
+
+PyObject* runCompatibilityPostcondition(PyObject* self, PyObject*)
+{
+    auto* probe = static_cast<PostconditionProbe*>(
+        PyCapsule_GetPointer(self, "App.DocumentCompatibilityPostconditionProbe"));
+    if (!probe) {
+        return nullptr;
+    }
+    ++probe->calls;
+    if (probe->attemptHostileBoundaryRelease && probe->document) {
+        App::endAtomicPresentationMutationTarget(*probe->document);
+        App::endCollaborationReadOnlyMutationTarget(*probe->document);
+        probe->document->endCollaborationAtomicPresentationAudit();
+        try {
+            if (!probe->target) {
+                throw std::runtime_error("missing hostile postcondition target");
+            }
+            probe->target->Label.setValue("Forbidden after hostile postcondition end");
+        }
+        catch (const Base::Exception&) {
+            probe->hostileTargetMutationRejected = true;
+        }
+        try {
+            if (!probe->foreignTarget) {
+                throw std::runtime_error("missing hostile postcondition foreign target");
+            }
+            probe->foreignTarget->Label.setValue(
+                "Forbidden foreign after hostile postcondition end");
+        }
+        catch (const Base::Exception&) {
+            probe->hostileForeignMutationRejected = true;
+        }
+        try {
+            static_cast<void>(App::GetApplication().newDocument(
+                probe->threadedLifecycleDocumentName.c_str()));
+        }
+        catch (const Base::Exception&) {
+            probe->hostileLifecycleMutationRejected = true;
+        }
+        try {
+            static_cast<void>(probe->document->collaborationRevisions()
+                                  .publishUnknownModelMutation());
+        }
+        catch (const Base::Exception&) {
+            probe->hostileRevisionMutationRejected = true;
+        }
+    }
+    if (probe->requireLazyFeature) {
+        auto* object = probe->document
+            ? probe->document->getObject("LazyStructuralFeature")
+            : nullptr;
+        if (!object || !object->isValid()
+            || !object->getPropertyByName("LazyExecuteProperty")) {
+            PyErr_SetString(PyExc_AssertionError,
+                            "lazy structural feature was not valid after recompute");
+            return nullptr;
+        }
+    }
+    if (probe->attemptThreadedMutations) {
+        std::thread worker([probe] {
+            try {
+                if (!probe->target) {
+                    throw std::runtime_error("missing threaded postcondition target");
+                }
+                probe->target->Label.setValue(
+                    "Forbidden threaded postcondition target label");
+            }
+            catch (const Base::Exception&) {
+                probe->threadedTargetMutationRejected = true;
+            }
+            catch (...) {
+            }
+            try {
+                if (!probe->foreignTarget) {
+                    throw std::runtime_error(
+                        "missing threaded postcondition foreign target");
+                }
+                probe->foreignTarget->Label.setValue(
+                    "Forbidden threaded postcondition foreign label");
+            }
+            catch (const Base::Exception&) {
+                probe->threadedForeignMutationRejected = true;
+            }
+            catch (...) {
+            }
+            try {
+                static_cast<void>(App::GetApplication().newDocument(
+                    probe->threadedLifecycleDocumentName.c_str()));
+            }
+            catch (const Base::Exception&) {
+                probe->threadedLifecycleMutationRejected = true;
+            }
+            catch (...) {
+            }
+        });
+        worker.join();
+    }
+    if (probe->attemptRestrictedMutations && probe->document && probe->target) {
+        try {
+            static_cast<void>(probe->target->addDynamicProperty(
+                "App::PropertyString", "ForbiddenPostconditionSchema"));
+        }
+        catch (const Base::Exception&) {
+            probe->existingSchemaRejected = true;
+        }
+        try {
+            auto* newObject = probe->document->getObject("LazyStructuralFeature");
+            if (!newObject) {
+                throw Base::RuntimeError("missing new structural feature");
+            }
+            static_cast<void>(newObject->addDynamicProperty(
+                "App::PropertyString", "ForbiddenPostconditionNewObjectSchema"));
+        }
+        catch (const Base::Exception&) {
+            probe->newObjectSchemaRejected = true;
+        }
+        try {
+            static_cast<void>(probe->document->addObject<App::FeatureTest>(
+                "ForbiddenPostconditionObject"));
+        }
+        catch (const Base::Exception&) {
+            probe->objectAddRejected = true;
+        }
+        try {
+            probe->document->removeObject(probe->target->getNameInDocument());
+        }
+        catch (const Base::Exception&) {
+            probe->objectRemoveRejected = true;
+        }
+        try {
+            static_cast<void>(
+                probe->document->openTransaction("forbidden postcondition transaction"));
+        }
+        catch (const Base::Exception&) {
+            probe->transactionControlRejected = true;
+        }
+        try {
+            static_cast<void>(probe->document->redo());
+        }
+        catch (const Base::Exception&) {
+            probe->historyControlRejected = true;
+        }
+    }
+    if (probe->attemptOrdinaryValueMutation && probe->target) {
+        try {
+            probe->target->Label.setValue("Forbidden postcondition label");
+        }
+        catch (const Base::Exception&) {
+            probe->ordinaryValueRejected = true;
+        }
+    }
+    if (probe->attemptTouch && probe->target) {
+        try {
+            probe->target->touch();
+        }
+        catch (const Base::Exception&) {
+            probe->touchRejected = true;
+        }
+    }
+    if (probe->attemptRecompute && probe->document) {
+        try {
+            static_cast<void>(probe->document->recompute());
+        }
+        catch (const Base::Exception&) {
+            probe->recomputeRejected = true;
+        }
+    }
+    if (probe->attemptForeignMutation && probe->foreignTarget) {
+        try {
+            probe->foreignTarget->Label.setValue("Forbidden foreign label");
+        }
+        catch (const Base::Exception&) {
+            probe->foreignMutationRejected = true;
+        }
+    }
+    if (probe->attemptNewDocument) {
+        try {
+            static_cast<void>(App::GetApplication().newDocument(
+                "ForbiddenPostconditionDocument"));
+        }
+        catch (const Base::Exception&) {
+            probe->newDocumentRejected = true;
+        }
+    }
+    if (probe->attemptCloseDocument && probe->foreignDocument) {
+        try {
+            static_cast<void>(
+                App::GetApplication().closeDocument(probe->foreignDocument));
+        }
+        catch (const Base::Exception&) {
+            probe->closeDocumentRejected = true;
+        }
+    }
+    if (probe->attemptActiveDocumentChange && probe->foreignDocument) {
+        try {
+            App::GetApplication().setActiveDocument(probe->foreignDocument);
+        }
+        catch (const Base::Exception&) {
+            probe->activeDocumentChangeRejected = true;
+        }
+    }
+    if (probe->attemptRevisionPublication && probe->document) {
+        try {
+            static_cast<void>(probe->document->collaborationRevisions()
+                                  .publishUnknownModelMutation());
+        }
+        catch (const Base::Exception&) {
+            probe->revisionPublicationRejected = true;
+        }
+    }
+    if (probe->revisionMutationProbe) {
+        attemptDirectRevisionMutations(*probe->revisionMutationProbe);
+    }
+    if (probe->bypassNoTouchGuard && probe->rawStatusTarget) {
+        probe->rawStatusTarget->setNoTouchWithoutMutationGuard(true);
+    }
+    if (probe->saveAttempt != SaveAttempt::None && probe->document) {
+        try {
+            performSaveAttempt(*probe->document,
+                               probe->saveAttempt,
+                               probe->saveAsPath,
+                               probe->copyPath);
+        }
+        catch (const Base::Exception&) {
+            probe->saveRejected = true;
+        }
+    }
+    if (probe->raisePythonError) {
+        PyErr_SetString(PyExc_ValueError, "original compatibility postcondition failure");
+        return nullptr;
+    }
+    if (probe->returnFalseyInteger) {
+        return PyLong_FromLong(0);
+    }
+    return PyBool_FromLong(probe->satisfied ? 1 : 0);
+}
+
+PyObject* makeCompatibilityPostcondition(PostconditionProbe& probe)
+{
+    static PyMethodDef definition {
+        "compatibilityPostcondition",
+        runCompatibilityPostcondition,
+        METH_NOARGS,
+        nullptr,
+    };
+    PyObjectRef capsule(PyCapsule_New(
+        &probe, "App.DocumentCompatibilityPostconditionProbe", nullptr));
     if (!capsule.get()) {
         return nullptr;
     }
@@ -642,6 +1468,59 @@ PyObject* callStructuralCompatibilityMutation(PyObject* document, PyObject* call
     }
     PyObjectRef keywords(Py_BuildValue("{s:O}", "structural", Py_True));
     if (!keywords.get()) {
+        return nullptr;
+    }
+    return PyObject_Call(method.get(), positional.get(), keywords.get());
+}
+
+PyObject* callDeferredCompatibilityMutation(PyObject* document, PyObject* callback)
+{
+    PyObjectRef method(PyObject_GetAttrString(document, "commitCompatibilityMutation"));
+    if (!method.get()) {
+        return nullptr;
+    }
+    PyObjectRef positional(PyTuple_Pack(1, callback));
+    if (!positional.get()) {
+        return nullptr;
+    }
+    PyObjectRef keywords(Py_BuildValue("{s:O}", "recompute", Py_False));
+    if (!keywords.get()) {
+        return nullptr;
+    }
+    return PyObject_Call(method.get(), positional.get(), keywords.get());
+}
+
+PyObject* callCompatibilityMutationWithOptions(
+    PyObject* document,
+    PyObject* callback,
+    const bool structural,
+    const bool recompute,
+    PyObject* postcondition,
+    const bool trustedStructural)
+{
+    PyObjectRef method(PyObject_GetAttrString(document, "commitCompatibilityMutation"));
+    if (!method.get()) {
+        return nullptr;
+    }
+    PyObjectRef positional(PyTuple_Pack(1, callback));
+    if (!positional.get()) {
+        return nullptr;
+    }
+    PyObjectRef keywords(PyDict_New());
+    if (!keywords.get()
+        || PyDict_SetItemString(
+               keywords.get(), "structural", structural ? Py_True : Py_False)
+            < 0
+        || PyDict_SetItemString(
+               keywords.get(), "recompute", recompute ? Py_True : Py_False)
+            < 0
+        || PyDict_SetItemString(
+               keywords.get(), "postcondition", postcondition ? postcondition : Py_None)
+            < 0
+        || PyDict_SetItemString(keywords.get(),
+                                "trusted_structural",
+                                trustedStructural ? Py_True : Py_False)
+            < 0) {
         return nullptr;
     }
     return PyObject_Call(method.get(), positional.get(), keywords.get());
@@ -842,6 +1721,54 @@ protected:
 };
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       saveAsOutcomeBindingPreservesTwoArgumentsAndAddsHashDurabilityAndWarnings)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+    ScopedTemporaryPath canonical("fc_python_save_outcome_legacy_" + _documentName);
+    PyObjectRef legacyResult(PyObject_CallMethod(document.get(),
+                                                "saveAsWithOutcome",
+                                                "sO",
+                                                canonical.path.string().c_str(),
+                                                Py_False));
+    ASSERT_TRUE(pythonObjectAvailable(legacyResult.get()));
+    ASSERT_TRUE(PyDict_Check(legacyResult.get()));
+    EXPECT_EQ(PyObject_IsTrue(
+                  PyDict_GetItemString(legacyResult.get(), "durability_verified")),
+              1);
+    PyObject* legacyWarnings = PyDict_GetItemString(legacyResult.get(), "warnings");
+    ASSERT_NE(legacyWarnings, nullptr);
+    EXPECT_TRUE(PyList_Check(legacyWarnings));
+
+    ScopedTemporaryPath attempted("fc_python_save_outcome_hash_" + _documentName);
+    const std::string expectedHash(64, 'a');
+    PyObjectRef hashPolicyResult(PyObject_CallMethod(document.get(),
+                                                    "saveAsWithOutcome",
+                                                    "sOs",
+                                                    attempted.path.string().c_str(),
+                                                    Py_False,
+                                                    expectedHash.c_str()));
+    ASSERT_TRUE(pythonObjectAvailable(hashPolicyResult.get()));
+    ASSERT_TRUE(PyDict_Check(hashPolicyResult.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(
+                     PyDict_GetItemString(hashPolicyResult.get(), "error_code")),
+                 "EXPECTED_DESTINATION_REQUIRES_OVERWRITE");
+    EXPECT_EQ(PyObject_IsTrue(
+                  PyDict_GetItemString(hashPolicyResult.get(), "file_written")),
+              0);
+    EXPECT_EQ(PyObject_IsTrue(
+                  PyDict_GetItemString(hashPolicyResult.get(), "durability_verified")),
+              0);
+    PyObject* warnings = PyDict_GetItemString(hashPolicyResult.get(), "warnings");
+    ASSERT_NE(warnings, nullptr);
+    EXPECT_TRUE(PyList_Check(warnings));
+    EXPECT_EQ(PyList_Size(warnings), 0);
+    EXPECT_EQ(_document->FileName.getStrValue(), canonical.path.string());
+    EXPECT_FALSE(std::filesystem::exists(attempted.path));
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
        surfaceCommitsExactCallbackAndPublishesOnlyUnknownModel)
 {
     Base::PyGILStateLocker gil;
@@ -886,6 +1813,1436 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
     EXPECT_EQ(wildcardRevision(), wildcardBefore + 1);
     EXPECT_EQ(Py_REFCNT(callback.get()), callbackReferences);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       applyCannotPublishReserveOrBindAndRevisionCancellationCannotLeakLock)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("revisionAdmissionForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    ASSERT_NE(foreign, nullptr);
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+
+    const auto targetBefore = wildcardRevision();
+    const auto foreignKey = App::DocumentRevisionKey::unknownModelMutation();
+    const auto foreignBefore = foreign->collaborationRevisions().current(foreignKey);
+    auto foreignReservation = foreign->collaborationRevisions().reservePublication(
+        {}, {{foreignKey, std::nullopt}});
+    ASSERT_TRUE(foreignReservation.ready());
+
+    DirectRevisionMutationProbe revisionProbe;
+    revisionProbe.targetDocument = _document;
+    revisionProbe.foreignDocument = foreign;
+    revisionProbe.foreignReservation = &foreignReservation;
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.foreignTarget = foreignTarget;
+    callbackProbe.changeTargetLabel = true;
+    callbackProbe.attemptHostileBoundaryRelease = true;
+    callbackProbe.threadedLifecycleDocumentName =
+        App::GetApplication().getUniqueDocumentName("HostileApplyLifecycle");
+    callbackProbe.revisionMutationProbe = &revisionProbe;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PyObjectRef document(_document->getPyObject());
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, Py_None, false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    expectAllDirectRevisionMutationsRejected(revisionProbe);
+    EXPECT_TRUE(callbackProbe.hostileForeignMutationRejected);
+    EXPECT_TRUE(callbackProbe.hostileLifecycleMutationRejected);
+    EXPECT_TRUE(callbackProbe.hostileRevisionMutationRejected);
+    EXPECT_EQ(App::GetApplication().getDocument(
+                  callbackProbe.threadedLifecycleDocumentName.c_str()),
+              nullptr);
+    EXPECT_TRUE(revisionProbe.foreignCancelCompleted);
+    EXPECT_FALSE(foreignReservation.ready());
+    EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+    EXPECT_EQ(wildcardRevision(), targetBefore + 1);
+    EXPECT_EQ(foreign->collaborationRevisions().current(foreignKey), foreignBefore);
+
+    foreignReservation.cancel();
+    EXPECT_EQ(foreign->collaborationRevisions().current(foreignKey), foreignBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       postconditionCannotPublishReserveOrBindTargetOrForeignRevisionState)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName = App::GetApplication().getUniqueDocumentName(
+        "revisionPostconditionForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    ASSERT_NE(foreign, nullptr);
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    const auto targetBefore = wildcardRevision();
+    const auto foreignKey = App::DocumentRevisionKey::unknownModelMutation();
+    const auto foreignBefore = foreign->collaborationRevisions().current(foreignKey);
+
+    DirectRevisionMutationProbe revisionProbe;
+    revisionProbe.targetDocument = _document;
+    revisionProbe.foreignDocument = foreign;
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    callbackProbe.changeTargetLabel = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    postconditionProbe.target = _target;
+    postconditionProbe.foreignTarget = foreignTarget;
+    postconditionProbe.attemptHostileBoundaryRelease = true;
+    postconditionProbe.threadedLifecycleDocumentName =
+        App::GetApplication().getUniqueDocumentName("HostilePostconditionLifecycle");
+    postconditionProbe.revisionMutationProbe = &revisionProbe;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+    PyObjectRef document(_document->getPyObject());
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    expectAllDirectRevisionMutationsRejected(revisionProbe);
+    EXPECT_TRUE(postconditionProbe.hostileTargetMutationRejected);
+    EXPECT_TRUE(postconditionProbe.hostileForeignMutationRejected);
+    EXPECT_TRUE(postconditionProbe.hostileLifecycleMutationRejected);
+    EXPECT_TRUE(postconditionProbe.hostileRevisionMutationRejected);
+    EXPECT_EQ(App::GetApplication().getDocument(
+                  postconditionProbe.threadedLifecycleDocumentName.c_str()),
+              nullptr);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(wildcardRevision(), targetBefore);
+    EXPECT_EQ(foreign->collaborationRevisions().current(foreignKey), foreignBefore);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_TRUE(_document->getMutationReadiness().ready);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       postconditionNoneAndTruePreserveSuccessfulLegacyCalls)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+
+    CallbackProbe noneProbe;
+    noneProbe.target = _target;
+    PyObjectRef noneCallback(makeCompatibilityCallback(noneProbe));
+    ASSERT_TRUE(pythonObjectAvailable(noneCallback.get()));
+    PyObjectRef noneResult(callCompatibilityMutationWithOptions(
+        document.get(), noneCallback.get(), false, true, Py_None, false));
+    ASSERT_TRUE(pythonObjectAvailable(noneResult.get()));
+    ASSERT_TRUE(PyDict_Check(noneResult.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(
+                     PyDict_GetItemString(noneResult.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(noneProbe.calls, 1);
+
+    _target->Label.setValue("Before true postcondition");
+    _document->recompute();
+    CallbackProbe trueProbe;
+    trueProbe.target = _target;
+    PyObjectRef trueCallback(makeCompatibilityCallback(trueProbe));
+    ASSERT_TRUE(pythonObjectAvailable(trueCallback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+    PyObjectRef trueResult(callCompatibilityMutationWithOptions(
+        document.get(), trueCallback.get(), false, true, postcondition.get(), false));
+    ASSERT_TRUE(pythonObjectAvailable(trueResult.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(
+                     PyDict_GetItemString(trueResult.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(trueProbe.calls, 1);
+    EXPECT_EQ(postconditionProbe.calls, 1);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       falseyPostconditionReturnsStructuredFailureAndRollsBack)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.returnFalseyInteger = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+    const auto wildcardBefore = wildcardRevision();
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_EQ(callbackProbe.calls, 1);
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_EQ(wildcardRevision(), wildcardBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       postconditionExceptionRollsBackThenRestoresOriginalPythonError)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.raisePythonError = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, postcondition.get(), false));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_ValueError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(error.message, "original compatibility postcondition failure");
+    EXPECT_EQ(callbackProbe.calls, 1);
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       invalidPostconditionIsRejectedBeforeCallbackOrTransaction)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    PyObjectRef invalidPostcondition(PyLong_FromLong(7));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(document.get(),
+                                                            callback.get(),
+                                                            false,
+                                                            true,
+                                                            invalidPostcondition.get(),
+                                                            false));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_TypeError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(callbackProbe.calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       deferredPostconditionRunsExactlyOnceAfterApply)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    PostconditionProbe postconditionProbe;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, false, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(callbackProbe.calls, 1);
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       structuralRecomputeUsesNarrowTrustedGrantAndValidatesBeforeCommit)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    _document->recompute();
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    callbackProbe.lazyAttemptRestrictedMutations = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    postconditionProbe.target = _target;
+    postconditionProbe.requireLazyFeature = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, postcondition.get(), true));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    auto* lazy = dynamic_cast<LazyStructuralExecuteFeature*>(
+        _document->getObject("LazyStructuralFeature"));
+    ASSERT_NE(lazy, nullptr);
+    EXPECT_EQ(lazy->executeCalls, 1);
+    EXPECT_NE(lazy->getPropertyByName("LazyExecuteProperty"), nullptr);
+    EXPECT_TRUE(lazy->editorStatusChanged);
+    EXPECT_FALSE(lazy->editorStatusRejected);
+    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_TRUE(lazy->existingSchemaRejected);
+    EXPECT_TRUE(lazy->objectAddRejected);
+    EXPECT_TRUE(lazy->objectRemoveRejected);
+    EXPECT_TRUE(lazy->transactionControlRejected);
+    EXPECT_TRUE(lazy->historyControlRejected);
+    EXPECT_EQ(_document->getObject("ForbiddenExecuteObject"), nullptr);
+    EXPECT_EQ(_target->getPropertyByName("ForbiddenExistingSchema"), nullptr);
+    EXPECT_EQ(_document->getObject("Target"), _target);
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       trustedEditorStatusFollowsCommittedUndoRedoFileState)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    _document->recompute();
+    ScopedTemporaryPath canonical(
+        "fc_trusted_status_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, Py_None, true));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Model));
+
+    int statusNotifications = 0;
+    auto statusConnection = _document->signalChangePropertyEditor.connect(
+        [&](const App::Document&, const App::Property& property) {
+            if (&property == editorProperty) {
+                ++statusNotifications;
+            }
+        });
+    const auto targetStructureRevision = [&] {
+        return _document->collaborationRevisions()
+            .capture({App::DocumentRevisionKey::objectStructure("Target")})
+            .front()
+            .revision;
+    };
+    const auto statusRevisionBeforeUndo = targetStructureRevision();
+
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(_document->hasPendingFileChanges());
+    EXPECT_EQ(statusNotifications, 1);
+    EXPECT_EQ(targetStructureRevision(), statusRevisionBeforeUndo + 1);
+
+    ASSERT_TRUE(_document->redo());
+    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_NE(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Model));
+    EXPECT_EQ(statusNotifications, 2);
+    EXPECT_EQ(targetStructureRevision(), statusRevisionBeforeUndo + 2);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       trustedStatusHistorySurvivesPropertyAndObjectRemovalWithoutRawPointers)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    const auto targetId = _target->getID();
+    const auto propertyId = editorProperty->getID();
+    _document->recompute();
+    ScopedTemporaryPath canonical(
+        "fc_trusted_status_removal_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, Py_None, true));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
+
+    ASSERT_NE(_document->openTransaction("remove trusted-status property"), 0);
+    ASSERT_TRUE(_target->removeDynamicProperty("ExistingMetadataProperty"));
+    _document->commitTransaction();
+    ASSERT_EQ(_target->getPropertyByName("ExistingMetadataProperty"), nullptr);
+
+    ASSERT_NE(_document->openTransaction("remove trusted-status object"), 0);
+    _document->removeObject("Target");
+    _document->commitTransaction();
+    ASSERT_EQ(_document->getObject("Target"), nullptr);
+
+    ASSERT_TRUE(_document->undo());
+    auto* restoredTarget = _document->getObject("Target");
+    ASSERT_NE(restoredTarget, nullptr);
+    EXPECT_EQ(restoredTarget->getID(), targetId);
+    EXPECT_EQ(restoredTarget->getPropertyByName("ExistingMetadataProperty"), nullptr);
+
+    ASSERT_TRUE(_document->undo());
+    auto* restoredProperty = restoredTarget->getPropertyByName(
+        "ExistingMetadataProperty");
+    ASSERT_NE(restoredProperty, nullptr);
+    EXPECT_EQ(restoredProperty->getID(), propertyId);
+    EXPECT_TRUE(restoredProperty->testStatus(App::Property::ReadOnly));
+
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(restoredProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(_document->hasPendingFileChanges());
+
+    ASSERT_TRUE(_document->redo());
+    EXPECT_TRUE(restoredProperty->testStatus(App::Property::ReadOnly));
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(restoredTarget->getPropertyByName("ExistingMetadataProperty"), nullptr);
+    ASSERT_TRUE(_document->redo());
+    EXPECT_EQ(_document->getObject("Target"), nullptr);
+    _target = nullptr;
+    _document->clearUndos();
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       trustedStatusHistoryIgnoresNonTransactionalSameNameReplacement)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    const auto originalPropertyId = editorProperty->getID();
+    _document->recompute();
+    ScopedTemporaryPath canonical(
+        "fc_trusted_status_replacement_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, Py_None, true));
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
+
+    ASSERT_TRUE(_target->removeDynamicProperty("ExistingMetadataProperty"));
+    auto* replacement = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(replacement, nullptr);
+    ASSERT_NE(replacement->getID(), originalPropertyId);
+    ASSERT_FALSE(replacement->testStatus(App::Property::ReadOnly));
+
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(replacement->testStatus(App::Property::ReadOnly));
+    EXPECT_EQ(_target->getPropertyByName("ExistingMetadataProperty"), replacement);
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->hasPendingFileChanges());
+    _document->clearUndos();
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       stablePythonObserverRunsAfterReplayAndTargetUnwindDespiteThrowingSlots)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("stableObserverForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    foreignTarget->Label.setValue("Foreign before stable");
+    foreign->recompute();
+
+    fastsignals::scoped_connection applicationThrowingConnection =
+        App::GetApplication().signalBecameStableDocument().connect(
+            [&](const App::Document& document) {
+                if (&document == _document) {
+                    throw std::runtime_error("expected throwing application stable slot");
+                }
+            });
+
+    PyObject* mainModule = PyImport_AddModule("__main__");
+    ASSERT_TRUE(pythonObjectAvailable(mainModule));
+    PyObject* globals = PyModule_GetDict(mainModule);
+    ASSERT_TRUE(pythonObjectAvailable(globals));
+    PyObjectRef pythonObserver(PyRun_String(
+        "type('StableObserver', (), {"
+        "'events': None, "
+        "'__init__': lambda self: setattr(self, 'events', []), "
+        "'slotRecomputedDocument': lambda self, doc: "
+        "self.events.append(('recomputed', doc.getMutationReadiness())), "
+        "'slotCommitTransaction': lambda self, doc: "
+        "self.events.append(('commit', doc.getMutationReadiness())), "
+        "'slotAbortTransaction': lambda self, doc: "
+        "self.events.append(('abort', doc.getMutationReadiness())), "
+        "'slotBecameStableDocument': lambda self, doc: "
+        "self.events.append(('stable', doc.getMutationReadiness()))})()",
+        Py_eval_input,
+        globals,
+        globals));
+    ASSERT_TRUE(pythonObjectAvailable(pythonObserver.get()));
+    PythonDocumentObserverGuard observerGuard(pythonObserver.get());
+
+    int applicationSentinelCalls = 0;
+    int documentSentinelCalls = 0;
+    int crossDocumentMutationCalls = 0;
+    fastsignals::scoped_connection applicationSentinelConnection =
+        App::GetApplication().signalBecameStableDocument().connect(
+            [&](const App::Document& document) {
+                if (&document != _document) {
+                    return;
+                }
+                ++applicationSentinelCalls;
+                foreignTarget->Label.setValue("Foreign changed from stable");
+                ++crossDocumentMutationCalls;
+            });
+    fastsignals::scoped_connection documentThrowingConnection =
+        _document->signalBecameStable.connect(
+        [&](const App::Document&) {
+            throw std::runtime_error("expected throwing document stable slot");
+        });
+    fastsignals::scoped_connection documentSentinelConnection =
+        _document->signalBecameStable.connect(
+            [&](const App::Document&) { ++documentSentinelCalls; });
+
+    PyObjectRef events(PyObject_GetAttrString(pythonObserver.get(), "events"));
+    ASSERT_TRUE(pythonObjectAvailable(events.get()));
+    ASSERT_TRUE(PyList_Check(events.get()));
+    const auto eventName = [&](const Py_ssize_t index) {
+        auto* event = PyList_GetItem(events.get(), index);
+        if (!event || !PyTuple_Check(event) || PyTuple_Size(event) != 2) {
+            return static_cast<const char*>(nullptr);
+        }
+        return PyUnicode_AsUTF8(PyTuple_GetItem(event, 0));
+    };
+    const auto eventReadiness = [&](const Py_ssize_t index) -> PyObject* {
+        auto* event = PyList_GetItem(events.get(), index);
+        return event && PyTuple_Check(event) && PyTuple_Size(event) == 2
+            ? PyTuple_GetItem(event, 1)
+            : nullptr;
+    };
+    const auto readinessFlag = [](PyObject* readiness, const char* key) {
+        if (!readiness || !PyDict_Check(readiness)) {
+            return -2;
+        }
+        auto* value = PyDict_GetItemString(readiness, key);
+        return value ? PyObject_IsTrue(value) : -2;
+    };
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe commitProbe;
+    commitProbe.target = _target;
+    PyObjectRef commitCallback(makeCompatibilityCallback(commitProbe));
+    ASSERT_TRUE(pythonObjectAvailable(commitCallback.get()));
+    PyObjectRef commitResult(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", commitCallback.get()));
+    ASSERT_TRUE(pythonObjectAvailable(commitResult.get()));
+
+    ASSERT_EQ(PyList_Size(events.get()), 3);
+    EXPECT_STREQ(eventName(0), "recomputed");
+    EXPECT_STREQ(eventName(1), "commit");
+    EXPECT_STREQ(eventName(2), "stable");
+    auto* recomputedReadiness = eventReadiness(0);
+    auto* commitReadiness = eventReadiness(1);
+    auto* stableReadiness = eventReadiness(2);
+    ASSERT_NE(recomputedReadiness, nullptr);
+    ASSERT_NE(commitReadiness, nullptr);
+    ASSERT_NE(stableReadiness, nullptr);
+    EXPECT_EQ(readinessFlag(recomputedReadiness, "notification_replay"), 1);
+    EXPECT_EQ(readinessFlag(recomputedReadiness, "ready"), 0);
+    EXPECT_EQ(readinessFlag(commitReadiness, "notification_replay"), 1);
+    EXPECT_EQ(readinessFlag(commitReadiness, "ready"), 0);
+    EXPECT_EQ(readinessFlag(stableReadiness, "stable_event_supported"), 1);
+    EXPECT_EQ(readinessFlag(stableReadiness, "ready"), 1);
+    EXPECT_EQ(readinessFlag(stableReadiness, "pending_removal"), 0);
+    EXPECT_EQ(readinessFlag(stableReadiness, "notification_replay"), 0);
+    EXPECT_EQ(applicationSentinelCalls, 1);
+    EXPECT_EQ(documentSentinelCalls, 1);
+    EXPECT_EQ(crossDocumentMutationCalls, 1);
+    EXPECT_EQ(foreignTarget->Label.getStrValue(), "Foreign changed from stable");
+
+    ASSERT_EQ(PyList_SetSlice(events.get(), 0, PyList_Size(events.get()), nullptr), 0);
+    _target->Label.setValue("Before failed stable boundary");
+    _document->recompute();
+    ASSERT_EQ(PyList_SetSlice(events.get(), 0, PyList_Size(events.get()), nullptr), 0);
+    CallbackProbe abortProbe;
+    abortProbe.target = _target;
+    PyObjectRef abortCallback(makeCompatibilityCallback(abortProbe));
+    PostconditionProbe falsePostconditionProbe;
+    falsePostconditionProbe.satisfied = false;
+    PyObjectRef falsePostcondition(
+        makeCompatibilityPostcondition(falsePostconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(abortCallback.get()));
+    ASSERT_TRUE(pythonObjectAvailable(falsePostcondition.get()));
+    PyObjectRef abortResult(callCompatibilityMutationWithOptions(
+        document.get(),
+        abortCallback.get(),
+        false,
+        true,
+        falsePostcondition.get(),
+        false));
+    ASSERT_TRUE(pythonObjectAvailable(abortResult.get()));
+    ASSERT_EQ(PyList_Size(events.get()), 1);
+    EXPECT_STREQ(eventName(0), "stable");
+    auto* abortStableReadiness = eventReadiness(0);
+    ASSERT_NE(abortStableReadiness, nullptr);
+    EXPECT_EQ(readinessFlag(abortStableReadiness, "ready"), 1);
+
+    ASSERT_EQ(PyList_SetSlice(events.get(), 0, PyList_Size(events.get()), nullptr), 0);
+    _target->touch();
+    _document->recompute();
+    ASSERT_EQ(PyList_Size(events.get()), 2);
+    EXPECT_STREQ(eventName(0), "recomputed");
+    EXPECT_STREQ(eventName(1), "stable");
+    auto* recomputeStableReadiness = eventReadiness(1);
+    ASSERT_NE(recomputeStableReadiness, nullptr);
+    EXPECT_EQ(readinessFlag(recomputeStableReadiness, "ready"), 1);
+    EXPECT_GE(applicationSentinelCalls, 3);
+    EXPECT_GE(documentSentinelCalls, 3);
+    EXPECT_GE(crossDocumentMutationCalls, 3);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       stablePythonObserverSeesPendingRemovalComplete)
+{
+    Base::PyGILStateLocker gil;
+    auto* object = _document->addObject<App::FeatureTest>("PendingRemoval");
+    ASSERT_NE(object, nullptr);
+    object->setStatus(App::ObjectStatus::PendingRecompute, true);
+    _document->removeObject(object);
+    object->setStatus(App::ObjectStatus::PendingRecompute, false);
+
+    PyObject* mainModule = PyImport_AddModule("__main__");
+    ASSERT_TRUE(pythonObjectAvailable(mainModule));
+    PyObject* globals = PyModule_GetDict(mainModule);
+    ASSERT_TRUE(pythonObjectAvailable(globals));
+    PyObjectRef pythonObserver(PyRun_String(
+        "type('PendingRemovalStableObserver', (), {"
+        "'removed': False, "
+        "'ready': False, "
+        "'slotBecameStableDocument': lambda self, doc: "
+        "(setattr(self, 'removed', doc.getObject('PendingRemoval') is None), "
+        "setattr(self, 'ready', doc.getMutationReadiness()['ready']))})()",
+        Py_eval_input,
+        globals,
+        globals));
+    ASSERT_TRUE(pythonObjectAvailable(pythonObserver.get()));
+    PythonDocumentObserverGuard observerGuard(pythonObserver.get());
+
+    _document->recompute();
+
+    PyObjectRef removed(PyObject_GetAttrString(pythonObserver.get(), "removed"));
+    ASSERT_TRUE(pythonObjectAvailable(removed.get()));
+    EXPECT_EQ(PyObject_IsTrue(removed.get()), 1);
+    PyObjectRef ready(PyObject_GetAttrString(pythonObserver.get(), "ready"));
+    ASSERT_TRUE(pythonObjectAvailable(ready.get()));
+    EXPECT_EQ(PyObject_IsTrue(ready.get()), 1);
+    EXPECT_EQ(_document->getObject("PendingRemoval"), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       postconditionIsReadOnlyAndCannotEscapeDocumentLifecycleBoundary)
+{
+    Base::PyGILStateLocker gil;
+    auto rawStatus = std::make_unique<RawStatusFeature>();
+    auto* rawStatusTarget = rawStatus.get();
+    _document->addObject(rawStatus.get(), "RawStatusTarget");
+    static_cast<void>(rawStatus.release());
+    _document->recompute();
+
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("postconditionForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    foreignTarget->Label.setValue("Foreign before");
+    foreign->recompute();
+    App::GetApplication().setActiveDocument(_document);
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    postconditionProbe.target = _target;
+    postconditionProbe.foreignDocument = foreign;
+    postconditionProbe.foreignTarget = foreignTarget;
+    postconditionProbe.rawStatusTarget = rawStatusTarget;
+    postconditionProbe.requireLazyFeature = true;
+    postconditionProbe.attemptRestrictedMutations = true;
+    postconditionProbe.attemptOrdinaryValueMutation = true;
+    postconditionProbe.attemptTouch = true;
+    postconditionProbe.attemptRecompute = true;
+    postconditionProbe.attemptForeignMutation = true;
+    postconditionProbe.attemptNewDocument = true;
+    postconditionProbe.attemptCloseDocument = true;
+    postconditionProbe.attemptActiveDocumentChange = true;
+    postconditionProbe.attemptRevisionPublication = true;
+    postconditionProbe.bypassNoTouchGuard = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+    const auto wildcardBefore = wildcardRevision();
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, postcondition.get(), true));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_TRUE(postconditionProbe.existingSchemaRejected);
+    EXPECT_TRUE(postconditionProbe.newObjectSchemaRejected);
+    EXPECT_TRUE(postconditionProbe.objectAddRejected);
+    EXPECT_TRUE(postconditionProbe.objectRemoveRejected);
+    EXPECT_TRUE(postconditionProbe.transactionControlRejected);
+    EXPECT_TRUE(postconditionProbe.historyControlRejected);
+    EXPECT_TRUE(postconditionProbe.ordinaryValueRejected);
+    EXPECT_TRUE(postconditionProbe.touchRejected);
+    EXPECT_TRUE(postconditionProbe.recomputeRejected);
+    EXPECT_TRUE(postconditionProbe.foreignMutationRejected);
+    EXPECT_TRUE(postconditionProbe.newDocumentRejected);
+    EXPECT_TRUE(postconditionProbe.closeDocumentRejected);
+    EXPECT_TRUE(postconditionProbe.activeDocumentChangeRejected);
+    EXPECT_TRUE(postconditionProbe.revisionPublicationRejected);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(rawStatusTarget->testStatus(App::ObjectStatus::NoTouch));
+    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(foreignTarget->Label.getStrValue(), "Foreign before");
+    EXPECT_EQ(App::GetApplication().getDocument(foreignName.c_str()), foreign);
+    EXPECT_EQ(App::GetApplication().getDocument("ForbiddenPostconditionDocument"),
+              nullptr);
+    EXPECT_EQ(App::GetApplication().getActiveDocument(), _document);
+    EXPECT_EQ(wildcardRevision(), wildcardBefore);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       compatibilityCallbackCannotMutateAnotherDocument)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("callbackForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    foreignTarget->Label.setValue("Foreign before");
+    foreign->recompute();
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.foreignTarget = foreignTarget;
+    callbackProbe.mutateForeignTarget = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, Py_None, false));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_RuntimeError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(callbackProbe.calls, 1);
+    EXPECT_EQ(foreignTarget->Label.getStrValue(), "Foreign before");
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       joinedWorkerCannotEscapePreparedApplyMutationAdmission)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("threadedApplyForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    foreignTarget->Label.setValue("Foreign before");
+    foreign->recompute();
+
+    const auto lifecycleName =
+        App::GetApplication().getUniqueDocumentName("threadedApplyLifecycle");
+    ScopedDocumentClose closeLifecycle(lifecycleName);
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.foreignTarget = foreignTarget;
+    callbackProbe.changeTargetLabel = true;
+    callbackProbe.attemptThreadedMutations = true;
+    callbackProbe.threadedLifecycleDocumentName = lifecycleName;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, Py_None, false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_TRUE(callbackProbe.threadedTargetMutationRejected);
+    EXPECT_TRUE(callbackProbe.threadedForeignMutationRejected);
+    EXPECT_TRUE(callbackProbe.threadedLifecycleMutationRejected);
+    EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+    EXPECT_EQ(foreignTarget->Label.getStrValue(), "Foreign before");
+    EXPECT_EQ(App::GetApplication().getDocument(lifecycleName.c_str()), nullptr);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       joinedWorkerPostconditionMutationIsRejectedAndRollsBack)
+{
+    Base::PyGILStateLocker gil;
+    const auto foreignName =
+        App::GetApplication().getUniqueDocumentName("threadedPostconditionForeign");
+    ScopedDocumentClose closeForeign(foreignName);
+    auto* foreign = App::GetApplication().newDocument(foreignName.c_str());
+    auto* foreignTarget = foreign->addObject<App::FeatureTest>("ForeignTarget");
+    ASSERT_NE(foreignTarget, nullptr);
+    foreignTarget->Label.setValue("Foreign before");
+    foreign->recompute();
+
+    const auto lifecycleName = App::GetApplication().getUniqueDocumentName(
+        "threadedPostconditionLifecycle");
+    ScopedDocumentClose closeLifecycle(lifecycleName);
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    callbackProbe.changeTargetLabel = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    postconditionProbe.target = _target;
+    postconditionProbe.foreignDocument = foreign;
+    postconditionProbe.foreignTarget = foreignTarget;
+    postconditionProbe.attemptThreadedMutations = true;
+    postconditionProbe.threadedLifecycleDocumentName = lifecycleName;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_TRUE(postconditionProbe.threadedTargetMutationRejected);
+    EXPECT_TRUE(postconditionProbe.threadedForeignMutationRejected);
+    EXPECT_TRUE(postconditionProbe.threadedLifecycleMutationRejected);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(foreignTarget->Label.getStrValue(), "Foreign before");
+    EXPECT_EQ(App::GetApplication().getDocument(lifecycleName.c_str()), nullptr);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       preparedApplyBlocksEverySaveIntentBeforeBookkeepingOrFilesystemAccess)
+{
+    Base::PyGILStateLocker gil;
+    ScopedTemporaryPath canonical("fc_prepared_apply_save_" + _documentName);
+    ScopedTemporaryPath saveAsDestination(
+        "fc_prepared_apply_save_as_" + _documentName);
+    ScopedTemporaryPath copyDestination(
+        "fc_prepared_apply_copy_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->lastCanonicalSaveFailed());
+
+    const auto canonicalBytes = readFileBytes(canonical.path);
+    const auto canonicalMtime = std::filesystem::last_write_time(canonical.path);
+    const auto canonicalName = _document->FileName.getStrValue();
+    const auto documentLabel = _document->Label.getStrValue();
+    int startSaveSignals = 0;
+    int saveOutcomeSignals = 0;
+    auto startConnection = _document->signalStartSave.connect(
+        [&](const App::Document&, const std::string&) { ++startSaveSignals; });
+    auto outcomeConnection = _document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome&) {
+            ++saveOutcomeSignals;
+        });
+    constexpr std::array attempts {
+        SaveAttempt::LegacyCanonical,
+        SaveAttempt::OutcomeCanonical,
+        SaveAttempt::ForceCanonical,
+        SaveAttempt::LegacySaveAs,
+        SaveAttempt::PolicySaveAs,
+        SaveAttempt::OutcomeSaveAs,
+        SaveAttempt::LegacyCopy,
+        SaveAttempt::OutcomeCopy,
+        SaveAttempt::RecoverySnapshot,
+        SaveAttempt::RecoveryOutcomeReport,
+    };
+    expectNoRecoveryArtifacts(*_document);
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+
+    for (const auto attempt : attempts) {
+        SCOPED_TRACE(static_cast<int>(attempt));
+        CallbackProbe callbackProbe;
+        callbackProbe.nativeDocument = _document;
+        callbackProbe.target = _target;
+        callbackProbe.changeTargetLabel = true;
+        callbackProbe.saveAttempt = attempt;
+        callbackProbe.saveAsPath = saveAsDestination.path.string();
+        callbackProbe.copyPath = copyDestination.path.string();
+        PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+        ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+        PyObjectRef result(callCompatibilityMutationWithOptions(
+            document.get(), callback.get(), false, true, Py_None, false));
+
+        EXPECT_EQ(result.get(), nullptr);
+        const auto error = takePythonError(PyExc_RuntimeError);
+        EXPECT_TRUE(error.present);
+        EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+        EXPECT_EQ(_target->Label.getStrValue(), "Before");
+        EXPECT_EQ(_document->FileName.getStrValue(), canonicalName);
+        EXPECT_EQ(_document->Label.getStrValue(), documentLabel);
+        EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+        EXPECT_FALSE(_document->hasPendingFileChanges());
+        EXPECT_FALSE(_document->lastCanonicalSaveFailed());
+        EXPECT_FALSE(_document->hasPendingTransaction());
+        EXPECT_FALSE(_document->mustExecute());
+        EXPECT_EQ(readFileBytes(canonical.path), canonicalBytes);
+        EXPECT_TRUE(std::filesystem::last_write_time(canonical.path)
+                    == canonicalMtime);
+        EXPECT_FALSE(std::filesystem::exists(saveAsDestination.path));
+        EXPECT_FALSE(std::filesystem::exists(copyDestination.path));
+        expectNoRecoveryArtifacts(*_document);
+        EXPECT_EQ(startSaveSignals, 0);
+        EXPECT_EQ(saveOutcomeSignals, 0);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       readOnlyPostconditionBlocksEverySaveIntentWithoutFailureOverlay)
+{
+    Base::PyGILStateLocker gil;
+    ScopedTemporaryPath canonical("fc_postcondition_save_" + _documentName);
+    ScopedTemporaryPath saveAsDestination(
+        "fc_postcondition_save_as_" + _documentName);
+    ScopedTemporaryPath copyDestination(
+        "fc_postcondition_copy_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->lastCanonicalSaveFailed());
+
+    const auto canonicalBytes = readFileBytes(canonical.path);
+    const auto canonicalMtime = std::filesystem::last_write_time(canonical.path);
+    const auto canonicalName = _document->FileName.getStrValue();
+    const auto documentLabel = _document->Label.getStrValue();
+    int startSaveSignals = 0;
+    int saveOutcomeSignals = 0;
+    auto startConnection = _document->signalStartSave.connect(
+        [&](const App::Document&, const std::string&) { ++startSaveSignals; });
+    auto outcomeConnection = _document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome&) {
+            ++saveOutcomeSignals;
+        });
+    constexpr std::array attempts {
+        SaveAttempt::LegacyCanonical,
+        SaveAttempt::OutcomeCanonical,
+        SaveAttempt::ForceCanonical,
+        SaveAttempt::LegacySaveAs,
+        SaveAttempt::PolicySaveAs,
+        SaveAttempt::OutcomeSaveAs,
+        SaveAttempt::LegacyCopy,
+        SaveAttempt::OutcomeCopy,
+        SaveAttempt::RecoverySnapshot,
+        SaveAttempt::RecoveryOutcomeReport,
+    };
+    expectNoRecoveryArtifacts(*_document);
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+
+    for (const auto attempt : attempts) {
+        SCOPED_TRACE(static_cast<int>(attempt));
+        CallbackProbe callbackProbe;
+        callbackProbe.target = _target;
+        callbackProbe.changeTargetLabel = true;
+        PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+        ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+        PostconditionProbe postconditionProbe;
+        postconditionProbe.document = _document;
+        postconditionProbe.saveAttempt = attempt;
+        postconditionProbe.saveAsPath = saveAsDestination.path.string();
+        postconditionProbe.copyPath = copyDestination.path.string();
+        PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+        ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+        PyObjectRef result(callCompatibilityMutationWithOptions(
+            document.get(), callback.get(), false, true, postcondition.get(), false));
+
+        ASSERT_TRUE(pythonObjectAvailable(result.get()));
+        EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                     "PostconditionFailed");
+        EXPECT_TRUE(postconditionProbe.saveRejected);
+        EXPECT_EQ(_target->Label.getStrValue(), "Before");
+        EXPECT_EQ(_document->FileName.getStrValue(), canonicalName);
+        EXPECT_EQ(_document->Label.getStrValue(), documentLabel);
+        EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+        EXPECT_FALSE(_document->hasPendingFileChanges());
+        EXPECT_FALSE(_document->lastCanonicalSaveFailed());
+        EXPECT_FALSE(_document->hasPendingTransaction());
+        EXPECT_FALSE(_document->mustExecute());
+        EXPECT_EQ(readFileBytes(canonical.path), canonicalBytes);
+        EXPECT_TRUE(std::filesystem::last_write_time(canonical.path)
+                    == canonicalMtime);
+        EXPECT_FALSE(std::filesystem::exists(saveAsDestination.path));
+        EXPECT_FALSE(std::filesystem::exists(copyDestination.path));
+        expectNoRecoveryArtifacts(*_document);
+        EXPECT_EQ(startSaveSignals, 0);
+        EXPECT_EQ(saveOutcomeSignals, 0);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       untrustedStructuralRecomputeCannotChangeExistingEditorStatus)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    _document->recompute();
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.document = _document;
+    postconditionProbe.requireLazyFeature = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    auto* lazy = dynamic_cast<LazyStructuralExecuteFeature*>(
+        _document->getObject("LazyStructuralFeature"));
+    ASSERT_NE(lazy, nullptr);
+    EXPECT_TRUE(lazy->editorStatusRejected);
+    EXPECT_FALSE(lazy->editorStatusChanged);
+    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_NE(lazy->getPropertyByName("LazyExecuteProperty"), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       trustedStructuralGrantCannotBeBorrowedByAnExistingExecutingObject)
+{
+    Base::PyGILStateLocker gil;
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    auto unrelated = std::make_unique<LazyStructuralExecuteFeature>();
+    auto* unrelatedExecute = unrelated.get();
+    unrelatedExecute->editorTarget = _target;
+    _document->addObject(unrelated.get(), "UnrelatedExecute");
+    static_cast<void>(unrelated.release());
+    _document->recompute();
+    unrelatedExecute->executeCalls = 0;
+    unrelatedExecute->changeEditorStatus = true;
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = unrelatedExecute;
+    callbackProbe.touchTarget = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, Py_None, true));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    EXPECT_EQ(unrelatedExecute->executeCalls, 1);
+    EXPECT_TRUE(unrelatedExecute->editorStatusRejected);
+    EXPECT_FALSE(unrelatedExecute->editorStatusChanged);
+    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       falsePostconditionRestoresTrustedEditorStatusAndNewSchema)
+{
+    Base::PyGILStateLocker gil;
+    auto rawStatus = std::make_unique<RawStatusFeature>();
+    auto* rawStatusTarget = rawStatus.get();
+    _document->addObject(rawStatus.get(), "FalseRawStatusTarget");
+    static_cast<void>(rawStatus.release());
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    _document->recompute();
+    ScopedTemporaryPath canonical("fc_false_postcondition_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->hasPendingFileChanges());
+    const auto undosBefore = _document->getAvailableUndos();
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.rawStatusTarget = rawStatusTarget;
+    postconditionProbe.bypassNoTouchGuard = true;
+    postconditionProbe.satisfied = false;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, postcondition.get(), true));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_FALSE(rawStatusTarget->testStatus(App::ObjectStatus::NoTouch));
+    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(_document->getObject("Target"), _target);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(_document->hasPendingFileChanges());
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       falsePostconditionPreservesPreexistingStableErrorWithoutPoisoningRollback)
+{
+    Base::PyGILStateLocker gil;
+    auto* existingError =
+        _document->addObject<App::FeatureTest>("PreexistingStableError");
+    ASSERT_NE(existingError, nullptr);
+    existingError->ExceptionType.setValue(1);
+    bool recomputeHasError = false;
+    static_cast<void>(_document->recompute({}, true, &recomputeHasError));
+    ASSERT_TRUE(recomputeHasError);
+    ASSERT_TRUE(existingError->isError());
+    const char* errorDescription = _document->getErrorDescription(existingError);
+    ASSERT_NE(errorDescription, nullptr);
+    const auto errorDescriptionBefore = std::string(errorDescription);
+    existingError->purgeTouched();
+    ASSERT_FALSE(_document->mustExecute());
+    const auto errorStatusBefore = existingError->getStatus();
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.satisfied = false;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), false, true, postcondition.get(), false));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_FALSE(_document->getMutationReadiness().poisoned);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(existingError->getStatus(), errorStatusBefore);
+    EXPECT_TRUE(existingError->isError());
+    EXPECT_STREQ(_document->getErrorDescription(existingError),
+                 errorDescriptionBefore.c_str());
+    EXPECT_FALSE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       exceptionalPostconditionRestoresTrustedEditorStatusBeforeRethrow)
+{
+    Base::PyGILStateLocker gil;
+    auto rawStatus = std::make_unique<RawStatusFeature>();
+    auto* rawStatusTarget = rawStatus.get();
+    _document->addObject(rawStatus.get(), "ExceptionalRawStatusTarget");
+    static_cast<void>(rawStatus.release());
+    auto* editorProperty = _target->addDynamicProperty(
+        "App::PropertyString", "ExistingMetadataProperty");
+    ASSERT_NE(editorProperty, nullptr);
+    _document->recompute();
+    ScopedTemporaryPath canonical("fc_exceptional_postcondition_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->hasPendingFileChanges());
+    const auto undosBefore = _document->getAvailableUndos();
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.nativeDocument = _document;
+    callbackProbe.target = _target;
+    callbackProbe.addLazyStructuralFeature = true;
+    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.lazyChangeEditorStatus = true;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    PostconditionProbe postconditionProbe;
+    postconditionProbe.rawStatusTarget = rawStatusTarget;
+    postconditionProbe.bypassNoTouchGuard = true;
+    postconditionProbe.raisePythonError = true;
+    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+
+    PyObjectRef result(callCompatibilityMutationWithOptions(
+        document.get(), callback.get(), true, true, postcondition.get(), true));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_ValueError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(postconditionProbe.calls, 1);
+    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
+    EXPECT_FALSE(rawStatusTarget->testStatus(App::ObjectStatus::NoTouch));
+    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(_document->getObject("Target"), _target);
+    EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(_document->hasPendingFileChanges());
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       deferredPolicyCommitsWithoutConsumingPendingRecompute)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+    auto pending = std::make_unique<LazyStructuralExecuteFeature>();
+    auto* pendingFeature = pending.get();
+    _document->addObject(pending.get(), "PendingDeferredExecute");
+    static_cast<void>(pending.release());
+    _document->recompute();
+    pendingFeature->executeCalls = 0;
+    pendingFeature->touch();
+    ASSERT_TRUE(_document->mustExecute());
+
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.target = _target;
+    probe.document = document.get();
+    probe.recomputeDocument = true;
+    probe.recomputeTarget = true;
+    probe.changeTargetLabel = true;
+    probe.executeCalls = &pendingFeature->executeCalls;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    const auto wildcardBefore = wildcardRevision();
+
+    PyObjectRef result(callDeferredCompatibilityMutation(document.get(), callback.get()));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_TRUE(PyDict_Check(result.get()));
+    PyObject* status = PyDict_GetItemString(result.get(), "status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_EQ(probe.executeCallsObservedAfterCallbackRecompute, 0);
+    EXPECT_EQ(pendingFeature->executeCalls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
+    EXPECT_TRUE(pendingFeature->isTouched());
+    EXPECT_TRUE(_document->mustExecute());
+    EXPECT_EQ(wildcardRevision(), wildcardBefore + 1);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       eagerPolicyStillRejectsPreexistingPendingRecomputeByDefault)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    _target->touch();
+    ASSERT_TRUE(_document->mustExecute());
+
+    CallbackProbe probe;
+    probe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", callback.get()));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    PyObject* status = PyDict_GetItemString(result.get(), "status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Busy");
+    EXPECT_EQ(probe.calls, 0);
+    EXPECT_TRUE(_document->mustExecute());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       deferredFailureRestoresMutationWithoutConsumingPendingRecompute)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+    auto unrelatedHolder = std::make_unique<LazyStructuralExecuteFeature>();
+    auto* unrelated = unrelatedHolder.get();
+    _document->addObject(unrelatedHolder.get(), "PendingUnrelated");
+    static_cast<void>(unrelatedHolder.release());
+    _document->recompute();
+    unrelated->executeCalls = 0;
+    ASSERT_FALSE(_target->isTouched());
+    ASSERT_FALSE(_target->isError());
+    unrelated->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    const bool touchedBefore = _target->isTouched();
+    const bool errorBefore = _target->isError();
+    const auto targetStatusBefore = _target->getStatus();
+    const auto unrelatedStatusBefore = unrelated->getStatus();
+    const auto wildcardBefore = wildcardRevision();
+
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.target = _target;
+    probe.recomputeDocument = true;
+    probe.recomputeTarget = true;
+    probe.changeTargetLabel = true;
+    probe.executeCalls = &unrelated->executeCalls;
+    probe.raisePythonError = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(callDeferredCompatibilityMutation(document.get(), callback.get()));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_ValueError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_EQ(probe.executeCallsObservedAfterCallbackRecompute, 0);
+    EXPECT_EQ(unrelated->executeCalls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_target->isTouched(), touchedBefore);
+    EXPECT_EQ(_target->isError(), errorBefore);
+    EXPECT_EQ(_target->getStatus(), targetStatusBefore);
+    EXPECT_EQ(unrelated->getStatus(), unrelatedStatusBefore);
+    EXPECT_TRUE(unrelated->isTouched());
+    EXPECT_FALSE(unrelated->isError());
+    EXPECT_TRUE(_document->mustExecute());
+    EXPECT_EQ(wildcardRevision(), wildcardBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       deferredFailureAtCleanBoundaryRestoresStableDocument)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+    ASSERT_FALSE(_document->mustExecute());
+    ASSERT_FALSE(_target->isTouched());
+    ASSERT_FALSE(_target->isError());
+    const auto wildcardBefore = wildcardRevision();
+
+    CallbackProbe probe;
+    probe.target = _target;
+    probe.raisePythonError = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(callDeferredCompatibilityMutation(document.get(), callback.get()));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_ValueError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_target->isTouched());
+    EXPECT_FALSE(_target->isError());
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_EQ(wildcardRevision(), wildcardBefore);
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
@@ -1194,6 +3551,165 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         poll.events.front(),
         "Transient",
         _document->collaborationObjectIdentity(*transient));
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       transactionOwnedNewObjectApplyAndPostconditionFailuresRestoreCleanBaseline)
+{
+    Base::PyGILStateLocker gil;
+    ScopedTemporaryPath canonical(
+        "fc_new_object_failure_tokens_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->hasPendingFileChanges());
+    const auto undosBefore = _document->getAvailableUndos();
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+
+    for (const bool failDuringApply : {true, false}) {
+        SCOPED_TRACE(failDuringApply ? "apply" : "postcondition");
+        CallbackProbe callbackProbe;
+        callbackProbe.nativeDocument = _document;
+        callbackProbe.addTransient = true;
+        callbackProbe.addDynamicPropertyToTransient = true;
+        callbackProbe.setPropertyStatusOnTransient = true;
+        callbackProbe.changePropertyMetadataOnTransient = true;
+        callbackProbe.raisePythonError = failDuringApply;
+        PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+        ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+        PostconditionProbe postconditionProbe;
+        postconditionProbe.satisfied = failDuringApply;
+        PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
+        ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
+
+        PyObjectRef result(callCompatibilityMutationWithOptions(
+            document.get(), callback.get(), true, true, postcondition.get(), false));
+
+        if (failDuringApply) {
+            EXPECT_EQ(result.get(), nullptr);
+            const auto error = takePythonError(PyExc_ValueError);
+            EXPECT_TRUE(error.present);
+            EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+            EXPECT_EQ(postconditionProbe.calls, 0);
+        }
+        else {
+            ASSERT_TRUE(pythonObjectAvailable(result.get()));
+            EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                         "PostconditionFailed");
+            EXPECT_EQ(postconditionProbe.calls, 1);
+        }
+        EXPECT_EQ(_document->getObject("Transient"), nullptr);
+        EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+        EXPECT_FALSE(_document->hasPendingFileChanges());
+        EXPECT_FALSE(_document->hasPendingTransaction());
+        EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
+    }
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       isObjectNewDistinguishesAddedRemovedAndChangedTransactionRecords)
+{
+    App::Transaction addedRecord;
+    addedRecord.addObjectDel(_target);
+    ASSERT_TRUE(addedRecord.hasObject(_target));
+    EXPECT_TRUE(addedRecord.isObjectNew(_target));
+
+    App::Transaction changedRecord;
+    changedRecord.addObjectChange(_target, &_target->Label);
+    ASSERT_TRUE(changedRecord.hasObject(_target));
+    EXPECT_FALSE(changedRecord.isObjectNew(_target));
+
+    App::Transaction removedRecord;
+    auto detached = std::make_unique<DetachedTransactionFeature>();
+    removedRecord.addObjectNew(detached.get());
+    ASSERT_TRUE(removedRecord.hasObject(detached.get()));
+    auto* transactionOwnedDetachedObject = detached.release();
+    EXPECT_FALSE(removedRecord.isObjectNew(transactionOwnedDetachedObject));
+    // removedRecord owns and deletes the detached New-status snapshot.
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       transactionOwnedNewObjectStatusAndMetadataFollowCommittedUndoRedoFileState)
+{
+    Base::PyGILStateLocker gil;
+    ScopedTemporaryPath canonical(
+        "fc_new_object_history_tokens_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    ASSERT_FALSE(_document->hasPendingFileChanges());
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_TRUE(pythonObjectAvailable(document.get()));
+
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.addTransient = true;
+    probe.addDynamicPropertyToTransient = true;
+    probe.setPropertyStatusOnTransient = true;
+    probe.changePropertyMetadataOnTransient = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+
+    PyObjectRef result(callStructuralCompatibilityMutation(document.get(), callback.get()));
+
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "Committed");
+    auto assertCommittedObject = [&]() {
+        auto* object = _document->getObject("Transient");
+        ASSERT_NE(object, nullptr);
+        auto* property = object->getPropertyByName("PostSetupCompatibilityProperty");
+        ASSERT_NE(property, nullptr);
+        EXPECT_TRUE(property->testStatus(App::Property::ReadOnly));
+        EXPECT_STREQ(property->getGroup(), "Compatibility Group");
+        EXPECT_STREQ(property->getDocumentation(), "Compatibility documentation");
+    };
+    assertCommittedObject();
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Model));
+
+    ASSERT_TRUE(_document->undo());
+    EXPECT_EQ(_document->getObject("Transient"), nullptr);
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(_document->hasPendingFileChanges());
+
+    ASSERT_TRUE(_document->redo());
+    assertCommittedObject();
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Model));
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       existingObjectStatusAndMetadataRemainStickyAcrossAbort)
+{
+    auto* property = _target->addDynamicProperty(
+        "App::PropertyString",
+        "ExistingStickyMetadata",
+        "Original Group",
+        "Original documentation");
+    ASSERT_NE(property, nullptr);
+    ScopedTemporaryPath canonical(
+        "fc_existing_object_sticky_tokens_" + _documentName);
+    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
+
+    ASSERT_NE(_document->openTransaction("existing status and metadata"), 0);
+    property->setStatus(App::Property::Hidden, true);
+    ASSERT_TRUE(_target->changeDynamicProperty(
+        property, "Changed Group", "Changed documentation"));
+    _document->abortTransaction();
+
+    EXPECT_TRUE(property->testStatus(App::Property::Hidden));
+    EXPECT_STREQ(property->getGroup(), "Changed Group");
+    EXPECT_STREQ(property->getDocumentation(), "Changed documentation");
+    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
+    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Model));
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

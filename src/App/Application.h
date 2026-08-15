@@ -50,6 +50,7 @@
 
 #include <Base/Observer.h>
 #include <Base/Parameter.h>
+#include "MainThreadSignal.h"
 #include "TransactionDefs.h"
 
 // forward declarations
@@ -440,9 +441,9 @@ public:
     /// Signal on a newly created document.
     fastsignals::signal<void (const Document&, bool)> signalNewDocument;
     /// Signal on a document getting deleted.
-    fastsignals::signal<void (const Document&)> signalDeleteDocument;
+    App::ResilientSignal<void (const Document&)> signalDeleteDocument;
     /// Signal that a document has been deleted.
-    fastsignals::signal<void ()> signalDeletedDocument;
+    App::ResilientSignal<void ()> signalDeletedDocument;
     /// Signal on relabeling the document (the user provided name).
     fastsignals::signal<void (const Document&)> signalRelabelDocument;
     /// Signal on renaming the document (internal name).
@@ -515,6 +516,11 @@ public:
     fastsignals::signal<void (const App::Document&)> signalBeforeRecomputeDocument;
     /// Signal on a recomputed document.
     fastsignals::signal<void (const App::Document&)> signalRecomputed;
+    /// Signal after a document has fully unwound recompute/transaction state.
+    ///
+    /// This accessor intentionally keeps the signal storage out of Application's
+    /// exported object layout.
+    App::ResilientMainThreadSignal<void(const App::Document&)>& signalBecameStableDocument();
     /// Signal on a recomputed document object.
     fastsignals::signal<void (const App::DocumentObject&)> signalObjectRecomputed;
     /// Signal on an opened transaction.
@@ -961,6 +967,8 @@ protected:
     void slotRecomputedObject(const App::DocumentObject& obj);
     /// A slot for when a document has been recomputed.
     void slotRecomputed(const App::Document& doc);
+    /// A slot for when a document has fully unwound recompute/transaction state.
+    void slotBecameStableDocument(const App::Document& doc);
     /// A slot for before a document is recomputed.
     void slotBeforeRecompute(const App::Document& doc);
     /// A slot for when a transaction is opened in a document.

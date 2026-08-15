@@ -134,6 +134,7 @@ void PagePrinter::makePageLayout(TechDraw::DrawPage* dPage, QPageLayout& pageLay
 //! print all pages in a document
 void PagePrinter::printAll(QPrinter* printer, App::Document* doc)
 {
+    App::Document::FileChangeTrackingScope trackingScope(*doc);
     QPageLayout pageLayout = printer->pageLayout();
     std::vector<App::DocumentObject*> docObjs =
         doc->getObjectsOfType(TechDraw::DrawPage::getClassTypeId());
@@ -145,9 +146,6 @@ void PagePrinter::printAll(QPrinter* printer, App::Document* doc)
     makePageLayout(dPage, pageLayout, width, height);
     printer->setPageLayout(pageLayout);
     QPainter painter(printer);
-
-    auto ourDoc = Gui::Application::Instance->getDocument(doc);
-    auto docModifiedState = ourDoc->isModified();
 
     bool firstTime = true;
     for (auto& obj : docObjs) {
@@ -175,13 +173,12 @@ void PagePrinter::printAll(QPrinter* printer, App::Document* doc)
         renderPage(vpp, painter, sourceRect, targetRect);
         dPage->redrawCommand();
     }
-
-    ourDoc->setModified(docModifiedState);
 }
 
 //! print all pages in a document to pdf
 void PagePrinter::printAllPdf(QPrinter* printer, App::Document* doc)
 {
+    App::Document::FileChangeTrackingScope trackingScope(*doc);
     QString outputFile = printer->outputFileName();
     Base::FileInfo fi{outputFile.toStdString()};
     if (fi.exists() && !fi.isWritable()) {
@@ -222,9 +219,6 @@ void PagePrinter::printAllPdf(QPrinter* printer, App::Document* doc)
     // start() or end() until all the pages are printed.
     QPainter painter(&pdfWriter);
 
-    auto ourDoc = Gui::Application::Instance->getDocument(doc);
-    auto docModifiedState = ourDoc->isModified();
-
     bool firstTime = true;
     for (auto& obj : docObjs) {
         Gui::ViewProvider* vp = Gui::Application::Instance->getViewProvider(obj);
@@ -257,8 +251,6 @@ void PagePrinter::printAllPdf(QPrinter* printer, App::Document* doc)
 
         ourScene->setExportingPdf(false);
     }
-
-    ourDoc->setModified(docModifiedState);
 }
 
 
@@ -322,6 +314,7 @@ void PagePrinter::renderPage(ViewProviderPage* vpp, QPainter& painter, QRectF& s
 /// print the Page associated with the view provider
 void PagePrinter::print(ViewProviderPage* vpPage, QPrinter* printer, bool isPreview)
 {
+    App::Document::FileChangeTrackingScope trackingScope(*vpPage->getDrawPage()->getDocument());
     QPageLayout pageLayout = printer->pageLayout();
 
     TechDraw::DrawPage* dPage = vpPage->getDrawPage();
@@ -337,15 +330,11 @@ void PagePrinter::print(ViewProviderPage* vpPage, QPrinter* printer, bool isPrev
         isPreview) {
         ourScene->setExportingPdf(true);
     }
-    auto ourDoc = Gui::Application::Instance->getDocument(dPage->getDocument());
-    auto docModifiedState = ourDoc->isModified();
-
     QRect targetRect = printer->pageLayout().fullRectPixels(printer->resolution());
     QRectF sourceRect(0.0, Rez::guiX(-height), Rez::guiX(width), Rez::guiX(height));
     renderPage(vpPage, painter, sourceRect, targetRect);
 
     ourScene->setExportingPdf(false);  // doesn't hurt if not pdf
-    ourDoc->setModified(docModifiedState);
     dPage->redrawCommand();
 }
 
@@ -381,6 +370,7 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
     // set up the page layout by modifying the default
     QPageLayout pageLayout = pdfWriter.pageLayout();
     auto dPage = vpPage->getDrawPage();
+    App::Document::FileChangeTrackingScope trackingScope(*dPage->getDocument());
     double width = dPage->getPageWidth();
     double height = dPage->getPageHeight();
     makePageLayout(dPage, pageLayout, width, height);
@@ -392,9 +382,6 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
 
     auto ourScene = vpPage->getQGSPage();
     ourScene->setExportingPdf(true);
-    auto ourDoc = Gui::Application::Instance->getDocument(dPage->getDocument());
-    auto docModifiedState = ourDoc->isModified();
-
     // render the page
     QRectF sourceRect(0.0, Rez::guiX(-height), Rez::guiX(width), Rez::guiX(height));
     double dpmm = pdfWriter.resolution() / mmPerInch;
@@ -404,7 +391,6 @@ void PagePrinter::printPdf(ViewProviderPage* vpPage, const std::string& file)
     renderPage(vpPage, painter, sourceRect, targetRect);
 
     ourScene->setExportingPdf(false);
-    ourDoc->setModified(docModifiedState);
     dPage->redrawCommand();
 }
 
@@ -419,16 +405,15 @@ void PagePrinter::saveSVG(ViewProviderPage* vpPage, const std::string& file)
     auto filespec = Base::Tools::escapeEncodeFilename(file);
     filespec = DU::cleanFilespecBackslash(file);
     QString filename = QString::fromStdString(filespec);
+    App::Document::FileChangeTrackingScope trackingScope(
+        *vpPage->getDrawPage()->getDocument());
 
     auto ourScene = vpPage->getQGSPage();
     ourScene->setExportingSvg(true);
-    auto ourDoc = vpPage->getDocument();
-    auto docModifiedState = ourDoc->isModified();
 
     ourScene->saveSvg(filename);
 
     ourScene->setExportingSvg(false);
-    ourDoc->setModified(docModifiedState);
 }
 
 
@@ -465,4 +450,3 @@ PaperAttributes::PaperAttributes() :
 {
     // set default values to A4 Landscape
 }
-

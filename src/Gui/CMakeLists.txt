@@ -1324,6 +1324,7 @@ SET(FreeCADGui_CPP_SRCS
     PersonalViewContext.cpp
     SharedPresentationCoordinator.cpp
     Document.cpp
+    DocumentChangesWidget.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
     DocumentObserver.cpp
@@ -1371,6 +1372,7 @@ SET(FreeCADGui_SRCS
     PersonalViewContext.h
     SharedPresentationCoordinator.h
     Document.h
+    DocumentChangesWidget.h
     DocumentModel.h
     DocumentObserver.h
     DocumentObserverPython.h

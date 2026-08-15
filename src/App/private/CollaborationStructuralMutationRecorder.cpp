@@ -8,6 +8,7 @@
 #include "App/Application.h"
 #include "App/DocumentObject.h"
 #include "App/ExtensionContainer.h"
+#include "App/Transactions.h"
 #include "DocumentP.h"
 
 namespace App::Internal
@@ -18,7 +19,9 @@ namespace
 
 bool isNewStructuralObject(const DocumentP& state, const DocumentObject& object)
 {
-    if (state.collaborationNewObjectStructuralSetup.contains(&object)
+    if ((state.activeUndoTransaction
+         && state.activeUndoTransaction->isObjectNew(&object))
+        || state.collaborationNewObjectStructuralSetup.contains(&object)
         || state.collaborationImportNewObjects.contains(&object)) {
         return true;
     }
@@ -67,8 +70,11 @@ void CollaborationStructuralMutationRecorder::ensurePropertySchemaMutationAllowe
     const PropertyContainer& container)
 {
     const auto* object = dynamic_cast<const DocumentObject*>(&container);
+    const bool recomputeOwnsNewObject = !document.d->collaborationCompatibilityRecomputeMutationGranted
+        || document.d->collaborationCompatibilityRecomputeSourceObject == object;
     const auto kind = object && object->getDocument() == &document
             && document.containsObject(object) && isNewStructuralObject(*document.d, *object)
+            && recomputeOwnsNewObject
         ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
         : Document::CollaborationStructuralMutationKind::Restricted;
     std::string mutation = "propertySchema on ";
@@ -80,6 +86,64 @@ void CollaborationStructuralMutationRecorder::ensurePropertySchemaMutationAllowe
         mutation += container.getTypeId().getName();
     }
     document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
+}
+
+void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowed(
+    Document& document,
+    Property& property,
+    const unsigned long oldStatus,
+    const unsigned long newStatus)
+{
+    auto* container = property.getContainer();
+    const auto* object = dynamic_cast<const DocumentObject*>(container);
+    constexpr unsigned long editorStatusMask =
+        (1UL << Property::ReadOnly) | (1UL << Property::Hidden);
+    const unsigned long changedStatus = oldStatus ^ newStatus;
+    const bool attachedStructuralObject = object && object->getDocument() == &document
+        && document.containsObject(object);
+    const bool newStructuralObject = attachedStructuralObject
+        && isNewStructuralObject(*document.d, *object);
+    const auto* recomputeSource =
+        document.d->collaborationCompatibilityRecomputeSourceObject;
+    const bool recomputeOwnsNewObject =
+        !document.d->collaborationCompatibilityRecomputeMutationGranted
+        || recomputeSource == object;
+    const bool trustedNewObjectExecute = recomputeSource
+        && isNewStructuralObject(*document.d, *recomputeSource);
+    const auto kind = newStructuralObject && recomputeOwnsNewObject
+        ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
+        : (attachedStructuralObject && trustedNewObjectExecute && changedStatus != 0
+               && (changedStatus & ~editorStatusMask) == 0
+               ? Document::CollaborationStructuralMutationKind::TrustedPropertyEditorStatus
+               : Document::CollaborationStructuralMutationKind::Restricted);
+    std::string mutation = "propertyStatus on ";
+    if (object) {
+        const char* objectName = object->getNameInDocument();
+        mutation += (objectName && *objectName) ? objectName : "<unnamed>";
+    }
+    else if (container) {
+        mutation += container->getTypeId().getName();
+    }
+    else {
+        mutation += "<detached>";
+    }
+    if (const char* propertyName = property.getName(); propertyName && *propertyName) {
+        mutation += ".";
+        mutation += propertyName;
+    }
+    document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
+    if (kind == Document::CollaborationStructuralMutationKind::TrustedPropertyEditorStatus) {
+        document.recordCollaborationTrustedPropertyStatusBoundary(property, newStatus);
+    }
+}
+
+bool CollaborationStructuralMutationRecorder::isTransactionOwnedNewObject(
+    const Document& document,
+    const DocumentObject& object)
+{
+    return object.getDocument() == &document && document.containsObject(&object)
+        && document.d->activeUndoTransaction
+        && document.d->activeUndoTransaction->isObjectNew(&object);
 }
 
 void CollaborationStructuralMutationRecorder::ensureDynamicPropertyRemovalAllowed(

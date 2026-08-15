@@ -141,6 +141,13 @@ bool Transaction::hasObject(const TransactionalObject* Obj) const
 #endif
 }
 
+bool Transaction::isObjectNew(const TransactionalObject* Obj) const
+{
+    const auto& index = _Objects.get<1>();
+    const auto pos = index.find(Obj);
+    return pos != index.end() && pos->second->status == TransactionObject::Del;
+}
+
 void Transaction::changeProperty(TransactionalObject* Obj,
                                  std::function<void(TransactionObject* to)> changeFunc)
 {
@@ -406,6 +413,12 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                         }
                         continue;
                     }
+                    // Undo recreation preserves the semantic identity of the
+                    // removed dynamic property.  This lets auxiliary native
+                    // transaction state resolve it without retaining a raw
+                    // pointer and prevents a same-name replacement from being
+                    // mistaken for the original property.
+                    prop->_id = v.first;
                     prop->setStatusValue(data.property->getStatus());
                 }
             }

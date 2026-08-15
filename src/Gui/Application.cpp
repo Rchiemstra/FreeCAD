@@ -49,12 +49,15 @@
 
 #include <QLoggingCategory>
 #include <fmt/format.h>
+#include <cstdint>
 #include <list>
 #include <ranges>
 
 #include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
+#include <App/Property.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Exception.h>
@@ -233,6 +236,22 @@ struct ApplicationP
         const App::Property* property {nullptr};
         bool beforeChange {false};
         bool delayActions {false};
+        bool propertyStatusChange {false};
+    };
+
+    struct DeferredPresentationStatusMutation
+    {
+        const App::Document* document {nullptr};
+        const App::DocumentObject* object {nullptr};
+        const Gui::ViewProvider* viewProvider {nullptr};
+        const App::Property* property {nullptr};
+        App::DocumentInstanceId documentInstanceId {0};
+        App::DocumentLifecycleEpoch lifecycleEpoch {0};
+        std::string stableObjectIdentity;
+        std::string propertyName;
+        std::int64_t propertyId {0};
+        unsigned long originalStatus {0};
+        bool statusChanged {false};
     };
 
     explicit ApplicationP(bool GUIenabled)
@@ -280,8 +299,11 @@ struct ApplicationP
     bool sharedPresentationNotificationReplay {false};
     bool sharedPresentationStructureMutationBlocked {false};
     bool suppressCurrentSharedPresentationPublication {true};
+    const Gui::ViewProvider* currentStatusNotificationViewProvider {nullptr};
+    const App::Property* currentStatusNotificationProperty {nullptr};
     Application::SharedPresentationNotificationAudit sharedPresentationNotificationAudit;
     std::vector<DeferredPresentationNotification> deferredPresentationNotifications;
+    std::vector<DeferredPresentationStatusMutation> deferredPresentationStatusMutations;
     std::bitset<32> StatusBits;
 };
 
@@ -912,9 +934,6 @@ void Application::importFrom(const char* FileName, const char* DocName, const ch
                 checkPartialRestore(doc);
                 checkRestoreError(doc);
                 checkForRecomputes();
-                if (activeDocument()) {
-                    activeDocument()->setModified(false);
-                }
             }
             else {
                 // Open transaction when importing a file
@@ -1413,6 +1432,8 @@ void Application::beginSharedPresentationNotificationBarrier(
     }
     d->deferredPresentationNotifications.clear();
     d->deferredPresentationNotifications.reserve(64);
+    d->deferredPresentationStatusMutations.clear();
+    d->deferredPresentationStatusMutations.reserve(16);
     d->sharedPresentationNotificationAudit = std::move(audit);
     d->sharedPresentationNotificationAuditViolated = false;
     d->sharedPresentationAppDurable = false;
@@ -1424,6 +1445,12 @@ bool Application::sharedPresentationNotificationAuditViolated() const noexcept
 {
     return d->sharedPresentationNotificationBarrier
         && d->sharedPresentationNotificationAuditViolated;
+}
+
+bool Application::sharedPresentationPropertyStatusRollbackActive() const noexcept
+{
+    return d->sharedPresentationNotificationBarrier
+        && !d->sharedPresentationAppDurable;
 }
 
 void Application::markSharedPresentationAppDurable() noexcept
@@ -1452,12 +1479,23 @@ void Application::finishSharedPresentationNotificationBarrier(bool committed) no
     if (!d->sharedPresentationNotificationBarrier) {
         return;
     }
+    if (!committed) {
+        std::string diagnostic;
+        if (!restoreSharedPresentationPropertyStatuses(diagnostic)) {
+            try {
+                FC_ERR("Shared-presentation status fallback rollback failed: " << diagnostic);
+            }
+            catch (...) {
+            }
+        }
+    }
     d->sharedPresentationNotificationBarrier = false;
     d->sharedPresentationNotificationAudit = {};
     d->sharedPresentationNotificationAuditViolated = false;
     d->sharedPresentationAppDurable = false;
     auto notifications = std::move(d->deferredPresentationNotifications);
     d->deferredPresentationNotifications.clear();
+    d->deferredPresentationStatusMutations.clear();
     if (!committed) {
         d->sharedPresentationStructureMutationBlocked = false;
         return;
@@ -1479,6 +1517,18 @@ void Application::finishSharedPresentationNotificationBarrier(bool committed) no
                 signalBeforeChangeObject(*notification.viewProvider, *notification.property);
             }
             else {
+                const auto* priorViewProvider =
+                    d->currentStatusNotificationViewProvider;
+                const auto* priorProperty = d->currentStatusNotificationProperty;
+                d->currentStatusNotificationViewProvider =
+                    notification.propertyStatusChange ? notification.viewProvider : nullptr;
+                d->currentStatusNotificationProperty =
+                    notification.propertyStatusChange ? notification.property : nullptr;
+                const auto restoreStatusContext = qScopeGuard(
+                    [this, priorViewProvider, priorProperty]() {
+                        d->currentStatusNotificationViewProvider = priorViewProvider;
+                        d->currentStatusNotificationProperty = priorProperty;
+                    });
                 signalChangedObject(*notification.viewProvider, *notification.property);
                 updateActions(notification.delayActions);
             }
@@ -1510,6 +1560,44 @@ void Application::preflightSharedPresentationPropertyMutation(
             throw Base::RuntimeError(
                 "atomic presentation callback attempted an undeclared GUI property mutation");
         }
+
+        // Capture a pointer-free identity and the first pre-mutation status
+        // before Property::setStatusValue() can alter StatusBits. Value-only
+        // mutations leave this candidate unmarked and are never status-restored.
+        if (property.getContainer() == &viewProvider) {
+            const auto* objectView =
+                dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
+            const auto* object = objectView ? objectView->getObject() : nullptr;
+            const auto* document = object ? object->getDocument() : nullptr;
+            const char* propertyName = property.getName();
+            if (!document || !object || !document->containsObject(object)
+                || !propertyName || *propertyName == '\0') {
+                d->sharedPresentationNotificationAuditViolated = true;
+                throw Base::RuntimeError(
+                    "atomic presentation status mutation has no stable GUI property identity");
+            }
+            const auto found = std::ranges::find_if(
+                d->deferredPresentationStatusMutations,
+                [&](const ApplicationP::DeferredPresentationStatusMutation& mutation) {
+                    return mutation.viewProvider == &viewProvider
+                        && mutation.property == &property;
+                });
+            if (found == d->deferredPresentationStatusMutations.end()) {
+                const auto identity = document->collaborationIdentity();
+                d->deferredPresentationStatusMutations.push_back(
+                    {document,
+                     object,
+                     &viewProvider,
+                     &property,
+                     identity.instanceId,
+                     identity.lifecycleEpoch,
+                     document->collaborationObjectIdentity(*object),
+                     propertyName,
+                     property.getID(),
+                     property.getStatus(),
+                     false});
+            }
+        }
     }
     catch (const Base::Exception&) {
         d->sharedPresentationNotificationAuditViolated = true;
@@ -1520,6 +1608,104 @@ void Application::preflightSharedPresentationPropertyMutation(
         throw Base::RuntimeError(
             "atomic presentation GUI property audit failed before mutation");
     }
+}
+
+void Application::recordSharedPresentationPropertyStatusMutation(
+    const ViewProvider& viewProvider,
+    const App::Property& property,
+    const unsigned long oldStatus)
+{
+    if (d->sharedPresentationNotificationBarrier
+        && !d->sharedPresentationAppDurable) {
+        const auto found = std::ranges::find_if(
+            d->deferredPresentationStatusMutations,
+            [&](const ApplicationP::DeferredPresentationStatusMutation& mutation) {
+                return mutation.viewProvider == &viewProvider
+                    && mutation.property == &property;
+            });
+        if (found == d->deferredPresentationStatusMutations.end()) {
+            // Preserve pre-mutation state even if a future ViewProvider
+            // bypasses the required preflight path.
+            auto& mutableProperty = const_cast<App::Property&>(property);
+            mutableProperty.StatusBits = decltype(mutableProperty.StatusBits)(oldStatus);
+            d->sharedPresentationNotificationAuditViolated = true;
+            throw Base::RuntimeError(
+                "atomic presentation property status changed without preflight");
+        }
+        found->statusChanged = true;
+    }
+
+}
+
+bool Application::restoreSharedPresentationPropertyStatuses(
+    std::string& diagnostic) noexcept
+{
+    bool restored = true;
+    const auto fail = [&](const char* detail) noexcept {
+        restored = false;
+        try {
+            if (!diagnostic.empty()) {
+                diagnostic += "; ";
+            }
+            diagnostic += detail;
+        }
+        catch (...) {
+        }
+    };
+
+    for (auto it = d->deferredPresentationStatusMutations.rbegin();
+         it != d->deferredPresentationStatusMutations.rend();
+         ++it) {
+        auto& mutation = *it;
+        if (!mutation.statusChanged) {
+            continue;
+        }
+        try {
+            const auto documentEntry = d->documents.find(mutation.document);
+            if (documentEntry == d->documents.end()) {
+                fail("status rollback lost its GUI document");
+                continue;
+            }
+            const auto identity = mutation.document->collaborationIdentity();
+            if (identity.instanceId != mutation.documentInstanceId
+                || identity.lifecycleEpoch != mutation.lifecycleEpoch
+                || identity.state != App::DocumentLifecycleState::Live) {
+                fail("status rollback document identity changed");
+                continue;
+            }
+            if (!mutation.document->containsObject(mutation.object)
+                || mutation.document->collaborationObjectIdentity(*mutation.object)
+                    != mutation.stableObjectIdentity) {
+                fail("status rollback object identity changed");
+                continue;
+            }
+            auto* viewProvider = d->viewproviderMap.getViewProvider(mutation.object);
+            if (viewProvider != mutation.viewProvider) {
+                fail("status rollback ViewProvider identity changed");
+                continue;
+            }
+            auto* property = viewProvider->getPropertyByName(mutation.propertyName.c_str());
+            if (property != mutation.property || property->getContainer() != viewProvider
+                || property->getID() != mutation.propertyId) {
+                fail("status rollback property identity changed");
+                continue;
+            }
+            property->StatusBits = decltype(property->StatusBits)(mutation.originalStatus);
+            if (property->getStatus() != mutation.originalStatus) {
+                fail("status rollback did not restore exact bits");
+                continue;
+            }
+            // Keep the entry armed. The shared coordinator invokes its GUI
+            // rollback before the native App transaction is aborted; that App
+            // rollback may touch the property value again. The enclosing GUI
+            // barrier performs this exact restore once more after native
+            // rollback and only then discards the ledger.
+        }
+        catch (...) {
+            fail("status rollback validation raised an exception");
+        }
+    }
+    return restored;
 }
 
 void Application::notifyBeforeChangeObject(const ViewProvider& vp, const App::Property& prop)
@@ -1557,6 +1743,43 @@ void Application::notifyChangedObject(const ViewProvider& vp,
                                       const App::Property& prop,
                                       bool delayActions)
 {
+    notifyChangedObjectImpl(vp, prop, delayActions, false);
+}
+
+void Application::notifyPropertyStatusChangedObject(const ViewProvider& vp,
+                                                    const App::Property& prop,
+                                                    bool delayActions)
+{
+    notifyChangedObjectImpl(vp, prop, delayActions, true);
+}
+
+bool Application::currentNotificationIsPropertyStatusChange(
+    const ViewProvider& viewProvider,
+    const App::Property& property) const noexcept
+{
+    return d->currentStatusNotificationViewProvider == &viewProvider
+        && d->currentStatusNotificationProperty == &property;
+}
+
+void Application::notifyChangedObjectImpl(const ViewProvider& vp,
+                                          const App::Property& prop,
+                                          const bool delayActions,
+                                          const bool propertyStatusChange)
+{
+    const auto emitChanged = [&]() {
+        const auto* priorViewProvider = d->currentStatusNotificationViewProvider;
+        const auto* priorProperty = d->currentStatusNotificationProperty;
+        d->currentStatusNotificationViewProvider = propertyStatusChange ? &vp : nullptr;
+        d->currentStatusNotificationProperty = propertyStatusChange ? &prop : nullptr;
+        const auto restoreStatusContext = qScopeGuard(
+            [this, priorViewProvider, priorProperty]() {
+                d->currentStatusNotificationViewProvider = priorViewProvider;
+                d->currentStatusNotificationProperty = priorProperty;
+            });
+        signalChangedObject(vp, prop);
+        updateActions(delayActions);
+    };
+
     if (d->sharedPresentationNotificationBarrier) {
         if (d->sharedPresentationAppDurable) {
             const bool priorReplay = d->sharedPresentationNotificationReplay;
@@ -1567,8 +1790,7 @@ void Application::notifyChangedObject(const ViewProvider& vp,
                 d->sharedPresentationNotificationReplay = priorReplay;
                 d->suppressCurrentSharedPresentationPublication = priorSuppression;
             });
-            signalChangedObject(vp, prop);
-            updateActions(delayActions);
+            emitChanged();
             return;
         }
         try {
@@ -1580,7 +1802,8 @@ void Application::notifyChangedObject(const ViewProvider& vp,
         catch (...) {
             d->sharedPresentationNotificationAuditViolated = true;
         }
-        d->deferredPresentationNotifications.push_back({&vp, &prop, false, delayActions});
+        d->deferredPresentationNotifications.push_back(
+            {&vp, &prop, false, delayActions, propertyStatusChange});
         return;
     }
     if (d->sharedPresentationNotificationReplay) {
@@ -1589,12 +1812,10 @@ void Application::notifyChangedObject(const ViewProvider& vp,
         const auto restore = qScopeGuard([this, prior]() {
             d->suppressCurrentSharedPresentationPublication = prior;
         });
-        signalChangedObject(vp, prop);
-        updateActions(delayActions);
+        emitChanged();
         return;
     }
-    signalChangedObject(vp, prop);
-    updateActions(delayActions);
+    emitChanged();
 }
 
 void Application::slotRelabelObject(const ViewProvider& vp)
@@ -3292,7 +3513,6 @@ App::Document* Application::reopen(App::Document* doc)
             }
             if (reset) {
                 v.second->getDocument()->purgeTouched();
-                v.second->setModified(false);
             }
         }
     }

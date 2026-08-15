@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "DocumentRevisionIndex.h"
+#include "MutationClassification.h"
 
 #include <algorithm>
 #include <functional>
@@ -442,7 +443,14 @@ void DocumentRevisionIndex::bindDocumentIdentity(DocumentInstanceId documentInst
         throw std::invalid_argument("document revision identity values must be nonzero");
     }
 
+    // Reject an already-active prepared boundary before waiting on the index
+    // mutex. A caller can legitimately own a publication reservation on this
+    // index; taking the non-recursive index lock first would self-deadlock
+    // instead of failing admission. The lease below repeats the check while
+    // holding both locks and closes the race with a boundary that starts here.
+    enforceCollaborationRevisionMutationAllowed(*this);
     std::lock_guard<std::mutex> lock(_mutex);
+    CollaborationRevisionMutationAdmissionLease admission(*this);
     if (!_documentIdentity) {
         _documentIdentity = DocumentRevisionIdentityBinding {documentInstanceId, lifecycleEpoch};
         return;
@@ -506,6 +514,7 @@ std::vector<DocumentRevisionConflict> DocumentRevisionIndex::validate(
 std::vector<DocumentRevisionObservation>
 DocumentRevisionIndex::publish(const std::vector<DocumentRevisionKey>& documentScopedKeys)
 {
+    enforceCollaborationRevisionMutationAllowed(*this);
     std::vector<DocumentRevisionPublicationRequest> changes;
     changes.reserve(documentScopedKeys.size());
     for (const auto& key : documentScopedKeys) {
@@ -517,6 +526,7 @@ DocumentRevisionIndex::publish(const std::vector<DocumentRevisionKey>& documentS
 std::vector<DocumentRevisionObservation>
 DocumentRevisionIndex::publish(const std::vector<DocumentRevisionPublicationRequest>& changes)
 {
+    enforceCollaborationRevisionMutationAllowed(*this);
     auto reservation = reservePublication({}, changes);
     return reservation.commit();
 }
@@ -530,6 +540,7 @@ DocumentRevisionPublicationReservation DocumentRevisionIndex::reservePublication
     const std::vector<DocumentRevisionObservation>& expectedRevisions,
     const std::vector<DocumentRevisionPublicationRequest>& changes)
 {
+    enforceCollaborationRevisionMutationAllowed(*this);
     KeySet expectedKeys;
     expectedKeys.reserve(expectedRevisions.size());
     for (const auto& expected : expectedRevisions) {
@@ -541,6 +552,7 @@ DocumentRevisionPublicationReservation DocumentRevisionIndex::reservePublication
     const auto uniqueChanges = distinctPublicationRequests(changes);
 
     std::unique_lock<std::mutex> lock(_mutex);
+    CollaborationRevisionMutationAdmissionLease admission(*this);
     if (!_documentIdentity) {
         throw std::logic_error("document revision identity must be bound before publication");
     }
@@ -702,7 +714,10 @@ DocumentRevisionPublicationReservation& DocumentRevisionPublicationReservation::
     if (this == &other) {
         return *this;
     }
-    cancel();
+    if (_owner) {
+        static_cast<void>(collaborationRevisionMutationAllowed(*_owner));
+    }
+    cancelPreparedPublication();
     _owner = std::exchange(other._owner, nullptr);
     _lock = std::move(other._lock);
     _conflicts = std::move(other._conflicts);
@@ -714,7 +729,12 @@ DocumentRevisionPublicationReservation& DocumentRevisionPublicationReservation::
 
 DocumentRevisionPublicationReservation::~DocumentRevisionPublicationReservation() noexcept
 {
-    cancel();
+    if (_owner) {
+        // Record a read-only-boundary violation, if any, while still ensuring
+        // the hidden journal entry and lock cannot leak from RAII teardown.
+        static_cast<void>(collaborationRevisionMutationAllowed(*_owner));
+    }
+    cancelPreparedPublication();
 }
 
 bool DocumentRevisionPublicationReservation::ready() const noexcept
@@ -731,8 +751,25 @@ DocumentRevisionPublicationReservation::conflicts() const noexcept
 std::vector<DocumentRevisionObservation>
 DocumentRevisionPublicationReservation::commit() noexcept
 {
+    std::vector<DocumentRevisionObservation> observations;
+    if (!_owner || !collaborationRevisionMutationAllowed(*_owner)) {
+        cancelPreparedPublication();
+        return observations;
+    }
+    static_cast<void>(commitPrepared(observations));
+    return observations;
+}
+
+bool DocumentRevisionPublicationReservation::commitPrepared(
+    std::vector<DocumentRevisionObservation>& observations) noexcept
+{
+    // Only DocumentCommitCoordinator can call this entry point. Reservation
+    // itself is the preauthorized capability acquired while the target/index
+    // grant was active, so no fallible admission check remains after the
+    // native transaction has become durable.
     if (!ready()) {
-        return {};
+        cancelPreparedPublication();
+        return false;
     }
 
     if (_journalPrepared) {
@@ -745,14 +782,25 @@ DocumentRevisionPublicationReservation::commit() noexcept
         }
     }
 
-    auto observations = std::move(_observations);
+    observations = std::move(_observations);
     _journalPrepared = false;
     _owner = nullptr;
     _lock.unlock();
-    return observations;
+    return true;
 }
 
 void DocumentRevisionPublicationReservation::cancel() noexcept
+{
+    // Cancellation only discards hidden/pre-publication state.  Probe indexed
+    // admission so a read-only audit records the attempted direct access, but
+    // always release the lock and journal reservation immediately.
+    if (_owner) {
+        static_cast<void>(collaborationRevisionMutationAllowed(*_owner));
+    }
+    cancelPreparedPublication();
+}
+
+void DocumentRevisionPublicationReservation::cancelPreparedPublication() noexcept
 {
     if (_owner && _lock.owns_lock()) {
         if (_journalPrepared) {

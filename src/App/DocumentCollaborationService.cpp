@@ -98,8 +98,11 @@ App::DocumentCommitResult rejectedCompatibilityCommit(App::DocumentCommitStatus 
 class CompatibilityMutationOperation final : public App::CollaborativeOperation
 {
 public:
-    explicit CompatibilityMutationOperation(App::CollaborationCompatibilityCallback callback)
+    CompatibilityMutationOperation(
+        App::CollaborationCompatibilityCallback callback,
+        App::CollaborationCompatibilityPostcondition postcondition)
         : _callback(std::move(callback))
+        , _postcondition(std::move(postcondition))
     {}
 
     [[nodiscard]] std::string_view typeId() const noexcept override
@@ -115,11 +118,15 @@ public:
     [[nodiscard]] App::CollaborativePostconditionResult
     checkPostcondition(const App::Document&) const override
     {
-        return {true, {}};
+        if (!_postcondition) {
+            return {true, {}};
+        }
+        return {_postcondition(), "compatibility mutation postcondition was not satisfied"};
     }
 
 private:
     App::CollaborationCompatibilityCallback _callback;
+    App::CollaborationCompatibilityPostcondition _postcondition;
 };
 
 }  // namespace
@@ -950,6 +957,26 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
     CollaborationCompatibilityMutation mutation,
     CollaborationCompatibilityCallback callback)
 {
+    return commitCompatibilityMutationWithOptions(
+        std::move(mutation), std::move(callback), {});
+}
+
+DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWithPolicy(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    const CollaborationCompatibilityRecomputePolicy recomputePolicy)
+{
+    CollaborationCompatibilityMutationOptions options;
+    options.recomputePolicy = recomputePolicy;
+    return commitCompatibilityMutationWithOptions(
+        std::move(mutation), std::move(callback), std::move(options));
+}
+
+DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWithOptions(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityMutationOptions options)
+{
     const std::string rejectedOperationId = "legacy-compatibility";
     auto lifecyclePin = pinDocumentAccess();
     if (!lifecyclePin) {
@@ -965,9 +992,12 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
             "off-owner compatibility mutation requires a document-thread dispatcher");
     }
     return invokeOnDocumentThread<DocumentCommitResult>(
-        [this, mutation = std::move(mutation), callback = std::move(callback)]() mutable {
-            return commitCompatibilityMutationOnDocumentThread(std::move(mutation),
-                                                               std::move(callback));
+        [this,
+         mutation = std::move(mutation),
+         callback = std::move(callback),
+         options = std::move(options)]() mutable {
+            return commitCompatibilityMutationWithOptionsOnDocumentThread(
+                std::move(mutation), std::move(callback), std::move(options));
         });
 }
 
@@ -975,6 +1005,28 @@ DocumentCommitResult
 DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
     CollaborationCompatibilityMutation mutation,
     CollaborationCompatibilityCallback callback)
+{
+    return commitCompatibilityMutationWithOptionsOnDocumentThread(
+        std::move(mutation), std::move(callback), {});
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithPolicyOnDocumentThread(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    const CollaborationCompatibilityRecomputePolicy recomputePolicy)
+{
+    CollaborationCompatibilityMutationOptions options;
+    options.recomputePolicy = recomputePolicy;
+    return commitCompatibilityMutationWithOptionsOnDocumentThread(
+        std::move(mutation), std::move(callback), std::move(options));
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentThread(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityMutationOptions options)
 {
     const std::string rejectedOperationId = "legacy-compatibility";
     if (!_document.isCollaborationOwnerThread()) {
@@ -1053,8 +1105,8 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
     }
     const auto expected = _document.collaborationRevisions().capture(writeSet);
     const std::string operationId = Base::Uuid::createUuid();
-    auto operation =
-        std::make_unique<CompatibilityMutationOperation>(std::move(callback));
+    auto operation = std::make_unique<CompatibilityMutationOperation>(
+        std::move(callback), std::move(options.postcondition));
     const std::string operationType(operation->typeId());
     PreparedEdit edit(PreparedEdit::ConstructionKey {},
                       1,
@@ -1068,8 +1120,11 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
                       std::move(effects),
                       "legacy-gui-compatibility",
                       std::move(operation));
-    return _coordinator.commitCompatibility(
-        edit, mutation.scope == CollaborationCompatibilityScope::Structural);
+    return _coordinator.commitCompatibilityWithOptions(
+        edit,
+        mutation.scope == CollaborationCompatibilityScope::Structural,
+        options.recomputePolicy,
+        options.trustedStructural);
 }
 
 DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(
@@ -1255,7 +1310,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
     _document.setCollaborationRevisionPublicationSuppressed(true);
     bool cleanupRequired = true;
     const auto clearAtomicState = [this]() noexcept {
-        _document.endCollaborationAtomicPresentationAudit();
+        _document.endCollaborationPreparedAtomicPresentationAudit();
         _atomicCompatibilityActive = false;
         _atomicCompatibilityCommitInvoked = false;
         _atomicCompatibilityCommitted = false;
@@ -1293,7 +1348,8 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                                                operationId,
                                                "document refused to open the native transaction");
         }
-        _document.beginCollaborationAtomicPresentationAudit(std::move(allowedWrites));
+        _document.beginCollaborationPreparedAtomicPresentationAudit(
+            std::move(allowedWrites));
         _atomicCompatibilityActive = true;
         _atomicCompatibilityOwner = std::this_thread::get_id();
     }

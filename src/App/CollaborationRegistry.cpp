@@ -2,6 +2,7 @@
 
 #include "CollaborationRegistry.h"
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
 #include <stdexcept>
@@ -143,6 +144,85 @@ std::optional<DocumentIdentity> CollaborationRegistry::markClosing(const Documen
     return closing;
 }
 
+std::optional<CollaborationRegistry::PreparedDocumentClose>
+CollaborationRegistry::prepareDocumentClose(const Document& document)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _byDocument.find(&document);
+    if (found == _byDocument.end() || found->second.state != DocumentLifecycleState::Live) {
+        return std::nullopt;
+    }
+    const auto instance = _byInstance.find(found->second.instanceId);
+    if (instance == _byInstance.end()) {
+        return std::nullopt;
+    }
+
+    PreparedDocumentClose prepared;
+    prepared.closingIdentity = found->second;
+    prepared.closingIdentity.lifecycleEpoch = allocateLifecycleEpoch();
+    prepared.closingIdentity.state = DocumentLifecycleState::Closing;
+    prepared.closedEpoch = allocateLifecycleEpoch();
+
+    // Reserve the only allocation needed to retain the eventual Closed
+    // tombstone before publishing Closing. Once Closing is visible, the
+    // Application close boundary is irrevocable and completion must not be
+    // vulnerable to allocation failure.
+    if (_tombstoneCapacity != 0) {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        if (const auto hook = _tombstonePreparationTestHook.load(
+                std::memory_order_acquire)) {
+            hook();
+        }
+#endif
+        // Instance ID zero is reserved and acts as an allocation-only slot.
+        // It cannot be evicted as a Closed tombstone while another document's
+        // prepared close is still running observers.
+        _tombstoneOrder.push_back(0);
+        prepared.tombstoneQueued = true;
+    }
+
+    found->second = prepared.closingIdentity;
+    instance->second = prepared.closingIdentity;
+    return prepared;
+}
+
+std::optional<DocumentIdentity> CollaborationRegistry::completePreparedDocumentClose(
+    const Document& document,
+    const PreparedDocumentClose& prepared)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto found = _byDocument.find(&document);
+    if (found == _byDocument.end() || found->second != prepared.closingIdentity) {
+        return std::nullopt;
+    }
+    const auto instance = _byInstance.find(prepared.closingIdentity.instanceId);
+    if (instance == _byInstance.end() || instance->second != prepared.closingIdentity) {
+        return std::nullopt;
+    }
+
+    auto closed = prepared.closingIdentity;
+    closed.lifecycleEpoch = prepared.closedEpoch;
+    closed.state = DocumentLifecycleState::Closed;
+    auto reservedTombstone = _tombstoneOrder.end();
+    if (prepared.tombstoneQueued) {
+        reservedTombstone = std::find(_tombstoneOrder.begin(), _tombstoneOrder.end(), 0);
+        if (reservedTombstone == _tombstoneOrder.end()) {
+            return std::nullopt;
+        }
+    }
+
+    instance->second = closed;
+    _byDocument.erase(found);
+    if (!prepared.tombstoneQueued) {
+        _byInstance.erase(instance);
+    }
+    else {
+        *reservedTombstone = closed.instanceId;
+        evictClosedTombstonesLocked();
+    }
+    return closed;
+}
+
 void CollaborationRegistry::retainTombstoneLocked(const DocumentIdentity& identity)
 {
     if (_tombstoneCapacity == 0) {
@@ -152,9 +232,22 @@ void CollaborationRegistry::retainTombstoneLocked(const DocumentIdentity& identi
 
     _byInstance.at(identity.instanceId) = identity;
     _tombstoneOrder.push_back(identity.instanceId);
-    while (_tombstoneOrder.size() > _tombstoneCapacity) {
-        _byInstance.erase(_tombstoneOrder.front());
-        _tombstoneOrder.pop_front();
+    evictClosedTombstonesLocked();
+}
+
+void CollaborationRegistry::evictClosedTombstonesLocked()
+{
+    auto retained = static_cast<std::size_t>(std::count_if(
+        _tombstoneOrder.begin(), _tombstoneOrder.end(), [](const auto id) { return id != 0; }));
+    while (retained > _tombstoneCapacity) {
+        const auto oldestClosed = std::find_if(
+            _tombstoneOrder.begin(), _tombstoneOrder.end(), [](const auto id) { return id != 0; });
+        if (oldestClosed == _tombstoneOrder.end()) {
+            break;
+        }
+        _byInstance.erase(*oldestClosed);
+        _tombstoneOrder.erase(oldestClosed);
+        --retained;
     }
 }
 
@@ -169,8 +262,19 @@ std::optional<DocumentIdentity> CollaborationRegistry::closeDocument(const Docum
     auto closed = found->second;
     closed.lifecycleEpoch = allocateLifecycleEpoch();
     closed.state = DocumentLifecycleState::Closed;
+    if (_tombstoneCapacity != 0) {
+        // Preserve the legacy direct API's strong guarantee as well: reserve
+        // deque storage before erasing the live pointer or changing identity.
+        _tombstoneOrder.push_back(closed.instanceId);
+    }
+    _byInstance.at(closed.instanceId) = closed;
     _byDocument.erase(found);
-    retainTombstoneLocked(closed);
+    if (_tombstoneCapacity == 0) {
+        _byInstance.erase(closed.instanceId);
+    }
+    else {
+        evictClosedTombstonesLocked();
+    }
     return closed;
 }
 

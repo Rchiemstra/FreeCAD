@@ -312,6 +312,35 @@ RecomputeResult processRecomputeRequestUnserialized(RecomputeRequest& request)
     return result;
 }
 
+void reportIrrevocableCloseFailure(const char* phase, const char* detail) noexcept
+{
+    try {
+        Base::Console().error(
+            "Document close %s failed after the Closing boundary: %s\n", phase, detail);
+    }
+    catch (...) {
+        // Closing is irrevocable. Diagnostics must never become a second
+        // failure that interrupts destruction or gate cleanup.
+    }
+}
+
+template<class Callable>
+void runIrrevocableCloseStep(const char* phase, Callable&& callable) noexcept
+{
+    try {
+        std::forward<Callable>(callable)();
+    }
+    catch (const Base::Exception& exception) {
+        reportIrrevocableCloseFailure(phase, exception.what());
+    }
+    catch (const std::exception& exception) {
+        reportIrrevocableCloseFailure(phase, exception.what());
+    }
+    catch (...) {
+        reportIrrevocableCloseFailure(phase, "unknown exception");
+    }
+}
+
 }  // namespace
 
 //==========================================================================
@@ -645,6 +674,8 @@ void Application::setupPythonException(PyObject* module)
 
 Document* Application::newDocument(const char * proposedName, const char * proposedLabel, DocumentInitFlags CreateFlags)
 {
+    enforceCollaborationLifecycleMutationAllowed();
+
     bool isUsingDefaultName = Base::Tools::isNullOrEmpty(proposedName);
     // get a valid name anyway!
     if (isUsingDefaultName) {
@@ -717,6 +748,7 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     doc->signalRedo.connect(std::bind(&Application::slotRedoDocument, this, sp::_1));
     doc->signalRecomputedObject.connect(std::bind(&Application::slotRecomputedObject, this, sp::_1));
     doc->signalRecomputed.connect(std::bind(&Application::slotRecomputed, this, sp::_1));
+    doc->signalBecameStable.connect(std::bind(&Application::slotBecameStableDocument, this, sp::_1));
     doc->signalBeforeRecompute.connect(std::bind(&Application::slotBeforeRecompute, this, sp::_1));
     doc->signalOpenTransaction.connect(std::bind(&Application::slotOpenTransaction, this, sp::_1, sp::_2));
     doc->signalCommitTransaction.connect(std::bind(&Application::slotCommitTransaction, this, sp::_1));
@@ -733,7 +765,13 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     setActiveDocumentNoSignal(doc);
     signalNewDocument(*doc, CreateFlags.createView);
 
-    doc->Label.setValue(label);
+    {
+        // The application-assigned bootstrap label is part of a new
+        // document's root state.  Suppress only this write: mutations made by
+        // signalNewDocument observers above remain authoritative.
+        Document::FileChangeTrackingScope fileStateScope(*doc);
+        doc->Label.setValue(label);
+    }
 
     // set the old document active again if the new is temporary
     if (CreateFlags.temporary && oldActiveDoc) {
@@ -749,6 +787,8 @@ bool Application::closeDocument(const Document* doc)
 
 bool Application::closeDocument(const char* name)
 {
+    enforceCollaborationLifecycleMutationAllowed();
+
     const std::string documentName(name);
 
     // Serialize close admission by stable document name before consulting the
@@ -778,7 +818,16 @@ bool Application::closeDocument(const char* name)
     if (pos == DocMap.end()) {  // no such document
         return false;
     }
+    if (pos->second->collaborationStableNotificationActive()
+        || pos->second->collaborationPendingRemovalProcessing()
+        || pos->second->isTransactionLocked()) {
+        return false;
+    }
     auto* collaborationService = &pos->second->collaborationService();
+    // Any pathname construction that can allocate belongs before the
+    // irrevocable Closing transition.
+    const std::string documentFileMapPath =
+        Base::FileInfo(pos->second->FileName.getValue()).filePath();
     const auto collaborationLifetimeGate =
         collaborationServiceLifetimeGate(*collaborationService);
     if (!collaborationLifetimeGate) {
@@ -864,31 +913,39 @@ bool Application::closeDocument(const char* name)
     if (!serialized.owns_lock()) {
         return false;
     }
+    if (pos->second->collaborationStableNotificationActive()
+        || pos->second->collaborationPendingRemovalProcessing()
+        || pos->second->isTransactionLocked()) {
+        return false;
+    }
     if (callerOwnsCollaborationAccess()) {
         return false;
     }
 
     enforceAtomicPresentationMutationTarget(pos->second);
-    pos->second->setCollaborationRevisionPublicationSuppressed(true);
-    const auto closingIdentity = _collaborationRegistry->markClosing(*pos->second);
-    if (!closingIdentity) {
+    const auto preparedClose = _collaborationRegistry->prepareDocumentClose(*pos->second);
+    if (!preparedClose) {
         throw Base::RuntimeError("Document collaboration identity is missing during close");
     }
-    pos->second->collaborationRevisions().bindDocumentIdentity(
-        closingIdentity->instanceId,
-        closingIdentity->lifecycleEpoch
-    );
+    // All potentially allocating tombstone work completed before Closing was
+    // published. From this point onward close is irrevocable.
+    pos->second->setCollaborationRevisionPublicationSuppressed(true);
+    const auto& closingIdentity = preparedClose->closingIdentity;
+    runIrrevocableCloseStep("Closing revision binding", [&] {
+        pos->second->collaborationRevisions().bindDocumentIdentity(
+            closingIdentity.instanceId,
+            closingIdentity.lifecycleEpoch);
+    });
     if (const auto hook = _postMarkCollaborationClosingTestHook.load(
             std::memory_order_acquire)) {
-        hook();
+        runIrrevocableCloseStep("post-Closing hook", hook);
     }
     if (!collaborationAccessGateSealed) {
         std::lock_guard lock(collaborationLifetimeGate->mutex);
-        if (collaborationLifetimeGate->accessOwners.contains(
-                std::this_thread::get_id())) {
-            throw Base::RuntimeError(
-                "Document close attempted to drain its own collaboration access");
-        }
+        // Ownership was checked while the document serialization lock was
+        // still held, immediately before publishing Closing. It cannot be acquired
+        // by this thread in between, so sealing here has no post-Closing
+        // rejection path.
         collaborationLifetimeGate->sealed = true;
         collaborationAccessGateSealed = true;
     }
@@ -905,40 +962,59 @@ bool Application::closeDocument(const char* name)
     }
     if (const auto hook = _postCollaborationAccessDrainTestHook.load(
             std::memory_order_acquire)) {
-        hook();
+        runIrrevocableCloseStep("post-drain hook", hook);
     }
 
     Base::ConsoleRefreshDisabler disabler;
 
     // Trigger observers before removing the document from the internal map.
     // Some observers might rely on this document still being there.
-    signalDeleteDocument(*pos->second);
+    runIrrevocableCloseStep(
+        "pre-delete observer notification", [&] { signalDeleteDocument(*pos->second); });
 
     // For exception-safety use a smart pointer
     if (_pActiveDoc == pos->second) {
-        setActiveDocument(static_cast<Document*>(nullptr));
+        runIrrevocableCloseStep("active-document reset", [&] {
+            setActiveDocumentNoSignal(static_cast<Document*>(nullptr));
+        });
+        // setActiveDocumentNoSignal updates this pointer before touching
+        // Python, but retain an allocation-free fallback for interpreter
+        // teardown failures.
+        _pActiveDoc = nullptr;
     }
     std::unique_ptr<Document> delDoc(pos->second);
     DocMap.erase( pos );
-    DocFileMap.erase(Base::FileInfo(delDoc->FileName.getValue()).filePath());
-    const auto closedIdentity = _collaborationRegistry->closeDocument(*delDoc);
+    DocFileMap.erase(documentFileMapPath);
+    std::optional<DocumentIdentity> closedIdentity;
+    runIrrevocableCloseStep("Closed tombstone publication", [&] {
+        closedIdentity = _collaborationRegistry->completePreparedDocumentClose(
+            *delDoc, *preparedClose);
+    });
     if (!closedIdentity) {
-        throw Base::RuntimeError("Document collaboration identity disappeared during close");
+        reportIrrevocableCloseFailure(
+            "Closed tombstone publication",
+            "document collaboration identity disappeared during close");
     }
-    delDoc->collaborationRevisions().bindDocumentIdentity(
-        closedIdentity->instanceId,
-        closedIdentity->lifecycleEpoch
-    );
+    else {
+        runIrrevocableCloseStep("Closed revision binding", [&] {
+            delDoc->collaborationRevisions().bindDocumentIdentity(
+                closedIdentity->instanceId,
+                closedIdentity->lifecycleEpoch);
+        });
+    }
 
     _objCount = -1;
 
     // Trigger observers after removing the document from the internal map.
-    signalDeletedDocument();
+    runIrrevocableCloseStep(
+        "post-delete observer notification", [&] { signalDeletedDocument(); });
 
     // Keep both admission seals active until Document and its collaboration
     // service have actually been destroyed.
     delDoc.reset();
-    unregisterCollaborationServiceLifetime(collaborationService);
+    runIrrevocableCloseStep("collaboration service unregister", [&] {
+        unregisterCollaborationServiceLifetime(collaborationService);
+    });
     collaborationAccessGateSealed = false;
     // Keep a name-keyed tombstone after destruction. newDocument() removes it
     // only when a new instance intentionally reuses this name.
@@ -1480,8 +1556,10 @@ std::vector<Document*> Application::openDocuments(const std::vector<std::string>
                                                   const std::vector<std::string> *paths,
                                                   const std::vector<std::string> *labels,
                                                   std::vector<std::string> *errs,
-                                                  DocumentInitFlags initFlags)
+                                                   DocumentInitFlags initFlags)
 {
+    enforceCollaborationLifecycleMutationAllowed();
+
     std::vector<Document*> res(filenames.size(), nullptr);
     if (filenames.empty())
         return res;
@@ -1794,6 +1872,7 @@ Document* Application::getActiveDocument() const
 
 void Application::setActiveDocument(Document* pDoc)
 {
+    enforceCollaborationLifecycleMutationAllowed();
     setActiveDocumentNoSignal(pDoc);
 
     if (pDoc) {
@@ -1819,6 +1898,7 @@ void Application::setActiveDocumentNoSignal(Document* pDoc)
 
 void Application::setActiveDocument(const char* Name)
 {
+    enforceCollaborationLifecycleMutationAllowed();
     // If no active document is set, resort to a default.
     if (*Name == '\0') {
         _pActiveDoc = nullptr;
@@ -2470,6 +2550,22 @@ void Application::slotRecomputedObject(const DocumentObject& obj)
 void Application::slotRecomputed(const Document& doc)
 {
     this->signalRecomputed(doc);
+}
+
+App::ResilientMainThreadSignal<void(const App::Document&)>&
+Application::signalBecameStableDocument()
+{
+    // Python observers may be released during late interpreter teardown.
+    // Process-lifetime storage keeps their scoped connections independent of
+    // function-static destruction order without changing Application layout.
+    static auto* signal =
+        new App::ResilientMainThreadSignal<void(const App::Document&)>;
+    return *signal;
+}
+
+void Application::slotBecameStableDocument(const Document& doc)
+{
+    this->signalBecameStableDocument()(doc);
 }
 
 void Application::slotBeforeRecompute(const Document& doc)

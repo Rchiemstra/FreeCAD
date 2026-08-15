@@ -9,11 +9,138 @@
 #include <Base/Exception.h>
 
 #include <algorithm>
+#include <exception>
+#include <limits>
+#include <mutex>
+#include <thread>
 
 namespace
 {
 
-thread_local const App::Document* atomicPresentationMutationTarget = nullptr;
+struct AtomicPresentationMutationAdmission
+{
+    std::mutex mutex;
+    const App::Document* target {nullptr};
+    const App::DocumentRevisionIndex* targetRevisionIndex {nullptr};
+    std::thread::id owner;
+    unsigned int legacyDepth {0};
+    unsigned int preparedDepth {0};
+    unsigned int legacyReadOnlyDepth {0};
+    unsigned int preparedReadOnlyDepth {0};
+};
+
+thread_local const App::DocumentRevisionIndex* coordinatorRevisionGrantIndex {nullptr};
+thread_local unsigned int coordinatorRevisionGrantDepth {0};
+
+AtomicPresentationMutationAdmission& atomicPresentationMutationAdmission()
+{
+    // A prepared commit may execute arbitrary extension code. Keep its
+    // admission state alive through late extension teardown, and make it
+    // process-scoped so joined worker threads cannot escape an owner-thread
+    // mutation/read-only boundary merely because thread_local state is empty.
+    static auto* admission = new AtomicPresentationMutationAdmission;
+    return *admission;
+}
+
+unsigned int mutationTargetDepth(
+    const AtomicPresentationMutationAdmission& admission) noexcept
+{
+    return admission.legacyDepth + admission.preparedDepth;
+}
+
+unsigned int readOnlyTargetDepth(
+    const AtomicPresentationMutationAdmission& admission) noexcept
+{
+    return admission.legacyReadOnlyDepth + admission.preparedReadOnlyDepth;
+}
+
+bool revisionMutationAllowedLocked(
+    AtomicPresentationMutationAdmission& admission,
+    const App::DocumentRevisionIndex& index) noexcept
+{
+    if (!admission.target) {
+        return true;
+    }
+    if (readOnlyTargetDepth(admission) != 0) {
+        const_cast<App::Document*>(admission.target)
+            ->noteCollaborationReadOnlyMutationAttempt();
+        return false;
+    }
+    return admission.owner == std::this_thread::get_id()
+        && admission.targetRevisionIndex == &index
+        && coordinatorRevisionGrantIndex == &index
+        && coordinatorRevisionGrantDepth != 0;
+}
+
+void beginMutationTarget(App::Document& document, bool prepared, bool readOnly)
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    const auto caller = std::this_thread::get_id();
+    if (admission.target
+        && (admission.target != &document || admission.owner != caller)) {
+        throw Base::RuntimeError(
+            "an atomic presentation mutation target is already active in this process");
+    }
+    // Public compatibility nesting must never acquire or release a slice of a
+    // coordinator-owned boundary. Conversely, a prepared mutation cannot be
+    // embedded in a caller-owned legacy scope whose lifetime it cannot prove.
+    if ((prepared && admission.legacyDepth != 0)
+        || (!prepared && admission.preparedDepth != 0)) {
+        throw Base::RuntimeError(
+            "atomic presentation mutation target ownership cannot be mixed");
+    }
+    auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
+    auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
+                                   : admission.legacyReadOnlyDepth;
+    if (depth == std::numeric_limits<unsigned int>::max()
+        || (readOnly
+            && readOnlyDepth == std::numeric_limits<unsigned int>::max())) {
+        throw Base::RuntimeError("atomic presentation mutation target depth overflow");
+    }
+    if (!admission.target) {
+        admission.target = &document;
+        admission.targetRevisionIndex = &document.collaborationRevisions();
+        admission.owner = caller;
+    }
+    ++depth;
+    if (readOnly) {
+        ++readOnlyDepth;
+    }
+}
+
+void endMutationTarget(const App::Document& document,
+                       bool prepared,
+                       bool readOnly) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
+        auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
+                                       : admission.legacyReadOnlyDepth;
+        if (admission.target != &document
+            || admission.owner != std::this_thread::get_id() || depth == 0
+            || (readOnly && readOnlyDepth == 0)) {
+            return;
+        }
+        if (readOnly) {
+            --readOnlyDepth;
+        }
+        --depth;
+        if (mutationTargetDepth(admission) == 0) {
+            admission.target = nullptr;
+            admission.targetRevisionIndex = nullptr;
+            admission.owner = std::thread::id {};
+            admission.legacyReadOnlyDepth = 0;
+            admission.preparedReadOnlyDepth = 0;
+        }
+    }
+    catch (...) {
+        // Teardown is noexcept. A mutex failure must not replace the original
+        // operation result or exception.
+    }
+}
 
 using App::CollaborationContainerKind;
 using App::CollaborationMutationSource;
@@ -90,23 +217,32 @@ App::Document* App::documentFromPropertyContainer(const PropertyContainer* conta
 
 void App::beginAtomicPresentationMutationTarget(Document& document)
 {
-    if (atomicPresentationMutationTarget) {
-        throw Base::RuntimeError(
-            "an atomic presentation mutation target is already active on this thread");
-    }
-    atomicPresentationMutationTarget = &document;
+    beginMutationTarget(document, false, false);
 }
 
 void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
 {
-    if (atomicPresentationMutationTarget == &document) {
-        atomicPresentationMutationTarget = nullptr;
-    }
+    endMutationTarget(document, false, false);
 }
 
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
 {
-    if (atomicPresentationMutationTarget && atomicPresentationMutationTarget != &document) {
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (!admission.target) {
+        return;
+    }
+    if (readOnlyTargetDepth(admission) != 0) {
+        const_cast<Document*>(admission.target)
+            ->noteCollaborationReadOnlyMutationAttempt();
+        throw Base::RuntimeError(
+            "mutation is unavailable during a collaboration postcondition check");
+    }
+    if (admission.owner != std::this_thread::get_id()) {
+        throw Base::RuntimeError(
+            "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+    }
+    if (admission.target != &document) {
         throw Base::RuntimeError(
             "cross-document mutation is unavailable during an atomic presentation callback");
     }
@@ -116,6 +252,162 @@ void App::enforceAtomicPresentationMutationTarget(const Document* document)
 {
     if (document) {
         enforceAtomicPresentationMutationTarget(*document);
+    }
+}
+
+void App::beginCollaborationReadOnlyMutationTarget(Document& document)
+{
+    beginMutationTarget(document, false, true);
+}
+
+void App::endCollaborationReadOnlyMutationTarget(const Document& document) noexcept
+{
+    endMutationTarget(document, false, true);
+}
+
+App::CollaborationPreparedMutationTargetScope::CollaborationPreparedMutationTargetScope(
+    Document& document)
+    : _document(&document)
+{
+    beginMutationTarget(document, true, false);
+}
+
+App::CollaborationPreparedMutationTargetScope::~CollaborationPreparedMutationTargetScope() noexcept
+{
+    if (_document) {
+        endMutationTarget(*_document, true, false);
+    }
+}
+
+void App::CollaborationPreparedMutationTargetAccess::begin(Document& document,
+                                                           bool readOnly)
+{
+    beginMutationTarget(document, true, readOnly);
+}
+
+void App::CollaborationPreparedMutationTargetAccess::end(
+    const Document& document,
+    bool readOnly) noexcept
+{
+    endMutationTarget(document, true, readOnly);
+}
+
+void App::enforceCollaborationLifecycleMutationAllowed()
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    std::lock_guard lock(admission.mutex);
+    if (!admission.target) {
+        return;
+    }
+    if (readOnlyTargetDepth(admission) != 0) {
+        const_cast<Document*>(admission.target)
+            ->noteCollaborationReadOnlyMutationAttempt();
+    }
+    throw Base::RuntimeError(
+        "document lifecycle changes are unavailable during a prepared commit");
+}
+
+void App::enforceCollaborationRevisionMutationAllowed()
+{
+    if (collaborationRevisionMutationAllowed()) {
+        return;
+    }
+    throw Base::RuntimeError(
+        "semantic revision mutation requires indexed coordinator admission during a prepared commit");
+}
+
+bool App::collaborationRevisionMutationAllowed() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        if (!admission.target) {
+            return true;
+        }
+        if (readOnlyTargetDepth(admission) != 0) {
+            const_cast<Document*>(admission.target)
+                ->noteCollaborationReadOnlyMutationAttempt();
+            return false;
+        }
+        // This ABI-preserved entry point cannot prove which document index is
+        // being changed.  Fail closed throughout a prepared mutation, even
+        // while the coordinator has its private indexed grant.
+        return false;
+    }
+    catch (...) {
+        // Revision publication is never required for cleanup. If process-wide
+        // admission cannot be inspected, fail closed without terminating a
+        // noexcept reservation/destructor path.
+        return false;
+    }
+}
+
+void App::enforceCollaborationRevisionMutationAllowed(
+    const DocumentRevisionIndex& index)
+{
+    if (collaborationRevisionMutationAllowed(index)) {
+        return;
+    }
+    throw Base::RuntimeError(
+        "semantic revision mutation is unavailable during a prepared commit");
+}
+
+bool App::collaborationRevisionMutationAllowed(
+    const DocumentRevisionIndex& index) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return revisionMutationAllowedLocked(admission, index);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+App::CollaborationRevisionMutationAdmissionLease::
+    CollaborationRevisionMutationAdmissionLease(
+        const DocumentRevisionIndex& index)
+    : _lock(atomicPresentationMutationAdmission().mutex)
+{
+    auto& admission = atomicPresentationMutationAdmission();
+    if (!revisionMutationAllowedLocked(admission, index)) {
+        throw Base::RuntimeError(
+            "semantic revision mutation is unavailable during a prepared commit");
+    }
+}
+
+App::CollaborationRevisionMutationAdmissionLease::~CollaborationRevisionMutationAdmissionLease()
+    noexcept = default;
+
+App::CollaborationRevisionMutationGrant::CollaborationRevisionMutationGrant(
+    const DocumentRevisionIndex& index) noexcept
+    : _index(&index)
+{
+    // Construction is coordinator-private and performs no locking or
+    // allocation, which keeps the post-native-commit publication path
+    // noexcept.  Process target/index/owner admission is still verified by
+    // collaborationRevisionMutationAllowed() at the actual index operation.
+    if ((coordinatorRevisionGrantIndex && coordinatorRevisionGrantIndex != &index)
+        || coordinatorRevisionGrantDepth == std::numeric_limits<unsigned int>::max()) {
+        std::terminate();
+    }
+    coordinatorRevisionGrantIndex = &index;
+    ++coordinatorRevisionGrantDepth;
+}
+
+App::CollaborationRevisionMutationGrant::~CollaborationRevisionMutationGrant() noexcept
+{
+    if (!_index) {
+        return;
+    }
+    if (coordinatorRevisionGrantIndex != _index
+        || coordinatorRevisionGrantDepth == 0) {
+        std::terminate();
+    }
+    --coordinatorRevisionGrantDepth;
+    if (coordinatorRevisionGrantDepth == 0) {
+        coordinatorRevisionGrantIndex = nullptr;
     }
 }
 

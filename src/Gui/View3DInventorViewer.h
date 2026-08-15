@@ -70,6 +70,8 @@ class SoText2;
 class SoAnnotation;
 class SoCamera;
 class SoNode;
+class SoNodeSensor;
+class SoSensor;
 
 class SoSeparator;
 class SoShapeHints;
@@ -598,6 +600,8 @@ public:
 
 Q_SIGNALS:
     void cameraChanged();
+    /// Emitted for camera-node changes such as orbit, pan, zoom, fit, or projection changes.
+    void cameraActivity();
 
 protected:
     static GLenum getInternalTextureFormat();
@@ -656,6 +660,9 @@ private:
     void aboutToDestroyGLContext();
     void createStandardCursors();
     bool applyCameraState(const SoCamera& camera);
+    void attachCameraActivitySensor();
+    void detachCameraActivitySensor();
+    static void cameraActivitySensorCB(void* data, SoSensor* sensor);
 
 private:
     NaviCube* naviCube;
@@ -735,6 +742,8 @@ private:
 
     std::string overrideMode;
     Gui::Document* guiDocument = nullptr;
+    SoNodeSensor* cameraActivitySensor = nullptr;
+    SoCamera* sensedCamera = nullptr;
 
     ViewerEventFilter* viewerEventFilter;
 

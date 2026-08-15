@@ -122,6 +122,8 @@ public:
     void beginSharedPresentationNotificationBarrier(
         SharedPresentationNotificationAudit audit = {});
     [[nodiscard]] bool sharedPresentationNotificationAuditViolated() const noexcept;
+    /** True while pre-durability GUI status writes are covered by exact rollback. */
+    [[nodiscard]] bool sharedPresentationPropertyStatusRollbackActive() const noexcept;
     /** Mark the App side durable; later GUI changes are ordinary observer mutations. */
     void markSharedPresentationAppDurable() noexcept;
     /** True unless the current replay item is an ordinary post-durability mutation. */
@@ -133,10 +135,18 @@ public:
     /** Validate a provider property before any native transaction captures it. */
     void preflightSharedPresentationPropertyMutation(
         const Gui::ViewProvider&, const App::Property&);
+    /** Mark a completed status transition in the preflight-created rollback ledger. */
+    void recordSharedPresentationPropertyStatusMutation(
+        const Gui::ViewProvider&, const App::Property&, unsigned long oldStatus);
     void notifyBeforeChangeObject(const Gui::ViewProvider&, const App::Property&);
     void notifyChangedObject(const Gui::ViewProvider&,
                              const App::Property&,
                              bool delayActions = false);
+    void notifyPropertyStatusChangedObject(const Gui::ViewProvider&,
+                                           const App::Property&,
+                                           bool delayActions = false);
+    [[nodiscard]] bool currentNotificationIsPropertyStatusChange(
+        const Gui::ViewProvider&, const App::Property&) const noexcept;
     //@}
 
     /** @name Signals of the Application */
@@ -370,6 +380,13 @@ public:
     //@}
 
 private:
+    /** Restore barrier-recorded status transitions without observable callbacks. */
+    bool restoreSharedPresentationPropertyStatuses(std::string& diagnostic) noexcept;
+    void notifyChangedObjectImpl(const Gui::ViewProvider&,
+                                 const App::Property&,
+                                 bool delayActions,
+                                 bool propertyStatusChange);
+
     struct ApplicationP* d;
     /// workbench python dictionary
     PyObject* _pcWorkbenchDictionary;
@@ -378,6 +395,7 @@ private:
     static void init3DMouse(MainWindow* mainWindow, QApplication* qtApp);
 
     friend class ApplicationPy;
+    friend class Document;
 };
 
 }  // namespace Gui

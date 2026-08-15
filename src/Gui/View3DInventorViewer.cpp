@@ -47,6 +47,7 @@
 
 #include <Inventor/SbBox.h>
 #include <Inventor/sensors/SoTimerSensor.h>
+#include <Inventor/sensors/SoNodeSensor.h>
 #include <Inventor/SoEventManager.h>
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
@@ -1337,10 +1338,12 @@ void View3DInventorViewer::init()
     syncNaviCubeVisibility();
 
     updateColors();
+    attachCameraActivitySensor();
 }
 
 View3DInventorViewer::~View3DInventorViewer()
 {
+    detachCameraActivitySensor();
     // to prevent following OpenGL error message: "Texture is not valid in the current context.
     // Texture has not been destroyed"
     aboutToDestroyGLContext();
@@ -4261,9 +4264,48 @@ std::shared_ptr<NavigationAnimation> View3DInventorViewer::setCameraOrientation(
     return navigation->setCameraOrientation(orientation, moveToCenter);
 }
 
+void View3DInventorViewer::attachCameraActivitySensor()
+{
+    auto* camera = getSoRenderManager() ? getSoRenderManager()->getCamera() : nullptr;
+    if (camera == sensedCamera && cameraActivitySensor) {
+        return;
+    }
+    detachCameraActivitySensor();
+    if (!camera) {
+        return;
+    }
+    cameraActivitySensor = new SoNodeSensor(cameraActivitySensorCB, this);
+    cameraActivitySensor->setPriority(10001);
+    cameraActivitySensor->attach(camera);
+    sensedCamera = camera;
+}
+
+void View3DInventorViewer::detachCameraActivitySensor()
+{
+    if (cameraActivitySensor) {
+        cameraActivitySensor->detach();
+        delete cameraActivitySensor;
+        cameraActivitySensor = nullptr;
+    }
+    sensedCamera = nullptr;
+}
+
+void View3DInventorViewer::cameraActivitySensorCB(void* data, SoSensor*)
+{
+    auto* viewer = static_cast<View3DInventorViewer*>(data);
+    if (!viewer) {
+        return;
+    }
+    Q_EMIT viewer->cameraActivity();
+    if (viewer->guiDocument) {
+        viewer->guiDocument->notifyCameraActivity();
+    }
+}
+
 void View3DInventorViewer::setCameraType(SoType type)
 {
     inherited::setCameraType(type);
+    attachCameraActivitySensor();
 
     SoCamera* cam = this->getSoRenderManager()->getCamera();
 
@@ -4283,6 +4325,10 @@ void View3DInventorViewer::setCameraType(SoType type)
     lightRotation->rotation.connectFrom(&cam->orientation);
 
     Q_EMIT cameraChanged();
+    Q_EMIT cameraActivity();
+    if (guiDocument) {
+        guiDocument->notifyCameraActivity();
+    }
 }
 
 bool View3DInventorViewer::setCamera(const char* pCamera)
