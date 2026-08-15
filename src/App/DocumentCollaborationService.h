@@ -70,6 +70,13 @@ enum class CollaborationCompatibilityScope
     Structural
 };
 
+/** Recompute policy for the synchronous native compatibility boundary. */
+enum class CollaborationCompatibilityRecomputePolicy
+{
+    Eager,
+    Deferred
+};
+
 /** Pointer-free declaration for the short synchronous compatibility path. */
 struct AppExport CollaborationCompatibilityMutation
 {
@@ -79,6 +86,22 @@ struct AppExport CollaborationCompatibilityMutation
 };
 
 using CollaborationCompatibilityCallback = std::function<void()>;
+using CollaborationCompatibilityPostcondition = std::function<bool()>;
+
+/**
+ * Options for the extended synchronous compatibility boundary.
+ *
+ * This is deliberately separate from CollaborationCompatibilityMutation so
+ * the layout and exported call shape of the legacy declaration remain ABI
+ * stable.
+ */
+struct AppExport CollaborationCompatibilityMutationOptions
+{
+    CollaborationCompatibilityRecomputePolicy recomputePolicy {
+        CollaborationCompatibilityRecomputePolicy::Eager};
+    bool trustedStructural {false};
+    CollaborationCompatibilityPostcondition postcondition;
+};
 
 /** Result of the service-owned native transaction commit point. */
 struct AppExport CollaborationAtomicCommitPointResult
@@ -143,6 +166,14 @@ public:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutation(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicy(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithOptions(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityMutationOptions options);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
         CollaborationCompatibilityCallback callback);
 
@@ -200,6 +231,14 @@ private:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicyOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithOptionsOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityMutationOptions options);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
         CollaborationCompatibilityCallback callback);
     [[nodiscard]] DocumentCommitResult serializeAtomicCompatibilityCallback(

@@ -22,6 +22,7 @@ using DocumentRevision = std::uint64_t;
 using DocumentPublicationSequence = std::uint64_t;
 
 class DocumentRevisionPublicationReservation;
+class DocumentCommitCoordinator;
 
 enum class DocumentRevisionKind
 {
@@ -365,6 +366,11 @@ public:
 
 private:
     friend class DocumentRevisionIndex;
+    friend class DocumentCommitCoordinator;
+
+    void cancelPreparedPublication() noexcept;
+    [[nodiscard]] bool commitPrepared(
+        std::vector<DocumentRevisionObservation>& observations) noexcept;
 
     DocumentRevisionPublicationReservation(
         DocumentRevisionIndex* owner,

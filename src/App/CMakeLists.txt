@@ -84,6 +84,12 @@ set(FreeCADApp_LIBS
     fmt::fmt
 )
 
+if(WIN32)
+    # DocumentFileWriter preserves DACL/protection metadata with
+    # GetSecurityInfo/SetSecurityInfo before exact-handle replacement.
+    list(APPEND FreeCADApp_LIBS advapi32)
+endif()
+
 if(BUILD_TRACY_FRAME_PROFILER)
     list(APPEND FreeCADApp_LIBS TracyClient)
 endif()
@@ -163,6 +169,7 @@ SET(Document_CPP_SRCS
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
     DocumentRevisionIndex.cpp
@@ -234,6 +241,7 @@ SET(Document_HPP_SRCS
     CollaborativeOperationRegistry.h
     CollaborativeSetPropertyOperation.h
     Document.h
+    DocumentFileWriter.h
     DocumentCollaborationService.h
     DocumentCommitCoordinator.h
     DocumentRevisionIndex.h
@@ -419,6 +427,12 @@ endif(FREECAD_USE_PCH)
 
 target_sources(FreeCADApp PRIVATE ${FreeCADApp_SRCS})
 target_link_libraries(FreeCADApp ${FreeCADApp_LIBS})
+
+if(ENABLE_DEVELOPER_TESTS)
+    # Keep DocumentFileWriter private in production while allowing its focused
+    # cross-platform boundary tests to link against the Windows DLL.
+    target_compile_definitions(FreeCADApp PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+endif()
 
 if (MSVC)
     target_compile_definitions(FreeCADApp PRIVATE WIN32_LEAN_AND_MEAN)

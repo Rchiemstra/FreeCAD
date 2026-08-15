@@ -5,6 +5,7 @@
 
 #include <FCGlobal.h>
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,11 @@ namespace App
 class Document;
 class DocumentCollaborationService;
 class PreparedEdit;
+enum class CollaborationCompatibilityRecomputePolicy;
+namespace Internal
+{
+class DocumentCommitCoordinatorTestAccess;
+}
 
 /** The terminal outcome of one prepared-edit commit attempt. */
 enum class DocumentCommitStatus
@@ -61,6 +67,7 @@ class AppExport DocumentCommitCoordinator
 {
 private:
     friend class DocumentCollaborationService;
+    friend class Internal::DocumentCommitCoordinatorTestAccess;
 
     explicit DocumentCommitCoordinator(Document& document) noexcept;
 
@@ -72,14 +79,48 @@ private:
     [[nodiscard]] DocumentCommitResult commitCompatibility(
         const PreparedEdit& edit,
         bool structural);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityWithPolicy(
+        const PreparedEdit& edit,
+        bool structural,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityWithOptions(
+        const PreparedEdit& edit,
+        bool structural,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy,
+        bool trustedStructural);
     [[nodiscard]] DocumentCommitResult commitWithPreparationPolicy(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility);
+    [[nodiscard]] DocumentCommitResult commitWithPreparationPolicyAndRecompute(
+        const PreparedEdit& edit,
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitWithPreparationPolicyAndOptions(
+        const PreparedEdit& edit,
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy,
+        bool trustedStructural);
     [[nodiscard]] DocumentCommitResult commitOnDocumentThread(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility);
+    [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithRecompute(
+        const PreparedEdit& edit,
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitOnDocumentThreadWithOptions(
+        const PreparedEdit& edit,
+        bool requireDetachedPreparationSupport,
+        bool structuralCompatibility,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy,
+        bool trustedStructural);
+
+    using PostReservationTestHook = void (*)();
+    static std::atomic<PostReservationTestHook> _postReservationTestHook;
 
     Document& _document;
 };

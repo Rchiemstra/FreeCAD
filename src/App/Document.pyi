@@ -95,6 +95,14 @@ class Document(PropertyContainer):
         """
         ...
 
+    def saveWithOutcome(self) -> dict[str, object]:
+        """Save canonically and report whether bytes were written or unchanged."""
+        ...
+
+    def forceSave(self) -> dict[str, object]:
+        """Rewrite the canonical file even when no persistent changes are pending."""
+        ...
+
     def saveAs(self, path: str, /) -> None:
         """
         Save the document under a new name to disk.
@@ -105,10 +113,36 @@ class Document(PropertyContainer):
         """Save As using FreeCAD's native destination overwrite policy."""
         ...
 
+    def saveAsWithOutcome(
+        self,
+        path: str,
+        overwrite: bool = False,
+        expected_destination_sha256: str = "",
+        /,
+    ) -> dict[str, object]:
+        """Save As using native no-clobber/CAS policy and return a structured outcome."""
+        ...
+
     def saveCopy(self, path: str, /) -> None:
         """
         Save a copy of the document under a new name to disk.
         """
+        ...
+
+    def saveCopyWithOutcome(self, path: str, /) -> dict[str, object]:
+        """Always write a copy without clearing canonical pending changes."""
+        ...
+
+    def hasPendingFileChanges(self) -> bool:
+        """Return whether canonical persistent content differs from its savepoint."""
+        ...
+
+    def getFileChangeState(self) -> dict[str, object]:
+        """Return authoritative file state, categories, path, and save-failure overlay."""
+        ...
+
+    def getMutationReadiness(self) -> dict[str, object]:
+        """Return readiness, stable-event capability, pending_removal, and transient blockers."""
         ...
 
     def canWriteRecoverySnapshot(self) -> bool:
@@ -281,10 +315,16 @@ class Document(PropertyContainer):
         /,
         *,
         structural: bool = False,
+        recompute: bool = True,
+        postcondition: Callable[[], object] | None = None,
+        trusted_structural: bool = False,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
 
         Object creation and removal require the explicit ``structural=True`` scope.
+        ``recompute=False`` preserves pending recompute work for recovery mutations.
+        The optional postcondition runs once before publication; a false result rolls back.
+        ``trusted_structural`` only widens the coordinator-owned recompute scope.
         """
         ...
 

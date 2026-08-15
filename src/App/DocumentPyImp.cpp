@@ -51,6 +51,86 @@ using namespace App;
 namespace
 {
 
+const char* saveDispositionName(const DocumentSaveDisposition disposition)
+{
+    switch (disposition) {
+        case DocumentSaveDisposition::Written:
+            return "written";
+        case DocumentSaveDisposition::Unchanged:
+            return "unchanged";
+        case DocumentSaveDisposition::CopyWritten:
+            return "copy_written";
+        case DocumentSaveDisposition::Failed:
+            return "failed";
+    }
+    return "failed";
+}
+
+const char* fileStateName(const DocumentFileState state)
+{
+    switch (state) {
+        case DocumentFileState::NotSaved:
+            return "not_saved";
+        case DocumentFileState::Clean:
+            return "clean";
+        case DocumentFileState::Modified:
+            return "modified";
+    }
+    return "modified";
+}
+
+const char* saveIntentName(const DocumentSaveIntent intent)
+{
+    switch (intent) {
+        case DocumentSaveIntent::Canonical:
+            return "canonical";
+        case DocumentSaveIntent::Force:
+            return "force";
+        case DocumentSaveIntent::SaveAs:
+            return "save_as";
+        case DocumentSaveIntent::Copy:
+            return "copy";
+        case DocumentSaveIntent::Recovery:
+            return "recovery";
+    }
+    return "canonical";
+}
+
+Py::Dict saveOutcomeToPy(const DocumentSaveOutcome& outcome)
+{
+    Py::Dict result;
+    result["success"] = Py::Boolean(outcome.succeeded());
+    result["intent"] = Py::String(saveIntentName(outcome.intent));
+    result["save_disposition"] = Py::String(saveDispositionName(outcome.disposition));
+    result["file_written"] = Py::Boolean(outcome.fileWritten);
+    result["durability_verified"] = Py::Boolean(outcome.durabilityVerified);
+    result["unchanged"] = Py::Boolean(
+        outcome.disposition == DocumentSaveDisposition::Unchanged);
+    result["canonical_path"] = Py::String(outcome.canonicalPath);
+    result["target_path"] = Py::String(outcome.targetPath);
+    result["resulting_state"] = Py::String(fileStateName(outcome.resultingState));
+    result["resulting_clean"] = Py::Boolean(
+        outcome.resultingState == DocumentFileState::Clean
+        && !outcome.lastCanonicalSaveFailed);
+    result["last_canonical_save_failed"] = Py::Boolean(outcome.lastCanonicalSaveFailed);
+    result["error_code"] = Py::String(outcome.errorCode);
+    result["message"] = Py::String(outcome.message);
+    Py::List pending;
+    if (outcome.pendingChanges.testFlag(DocumentFileChange::Model)) {
+        pending.append(Py::String("model"));
+    }
+    if (outcome.pendingChanges.testFlag(DocumentFileChange::Appearance)) {
+        pending.append(Py::String("appearance"));
+    }
+    result["pending_changes"] = pending;
+    Py::List warnings;
+    for (const auto& warning : outcome.warnings) {
+        warnings.append(Py::String(warning));
+    }
+    result["warnings"] = warnings;
+    return result;
+}
+
 constexpr const char* PreparedEditCapsuleName = "App.PreparedEdit";
 
 class PythonCompatibilityCallbackFailure final
@@ -83,9 +163,18 @@ public:
 
     void restore()
     {
+        // Cleanup performed by the native coordinator is allowed to execute
+        // Python-backed objects.  Never let a secondary cleanup error replace
+        // the callback/postcondition exception promised by this API.
+        PyErr_Clear();
         PyErr_Restore(std::exchange(_type, nullptr),
                       std::exchange(_value, nullptr),
                       std::exchange(_traceback, nullptr));
+    }
+
+    [[nodiscard]] bool captured() const noexcept
+    {
+        return _type || _value || _traceback;
     }
 
 private:
@@ -437,7 +526,12 @@ PyObject* DocumentPy::save(PyObject* args)
     PY_TRY
     {
         if (!getDocumentPtr()->save()) {
-            PyErr_SetString(PyExc_ValueError, "Object attribute 'FileName' is not set");
+            if (*(getDocumentPtr()->FileName.getValue()) == '\0') {
+                PyErr_SetString(PyExc_ValueError, "Object attribute 'FileName' is not set");
+            }
+            else {
+                PyErr_SetString(PyExc_IOError, "Failed to save document");
+            }
             return nullptr;
         }
     }
@@ -453,6 +547,30 @@ PyObject* DocumentPy::save(PyObject* args)
     Py_Return;
 }
 
+PyObject* DocumentPy::saveWithOutcome(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveWithOutcome()));
+    }
+    PY_CATCH
+}
+
+PyObject* DocumentPy::forceSave(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->forceSave()));
+    }
+    PY_CATCH
+}
+
 PyObject* DocumentPy::saveAs(PyObject* args)
 {
     char* fn;
@@ -465,7 +583,10 @@ PyObject* DocumentPy::saveAs(PyObject* args)
 
     PY_TRY
     {
-        getDocumentPtr()->saveAs(utf8Name.c_str());
+        // Preserve the legacy Python contract: saveAs() returns None when the
+        // C++ bool result is false. Callers that need an unambiguous failure
+        // result use saveAsWithOutcome().
+        static_cast<void>(getDocumentPtr()->saveAs(utf8Name.c_str()));
         Py_Return;
     }
     PY_CATCH
@@ -504,19 +625,124 @@ PyObject* DocumentPy::saveAsWithPolicy(PyObject* args)
     PY_CATCH
 }
 
-PyObject* DocumentPy::saveCopy(PyObject* args)
+PyObject* DocumentPy::saveAsWithOutcome(PyObject* args)
 {
     char* fn;
-    if (!PyArg_ParseTuple(args, "s", &fn)) {
+    char* expectedDestinationSha256 = nullptr;
+    PyObject* overwriteObject = Py_False;
+    if (!PyArg_ParseTuple(args,
+                          "et|O!et",
+                          "utf-8",
+                          &fn,
+                          &PyBool_Type,
+                          &overwriteObject,
+                          "utf-8",
+                          &expectedDestinationSha256)) {
         return nullptr;
     }
 
+    std::string utf8Name = fn;
+    PyMem_Free(fn);
+    std::string expectedHash;
+    if (expectedDestinationSha256) {
+        expectedHash = expectedDestinationSha256;
+        PyMem_Free(expectedDestinationSha256);
+    }
     PY_TRY
     {
-        getDocumentPtr()->saveCopy(fn);
+        return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveAsWithOutcome(
+            utf8Name.c_str(), Base::asBoolean(overwriteObject), expectedHash)));
+    }
+    PY_CATCH
+}
+
+PyObject* DocumentPy::saveCopy(PyObject* args)
+{
+    char* fn;
+    if (!PyArg_ParseTuple(args, "et", "utf-8", &fn)) {
+        return nullptr;
+    }
+
+    std::string utf8Name = fn;
+    PyMem_Free(fn);
+
+    PY_TRY
+    {
+        static_cast<void>(getDocumentPtr()->saveCopy(utf8Name.c_str()));
         Py_Return;
     }
     PY_CATCH
+}
+
+PyObject* DocumentPy::saveCopyWithOutcome(PyObject* args)
+{
+    char* fn;
+    if (!PyArg_ParseTuple(args, "et", "utf-8", &fn)) {
+        return nullptr;
+    }
+    std::string utf8Name = fn;
+    PyMem_Free(fn);
+    PY_TRY
+    {
+        return Py::new_reference_to(
+            saveOutcomeToPy(getDocumentPtr()->saveCopyWithOutcome(utf8Name.c_str())));
+    }
+    PY_CATCH
+}
+
+PyObject* DocumentPy::hasPendingFileChanges(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    return Py::new_reference_to(Py::Boolean(getDocumentPtr()->hasPendingFileChanges()));
+}
+
+PyObject* DocumentPy::getFileChangeState(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    const auto* document = getDocumentPtr();
+    Py::Dict result;
+    result["state"] = Py::String(fileStateName(document->getFileChangeState()));
+    result["canonical_path"] = Py::String(document->FileName.getStrValue());
+    result["has_pending_file_changes"] = Py::Boolean(document->hasPendingFileChanges());
+    result["last_canonical_save_failed"] = Py::Boolean(
+        document->lastCanonicalSaveFailed());
+    Py::List pending;
+    const auto changes = document->getPendingFileChanges();
+    if (changes.testFlag(DocumentFileChange::Model)) {
+        pending.append(Py::String("model"));
+    }
+    if (changes.testFlag(DocumentFileChange::Appearance)) {
+        pending.append(Py::String("appearance"));
+    }
+    result["pending_changes"] = pending;
+    return Py::new_reference_to(result);
+}
+
+PyObject* DocumentPy::getMutationReadiness(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    const auto readiness = getDocumentPtr()->getMutationReadiness();
+    Py::Dict result;
+    result["stable_event_supported"] = Py::Boolean(readiness.stableEventSupported);
+    result["ready"] = Py::Boolean(readiness.ready);
+    result["pending_transaction"] = Py::Boolean(readiness.pendingTransaction);
+    result["booked_transaction"] = Py::Long(readiness.bookedTransaction);
+    result["transaction_locked"] = Py::Boolean(readiness.transactionLocked);
+    result["recomputing"] = Py::Boolean(readiness.recomputing);
+    result["must_execute"] = Py::Boolean(readiness.mustExecute);
+    result["pending_removal"] = Py::Boolean(readiness.pendingRemoval);
+    result["commit_barrier"] = Py::Boolean(readiness.commitBarrier);
+    result["notification_replay"] = Py::Boolean(readiness.notificationReplay);
+    result["poisoned"] = Py::Boolean(readiness.poisoned);
+    result["quarantined"] = Py::Boolean(readiness.quarantined);
+    result["diagnostic"] = Py::String(readiness.diagnostic);
+    return Py::new_reference_to(result);
 }
 
 PyObject* DocumentPy::canWriteRecoverySnapshot(PyObject* args)
@@ -1157,56 +1383,112 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
 {
     PyObject* callback = nullptr;
     PyObject* structural = Py_False;
-    static const std::array<const char*, 3> kwlist {
-        "", "structural", nullptr};
+    PyObject* recompute = Py_True;
+    PyObject* postcondition = Py_None;
+    PyObject* trustedStructural = Py_False;
+    static const std::array<const char*, 6> kwlist {
+        "", "structural", "recompute", "postcondition", "trusted_structural", nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!:commitCompatibilityMutation",
+                                             "O|$O!O!OO!:commitCompatibilityMutation",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
-                                             &structural)) {
+                                             &structural,
+                                             &PyBool_Type,
+                                             &recompute,
+                                             &postcondition,
+                                             &PyBool_Type,
+                                             &trustedStructural)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
         PyErr_SetString(PyExc_TypeError, "callback must be callable");
         return nullptr;
     }
+    if (postcondition != Py_None && !PyCallable_Check(postcondition)) {
+        PyErr_SetString(PyExc_TypeError, "postcondition must be callable or None");
+        return nullptr;
+    }
 
     PY_TRY
     {
-        Py_INCREF(callback);
-        auto retainedCallback = std::shared_ptr<PyObject>(callback, [](PyObject* object) {
-            if (!object || !Py_IsInitialized()) {
-                return;
-            }
-            Base::PyGILStateLocker gil;
-            Py_DECREF(object);
-        });
+        const auto retainCallable = [](PyObject* callable) {
+            Py_INCREF(callable);
+            return std::shared_ptr<PyObject>(callable, [](PyObject* object) {
+                if (!object || !Py_IsInitialized()) {
+                    return;
+                }
+                Base::PyGILStateLocker gil;
+                Py_DECREF(object);
+            });
+        };
+        auto retainedCallback = retainCallable(callback);
+        std::shared_ptr<PyObject> retainedPostcondition;
+        if (postcondition != Py_None) {
+            retainedPostcondition = retainCallable(postcondition);
+        }
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
             mutation.scope = Base::asBoolean(structural)
                 ? CollaborationCompatibilityScope::Structural
                 : CollaborationCompatibilityScope::UnknownModel;
-            const auto result =
-                getDocumentPtr()->collaborationService().commitCompatibilityMutation(
-                    std::move(mutation),
-                    [retainedCallback = std::move(retainedCallback), callbackError] {
+            CollaborationCompatibilityCallback nativeCallback =
+                [retainedCallback = std::move(retainedCallback), callbackError] {
+                    Base::PyGILStateLocker gil;
+                    PyObject* callbackResult = PyObject_CallNoArgs(retainedCallback.get());
+                    if (!callbackResult) {
+                        callbackError->capture();
+                        throw PythonCompatibilityCallbackFailure();
+                    }
+                    Py_DECREF(callbackResult);
+                };
+            CollaborationCompatibilityPostcondition nativePostcondition;
+            if (retainedPostcondition) {
+                nativePostcondition =
+                    [retainedPostcondition = std::move(retainedPostcondition), callbackError] {
                         Base::PyGILStateLocker gil;
-                        PyObject* callbackResult =
-                            PyObject_CallNoArgs(retainedCallback.get());
-                        if (!callbackResult) {
+                        PyObject* postconditionResult =
+                            PyObject_CallNoArgs(retainedPostcondition.get());
+                        if (!postconditionResult) {
                             callbackError->capture();
                             throw PythonCompatibilityCallbackFailure();
                         }
-                        Py_DECREF(callbackResult);
-                    });
+                        const int satisfied = PyObject_IsTrue(postconditionResult);
+                        if (satisfied < 0) {
+                            callbackError->capture();
+                            Py_DECREF(postconditionResult);
+                            throw PythonCompatibilityCallbackFailure();
+                        }
+                        Py_DECREF(postconditionResult);
+                        return satisfied != 0;
+                    };
+            }
+            CollaborationCompatibilityMutationOptions options;
+            options.recomputePolicy = Base::asBoolean(recompute)
+                ? CollaborationCompatibilityRecomputePolicy::Eager
+                : CollaborationCompatibilityRecomputePolicy::Deferred;
+            options.trustedStructural = Base::asBoolean(trustedStructural);
+            options.postcondition = std::move(nativePostcondition);
+            const auto result = getDocumentPtr()
+                                    ->collaborationService()
+                                    .commitCompatibilityMutationWithOptions(
+                                        std::move(mutation),
+                                        std::move(nativeCallback),
+                                        std::move(options));
             return Py::new_reference_to(commitResultToPython(result));
         }
         catch (const PythonCompatibilityCallbackFailure&) {
             callbackError->restore();
             return nullptr;
+        }
+        catch (...) {
+            if (callbackError->captured()) {
+                callbackError->restore();
+                return nullptr;
+            }
+            throw;
         }
     }
     PY_CATCH;

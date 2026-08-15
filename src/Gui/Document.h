@@ -47,6 +47,7 @@ class Matrix4D;
 namespace App
 {
 class Document;
+struct DocumentSaveOutcome;
 class DocumentObject;
 class DocumentObjectGroup;
 class Property;
@@ -102,13 +103,14 @@ protected:
     void slotDeletedObject(const App::DocumentObject&);
     void slotChangedObject(const App::DocumentObject&, const App::Property&);
     void slotChangedViewObject(const Gui::ViewProvider&, const App::Property&);
+    void slotFileChangeStateChanged(const App::Document&);
+    void slotSaveOutcome(const App::Document&, const App::DocumentSaveOutcome&);
     void slotRelabelObject(const App::DocumentObject&);
     void slotTransactionAppend(const App::DocumentObject&, App::Transaction*);
     void slotTransactionRemove(const App::DocumentObject&, App::Transaction*);
     void slotActivatedObject(const App::DocumentObject&);
     void slotStartRestoreDocument(const App::Document&);
     void slotFinishRestoreDocument(const App::Document&);
-    void slotFinishSaveDocument(const App::Document&, const std::string& fileName);
     void slotUndoDocument(const App::Document&);
     void slotRedoDocument(const App::Document&);
     void slotShowHidden(const App::Document&);
@@ -122,6 +124,7 @@ protected:
 
 public:
     void addViewProvider(Gui::ViewProviderDocumentObject*);
+    void notifyCameraActivity();
 
     /** @name Signals of the document */
     //@{
@@ -144,6 +147,8 @@ public:
     mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalInEdit;
     /// signal on leaving edit mode
     mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalResetEdit;
+    /// Session-only camera navigation; never contributes to App file changes.
+    mutable fastsignals::signal<void(const Gui::Document&)> signalCameraActivity;
     /// signal on changed Object, the 2nd argument is the highlite mode to use
     mutable fastsignals::signal<void(
         const Gui::ViewProviderDocumentObject&,

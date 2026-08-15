@@ -223,6 +223,7 @@ protected:
 private:
     ViewMode currentMode;
     Qt::WindowStates wstate;
+    QString baseWindowTitle;
     bool _isDeleting {false};
     // list of active objects of this view
     ActiveObjectList ActiveObjects;

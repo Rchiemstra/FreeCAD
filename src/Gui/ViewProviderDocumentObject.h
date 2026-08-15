@@ -159,6 +159,11 @@ public:
 
     bool removeDynamicProperty(const char* prop) override;
 
+    bool changeDynamicProperty(const App::Property* prop,
+                               const char* group,
+                               const char* doc) override;
+    bool renameDynamicProperty(App::Property* prop, const char* name) override;
+
     App::Property* addDynamicProperty(
         std::string_view type,
         const char* name = nullptr,

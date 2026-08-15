@@ -112,21 +112,25 @@ ViewProviderReviewNote::ViewProviderReviewNote()
         LeaderEnd,
         (Base::Vector3d()),
         "ReviewNote",
-        App::Prop_Hidden,
+        App::PropertyType(App::Prop_Hidden | App::Prop_Transient | App::Prop_NoPersist),
         "Leader endpoint relative to BasePosition (nearest text-box border point)"
     );
     LeaderEnd.setStatus(App::Property::Output, true);
     LeaderEnd.setStatus(App::Property::ReadOnly, true);
+    LeaderEnd.setStatus(App::Property::Transient, true);
+    LeaderEnd.setStatus(App::Property::NoModify, true);
 
     ADD_PROPERTY_TYPE(
         LeaderHalfExtent,
         (Base::Vector3d(0.5, 0.5, 0.0)),
         "ReviewNote",
-        App::Prop_Hidden,
+        App::PropertyType(App::Prop_Hidden | App::Prop_Transient | App::Prop_NoPersist),
         "Billboard half-extents (x=halfW, y=halfH) of the text box used for leader attachment"
     );
     LeaderHalfExtent.setStatus(App::Property::Output, true);
     LeaderHalfExtent.setStatus(App::Property::ReadOnly, true);
+    LeaderHalfExtent.setStatus(App::Property::Transient, true);
+    LeaderHalfExtent.setStatus(App::Property::NoModify, true);
 }
 
 ViewProviderReviewNote::~ViewProviderReviewNote()
@@ -233,6 +237,28 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
 
     ensureCameraSensor();
     refreshLeader();
+}
+
+void ViewProviderReviewNote::finishRestoring()
+{
+    Gui::ViewProviderAnnotationLabel::finishRestoring();
+    // Legacy GuiDocument.xml files may contain old cache values/status bits.  The
+    // camera-derived values are session caches and must never dirty or persist.
+    const auto restoreCacheInvariant = [](App::Property& property) {
+        property.setStatus(App::Property::Output, true);
+        property.setStatus(App::Property::ReadOnly, true);
+        property.setStatus(App::Property::Hidden, true);
+        property.setStatus(App::Property::Transient, true);
+        property.setStatus(App::Property::NoModify, true);
+        property.setStatus(App::Property::PropOutput, true);
+        property.setStatus(App::Property::PropReadOnly, true);
+        property.setStatus(App::Property::PropHidden, true);
+        property.setStatus(App::Property::PropTransient, true);
+        property.setStatus(App::Property::PropNoPersist, true);
+    };
+    restoreCacheInvariant(LeaderEnd);
+    restoreCacheInvariant(LeaderHalfExtent);
+    scheduleVisualFrame();
 }
 
 void ViewProviderReviewNote::updateData(const App::Property* prop)

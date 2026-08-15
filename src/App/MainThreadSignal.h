@@ -23,8 +23,11 @@
 #define APP_MAINTHREADSIGNAL_H
 
 #include <Base/Interpreter.h>
+#include <Base/Console.h>
+#include <Base/Exception.h>
 #include <fastsignals/signal.h>
 #include <functional>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -135,6 +138,61 @@ auto captureSignalArg(PDecl&& x)
 template<class T>
 using non_void_t = std::conditional_t<std::is_void_v<T>, std::monostate, T>;
 }  // namespace detail
+
+// A same-thread void notification signal whose subscribers are isolated from
+// one another.  It deliberately derives from fastsignals::signal without
+// adding state so existing exported owner layouts remain unchanged.
+template<class Signature>
+class ResilientSignal;
+
+template<class... Arguments>
+class ResilientSignal<void(Arguments...)>
+    : public ::fastsignals::signal<void(Arguments...)>
+{
+    using inherited = ::fastsignals::signal<void(Arguments...)>;
+
+public:
+    using slot_type = typename inherited::slot_type;
+
+    using inherited::connect;
+
+    void operator()(typename ::fastsignals::signal_arg_t<Arguments>... args) const noexcept
+    {
+        inherited::emit_resilient(
+            [](std::exception_ptr failure) noexcept {
+                try {
+                    std::rethrow_exception(std::move(failure));
+                }
+                catch (const Base::Exception& exception) {
+                    reportFailure(exception.what());
+                }
+                catch (const std::exception& exception) {
+                    reportFailure(exception.what());
+                }
+                catch (...) {
+                    reportFailure("unknown exception");
+                }
+            },
+            args...);
+    }
+
+private:
+    static void reportFailure(const char* message) noexcept
+    {
+        try {
+            Base::Console().error("Resilient lifecycle observer failed: %s\n", message);
+        }
+        catch (...) {
+            // Logging is best-effort at an irrevocable lifecycle boundary.
+        }
+    }
+
+};
+
+static_assert(sizeof(ResilientSignal<void()>)
+              == sizeof(::fastsignals::signal<void()>));
+static_assert(alignof(ResilientSignal<void()>)
+              == alignof(::fastsignals::signal<void()>));
 
 // Wrapper that mirrors fastsignals::signal but executes slots on GUI thread.
 template<class Signature, template<class T> class Combiner = ::fastsignals::optional_last_value>
@@ -264,6 +322,139 @@ private:
 
     mutable base_sig sig_;
 };
+
+// A void notification signal whose subscribers are isolated from one another.
+// Persistence/autosave notifications use this type because an extension slot
+// must not prevent later core GUI observers from seeing authoritative state.
+template<class Signature>
+class ResilientMainThreadSignal;
+
+template<class... Arguments>
+class ResilientMainThreadSignal<void(Arguments...)>: public MainThreadSignal<void(Arguments...)>
+{
+    using inherited = MainThreadSignal<void(Arguments...)>;
+
+public:
+    using slot_type = typename inherited::slot_type;
+
+    ::fastsignals::connection connect(slot_type slot)
+    {
+        return inherited::connect(protect(std::move(slot)));
+    }
+
+    ::fastsignals::advanced_connection connect(slot_type slot, ::fastsignals::advanced_tag tag)
+    {
+        return inherited::connect(protect(std::move(slot)), tag);
+    }
+
+    void emit(typename ::fastsignals::signal_arg_t<Arguments>... args)
+    {
+        emitImpl(this, std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+    }
+
+    void emit(typename ::fastsignals::signal_arg_t<Arguments>... args) const
+    {
+        emitImpl(this, std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+    }
+
+    void operator()(typename ::fastsignals::signal_arg_t<Arguments>... args)
+    {
+        emit(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+    }
+
+    void operator()(typename ::fastsignals::signal_arg_t<Arguments>... args) const
+    {
+        emit(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+    }
+
+private:
+    template<class Self>
+    static void emitInline(
+        Self* self,
+        typename ::fastsignals::signal_arg_t<Arguments>... args) noexcept
+    {
+        self->underlying().emit_resilient(
+            [](std::exception_ptr failure) noexcept { reportFailure(std::move(failure)); },
+            args...);
+    }
+
+    template<class Self>
+    static void emitImpl(
+        Self* self,
+        typename ::fastsignals::signal_arg_t<Arguments>... args)
+    {
+        if (MainThreadSignalConfig::isMainThread()) {
+            emitInline(
+                self,
+                std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+            return;
+        }
+
+        Base::PyGILStateRelease release;
+        auto caps = std::make_tuple(
+            detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+        MainThreadSignalConfig::invoke(
+            [self, caps = std::move(caps)]() mutable {
+                std::apply(
+                    [self](auto&... captured) { emitInline(self, captured.get()...); },
+                    caps);
+            },
+            /*blocking=*/true);
+    }
+
+    static void reportFailure(std::exception_ptr failure) noexcept
+    {
+        try {
+            std::rethrow_exception(std::move(failure));
+        }
+        catch (const Base::Exception& exception) {
+            reportFailure(exception.what());
+        }
+        catch (const std::exception& exception) {
+            reportFailure(exception.what());
+        }
+        catch (...) {
+            reportFailure("unknown exception");
+        }
+    }
+
+    static void reportFailure(const char* message) noexcept
+    {
+        try {
+            Base::Console().error("Resilient document observer failed: %s\n", message);
+        }
+        catch (...) {
+            // Logging is best-effort for an authoritative state notification.
+        }
+    }
+
+    static slot_type protect(slot_type slot)
+    {
+        return [slot = std::move(slot)](
+                   typename ::fastsignals::signal_arg_t<Arguments>... args) {
+            try {
+                slot(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
+            }
+            catch (const Base::Exception& exception) {
+                Base::Console().error(
+                    "Resilient document observer failed: %s\n", exception.what());
+            }
+            catch (const std::exception& exception) {
+                Base::Console().error(
+                    "Resilient document observer failed: %s\n", exception.what());
+            }
+            catch (...) {
+                Base::Console().error(
+                    "Resilient document observer failed with an unknown exception\n");
+            }
+        };
+    }
+};
+
+static_assert(sizeof(ResilientMainThreadSignal<void()>)
+              == sizeof(MainThreadSignal<void()>));
+static_assert(alignof(ResilientMainThreadSignal<void()>)
+              == alignof(MainThreadSignal<void()>));
 
 }  // namespace App
 

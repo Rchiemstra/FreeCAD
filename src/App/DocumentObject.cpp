@@ -208,6 +208,7 @@ bool DocumentObject::recomputeFeature(bool recursive)
 
 void DocumentObject::setTouched(const char* name)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     // This function is not a replacement for touch(), it is only
     // used internally for fine-grained document recompute and replaces
     // the coarse grained equivalent of StatusBits.set(ObjectStatus::Touch);
@@ -217,10 +218,8 @@ void DocumentObject::setTouched(const char* name)
 
 void DocumentObject::touch(bool noRecompute)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
-    if (publish) {
-        enforceAtomicPresentationMutationTarget(_pDoc);
-    }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
     }
@@ -235,10 +234,8 @@ void DocumentObject::touch(bool noRecompute)
 
 void DocumentObject::purgeTouched()
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
-    if (publish) {
-        enforceAtomicPresentationMutationTarget(_pDoc);
-    }
     StatusBits.reset(ObjectStatus::Touch);
     StatusBits.reset(ObjectStatus::Enforce);
     std::vector<Property*> properties;
@@ -325,6 +322,15 @@ void DocumentObject::purgeError()
 bool DocumentObject::isTouched() const
 {
     return ExpressionEngine.isTouched() || StatusBits.test(ObjectStatus::Touch);
+}
+
+void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
+{
+    if (StatusBits.test(static_cast<size_t>(pos)) == on) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    StatusBits.set(static_cast<size_t>(pos), on);
 }
 
 void DocumentObject::enforceRecompute(const std::string& propName)
@@ -918,6 +924,40 @@ bool DocumentObject::removeDynamicProperty(const char* name)
     }
 
     return TransactionalObject::removeDynamicProperty(name);
+}
+
+bool DocumentObject::changeDynamicProperty(const Property* prop,
+                                           const char* group,
+                                           const char* doc)
+{
+    if (_pDoc) {
+        Internal::CollaborationStructuralMutationRecorder::
+            ensurePropertySchemaMutationAllowed(*_pDoc, *this);
+    }
+    const std::string oldGroup = prop && getPropertyGroup(prop) ? getPropertyGroup(prop) : "";
+    const std::string oldDocumentation = prop && getPropertyDocumentation(prop)
+        ? getPropertyDocumentation(prop)
+        : "";
+    const bool changed = TransactionalObject::changeDynamicProperty(prop, group, doc);
+    const bool metadataChanged = prop
+        && (oldGroup != (getPropertyGroup(prop) ? getPropertyGroup(prop) : "")
+            || oldDocumentation
+                != (getPropertyDocumentation(prop) ? getPropertyDocumentation(prop) : ""));
+    if (changed && metadataChanged && _pDoc
+        && Document::dynamicPropertySchemaAffectsPersistence(prop)) {
+        // Existing-object metadata is not represented in Transaction's
+        // property payload and therefore stays sticky.  A transaction-owned
+        // new object is removed as a whole on abort/undo, so its metadata and
+        // dirty evidence share the transaction safely.
+        const bool transactionOwnedNewObject =
+            Internal::CollaborationStructuralMutationRecorder::
+                isTransactionOwnedNewObject(*_pDoc, *this);
+        _pDoc->markFileChange(
+            DocumentFileChange::Model,
+            transactionOwnedNewObject ? DocumentFileChangeOwnership::AutoTransaction
+                                      : DocumentFileChangeOwnership::Sticky);
+    }
+    return changed;
 }
 
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
@@ -1972,9 +2012,35 @@ bool DocumentObject::redirectSubName(std::ostringstream&, DocumentObject*, Docum
 
 void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long oldStatus)
 {
-    (void)oldStatus;
     if (!Document::isAnyRestoring() && isAttachedToDocument() && getDocument()) {
-        getDocument()->emitCollaborationChangePropertyEditor(prop);
+        constexpr unsigned long serializedStatusMask =
+            (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+            | (1UL << Property::Transient) | (1UL << Property::Output)
+            | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+            | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+            | (1UL << Property::UserEdit);
+        const bool serializedDelta = ((oldStatus ^ prop.getStatus()) & serializedStatusMask) != 0;
+        const bool affectsPersistence = serializedDelta
+            && !prop.testStatus(Property::PropNoPersist);
+        if (affectsPersistence) {
+            // Existing-object status changes are not part of Transaction's
+            // property payload and therefore remain sticky unless the
+            // compatibility coordinator snapshots its narrow trusted editor
+            // status grant. A transaction-owned new object is removed as a
+            // whole on abort/undo, including its serialized property status.
+            const bool transactionOwnedNewObject =
+                Internal::CollaborationStructuralMutationRecorder::
+                    isTransactionOwnedNewObject(*getDocument(), *this);
+            getDocument()->markFileChange(
+                DocumentFileChange::Model,
+                (getDocument()->collaborationTrustedPropertyStatusMutationActive()
+                 || transactionOwnedNewObject)
+                    ? DocumentFileChangeOwnership::AutoTransaction
+                    : DocumentFileChangeOwnership::Sticky);
+        }
+        if (serializedDelta) {
+            getDocument()->emitCollaborationChangePropertyEditor(prop);
+        }
     }
 }
 

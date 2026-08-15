@@ -57,7 +57,7 @@ set(TestExecutables
 # module.
 
 if(BUILD_GUI)
-    list (APPEND TestExecutables Gui_tests_run)
+    list (APPEND TestExecutables Gui_tests_run GuiShutdown_tests_run)
 endif()
 if(BUILD_ASSEMBLY)
     list (APPEND TestExecutables Assembly_tests_run)

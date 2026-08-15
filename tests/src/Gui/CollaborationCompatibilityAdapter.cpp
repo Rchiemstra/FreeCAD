@@ -7,6 +7,8 @@
 #include <thread>
 
 #include <QApplication>
+#include <QScopeGuard>
+#include <QTemporaryDir>
 
 #include <App/Application.h>
 #include <App/Document.h>
@@ -14,10 +16,12 @@
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
 #include <App/MergeDocuments.h>
+#include <Base/Parameter.h>
 #include <Base/Stream.h>
 #include <Gui/Application.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Document.h>
+#include <Gui/MainWindow.h>
 #include <Gui/MergeDocuments.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <src/App/InitApplication.h>
@@ -147,6 +151,35 @@ TEST(CollaborationCompatibilityAdapterTest, everyPersonalActionBypassesCommitAnd
         EXPECT_EQ(outcome.status, Status::RejectedPersonalContext);
         EXPECT_EQ(commitCalls, 0);
         EXPECT_EQ(callbackCalls, 0);
+    }
+}
+
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       canonicalSaveDoesNotRequireMainWindowWithThumbnailEnabledOrDisabled)
+{
+    ASSERT_EQ(Gui::MainWindow::getInstance(), nullptr);
+    ASSERT_TRUE(_guiDocument->getMDIViews().empty());
+
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    auto preferences = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document");
+    const bool previousSaveThumbnail = preferences->GetBool("SaveThumbnail", true);
+    auto restorePreference = qScopeGuard(
+        [&] { preferences->SetBool("SaveThumbnail", previousSaveThumbnail); });
+
+    for (const bool saveThumbnail : {false, true}) {
+        preferences->SetBool("SaveThumbnail", saveThumbnail);
+        _object->Label.setValue(saveThumbnail ? "thumbnail enabled" : "thumbnail disabled");
+        const auto target = directory.filePath(
+            saveThumbnail ? QStringLiteral("thumbnail-enabled.FCStd")
+                          : QStringLiteral("thumbnail-disabled.FCStd"));
+
+        const auto outcome = _document->saveAsWithOutcome(target.toUtf8().constData(), false);
+        EXPECT_TRUE(outcome.succeeded()) << outcome.errorCode << ": " << outcome.message;
+        EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written);
+        EXPECT_TRUE(outcome.fileWritten);
+        EXPECT_TRUE(outcome.durabilityVerified);
     }
 }
 
