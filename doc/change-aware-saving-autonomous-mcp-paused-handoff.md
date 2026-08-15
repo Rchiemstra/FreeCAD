@@ -1,13 +1,40 @@
-# Change-Aware Saving and Autonomous MCP Editing — Paused Handoff
+# Change-Aware Saving and Autonomous MCP Editing — Work-in-Progress Handoff
 
-**Status:** Paused by user; all implementation/review lanes stopped; current source is not release-ready  
-**Date:** 2026-08-15  
-**Parent branch:** `fix/change-aware-save-mcp-autonomy`  
-**Parent base HEAD:** `0b90c1533719486a390a4c7afcf40aa7226f316a`  
-**Nested MCP branch:** `fix/change-aware-save-mcp-autonomy`  
-**Nested MCP base HEAD:** `f5c40fe679567a63ad16e48ff95e5dce75197fb0`
+- **Status:** Committed work in progress on a feature branch; **not release-ready**
+- **Last updated:** 2026-08-15
+- **Parent branch:** `fix/change-aware-save-mcp-autonomy`
+- **Nested MCP branch:** `fix/change-aware-save-mcp-autonomy`
 
-## Original pause state
+### Current published WIP heads
+
+These are the authoritative heads. Do not amend, rebase, or force-push them; land further
+work as follow-up commits.
+
+| repository | commit | subject |
+| --- | --- | --- |
+| parent | `0343b0a49a94f3bdac24de7814f5db90433d6aba` | `fix(gui): make document saving change-aware and observable` |
+| nested MCP | `0bd67ad531164baac81302e49ee042dc077b1c4a` | `fix(mcp): make editing and save finalization transaction-safe` |
+
+The parent gitlink for `tools/mcp/freecad-mcp` was advanced from `f5c40fe6` to `0bd67ad5` in
+the parent commit above.
+
+**Neither commit has been pushed.** The parent branch has no configured upstream, so both
+heads are local-only. Deliberately excluded from staging and still untracked: parent
+`results/`, parent `tests/lib/`, and the nested `results_luna_*` logs.
+
+### Baseline for comparison
+
+| reference | commit |
+| --- | --- |
+| parent base (branch point) | `0b90c1533719486a390a4c7afcf40aa7226f316a` |
+| nested base | `f5c40fe679567a63ad16e48ff95e5dce75197fb0` |
+
+## Original pause state (historical — superseded)
+
+> **Historical.** Everything in this section described the state at the original pause, before
+> the work was committed. Its claims that no commit exists and that the trees are unstaged were
+> true then and are **no longer true**; see "Current published WIP heads" above. The text is
+> preserved unchanged as the historical record.
 
 All implementation and review sub-agents were stopped. No commit or push has been made.
 The working trees are intentionally left intact and unstaged. The user's running FreeCAD
@@ -763,7 +790,12 @@ rerun on the new binaries, the public typed/generated routes will be migrated, a
 branch-built MCP acceptance sequence will run. The user's live FreeCAD session remains
 untouched; no commit or push has occurred.
 
-## User-requested pause checkpoint — 2026-08-15
+## User-requested pause checkpoint — 2026-08-15 (historical — superseded)
+
+> **Historical.** This section records the state at the second pause. Its statements that no
+> commit exists, that both repositories are unstaged, and that the branches sit at the base
+> commits were true then and are **no longer true**; see "Current published WIP heads" at the
+> top. The text is preserved unchanged as the historical record.
 
 The user requested another stop while the final adversarial repair round was still in
 progress. Work stopped immediately. No new full nested test, parent build, FreeCAD process,
@@ -1295,11 +1327,11 @@ and passes.
 failed", which is now only the `catch (...)` fallback text; the injected `std::runtime_error`
 path reports "guard ownership could not be proved at '<path>' (<diagnostic>)".
 
-**Unrelated pre-existing failure (1 test).** `BackupPolicyTest.TimestampTargetHasNoExtension`
-expects `target.<date>.FCBak` for an extensionless target and finds nothing. It uses the
-two-argument `apply()`, so it runs the **no-lease legacy** `atomicInstallNoReplace` path, and
-its naming logic produces the same `target.` base as the passing `.fcstd` sibling. Nothing in
-this session touched that path, so it is pre-existing and still undiagnosed. Not yet root-caused.
+**`BackupPolicyTest.TimestampTargetHasNoExtension` — see the dedicated bisect section below.**
+This entry was recorded twice with a wrong conclusion (first "pre-existing" by unsound
+reasoning, then "regression" on partial evidence). The measured answer is a pre-existing
+latent defect that only fires when the temporary directory path contains a `.`; the branch did
+not cause it.
 
 ### Open design decision
 
@@ -1348,3 +1380,112 @@ Consequences that must drive the next decision:
 The remaining realistic choices for the fallback path — which is the one that actually runs —
 are still to update the stale tests to accept retention, or to permit an identity-proved unlink
 of our own `O_EXCL`-created UUID temporary (never of a canonical or backup name).
+
+**Resolved:** O_TMPFILE was reverted in full (unnamed creation, `materializeAt`, the unnamed
+install branch, and the `isNamed()` guard). Recorded for a future release: **tmpfs does support
+`O_TMPFILE`**, verified with `docker run --tmpfs`, so a capable lane is available whenever the
+unnamed create/materialize/install/failure paths are given real coverage.
+
+## Bisect — `BackupPolicyTest.TimestampTargetHasNoExtension`
+
+Run on both commits in the same image, with `TZ=UTC`, `LANG=LC_ALL=C.UTF-8`, the same test
+command, and the same procedure (`git archive` of the commit, submodule trees copied in,
+identical cmake configure). `tests::TempDirectory` removes its tree in its destructor, so the
+literal post-process listing is necessarily empty; the artifact listings below are reconstructed
+from a complete `strace` of file syscalls, which gives the exact directory contents at the
+moment of assertion.
+
+### Result: both commits PASS
+
+| commit | TMPDIR | result |
+| --- | --- | --- |
+| base `0b90c153` | `/basetmp` | **PASSED** |
+| head `0343b0a4` | `/headtmp` | **PASSED** |
+
+Base artifacts:
+
+```
+/basetmp/fc_backup_policy_0/source.fcstd
+/basetmp/fc_backup_policy_0/target
+/basetmp/fc_backup_policy_0/target.2026-08-15.FCBak
+rename("…/target", "…/target.2026-08-15.FCBak") = 0
+rename("…/source.fcstd", "…/target")            = 0
+```
+
+Head artifacts (the legacy rename is now a link+unlink through `atomicInstallNoReplace`, which
+is the only behavioural change in the whole `BackupPolicy.cpp` diff):
+
+```
+/headtmp/fc_backup_policy_0/source.fcstd
+/headtmp/fc_backup_policy_0/target
+/headtmp/fc_backup_policy_0/target.2026-08-15.FCBak
+/headtmp/fc_backup_policy_0/target.FreeCAD-save.lock
+link("…/target", "…/target.2026-08-15.FCBak")   = 0
+unlink("…/target")                              = 0
+rename("…/source.fcstd", "…/target")            = 0
+```
+
+### Actual root cause: a dot in the temporary directory path
+
+The earlier failures were produced with `TMPDIR=$(mktemp -d)`, which yields `/tmp/tmp.XXXXXXXX`
+— a path containing a `.`. The bisect scripts used `/basetmp` and `/headtmp`, which do not.
+That difference, not the commit, decides the result:
+
+| binary | TMPDIR | result |
+| --- | --- | --- |
+| working tree | `/nodot` | **PASSED** |
+| working tree | `/has.dot` | **FAILED** |
+
+The trace under a dotted TMPDIR shows the backup being written to the wrong directory entirely:
+
+```
+link("/tmp/tmp.pbQUWBuJg3/fc_backup_policy_0/target", "/tmp/tmp.2026-08-15.FCBak") = 0
+```
+
+`applyTimeStamp` computes its backup base as
+
+```cpp
+std::string ext = fi.extension();
+if (!ext.empty()) {
+    bn = fi.filePath().substr(0, fi.filePath().length() - ext.length());
+```
+
+For a target with **no filename extension** inside a directory whose name contains a `.`,
+`Base::FileInfo::extension()` reports everything after the last dot **in the whole path**
+(`pbQUWBuJg3/fc_backup_policy_0/target`). The `else` branch is therefore never taken, `bn`
+truncates the path at the last dot to `/tmp/tmp.`, and the backup lands outside the document's
+directory.
+
+This code is byte-identical at base and head. It is a **pre-existing latent defect**, not
+caused by this branch, and it is genuinely user-facing: saving an extensionless document from a
+folder containing a dot writes its backup into the wrong directory. It should be filed and
+fixed separately, against `Base::FileInfo::extension()` or `applyTimeStamp`'s use of it — not
+as part of this release.
+
+### Consequence for the gate
+
+With a dot-free `TMPDIR`, and with the EphemeralPartial cleanup from step 5 in place, the
+writer filter is now **9 failures**, down from 11:
+
+- step 5 fixed `AbandonedSerializationNeverTouchesDestination`;
+- a dot-free `TMPDIR` removes `BackupPolicyTest.TimestampTargetHasNoExtension`.
+
+All nine remaining failures are `DocumentFileWriterTest` cases, and eight of them are decided
+by the two open contract questions:
+
+| test | decided by |
+| --- | --- |
+| `NoReplaceRejectsDestinationCreatedAfterSerialization` | Q1 |
+| `CompareAndSwapRejectsSwapAtReplacementPrimitive` | Q1 |
+| `CompareAndSwapGuardMoveNeverClobbersCollision` | Q1 |
+| `CompareAndSwapUnsupportedNoReplaceFailsBeforeMutation` | Q1 |
+| `CompareAndSwapAuthorityFailureIsPreMutationAndSpecific` | Q1 |
+| `CompareAndSwapDurabilityFailureIsPreMutationAndSpecific` | Q1 |
+| `CompareAndSwapAcceptsMatchingDestinationHash` | Q2 |
+| `RetainedLeaseDiscardRemovesOnlyOwnedSnapshot` | Q2 |
+| `CompareAndSwapPostInstallGuardInspectionIsBestEffort` | neither — stale warning wording only |
+
+In each Q1 case the writer deliberately calls `relinquishPathCleanup()` on the serialized
+temporary so it survives as recovery evidence, which is exactly the `VerifiedSerialization`
+question. No expectation has been changed, per the instruction not to reclassify before the
+contract is approved.
