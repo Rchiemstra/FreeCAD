@@ -796,6 +796,45 @@ public:
         _ephemeralPartial = true;
     }
 
+    /**
+     * Promote an EphemeralPartial to VerifiedSerialization (contract §2.2, Q1).
+     *
+     * Once the serialized bytes have been hashed and stably verified they are
+     * the only copy of work the user asked to save, so they leave the one class
+     * that cleanup may remove. From here the file is either consumed by the
+     * install primitive or retained and reported as recovery evidence.
+     */
+    void markVerifiedSerialization() noexcept
+    {
+        _ephemeralPartial = false;
+    }
+
+    /**
+     * Remove a DisplacedCanonical at the user's explicit request (contract R5).
+     *
+     * This is the single carve-out that removes a version of the user's
+     * document, and it is reachable only from a `numberOfFiles == 0` retention
+     * decision. It is deliberately **not** part of discardExact(): generic
+     * cleanup must never be able to reach it. The POSIX path proves the entry
+     * still names this exact inode and retains it when that proof fails.
+     */
+    [[nodiscard]] bool discardDisplacedCanonicalExact() noexcept
+    {
+        if (_cleanupState != CleanupState::Owned) {
+            return false;
+        }
+#ifdef FC_OS_WIN32
+        if (!setDeleteDisposition()) {
+            return false;
+        }
+        _cleanupState = CleanupState::None;
+        close();
+        return true;
+#else
+        return unlinkProvedOwnedEntry();
+#endif
+    }
+
     [[nodiscard]] bool discardExact() noexcept
     {
         if (_cleanupState != CleanupState::Owned) {
@@ -818,7 +857,7 @@ public:
             // not leak their successful serialization temporary.
             return false;
         }
-        return unlinkEphemeralPartialExact();
+        return unlinkProvedOwnedEntry();
 #endif
     }
 
@@ -1160,31 +1199,34 @@ private:
             _cleanupState = CleanupState::None;
         }
 #else
-        // Only an EphemeralPartial may be removed here. Every other artifact
-        // class keeps its name; see discardExact() and the artifact contract.
+        // Only an EphemeralPartial may be removed by destructor cleanup. Every
+        // other class keeps its name; see discardExact() and the contract.
         if (_ephemeralPartial) {
-            (void)unlinkEphemeralPartialExact();
+            (void)unlinkProvedOwnedEntry();
         }
 #endif
     }
 
 #ifndef FC_OS_WIN32
     /**
-     * Remove an EphemeralPartial's directory entry after proving it still
-     * names this exact inode.
+     * Remove this file's directory entry after proving it still names the exact
+     * retained inode; retain it untouched when the proof fails.
      *
-     * Threat model (documented and deliberately narrower than the rest of this
-     * writer): the entry is an unpredictable UUID name this process created
-     * with O_EXCL in the destination directory and never published. Winning the
-     * proof-to-unlink race requires write access to that directory plus
-     * knowledge of the name, and an attacker holding that can already damage
-     * the document itself. The blast radius of a lost race is one attacker-
-     * planted file in a directory they already control, never user data.
+     * Callers own the *authority* to remove; this helper owns only the proof.
+     * It is reachable from exactly two places, both of which state their
+     * justification: EphemeralPartial cleanup, and the explicit
+     * `numberOfFiles == 0` DisplacedCanonical discard.
      *
-     * On a failed proof the entry is retained, never unlinked, and the caller
-     * reports it.
+     * Threat model for the EphemeralPartial caller, deliberately narrower than
+     * the rest of this writer: the entry is an unpredictable UUID name this
+     * process created with O_EXCL and never published, so winning the
+     * proof-to-unlink race requires write access to a directory in which the
+     * attacker could already damage the document, and losing the race costs one
+     * attacker-planted file rather than user data. The DisplacedCanonical
+     * caller does remove user data, and is justified instead by the user having
+     * explicitly configured zero retained backups.
      */
-    [[nodiscard]] bool unlinkEphemeralPartialExact() noexcept
+    [[nodiscard]] bool unlinkProvedOwnedEntry() noexcept
     {
         if (!_parent || _path.empty() || _identity.empty()) {
             return false;
@@ -2316,13 +2358,16 @@ DisplacedFileLeaseOperationResult discardDisplacedFileLease(
         }
 # endif
 #endif
-        if (!owned->discardExact()) {
+        // Contract R5: an explicit numberOfFiles == 0 retention decision is the
+        // only authority that may remove a DisplacedCanonical, and it uses its
+        // own entry point so generic cleanup can never reach this.
+        if (!owned->discardDisplacedCanonicalExact()) {
 #ifdef FC_OS_WIN32
             return fail("Unable to discard the exact displaced snapshot");
 #else
             return fail(
-                "The exact displaced snapshot was retained: POSIX provides no "
-                "inode-conditional pathname discard, so cleanup fails closed");
+                "The exact displaced snapshot was retained: its pathname no longer proves to "
+                "name the retained snapshot, so the discard failed closed");
 #endif
         }
         result.sourceConsumed = true;
@@ -2528,12 +2573,12 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
     result.destination = _impl->destinationUtf8;
     const auto fail = [&](std::string code, std::string message) {
 #ifndef FC_OS_WIN32
-        // POSIX cannot safely erase a public sibling pathname using only its
-        // retained inode: an adjacent pathname substitution could redirect
-        // unlinkat to a foreign file. If no install consumed the serialized
-        // temporary, make the fail-closed retention explicit in the result.
-        // Specific partial-CAS paths may already have published the same
-        // evidence, so avoid duplicating their diagnostic.
+        // Contract §2.2: the serialized bytes were verified before the
+        // replacement boundary, so they are a VerifiedSerialization and are
+        // never removed by cleanup. If no install consumed them they are the
+        // only copy of the work being saved, so report them as recovery
+        // evidence. Specific partial-CAS paths may already have published the
+        // same evidence, so avoid duplicating their diagnostic.
         try {
             if (!result.fileWritten && _impl->temporary
                 && _impl->temporary->pinnedPathStillOwned()) {
@@ -2547,9 +2592,11 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     });
                 if (!alreadyReported) {
                     result.warnings.push_back(
-                        "The serialized temporary is retained because POSIX provides no "
-                        "inode-conditional pathname cleanup at '"
-                        + temporary + "'.");
+                        "The save did not complete, so the verified serialized document is "
+                        "retained as recovery evidence at '"
+                        + temporary
+                        + "'. It contains the bytes that were being saved and is safe to "
+                          "delete once you no longer need them.");
                 }
             }
         }
@@ -2686,6 +2733,11 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         // destination metadata, so later mode/attribute changes are part of
         // the final-boundary identity check.
         const auto serializedHash = stableHash(*_impl->temporary);
+        // Contract §2.2 / Q1: these bytes are now verified and are the only
+        // copy of the work being saved. Promote out of EphemeralPartial so no
+        // cleanup path can remove them; from here they are either consumed by
+        // the install primitive or retained and reported as recovery evidence.
+        _impl->temporary->markVerifiedSerialization();
 
         std::optional<std::string> expectedDestinationSha256;
         std::optional<StableHash> destinationHashBefore;
