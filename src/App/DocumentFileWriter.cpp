@@ -631,76 +631,6 @@ public:
         throw std::runtime_error("Unable to reserve a unique sibling save file");
     }
 
-#ifndef FC_OS_WIN32
-    /**
-     * Reserve an unnamed serialization file in the destination's directory.
-     *
-     * An abandoned unnamed file has no directory entry to clean up: closing the
-     * descriptor releases the inode. That removes the whole reason the POSIX
-     * discard path had to choose between an unsafe pathname unlink and leaving
-     * litter behind. Returns null when the filesystem has no O_TMPFILE support,
-     * in which case the caller falls back to a named sibling.
-     */
-    static std::shared_ptr<NativeFile>
-    createUnnamedTemporary(const std::shared_ptr<PinnedDirectory>& parent)
-    {
-# if defined(O_TMPFILE)
-        const int descriptor =
-            ::openat(parent->handle(), ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0666);
-        if (descriptor >= 0) {
-            return std::shared_ptr<NativeFile>(
-                new NativeFile(fs::path {}, descriptor, false, parent));
-        }
-        // EOPNOTSUPP/ENOTSUP/EISDIR/EINVAL/EPERM all mean "this filesystem or
-        // kernel cannot do it"; anything else is a real error the named path
-        // would hit again, so fall back uniformly rather than guessing.
-# endif
-        return {};
-    }
-
-    /**
-     * Give an unnamed serialization file a directory entry.
-     *
-     * Used both to install and to preserve failure evidence. The link is made
-     * from the retained descriptor, never from a pathname, so no substitution
-     * window exists. Cleanup state stays None: a materialized file is either
-     * consumed by a rename or deliberately kept as recovery evidence.
-     */
-    [[nodiscard]] bool materializeAt(const fs::path& candidate) noexcept
-    {
-        if (!_path.empty() || !_parent) {
-            return false;
-        }
-        const auto leaf = candidate.filename();
-        const std::string descriptorPath = "/proc/self/fd/" + std::to_string(_handle);
-        if (::linkat(AT_FDCWD,
-                     descriptorPath.c_str(),
-                     _parent->handle(),
-                     leaf.c_str(),
-                     AT_SYMLINK_FOLLOW)
-            != 0) {
-            return false;
-        }
-        try {
-            auto boundPath = candidate;
-            auto boundUtf8 = pathToUtf8(candidate);
-            _path.swap(boundPath);
-            _pathUtf8.swap(boundUtf8);
-        }
-        catch (...) {
-            // The entry exists and is durable evidence even if the diagnostic
-            // strings could not be stored. Never unlink to undo this.
-            return false;
-        }
-        return true;
-    }
-
-    [[nodiscard]] bool isNamed() const noexcept
-    {
-        return !_path.empty();
-    }
-#endif
-
     static std::shared_ptr<NativeFile>
     openRegularNoFollow(const fs::path& path,
                         const std::shared_ptr<PinnedDirectory>& parent,
@@ -851,6 +781,21 @@ public:
         _cleanupState = CleanupState::None;
     }
 
+    /**
+     * Mark this file as an EphemeralPartial serialization temporary.
+     *
+     * See the save-artifact contract in
+     * doc/save-artifact-contract.md. EphemeralPartial is the only artifact
+     * class whose directory entry may be removed by cleanup: it is created
+     * O_EXCL under an unpredictable UUID name, it is never published to the
+     * user, and it never holds a version of the user's document. Canonical,
+     * displaced, backup and verified-recovery artifacts must never be marked.
+     */
+    void markEphemeralPartial() noexcept
+    {
+        _ephemeralPartial = true;
+    }
+
     [[nodiscard]] bool discardExact() noexcept
     {
         if (_cleanupState != CleanupState::Owned) {
@@ -864,14 +809,16 @@ public:
         close();
         return true;
 #else
-        // POSIX has no portable unlink-by-handle or inode-conditional unlink.
-        // Any fstatat(path) -> unlinkat(path) sequence has an unavoidable
-        // substitution window in which a hostile writer can make us delete a
-        // foreign entry. Fail closed and leave the proved owned name as
-        // explicit recovery/maintenance evidence. Namespace-consuming rename
-        // paths still clear the cleanup state and therefore do not leak their
-        // successful serialization temporary.
-        return false;
+        if (!_ephemeralPartial) {
+            // POSIX has no portable unlink-by-handle or inode-conditional
+            // unlink, and for every other artifact class the unlink target is
+            // a version of the user's document. Fail closed and leave the
+            // proved owned name as explicit recovery evidence. Namespace-
+            // consuming rename paths still clear the cleanup state and so do
+            // not leak their successful serialization temporary.
+            return false;
+        }
+        return unlinkEphemeralPartialExact();
 #endif
     }
 
@@ -1213,12 +1160,48 @@ private:
             _cleanupState = CleanupState::None;
         }
 #else
-        // See discardExact(): pathname unlink cannot be made conditional on
-        // this retained inode. Destructor cleanup therefore intentionally
-        // performs no POSIX namespace mutation.
-        return;
+        // Only an EphemeralPartial may be removed here. Every other artifact
+        // class keeps its name; see discardExact() and the artifact contract.
+        if (_ephemeralPartial) {
+            (void)unlinkEphemeralPartialExact();
+        }
 #endif
     }
+
+#ifndef FC_OS_WIN32
+    /**
+     * Remove an EphemeralPartial's directory entry after proving it still
+     * names this exact inode.
+     *
+     * Threat model (documented and deliberately narrower than the rest of this
+     * writer): the entry is an unpredictable UUID name this process created
+     * with O_EXCL in the destination directory and never published. Winning the
+     * proof-to-unlink race requires write access to that directory plus
+     * knowledge of the name, and an attacker holding that can already damage
+     * the document itself. The blast radius of a lost race is one attacker-
+     * planted file in a directory they already control, never user data.
+     *
+     * On a failed proof the entry is retained, never unlinked, and the caller
+     * reports it.
+     */
+    [[nodiscard]] bool unlinkEphemeralPartialExact() noexcept
+    {
+        if (!_parent || _path.empty() || _identity.empty()) {
+            return false;
+        }
+        const auto leaf = _path.filename();
+        struct stat current {};
+        if (::fstatat(_parent->handle(), leaf.c_str(), &current, AT_SYMLINK_NOFOLLOW) != 0
+            || !S_ISREG(current.st_mode) || posixIdentity(current) != _identity) {
+            return false;
+        }
+        if (::unlinkat(_parent->handle(), leaf.c_str(), 0) != 0) {
+            return false;
+        }
+        _cleanupState = CleanupState::None;
+        return true;
+    }
+#endif
 
 #ifdef FC_OS_WIN32
     struct LocalSecurityDescriptorDeleter
@@ -1438,6 +1421,9 @@ private:
 #endif
     std::shared_ptr<PinnedDirectory> _parent;
     CleanupState _cleanupState {CleanupState::None};
+    // Set only for the serialization temporary; gates the one POSIX cleanup
+    // path that is permitted to remove a directory entry.
+    bool _ephemeralPartial {false};
     std::string _identity;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API) && defined(FC_OS_WIN32)
     bool _forceLegacyDeleteDispositionForTesting {false};
@@ -1975,41 +1961,8 @@ bool replaceOwnedFile(NativeFile& temporary,
     error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
     return false;
 #else
-    const auto destinationLeaf = destination.filename();
-    if (!temporary.isNamed()) {
-        // An unnamed serialization file is linked straight from its retained
-        // descriptor, so there is no source pathname to prove and none to
-        // consume afterwards. NoReplace collides through linkat's own EEXIST.
-        if (mode == DocumentFileReplacementMode::NoReplace) {
-            if (!temporary.materializeAt(destination)) {
-                error = std::error_code(errno, std::generic_category());
-                return false;
-            }
-            sourceConsumed = true;
-            return true;
-        }
-        // Replace has no rename-from-descriptor primitive. Give the file a
-        // private name and let renameat consume it atomically; the name exists
-        // only across that single call.
-        const auto staging = destination.parent_path()
-            / (destination.filename().native()
-               + pathFromUtf8("." + Base::Uuid::createUuid() + ".install").native());
-        if (!temporary.materializeAt(staging)) {
-            error = std::error_code(errno, std::generic_category());
-            return false;
-        }
-        if (::renameat(parent.handle(),
-                       staging.filename().c_str(),
-                       parent.handle(),
-                       destinationLeaf.c_str())
-            != 0) {
-            error = std::error_code(errno, std::generic_category());
-            return false;
-        }
-        sourceConsumed = true;
-        return true;
-    }
     const auto temporaryLeaf = temporary.path().filename();
+    const auto destinationLeaf = destination.filename();
     struct stat sourceAtBoundary {};
     if (::fstatat(parent.handle(),
                   temporaryLeaf.c_str(),
@@ -2471,28 +2424,6 @@ bool DocumentFileLock::isLocked() const noexcept
     return _impl && _impl->locked;
 }
 
-namespace
-{
-
-/**
- * Prefer an unnamed serialization file so an abandoned save has no directory
- * entry to clean up, and fall back to the historical named sibling when the
- * filesystem cannot provide one.
- */
-std::shared_ptr<NativeFile> reserveSerializationFile(
-    const std::shared_ptr<PinnedDirectory>& parent,
-    const fs::path& destination)
-{
-#ifndef FC_OS_WIN32
-    if (auto unnamed = NativeFile::createUnnamedTemporary(parent)) {
-        return unnamed;
-    }
-#endif
-    return NativeFile::createSibling(parent, destination, ".tmp");
-}
-
-}  // namespace
-
 struct DocumentFileWriter::Impl
 {
     explicit Impl(DocumentFileReplacementRequest value)
@@ -2503,7 +2434,7 @@ struct DocumentFileWriter::Impl
                         : std::make_optional(
                               normalizeFinalEntry(request.forbiddenAliasPath, false)))
         , parent(std::make_shared<PinnedDirectory>(destination.parent_path()))
-        , temporary(reserveSerializationFile(parent, destination))
+        , temporary(NativeFile::createSibling(parent, destination, ".tmp"))
         , serializationBuffer(
               *temporary
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
@@ -2515,6 +2446,9 @@ struct DocumentFileWriter::Impl
         , destinationUtf8(pathToUtf8(destination))
         , temporaryUtf8(temporary->pathUtf8())
     {
+        // The serialization temporary is the only EphemeralPartial in a save.
+        // Nothing else created by this writer may be marked.
+        temporary->markEphemeralPartial();
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API) && defined(FC_OS_WIN32)
         if (request.testFault
             == DocumentFileWriterTestFault::CleanupReadOnlyAndRestrictedDacl) {
@@ -3033,9 +2967,7 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
 #ifndef FC_OS_WIN32
         // POSIX has no portable fd-source rename. Prove the final pathname
         // still names the owned inode immediately before renameat/linkat.
-        // An unnamed serialization file has no pathname to substitute, so the
-        // proof is unnecessary rather than merely skipped.
-        if (_impl->temporary->isNamed() && !_impl->temporary->pathStillOwned()) {
+        if (!_impl->temporary->pathStillOwned()) {
             return fail("TEMPORARY_FILE_CHANGED",
                         "The serialized temporary path changed at the replacement boundary");
         }
