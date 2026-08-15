@@ -1,16 +1,20 @@
 # Save-Artifact Contract
 
-**Status:** Proposed — **awaiting approval**
+**Status:** **Approved** — both open questions ruled on; implemented and verified green.
 **Applies to:** `src/App/DocumentFileWriter.{h,cpp}`, `src/App/BackupPolicy.{h,cpp}`, and the
 `App::Document` save entry points that drive them.
+
+**Rulings:** Q1 — retain and report verified serialized bytes (§2.2). Q2 — permit an
+identity-proved removal of a `DisplacedCanonical` when the user configured
+`numberOfFiles == 0` (§2.3).
 
 This document is normative. "MUST", "MUST NOT", and "MAY" carry their usual force. Where the
 current implementation deviates, the deviation is called out explicitly as a defect rather
 than silently blessed.
 
-Until this contract is approved, no writer test expectation may be reclassified as stale on
-the grounds that "the behaviour changed deliberately". The contract is what decides which
-side of each disagreement is wrong.
+No writer test expectation may be reclassified as stale on the grounds that "the behaviour
+changed deliberately". This contract is what decides which side of each disagreement is wrong,
+and every reconciliation must cite the rule it follows.
 
 ---
 
@@ -113,18 +117,19 @@ it is the only copy of work the user asked to save.
 > **R4.** After promotion the artifact MUST either be consumed by the install rename, or be
 > retained and reported by path in `result.warnings`. It MUST NOT be silently discarded.
 
-**Open question for approval (Q1).** Promotion is currently implicit — the same
-`_ephemeralPartial` mark persists across it, so a post-verification abandon would take the
-§1.2 unlink path and delete verified bytes. Two ways to resolve, and the contract needs a
-ruling:
+**Q1 — RULED: retain and report (Q1-a).**
 
-- **Q1-a:** clear the mark at verification, so a verified serialization is always retained.
-  Safer; means a failure after verification leaves a named file.
-- **Q1-b:** keep the mark, on the grounds that the canonical file is still intact and the
-  user's editor still holds the document in memory, so the bytes are reproducible.
+> **R4a.** Promotion MUST clear the `EphemeralPartial` mark. `DocumentFileWriter::commit()`
+> calls `markVerifiedSerialization()` immediately after the serialized baseline hash is taken,
+> so from that point no cleanup path can remove the file.
 
-The recommendation is **Q1-a**: the bytes are cheap to keep and the user may have no other
-copy if the application then crashes.
+> **R4b.** A save that fails after promotion MUST report the retained path, and the warning
+> MUST describe it as the verified document being saved and state that it is safe to delete
+> once no longer needed — not as an unremovable temporary.
+
+The bytes are cheap to keep and the user may have no other copy if the application then
+crashes. A failure *before* promotion still leaves nothing behind, because the artifact is
+still an `EphemeralPartial` and cleanup removes it.
 
 ### 2.3 DisplacedCanonical
 
@@ -140,26 +145,23 @@ copy if the application then crashes.
 > retention decision (§2.4, `numberOfFiles == 0`), and only after an exact identity proof; on a
 > failed proof it MUST be retained and reported as unconsumed.
 
-**Open question for approval (Q2).** R5's exception is not currently implemented: the POSIX
-lease discard fails closed unconditionally. This is the direct cause of one of the eleven
-writer failures (`RetainedLeaseDiscardRemovesOnlyOwnedSnapshot`), and the two behaviours are
-mutually exclusive:
+**Q2 — RULED: permit it, with an identity proof (Q2-a).**
 
-- **Q2-a:** implement the R5 exception — identity-proved removal when the user has explicitly
-  configured zero backups. `RetainedLeaseDiscardRemovesOnlyOwnedSnapshot` then passes as
-  written, and `DiscardAfterSourceSwapNeverDeletesForeignEntry` still passes because a swapped
-  source fails the proof.
-- **Q2-b:** keep failing closed. The displaced predecessor accumulates in the user's document
-  directory on every save even though they asked for no backups, and the test expectation must
-  change instead.
+> **R5a.** The removal MUST use its own entry point, `discardDisplacedCanonicalExact()`, which
+> is never reachable from `discardExact()` or from destructor cleanup. Deleting the previous
+> version is precisely what `numberOfFiles == 0` means; refusing to honour it is not a safety
+> win, it is unbounded growth of stale copies of the user's document.
 
-The recommendation is **Q2-a**. Deleting the previous version is precisely what
-`numberOfFiles == 0` means; refusing to honour it is not a safety win, it is unbounded growth
-of stale copies of the user's document. The identity proof is a genuine safety improvement
-over the historical unconditional `unlink`, and its failure mode is retention.
+> **R5b.** The POSIX path MUST prove the entry still names the exact retained inode before
+> unlinking, and MUST retain and report it as unconsumed when that proof fails. This is a
+> genuine improvement on the historical unconditional `unlink`, whose failure mode was silent
+> deletion of a foreign entry.
 
-Note this is an unlink of user data and so is a deliberate, narrow carve-out from R1, justified
-by explicit user configuration rather than by the §1.2 blast-radius argument.
+This is an unlink of user data and therefore a deliberate, narrow carve-out from R1, justified
+by explicit user configuration rather than by the §1.2 blast-radius argument. Both affected
+tests now pass unchanged: `RetainedLeaseDiscardRemovesOnlyOwnedSnapshot` because the proof
+succeeds, and `DiscardAfterSourceSwapNeverDeletesForeignEntry` because a swapped source fails
+it.
 
 ### 2.4 BackupHistory
 
@@ -203,7 +205,7 @@ by explicit user configuration rather than by the §1.2 blast-radius argument.
 | --- | --- | --- | --- | --- |
 | EphemeralPartial | identity-proved unlink | identity-proved unlink | delete disposition | retain + report |
 | VerifiedSerialization | never | never | delete disposition only before publication | retain + report |
-| DisplacedCanonical | never | only when `numberOfFiles == 0` (Q2) | handle rename / disposition | retain + report unconsumed |
+| DisplacedCanonical | never | only via `discardDisplacedCanonicalExact()`, `numberOfFiles == 0` | handle rename / disposition | retain + report unconsumed |
 | BackupHistory | never | retention prune only | retention prune only | retain + report |
 | NamedRecoveryEvidence | never | never | never | retain + report |
 
@@ -297,16 +299,50 @@ the bug:
 | Discard of a swapped displaced snapshot | retained, reported unconsumed | consumed via retained handle |
 | Abandoned `EphemeralPartial` | identity-proved unlink | delete disposition |
 | Directory durability after install | `fsync` on the pinned parent | handle flush; no portable directory contract |
+| Retention of a `VerifiedSerialization` after a failed save | retained and reported (R4a/R4b) | still removed by the handle delete disposition |
+
+The last row is a **known and deliberate gap**, not a settled decision. R4a is expressed
+through the `_ephemeralPartial` mark, which only gates the POSIX path; the Windows destructor
+removes the file through its retained handle regardless. Windows users therefore do not get
+the recovery evidence Q1 was ruled to provide. Making Windows honour R4a is a follow-up,
+tracked separately because it changes existing Windows test expectations.
 
 ---
 
-## 9. Items requiring a ruling before implementation
+## 9. Ruling record and reconciliation
 
-1. **Q1** (§2.2) — does the `EphemeralPartial` mark survive promotion to
-   `VerifiedSerialization`? Recommendation: **Q1-a**, clear it.
-2. **Q2** (§2.3) — is the `numberOfFiles == 0` identity-proved removal of a
-   `DisplacedCanonical` in scope for this release? Recommendation: **Q2-a**, implement it.
+Both questions were ruled on, implemented, and verified. `DocumentFileWriterTest.*` and
+`BackupPolicyTest.*` are **87 passed, 2 platform skips, 0 failed**.
 
-Both questions change which of the eleven outstanding writer failures are production defects
-and which are stale expectations, so neither reconciliation can be finalised until they are
-answered.
+| # | ruling | implementation |
+| --- | --- | --- |
+| Q1 | retain and report | `markVerifiedSerialization()` at the serialized-baseline hash; failure warning rewritten per R4b |
+| Q2 | permit, with identity proof | `discardDisplacedCanonicalExact()`, used only by the lease discard |
+
+How each of the original eleven disagreements was resolved:
+
+| test | resolution |
+| --- | --- |
+| `AbandonedSerializationNeverTouchesDestination` | production fix — EphemeralPartial cleanup restored; passes unchanged |
+| `RetainedLeaseDiscardRemovesOnlyOwnedSnapshot` | production fix — Q2/R5a; passes unchanged |
+| `BackupPolicyTest.TimestampTargetHasNoExtension` | not a writer defect — pre-existing latent `Base::FileInfo::extension()` bug, fires only when the temp directory path contains a dot; filed separately |
+| `NoReplaceRejectsDestinationCreatedAfterSerialization` | expectation corrected under R4a/R4b |
+| `CompareAndSwapRejectsSwapAtReplacementPrimitive` | expectation corrected under R4a/R4b |
+| `CompareAndSwapGuardMoveNeverClobbersCollision` | expectation corrected under R4a/R4b |
+| `CompareAndSwapUnsupportedNoReplaceFailsBeforeMutation` | expectation corrected under R4a/R4b |
+| `CompareAndSwapAuthorityFailureIsPreMutationAndSpecific` | expectation corrected under R4a/R4b |
+| `CompareAndSwapDurabilityFailureIsPreMutationAndSpecific` | expectation corrected under R4a/R4b |
+| `CompareAndSwapAcceptsMatchingDestinationHash` | expectation corrected under §2.3/R17 — a successful CAS hands its predecessor to BackupPolicy |
+| `CompareAndSwapPostInstallGuardInspectionIsBestEffort` | stale warning string only; no behaviour change |
+
+Only two of the eleven were production defects. Seven were expectations that the approved
+contract shows to be wrong, one was an unrelated pre-existing bug, and one was a wording drift.
+
+## 10. Known follow-ups
+
+1. Windows does not honour R4a (see §8).
+2. `Base::FileInfo::extension()` returns everything after the last dot in the whole path, so an
+   extensionless target inside a dotted directory makes `applyTimeStamp` write its backup
+   outside the document directory. Pre-existing; not caused by this work.
+3. An `O_TMPFILE` lane on tmpfs would let unnamed serialization be adopted and exercised; it is
+   unavailable on overlayfs and 9p, which is why the earlier attempt was reverted.

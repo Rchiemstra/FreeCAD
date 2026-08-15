@@ -1487,5 +1487,45 @@ by the two open contract questions:
 
 In each Q1 case the writer deliberately calls `relinquishPathCleanup()` on the serialized
 temporary so it survives as recovery evidence, which is exactly the `VerifiedSerialization`
-question. No expectation has been changed, per the instruction not to reclassify before the
-contract is approved.
+question.
+
+## Resume checkpoint — contract approved, writer filter green
+
+Both contract questions were ruled on: **Q1 retain and report**, **Q2 permit with an identity
+proof**. Both are implemented and the full reconciliation is recorded in
+`doc/save-artifact-contract.md` §9.
+
+- `markVerifiedSerialization()` clears the `EphemeralPartial` mark at the serialized-baseline
+  hash, so verified bytes can never be removed by cleanup; the failure warning now describes
+  them as the document being saved rather than as an unremovable temporary.
+- `discardDisplacedCanonicalExact()` gives the `numberOfFiles == 0` discard its own entry
+  point, unreachable from generic cleanup, with an identity proof that retains and reports on
+  failure.
+
+Of the original eleven, only **two were production defects**; seven were expectations the
+approved contract shows to be wrong, one was an unrelated pre-existing bug, and one was a
+wording drift.
+
+### Gate results
+
+- `DocumentFileWriterTest.*` + `BackupPolicyTest.*`: **87 passed, 2 platform skips, 0 failed.**
+- Full `App_tests_run`: **922 tests, 919 passed, 2 skips, 1 failed.**
+
+### New finding — `RenameProperty.updateExpressionDifferentDocument` is a regression
+
+Surfaced by the broader App filter and bisected the same way as the timestamp test, with the
+same image, locale, timezone and command:
+
+| commit | `RenameProperty.*` |
+| --- | --- |
+| base `0b90c153` | **14/14 passed** |
+| working tree | 13 passed, **1 failed** (`updateExpressionDifferentDocument`) |
+
+It fails in isolation, so it is not test-order pollution. The test lives in
+`tests/src/App/Property.cpp`, which this branch does not modify, but the branch does modify
+`src/App/Property.cpp` and `src/App/Property.h`. This is a **genuine regression introduced by
+this work** and is the next thing to fix; it is not yet root-caused.
+
+Per the ordered-gate rule this is the first red layer of the broader parent sequence, so the
+nested, branch-built MCP, authenticated-session and full acceptance gates have **not** been
+started.

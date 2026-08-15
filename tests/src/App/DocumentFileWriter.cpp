@@ -605,7 +605,11 @@ TEST_F(DocumentFileWriterTest, NoReplaceRejectsDestinationCreatedAfterSerializat
     EXPECT_FALSE(result.fileWritten);
     EXPECT_EQ(result.errorCode, "DESTINATION_EXISTS");
     EXPECT_EQ(readFile(destination), "late conflicting bytes");
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: once verified, the serialized bytes are the only copy of
+    // the work being saved, so they are retained and reported, never removed.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)), "serialized bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
 }
 
 TEST_F(DocumentFileWriterTest, CompareAndSwapAcceptsMatchingDestinationHash)
@@ -625,8 +629,13 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapAcceptsMatchingDestinationHash)
     ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
     EXPECT_TRUE(result.fileWritten);
     EXPECT_EQ(readFile(destination), "replacement bytes");
-    EXPECT_TRUE(result.displacedFile.empty());
-    EXPECT_FALSE(result.displacedFileLease);
+    // Contract 2.3: a successful compare-and-swap retains the exact previous
+    // destination and hands it to BackupPolicy as a DisplacedCanonical rather
+    // than discarding it. See CompareAndSwapRetainsExactMovedPredecessorForBackup.
+    ASSERT_FALSE(result.displacedFile.empty());
+    EXPECT_TRUE(result.displacedFileLease);
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
+              "expected old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, CompareAndSwapRetainsExactMovedPredecessorForBackup)
@@ -735,7 +744,11 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapRejectsSwapAtReplacementPrimitive)
     EXPECT_EQ(result.errorCode, "DESTINATION_CHANGED");
     EXPECT_EQ(readFile(destination), "foreign canonical bytes");
     EXPECT_EQ(readFile(movedExpected), "expected old bytes");
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: the verified serialization is retained and reported.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
+              "serialized replacement bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
 }
 
 TEST_F(DocumentFileWriterTest, CompareAndSwapGuardMoveNeverClobbersCollision)
@@ -769,7 +782,11 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapGuardMoveNeverClobbersCollision)
     EXPECT_EQ(readFile(destination), "expected old bytes");
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(guard)),
               "foreign guard collision");
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: the verified serialization is retained and reported.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
+              "serialized replacement bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
 }
 
 #ifndef FC_OS_WIN32
@@ -1128,7 +1145,11 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapUnsupportedNoReplaceFailsBeforeMuta
     EXPECT_FALSE(result.fileWritten);
     EXPECT_EQ(result.errorCode, "STRICT_NO_REPLACE_UNSUPPORTED");
     EXPECT_EQ(readFile(destination), "expected old bytes");
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: the verified serialization is retained and reported.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
+              "serialized replacement bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
 }
 
 TEST_F(DocumentFileWriterTest, CompareAndSwapAuthorityFailureIsPreMutationAndSpecific)
@@ -1162,7 +1183,11 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapAuthorityFailureIsPreMutationAndSpe
     const auto resultingModified = fs::last_write_time(destination, timeError);
     EXPECT_FALSE(timeError) << timeError.message();
     EXPECT_TRUE(resultingModified == originalModified);
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: the verified serialization is retained and reported.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
+              "serialized replacement bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
     for (const auto& entry : fs::directory_iterator(tempDir.path())) {
         EXPECT_EQ(entry.path().filename().string().find(".cas-recovery"),
                   std::string::npos);
@@ -1199,7 +1224,11 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapDurabilityFailureIsPreMutationAndSp
     const auto resultingModified = fs::last_write_time(destination, timeError);
     ASSERT_FALSE(timeError) << timeError.message();
     EXPECT_TRUE(resultingModified == originalModified);
-    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Contract 2.2: the verified serialization is retained and reported.
+    EXPECT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
+              "serialized replacement bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
 }
 
 TEST_F(DocumentFileWriterTest, CompareAndSwapRecoveryEvidenceSurvivesResultDestruction)
@@ -1294,7 +1323,9 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapPostInstallGuardInspectionIsBestEff
     EXPECT_TRUE(result.displacedFileLease);
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
               "expected old bytes");
-    EXPECT_TRUE(warningContains(result, "guard ownership inspection failed"));
+    // The injected std::runtime_error path reports the exception text; the
+    // bare "inspection failed" wording is only the catch(...) fallback.
+    EXPECT_TRUE(warningContains(result, "guard ownership could not be proved"));
     EXPECT_TRUE(warningContains(result, result.displacedFile));
 }
 
