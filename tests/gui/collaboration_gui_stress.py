@@ -3,8 +3,8 @@
 
 """Interactive GUI stress gate for change-aware saving and autonomous MCP editing.
 
-This drives a real FreeCAD GUI process over the MCP XML-RPC surface and proves
-the properties the collaboration work claims:
+This drives a real FreeCAD GUI process over the MCP JSON-RPC 2.0 surface
+(``POST /jsonrpc``) and proves the properties the collaboration work claims:
 
   * view activity (camera, pan, zoom, selection, tree) never invalidates a
     commit and never marks the Model dirty,
@@ -18,9 +18,10 @@ Isolation
 ---------
 The GUI is always started through ``start_freecad.py`` as required. That
 launcher writes into every FreeCAD user-data directory it can find under
-``%APPDATA%\\FreeCAD`` -- it reinstalls ``Mod/FreeCADMCP`` and rewrites
-``freecad_mcp_settings.json`` -- and it will happily *reuse* an MCP session that
-is already listening. Neither is acceptable against a real user profile, so this
+``%APPDATA%\\FreeCAD``: it reinstalls ``Mod/FreeCADMCP`` (via a delete) and
+rewrites ``freecad_mcp_settings.json`` to force ``auto_start_rpc``. It also has
+a ``_reuse_existing_mcp_if_possible()`` path that would drive an MCP session it
+did not start. None of that is acceptable against a real user profile, so this
 harness redirects ``APPDATA`` (``XDG_DATA_HOME`` off Windows) at a throwaway
 directory. ``_freecad_user_data_base()`` then resolves inside that directory and
 the launcher's writes land there instead.
@@ -29,6 +30,14 @@ the launcher's writes land there instead.
 environment override, so the isolated instance still binds the shared port. The
 harness therefore refuses to start when that port is already answering, rather
 than attaching to a session it does not own.
+
+Note on the launcher's own MCP handling: ``_ping_mcp_rpc``, ``_mcp_rpc_proxy``
+and ``_reuse_existing_mcp_if_possible`` all still speak XML-RPC, which the
+server retired. They therefore always fail, which means the launcher's readiness
+wait burns its full timeout and then reports failure for a server that is
+actually up (and, as a side effect, its session-reuse path can no longer
+trigger). The harness passes ``--no-wait-for-mcp`` and waits for readiness
+itself over JSON-RPC.
 
 Usage:
     python tests/gui/collaboration_gui_stress.py [--view-cycles 500]
@@ -44,13 +53,12 @@ import datetime as _dt
 import hashlib
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
-import xmlrpc.client
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -123,11 +131,40 @@ class Evidence:
 # --------------------------------------------------------------------------
 # RPC helpers
 # --------------------------------------------------------------------------
-def proxy() -> xmlrpc.client.ServerProxy:
-    """A fresh proxy. xmlrpc proxies are not safe to share across threads."""
-    return xmlrpc.client.ServerProxy(
-        f"http://{MCP_HOST}:{MCP_PORT}", allow_none=True
-    )
+class Rpc:
+    """JSON-RPC 2.0 client for the MCP listener.
+
+    XML-RPC is retired. The listener answers `410 Gone` on `/RPC2` with
+    `Link: </jsonrpc>; rel="successor-version"` and expects JSON-RPC 2.0 at
+    `/jsonrpc`. Note that start_freecad.py has NOT been updated: its
+    `_ping_mcp_rpc` still uses xmlrpc.client, so its readiness wait can never
+    succeed against this server. The harness passes --no-wait-for-mcp and waits
+    for readiness itself.
+    """
+
+    def __init__(self, host: str = MCP_HOST, port: int = MCP_PORT) -> None:
+        self.url = f"http://{host}:{port}/jsonrpc"
+        self._id = 0
+
+    def call(self, method: str, params: Any = None, timeout: float = 120.0) -> Any:
+        self._id += 1
+        payload = json.dumps({
+            "jsonrpc": "2.0", "id": self._id,
+            "method": method, "params": {} if params is None else params,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            self.url, data=payload, headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if "error" in body:
+            raise RuntimeError(f"{method}: {body['error']}")
+        return body.get("result")
+
+
+def proxy() -> Rpc:
+    """A fresh client. One per thread; do not share."""
+    return Rpc()
 
 
 def port_is_open(host: str = MCP_HOST, port: int = MCP_PORT) -> bool:
@@ -136,10 +173,17 @@ def port_is_open(host: str = MCP_HOST, port: int = MCP_PORT) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def run_code(client: xmlrpc.client.ServerProxy, code: str) -> tuple[bool, str]:
+def rpc_is_ready() -> bool:
+    try:
+        return bool(Rpc().call("ping", timeout=5.0))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_code(client: Rpc, code: str) -> tuple[bool, str]:
     """Execute code inside FreeCAD. Returns (success, message-or-error)."""
     try:
-        result = client.execute_code(code)
+        result = client.call("execute_code", {"code": code})
     except Exception as exc:  # noqa: BLE001 - surface transport failures verbatim
         return False, f"transport: {exc!r}"
     if not isinstance(result, dict):
@@ -210,32 +254,37 @@ def launch(exe: Path, profile: Path, ev: Evidence, timeout: float) -> subprocess
         sys.executable,
         str(launcher),
         "--force-new",
+        "--no-wait-for-mcp",  # its own wait uses retired XML-RPC and always fails
         "--freecad",
         str(exe),
-        "--mcp-timeout",
-        str(timeout),
     ]
     ev.log(f"launching: {' '.join(command)}")
     ev.log(f"  isolated profile: {profile}")
+    # Drain the launcher's output to a file. Leaving it in an unread PIPE loses
+    # the diagnostics and can block the child once the buffer fills.
+    launcher_log = (ev.root / "launcher.log").open("wb")
     process = subprocess.Popen(
         command, cwd=str(REPO), env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout=launcher_log, stderr=subprocess.STDOUT,
     )
     return process
 
 
 def wait_ready(process: subprocess.Popen[bytes], timeout: float, ev: Evidence) -> bool:
+    """Wait for the RPC server, independently of the launcher's lifetime.
+
+    With --no-wait-for-mcp the launcher returns as soon as it has spawned
+    FreeCAD, so its exit says nothing about readiness and must not be treated
+    as failure.
+    """
     deadline = time.monotonic() + timeout
+    reported_exit = False
     while time.monotonic() < deadline:
-        if port_is_open():
-            try:
-                if proxy().ping():
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
-        if process.poll() is not None:
-            ev.log(f"launcher exited early with code {process.returncode}")
-            return False
+        if port_is_open() and rpc_is_ready():
+            return True
+        if process.poll() is not None and not reported_exit:
+            ev.log(f"launcher returned code {process.returncode}; still waiting for RPC")
+            reported_exit = True
         time.sleep(0.5)
     return False
 
@@ -267,7 +316,7 @@ print('touched_after_view=' + str(bool(_doc.isTouched())))
 """
 
 
-def make_document(client: xmlrpc.client.ServerProxy, name: str, path: Path) -> tuple[bool, str]:
+def make_document(client: Rpc, name: str, path: Path) -> tuple[bool, str]:
     code = f"""
 import FreeCAD
 import Part  # noqa: F401 - registers the Part::Box type
@@ -550,7 +599,7 @@ def phase_two_document_readiness(ev: Evidence, primary: str, secondary: str,
 
     for label, doc in (("primary", primary), ("secondary", secondary)):
         try:
-            snapshot = client.get_mutation_readiness(doc)
+            snapshot = client.call("get_mutation_readiness", {"doc_name": doc})
         except Exception as exc:  # noqa: BLE001
             snapshot = {"error": repr(exc)}
         ev.note_readiness(f"{label}:{doc}", snapshot)
@@ -568,7 +617,7 @@ def phase_two_document_readiness(ev: Evidence, primary: str, secondary: str,
     for label, doc in (("primary-after-failure", primary),
                        ("secondary-after-failure", secondary)):
         try:
-            snapshot = client.get_mutation_readiness(doc)
+            snapshot = client.call("get_mutation_readiness", {"doc_name": doc})
         except Exception as exc:  # noqa: BLE001
             snapshot = {"error": repr(exc)}
         ev.note_readiness(label, snapshot)
@@ -844,12 +893,26 @@ print('user_appdata=' + str(FreeCAD.getUserAppDataDir()))
         if not args.keep_running:
             ev.log("shutting the GUI down")
             with contextlib.suppress(Exception):
-                proxy().execute_code(
-                    "import FreeCADGui; FreeCADGui.getMainWindow().close()"
-                )
+                run_code(proxy(),
+                         "import FreeCADGui; FreeCADGui.getMainWindow().close()")
             time.sleep(3)
+            # Terminating the launcher does NOT stop FreeCAD -- the launcher
+            # spawns it (often via `pixi run`) and returns. Kill the real
+            # process by the PID the RPC server reported, or the GUI is leaked.
             with contextlib.suppress(Exception):
                 process.terminate()
+            gui_pid = ev.record["environment"].get("freecad_pid")
+            if gui_pid and rpc_is_ready():
+                ev.log(f"GUI still up; terminating FreeCAD pid {gui_pid}")
+                with contextlib.suppress(Exception):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(gui_pid), "/F"]
+                        if sys.platform == "win32"
+                        else ["kill", "-9", str(gui_pid)],
+                        capture_output=True, check=False,
+                    )
+            if port_is_open() and rpc_is_ready():
+                ev.log("WARNING: an MCP server is still answering after shutdown")
         path = ev.write()
         ev.log(f"evidence: {path}")
         ev.log(f"GUI_STRESS_RESULT: {ev.record['verdict']}")

@@ -1731,3 +1731,54 @@ makes both properties testable **deterministically**, with no threads at all:
 The harness now drives exactly that. The interleaved view/mutation phase is described
 accurately as interleaved rather than simultaneous, for the same single-threaded-listener
 reason.
+
+## XML-RPC is retired; `start_freecad.py`'s readiness wait is broken
+
+The first GUI stress attempt failed with `MCP RPC became ready: FAIL — timeout or early exit`
+after burning the full 240 s. FreeCAD was in fact running the whole time and the MCP server was
+listening. The probe was wrong, not the server.
+
+A direct request to the default XML-RPC endpoint shows why:
+
+    xmlrpc.client.ProtocolError: <ProtocolError for localhost:9875/RPC2: 410 Gone>
+
+`transport/listener.py:296` (`_handle_xmlrpc_retired_post`) answers every XML-RPC POST with
+`410 Gone`, `Deprecation: true`, and `Link: </jsonrpc>; rel="successor-version"`. The transport
+is now **JSON-RPC 2.0 at `POST /jsonrpc`**. Verified against a live instance:
+
+    {"jsonrpc":"2.0","id":1,"method":"ping","params":{}}    -> {"result":true}
+    {"jsonrpc":"2.0","id":1,"method":"execute_code",
+     "params":{"code":"print('x=1')"}}                      -> {"result":{"success":true,...}}
+
+Both named (`{"code": ...}`) and positional (`[...]`) params are accepted. `ping` needs no
+identity headers.
+
+### This is a defect in `start_freecad.py`, not only in the harness
+
+`_ping_mcp_rpc()`, `_mcp_rpc_proxy()`, `_mcp_rpc_process_id()` and
+`_reuse_existing_mcp_if_possible()` all still construct `xmlrpc.client.ServerProxy`. Against
+the current server every one of them fails, with two consequences:
+
+* **The launcher always reports failure for a healthy server.** It waits the full
+  `--mcp-timeout` (default 120 s), then prints "MCP RPC server did not respond…" and returns 1,
+  even though FreeCAD is up and serving. In `--wait` mode it goes further and *terminates*
+  FreeCAD on that false negative.
+* **The session-reuse path can no longer trigger.** `_reuse_existing_mcp_if_possible()` cannot
+  ping, so it always returns False. That accidentally removes the risk of the launcher driving
+  a session it did not start — but by breakage, not by design, and it would come back the
+  moment the launcher is ported to JSON-RPC.
+
+This is recorded as a follow-up; the launcher has **not** been changed, because it is outside
+the current scope and is a shared entry point.
+
+The harness therefore passes `--no-wait-for-mcp` and waits for readiness itself over JSON-RPC.
+
+### Two harness defects found by the same failure
+
+* The launcher's output was captured to `subprocess.PIPE` and never drained. That discarded the
+  diagnostics and risks blocking the child once the pipe buffer fills. It is now written to
+  `launcher.log` in the evidence directory.
+* Shutdown terminated the *launcher*, not FreeCAD. The launcher spawns FreeCAD (often through
+  `pixi run`) and returns, so the GUI survived — the first smoke run leaked a live FreeCAD
+  process (pid 31832) holding port 9875. Shutdown now kills the PID the RPC server reported and
+  warns if anything is still answering afterwards.
