@@ -287,7 +287,15 @@ print('filename=' + _doc.FileName)
 # phases
 # --------------------------------------------------------------------------
 def phase_view_vs_mutation(ev: Evidence, doc: str, cycles: int) -> None:
-    """View activity concurrent with agent mutations."""
+    """View activity interleaved with agent mutations.
+
+    The two run from separate connections, but the RPC listener is a
+    single-threaded SimpleXMLRPCServer and view work must stay on the GUI
+    thread, so these interleave rather than overlap. That is the realistic
+    shape of a user orbiting the model while an agent edits it, and it is what
+    the "camera never invalidates a commit" claim is about. It is deliberately
+    not described as simultaneous execution.
+    """
     ev.log(f"phase A: {cycles} view cycles concurrent with mutations")
     stop = threading.Event()
     view_errors: list[str] = []
@@ -555,78 +563,104 @@ def phase_two_document_readiness(ev: Evidence, primary: str, secondary: str,
              still_alive, alive_msg[:160])
 
 
-def phase_conflicts(ev: Evidence, doc: str) -> None:
-    ev.log("phase D: targeted conflict detection")
-    barrier = threading.Barrier(2, timeout=30)
-    results: dict[str, tuple[bool, str]] = {}
-    lock = threading.Lock()
-
-    def writer(tag: str, code: str) -> None:
-        client = proxy()
-        with contextlib.suppress(threading.BrokenBarrierError):
-            barrier.wait()
-        outcome = run_code(client, code)
-        with lock:
-            results[tag] = outcome
-
-    same = [
-        threading.Thread(target=writer, args=(f"same{i}", f"""
+# Conflicts in this architecture are NOT thread races. Every RPC mutation is
+# marshalled onto the GUI thread, so two clients writing at once are serialised
+# and could never collide. Arbitration is done by the native edit-session layer:
+# a session snapshots the semantic revisions it intends to edit, and a commit
+# built on a snapshot another actor has since superseded is refused. Racing
+# threads here would report success while proving nothing, so the test drives
+# the real interleaving deterministically instead.
+SAME_PROPERTY = """
 import FreeCAD
-_d = FreeCAD.getDocument({doc!r})
-_d.getObject('StressBox').Height = float({100 + i})
-_d.recompute()
-print('height=' + str(_d.getObject('StressBox').Height.Value))
-"""), name=f"same{i}") for i in range(2)
-    ]
-    for thread in same:
-        thread.start()
-    for thread in same:
-        thread.join(timeout=60)
-    same_results = {k: v for k, v in results.items() if k.startswith("same")}
-    ev.record["phases"]["same_property"] = {k: list(v) for k, v in same_results.items()}
-    ev.check("same-property concurrent writes were serialised or conflicted",
-             len(same_results) == 2,
-             str(same_results)[:300])
+_d = FreeCAD.getDocument(DOCNAME)
+_a = _d.beginEditSession('agent-a')['session_id']
+_b = _d.beginEditSession('agent-b')['session_id']
+_key = [{'object': 'StressBox', 'property': 'Length'}]
 
-    results.clear()
-    barrier = threading.Barrier(2, timeout=30)
-    independent = [
-        threading.Thread(target=writer, args=("indep-a", f"""
-import FreeCAD
-_d = FreeCAD.getDocument({doc!r})
-_d.getObject('StressBox').Length = 42.0
-_d.recompute()
-print('ok=1')
-"""), name="indep-a"),
-        threading.Thread(target=writer, args=("indep-b", f"""
-import FreeCAD
-_d = FreeCAD.getDocument({doc!r})
-_d.getObject('SecondBox').Width = 24.0
-_d.recompute()
-print('ok=1')
-"""), name="indep-b"),
-    ]
-    for thread in independent:
-        thread.start()
-    for thread in independent:
-        thread.join(timeout=60)
-    indep = dict(results)
-    ev.record["phases"]["independent_property"] = {k: list(v) for k, v in indep.items()}
-    ev.check("independent-property concurrent writes both succeeded",
-             all(ok for ok, _ in indep.values()) and len(indep) == 2,
-             str(indep)[:300])
+# Both actors observe the same revision of the same property.
+_d.snapshotForEdit(_a, _key)
+_d.snapshotForEdit(_b, _key)
 
-    client = proxy()
-    ok, message = run_code(client, f"""
+_args_a = {'object': 'StressBox', 'property': 'Length',
+           'value_type': 'float', 'value': '55.0'}
+_args_b = {'object': 'StressBox', 'property': 'Length',
+           'value_type': 'float', 'value': '66.0'}
+_pa = _d.prepareEdit(_a, 'stress-same-a', 'App.CollaborativeSetProperty', _args_a, 'stress')
+_pb = _d.prepareEdit(_b, 'stress-same-b', 'App.CollaborativeSetProperty', _args_b, 'stress')
+
+_ra = _d.commitEdit(_a, _pa)
+_rb = _d.commitEdit(_b, _pb)
+print('first_status=' + str(_ra.get('status')))
+print('second_status=' + str(_rb.get('status')))
+print('first_committed=' + str(bool(_ra.get('committed', _ra.get('status') == 'Committed'))))
+print('second_committed=' + str(bool(_rb.get('committed', _rb.get('status') == 'Committed'))))
+print('final_length=' + str(_d.getObject('StressBox').Length.Value))
+print('first_operation_id=' + str(_ra.get('operation_id')))
+print('second_operation_id=' + str(_rb.get('operation_id')))
+"""
+
+INDEPENDENT_PROPERTY = """
 import FreeCAD
-_d = FreeCAD.getDocument({doc!r})
+_d = FreeCAD.getDocument(DOCNAME)
+_a = _d.beginEditSession('agent-c')['session_id']
+_b = _d.beginEditSession('agent-d')['session_id']
+
+# Each actor observes only the property it intends to edit.
+_d.snapshotForEdit(_a, [{'object': 'StressBox', 'property': 'Length'}])
+_d.snapshotForEdit(_b, [{'object': 'SecondBox', 'property': 'Width'}])
+
+_args_a = {'object': 'StressBox', 'property': 'Length',
+           'value_type': 'float', 'value': '42.0'}
+_args_b = {'object': 'SecondBox', 'property': 'Width',
+           'value_type': 'float', 'value': '24.0'}
+_pa = _d.prepareEdit(_a, 'stress-indep-a', 'App.CollaborativeSetProperty', _args_a, 'stress')
+_pb = _d.prepareEdit(_b, 'stress-indep-b', 'App.CollaborativeSetProperty', _args_b, 'stress')
+
+_ra = _d.commitEdit(_a, _pa)
+_rb = _d.commitEdit(_b, _pb)
+print('a_status=' + str(_ra.get('status')))
+print('b_status=' + str(_rb.get('status')))
 print('length=' + str(_d.getObject('StressBox').Length.Value))
 print('width=' + str(_d.getObject('SecondBox').Width.Value))
-""")
+print('a_operation_id=' + str(_ra.get('operation_id')))
+print('b_operation_id=' + str(_rb.get('operation_id')))
+"""
+
+
+def phase_conflicts(ev: Evidence, doc: str) -> None:
+    ev.log("phase D: targeted conflict detection (native edit sessions)")
+    client = proxy()
+
+    ok, message = run_code(client, SAME_PROPERTY.replace("DOCNAME", repr(doc)))
     fields = parsed(message)
-    ev.check("independent writes both landed exactly once",
-             ok and fields.get("length") == "42.0" and fields.get("width") == "24.0",
-             str(fields))
+    ev.record["phases"]["same_property"] = {"ok": ok, "fields": fields, "raw": message}
+    ev.note_operation(fields.get("first_operation_id"))
+    ev.note_operation(fields.get("second_operation_id"))
+    if not ev.check("same-property scenario ran", ok, message[:300]):
+        return
+    ev.check("first same-property commit succeeded",
+             fields.get("first_committed") == "True",
+             f"status={fields.get('first_status')}")
+    ev.check("second same-property commit was refused as a conflict",
+             fields.get("second_committed") == "False",
+             f"status={fields.get('second_status')}")
+    ev.check("the losing commit did not land (exactly-once)",
+             fields.get("final_length") == "55.0",
+             f"final_length={fields.get('final_length')}, expected 55.0")
+
+    ok, message = run_code(client, INDEPENDENT_PROPERTY.replace("DOCNAME", repr(doc)))
+    fields = parsed(message)
+    ev.record["phases"]["independent_property"] = {"ok": ok, "fields": fields, "raw": message}
+    ev.note_operation(fields.get("a_operation_id"))
+    ev.note_operation(fields.get("b_operation_id"))
+    if not ev.check("independent-property scenario ran", ok, message[:300]):
+        return
+    ev.check("independent edits did not conflict with each other",
+             fields.get("a_status") == fields.get("b_status") != "None",
+             f"a={fields.get('a_status')} b={fields.get('b_status')}")
+    ev.check("both independent edits landed exactly once",
+             fields.get("length") == "42.0" and fields.get("width") == "24.0",
+             f"length={fields.get('length')} width={fields.get('width')}")
 
 
 def phase_pause_resume(ev: Evidence, doc: str) -> None:
