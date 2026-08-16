@@ -1529,3 +1529,77 @@ this work** and is the next thing to fix; it is not yet root-caused.
 Per the ordered-gate rule this is the first red layer of the broader parent sequence, so the
 nested, branch-built MCP, authenticated-session and full acceptance gates have **not** been
 started.
+
+## Root cause — `RenameProperty.updateExpressionDifferentDocument`
+
+### Correction: the earlier bisect was invalid
+
+The bisect that "proved" a regression compared **different filesystems**. Base was built and
+run at `/basetree2`, which is container-local **overlayfs**; head was run from the repo root,
+which is the **9p** bind mount. Same-filesystem runs of the *current* tree show:
+
+| filesystem | result |
+| --- | --- |
+| overlayfs (`/tmp`, `mktemp -d`) | **PASSES**, including `--gtest_repeat=5` and the whole `RenameProperty.*` suite |
+| 9p (anywhere under the repo mount) | **FAILS** |
+
+The test is not order-dependent, not polluted by a pre-existing `test.FCStd`, and not affected
+by `HOME`/`FREECAD_USER_HOME`. It uses relative paths (`saveAs("test.FCStd")`), so it saves
+into the current working directory — which is why running the suite from the repo root put it
+on 9p.
+
+### The actual failure
+
+The escaping exception is `Base::FileException` from `Document.cpp:5116`, carrying
+`REPLACEMENT_VERIFICATION_FAILED` — "The installed destination does not match the serialized
+temporary file". At the check in `DocumentFileWriter::commit()`:
+
+```
+destinationAfter.exists    = false
+destinationAfter.identity  = ""
+temporary->identity()      = "133:34902897112163405"
+```
+
+The destination does not resolve at all immediately after the replacement rename.
+
+### Mechanism, isolated to a single primitive
+
+Reproduced with no FreeCAD code at all. Renaming a file **while holding an open descriptor on
+it** makes the destination invisible to a subsequent `stat` on 9p:
+
+| filesystem | hold fd across rename | destination visible after rename |
+| --- | --- | --- |
+| 9p | no | **yes** |
+| 9p | **yes** | **no** — `ENOENT`, still failing after 1s |
+| overlayfs | no | yes |
+| overlayfs | yes | yes |
+
+Overwrite-vs-create and dirfd-vs-path make no difference; the retained descriptor is the only
+variable. This is precisely the writer's retained-handle design (contract R22), so on 9p the
+post-replacement identity proof (R23) can never succeed.
+
+Base does not hit this because its legacy save closes the temporary before renaming.
+
+### Severity: worse than a failed test
+
+On 9p the bytes are installed correctly but the save is reported as failed:
+
+- `doc.FCStd` afterwards is the **new** 1192-byte FCStd zip — the save physically succeeded;
+- `doc.FCStd.<uuid>.displaced` holds the exact previous version;
+- yet `saveAs` throws and `Document.FileName` is rolled back to `''`.
+
+A user on such a mount is told the save failed while the file on disk is correct and current.
+They may re-save repeatedly, accumulating a `.displaced` copy each time, or quit believing
+work was lost that was in fact written.
+
+### Why this stops here
+
+This is **not** a rename/expression defect, so the prescribed narrowing (Property.cpp/.h
+restore, then the notification chain through PropertyContainer/Document/transaction) does not
+apply — the divergence is not in that chain at all. The failing expectation is correct and has
+not been touched.
+
+The smallest production invariant to fix lives in `DocumentFileWriter::commit()`, which is
+**frozen** by the current constraints, so no change has been made. It also contaminates an
+authoritative gate: the branch-built MCP lane runs with the repo on 9p, so any test that saves
+into the repo tree fails there for this reason.
