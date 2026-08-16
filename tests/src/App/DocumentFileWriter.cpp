@@ -222,6 +222,16 @@ std::string readUserVisibleFile(const fs::path& path)
 std::string readActiveLeasedArtifact(const fs::path& path)
 {
 #ifdef FC_OS_WIN32
+    // Prove the lease is actually active before reading through it. A positive
+    // read on its own would pass just as happily against an unheld file, which
+    // would make every use of this helper unfalsifiable: it could silently
+    // become the reader for artifacts that ought to be ordinarily readable and
+    // nothing would notice. The negative is the half that pins the contract.
+    const std::string ordinary = probeOpen(path, FILE_SHARE_READ | FILE_SHARE_WRITE);
+    EXPECT_EQ(ordinary, "failed, ERROR_SHARING_VIOLATION")
+        << "readActiveLeasedArtifact expects an active lease on " << path.string()
+        << ", but an ordinary reader was not blocked by one";
+
     const HANDLE handle = CreateFileW(path.c_str(),
                                       GENERIC_READ,
                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -841,7 +851,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapAcceptsMatchingDestinationHash)
     // than discarding it. See CompareAndSwapRetainsExactMovedPredecessorForBackup.
     ASSERT_FALSE(result.displacedFile.empty());
     EXPECT_TRUE(result.displacedFileLease);
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
               "expected old bytes");
 }
 
@@ -864,7 +874,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapRetainsExactMovedPredecessorForBack
     EXPECT_TRUE(result.fileWritten);
     EXPECT_EQ(readFile(destination), "replacement bytes");
     ASSERT_FALSE(result.displacedFile.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
               "expected old bytes");
 }
 
@@ -1083,7 +1093,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapRevalidatesAfterGuardMove)
     EXPECT_EQ(result.errorCode, "DESTINATION_CHANGED");
     EXPECT_EQ(result.displacedFile, guard);
     ASSERT_FALSE(guard.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(guard)), "expected old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(guard)), "expected old bytes");
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
               "serialized replacement bytes");
     EXPECT_EQ(readFile(destination), "foreign after-guard bytes");
@@ -1122,7 +1132,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapInstallUsesNoReplaceAfterGuardValid
     EXPECT_FALSE(result.fileWritten);
     EXPECT_EQ(result.errorCode, "DESTINATION_CHANGED");
     EXPECT_EQ(result.displacedFile, guard);
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(guard)), "expected old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(guard)), "expected old bytes");
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
               "serialized replacement bytes");
     EXPECT_EQ(readFile(destination), "foreign before-install bytes");
@@ -1229,7 +1239,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapRestoreNeverClobbersLateOccupant)
     EXPECT_EQ(result.errorCode, "DESTINATION_CHANGED");
     EXPECT_EQ(result.displacedFile, guard);
     EXPECT_EQ(readFile(destination), "foreign restore occupant");
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(guard)), "expected old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(guard)), "expected old bytes");
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(temporary)),
               "serialized replacement bytes");
 }
@@ -1498,7 +1508,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapPostInstallFailureReportsWrittenAnd
     EXPECT_EQ(result.errorCode, "TEST_INJECTED_REPLACEMENT_VERIFICATION_FAILURE");
     EXPECT_EQ(readFile(destination), "serialized replacement bytes");
     ASSERT_FALSE(result.displacedFile.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
               "expected old bytes");
 }
 
@@ -1528,7 +1538,7 @@ TEST_F(DocumentFileWriterTest, CompareAndSwapPostInstallGuardInspectionIsBestEff
     EXPECT_EQ(readFile(destination), "serialized replacement bytes");
     ASSERT_FALSE(result.displacedFile.empty());
     EXPECT_TRUE(result.displacedFileLease);
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)),
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
               "expected old bytes");
     // The injected std::runtime_error path reports the exception text; the
     // bare "inspection failed" wording is only the catch(...) fallback.
@@ -1836,7 +1846,8 @@ TEST_F(DocumentFileWriterTest, SnapshotReservationCollisionNeverAdoptsForeignPat
     ASSERT_FALSE(result.displacedFile.empty());
     EXPECT_NE(result.displacedFile, collision);
     EXPECT_EQ(readFile(Base::FileInfo::stringToPath(collision)), "foreign collision");
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)), "old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
+              "old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, PostReplacementVerificationFailureRetainsDisplacedBytes)
@@ -1865,7 +1876,8 @@ TEST_F(DocumentFileWriterTest, PostReplacementVerificationFailureRetainsDisplace
     EXPECT_EQ(result.errorCode, "TEST_INJECTED_REPLACEMENT_VERIFICATION_FAILURE");
     EXPECT_EQ(readFile(destination), "new bytes");
     ASSERT_FALSE(result.displacedFile.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)), "old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
+              "old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, PostReplacementDurabilityFailureRetainsDisplacedBytes)
@@ -1893,7 +1905,8 @@ TEST_F(DocumentFileWriterTest, PostReplacementDurabilityFailureRetainsDisplacedB
     EXPECT_EQ(result.errorCode, "TEST_INJECTED_DURABILITY_FAILURE");
     EXPECT_EQ(readFile(destination), "new bytes");
     ASSERT_FALSE(result.displacedFile.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)), "old bytes");
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
+              "old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, FailedBackupCanLeaveRecoverySnapshotAfterLeaseDestruction)
