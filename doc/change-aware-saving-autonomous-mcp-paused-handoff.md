@@ -1975,3 +1975,122 @@ started — the port was proven free first — and its docstring records that co
 
 The stress harness no longer passes `--no-wait-for-mcp`, and it invokes the tracked entrypoint.
 `doc/launcher-jsonrpc-migration.diff` has been removed now that the source itself is tracked.
+
+## Phase B1 — every remaining Windows failure classified by measurement
+
+The reader helpers landed in `6378522c` proved one case. They did not explain the other 29, and
+the previous evidence could not: `readFile()` reported only "could not open", which cannot tell a
+missing artifact from a live handle holding an incompatible access mask. `readFile()` now probes
+the exact path twice with `CreateFileW` and reports both Win32 results:
+
+    ordinary   GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE
+    delete-sh  GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+
+Baseline at `6378522c`, Release, `App_tests_run.exe` sha256 `20676B9F…E94BDF`:
+
+    DocumentFileWriterTest.* + BackupPolicyTest.*   92 ran, 57 passed, 6 skipped, 29 failed
+
+The 27 reader failures split cleanly and with no overlap:
+
+    21   ordinary: ERROR_SHARING_VIOLATION    delete-sh: opened
+     6   ordinary: ERROR_FILE_NOT_FOUND       delete-sh: ERROR_FILE_NOT_FOUND
+
+So there are exactly two mechanisms, not one. Nothing is ambiguous, and nothing is "missing but
+present" — the six are genuinely gone.
+
+### Group C — canonical `.FCStd` blocked from ordinary readers (10)
+
+| test | requested | ordinary |
+|---|---|---|
+| `RetainedSerializationStreamSupportsZipBackpatchSeeks` | `seekable.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `CompareAndSwapAcceptsMatchingDestinationHash` | `document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `CompareAndSwapRetainsExactMovedPredecessorForBackup` | `cas-with-backup.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `CompareAndSwapRejectsMismatchingDestinationHash` | `document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `CompareAndSwapRehashesAtFinalBoundary` | `document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `SameSizeSameMtimeTemporaryMutationIsRejectedOrPrevented` | `document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `PostValidationSameSizeSameMtimeMutationIsRehashedOrDenied` | `post-hash-document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `DiscardsSnapshotWhenSourceMutatesWithSameSizeAndMtime` | `document.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `WindowsLegacyDeletePendingIsMaintenanceWarningWithoutPruning` | `windows-delete-pending.FCStd` | `ERROR_SHARING_VIOLATION` |
+| `ZipWriterSerializesThroughRetainedSeekableHandle` | canonical, through QuaZip | `Error reading from file` |
+
+This is **not** an expectation defect. §4.1 makes the canonical file ordinary-reader territory,
+and these tests are right to read it that way.
+
+`ReplaceUsesSiblingAndRetainsDisplacedSnapshot` passes only because it destroys the writer before
+reading; every test above still holds one when it reads. That is the whole difference.
+
+The holder is `_impl->temporary`. `createSibling()` opens it `GENERIC_READ | GENERIC_WRITE |
+DELETE | …` and after the install rename that same handle names the canonical destination — the
+comment at the durability flush says so outright ("the same retained handle now names the
+installed destination"). On the success branch it is then **never released**:
+`releaseDescriptor()` is called only in the `else` branch, the 9p path where the name does not
+resolve. So for as long as the writer lives, the just-saved document cannot be opened by any
+ordinary reader in any process. On the CAS failure paths the blocking handle is instead
+`destinationSource`, which CAS opens with `requireRenameAuthority = true` and therefore `DELETE`.
+
+Answers to the §7 questions, in order: (1) yes, the installed serialization handle stays open with
+`DELETE`; (2) no rebinding accident — the CAS guard is bound to its own `.cas-recovery` path at
+line 3701; (3) `displacedFileLease` identifies the predecessor guard, not the installed canonical;
+(4) yes, an installed canonical descriptor is retained after its verification work is complete;
+(5) yes — every proof is finished by the time `durabilityVerified` is set.
+
+### Group A — internal recovery artifact under a live lease (8)
+
+Correct behaviour; the special reader is appropriate. Requested paths are `.displaced`,
+`.cas-recovery` and `.cas-post-install-predecessor-recovery` siblings, each still held by the
+lease reported in `result.displacedFileLease`.
+
+`CompareAndSwapRevalidatesAfterGuardMove`, `CompareAndSwapInstallUsesNoReplaceAfterGuardValidation`,
+`CompareAndSwapRestoreNeverClobbersLateOccupant`, `CompareAndSwapPostInstallFailureReportsWrittenAndKeepsGuard`,
+`CompareAndSwapPostInstallGuardInspectionIsBestEffort`, `SnapshotReservationCollisionNeverAdoptsForeignPath`,
+`PostReplacementVerificationFailureRetainsDisplacedBytes`, `PostReplacementDurabilityFailureRetainsDisplacedBytes`.
+
+### Group D — installed backup-history entry blocked (3)
+
+`RetainedLeaseInstallsBackupWithoutReopeningSource` (`lease-install.FCStd1`),
+`RetainedLeaseNoReplaceRetriesLateOsCollision` (`lease-collision.FCStd2`),
+`SourceNameSwapCannotRedirectRetainedLeaseInstall` (`lease-source-swap.FCStd1`).
+
+A `.FCStd1` is user-visible backup history under §4.1, so this is the same defect shape as group C
+with a different holder: the retained lease stays open across the backup install.
+
+### Group E — Q1 lifecycle, the artifact is really gone (6 + 1)
+
+`NoReplaceRejectsDestinationCreatedAfterSerialization`, `CompareAndSwapRejectsSwapAtReplacementPrimitive`,
+`CompareAndSwapGuardMoveNeverClobbersCollision`, `CompareAndSwapUnsupportedNoReplaceFailsBeforeMutation`,
+`CompareAndSwapAuthorityFailureIsPreMutationAndSpecific`, `CompareAndSwapDurabilityFailureIsPreMutationAndSpecific`.
+
+Each expects a `VerifiedSerialization` `.tmp` to survive a failed save and be reported as recovery
+evidence. On Windows it is deleted. The seventh is
+`CompareAndSwapAcceptsMatchingDestinationHash`, whose `DisplacedCanonical` guard is deleted and
+whose `result.displacedFile` is therefore empty.
+
+Root cause, and it is one line short in two places:
+
+    cleanupOwnedFile()   POSIX: if (_ephemeralPartial) unlink…    Windows: setDeleteDisposition() unconditionally
+    discardExact()       POSIX: if (!_ephemeralPartial) return false   Windows: no such guard
+
+The POSIX branch of `cleanupOwnedFile()` even carries the comment stating the rule the Windows
+branch above it does not implement: "Only an EphemeralPartial may be removed by destructor
+cleanup. Every other class keeps its name." `discardDisplacedCanonicalExact()` already exists as
+the deliberate R5 carve-out, so on Windows the general and the explicit path are currently the
+same function — which is exactly the bug.
+
+This is Q1, and it is a Windows-only data-loss defect: a verified copy of the user's work is
+removed on a failed save.
+
+### Group F — genuinely separate, one cause each (2)
+
+| test | boundary | evidence |
+|---|---|---|
+| `PathInvisibleUntilDescriptorReleaseStillVerifies` | `DURABILITY_UNVERIFIED` | `Unable to flush an open save file: Access is denied.` |
+| `ExistingBasicAttributesAndProtectedDaclSurviveReplacement` | `ATOMIC_REPLACEMENT_FAILED` | `Unable to atomically replace the destination: Access is denied.` |
+
+Both are `ERROR_ACCESS_DENIED`, not sharing, not lifecycle. Neither is diagnosed yet.
+
+### What this changes about the plan
+
+Groups C, D and E are production defects, not expectations to adjust. Only group A is a test-side
+reconciliation, and it is the smallest of the four. The earlier reading — that this lane was
+mostly tests reading internal artifacts the wrong way — was wrong in the direction that matters:
+the ordinary-reader failures are largely the product breaking its own user-visible contract.

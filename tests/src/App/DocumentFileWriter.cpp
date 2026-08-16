@@ -109,6 +109,55 @@ void overwriteFileWithDeleteSharing(const fs::path& path,
 #endif
 }
 
+#ifdef FC_OS_WIN32
+/*!
+ * Name the Win32 open failures this lane must tell apart.
+ *
+ * A sharing violation and a missing file are entirely different diagnoses:
+ * the first means a live handle holds an incompatible access mask, the second
+ * means the artifact is gone. Reporting either as a bare "could not open"
+ * loses exactly the distinction the classification depends on.
+ */
+std::string describeWin32Error(const DWORD error)
+{
+    switch (error) {
+        case ERROR_SUCCESS:
+            return "ERROR_SUCCESS";
+        case ERROR_FILE_NOT_FOUND:
+            return "ERROR_FILE_NOT_FOUND";
+        case ERROR_PATH_NOT_FOUND:
+            return "ERROR_PATH_NOT_FOUND";
+        case ERROR_ACCESS_DENIED:
+            return "ERROR_ACCESS_DENIED";
+        case ERROR_SHARING_VIOLATION:
+            return "ERROR_SHARING_VIOLATION";
+        case ERROR_LOCK_VIOLATION:
+            return "ERROR_LOCK_VIOLATION";
+        case ERROR_DELETE_PENDING:
+            return "ERROR_DELETE_PENDING";
+        default:
+            return "error " + std::to_string(error);
+    }
+}
+
+//! Try one read-only open under an exact share mode and report what Windows said.
+std::string probeOpen(const fs::path& path, const DWORD sharing)
+{
+    const HANDLE handle = CreateFileW(path.c_str(),
+                                      GENERIC_READ,
+                                      sharing,
+                                      nullptr,
+                                      OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL,
+                                      nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return "failed, " + describeWin32Error(GetLastError());
+    }
+    CloseHandle(handle);
+    return "opened";
+}
+#endif
+
 std::string readFile(const fs::path& path)
 {
     std::ifstream stream(path, std::ios::in | std::ios::binary);
@@ -127,10 +176,18 @@ std::string readFile(const fs::path& path)
             listing += "\n      " + entry.path().filename().string() + "  ("
                 + std::to_string(size) + " bytes)";
         }
+        std::string shareModes;
+#ifdef FC_OS_WIN32
+        // Which share mode an existing handle blocks is the whole diagnosis, so
+        // measure both rather than inferring one from the ifstream failure.
+        shareModes = "\n    ordinary  : " + probeOpen(path, FILE_SHARE_READ | FILE_SHARE_WRITE)
+            + "\n    delete-sh : "
+            + probeOpen(path, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+#endif
         ADD_FAILURE() << "readFile could not open the requested artifact"
                       << "\n    requested : " << path.string()
                       << "\n    exists    : " << (fs::exists(path, code) ? "yes" : "no")
-                      << "\n    parent    : " << path.parent_path().string()
+                      << shareModes << "\n    parent    : " << path.parent_path().string()
                       << "\n    contents  :" << (listing.empty() ? " <empty>" : listing);
         return {};
     }
