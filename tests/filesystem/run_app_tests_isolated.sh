@@ -42,10 +42,28 @@ case "$RUN_DIR" in
     *.*) echo "FAIL: run directory contains a dot: $RUN_DIR" >&2; exit 2 ;;
 esac
 
+# Since Python 3.8 a Windows extension module resolves its dependencies through
+# the directories registered with os.add_dll_directory(), not through PATH.
+# FreeCADInit registers FREECAD_LIBPACK_BIN for exactly that. Without it Part
+# and Sketcher fail to import, every fixture that adds a Sketcher object throws
+# in SetUp, and roughly a dozen tests fail for a reason that has nothing to do
+# with the code under test. Say so up front rather than letting the run be read
+# as a source regression.
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+        if [ -z "${FREECAD_LIBPACK_BIN:-}" ]; then
+            echo "WARNING: FREECAD_LIBPACK_BIN is not set." >&2
+            echo "         Windows extension modules ignore PATH, so Part/Sketcher" >&2
+            echo "         will fail to import and their tests will fail in SetUp." >&2
+        fi
+        ;;
+esac
+
 echo "isolated test run"
 echo "  binary : $BINARY"
 echo "  run dir: $RUN_DIR"
 echo "  cwd    : $CWD"
+echo "  libpack: ${FREECAD_LIBPACK_BIN:-<unset>}"
 
 ( cd "$CWD" && "$BINARY" "$@" )
 STATUS=$?

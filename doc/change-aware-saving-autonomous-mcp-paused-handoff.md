@@ -2171,3 +2171,73 @@ neither the Linux regression nor the 9p gate has been run against this work.
 Several changes here are POSIX-visible -- the sealed-serialization gate and the
 explicit lease release in `retainDisplacedFileForRecovery()` -- so Linux is a
 real gate, not a formality.
+
+## The Windows collaboration/async lane — one linkage defect, two symptoms
+
+    complete App_tests_run, isolated runner
+      71bd8ac8   hangs; never completes
+      a00ce572   929 ran, 920 passed, 9 skipped, 0 failed
+
+The three 2000 ms failures and the hang were the same defect, and there were
+five hangs rather than one. A per-test 20 s watchdog over
+`DocumentCollaborationServiceTest` found them: 40 passed, 0 failed, 5 hung.
+
+`MainThreadSignalConfig` stored its two hook pointers in function-local statics
+inside inline member functions, in a header with no export marking. ELF merges
+those across modules; PE does not. The hooks are installed by one module and
+read by another, so on Windows the installer wrote its own copy and App read a
+copy that stayed null. App treats "no hooks" as "this thread is main, run
+inline", so nothing was ever handed to the owner thread.
+
+Whether that presented as a failure or a hang was decided purely by the waiter:
+
+    BlockingRecomputeDispatcher::waitUntilQueued   wait_for(2s)  -> returns false
+    BlockingTestDispatcher::waitUntilQueued        wait()        -> never returns
+
+Attributed by measurement: `src/App/MainThreadSignal.*` reverted to `71bd8ac8`,
+rebuilt, and all eight reproduce; restored, and all eight pass individually and
+together at `--gtest_repeat=20`.
+
+The tests were the visible half. Gui installs `qtIsMainThread`/`qtInvokeOnMain`
+from `Gui/Application.cpp` -- a different module again -- so on Windows the real
+application has been running document-signal observers on the recompute worker
+thread instead of hopping to the Qt main thread. Part 3 is a GUI stress lane, so
+this would have been exercised there.
+
+### The other twelve were the environment, not the code
+
+With the hang cleared, the suite reached tests it had never got to:
+`ExpressionParserTest.*` (10), `DocumentObjectTest.getSubObjectList`, and
+`PropertyExpressionEngineTest.executeCrossPropertyReference`, all failing as
+"Unknown C++ exception thrown in SetUp()".
+
+Their fixtures add a `Sketcher::SketchObject`. Since Python 3.8 a Windows
+extension module resolves dependencies through `os.add_dll_directory()`, not
+PATH, and `FreeCADInit` registers `FREECAD_LIBPACK_BIN` for that. Unset, `Part`
+and `Sketcher` fail to load their OpenCASCADE `TK*.dll` dependencies, the
+fixture throws, and gtest reports it as unknown because `Base::Exception` does
+not derive from `std::exception`. With `FREECAD_LIBPACK_BIN` set, all twelve
+pass. They fail identically at `71bd8ac8`, so this is not a regression.
+
+`run_app_tests_isolated.sh` now records the value and warns on Windows when it
+is unset, so this cannot be misread as a source regression again.
+
+### Gate status
+
+    Windows  complete App_tests_run (isolated)   929 ran, 920 passed, 9 skipped, 0 failed
+             of which DocumentFileWriterTest     57 ok      BackupPolicyTest      33 ok
+                      RenameProperty             14 ok      CollaborationService  45 ok
+                      AsyncRecompute             10 ok      PythonCompatibility   61 ok
+    Windows  launcher JSON-RPC tests             26 passed
+    Windows  occupied-port refusal               exit 1, refused
+    git diff --check / line endings              clean, no churn
+    Linux    writer/backup + collaboration       NOT RUN
+    9p       explicit save gate                  NOT RUN
+    cross-process save-lock test                 NOT WRITTEN
+    Windows  Debug configuration                 unavailable
+
+**Part 3: NO-GO.** The Windows App lane is green for the first time, but the
+Linux and 9p gates have not been run against this work and the cross-process
+lock proof does not exist. The linkage fix in particular is cross-platform by
+nature: it changes which module owns the hook storage, so Linux must confirm the
+behaviour it always had is unchanged.
