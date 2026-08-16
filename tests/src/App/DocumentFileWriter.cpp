@@ -112,7 +112,28 @@ void overwriteFileWithDeleteSharing(const fs::path& path,
 std::string readFile(const fs::path& path)
 {
     std::ifstream stream(path, std::ios::in | std::ios::binary);
-    EXPECT_TRUE(stream.is_open());
+    if (!stream.is_open()) {
+        // Diagnostic, not decoration: a bare is_open() failure cannot
+        // distinguish "the artifact was never created", "it was created under
+        // another name", and "it was cleaned up too early". Report the
+        // requested path, whether it exists, and the parent listing.
+        std::error_code code;
+        std::string listing;
+        for (const auto& entry : fs::directory_iterator(path.parent_path(), code)) {
+            std::error_code sizeCode;
+            const auto size = fs::is_regular_file(entry.path(), sizeCode)
+                ? fs::file_size(entry.path(), sizeCode)
+                : 0U;
+            listing += "\n      " + entry.path().filename().string() + "  ("
+                + std::to_string(size) + " bytes)";
+        }
+        ADD_FAILURE() << "readFile could not open the requested artifact"
+                      << "\n    requested : " << path.string()
+                      << "\n    exists    : " << (fs::exists(path, code) ? "yes" : "no")
+                      << "\n    parent    : " << path.parent_path().string()
+                      << "\n    contents  :" << (listing.empty() ? " <empty>" : listing);
+        return {};
+    }
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
