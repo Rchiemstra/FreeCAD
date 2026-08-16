@@ -266,6 +266,153 @@ FileSnapshot inspectPath(const fs::path& path, const bool followLinks)
     CloseHandle(handle);
     return result;
 }
+
+// --- Windows relative rename ---------------------------------------------
+//
+// The pinned-parent design renames a sibling by naming a leaf relative to a
+// retained directory handle, so no path is ever re-resolved and no CWD is
+// consulted. SetFileInformationByHandle cannot express that: it ignores a
+// non-NULL RootDirectory and fails every such call with
+// ERROR_INVALID_PARAMETER. Measured on NTFS, Windows 10.0.26200, for both
+// FileRenameInfo and FileRenameInfoEx, destination absent or present,
+// replace and no-replace -- all 16 combinations.
+//
+// Passing RootDirectory = NULL with a bare leaf is not an alternative: the
+// name then resolves against the process current directory, and the file is
+// silently moved out of its parent. That was measured too.
+//
+// Only the NT information classes honour the directory handle, so the
+// guarantee is expressed through NtSetInformationFile. Same measurement
+// harness: relative rename through the pinned parent succeeds, and
+// no-replace onto an existing destination reports STATUS_OBJECT_NAME_COLLISION.
+
+constexpr LONG statusObjectNameCollision = static_cast<LONG>(0xC0000035);
+constexpr LONG statusInvalidParameter = static_cast<LONG>(0xC000000D);
+constexpr LONG statusNotImplemented = static_cast<LONG>(0xC0000002);
+constexpr LONG statusNotSupported = static_cast<LONG>(0xC00000BB);
+constexpr LONG statusInvalidInfoClass = static_cast<LONG>(0xC0000003);
+
+constexpr ULONG fileRenameInformation = 10;
+constexpr ULONG fileRenameInformationEx = 65;
+
+constexpr ULONG renameFlagReplaceIfExists = 0x00000001;
+constexpr ULONG renameFlagPosixSemantics = 0x00000002;
+
+struct NtIoStatusBlock
+{
+    union
+    {
+        LONG status;
+        void* pointer;
+    };
+    ULONG_PTR information;
+};
+
+using NtSetInformationFileFn = LONG(NTAPI*)(HANDLE, NtIoStatusBlock*, void*, ULONG, ULONG);
+using RtlNtStatusToDosErrorFn = ULONG(NTAPI*)(LONG);
+
+NtSetInformationFileFn ntSetInformationFile()
+{
+    static NtSetInformationFileFn function = [] {
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll != nullptr ? reinterpret_cast<NtSetInformationFileFn>(
+                   reinterpret_cast<void*>(GetProcAddress(ntdll, "NtSetInformationFile")))
+                                : nullptr;
+    }();
+    return function;
+}
+
+std::error_code dosErrorFromStatus(const LONG status)
+{
+    static RtlNtStatusToDosErrorFn translate = [] {
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        return ntdll != nullptr ? reinterpret_cast<RtlNtStatusToDosErrorFn>(
+                   reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlNtStatusToDosError")))
+                                : nullptr;
+    }();
+    const ULONG dosError =
+        translate != nullptr ? translate(status) : static_cast<ULONG>(ERROR_GEN_FAILURE);
+    return std::error_code(static_cast<int>(dosError), std::system_category());
+}
+
+enum class NtRenameOutcome
+{
+    Renamed,
+    DestinationExists,
+    Unsupported,
+    Failed,
+};
+
+struct NtRenameResult
+{
+    NtRenameOutcome outcome {NtRenameOutcome::Failed};
+    std::error_code error;
+};
+
+/*!
+ * Rename \a source to \a leaf inside \a parentDirectory, naming the
+ * destination only relative to that retained handle.
+ *
+ * The buffer is the official SDK FILE_RENAME_INFO layout, which is identical
+ * to the NT FILE_RENAME_INFORMATION. It is zero initialized, allocated with
+ * new[] so it carries at least 16-byte alignment for the embedded HANDLE, and
+ * sized with explicit capacity for a terminating NUL that FileNameLength
+ * itself excludes.
+ */
+NtRenameResult ntRenameThroughParent(const HANDLE source,
+                                     const HANDLE parentDirectory,
+                                     const std::wstring& leaf,
+                                     const bool replaceIfExists,
+                                     const bool extended)
+{
+    auto* const setInformation = ntSetInformationFile();
+    if (setInformation == nullptr) {
+        return {NtRenameOutcome::Unsupported,
+                std::error_code(ERROR_PROC_NOT_FOUND, std::system_category())};
+    }
+    if (leaf.empty() || leaf.find(L'\\') != std::wstring::npos
+        || leaf.find(L'/') != std::wstring::npos) {
+        return {NtRenameOutcome::Failed,
+                std::error_code(ERROR_INVALID_NAME, std::system_category())};
+    }
+
+    const auto nameBytes = static_cast<ULONG>(leaf.size() * sizeof(wchar_t));
+    const std::size_t bytes =
+        offsetof(FILE_RENAME_INFO, FileName) + nameBytes + sizeof(wchar_t);
+    auto storage = std::make_unique<std::byte[]>(bytes);
+    std::memset(storage.get(), 0, bytes);
+    auto* const info = reinterpret_cast<FILE_RENAME_INFO*>(storage.get());
+
+    if (extended) {
+        // The extended class reads the same leading word as flags.
+        auto* const flags = reinterpret_cast<ULONG*>(storage.get());
+        *flags = (replaceIfExists ? renameFlagReplaceIfExists : 0U) | renameFlagPosixSemantics;
+    }
+    else {
+        info->ReplaceIfExists = replaceIfExists ? TRUE : FALSE;
+    }
+    info->RootDirectory = parentDirectory;
+    info->FileNameLength = nameBytes;
+    std::memcpy(info->FileName, leaf.data(), nameBytes);
+
+    NtIoStatusBlock iosb {};
+    const LONG status = setInformation(source,
+                                       &iosb,
+                                       info,
+                                       static_cast<ULONG>(bytes),
+                                       extended ? fileRenameInformationEx : fileRenameInformation);
+    if (status >= 0) {
+        return {NtRenameOutcome::Renamed, {}};
+    }
+    if (status == statusObjectNameCollision) {
+        return {NtRenameOutcome::DestinationExists, dosErrorFromStatus(status)};
+    }
+    if (status == statusNotImplemented || status == statusNotSupported
+        || status == statusInvalidInfoClass || (extended && status == statusInvalidParameter)) {
+        return {NtRenameOutcome::Unsupported, dosErrorFromStatus(status)};
+    }
+    return {NtRenameOutcome::Failed, dosErrorFromStatus(status)};
+}
 #else
 std::string posixIdentity(const struct stat& info)
 {
@@ -1902,32 +2049,20 @@ StrictNoReplaceResult moveOwnedFileNoReplaceStrict(NativeFile& source,
 # if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
     (void)afterSourceValidation;
 # endif
-    // FILE_RENAME_INFO with ReplaceIfExists=FALSE is the oldest exact-handle
-    // Windows rename contract with strict collision behavior. Do not fall
-    // back to any replace-capable primitive here.
+    // Relative rename through the pinned parent with no replace authority.
+    // This is the strict exact-handle contract; do not fall back to any
+    // replace-capable primitive here.
     const std::wstring leaf = destination.filename().native();
-    const DWORD nameBytes = static_cast<DWORD>(leaf.size() * sizeof(wchar_t));
-    const std::size_t bytes = offsetof(FILE_RENAME_INFO, FileName) + nameBytes;
-    auto storage = std::make_unique<std::byte[]>(bytes);
-    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(storage.get());
-    info->ReplaceIfExists = FALSE;
-    info->RootDirectory = parent.handle();
-    info->FileNameLength = nameBytes;
-    std::memcpy(info->FileName, leaf.data(), nameBytes);
-    if (SetFileInformationByHandle(source.handle(),
-                                   FileRenameInfo,
-                                   info,
-                                   static_cast<DWORD>(bytes))
-        != 0) {
+    const auto renamed =
+        ntRenameThroughParent(source.handle(), parent.handle(), leaf, false, false);
+    if (renamed.outcome == NtRenameOutcome::Renamed) {
         return StrictNoReplaceResult::Installed;
     }
-    const DWORD status = GetLastError();
-    error = std::error_code(static_cast<int>(status), std::system_category());
-    if (status == ERROR_FILE_EXISTS || status == ERROR_ALREADY_EXISTS) {
+    error = renamed.error;
+    if (renamed.outcome == NtRenameOutcome::DestinationExists) {
         return StrictNoReplaceResult::DestinationExists;
     }
-    if (status == ERROR_INVALID_PARAMETER || status == ERROR_NOT_SUPPORTED
-        || status == ERROR_INVALID_FUNCTION || status == ERROR_CALL_NOT_IMPLEMENTED) {
+    if (renamed.outcome == NtRenameOutcome::Unsupported) {
         return StrictNoReplaceResult::Unsupported;
     }
     return StrictNoReplaceResult::Failed;
@@ -2020,58 +2155,31 @@ bool replaceOwnedFile(NativeFile& temporary,
     sourceConsumed = false;
 #ifdef FC_OS_WIN32
     const std::wstring leaf = destination.filename().native();
-    const DWORD nameBytes = static_cast<DWORD>(leaf.size() * sizeof(wchar_t));
+    const bool replaceIfExists = mode != DocumentFileReplacementMode::NoReplace;
 
-    if (mode != DocumentFileReplacementMode::NoReplace) {
-        struct RenameInfoEx
-        {
-            DWORD flags;
-            HANDLE rootDirectory;
-            DWORD fileNameLength;
-            wchar_t fileName[1];
-        };
-        constexpr DWORD replaceIfExists = 0x00000001;
-        constexpr DWORD posixSemantics = 0x00000002;
-        constexpr auto fileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
-        const std::size_t bytes = offsetof(RenameInfoEx, fileName) + nameBytes;
-        auto storage = std::make_unique<std::byte[]>(bytes);
-        auto* info = reinterpret_cast<RenameInfoEx*>(storage.get());
-        info->flags = replaceIfExists | posixSemantics;
-        info->rootDirectory = parent.handle();
-        info->fileNameLength = nameBytes;
-        std::memcpy(info->fileName, leaf.data(), nameBytes);
-        if (SetFileInformationByHandle(temporary.handle(),
-                                       fileRenameInfoEx,
-                                       info,
-                                       static_cast<DWORD>(bytes))
-            != 0) {
+    // Prefer the extended class: it carries POSIX semantics, so a replaced
+    // predecessor is unlinked from the namespace immediately rather than
+    // lingering until every handle on it closes.
+    if (replaceIfExists) {
+        const auto extended =
+            ntRenameThroughParent(temporary.handle(), parent.handle(), leaf, true, true);
+        if (extended.outcome == NtRenameOutcome::Renamed) {
             sourceConsumed = true;
             return true;
         }
-        const DWORD advancedError = GetLastError();
-        if (advancedError != ERROR_INVALID_PARAMETER && advancedError != ERROR_NOT_SUPPORTED
-            && advancedError != ERROR_INVALID_FUNCTION) {
-            error = std::error_code(static_cast<int>(advancedError), std::system_category());
+        if (extended.outcome != NtRenameOutcome::Unsupported) {
+            error = extended.error;
             return false;
         }
     }
 
-    const std::size_t bytes = offsetof(FILE_RENAME_INFO, FileName) + nameBytes;
-    auto storage = std::make_unique<std::byte[]>(bytes);
-    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(storage.get());
-    info->ReplaceIfExists = mode == DocumentFileReplacementMode::NoReplace ? FALSE : TRUE;
-    info->RootDirectory = parent.handle();
-    info->FileNameLength = nameBytes;
-    std::memcpy(info->FileName, leaf.data(), nameBytes);
-    if (SetFileInformationByHandle(temporary.handle(),
-                                   FileRenameInfo,
-                                   info,
-                                   static_cast<DWORD>(bytes))
-        != 0) {
+    const auto classic =
+        ntRenameThroughParent(temporary.handle(), parent.handle(), leaf, replaceIfExists, false);
+    if (classic.outcome == NtRenameOutcome::Renamed) {
         sourceConsumed = true;
         return true;
     }
-    error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    error = classic.error;
     return false;
 #else
     const auto temporaryLeaf = temporary.path().filename();
