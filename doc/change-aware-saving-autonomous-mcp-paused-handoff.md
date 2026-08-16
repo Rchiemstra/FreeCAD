@@ -1849,3 +1849,79 @@ Part 3 cannot run. The GUI stress is built around saving, and saving does not wo
 This is not a harness problem: it reproduces in three lines of `FreeCADCmd`, with no GUI and no
 MCP involved. Closing it is a genuine body of Windows work against currently frozen code, which
 is a scope decision rather than a mechanical fix.
+
+## Windows rename: measured, not guessed
+
+`tests/filesystem/win32_rename_probe.cpp` is a standalone Win32 probe with no FreeCAD
+dependencies. It builds with `cl /EHsc /std:c++20` and answers why the Windows replacement
+primitive failed. Environment: NTFS, volume serial `c0e44cc4`, Windows `10.0.26200`, x64,
+source opened `GENERIC_READ|GENERIC_WRITE|DELETE` share `READ|DELETE`, parent opened
+`FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_READ_ATTRIBUTES` with `FILE_FLAG_BACKUP_SEMANTICS`,
+`sizeof(FILE_RENAME_INFO)=24`, `offsetof(FileName)=20`. Process CWD deliberately set away from
+the test directory.
+
+| variant | primitive | RootDirectory | FileName | result |
+|---|---|---|---|---|
+| A | `SetFileInformationByHandle` | pinned parent | leaf | **`err=87` in all 8 combinations** |
+| B | `SetFileInformationByHandle` | `NULL` | leaf | "succeeds" but **`MOVED-WRONG`** |
+| C | `SetFileInformationByHandle` | `NULL` | absolute | moved correctly; `err=183` on no-replace collision |
+| D | `SetFileInformationByHandle` | other dir handle | leaf | `err=87` (cross-directory control) |
+| E | `NtSetInformationFile` (10) | pinned parent | leaf | **moved correctly**; `0xC0000035` on no-replace collision |
+| F | `NtSetInformationFile` (65, POSIX) | pinned parent | leaf | **moved correctly**; `0xC0000035` on no-replace collision |
+
+Three conclusions.
+
+**A is the production bug.** `SetFileInformationByHandle` does not honour a non-NULL
+`RootDirectory`; it fails `ERROR_INVALID_PARAMETER` for every relative rename, both information
+classes, destination absent or present, replace or no-replace. It is a Win32 wrapper
+limitation, not a parameter mistake — buffer layout, access masks and NUL capacity were all
+varied and none of them change the outcome.
+
+**B must never be used.** With `RootDirectory = NULL` a bare leaf resolves against the *process
+current directory*, so the file is silently moved out of its parent. The probe shows
+`src=<absent> dst=<absent>`: the source vanished and nothing appeared at the intended path. A
+later B case then failed `err=183` because earlier B cases had already created the file in the
+CWD. This was the pre-registered hypothesis for the authoritative primitive; the measurement
+rejects it outright.
+
+**E/F are the fix.** The NT information classes honour the directory handle, so the
+pinned-parent guarantee is preserved exactly: the destination is never named by path, no CWD is
+consulted, and no absolute-path re-resolution is introduced. The separate review gated on
+`MoveFileExW` / `ReplaceFileW` / `std::filesystem::rename` / absolute-path fallback is therefore
+**not needed** — none of them are used.
+
+`ntRenameThroughParent()` centralizes construction: official SDK `FILE_RENAME_INFO` layout
+(identical to NT `FILE_RENAME_INFORMATION`), zero-initialized, allocated through `new[]` for at
+least 16-byte alignment for the embedded `HANDLE`, explicit capacity for a terminating NUL that
+`FileNameLength` excludes, and a rejected leaf if it contains a separator. The extended class is
+preferred so POSIX semantics unlink a replaced predecessor immediately, falling back to the
+classic class only on a genuine unsupported status.
+
+### Result
+
+    minimal FreeCADCmd saveAs probe   SAVE_OK; resave -> unchanged/written=False;
+                                      modified -> written/written=True/durable=True
+    DocumentFileWriterTest.* + BackupPolicyTest.*   92 ran, 56 passed, 6 skipped, 30 failed
+                                                    (was 41 passed before the Windows work)
+
+Native Windows saving works and the change-aware disposition contract is correct.
+
+### Remaining 30, and one hypothesis already eliminated
+
+28 of the 30 fail at the same place: `readFile()` in the test file, `stream.is_open()` false.
+The obvious explanation — that the writer's retained handle holds `DELETE` access and MSVC's
+`ifstream` does not permit `FILE_SHARE_DELETE`, which would be a real Windows-only production
+defect — was tested and **rejected**: a saved document is readable by an ordinary reader both
+while it is still open and after it is closed.
+
+    READ_AFTER_SAVE_OK bytes=1240
+    READ_AFTER_CLOSE_OK bytes=1240
+
+So the failures are missing files, not locked ones, and the next step is to determine which path
+each test expects and why it is absent on Windows. Untested candidates: POSIX-semantics unlink
+of the predecessor changing displaced-snapshot lifetime, and Windows artifact-lifecycle
+differences around `EphemeralPartial` / `VerifiedSerialization` — which is the Q1 gap already
+scheduled after basic saving is green.
+
+A zero-byte `<name>.FCStd.FreeCAD-save.lock` remains beside saved documents; not yet
+characterized as intentional or leaked.
