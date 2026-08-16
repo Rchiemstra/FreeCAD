@@ -1603,3 +1603,88 @@ The smallest production invariant to fix lives in `DocumentFileWriter::commit()`
 **frozen** by the current constraints, so no change has been made. It also contaminates an
 authoritative gate: the branch-built MCP lane runs with the repo on 9p, so any test that saves
 into the repo tree fails there for this reason.
+
+## Resume checkpoint — Windows rebuild for GUI stress — 2026-08-16
+
+Part 3 (interactive GUI stress) must run against **this branch**, so the Windows Release tree
+had to be rebuilt first. `build/release/bin/FreeCADApp.dll` and `FreeCADGui.dll` were dated
+10 Aug 2026 while every branch commit is 15–16 Aug 2026, so they could not contain
+`DocumentFileWriter.cpp`, which is a new file on this branch.
+
+Four build attempts, three distinct causes. Two were environment, one was a real defect.
+
+### 1. `moc.exe` exits `0xC0000135` (environment)
+
+MSVC was activated through `vcvars64.bat` but the pixi environment was not, so `moc.exe` and
+`rcc.exe` could not find their Qt DLLs. `0xC0000135` is `STATUS_DLL_NOT_FOUND`, reported by
+ninja as exit code `3221225781`.
+
+**Both** activations are required, and for different reasons:
+
+* `vcvars64.bat` — MSVC needs `INCLUDE`/`LIB` in the environment. The generated Ninja rules do
+  not pass the Windows SDK include directories with `-I`.
+* `pixi run` — puts the pixi environment on `PATH` so the Qt tools can load their DLLs.
+
+Building as `pixi run cmake --build build\release -j 8 -- -k 0` from a vcvars shell satisfies
+both. This cause was diagnosed once, then reintroduced by a later script that called
+`cmake.exe` directly; it is recorded here so it is not rediscovered a third time.
+
+### 2. `LNK1104: cannot open file 'bin\FreeCADGui.dll'` (environment)
+
+A FreeCAD process held the DLL open during the link. It was not started by this work and was
+not touched; it exited on its own and the link then succeeded. Note that an in-place rebuild
+leaves `build/release` transiently inconsistent — `FreeCADApp.dll` can be relinked while
+`FreeCADGui.dll` is still the old one. **Do not launch FreeCAD from a partially rebuilt tree**;
+that App/Gui pair is mismatched.
+
+### 3. `objidl.h(13629): error C2059: syntax error: 'string'` (real defect, fixed)
+
+`tests/src/App/CMakeLists.txt` defines `DATADIR="${CMAKE_SOURCE_DIR}/data"` for
+`App_tests_run`. The Windows SDK declares `enum tagDATADIR { ... } DATADIR;` in `objidl.h`,
+which `<windows.h>` pulls in. With the macro defined, the typedef name expands to a string
+literal and the SDK header fails to parse.
+
+This only affects `tests/src/App/DocumentFileWriter.cpp` — it is the only file in that target
+that includes `<windows.h>`, and it never uses `DATADIR`. `src/App/DocumentFileWriter.cpp`
+includes the same headers and compiles because only the *test* target defines the macro.
+
+Fixed by `#undef DATADIR` ahead of the Windows includes in that translation unit. This is a
+Windows-only compile fix and changes no test expectation, so it does not breach the writer
+freeze. It was invisible on Linux, which is where the writer lanes had been green.
+
+## `start_freecad.py` is not a neutral launcher — isolation is mandatory
+
+The constraint is that every GUI process starts through `python start_freecad.py`. Read before
+use, that launcher does three things that collide with the constraint forbidding any contact
+with the user's session or profile:
+
+* `_ensure_mcp_addon_installed()` replaces `Mod/FreeCADMCP` in **every** user-data directory
+  under `%APPDATA%\FreeCAD`, via `_remove_install()`, which deletes.
+* `_ensure_mcp_auto_start()` rewrites `freecad_mcp_settings.json` to force
+  `auto_start_rpc = True`.
+* `_reuse_existing_mcp_if_possible()` attaches to and drives an MCP session that is already
+  listening, instead of starting its own.
+
+Run plainly against the real profile, the mandated launcher would therefore both modify the
+user's profile and reuse the user's session.
+
+**Resolution.** `_freecad_user_data_base()` resolves from `APPDATA` on Windows
+(`XDG_DATA_HOME` elsewhere). Pointing that at a throwaway directory redirects the addon
+install, the Mod directory, and the settings file into the isolated profile. No launcher change
+is needed, and the harness verifies the redirect held by comparing
+`FreeCAD.getUserAppDataDir()` against the isolated path.
+
+**Residual risk, not solvable by environment.** `MCP_RPC_PORT = 9875` is a module constant in
+the launcher with no flag or environment override, so an isolated instance still binds the port
+a real session would use. The harness therefore **refuses to start** when that port is already
+answering, rather than attaching to a session it does not own.
+
+### Harness
+
+`tests/gui/collaboration_gui_stress.py` drives the run and writes `evidence.json` plus a log
+and screenshots. It asserts against the documented save contract rather than inferring it:
+`saveWithOutcome()` / `saveCopyWithOutcome()` report `save_disposition`
+(`written` / `unchanged` / `copy_written`), `file_written` and `durability_verified`, and every
+reported disposition is cross-checked against the observed SHA-256 of the file on disk. A save
+that reports `unchanged` while the bytes change — or `written` while they do not — fails the
+gate.
