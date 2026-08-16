@@ -783,7 +783,8 @@ public:
     static std::shared_ptr<NativeFile>
     openRegularNoFollow(const fs::path& path,
                         const std::shared_ptr<PinnedDirectory>& parent,
-                        const bool requireRenameAuthority)
+                        const bool requireRenameAuthority,
+                        const bool requireDurabilityAuthority = false)
     {
 #ifdef FC_OS_WIN32
         DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL;
@@ -794,6 +795,14 @@ public:
             // by the guard hash/identity proof instead of by an advisory open
             // convention. DELETE is authoritative for the exact move and
             // GENERIC_WRITE keeps FlushFileBuffers truthful after that move.
+        }
+        else if (requireDurabilityAuthority) {
+            // FlushFileBuffers requires GENERIC_WRITE on the handle and fails
+            // ERROR_ACCESS_DENIED without it. fsync has no such requirement,
+            // which is why a read-only handle was enough on POSIX and not
+            // here. No DELETE is added: this handle proves durability, it
+            // never moves or removes anything.
+            access |= GENERIC_WRITE;
         }
         const HANDLE handle = CreateFileW(path.c_str(),
                                           access,
@@ -922,8 +931,10 @@ public:
     {
 #ifdef FC_OS_WIN32
         // Windows has no openat. The pinned parent already prevents the
-        // directory itself from being exchanged underneath the lookup.
-        return openRegularNoFollow(destination, parent, false);
+        // directory itself from being exchanged underneath the lookup. This
+        // handle exists to re-prove and flush the installed file, so it is
+        // opened with the write access FlushFileBuffers demands.
+        return openRegularNoFollow(destination, parent, false, true);
 #else
         const auto leaf = destination.filename();
         int flags = O_RDONLY | O_CLOEXEC;
