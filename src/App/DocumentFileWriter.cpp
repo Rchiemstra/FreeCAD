@@ -39,6 +39,7 @@
 #include <streambuf>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -746,6 +747,56 @@ public:
         _cleanupState = CleanupState::Relinquished;
     }
 
+    /**
+     * Close this object's descriptor without touching the namespace.
+     *
+     * Some filesystems leave a renamed destination unresolvable by name for as
+     * long as any descriptor to the installed inode stays open. This is
+     * reproducible on the 9p bind mount used by Docker Desktop, where the name
+     * never becomes resolvable while the descriptor is held. Verification there
+     * is only possible after release, so callers must capture everything they
+     * need from the handle first. The bytes are already installed under the
+     * destination name, so nothing may be removed on the way out.
+     */
+    void releaseDescriptor() noexcept
+    {
+        _cleanupState = CleanupState::Relinquished;
+        close();
+    }
+
+    /**
+     * Re-open an installed destination through the pinned parent directory,
+     * without following links.
+     */
+    static std::shared_ptr<NativeFile>
+    openInstalledThroughPinnedParent(const std::shared_ptr<PinnedDirectory>& parent,
+                                     const fs::path& destination)
+    {
+#ifdef FC_OS_WIN32
+        // Windows has no openat. The pinned parent already prevents the
+        // directory itself from being exchanged underneath the lookup.
+        return openRegularNoFollow(destination, parent, false);
+#else
+        const auto leaf = destination.filename();
+        int flags = O_RDONLY | O_CLOEXEC;
+# ifdef O_NOFOLLOW
+        flags |= O_NOFOLLOW;
+# endif
+        const int handle = ::openat(parent->handle(), leaf.c_str(), flags);
+        if (handle < 0) {
+            throw std::system_error(errno,
+                                    std::generic_category(),
+                                    "Unable to re-resolve the installed destination");
+        }
+        auto result =
+            std::shared_ptr<NativeFile>(new NativeFile(destination, handle, false, parent));
+        if (!result->snapshot().regular) {
+            throw std::runtime_error("The installed destination is not a regular file");
+        }
+        return result;
+#endif
+    }
+
     void claimOwnedPathCleanup() noexcept
     {
         _cleanupState = CleanupState::Owned;
@@ -805,6 +856,20 @@ public:
      * install primitive or retained and reported as recovery evidence.
      */
     void markVerifiedSerialization() noexcept
+    {
+        _ephemeralPartial = false;
+    }
+
+    /**
+     * Promote a verified previous-file snapshot to a DisplacedCanonical
+     * (contract §2.3).
+     *
+     * Before its content is proved the snapshot is an unpublished partial copy
+     * that duplicates a canonical file which is still intact, so it is
+     * cleanup-eligible. Once proved it holds a real version of the user's
+     * document and cleanup may never remove it.
+     */
+    void promoteToDisplacedCanonical() noexcept
     {
         _ephemeralPartial = false;
     }
@@ -2769,6 +2834,11 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     _impl->request.beforeDisplacedReservationAttempt
 #endif
                 );
+                // Until its content is proved, the snapshot is an unpublished
+                // partial copy and the previous file is still intact at the
+                // canonical name, so it is cleanup-eligible. It is promoted to
+                // a DisplacedCanonical only once verified.
+                _impl->displaced->markEphemeralPartial();
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API) && defined(FC_OS_WIN32)
                 if (_impl->request.testFault
                     == DocumentFileWriterTestFault::LegacyDisplacedDiscardDeletePending) {
@@ -2796,12 +2866,22 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                     throw std::runtime_error(
                         "The previous file changed while its exact backup snapshot was created");
                 }
+                // Verified: this is now a DisplacedCanonical holding a real
+                // version of the user's document, and cleanup may never remove
+                // it again.
+                _impl->displaced->promoteToDisplacedCanonical();
                 _impl->displacedSourceHash = sourceAfter;
             }
             catch (const std::exception& exception) {
                 result.warnings.push_back(
                     "Unable to preserve an exact previous-file snapshot: "
                     + std::string(exception.what()));
+                if (_impl->displaced && !_impl->displaced->discardExact()) {
+                    result.warnings.push_back(
+                        "The abandoned previous-file snapshot could not be removed and remains "
+                        "at '"
+                        + _impl->displaced->pathUtf8() + "'.");
+                }
                 _impl->displaced.reset();
                 _impl->displacedSourceHash.reset();
             }
@@ -3836,36 +3916,165 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         }
 #endif
 
-        const auto destinationAfter = inspectPath(_impl->destination, false);
-        if (!destinationAfter.exists || !destinationAfter.regular
-            || destinationAfter.identity != _impl->temporary->identity()) {
-            return fail("REPLACEMENT_VERIFICATION_FAILED",
-                        "The installed destination does not match the serialized temporary file");
-        }
-        const auto installedHash = stableHash(*_impl->temporary);
-        if (installedHash.value != serializedHash.value
-            || !sameObservedFile(installedHash.snapshot, destinationAfter)) {
-            return fail("REPLACEMENT_VERIFICATION_FAILED",
-                        "The installed destination content could not be verified");
-        }
-        result.replacementVerified = true;
+        auto destinationAfter = inspectPath(_impl->destination, false);
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
-        if (_impl->request.testFault == DocumentFileWriterTestFault::BeforeDurabilityFlush) {
-            return fail("TEST_INJECTED_DURABILITY_FAILURE",
-                        "Injected failure before replacement durability flush");
+        if (_impl->request.simulatePathInvisibleUntilDescriptorRelease) {
+            // Model a filesystem that cannot resolve the installed name while
+            // this process still holds a descriptor on the inode.
+            destinationAfter = FileSnapshot {};
         }
 #endif
-        try {
-            // The same retained handle now names the installed destination;
-            // never reopen a potentially swapped path for durability.
-            _impl->temporary->flush();
-            _impl->parent->flush();
+        if (destinationAfter.exists) {
+            if (!destinationAfter.regular
+                || destinationAfter.identity != _impl->temporary->identity()) {
+                return fail(
+                    "REPLACEMENT_VERIFICATION_FAILED",
+                    "The installed destination does not match the serialized temporary file");
+            }
+            const auto installedHash = stableHash(*_impl->temporary);
+            if (installedHash.value != serializedHash.value
+                || !sameObservedFile(installedHash.snapshot, destinationAfter)) {
+                return fail("REPLACEMENT_VERIFICATION_FAILED",
+                            "The installed destination content could not be verified");
+            }
+            result.replacementVerified = true;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (_impl->request.testFault == DocumentFileWriterTestFault::BeforeDurabilityFlush) {
+                return fail("TEST_INJECTED_DURABILITY_FAILURE",
+                            "Injected failure before replacement durability flush");
+            }
+#endif
+            try {
+                // The same retained handle now names the installed destination;
+                // never reopen a potentially swapped path for durability.
+                _impl->temporary->flush();
+                _impl->parent->flush();
+            }
+            catch (const std::exception& exception) {
+                return fail("DURABILITY_UNVERIFIED", exception.what());
+            }
+            result.durabilityVerified = true;
         }
-        catch (const std::exception& exception) {
-            return fail("DURABILITY_UNVERIFIED", exception.what());
-        }
+        else {
+            // The destination name did not resolve at all. A rename that
+            // reports success is never accepted as proof on its own, so prove
+            // everything provable through the retained handle first, then
+            // release it and re-resolve the name. Releasing before the
+            // re-resolve is required: on the reproduced 9p behaviour the name
+            // stays unresolvable for as long as the descriptor is held, so
+            // waiting with it open can never succeed.
+            // Re-proving the content through the retained handle is attempted
+            // first, but it is not always possible: on the same filesystems
+            // that hide the renamed name, fstat on the retained descriptor also
+            // fails with ENOENT, so the handle can no longer be identified or
+            // hashed. That costs nothing, because serializedHash was itself
+            // computed and stably re-verified through this very handle before
+            // the replacement, and the post-release re-hash below proves the
+            // installed bytes against it in full. A rename reporting success is
+            // still never accepted on its own.
+            std::string retainedProofDiagnostic;
+            try {
+                const auto retained = stableHash(*_impl->temporary);
+                if (retained.value != serializedHash.value) {
+                    return fail("REPLACEMENT_VERIFICATION_FAILED",
+                                "The installed destination content could not be verified");
+                }
+            }
+            catch (const std::exception& exception) {
+                retainedProofDiagnostic = exception.what();
+            }
+            try {
+                _impl->temporary->flush();
+            }
+            catch (const std::exception& exception) {
+                // Durability is established below on the re-resolved handle and
+                // the pinned parent; a handle that can no longer be identified
+                // cannot be flushed either.
+                if (retainedProofDiagnostic.empty()) {
+                    return fail("DURABILITY_UNVERIFIED", exception.what());
+                }
+            }
+            const std::string expectedIdentity = _impl->temporary->identity();
+            const auto expectedSize = serializedHash.snapshot.size;
 
-        result.durabilityVerified = true;
+            _impl->temporary->releaseDescriptor();
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (_impl->request.afterInstalledDescriptorRelease) {
+                _impl->request.afterInstalledDescriptorRelease(_impl->destinationUtf8);
+            }
+#endif
+            std::shared_ptr<NativeFile> installed;
+            std::string reResolveDiagnostic;
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+            for (;;) {
+                try {
+                    installed = NativeFile::openInstalledThroughPinnedParent(
+                        _impl->parent, _impl->destination);
+                }
+                catch (const std::exception& exception) {
+                    reResolveDiagnostic = exception.what();
+                    installed.reset();
+                }
+                if (installed || std::chrono::steady_clock::now() >= deadline) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            if (!installed) {
+                return fail("REPLACEMENT_VERIFICATION_FAILED",
+                            "The installed destination could not be re-resolved after releasing "
+                            "the serialized handle: "
+                                + reResolveDiagnostic);
+            }
+
+            const auto namespaceBefore = inspectPath(_impl->destination, false);
+            StableHash installedHash;
+            try {
+                installedHash = stableHash(*installed);
+            }
+            catch (const std::exception& exception) {
+                return fail("REPLACEMENT_VERIFICATION_FAILED",
+                            "The re-resolved destination could not be hashed: "
+                                + std::string(exception.what()));
+            }
+            const auto namespaceAfter = inspectPath(_impl->destination, false);
+            const bool namespaceStable = namespaceBefore.exists && namespaceBefore.regular
+                && namespaceAfter.exists && namespaceAfter.regular
+                && sameObservedFile(namespaceBefore, namespaceAfter)
+                && sameObservedFile(installedHash.snapshot, namespaceAfter);
+            if (!installedHash.snapshot.regular || installedHash.value != serializedHash.value
+                || installedHash.snapshot.size != expectedSize || !namespaceStable) {
+                // Foreign or mismatching content. Fail closed: the entry now at
+                // that name is never overwritten or removed, and every recovery
+                // artifact the caller already holds is left in place.
+                return fail("REPLACEMENT_VERIFICATION_FAILED",
+                            "The re-resolved destination does not match the serialized document; "
+                            "the entry now at that name was left untouched");
+            }
+            if (installedHash.snapshot.identity != expectedIdentity) {
+                result.warnings.push_back(
+                    "The installed file was verified by content, size and stable namespace "
+                    "observation after its name became resolvable again, because this "
+                    "filesystem did not report a stable file identity across the replacement.");
+            }
+            result.replacementVerified = true;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            if (_impl->request.testFault == DocumentFileWriterTestFault::BeforeDurabilityFlush) {
+                return fail("TEST_INJECTED_DURABILITY_FAILURE",
+                            "Injected failure before replacement durability flush");
+            }
+#endif
+            try {
+                installed->flush();
+                _impl->parent->flush();
+            }
+            catch (const std::exception& exception) {
+                return fail("DURABILITY_UNVERIFIED", exception.what());
+            }
+            result.durabilityVerified = true;
+        }
         if (expectedDestinationSha256) {
             if (!_impl->request.preserveDisplacedFile
                 && result.displacedFileLease) {
