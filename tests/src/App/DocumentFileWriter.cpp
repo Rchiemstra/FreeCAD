@@ -140,11 +140,11 @@ std::string describeWin32Error(const DWORD error)
     }
 }
 
-//! Try one read-only open under an exact share mode and report what Windows said.
-std::string probeOpen(const fs::path& path, const DWORD sharing)
+//! Try one open under an exact access/share pair and report what Windows said.
+std::string probeOpenWith(const fs::path& path, const DWORD access, const DWORD sharing)
 {
     const HANDLE handle = CreateFileW(path.c_str(),
-                                      GENERIC_READ,
+                                      access,
                                       sharing,
                                       nullptr,
                                       OPEN_EXISTING,
@@ -155,6 +155,12 @@ std::string probeOpen(const fs::path& path, const DWORD sharing)
     }
     CloseHandle(handle);
     return "opened";
+}
+
+//! Try one read-only open under an exact share mode and report what Windows said.
+std::string probeOpen(const fs::path& path, const DWORD sharing)
+{
+    return probeOpenWith(path, GENERIC_READ, sharing);
 }
 #endif
 
@@ -2711,5 +2717,170 @@ TEST_F(DocumentFileWriterTest, RejectsMissingCanonicalReachedThroughSymlinkedPar
     EXPECT_EQ(result.errorCode, "DESTINATION_ALIASES_FORBIDDEN_FILE");
     EXPECT_FALSE(fs::exists(canonical));
 }
+
+// Q1 is about what survives destruction, which is a different question from
+// what an artifact does while its owner is alive. Both tests below therefore
+// destroy the writer and the result before looking at the disk at all.
+
+// Nothing was ever verified here, so nothing on disk is worth keeping and
+// nothing may be promised to the user.
+TEST_F(DocumentFileWriterTest, FailureBeforeVerificationLeavesNoArtifactAndPromisesNoRecovery)
+{
+    const auto destination = path("q1-pre-verification.FCStd");
+    writeFile(destination, "old bytes");
+
+    std::string temporary;
+    App::Internal::DocumentFileReplacementResult result;
+    {
+        App::Internal::DocumentFileReplacementRequest request;
+        request.destination = pathToUtf8(destination);
+        request.testFault = App::Internal::DocumentFileWriterTestFault::SerializationWrite;
+        App::Internal::DocumentFileWriter writer(std::move(request));
+        temporary = writer.temporaryPath();
+        serialize(writer, "partial bytes");
+        result = writer.commit();
+    }
+
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_FALSE(result.fileWritten);
+    EXPECT_EQ(result.errorCode, "SERIALIZATION_IO_FAILED");
+    // EphemeralPartial is the one class cleanup may remove: it never held a
+    // verified version of anything.
+    EXPECT_FALSE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    EXPECT_EQ(readUserVisibleFile(destination), "old bytes");
+    EXPECT_FALSE(warningContains(result, temporary));
+}
+
+// The bytes were verified and then the install failed, which makes them the
+// only copy of the work the user asked to save. Destroying the writer must not
+// take them with it, and the failure has to say where they are.
+TEST_F(DocumentFileWriterTest, VerifiedSerializationSurvivesDestructionAndIsNamedAsRecovery)
+{
+    const auto destination = path("q1-post-verification.FCStd");
+
+    std::string temporary;
+    App::Internal::DocumentFileReplacementResult result;
+    {
+        App::Internal::DocumentFileReplacementRequest request;
+        request.destination = pathToUtf8(destination);
+        request.mode = App::Internal::DocumentFileReplacementMode::NoReplace;
+        request.beforeReplacementPrimitive = [&] {
+            // Occupy the destination after the serialized bytes have been
+            // hashed and verified, so the save fails at the namespace boundary
+            // rather than before it.
+            writeFile(destination, "late conflicting bytes");
+        };
+        App::Internal::DocumentFileWriter writer(std::move(request));
+        temporary = writer.temporaryPath();
+        serialize(writer, "serialized bytes");
+        result = writer.commit();
+    }
+
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_FALSE(result.fileWritten);
+    EXPECT_EQ(result.errorCode, "DESTINATION_EXISTS");
+    ASSERT_TRUE(fs::exists(Base::FileInfo::stringToPath(temporary)));
+    // Recovery evidence, so ordinary reader semantics: no lease survives the
+    // writer that produced it.
+    EXPECT_EQ(readUserVisibleFile(Base::FileInfo::stringToPath(temporary)), "serialized bytes");
+    EXPECT_TRUE(warningContains(result, temporary));
+    EXPECT_EQ(readUserVisibleFile(destination), "late conflicting bytes");
+}
+
+#ifdef FC_OS_WIN32
+// A recovery artifact passes through three states, and each one has a different
+// answer to "can an ordinary reader open this?". Reading the bytes back proves
+// only the middle of the story; asserting all three in one test is what stops a
+// future change from quietly collapsing them into one.
+TEST_F(DocumentFileWriterTest, DisplacedRecoveryIsReadableExactlyWhenItIsNoLongerLeased)
+{
+    const auto destination = path("three-state.FCStd");
+    fs::path displaced;
+
+    {
+        auto result = makeDisplacedLease(destination, "old bytes", "new bytes");
+        ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+        ASSERT_FALSE(result.displacedFile.empty());
+        ASSERT_TRUE(result.displacedFileLease);
+        displaced = Base::FileInfo::stringToPath(result.displacedFile);
+
+        // State 1: the canonical file is installed and the displaced snapshot is
+        // still leased. The two must not behave the same way.
+        EXPECT_EQ(readUserVisibleFile(destination), "new bytes");
+        EXPECT_EQ(probeOpen(displaced, FILE_SHARE_READ | FILE_SHARE_WRITE),
+                  "failed, ERROR_SHARING_VIOLATION");
+        EXPECT_EQ(readActiveLeasedArtifact(displaced), "old bytes");
+
+        // State 2: the recovery evidence is published. It is the user's file
+        // now, so it has to read like one -- while the result object that
+        // published it is still alive, not merely after it is gone.
+        ASSERT_TRUE(result.retainDisplacedFileForRecovery());
+        EXPECT_EQ(probeOpen(displaced, FILE_SHARE_READ | FILE_SHARE_WRITE), "opened");
+        EXPECT_EQ(readUserVisibleFile(displaced), "old bytes");
+        EXPECT_EQ(readUserVisibleFile(destination), "new bytes");
+    }
+
+    // State 3: writer, result and every lease are gone. Destruction closes
+    // handles; it never removes published recovery evidence.
+    EXPECT_TRUE(fs::exists(displaced));
+    EXPECT_EQ(readUserVisibleFile(displaced), "old bytes");
+    EXPECT_EQ(readUserVisibleFile(destination), "new bytes");
+}
+
+// Delete sharing on the reader is not a capability grant, and the point of the
+// lease is that FreeCAD keeps authority while others may only look. A fix that
+// worked by opening everything to everyone would pass a read-back test and fail
+// this one.
+TEST_F(DocumentFileWriterTest, ActiveDisplacedLeaseAdmitsReadersWithoutSurrenderingAuthority)
+{
+    const auto destination = path("lease-authority.FCStd");
+    auto result = makeDisplacedLease(destination, "old bytes", "new bytes");
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    ASSERT_FALSE(result.displacedFile.empty());
+    ASSERT_TRUE(result.displacedFileLease);
+    const auto displaced = Base::FileInfo::stringToPath(result.displacedFile);
+
+    constexpr DWORD recoveryShare = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+
+    // No second writer. The lease does not share write access, so this is
+    // refused however generous the newcomer's own share mode is.
+    EXPECT_EQ(probeOpenWith(displaced, GENERIC_WRITE, recoveryShare),
+              "failed, ERROR_SHARING_VIOLATION");
+    EXPECT_EQ(probeOpenWith(displaced, GENERIC_READ | GENERIC_WRITE, recoveryShare),
+              "failed, ERROR_SHARING_VIOLATION");
+
+    // Readers may coexist, several at once, for as long as they tolerate the
+    // authority the lease already holds.
+    const HANDLE first = CreateFileW(displaced.c_str(), GENERIC_READ, recoveryShare, nullptr,
+                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(first, INVALID_HANDLE_VALUE) << GetLastError();
+    const HANDLE second = CreateFileW(displaced.c_str(), GENERIC_READ, recoveryShare, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    EXPECT_NE(second, INVALID_HANDLE_VALUE) << GetLastError();
+
+    // The recovery reader asks for GENERIC_READ and nothing else, so it cannot
+    // itself write to the artifact it is inspecting.
+    char byte = 'x';
+    DWORD written = 0;
+    EXPECT_EQ(WriteFile(first, &byte, 1, &written, nullptr), 0);
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_ACCESS_DENIED));
+
+    // Neither reader is inheritable, so no child process can outlive this scope
+    // still holding the artifact open.
+    DWORD flags = 0;
+    ASSERT_NE(GetHandleInformation(first, &flags), 0);
+    EXPECT_EQ(flags & HANDLE_FLAG_INHERIT, 0U);
+
+    if (second != INVALID_HANDLE_VALUE) {
+        CloseHandle(second);
+    }
+    CloseHandle(first);
+
+    // Readers never cost the owner its authority: the lease can still publish
+    // the evidence through the handle it has held all along.
+    EXPECT_TRUE(result.retainDisplacedFileForRecovery());
+    EXPECT_EQ(readUserVisibleFile(displaced), "old bytes");
+}
+#endif
 
 }  // namespace
