@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Tests for the JSON-RPC transport in the FreeCADModeling launcher.
+"""Tests for the JSON-RPC transport in the tracked launcher.
 
-The launcher under test lives OUTSIDE this repository, in the parent
-FreeCADModeling directory; FreeCAD/start_freecad.py is only a wrapper that
-runpy-executes it. That directory is not under version control, so these tests
-are kept here, and they locate the launcher the same way the wrapper does.
+The launcher implementation is tools/launcher/start_freecad_impl.py, reached
+through the public entrypoint start_freecad.py. Both are tracked in this
+repository; the implementation previously lived in the unversioned parent
+directory, where it could not be reviewed or tested.
 
 Covered: success, timeout, refused connection, malformed responses, mismatched
 request IDs, JSON-RPC errors, occupied-port refusal under --force-new, refusal
@@ -26,7 +26,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-LAUNCHER = REPO.parent / "start_freecad.py"
+ENTRYPOINT = REPO / "start_freecad.py"
+LAUNCHER = REPO / "tools" / "launcher" / "start_freecad_impl.py"
 
 
 def load_launcher():
@@ -285,6 +286,45 @@ class MainRefusalTests(unittest.TestCase):
         finally:
             for name, value in originals.items():
                 setattr(launcher, name, value)
+
+
+class TrackedEntrypointTests(unittest.TestCase):
+    """The public entrypoint must resolve the tracked implementation."""
+
+    def test_entrypoint_and_implementation_are_both_tracked(self):
+        self.assertTrue(ENTRYPOINT.is_file(), ENTRYPOINT)
+        self.assertTrue(LAUNCHER.is_file(), LAUNCHER)
+
+    def test_entrypoint_does_not_reach_outside_the_repository(self):
+        source = ENTRYPOINT.read_text(encoding="utf-8")
+        self.assertNotIn("parent.parent", source)
+        self.assertIn("tools", source)
+
+    def test_entrypoint_reexports_the_transport_api(self):
+        spec = importlib.util.spec_from_file_location("start_freecad_entry", ENTRYPOINT)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        # The test harness loads the implementation under its own private
+        # module name, so these are equal by definition rather than identical.
+        self.assertEqual(module.JsonRpcClient.__name__, launcher.JsonRpcClient.__name__)
+        self.assertEqual(module.JsonRpcClient.JSON_RPC_PATH, "/jsonrpc")
+        self.assertTrue(callable(module.main))
+        self.assertEqual(module.MCP_RPC_PORT, launcher.MCP_RPC_PORT)
+        self.assertEqual(module.REUSE_DISABLED_REASON, launcher.REUSE_DISABLED_REASON)
+
+    def test_repo_root_resolves_to_this_repository(self):
+        # The implementation sits at <repo>/tools/launcher/, so repo root must
+        # come from an ancestor walk, not from the script's own directory.
+        import os as _os
+
+        saved = {key: _os.environ.pop(key, None) for key in ("FREECAD_REPO", "FREECAD_ROOT")}
+        try:
+            self.assertEqual(launcher._repo_root().resolve(), REPO.resolve())
+        finally:
+            for key, value in saved.items():
+                if value is not None:
+                    _os.environ[key] = value
 
 
 if __name__ == "__main__":
