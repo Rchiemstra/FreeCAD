@@ -2399,6 +2399,13 @@ DisplacedFileLeaseOperationResult installDisplacedFileLeaseNoReplace(
             return fail("The installed backup no longer names the retained displaced file");
         }
         result.durabilityVerified = true;
+        // The lease handle now names installed backup history, which is a
+        // user-visible file: it must read like any other file on disk. Its
+        // DELETE access has done its work -- the exact move is complete and
+        // verified -- and keeping it open would leave every ordinary reader on
+        // Windows facing ERROR_SHARING_VIOLATION. POSIX needs no equivalent:
+        // an open descriptor there denies nobody.
+        owned->releaseDescriptor();
         return result;
 #else
         if (!owned->pinnedPathStillOwned()) {
@@ -2722,6 +2729,13 @@ bool DocumentFileReplacementResult::retainDisplacedFileForRecovery() noexcept
             return false;
         }
         owned->relinquishPathCleanup();
+        // Publishing the recovery evidence has to end the lease outright, not
+        // merely drop this pointer to it. On Windows the retained handle holds
+        // DELETE, and while it is open no ordinary reader can open the file;
+        // the caller who was just told the evidence is theirs would find it
+        // unreadable. Whether some other reference to the lease survives is not
+        // something this transition may depend on.
+        owned->releaseDescriptor();
         displacedFileLease.reset();
         return true;
     }
