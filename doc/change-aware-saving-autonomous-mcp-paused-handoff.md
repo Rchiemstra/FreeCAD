@@ -2241,3 +2241,107 @@ Linux and 9p gates have not been run against this work and the cross-process
 lock proof does not exist. The linkage fix in particular is cross-platform by
 nature: it changes which module owns the hook storage, so Linux must confirm the
 behaviour it always had is unchanged.
+
+## Linux, 9p and lock-anchor gates closed; Part 3 blocked on the harness
+
+The three gates that were outstanding are now green, and the Windows GUI binary
+turned out to be carrying the very defect `a00ce572` fixed.
+
+### Linux is green, and the rebuild was not a formality
+
+    complete App_tests_run (isolated)   926 ran, 924 passed, 2 skipped, 0 failed
+    DocumentFileWriterTest 56   BackupPolicyTest 35 +2 skipped   RenameProperty 14
+    CollaborationService 45     AsyncRecompute 10                PythonCompatibility 61
+    collaboration/save filters  403 ran, 401 passed, 2 skipped
+
+Image `127.0.0.1:5001/freecad-ci-deps:24.04`, Ubuntu 24.04.4, g++ 13.3.0, ld 2.42,
+cmake 3.30.5, Debug. Both `.so`s predated `MainThreadSignal.{h,cpp}`, so Linux was
+a real gate. Counts for the three hook-installing suites match Windows exactly;
+the writer/backup deltas are the §8 platform differences.
+
+Linkage: `gIsMainThread`/`gInvoke` exist as local BSS in `libFreeCADApp.so` only —
+zero copies in Gui, Base or any test binary — and only that module defines the
+four accessors. Gui carries `U` references. What ELF COMDAT merging used to do
+implicitly is now one exported definition, explicitly.
+
+### The Windows GUI binary did not have the fix
+
+Found by symbol inspection, not timestamps:
+
+    FreeCADApp.dll   exports ?setHooks@MainThreadSignalConfig@App@@...   1 hit
+    FreeCADGui.dll   references to MainThreadSignalConfig                0 hits
+
+Zero references means Gui was compiled against the old all-inline header and kept
+its own function-local statics. Gui installed the Qt hooks into its own copy, App
+read its own null copy, and App therefore ran document-signal observers inline on
+recompute worker threads — exactly the defect the tests were fixed for, still live
+in the application binary. Part 3 is a GUI lane and would have exercised it.
+
+After rebuilding, Gui imports `setHooks` and `isMainThread`, matching Linux.
+Windows recheck on the rebuilt DLLs: **929 ran, 920 passed, 9 skipped, 0 failed**.
+
+**Rebuild Gui, not just App, whenever `MainThreadSignal.h` changes.** Building
+`App_tests_run` alone leaves a stale `FreeCADGui.dll` that tests cannot see.
+
+### 9p and the lock anchor
+
+The CI bind mount is genuinely `9p`/`v9fs`, so the gate has real authority. It was
+extended from 9 checks to 21: durability truthful, no false failure after valid
+bytes install, Unchanged leaves the installed SHA-256 byte-identical, edit→save
+really replaces the bytes, nothing left but the document and its anchor.
+
+The cross-process lock proof now exists: `tests/filesystem/save_lock_probe.cpp`
+plus `save_lock_anchor_gate.py`, acknowledged line IPC, no sleeps. 24 checks,
+including that a process killed while holding the lock still releases it.
+Recorded normatively as artifact class **LockAnchor** (contract §2.6, R26/R27).
+
+Not proved on Windows: `App::Internal::DocumentFileLock` has no `AppExport`, so
+the probe does not link there, and Windows uses `LockFileEx` rather than `fcntl`.
+That gap is real and deliberate — the frozen header was not touched to close it.
+
+### Part 3 Stage A: FAILED — the harness, not the product
+
+Evidence: `%TEMP%\fcstress20260816-212131\evidence\`.
+
+What held: saves truthful, valid FCStd archive, Save Copy did not repoint the
+document, no `.displaced` leftovers, no stray documents, GUI verified on the
+isolated profile. The harness's own leftover check saw the `.FreeCAD-save.lock`
+and correctly did not flag it.
+
+The harness is written against a retired API. It calls
+`_doc.openTransaction()`/`commitTransaction()` — the exact pattern this whole
+effort removed — and calls `saveCopyWithOutcome()` and `newDocument()` from inside
+`execute_code`, which the coordinator now fences by design. Add
+`No module named 'FreeCADMCP'` for pause/resume, a `revision key 'kind'` mismatch,
+and `No SWIG wrapped library loaded` from missing pivy, which zeroed all view
+cycles. **The harness must be updated before it can gate anything.**
+
+One finding is not harness drift: `execute_ops.py:19` defaults public
+`execute_code` to `recompute="none"` (internal `run_code.py:22` uses `"target"`).
+With in-apply recompute now inert, a geometry mutation commits truthfully but
+leaves the object `Touched`, and the next mutation is refused `retryable: False`.
+Either callers must opt into `"target"`, or the default wedges any caller after
+one mutation. Unresolved; nothing was changed to chase it.
+
+### Environment preflight
+
+`run_app_tests_isolated.sh` now derives `FREECAD_LIBPACK_BIN` from the CMakeCache
+of the build that produced the binary, validates it by `TK*.dll`, and refuses to
+run otherwise. It also puts the binary directory and libpack on `PATH`: without
+them Windows fails the image load with exit 127 and *no output*, which reads as a
+passing or hanging suite. The Windows suite now needs no manual environment.
+
+### Gate status
+
+    Linux    complete App_tests_run          926 ran, 924 passed, 2 skipped, 0 failed
+    Linux    focused writer/backup/async     all green
+    Windows  complete App_tests_run          929 ran, 920 passed, 9 skipped, 0 failed
+    Windows  launcher JSON-RPC / port refusal 26 passed / exit 1
+    9p       explicit save gate              21 checks, PASSED
+    cross-process lock anchor                24 checks, PASSED (Linux only)
+    Windows  lock anchor                     NOT RUN (needs an export)
+    Windows  Debug configuration             unavailable
+    git diff --check / line endings          clean, no churn
+
+**Part 3: NO-GO.** Every required layer below it is green, but Stage A cannot pass
+against a harness built for a retired API.
