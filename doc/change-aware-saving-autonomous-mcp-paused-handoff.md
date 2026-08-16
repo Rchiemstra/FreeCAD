@@ -1782,3 +1782,70 @@ The harness therefore passes `--no-wait-for-mcp` and waits for readiness itself 
   `pixi run`) and returns, so the GUI survived — the first smoke run leaked a live FreeCAD
   process (pid 31832) holding port 9875. Shutdown now kills the PID the RPC server reported and
   warns if anything is still answering afterwards.
+
+## The writer had never been run on Windows, and it does not work there
+
+Every writer gate reported green so far was **Linux-only**. The Windows Release build finally
+made it possible to run the same lanes natively, and the result is:
+
+    DocumentFileWriterTest.* + BackupPolicyTest.*   92 ran, 41 passed, 47 failed   (Windows)
+    same filter                                     89 passed, 2 skipped           (Linux)
+
+All 47 failures were `DocumentFileWriterTest`; **no** `BackupPolicyTest` failed. A plain
+`Document.saveAs()` also failed outright, so nothing could be saved on Windows at all.
+
+### Root cause 1 — the diagnostic was being destroyed (fixed)
+
+The failure surfaced only as:
+
+    OSError: File replacement failed with an unknown exception
+
+`commit()` ended with `catch (const std::invalid_argument&)`, `catch (const std::exception&)`
+and `catch (...)`. `Base::Exception` derives from `Base::BaseClass`, **not** from
+`std::exception`, so every FreeCAD exception — including the SEH translations — skipped the
+typed handlers and landed in the catch-all, which discards the message. Adding
+`catch (const Base::Exception&)` immediately revealed the real error.
+
+### Root cause 2 — a 1 MiB buffer on a 1 MiB stack (fixed)
+
+    REPLACEMENT_PREFLIGHT_FAILED: SEH exception of type: 3221225725
+
+`3221225725` is `0xC00000FD`, `STATUS_STACK_OVERFLOW`. `hashOnce()` and `copyAndHash()` each
+declared
+
+    std::array<char, ioBufferSize> buffer {};   // ioBufferSize == 1024 * 1024
+
+as a **stack local**. The default thread stack is 1 MiB on Windows and 8 MiB on Linux, so this
+overflowed the stack before the first read on Windows and was invisible on Linux — the platform
+difference is the entire reason the Linux gates stayed green. Both buffers are now
+heap-allocated (`std::vector<char>`). After the fix no SEH exception remains anywhere in the
+lane.
+
+### Still failing — 44 tests, and saving still does not work
+
+    DocumentFileWriterTest.* + BackupPolicyTest.*   92 ran, 42 passed, 6 skipped, 44 failed
+
+`saveAs()` now fails with a real, specific error instead of a crash:
+
+    Unable to atomically replace the destination: The parameter is incorrect.
+
+`ERROR_INVALID_PARAMETER` from `SetFileInformationByHandle(..., FileRenameInfo, ...)` in the
+Windows replacement primitive. Ruled out so far:
+
+* not path length — reproduces identically at `C:\fcprobe\d\p.FCStd`
+* not missing `DELETE` on the source handle — the temporary is opened `GENERIC_READ |
+  GENERIC_WRITE | DELETE` (line 597)
+* not the `RootDirectory` handle's access mask — the pinned parent is opened
+  `FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_READ_ATTRIBUTES` with `FILE_FLAG_BACKUP_SEMANTICS`
+* **not** the missing terminating-null slack in the `FILE_RENAME_INFO` buffer. That was tried
+  (`+ sizeof(wchar_t)` on all three allocation sites), made no difference to either the probe or
+  the pass count, and was reverted rather than left in as an unverified change.
+
+A stray `<name>.FCStd.FreeCAD-save.lock` of zero bytes is left behind on every failed save.
+
+### Consequence for the plan
+
+Part 3 cannot run. The GUI stress is built around saving, and saving does not work on Windows.
+This is not a harness problem: it reproduces in three lines of `FreeCADCmd`, with no GUI and no
+MCP involved. Closing it is a genuine body of Windows work against currently frozen code, which
+is a scope decision rather than a mechanical fix.
