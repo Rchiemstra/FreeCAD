@@ -152,6 +152,14 @@ struct DocumentFileReplacementRequest
     // exact predecessor materialized from its retained handle.
     std::function<void(const std::string&)>
         afterCompareAndSwapInstallBeforeGuardInspection;
+    // Model a filesystem that cannot resolve the installed destination name
+    // while this process still holds a descriptor on the installed inode, as
+    // the 9p bind mount does. Forces the release-then-re-resolve path.
+    bool simulatePathInvisibleUntilDescriptorRelease {false};
+    // Invoked after the installed inode's descriptor has been released and
+    // before the destination name is re-resolved. Substituting the destination
+    // here must be detected and must leave the substituted entry untouched.
+    std::function<void(const std::string&)> afterInstalledDescriptorRelease;
     std::function<void()> afterDisplacedSourceHashBeforeCopy;
     std::function<void(const std::string&)> beforeDisplacedReservationAttempt;
     DocumentFileWriterTestFault testFault {DocumentFileWriterTestFault::None};

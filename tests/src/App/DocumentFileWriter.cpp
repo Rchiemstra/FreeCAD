@@ -612,6 +612,63 @@ TEST_F(DocumentFileWriterTest, NoReplaceRejectsDestinationCreatedAfterSerializat
     EXPECT_TRUE(warningContains(result, temporary));
 }
 
+// A rename can succeed while the destination name stays unresolvable for as
+// long as this process holds a descriptor on the installed inode. The 9p bind
+// mount does exactly that. Simulated here so the release-then-re-resolve path
+// is covered deterministically on every filesystem.
+TEST_F(DocumentFileWriterTest, PathInvisibleUntilDescriptorReleaseStillVerifies)
+{
+    const auto destination = path("invisible-until-release.FCStd");
+    writeFile(destination, "old bytes");
+    App::Internal::DocumentFileReplacementResult result;
+
+    {
+        App::Internal::DocumentFileReplacementRequest request;
+        request.destination = pathToUtf8(destination);
+        request.simulatePathInvisibleUntilDescriptorRelease = true;
+        App::Internal::DocumentFileWriter writer(std::move(request));
+        serialize(writer, "serialized replacement bytes");
+        result = writer.commit();
+    }
+
+    ASSERT_TRUE(result.succeeded()) << result.errorCode << ": " << result.message;
+    EXPECT_TRUE(result.fileWritten);
+    EXPECT_TRUE(result.replacementCompleted);
+    EXPECT_TRUE(result.replacementVerified);
+    EXPECT_TRUE(result.durabilityVerified);
+    EXPECT_EQ(readFile(destination), "serialized replacement bytes");
+}
+
+TEST_F(DocumentFileWriterTest, SubstitutionAfterDescriptorReleaseFailsClosedAndKeepsForeignEntry)
+{
+    const auto destination = path("substituted-after-release.FCStd");
+    writeFile(destination, "old bytes");
+    bool hookCalled = false;
+    App::Internal::DocumentFileReplacementResult result;
+
+    {
+        App::Internal::DocumentFileReplacementRequest request;
+        request.destination = pathToUtf8(destination);
+        request.simulatePathInvisibleUntilDescriptorRelease = true;
+        // Substitute the destination in the window the release opens up.
+        request.afterInstalledDescriptorRelease = [&](const std::string& value) {
+            hookCalled = true;
+            writeFile(Base::FileInfo::stringToPath(value), "foreign substituted bytes");
+        };
+        App::Internal::DocumentFileWriter writer(std::move(request));
+        serialize(writer, "serialized replacement bytes");
+        result = writer.commit();
+    }
+
+    ASSERT_TRUE(hookCalled);
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_FALSE(result.replacementVerified);
+    EXPECT_FALSE(result.durabilityVerified);
+    EXPECT_EQ(result.errorCode, "REPLACEMENT_VERIFICATION_FAILED");
+    // The substituted entry is foreign; it must be left exactly as found.
+    EXPECT_EQ(readFile(destination), "foreign substituted bytes");
+}
+
 TEST_F(DocumentFileWriterTest, CompareAndSwapAcceptsMatchingDestinationHash)
 {
     const auto destination = path("document.FCStd");
