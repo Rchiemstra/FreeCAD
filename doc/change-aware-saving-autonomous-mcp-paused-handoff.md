@@ -1688,3 +1688,46 @@ and screenshots. It asserts against the documented save contract rather than inf
 reported disposition is cross-checked against the observed SHA-256 of the file on disk. A save
 that reports `unchanged` while the bytes change — or `written` while they do not — fails the
 gate.
+
+## Conflicts are arbitrated by edit sessions, not by racing clients
+
+The first draft of the GUI stress harness tested "same-property conflict" by having two
+threads write the same property at the same time. That test was wrong and would have produced
+a **false green**. Two facts make it meaningless:
+
+* `JsonRpcListener` extends `SimpleXMLRPCServer` (no `ThreadingMixIn`) and is driven by a
+  single `serve_forever()` thread (`rpc_server/server_lifecycle.py:145`), so concurrent RPC
+  calls are queued, not run together.
+* Mutations are marshalled onto the GUI thread anyway.
+
+Two clients writing at once are therefore serialised by construction and can never collide.
+Racing them proves nothing while reporting success.
+
+The legacy lease surface cannot be used to test this either: every method in
+`rpc_server/methods/lease_methods.py` — `acquire_document_lock`, `release_document_lock`,
+`get_document_lock`, `list_document_locks`, `heartbeat_document_lock` and the rest — now
+returns `_legacy_lease_authority_removed()`. Lease authority lives in the native layer.
+
+Arbitration is done by the native edit-session protocol on `App::Document`:
+
+    session = doc.beginEditSession(actor_id)      -> {'session_id': ...}
+    doc.snapshotForEdit(session_id, revision_keys)
+    prepared = doc.prepareEdit(session_id, operation_id, operation_type, arguments, provenance)
+    result   = doc.commitEdit(session_id, prepared)
+
+with `operation_type = "App.CollaborativeSetProperty"` (registered automatically by
+`DocumentCollaborationService.cpp:195`) and arguments `object`, `property`, `value_type`
+(`integer` / `float` / `string`), `value`.
+
+A commit is refused when it is built on a snapshot another actor has since superseded. That
+makes both properties testable **deterministically**, with no threads at all:
+
+* *same property* — two sessions snapshot the same revision, both prepare, both commit. The
+  first must commit, the second must be refused, and the losing value must not be observable
+  afterwards (exactly-once).
+* *independent properties* — two sessions snapshot different properties and both commit. Both
+  must succeed and both values must land.
+
+The harness now drives exactly that. The interleaved view/mutation phase is described
+accurately as interleaved rather than simultaneous, for the same single-threaded-listener
+reason.
