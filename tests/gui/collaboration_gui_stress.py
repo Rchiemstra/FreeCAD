@@ -261,7 +261,8 @@ if _view is not None:
         if _names:
             FreeCADGui.Selection.clearSelection()
             FreeCADGui.Selection.addSelection({doc!r}, _names[_i % len(_names)])
-print('view_cycles=' + str(_n))
+print('had_view=' + str(_view is not None))
+print('view_cycles=' + str(_n if _view is not None else 0))
 print('touched_after_view=' + str(bool(_doc.isTouched())))
 """
 
@@ -269,16 +270,29 @@ print('touched_after_view=' + str(bool(_doc.isTouched())))
 def make_document(client: xmlrpc.client.ServerProxy, name: str, path: Path) -> tuple[bool, str]:
     code = f"""
 import FreeCAD
+import Part  # noqa: F401 - registers the Part::Box type
 _doc = FreeCAD.newDocument({name!r})
 _box = _doc.addObject('Part::Box', 'StressBox')
 _box.Length = 10.0
 _box.Width = 10.0
 _box.Height = 10.0
 _second = _doc.addObject('Part::Box', 'SecondBox')
+
+# The collaborative set-property operation checks that value_type matches the
+# property exactly. Part::Box uses App::PropertyLength (a PropertyQuantity), so
+# the conflict phases edit dedicated dynamic integer properties instead --
+# mirroring tests/src/App/CollaborativeSetPropertyIndependence.cpp.
+_box.addDynamicProperty('App::PropertyInteger', 'AlphaValue', 'Stress', '')
+_second.addDynamicProperty('App::PropertyInteger', 'BetaValue', 'Stress', '')
+_box.AlphaValue = 0
+_second.BetaValue = 0
+
 _doc.recompute()
 _doc.saveAs({str(path)!r})
 print('created=' + _doc.Name)
 print('filename=' + _doc.FileName)
+print('alpha=' + str(_box.AlphaValue))
+print('beta=' + str(_second.BetaValue))
 """
     return run_code(client, code)
 
@@ -307,8 +321,14 @@ def phase_view_vs_mutation(ev: Evidence, doc: str, cycles: int) -> None:
         while not stop.is_set() and view_done[0] < cycles:
             todo = min(batch, cycles - view_done[0])
             ok, message = run_code(client, VIEW_ACTIVITY.format(doc=doc, n=todo))
+            fields = parsed(message)
             if not ok:
                 view_errors.append(message)
+                break
+            if fields.get("had_view") != "True":
+                # Without a 3D view this phase would report success having done
+                # nothing at all. Fail loudly instead of passing vacuously.
+                view_errors.append("no 3D view was available; view activity is vacuous")
                 break
             view_done[0] += todo
 
@@ -356,7 +376,9 @@ print('length=' + str(_box.Length.Value))
     ok, message = run_code(client, VIEW_ACTIVITY.format(doc=doc, n=25))
     fields = parsed(message)
     ev.check("view activity did not dirty the Model",
-             ok and fields.get("touched_after_view") == "False",
+             ok and fields.get("had_view") == "True"
+             and fields.get("touched_after_view") == "False",
+             f"had_view={fields.get('had_view')} "
              f"touched={fields.get('touched_after_view')} ok={ok}")
 
 
@@ -575,16 +597,16 @@ import FreeCAD
 _d = FreeCAD.getDocument(DOCNAME)
 _a = _d.beginEditSession('agent-a')['session_id']
 _b = _d.beginEditSession('agent-b')['session_id']
-_key = [{'object': 'StressBox', 'property': 'Length'}]
+_key = [{'object': 'StressBox', 'property': 'AlphaValue'}]
 
 # Both actors observe the same revision of the same property.
 _d.snapshotForEdit(_a, _key)
 _d.snapshotForEdit(_b, _key)
 
-_args_a = {'object': 'StressBox', 'property': 'Length',
-           'value_type': 'float', 'value': '55.0'}
-_args_b = {'object': 'StressBox', 'property': 'Length',
-           'value_type': 'float', 'value': '66.0'}
+_args_a = {'object': 'StressBox', 'property': 'AlphaValue',
+           'value_type': 'integer', 'value': '55'}
+_args_b = {'object': 'StressBox', 'property': 'AlphaValue',
+           'value_type': 'integer', 'value': '66'}
 _pa = _d.prepareEdit(_a, 'stress-same-a', 'App.CollaborativeSetProperty', _args_a, 'stress')
 _pb = _d.prepareEdit(_b, 'stress-same-b', 'App.CollaborativeSetProperty', _args_b, 'stress')
 
@@ -594,7 +616,7 @@ print('first_status=' + str(_ra.get('status')))
 print('second_status=' + str(_rb.get('status')))
 print('first_committed=' + str(bool(_ra.get('committed', _ra.get('status') == 'Committed'))))
 print('second_committed=' + str(bool(_rb.get('committed', _rb.get('status') == 'Committed'))))
-print('final_length=' + str(_d.getObject('StressBox').Length.Value))
+print('final_alpha=' + str(_d.getObject('StressBox').AlphaValue))
 print('first_operation_id=' + str(_ra.get('operation_id')))
 print('second_operation_id=' + str(_rb.get('operation_id')))
 """
@@ -606,13 +628,13 @@ _a = _d.beginEditSession('agent-c')['session_id']
 _b = _d.beginEditSession('agent-d')['session_id']
 
 # Each actor observes only the property it intends to edit.
-_d.snapshotForEdit(_a, [{'object': 'StressBox', 'property': 'Length'}])
-_d.snapshotForEdit(_b, [{'object': 'SecondBox', 'property': 'Width'}])
+_d.snapshotForEdit(_a, [{'object': 'StressBox', 'property': 'AlphaValue'}])
+_d.snapshotForEdit(_b, [{'object': 'SecondBox', 'property': 'BetaValue'}])
 
-_args_a = {'object': 'StressBox', 'property': 'Length',
-           'value_type': 'float', 'value': '42.0'}
-_args_b = {'object': 'SecondBox', 'property': 'Width',
-           'value_type': 'float', 'value': '24.0'}
+_args_a = {'object': 'StressBox', 'property': 'AlphaValue',
+           'value_type': 'integer', 'value': '42'}
+_args_b = {'object': 'SecondBox', 'property': 'BetaValue',
+           'value_type': 'integer', 'value': '24'}
 _pa = _d.prepareEdit(_a, 'stress-indep-a', 'App.CollaborativeSetProperty', _args_a, 'stress')
 _pb = _d.prepareEdit(_b, 'stress-indep-b', 'App.CollaborativeSetProperty', _args_b, 'stress')
 
@@ -620,8 +642,8 @@ _ra = _d.commitEdit(_a, _pa)
 _rb = _d.commitEdit(_b, _pb)
 print('a_status=' + str(_ra.get('status')))
 print('b_status=' + str(_rb.get('status')))
-print('length=' + str(_d.getObject('StressBox').Length.Value))
-print('width=' + str(_d.getObject('SecondBox').Width.Value))
+print('alpha=' + str(_d.getObject('StressBox').AlphaValue))
+print('beta=' + str(_d.getObject('SecondBox').BetaValue))
 print('a_operation_id=' + str(_ra.get('operation_id')))
 print('b_operation_id=' + str(_rb.get('operation_id')))
 """
@@ -645,8 +667,8 @@ def phase_conflicts(ev: Evidence, doc: str) -> None:
              fields.get("second_committed") == "False",
              f"status={fields.get('second_status')}")
     ev.check("the losing commit did not land (exactly-once)",
-             fields.get("final_length") == "55.0",
-             f"final_length={fields.get('final_length')}, expected 55.0")
+             fields.get("final_alpha") == "55",
+             f"final_alpha={fields.get('final_alpha')}, expected 55")
 
     ok, message = run_code(client, INDEPENDENT_PROPERTY.replace("DOCNAME", repr(doc)))
     fields = parsed(message)
@@ -659,8 +681,8 @@ def phase_conflicts(ev: Evidence, doc: str) -> None:
              fields.get("a_status") == fields.get("b_status") != "None",
              f"a={fields.get('a_status')} b={fields.get('b_status')}")
     ev.check("both independent edits landed exactly once",
-             fields.get("length") == "42.0" and fields.get("width") == "24.0",
-             f"length={fields.get('length')} width={fields.get('width')}")
+             fields.get("alpha") == "42" and fields.get("beta") == "24",
+             f"alpha={fields.get('alpha')} beta={fields.get('beta')}")
 
 
 def phase_pause_resume(ev: Evidence, doc: str) -> None:
