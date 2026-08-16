@@ -127,6 +127,7 @@ if(WIN32)
 endif()
 
 add_subdirectory(src)
+add_subdirectory(filesystem)
 
 include(GoogleTest)
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
