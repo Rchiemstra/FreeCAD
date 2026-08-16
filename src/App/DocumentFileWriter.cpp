@@ -2879,6 +2879,10 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
 {
     DocumentFileReplacementResult result;
     result.destination = _impl->destinationUtf8;
+    // Whether the serialization stream closed cleanly. Until it does, the
+    // temporary holds an incomplete -- possibly truncated -- document, which is
+    // the one thing that must never be offered to the user as their work.
+    bool serializationSealed = false;
     const auto fail = [&](std::string code, std::string message) {
         // Contract §2.2: the serialized bytes were verified before the
         // replacement boundary, so they are a VerifiedSerialization and are
@@ -2887,7 +2891,7 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         // evidence. Specific partial-CAS paths may already have published the
         // same evidence, so avoid duplicating their diagnostic.
         try {
-            if (!result.fileWritten && _impl->temporary
+            if (!result.fileWritten && serializationSealed && _impl->temporary
                 && _impl->temporary->pinnedPathStillOwned()) {
                 _impl->temporary->relinquishPathCleanup();
                 const auto& temporary = _impl->temporary->pathUtf8();
@@ -2951,6 +2955,9 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                         "Serialization through the retained file handle failed: "
                             + serializationError);
         }
+        // From here the temporary holds the complete document, so a later
+        // failure can honestly offer it as recovery evidence.
+        serializationSealed = true;
         if (!_impl->parent->pathStillOwned()) {
             return fail("DESTINATION_DIRECTORY_CHANGED",
                         "The destination directory changed before replacement");
