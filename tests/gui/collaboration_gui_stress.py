@@ -173,6 +173,21 @@ def port_is_open(host: str = MCP_HOST, port: int = MCP_PORT) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
+def process_alive(pid: int) -> bool:
+    """True if the OS still has this process."""
+    if sys.platform == "win32":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, check=False,
+        ).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def rpc_is_ready() -> bool:
     try:
         return bool(Rpc().call("ping", timeout=5.0))
@@ -194,10 +209,19 @@ def run_code(client: Rpc, code: str) -> tuple[bool, str]:
 
 
 def parsed(message: str) -> dict[str, str]:
-    """Parse `key=value` lines printed by in-process snippets."""
+    """Parse `key=value` lines printed by in-process snippets.
+
+    execute_code returns captured stdout wrapped as
+    "Python code execution completed.\\nOutput: first=1\\nsecond=2\\n", so the
+    first payload line carries an "Output: " prefix. Without stripping it the
+    key parses as "Output: first", which is not an identifier, and every value
+    from that line is silently dropped.
+    """
     out: dict[str, str] = {}
     for line in message.splitlines():
         line = line.strip()
+        if line.startswith("Output:"):
+            line = line[len("Output:"):].strip()
         if "=" in line and not line.startswith(("Traceback", "  ")):
             key, _, value = line.partition("=")
             key = key.strip()
@@ -241,13 +265,42 @@ def binary_fingerprint(exe: Path) -> dict[str, Any]:
 
 def launch(exe: Path, profile: Path, ev: Evidence, timeout: float) -> subprocess.Popen[bytes]:
     """Start the GUI through the mandated launcher, with an isolated profile."""
+    # Isolation needs BOTH halves, and they must agree.
+    #
+    # APPDATA steers start_freecad.py, whose _freecad_user_data_base() reads it
+    # to decide where to install the addon and write the settings file.
+    #
+    # APPDATA does NOT steer FreeCAD itself. On Windows the profile is resolved
+    # by SHGetFolderPathW(CSIDL_APPDATA) (Application.cpp:4043), which reads the
+    # user token and ignores the environment entirely. Setting APPDATA alone
+    # redirects the launcher's writes while FreeCAD keeps using the real
+    # profile. The supported override is FREECAD_USER_HOME / FREECAD_USER_DATA
+    # (Application.cpp:4141), and FREECAD_USER_HOME must already exist -- a
+    # missing directory is silently discarded by toNativePath().
+    #
+    # The two must be offset by one level to line up. Measured, not assumed:
+    # with FREECAD_USER_HOME=<x>, FreeCAD reports getUserAppDataDir() == "<x>\"
+    # exactly -- no vendor and no version subdirectory. The launcher meanwhile
+    # installs to $APPDATA/FreeCAD/Mod. So APPDATA gets the parent and
+    # FREECAD_USER_* gets <parent>/FreeCAD, and both land on the same tree:
+    #
+    #   APPDATA            = <profile>
+    #   FREECAD_USER_HOME  = <profile>/FreeCAD   <- FreeCAD's data dir
+    #   launcher installs to <profile>/FreeCAD/Mod/FreeCADMCP
+    #
+    # Point them at the same path instead and the addon is installed one level
+    # above where FreeCAD looks for it, so the MCP server never starts.
+    fc_data = profile / "FreeCAD"
+    fc_data.mkdir(parents=True, exist_ok=True)
+    (fc_data / "temp").mkdir(exist_ok=True)
+
     env = os.environ.copy()
-    if sys.platform == "win32":
-        env["APPDATA"] = str(profile)
-    else:
-        env["XDG_DATA_HOME"] = str(profile)
+    env["APPDATA"] = str(profile)
+    env["XDG_DATA_HOME"] = str(profile)
+    env["FREECAD_USER_HOME"] = str(fc_data)
+    env["FREECAD_USER_DATA"] = str(fc_data)
+    env["FREECAD_USER_TEMP"] = str(fc_data / "temp")
     env["FREECAD_REPO"] = str(REPO)
-    profile.mkdir(parents=True, exist_ok=True)
 
     launcher = REPO / "start_freecad.py"
     command = [
@@ -331,8 +384,8 @@ _second = _doc.addObject('Part::Box', 'SecondBox')
 # property exactly. Part::Box uses App::PropertyLength (a PropertyQuantity), so
 # the conflict phases edit dedicated dynamic integer properties instead --
 # mirroring tests/src/App/CollaborativeSetPropertyIndependence.cpp.
-_box.addDynamicProperty('App::PropertyInteger', 'AlphaValue', 'Stress', '')
-_second.addDynamicProperty('App::PropertyInteger', 'BetaValue', 'Stress', '')
+_box.addProperty('App::PropertyInteger', 'AlphaValue', 'Stress', '')
+_second.addProperty('App::PropertyInteger', 'BetaValue', 'Stress', '')
 _box.AlphaValue = 0
 _second.BetaValue = 0
 
@@ -855,8 +908,17 @@ print('user_appdata=' + str(FreeCAD.getUserAppDataDir()))
         ev.log(f"  freecad pid: {fields.get('freecad_pid')}")
         ev.log(f"  user app data: {fields.get('user_appdata')}")
         reported = str(fields.get("user_appdata", ""))
+        isolated = str(profile).lower() in reported.lower()
         ev.check("GUI is using the isolated profile, not the real one",
-                 str(profile).lower() in reported.lower(), reported)
+                 isolated, reported)
+        if not isolated:
+            # Never run the stress against a real user profile. Stop before
+            # touching a single document; FreeCAD rewrites user.cfg on a clean
+            # exit, so this instance is killed outright rather than closed.
+            ev.log("FATAL: profile isolation failed; aborting before any document work")
+            ev.record["environment"]["isolation_failed_reported_path"] = reported
+            ev.write()
+            return 2
 
         doc = f"CollaborationStress_{stamp}".replace("-", "_")
         doc_path = workdir / f"{doc}.FCStd"
@@ -891,26 +953,40 @@ print('user_appdata=' + str(FreeCAD.getUserAppDataDir()))
                  str(ev.record["leftovers"]["repo_root_fcstd"]))
     finally:
         if not args.keep_running:
-            ev.log("shutting the GUI down")
-            with contextlib.suppress(Exception):
-                run_code(proxy(),
-                         "import FreeCADGui; FreeCADGui.getMainWindow().close()")
-            time.sleep(3)
+            # If the GUI turned out to be on the real profile, do NOT close it
+            # gracefully: a clean exit rewrites user.cfg in that profile. Kill
+            # it instead, so a failed isolation check leaves no trace.
+            graceful = not ev.record["environment"].get(
+                "isolation_failed_reported_path"
+            )
+            ev.log("shutting the GUI down" if graceful
+                   else "killing the GUI (isolation failed; no clean exit)")
+            if graceful:
+                with contextlib.suppress(Exception):
+                    run_code(proxy(),
+                             "import FreeCADGui; FreeCADGui.getMainWindow().close()")
+                time.sleep(3)
             # Terminating the launcher does NOT stop FreeCAD -- the launcher
             # spawns it (often via `pixi run`) and returns. Kill the real
             # process by the PID the RPC server reported, or the GUI is leaked.
             with contextlib.suppress(Exception):
                 process.terminate()
+            # Kill on liveness, NOT on rpc_is_ready(). A closing window stops
+            # answering RPC long before the process exits, so gating the kill
+            # on readiness leaves the GUI running and holding build outputs.
             gui_pid = ev.record["environment"].get("freecad_pid")
-            if gui_pid and rpc_is_ready():
-                ev.log(f"GUI still up; terminating FreeCAD pid {gui_pid}")
+            if gui_pid and process_alive(int(gui_pid)):
+                ev.log(f"GUI still alive; terminating FreeCAD pid {gui_pid}")
                 with contextlib.suppress(Exception):
                     subprocess.run(
-                        ["taskkill", "/PID", str(gui_pid), "/F"]
+                        ["taskkill", "/PID", str(gui_pid), "/F", "/T"]
                         if sys.platform == "win32"
                         else ["kill", "-9", str(gui_pid)],
                         capture_output=True, check=False,
                     )
+                time.sleep(2)
+                if process_alive(int(gui_pid)):
+                    ev.log(f"WARNING: FreeCAD pid {gui_pid} survived termination")
             if port_is_open() and rpc_is_ready():
                 ev.log("WARNING: an MCP server is still answering after shutdown")
         path = ev.write()

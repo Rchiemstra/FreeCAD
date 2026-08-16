@@ -51,6 +51,7 @@
 
 #include <FCConfig.h>
 
+#include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/FileLock.h>
 #include <Base/Uuid.h>
@@ -1727,7 +1728,10 @@ std::pair<std::string, std::pair<FileSnapshot, FileSnapshot>> hashOnce(NativeFil
     const auto before = file.snapshot();
     file.rewind();
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    std::array<char, ioBufferSize> buffer {};
+    // Heap, not stack: ioBufferSize is 1 MiB and the default thread stack on
+    // Windows is 1 MiB, so a local array here overflows the stack before the
+    // first read. Linux's 8 MiB default hid this on every previous run.
+    std::vector<char> buffer(ioBufferSize);
     for (;;) {
         const auto count = file.read(buffer.data(), buffer.size());
         if (count == 0) {
@@ -1757,7 +1761,9 @@ std::string copyAndHash(NativeFile& source, NativeFile& destination)
     source.rewind();
     destination.truncate();
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    std::array<char, ioBufferSize> buffer {};
+    // Heap, not stack -- see hashOnce(): a 1 MiB local array overflows the
+    // 1 MiB default Windows thread stack.
+    std::vector<char> buffer(ioBufferSize);
     for (;;) {
         const auto count = source.read(buffer.data(), buffer.size());
         if (count == 0) {
@@ -4113,6 +4119,13 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         return fail("INVALID_REPLACEMENT_REQUEST", exception.what());
     }
     catch (const std::exception& exception) {
+        return fail("REPLACEMENT_PREFLIGHT_FAILED", exception.what());
+    }
+    catch (const Base::Exception& exception) {
+        // Base::Exception derives from BaseClass, not std::exception, so it
+        // would otherwise fall through to the catch-all below and lose its
+        // diagnostic entirely. Every Base::FileException raised by the code
+        // this function calls arrives here.
         return fail("REPLACEMENT_PREFLIGHT_FAILED", exception.what());
     }
     catch (...) {
