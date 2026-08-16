@@ -197,6 +197,38 @@ it.
 > cannot be verified, the failure MUST be reported and the retained handle MUST remain
 > authoritative; a partial or unverified copy MUST NOT be reported as evidence.
 
+### 2.6 LockAnchor
+
+| | |
+| --- | --- |
+| Name | `<destination-filename>.FreeCAD-save.lock`, sibling of the destination |
+| Created | `OPEN_ALWAYS` (Windows) / `O_RDWR\|O_CREAT` (POSIX), by `Base::FileLock` |
+| Holds | Nothing. It is always zero bytes and is never read or written |
+| Published | Never shown as a result path |
+| Cleanup | **Never** removed |
+
+This file is a *rendezvous name*, not an artifact. Ownership lives in a kernel byte-range lock
+taken on the open handle — `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)` on Windows,
+`fcntl(F_SETLK)` on POSIX — which the kernel releases when the handle closes or the owning
+process dies. The name itself carries no ownership whatsoever.
+
+> **R26.** The lock anchor MUST NOT be unlinked on release. Deleting it would race a process
+> that already holds it open: the winner would be left holding a lock on an unlinked inode
+> while a newcomer created a fresh file and took an unrelated lock on it, giving both writers
+> the destination at once.
+
+> **R27.** A surviving anchor pathname MUST NOT be treated as evidence of a held lock, a
+> crashed save, or a leaked artifact. Its persistence is the design. Generic leftover-artifact
+> checks — in tests, in cleanup code, and in user-facing reporting — MUST exclude it explicitly
+> rather than incidentally.
+
+**Measured, not asserted.** `tests/filesystem/save_lock_anchor_gate.py` drives real
+`save_lock_probe` processes through an acknowledged line protocol and proves, on Linux:
+exclusion while held; acquisition only after release; that a third process later coordinates
+through the same pathname; that the pathname survives every cycle at zero bytes; and that a
+process killed while holding the lock (`_Exit`, no unwinding, no `unlock()`) still releases it,
+so the surviving name never implies stale ownership. 24 checks, all passing.
+
 ---
 
 ## 3. Cleanup permission matrix
@@ -208,6 +240,7 @@ it.
 | DisplacedCanonical | never | only via `discardDisplacedCanonicalExact()`, `numberOfFiles == 0` | handle rename / disposition | retain + report unconsumed |
 | BackupHistory | never | retention prune only | retention prune only | retain + report |
 | NamedRecoveryEvidence | never | never | never | retain + report |
+| LockAnchor | never | never | never | n/a — carries no ownership |
 
 > **R10.** No code path may remove an entry whose class it has not established. "Owned by this
 > writer" is not sufficient authority to unlink.
