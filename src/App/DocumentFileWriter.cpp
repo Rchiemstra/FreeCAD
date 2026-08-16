@@ -4081,6 +4081,15 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                 return fail("DURABILITY_UNVERIFIED", exception.what());
             }
             result.durabilityVerified = true;
+            // Every proof this handle can give has now been given: identity,
+            // content against the serialized hash, and durability. It still
+            // names the installed canonical file and still carries DELETE, and
+            // on Windows that blocks every ordinary reader in every process --
+            // including FreeCAD reopening the document the user just saved.
+            // Holding it past this point buys nothing and costs the canonical
+            // file's user-visible readability, so release it here rather than
+            // whenever the writer happens to be destroyed.
+            _impl->temporary->releaseDescriptor();
         }
         else {
             // The destination name did not resolve at all. A rename that
