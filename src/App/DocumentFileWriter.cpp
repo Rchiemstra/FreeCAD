@@ -297,6 +297,11 @@ constexpr ULONG fileRenameInformationEx = 65;
 
 constexpr ULONG renameFlagReplaceIfExists = 0x00000001;
 constexpr ULONG renameFlagPosixSemantics = 0x00000002;
+// Windows refuses to replace a destination carrying FILE_ATTRIBUTE_READONLY.
+// This flag is the supported way to proceed: the filesystem itself disregards
+// the attribute for this one operation, so the writer never has to clear it by
+// pathname and open a window in which the file is genuinely writable.
+constexpr ULONG renameFlagIgnoreReadonlyAttribute = 0x00000040;
 
 struct NtIoStatusBlock
 {
@@ -363,7 +368,8 @@ NtRenameResult ntRenameThroughParent(const HANDLE source,
                                      const HANDLE parentDirectory,
                                      const std::wstring& leaf,
                                      const bool replaceIfExists,
-                                     const bool extended)
+                                     const bool extended,
+                                     const bool ignoreReadonlyAttribute = false)
 {
     auto* const setInformation = ntSetInformationFile();
     if (setInformation == nullptr) {
@@ -386,7 +392,8 @@ NtRenameResult ntRenameThroughParent(const HANDLE source,
     if (extended) {
         // The extended class reads the same leading word as flags.
         auto* const flags = reinterpret_cast<ULONG*>(storage.get());
-        *flags = (replaceIfExists ? renameFlagReplaceIfExists : 0U) | renameFlagPosixSemantics;
+        *flags = (replaceIfExists ? renameFlagReplaceIfExists : 0U) | renameFlagPosixSemantics
+            | (ignoreReadonlyAttribute ? renameFlagIgnoreReadonlyAttribute : 0U);
     }
     else {
         info->ReplaceIfExists = replaceIfExists ? TRUE : FALSE;
@@ -804,14 +811,29 @@ public:
             // never moves or removes anything.
             access |= GENERIC_WRITE;
         }
-        const HANDLE handle = CreateFileW(path.c_str(),
-                                          access,
-                                          sharing,
-                                          nullptr,
-                                          OPEN_EXISTING,
-                                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
-                                              | FILE_FLAG_SEQUENTIAL_SCAN,
-                                          nullptr);
+        const auto open = [&](const DWORD desired) {
+            return CreateFileW(path.c_str(),
+                               desired,
+                               sharing,
+                               nullptr,
+                               OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
+                                   | FILE_FLAG_SEQUENTIAL_SCAN,
+                               nullptr);
+        };
+        // Replacing a read-only destination needs attribute authority over it.
+        // Ask for it, but never let asking be the reason a save cannot start:
+        // a DACL may withhold it, and only a destination that turns out to be
+        // read-only actually needs it. Whether it was granted is recorded, and
+        // the replacement path fails closed later if it is missing and needed.
+        bool attributeAuthority = (access & FILE_WRITE_ATTRIBUTES) != 0;
+        HANDLE handle = open(access | FILE_WRITE_ATTRIBUTES);
+        if (handle != INVALID_HANDLE_VALUE) {
+            attributeAuthority = true;
+        }
+        else if (!attributeAuthority) {
+            handle = open(access);
+        }
         if (handle == INVALID_HANDLE_VALUE) {
             throw std::system_error(static_cast<int>(GetLastError()),
                                     std::system_category(),
@@ -831,6 +853,9 @@ public:
 #endif
         auto result =
             std::shared_ptr<NativeFile>(new NativeFile(path, handle, false, parent));
+#ifdef FC_OS_WIN32
+        result->_attributeAuthority = attributeAuthority;
+#endif
         const auto snapshot = result->snapshot();
         const auto pathSnapshot = inspectPath(path, false);
         if (!snapshot.regular || !pathSnapshot.regular
@@ -1340,6 +1365,51 @@ public:
 #endif
     }
 
+#ifdef FC_OS_WIN32
+    /*!
+     * Whether this file carries FILE_ATTRIBUTE_READONLY, read through the
+     * retained handle rather than by pathname.
+     *
+     * Windows refuses to replace a destination marked this way, so a save has
+     * to know before it reaches the namespace boundary.
+     */
+    [[nodiscard]] bool isReadOnly() const
+    {
+        FILE_BASIC_INFO info {};
+        if (GetFileInformationByHandleEx(_handle, FileBasicInfo, &info, sizeof(info)) == 0) {
+            throw std::system_error(static_cast<int>(GetLastError()),
+                                    std::system_category(),
+                                    "Unable to inspect the destination read-only attribute");
+        }
+        return (info.FileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+    }
+
+    /*!
+     * Prove this handle really can write attributes, by writing the ones it
+     * already has straight back.
+     *
+     * All-zero timestamps mean "leave unchanged", and the attribute word is the
+     * one just read, so nothing about the file changes -- least of all the
+     * read-only bit, which stays exactly as the user set it. What the call
+     * establishes is authority: a granted access mask is what CreateFileW
+     * reported, and this is the filesystem agreeing.
+     */
+    [[nodiscard]] bool hasProvenAttributeAuthority() const noexcept
+    {
+        if (!_attributeAuthority) {
+            return false;
+        }
+        FILE_BASIC_INFO info {};
+        if (GetFileInformationByHandleEx(_handle, FileBasicInfo, &info, sizeof(info)) == 0) {
+            return false;
+        }
+        FILE_BASIC_INFO unchanged {};
+        unchanged.FileAttributes = info.FileAttributes;
+        return SetFileInformationByHandle(_handle, FileBasicInfo, &unchanged, sizeof(unchanged))
+            != 0;
+    }
+#endif
+
     void prepareForExternalMove()
     {
 #ifdef FC_OS_WIN32
@@ -1706,6 +1776,11 @@ private:
     // path that is permitted to remove a directory entry.
     bool _ephemeralPartial {false};
     std::string _identity;
+#ifdef FC_OS_WIN32
+    // Whether this handle was granted FILE_WRITE_ATTRIBUTES. Only a read-only
+    // destination needs it, so it is recorded rather than required at open.
+    bool _attributeAuthority {false};
+#endif
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API) && defined(FC_OS_WIN32)
     bool _forceLegacyDeleteDispositionForTesting {false};
 #endif
@@ -2176,7 +2251,8 @@ bool replaceOwnedFile(NativeFile& temporary,
                       const fs::path& destination,
                       const DocumentFileReplacementMode mode,
                       std::error_code& error,
-                      bool& sourceConsumed)
+                      bool& sourceConsumed,
+                      const bool ignoreDestinationReadOnly)
 {
     sourceConsumed = false;
 #ifdef FC_OS_WIN32
@@ -2185,15 +2261,25 @@ bool replaceOwnedFile(NativeFile& temporary,
 
     // Prefer the extended class: it carries POSIX semantics, so a replaced
     // predecessor is unlinked from the namespace immediately rather than
-    // lingering until every handle on it closes.
+    // lingering until every handle on it closes. It is also the only class
+    // that honours the read-only override; the classic class silently ignores
+    // the flag, so a read-only destination must never fall through to it.
     if (replaceIfExists) {
-        const auto extended =
-            ntRenameThroughParent(temporary.handle(), parent.handle(), leaf, true, true);
+        const auto extended = ntRenameThroughParent(temporary.handle(),
+                                                    parent.handle(),
+                                                    leaf,
+                                                    true,
+                                                    true,
+                                                    ignoreDestinationReadOnly);
         if (extended.outcome == NtRenameOutcome::Renamed) {
             sourceConsumed = true;
             return true;
         }
         if (extended.outcome != NtRenameOutcome::Unsupported) {
+            error = extended.error;
+            return false;
+        }
+        if (ignoreDestinationReadOnly) {
             error = extended.error;
             return false;
         }
@@ -2386,7 +2472,10 @@ DisplacedFileLeaseOperationResult installDisplacedFileLeaseNoReplace(
                               target,
                               DocumentFileReplacementMode::NoReplace,
                               replacementError,
-                              sourceConsumed)) {
+                              sourceConsumed,
+                              // A backup install never replaces anything, so no
+                              // destination read-only attribute is in play.
+                              false)) {
             result.destinationExists = isDestinationExistsError(replacementError);
             return fail(systemMessage(replacementError));
         }
@@ -3319,6 +3408,9 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         std::error_code replacementError;
         bool replacementSourceConsumed = false;
         bool installed = false;
+        // Set when the replacement had to override a read-only destination, so
+        // the post-replacement verification can insist the attribute survived.
+        bool destinationWasReadOnly = false;
         if (expectedDestinationSha256) {
             bool guardMoved = false;
             bool guardRestoreHookInvoked = false;
@@ -4027,13 +4119,45 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
             }
         }
         else {
+            bool ignoreDestinationReadOnly = false;
+#ifdef FC_OS_WIN32
+            // A read-only destination cannot be replaced unless the rename is
+            // told to disregard the attribute. Decide that here, from the
+            // retained handle, and refuse the save rather than reaching a
+            // namespace boundary that would fail with a bare "Access is
+            // denied" after the document had already been serialized.
+            if (_impl->request.mode != DocumentFileReplacementMode::NoReplace
+                && _impl->destinationSource && _impl->destinationSource->isReadOnly()) {
+                if (!_impl->destinationSource->hasProvenAttributeAuthority()) {
+                    return fail("DESTINATION_READ_ONLY",
+                                "The destination is marked read-only and this process does not "
+                                "hold the attribute authority required to replace it: '"
+                                    + _impl->destinationUtf8 + "'");
+                }
+                ignoreDestinationReadOnly = true;
+                destinationWasReadOnly = true;
+            }
+#endif
             installed = replaceOwnedFile(*_impl->temporary,
                                          *_impl->parent,
                                          _impl->destination,
                                          _impl->request.mode,
                                          replacementError,
-                                         replacementSourceConsumed);
+                                         replacementSourceConsumed,
+                                         ignoreDestinationReadOnly);
             if (!installed) {
+#ifdef FC_OS_WIN32
+                if (ignoreDestinationReadOnly) {
+                    // The override is the only supported way through, and the
+                    // writer will not clear the attribute by pathname to get
+                    // there. Name the condition so a caller can offer Save As.
+                    return fail("DESTINATION_READ_ONLY",
+                                "The destination is marked read-only and this filesystem does "
+                                "not support replacing it while preserving that attribute: '"
+                                    + _impl->destinationUtf8
+                                    + "': " + systemMessage(replacementError));
+                }
+#endif
                 if (_impl->request.mode == DocumentFileReplacementMode::NoReplace
                     && isDestinationExistsError(replacementError)) {
                     return fail("DESTINATION_EXISTS",
@@ -4102,6 +4226,18 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
                 return fail("REPLACEMENT_VERIFICATION_FAILED",
                             "The installed destination content could not be verified");
             }
+#ifdef FC_OS_WIN32
+            // Overriding the attribute is permission to replace the file, not
+            // permission to unmark it. R13 says basic attributes survive a
+            // replacement, and read-only is the one the override could plausibly
+            // have dropped, so prove it is still there through the handle that
+            // now names the installed file.
+            if (destinationWasReadOnly && !_impl->temporary->isReadOnly()) {
+                return fail("REPLACEMENT_VERIFICATION_FAILED",
+                            "The replaced destination was read-only, but the installed file is "
+                            "not");
+            }
+#endif
             result.replacementVerified = true;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
             if (_impl->request.testFault == DocumentFileWriterTestFault::BeforeDurabilityFlush) {
