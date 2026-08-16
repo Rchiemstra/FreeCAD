@@ -137,6 +137,68 @@ std::string readFile(const fs::path& path)
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
+/*!
+ * Read a path the way any ordinary application would.
+ *
+ * This is the user-visible contract: the canonical FCStd, and recovery
+ * evidence after the lease is relinquished, must be readable like this. It
+ * deliberately uses plain std::ifstream, whose Windows share mode does not
+ * permit FILE_SHARE_DELETE, so it fails against an artifact still held under
+ * an active lease. That failure is the point.
+ */
+std::string readUserVisibleFile(const fs::path& path)
+{
+    return readFile(path);
+}
+
+/*!
+ * Read an internal artifact that is still held by an active lease.
+ *
+ * A retained lease keeps DELETE access on Windows because exact rename and
+ * delete authority is part of the retained-identity contract. An ordinary
+ * reader cannot open such a file, so a test inspecting an artifact *before*
+ * consumption or relinquishment must permit delete sharing.
+ *
+ * Only for artifacts that are genuinely active and internal -- never for the
+ * canonical file, and never after relinquishment.
+ */
+std::string readActiveLeasedArtifact(const fs::path& path)
+{
+#ifdef FC_OS_WIN32
+    const HANDLE handle = CreateFileW(path.c_str(),
+                                      GENERIC_READ,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                      nullptr,
+                                      OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL,
+                                      nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        ADD_FAILURE() << "readActiveLeasedArtifact could not open " << path.string()
+                      << " (GetLastError=" << GetLastError() << ")";
+        return {};
+    }
+    std::string contents;
+    for (;;) {
+        char buffer[4096];
+        DWORD read = 0;
+        if (ReadFile(handle, buffer, sizeof buffer, &read, nullptr) == 0) {
+            ADD_FAILURE() << "readActiveLeasedArtifact failed reading " << path.string()
+                          << " (GetLastError=" << GetLastError() << ")";
+            break;
+        }
+        if (read == 0) {
+            break;
+        }
+        contents.append(buffer, read);
+    }
+    CloseHandle(handle);
+    return contents;
+#else
+    // POSIX holds no equivalent mandatory lock, so an ordinary read suffices.
+    return readFile(path);
+#endif
+}
+
 std::string sha256(const std::string& contents)
 {
     return QCryptographicHash::hash(QByteArray::fromStdString(contents),
@@ -415,9 +477,14 @@ TEST_F(DocumentFileWriterTest, ReplaceUsesSiblingAndRetainsDisplacedSnapshot)
     EXPECT_TRUE(result.replacementVerified);
     EXPECT_TRUE(result.durabilityVerified);
     EXPECT_TRUE(result.fileWritten);
-    EXPECT_EQ(readFile(destination), "new bytes");
+    // Canonical file: must stay readable by an ordinary reader even while the
+    // result and its displaced lease are still alive.
+    EXPECT_EQ(readUserVisibleFile(destination), "new bytes");
     ASSERT_FALSE(result.displacedFile.empty());
-    EXPECT_EQ(readFile(Base::FileInfo::stringToPath(result.displacedFile)), "old bytes");
+    // Displaced snapshot: an active internal lease artifact, so delete sharing
+    // is required to inspect it before consumption or relinquishment.
+    EXPECT_EQ(readActiveLeasedArtifact(Base::FileInfo::stringToPath(result.displacedFile)),
+              "old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, AbandonedSerializationNeverTouchesDestination)
