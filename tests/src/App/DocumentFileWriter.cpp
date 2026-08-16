@@ -38,6 +38,11 @@
 #include <FCConfig.h>
 
 #ifdef FC_OS_WIN32
+// App_tests_run defines DATADIR as a string literal for the tests that need the
+// data directory. The Windows SDK declares `enum tagDATADIR { ... } DATADIR;`
+// in objidl.h, so leaving the macro defined turns that typedef name into a
+// string and breaks the SDK header. This translation unit never uses DATADIR.
+# undef DATADIR
 # include <windows.h>
 # include <Aclapi.h>
 # include <winioctl.h>
