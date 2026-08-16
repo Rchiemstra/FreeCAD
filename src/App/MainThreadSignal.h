@@ -22,6 +22,8 @@
 #ifndef APP_MAINTHREADSIGNAL_H
 #define APP_MAINTHREADSIGNAL_H
 
+#include <FCGlobal.h>
+
 #include <Base/Interpreter.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -45,51 +47,29 @@ namespace App
 // may observe while recompute can run on a worker thread. Raw
 // App::DocumentObject signals intentionally remain plain fastsignals with
 // same-thread semantics.
-class MainThreadSignalConfig
+// The hooks are installed by one module (Gui, or a test) and read by another
+// (App, which owns the signals). That makes where they are *stored* part of the
+// contract, not an implementation detail: there must be one definition shared by
+// every module, so setHooks and the accessors are defined once in
+// MainThreadSignal.cpp and exported. Holding them in inline function-local
+// statics gave each PE module its own copy, so on Windows the installer set one
+// and App read another that stayed null -- App then believed it had no hooks at
+// all and ran every marshalled callback inline on the calling thread.
+class AppExport MainThreadSignalConfig
 {
 public:
     using IsMainThreadFn = bool (*)();  // true iff currently on GUI/main thread
     using InvokeFn = void (*)(std::function<void()>&& fn, bool blocking);
 
-    static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke)
-    {
-        isMainThreadSlot() = isMainThread;
-        invokeSlot() = invoke;
-    }
+    static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke);
 
-    static inline bool isMainThread()
-    {
-        auto* f = isMainThreadSlot();
-        return f ? f() : true;  // no hooks, treat current thread as "main"
-    }
+    //! With no hooks installed, the current thread is treated as "main".
+    static bool isMainThread();
 
-    static inline bool hasHooks()
-    {
-        return isMainThreadSlot() && invokeSlot();
-    }
+    static bool hasHooks();
 
-    static inline void invoke(std::function<void()>&& fn, bool blocking)
-    {
-        auto* f = invokeSlot();
-        if (f) {
-            f(std::move(fn), blocking);
-        }
-        else {
-            fn();  // no hooks, run inline
-        }
-    }
-
-private:
-    static IsMainThreadFn& isMainThreadSlot()
-    {
-        static IsMainThreadFn fn = nullptr;
-        return fn;
-    }
-    static InvokeFn& invokeSlot()
-    {
-        static InvokeFn fn = nullptr;
-        return fn;
-    }
+    //! With no hooks installed, runs \a fn inline.
+    static void invoke(std::function<void()>&& fn, bool blocking);
 };
 
 namespace detail
