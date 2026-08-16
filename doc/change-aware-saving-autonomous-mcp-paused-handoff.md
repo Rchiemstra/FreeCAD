@@ -2094,3 +2094,80 @@ Groups C, D and E are production defects, not expectations to adjust. Only group
 reconciliation, and it is the smallest of the four. The earlier reading — that this lane was
 mostly tests reading internal artifacts the wrong way — was wrong in the direction that matters:
 the ordinary-reader failures are largely the product breaking its own user-visible contract.
+
+## Lane B result — the Windows writer lane is green, and it was mostly production
+
+    DocumentFileWriterTest.* + BackupPolicyTest.*
+      6378522c   92 ran, 57 passed,  6 skipped, 29 failed
+      cb676800   96 ran, 90 passed,  6 skipped,  0 failed
+
+Of the 29, only 10 were tests reading an internal artifact the wrong way. The
+other 19 were five distinct Windows-only production defects, each invisible on
+Linux because POSIX has no equivalent rule:
+
+| defect | POSIX equivalent | consequence |
+|---|---|---|
+| cleanup removed every artifact class | POSIX guarded on EphemeralPartial | verified work and the previous version deleted on a failed save |
+| install descriptor kept `DELETE` on the canonical | no mandatory sharing | the just-saved document unreadable to everyone |
+| backup/publish transitions kept the lease | no mandatory sharing | installed backup history and published recovery unreadable |
+| CAS kept `DELETE` on a file it never moved | no mandatory sharing | a document the save declined to touch became unreadable |
+| durability re-open lacked `GENERIC_WRITE` | `fsync` needs no write access | `DURABILITY_UNVERIFIED` after correct install |
+
+A sixth was found by the new Q1 test rather than by the failure list: a save that
+failed *before* its serialization sealed still reported the partial file as
+"the verified serialized document", on every platform.
+
+### Read-only destinations
+
+`FILE_ATTRIBUTE_READONLY` is the only one of the seven preserved basic
+attributes that blocks the rename, and a protected empty DACL does not block it
+at all. Replacement now uses `FILE_RENAME_IGNORE_READONLY_ATTRIBUTE` on
+`FileRenameInformationEx`; the attribute is never cleared by pathname, so there
+is no window in which the file is genuinely writable. Only the extended class
+honours the flag, so a read-only destination is never allowed to fall through to
+the classic class. Where the override is unavailable the save fails closed with
+`DESTINATION_READ_ONLY` so a caller can offer Save As, and the post-replacement
+check proves the installed file is still read-only.
+
+### The lock anchor is a byte-range lock, not a leftover
+
+`Base::FileLock` takes `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK)` on Windows and
+`fcntl(F_SETLK)` on POSIX. The lock lives in the kernel and dies with the handle
+or the process; the zero-byte `<document>.FCStd.FreeCAD-save.lock` is only the
+rendezvous name. Deleting it on release would race a process that already holds
+it open, so it is intentionally persistent. The §12 cross-process proof is
+**not yet written** -- it needs a helper executable and explicit IPC, and the
+characterization above is from source, not measurement.
+
+### Gate status
+
+    Windows  DocumentFileWriterTest.* + BackupPolicyTest.*   0 failed
+    Windows  RenameProperty.*                                14/14
+    Windows  launcher JSON-RPC tests                         26 passed
+    Windows  occupied-port refusal                           exit 1, refused
+    Windows  complete App_tests_run                          RED, see below
+    Windows  Debug configuration                             unavailable
+    Linux    writer/backup regression                        NOT RUN
+    9p       explicit save gate                              NOT RUN
+    git diff --check / line endings                          clean, no churn
+
+`App_tests_run` in full is red, and not from this work. Three tests fail on a
+2000 ms cross-thread queueing deadline and a fourth hangs outright:
+
+    AsyncRecomputeTest.OwnerCloseRejectsQueuedOwnerThreadRecompute
+    DocumentCollaborationPythonCompatibilityTest.offOwnerPythonCallDispatchesCallbackWithGilToDocumentOwner
+    DocumentCollaborationPythonCompatibilityTest.offOwnerPythonFailureRollsBackAndRestoresTheCallingThreadException
+    DocumentCollaborationServiceTest.closeDrainsPostSubmitRegistrationGap   (hangs, no timeout)
+
+Attributed by measurement, not by argument: `src/App/DocumentFileWriter.cpp` was
+reverted to `6378522c`, rebuilt, and all four behave identically. The earlier
+`60/60` green for these suites was recorded in the Linux CI image; they have
+never been run on Windows. This is a separate lane -- off-owner dispatch and
+close-drain, no file I/O.
+
+**Part 3: NO-GO.** The writer lane is green and the launcher is green, but three
+required gates are not: the full Windows App suite is red with a hang, and
+neither the Linux regression nor the 9p gate has been run against this work.
+Several changes here are POSIX-visible -- the sealed-serialization gate and the
+explicit lease release in `retainDisplacedFileForRecovery()` -- so Linux is a
+real gate, not a formality.
