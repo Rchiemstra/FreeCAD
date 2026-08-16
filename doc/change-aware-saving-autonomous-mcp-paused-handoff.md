@@ -1925,3 +1925,48 @@ scheduled after basic saving is green.
 
 A zero-byte `<name>.FCStd.FreeCAD-save.lock` remains beside saved documents; not yet
 characterized as intentional or leaked.
+
+## Lane A — launcher migrated to JSON-RPC 2.0 (done)
+
+`FreeCAD/start_freecad.py` is only a wrapper; the real launcher is
+`FreeCADModeling/start_freecad.py`, one directory up. **That directory is not a git
+repository**, so the launcher change cannot be committed. The applied diff is preserved as
+`doc/launcher-jsonrpc-migration.diff` (166 insertions, 31 deletions) and the original is backed
+up in the session scratchpad as `start_freecad.py.pre-jsonrpc.bak`.
+
+All four functions now use a strict `JsonRpcClient` over `POST /jsonrpc`, validating HTTP
+status, JSON-object shape, `jsonrpc == "2.0"`, request-ID match, and exactly one of
+`result`/`error`. Server errors are raised as `JsonRpcError` preserving `code`, `message` and
+`data`; transport and protocol faults raise `JsonRpcTransportError`. There is deliberately **no
+XML-RPC fallback** — falling back would silently reintroduce a transport the server answers
+with `410 Gone`.
+
+### Session reuse is disabled, deliberately
+
+Restoring the ping makes `_reuse_existing_mcp_if_possible()` live for the first time, so it had
+to be made safe before it could be made to work. Safe reuse needs a **read-only** method
+proving executable, profile/instance identity, endpoint and live PID. The surface has none:
+`ping` returns only `true`, and `handshake_v2` is an authenticated lease operation requiring
+credentials and a payload. The only alternative would be running `execute_code` inside a
+session of unknown provenance to discover what it is — executing code in an unidentified
+process in order to identify it, which is backwards.
+
+Reuse therefore returns `False` unconditionally, and an occupied endpoint is **refused**:
+
+    ERROR: localhost:9875 is already in use by another process.
+           Refusing to start: no read-only identity method is available to prove
+           which session is listening.
+
+The check runs before the profile is touched or anything is started, so a busy port cannot
+cause a second instance to race for it. `_mcp_rpc_process_id()` still uses `execute_code`, but
+only against a session the launcher started — the port was proven free first — and its docstring
+records that constraint.
+
+### Evidence
+
+    tests/launcher/test_start_freecad_jsonrpc.py    22 passed
+    occupied-port refusal, real launcher            exit 1, nothing touched, no attach
+    readiness, real launcher, no workaround         "MCP RPC server is ready on localhost:9875"
+
+The stress harness no longer passes `--no-wait-for-mcp`; the launcher's own readiness wait is
+what proved ready above.

@@ -1,0 +1,273 @@
+warning: in the working copy of 'C:\Users\Rchie\AppData\Local\Temp\claude\c--Users-Rchie-Music-FreeCADModeling-FreeCAD\6c4fe81d-600d-4da4-95b8-3f2e7090eb4f\scratchpad\start_freecad.py.pre-jsonrpc.bak', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'C:\Users\Rchie\Music\FreeCADModeling\start_freecad.py', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\Rchie\\AppData\\Local\\Temp\\claude\\c--Users-Rchie-Music-FreeCADModeling-FreeCAD\\6c4fe81d-600d-4da4-95b8-3f2e7090eb4f\\scratchpad\\start_freecad.py.pre-jsonrpc.bak" "b/C:\\Users\\Rchie\\Music\\FreeCADModeling\\start_freecad.py"
+index b6ee40389f..d26ddedcdf 100644
+--- "a/C:\\Users\\Rchie\\AppData\\Local\\Temp\\claude\\c--Users-Rchie-Music-FreeCADModeling-FreeCAD\\6c4fe81d-600d-4da4-95b8-3f2e7090eb4f\\scratchpad\\start_freecad.py.pre-jsonrpc.bak"
++++ "b/C:\\Users\\Rchie\\Music\\FreeCADModeling\\start_freecad.py"
+@@ -18,13 +18,16 @@ Examples:
+ from __future__ import annotations
+ 
+ import argparse
++import contextlib
+ import json
+ import os
+ import shutil
++import socket
+ import subprocess
+ import sys
+ import time
+-import xmlrpc.client
++import urllib.error
++import urllib.request
+ from pathlib import Path
+ 
+ 
+@@ -428,30 +431,134 @@ def _ensure_mcp_auto_start() -> None:
+         settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+ 
+ 
++class JsonRpcError(Exception):
++    """A JSON-RPC 2.0 error object returned by the server, preserved intact."""
++
++    def __init__(self, code: object, message: object, data: object = None) -> None:
++        super().__init__(f"JSON-RPC error {code}: {message}")
++        self.code = code
++        self.message = message
++        self.data = data
++
++
++class JsonRpcTransportError(Exception):
++    """Transport, protocol, or response-shape failure. Never a server error."""
++
++
++class JsonRpcClient:
++    """Strict JSON-RPC 2.0 client for the MCP listener.
++
++    The listener retired XML-RPC: it answers 410 Gone on /RPC2 with
++    `Link: </jsonrpc>; rel="successor-version"`. There is deliberately no
++    XML-RPC fallback here -- falling back would silently reintroduce a
++    transport the server rejects.
++
++    Every response is validated: HTTP status, JSON object shape, protocol
++    version, request-ID match, and exactly one of result/error.
++    """
++
++    JSON_RPC_PATH = "/jsonrpc"
++
++    def __init__(self, host: str = "localhost", port: int = MCP_RPC_PORT) -> None:
++        self.host = host
++        self.port = port
++        self.url = f"http://{host}:{port}{self.JSON_RPC_PATH}"
++        self._next_id = 0
++
++    def call(self, method: str, params: object = None, timeout: float = 30.0) -> object:
++        self._next_id += 1
++        request_id = self._next_id
++        payload = json.dumps({
++            "jsonrpc": "2.0",
++            "id": request_id,
++            "method": method,
++            "params": {} if params is None else params,
++        }).encode("utf-8")
++        request = urllib.request.Request(
++            self.url, data=payload, headers={"Content-Type": "application/json"}
++        )
++
++        try:
++            with urllib.request.urlopen(request, timeout=timeout) as response:
++                status = getattr(response, "status", response.getcode())
++                body = response.read()
++        except urllib.error.HTTPError as exc:  # includes the retired 410
++            detail = ""
++            try:
++                detail = exc.read().decode("utf-8", "replace")[:200]
++            except Exception:  # noqa: BLE001
++                pass
++            raise JsonRpcTransportError(
++                f"HTTP {exc.code} from {self.url}: {detail}"
++            ) from exc
++        except urllib.error.URLError as exc:
++            raise JsonRpcTransportError(f"cannot reach {self.url}: {exc.reason}") from exc
++        except OSError as exc:
++            raise JsonRpcTransportError(f"cannot reach {self.url}: {exc}") from exc
++
++        if status != 200:
++            raise JsonRpcTransportError(f"HTTP {status} from {self.url}")
++
++        try:
++            decoded = json.loads(body.decode("utf-8"))
++        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
++            raise JsonRpcTransportError(f"malformed JSON from {self.url}: {exc}") from exc
++
++        if not isinstance(decoded, dict):
++            raise JsonRpcTransportError(f"response is not a JSON object: {type(decoded).__name__}")
++        if decoded.get("jsonrpc") != "2.0":
++            raise JsonRpcTransportError(f"unexpected jsonrpc version: {decoded.get('jsonrpc')!r}")
++        if decoded.get("id") != request_id:
++            raise JsonRpcTransportError(
++                f"response id {decoded.get('id')!r} does not match request id {request_id!r}"
++            )
++
++        has_result = "result" in decoded
++        has_error = "error" in decoded
++        if has_result == has_error:
++            raise JsonRpcTransportError(
++                "response must carry exactly one of 'result' or 'error'"
++            )
++        if has_error:
++            error = decoded["error"]
++            if not isinstance(error, dict):
++                raise JsonRpcTransportError(f"error member is not an object: {error!r}")
++            raise JsonRpcError(error.get("code"), error.get("message"), error.get("data"))
++        return decoded["result"]
++
++
+ def _ping_mcp_rpc(host: str = "localhost", port: int = MCP_RPC_PORT) -> bool:
+     try:
+-        proxy = xmlrpc.client.ServerProxy(f"http://{host}:{port}", allow_none=True)
+-        return bool(proxy.ping())
+-    except Exception:
++        return bool(JsonRpcClient(host, port).call("ping", timeout=5.0))
++    except (JsonRpcError, JsonRpcTransportError):
+         return False
+ 
+ 
+ def _mcp_rpc_proxy(host: str = "localhost", port: int = MCP_RPC_PORT):
++    client = JsonRpcClient(host, port)
+     try:
+-        proxy = xmlrpc.client.ServerProxy(f"http://{host}:{port}", allow_none=True)
+-        if proxy.ping():
+-            return proxy
+-    except Exception:
++        if client.call("ping", timeout=5.0):
++            return client
++    except (JsonRpcError, JsonRpcTransportError):
+         return None
+     return None
+ 
+ 
+ def _mcp_rpc_process_id(proxy) -> int | None:
++    """PID of a session this launcher started.
++
++    This runs code in the target process, so it must never be used to identify
++    a session we do not own. Callers must have established ownership first.
++    """
++    if proxy is None:
++        return None
+     try:
+-        result = proxy.execute_code(
+-            "import os\nprint('freecad_process_id=' + str(os.getpid()))"
++        result = proxy.call(
++            "execute_code",
++            {"code": "import os\nprint('freecad_process_id=' + str(os.getpid()))"},
++            timeout=30.0,
+         )
+-    except Exception:
++    except (JsonRpcError, JsonRpcTransportError):
+         return None
+ 
+     if not isinstance(result, dict) or not result.get("success"):
+@@ -459,6 +566,8 @@ def _mcp_rpc_process_id(proxy) -> int | None:
+ 
+     for line in str(result.get("message", "")).splitlines():
+         line = line.strip()
++        if line.startswith("Output:"):
++            line = line[len("Output:"):].strip()
+         if not line.startswith("freecad_process_id="):
+             continue
+         try:
+@@ -469,11 +578,11 @@ def _mcp_rpc_process_id(proxy) -> int | None:
+     return None
+ 
+ 
+-def _current_mcp_rpc_process_id() -> int | None:
+-    proxy = _mcp_rpc_proxy()
+-    if proxy is None:
+-        return None
+-    return _mcp_rpc_process_id(proxy)
++def _port_is_occupied(host: str = "localhost", port: int = MCP_RPC_PORT) -> bool:
++    """True if anything accepts a TCP connection on the endpoint."""
++    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
++        sock.settimeout(1.0)
++        return sock.connect_ex((host, port)) == 0
+ 
+ 
+ def _resolve_freecad_file_arg(arg: str) -> Path | None:
+@@ -554,22 +663,34 @@ print("opened_documents=" + repr(_opened))
+     return True
+ 
+ 
++# Automatic session reuse is disabled.
++#
++# While the readiness probe still spoke the retired XML-RPC transport it could
++# never succeed, so this path was dead and the risk was theoretical. Migrating
++# to JSON-RPC makes it live again, which is only safe if the launcher can first
++# prove the listening session is the one it means to drive.
++#
++# That proof needs a READ-ONLY method reporting the executable, the profile or
++# instance identity, the endpoint, and a live PID. The surface offers no such
++# method: `ping` returns only true, and `handshake_v2` is an authenticated
++# lease operation requiring credentials and a payload. The only way to identify
++# a session would be to run `execute_code` inside it -- executing code in a
++# process of unknown provenance purely to discover what it is, which is exactly
++# backwards.
++#
++# So reuse stays off until a read-only identity method exists. An occupied port
++# is refused instead, and never attached to.
++REUSE_DISABLED_REASON = (
++    "no read-only identity method is available to prove which session is listening"
++)
++
++
+ def _reuse_existing_mcp_if_possible(
+     freecad_args: list[str],
+     force_new: bool,
+ ) -> bool:
+-    if force_new:
+-        return False
+-
+-    proxy = _mcp_rpc_proxy()
+-    if proxy is None:
+-        return False
+-
+-    if not _open_files_in_mcp(proxy, freecad_args):
+-        return False
+-
+-    print(f"MCP RPC server is already ready on localhost:{MCP_RPC_PORT}")
+-    return True
++    del freecad_args, force_new
++    return False
+ 
+ 
+ def _wait_for_mcp_rpc(
+@@ -666,13 +787,27 @@ def main(argv: list[str] | None = None) -> int:
+         print(f"ERROR: FreeCAD executable not found: {freecad}", file=sys.stderr)
+         return 1
+ 
++    # Refuse an occupied endpoint before touching the profile or starting
++    # anything. Starting a second instance would race for the port, and
++    # attaching is not permitted because the listener cannot be identified.
++    if _port_is_occupied():
++        reachable = _ping_mcp_rpc()
++        print(
++            f"ERROR: localhost:{MCP_RPC_PORT} is already in use by "
++            f"{'a live MCP RPC server' if reachable else 'another process'}.\n"
++            f"       Refusing to start: {REUSE_DISABLED_REASON}.\n"
++            "       Stop the existing session, or free the port, and retry.",
++            file=sys.stderr,
++        )
++        return 1
++
+     _ensure_pixi_external_mods(freecad)
+     _ensure_mcp_addon_installed()
+     _ensure_mcp_auto_start()
+ 
+-    if _reuse_existing_mcp_if_possible(args.args, args.force_new):
+-        return 0
+-    previous_mcp_pid = _current_mcp_rpc_process_id()
++    # The port was proven free above, so any server that answers from here on
++    # is the one this launcher started.
++    previous_mcp_pid = None
+ 
+     if args.wait:
+         process = _start_freecad(freecad, args.args, wait=True)

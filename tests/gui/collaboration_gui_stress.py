@@ -136,10 +136,9 @@ class Rpc:
 
     XML-RPC is retired. The listener answers `410 Gone` on `/RPC2` with
     `Link: </jsonrpc>; rel="successor-version"` and expects JSON-RPC 2.0 at
-    `/jsonrpc`. Note that start_freecad.py has NOT been updated: its
-    `_ping_mcp_rpc` still uses xmlrpc.client, so its readiness wait can never
-    succeed against this server. The harness passes --no-wait-for-mcp and waits
-    for readiness itself.
+    `/jsonrpc`. start_freecad.py now speaks JSON-RPC too, so its own readiness
+    wait works and the harness no longer passes --no-wait-for-mcp; it still
+    confirms readiness itself before driving anything.
     """
 
     def __init__(self, host: str = MCP_HOST, port: int = MCP_PORT) -> None:
@@ -307,9 +306,10 @@ def launch(exe: Path, profile: Path, ev: Evidence, timeout: float) -> subprocess
         sys.executable,
         str(launcher),
         "--force-new",
-        "--no-wait-for-mcp",  # its own wait uses retired XML-RPC and always fails
         "--freecad",
         str(exe),
+        "--mcp-timeout",
+        str(timeout),
     ]
     ev.log(f"launching: {' '.join(command)}")
     ev.log(f"  isolated profile: {profile}")
