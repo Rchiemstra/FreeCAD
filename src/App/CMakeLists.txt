@@ -395,6 +395,7 @@ SET(FreeCADApp_HPP_SRCS
     Services.h
     StringHasher.h
     MainThreadSignal.h
+    MainThreadSignal.cpp
 )
 
 # auto-generate resource file with all available translations
