@@ -49,13 +49,64 @@ esac
 # in SetUp, and roughly a dozen tests fail for a reason that has nothing to do
 # with the code under test. Say so up front rather than letting the run be read
 # as a source regression.
+#
+# A warning is not enough: an unset value costs roughly a dozen failures that
+# look like source regressions. Derive it from the build that produced the
+# binary, verify it really holds the OpenCASCADE DLLs, and refuse to start
+# otherwise, so this can never again be misread as a FreeCAD defect.
+libpack_has_occ() {
+    [ -d "$1" ] || return 1
+    # A directory without TK*.dll cannot satisfy Part/Sketcher, whatever it is.
+    ls "$1"/TK*.dll >/dev/null 2>&1
+}
+
+derive_libpack_bin() {
+    # Walk up from the binary to the CMake build directory that produced it and
+    # take the prefix that build was actually configured against.
+    dir="$(cd "$(dirname "$BINARY")" && pwd)"
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        if [ -f "$dir/CMakeCache.txt" ]; then
+            prefix="$(sed -n 's/^CMAKE_PREFIX_PATH:[^=]*=//p' "$dir/CMakeCache.txt" | head -1)"
+            [ -n "$prefix" ] && echo "$prefix/bin"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
+}
+
 case "$(uname -s 2>/dev/null)" in
     MINGW*|MSYS*|CYGWIN*)
         if [ -z "${FREECAD_LIBPACK_BIN:-}" ]; then
-            echo "WARNING: FREECAD_LIBPACK_BIN is not set." >&2
-            echo "         Windows extension modules ignore PATH, so Part/Sketcher" >&2
-            echo "         will fail to import and their tests will fail in SetUp." >&2
+            derived="$(derive_libpack_bin)"
+            if libpack_has_occ "$derived"; then
+                export FREECAD_LIBPACK_BIN="$derived"
+                echo "derived FREECAD_LIBPACK_BIN from the build: $derived"
+            else
+                echo "FAIL: FREECAD_LIBPACK_BIN is not set and could not be derived." >&2
+                echo "      Tried: ${derived:-<no CMakeCache.txt above the binary>}" >&2
+                echo "      Since Python 3.8 a Windows extension module resolves its" >&2
+                echo "      dependencies through os.add_dll_directory(), not PATH, so" >&2
+                echo "      Part and Sketcher would fail to import and roughly a dozen" >&2
+                echo "      tests would fail in SetUp for reasons unrelated to the code" >&2
+                echo "      under test. Refusing to run a suite whose result could not" >&2
+                echo "      be read honestly." >&2
+                exit 2
+            fi
+        elif ! libpack_has_occ "$FREECAD_LIBPACK_BIN"; then
+            echo "FAIL: FREECAD_LIBPACK_BIN does not contain the OpenCASCADE DLLs." >&2
+            echo "      Value: $FREECAD_LIBPACK_BIN" >&2
+            exit 2
         fi
+
+        # The executable also needs its own core DLLs and the libpack on PATH.
+        # Without them Windows fails the image load with exit 127 and no output
+        # whatsoever -- an empty run that is even easier to misread as a passing
+        # or hanging suite than the missing-libpack case above.
+        to_posix() {
+            if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else echo "$1"; fi
+        }
+        PATH="$(cd "$(dirname "$BINARY")" && pwd):$(to_posix "$FREECAD_LIBPACK_BIN"):$PATH"
+        export PATH
         ;;
 esac
 
