@@ -1054,6 +1054,17 @@ public:
             return false;
         }
 #ifdef FC_OS_WIN32
+        if (!_ephemeralPartial) {
+            // The same rule as the POSIX branch below, for a different reason.
+            // Windows *can* remove this file exactly and without a path race,
+            // through the retained handle. It may not: for every class other
+            // than EphemeralPartial the target is a version of the user's
+            // document, and generic cleanup holds no authority to remove one.
+            // Capability is not permission. The single carve-out stays
+            // discardDisplacedCanonicalExact(), reachable only from an explicit
+            // numberOfFiles == 0 retention decision.
+            return false;
+        }
         if (!setDeleteDisposition()) {
             return false;
         }
@@ -1407,16 +1418,20 @@ private:
         if (_cleanupState != CleanupState::Owned || _identity.empty()) {
             return;
         }
+        // Only an EphemeralPartial may be removed by destructor cleanup. Every
+        // other class keeps its name; see discardExact() and the contract. A
+        // VerifiedSerialization is the only copy of the work being saved and a
+        // DisplacedCanonical is the user's previous version, so destroying this
+        // object must never destroy either.
+        if (!_ephemeralPartial) {
+            return;
+        }
 #ifdef FC_OS_WIN32
         if (setDeleteDisposition()) {
             _cleanupState = CleanupState::None;
         }
 #else
-        // Only an EphemeralPartial may be removed by destructor cleanup. Every
-        // other class keeps its name; see discardExact() and the contract.
-        if (_ephemeralPartial) {
-            (void)unlinkProvedOwnedEntry();
-        }
+        (void)unlinkProvedOwnedEntry();
 #endif
     }
 
@@ -2751,7 +2766,6 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
     DocumentFileReplacementResult result;
     result.destination = _impl->destinationUtf8;
     const auto fail = [&](std::string code, std::string message) {
-#ifndef FC_OS_WIN32
         // Contract §2.2: the serialized bytes were verified before the
         // replacement boundary, so they are a VerifiedSerialization and are
         // never removed by cleanup. If no install consumed them they are the
@@ -2783,7 +2797,6 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
             // The namespace was never touched by this best-effort diagnostic;
             // destructor cleanup remains fail-closed even if reporting fails.
         }
-#endif
         result.errorCode = std::move(code);
         result.message = std::move(message);
         if (_impl->request.mode
