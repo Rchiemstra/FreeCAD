@@ -2813,6 +2813,19 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         }
         result.errorCode = std::move(code);
         result.message = std::move(message);
+        // A compare-and-swap opens the destination with DELETE so it can move
+        // the exact file it validated. If the handle still names the canonical
+        // path here, that move never happened: the save failed and the user's
+        // document is untouched at its own name. Keeping DELETE on it past that
+        // point blocks every ordinary reader of a file this writer decided not
+        // to change. Never released when it is the reported recovery lease --
+        // that artifact is still internal and still needs its authority.
+        if (_impl->destinationSource
+            && static_cast<const void*>(_impl->destinationSource.get())
+                != result.displacedFileLease.get()
+            && _impl->destinationSource->pathUtf8() == _impl->destinationUtf8) {
+            _impl->destinationSource->releaseDescriptor();
+        }
         if (_impl->request.mode
                 == DocumentFileReplacementMode::CompareAndSwapSha256
             && result.displacedFileLease) {
