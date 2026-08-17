@@ -283,6 +283,16 @@ def _runtime_path_entries(freecad_exe: Path) -> list[str]:
 def _launch_env(freecad_exe: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join(_runtime_path_entries(freecad_exe))
+    mcp_root = str(_freecad_mcp_dir())
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    pythonpath_parts = [mcp_root]
+    if existing_pythonpath:
+        pythonpath_parts.extend(
+            part
+            for part in existing_pythonpath.split(os.pathsep)
+            if part and part != mcp_root
+        )
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
     pixi = _pixi_env_dir()
     if pixi is not None:
@@ -328,7 +338,7 @@ def _launch_details(
         cwd = _repo_root()
         env = _launch_env(freecad_exe)
         return (
-            [pixi, "run", _path_for_pixi_run(freecad_exe, cwd), *freecad_args],
+            [pixi, "run", "--", _path_for_pixi_run(freecad_exe, cwd), *freecad_args],
             str(cwd),
             env,
         )

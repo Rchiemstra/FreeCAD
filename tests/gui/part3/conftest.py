@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Shared fixtures for Part 3 LocalUserDriver GUI acceptance tests."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_FREECAD = REPO_ROOT / "build" / "release" / "bin" / "FreeCAD.exe"
+LAUNCHER = REPO_ROOT / "start_freecad.py"
+LAUNCHER_IMPL = REPO_ROOT / "tools" / "launcher" / "start_freecad_impl.py"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tests.gui.part3.local_user_driver import (
+    LocalUserDriver,
+    generate_control_token,
+    launch_env_for_isolated_profile,
+    wait_for_endpoint,
+)
+from tests.gui.part3.rpc_session_client import authenticate_json_rpc
+
+
+def _load_json_rpc_client():
+    spec = importlib.util.spec_from_file_location("start_freecad_impl", LAUNCHER_IMPL)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot import launcher from {LAUNCHER_IMPL}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.settimeout(0.75)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _default_freecad_exe() -> Path | None:
+    if DEFAULT_FREECAD.is_file():
+        return DEFAULT_FREECAD
+    return None
+
+
+def _terminate_owned_process_tree(process: subprocess.Popen) -> None:
+    """Stop the launcher and pixi-spawned FreeCAD grandchildren.
+
+    ``Popen.terminate`` only hits ``start_freecad.py``; Windows then leaves
+    ``pixi run -- FreeCAD.exe`` holding ``FreeCADApp.dll``.
+    """
+
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.fixture(scope="module")
+def freecad_gui_session() -> Iterator[dict[str, object]]:
+    freecad_exe = _default_freecad_exe()
+    if freecad_exe is None:
+        pytest.skip("FreeCAD GUI binary not found at build/release/bin/FreeCAD.exe")
+    launcher_module = _load_json_rpc_client()
+    if _port_is_open("127.0.0.1", launcher_module.MCP_RPC_PORT):
+        pytest.skip(
+            f"MCP port {launcher_module.MCP_RPC_PORT} is already occupied; "
+            "refusing to attach to an unknown session"
+        )
+
+    profile_root = Path(tempfile.mkdtemp(prefix="part3-local-driver-"))
+    run_root = profile_root / "run"
+    endpoint_dir = run_root / "control"
+    token = generate_control_token()
+    env = launch_env_for_isolated_profile(
+        profile_root,
+        control_token=token,
+        endpoint_dir=endpoint_dir,
+        repo_root=REPO_ROOT,
+    )
+    launcher_log = run_root / "launcher.log"
+    command = [
+        sys.executable,
+        str(LAUNCHER),
+        "--force-new",
+        "--freecad",
+        str(freecad_exe),
+        "--mcp-timeout",
+        "120",
+    ]
+    with launcher_log.open("wb") as log_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+
+    try:
+        deadline = time.monotonic() + 120.0
+        ready = False
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            if _port_is_open("127.0.0.1", launcher_module.MCP_RPC_PORT):
+                try:
+                    if launcher_module.JsonRpcClient().call("ping", timeout=2.0):
+                        ready = True
+                        break
+                except Exception:
+                    pass
+            time.sleep(0.25)
+
+        if not ready:
+            pytest.skip(
+                "FreeCAD GUI with MCP did not become ready within 120s; "
+                f"see {launcher_log}"
+            )
+
+        endpoint = wait_for_endpoint(endpoint_dir, timeout_s=30.0)
+        local_driver = LocalUserDriver(token, endpoint)
+        local_driver.preflight()
+        rpc = authenticate_json_rpc(
+            launcher_module.JsonRpcClient(),
+            profile_root,
+            json_rpc_error=launcher_module.JsonRpcError,
+            json_rpc_transport_error=launcher_module.JsonRpcTransportError,
+        )
+
+        session = {
+            "process": process,
+            "profile_root": profile_root,
+            "run_root": run_root,
+            "endpoint_dir": endpoint_dir,
+            "token": token,
+            "local_driver": local_driver,
+            "rpc": rpc,
+            "launcher_module": launcher_module,
+            "freecad_exe": freecad_exe,
+        }
+        try:
+            yield session
+        finally:
+            with contextlib.suppress(Exception):
+                rpc.call("shutdown_rpc_server", timeout=10.0)
+    finally:
+        _terminate_owned_process_tree(process)
