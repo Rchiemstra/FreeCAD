@@ -59,12 +59,14 @@ def _identity_selector(local, document_name: str) -> dict[str, Any]:
     return selector
 
 
-def _semantic_model_revision(rpc, local, document_name: str) -> int:
+def _semantic_model_revision(
+    rpc, local, document_name: str, object_name: str = "StressBox"
+) -> int:
     result = rpc.call(
         "get_semantic_revisions",
         {
             "doc_selector": _identity_selector(local, document_name),
-            "revision_keys": [{"kind": "ObjectModel", "subject": "StressBox"}],
+            "revision_keys": [{"kind": "ObjectModel", "subject": object_name}],
         },
         timeout=30.0,
     )
@@ -276,6 +278,128 @@ def test_remote_child_lacks_control_token() -> None:
     report = json.loads(completed.stdout)
     assert report["absent"] is True
     assert TOKEN_ENV not in env
+
+
+def _property_revision(rpc, local, document_name: str, object_name: str, property_name: str) -> int:
+    result = rpc.call(
+        "get_semantic_revisions",
+        {
+            "doc_selector": _identity_selector(local, document_name),
+            "revision_keys": [
+                {
+                    "kind": "ObjectProperty",
+                    "subject": object_name,
+                    "property_name": property_name,
+                },
+            ],
+        },
+        timeout=30.0,
+    )
+    revisions = result.get("revisions") if isinstance(result, dict) else None
+    assert isinstance(revisions, list) and revisions
+    return int(revisions[0]["revision"])
+
+
+def test_local_property_edit_publishes_expected_revisions(
+    freecad_gui_session, tmp_path: Path
+) -> None:
+    rpc = freecad_gui_session["rpc"]
+    local = freecad_gui_session["local_driver"]
+    document_name = f"LocalEditDoc_{uuid.uuid4().hex[:8]}"
+    try:
+        created = rpc.call("create_document", {"name": document_name}, timeout=60.0)
+    except Exception:
+        created = rpc.call("create_document", document_name, timeout=60.0)
+    if isinstance(created, dict):
+        document_name = str(
+            created.get("document_name") or created.get("name") or document_name
+        )
+    rpc.call(
+        "create_object",
+        {
+            "doc_name": document_name,
+            "obj_data": {
+                "Name": "StressFloat",
+                "Type": "App::FeatureTest",
+                "Properties": {"Float": 2.0},
+            },
+        },
+        timeout=60.0,
+    )
+    save_path = tmp_path / f"{document_name}.FCStd"
+    rpc.call(
+        "save_document_as",
+        {
+            "selector": {"document_name": document_name},
+            "destination": str(save_path),
+            "overwrite": True,
+        },
+        timeout=60.0,
+    )
+    local.invoke("set_active_document", {"document": document_name})
+    before_model = _semantic_model_revision(rpc, local, document_name, "StressFloat")
+    before_property = _property_revision(
+        rpc, local, document_name, "StressFloat", "Float"
+    )
+    local.invoke(
+        "local_property_edit",
+        {
+            "document": document_name,
+            "object": "StressFloat",
+            "property": "Float",
+            "value": 42.0,
+        },
+    )
+    after_model = _semantic_model_revision(rpc, local, document_name, "StressFloat")
+    after_property = _property_revision(
+        rpc, local, document_name, "StressFloat", "Float"
+    )
+    assert after_model == before_model + 1
+    assert after_property == before_property + 1
+    file_state = _file_change_state(local, document_name)
+    assert file_state.get("has_pending_file_changes") is True
+    state = local.invoke("view_state")["result"]
+    assert state.get("modified") is True or state.get("touched") is True
+
+
+def test_local_save_orders_with_remote_mutation(
+    freecad_gui_session, tmp_path: Path
+) -> None:
+    rpc = freecad_gui_session["rpc"]
+    local = freecad_gui_session["local_driver"]
+    document = _create_box_document(rpc, f"LocalSaveDoc_{uuid.uuid4().hex[:8]}")
+    document_name = document["document_name"]
+    save_path = tmp_path / f"{document_name}.FCStd"
+    rpc.call(
+        "save_document_as",
+        {
+            "selector": {"document_name": document_name},
+            "destination": str(save_path),
+            "overwrite": True,
+        },
+        timeout=60.0,
+    )
+    local.invoke("set_active_document", {"document": document_name})
+    rpc.call(
+        "edit_object",
+        {
+            "doc_name": document_name,
+            "obj_name": "StressBox",
+            "properties": {"Width": 11.0},
+        },
+        timeout=60.0,
+    )
+    local.invoke("local_save")
+    file_state = _file_change_state(local, document_name)
+    assert file_state.get("has_pending_file_changes") is False
+    assert str(file_state.get("state", "")).lower() == "clean"
+    save_result = rpc.call(
+        "save_document",
+        {"selector": {"document_name": document_name}},
+        timeout=60.0,
+    )
+    assert isinstance(save_result, dict)
+    assert str(save_result.get("save_disposition", "")).lower() == "unchanged"
 
 
 def test_remote_rpc_cannot_resume_local_pause() -> None:

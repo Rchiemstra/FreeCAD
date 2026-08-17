@@ -1573,6 +1573,7 @@ CollaborationCompatibilityMutationOutcome Document::executeCompatibilityMutation
                         mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
                         mutation.objectName = admitted.objectName;
                         mutation.stableObjectIdentity = admitted.stableObjectIdentity;
+                        mutation.propertyName = admitted.propertyName;
                     }
                     else {
                         mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;

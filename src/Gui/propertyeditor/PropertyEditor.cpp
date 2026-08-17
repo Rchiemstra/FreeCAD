@@ -389,26 +389,6 @@ void PropertyEditor::openEditor(const QModelIndex& index)
         FC_LOG("pending transaction");
         return;
     }
-    std::ostringstream str;
-    str << tr("Edit").toUtf8().constData() << ' ';
-    for (auto prop : items) {
-        if (prop->getContainer() != obj) {
-            obj = nullptr;
-            break;
-        }
-    }
-    if (obj && obj->isAttachedToDocument()) {
-        str << obj->getNameInDocument() << '.';
-    }
-    else {
-        str << tr("property").toUtf8().constData() << ' ';
-    }
-    str << prop->getName();
-    if (items.size() > 1) {
-        str << "...";
-    }
-    transactionID = Command::openActiveDocumentCommand(str.str());
-    FC_LOG("editor transaction " << App::GetApplication().getTransactionName(transactionID));
 }
 
 void PropertyEditor::onItemActivated(const QModelIndex& index)

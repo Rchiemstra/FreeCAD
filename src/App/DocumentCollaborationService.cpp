@@ -1178,6 +1178,12 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
             }
             effects.push_back({DocumentRevisionKey::objectModel(mutation.objectName),
                                mutation.stableObjectIdentity});
+            if (!mutation.propertyName.empty()) {
+                effects.push_back(
+                    {DocumentRevisionKey::objectProperty(mutation.objectName,
+                                                        mutation.propertyName),
+                     mutation.stableObjectIdentity});
+            }
             break;
         }
         case CollaborationCompatibilityScope::UnknownModel:
