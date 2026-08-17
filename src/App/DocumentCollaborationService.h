@@ -83,6 +83,7 @@ struct AppExport CollaborationCompatibilityMutation
     CollaborationCompatibilityScope scope {CollaborationCompatibilityScope::UnknownModel};
     std::string objectName;
     std::string stableObjectIdentity;
+    std::string propertyName;
 };
 
 using CollaborationCompatibilityCallback = std::function<void()>;
