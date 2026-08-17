@@ -246,7 +246,7 @@ discardDisplacedFileLease(
 );
 
 /** Process-local plus cross-process lock shared by replacement and backup history. */
-class DocumentFileLock
+class APP_DOCUMENTFILEWRITER_EXPORT DocumentFileLock
 {
 public:
     explicit DocumentFileLock(const std::string& destination, int timeoutMs);

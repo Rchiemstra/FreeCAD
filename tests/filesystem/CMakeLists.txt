@@ -11,6 +11,8 @@ add_executable(save_lock_probe save_lock_probe.cpp)
 
 target_link_libraries(save_lock_probe PRIVATE FreeCADApp)
 
+target_compile_definitions(save_lock_probe PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+
 if(WIN32)
     set_target_properties(save_lock_probe PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
