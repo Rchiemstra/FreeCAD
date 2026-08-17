@@ -80,8 +80,17 @@ def _terminate_owned_process_tree(process: subprocess.Popen) -> None:
         process.wait(timeout=5)
 
 
-@pytest.fixture(scope="module")
-def freecad_gui_session() -> Iterator[dict[str, object]]:
+def _wait_for_port_closed(host: str, port: int, timeout_s: float = 45.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _port_is_open(host, port):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+@contextlib.contextmanager
+def launch_freecad_gui_session() -> Iterator[dict[str, object]]:
     freecad_exe = _default_freecad_exe()
     if freecad_exe is None:
         pytest.skip("FreeCAD GUI binary not found at build/release/bin/FreeCAD.exe")
@@ -170,3 +179,25 @@ def freecad_gui_session() -> Iterator[dict[str, object]]:
                 rpc.call("shutdown_rpc_server", timeout=10.0)
     finally:
         _terminate_owned_process_tree(process)
+        if not _wait_for_port_closed("127.0.0.1", launcher_module.MCP_RPC_PORT):
+            pytest.skip(
+                f"MCP port {launcher_module.MCP_RPC_PORT} remained occupied after teardown"
+            )
+
+
+@pytest.fixture(scope="module")
+def freecad_gui_session() -> Iterator[dict[str, object]]:
+    with launch_freecad_gui_session() as session:
+        yield session
+
+
+@pytest.fixture(autouse=True)
+def _reset_pause_gate_between_tests(freecad_gui_session) -> None:
+    local = freecad_gui_session["local_driver"]
+    with contextlib.suppress(Exception):
+        local.invoke("resume_writes")
+    yield
+    with contextlib.suppress(Exception):
+        local.invoke("resume_writes")
+    with contextlib.suppress(Exception):
+        local.invoke("clear_selection")

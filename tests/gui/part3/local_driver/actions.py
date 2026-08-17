@@ -22,6 +22,10 @@ SUPPORTED_ACTIONS = frozenset(
         "view_state",
         "local_property_edit",
         "local_save",
+        "provision_alpha_beta_fixture",
+        "async_blocker_control",
+        "close_document",
+        "reset_property_editor",
     }
 )
 
@@ -45,6 +49,10 @@ def execute(action: str, params: dict[str, Any]) -> dict[str, Any]:
         "view_state": _view_state,
         "local_property_edit": _local_property_edit,
         "local_save": _local_save,
+        "provision_alpha_beta_fixture": _provision_alpha_beta_fixture,
+        "async_blocker_control": _async_blocker_control,
+        "close_document": _close_document,
+        "reset_property_editor": _reset_property_editor,
     }
     return dispatch[action](params or {})
 
@@ -284,7 +292,7 @@ def _property_editor_data():
     return editor
 
 
-def _wait_for_property_editor(editor, timeout_s: float = 3.0) -> None:
+def _wait_for_property_editor(editor, timeout_s: float = 5.0) -> None:
     import time
 
     from PySide import QtWidgets
@@ -367,19 +375,178 @@ def _local_property_edit(params: dict[str, Any]) -> dict[str, Any]:
     FreeCADGui.setActiveDocument(document_name)
     FreeCADGui.Selection.clearSelection()
     FreeCADGui.Selection.addSelection(document_name, object_name)
+    gui_document = FreeCADGui.getDocument(document_name)
+    if gui_document is not None:
+        gui_document.toggleTreeItem(obj, 2)
+    FreeCADGui.updateGui()
 
     editor = _property_editor_data()
-    _wait_for_property_editor(editor)
+    _wait_for_property_editor(editor, timeout_s=8.0)
     index = _find_property_value_index(editor, property_name)
     _apply_property_editor_value(editor, index, params["value"])
 
     after_value = getattr(obj, property_name)
+    expected = params["value"]
+    if isinstance(expected, bool):
+        if bool(after_value) != bool(expected):
+            raise RuntimeError(
+                f"property editor did not apply {property_name}: "
+                f"expected {expected!r}, got {after_value!r}"
+            )
+    elif isinstance(expected, int) and not isinstance(expected, bool):
+        if int(after_value) != int(expected):
+            raise RuntimeError(
+                f"property editor did not apply {property_name}: "
+                f"expected {expected!r}, got {after_value!r}"
+            )
+    else:
+        if float(after_value) != float(expected):
+            raise RuntimeError(
+                f"property editor did not apply {property_name}: "
+                f"expected {expected!r}, got {after_value!r}"
+            )
     return {
         "document": document_name,
         "object": object_name,
         "property": property_name,
         "value": after_value,
     }
+
+
+_PROP_NO_RECOMPUTE = 16
+
+
+def _provision_alpha_beta_fixture(params: dict[str, Any]) -> dict[str, Any]:
+    """Create StressBox.AlphaValue and SecondBox.BetaValue for Part 3 integration."""
+
+    import FreeCAD
+
+    document_name = str(params.get("document") or "")
+    if not document_name:
+        raise ValueError("document is required")
+    alpha = int(params.get("alpha", 0))
+    beta = int(params.get("beta", 0))
+    with_blocker = bool(params.get("with_async_blocker", False))
+
+    if document_name in FreeCAD.listDocuments():
+        document = FreeCAD.getDocument(document_name)
+    else:
+        document = FreeCAD.newDocument(document_name)
+
+    stress = document.getObject("StressBox")
+    if stress is None:
+        stress = document.addObject("App::FeatureTest", "StressBox")
+    if "AlphaValue" not in stress.PropertiesList:
+        stress.addProperty(
+            "App::PropertyInteger",
+            "AlphaValue",
+            "Stress",
+            "",
+        )
+    stress.AlphaValue = alpha
+
+    second = document.getObject("SecondBox")
+    if second is None:
+        second = document.addObject("App::DocumentObject", "SecondBox")
+    if "BetaValue" not in second.PropertiesList:
+        second.addProperty(
+            "App::PropertyInteger",
+            "BetaValue",
+            "Data",
+            "",
+            _PROP_NO_RECOMPUTE,
+        )
+    second.BetaValue = beta
+
+    blocker_name = None
+    if with_blocker:
+        blocker = document.getObject("RecomputeBlocker")
+        if blocker is None:
+            blocker = document.addObject(
+                "App::FeatureTestAsyncBlocker",
+                "RecomputeBlocker",
+            )
+        blocker_name = str(blocker.Name)
+        _async_blocker_reset()
+
+    document.recompute()
+    return {
+        "document": document_name,
+        "alpha": int(stress.AlphaValue),
+        "beta": int(second.BetaValue),
+        "async_blocker": blocker_name,
+    }
+
+
+def _reset_property_editor(_params: dict[str, Any]) -> dict[str, Any]:
+    import FreeCADGui
+
+    active = FreeCADGui.ActiveDocument
+    if active is not None:
+        try:
+            active.resetEdit()
+        except Exception:
+            pass
+    FreeCADGui.Selection.clearSelection()
+    FreeCADGui.updateGui()
+    return {"reset": True}
+
+
+def _close_document(params: dict[str, Any]) -> dict[str, Any]:
+    import FreeCAD
+    import FreeCADGui
+
+    document_name = str(params.get("document") or "")
+    if not document_name:
+        raise ValueError("document is required")
+    closed = False
+    if document_name in FreeCAD.listDocuments():
+        FreeCAD.closeDocument(document_name)
+        closed = document_name not in FreeCAD.listDocuments()
+    FreeCADGui.Selection.clearSelection()
+    FreeCADGui.updateGui()
+    return {"document": document_name, "closed": closed}
+
+
+def _async_blocker_reset() -> None:
+    import FreeCAD
+
+    blocker_api = getattr(FreeCAD, "FeatureTestAsyncBlocker", None)
+    if blocker_api is None:
+        raise RuntimeError("FreeCAD.FeatureTestAsyncBlocker is unavailable")
+    blocker_api.resetBlocker()
+    blocker_api.releaseBlocker()
+
+
+def _async_blocker_control(params: dict[str, Any]) -> dict[str, Any]:
+    import FreeCAD
+
+    action = str(params.get("action") or "")
+    document_name = str(params.get("document") or "")
+    if not document_name:
+        raise ValueError("document is required")
+    document = FreeCAD.getDocument(document_name)
+    blocker = document.getObject("RecomputeBlocker")
+    if blocker is None:
+        raise ValueError("RecomputeBlocker missing")
+    blocker_api = getattr(FreeCAD, "FeatureTestAsyncBlocker", None)
+    if blocker_api is None:
+        raise RuntimeError("FreeCAD.FeatureTestAsyncBlocker is unavailable")
+
+    if action == "reset":
+        blocker_api.resetBlocker()
+        return {"action": action}
+    if action == "release":
+        blocker_api.releaseBlocker()
+        return {"action": action}
+    if action == "touch_and_queue_recompute":
+        blocker_api.resetBlocker()
+        blocker.touch()
+        FreeCAD.queueRecomputeRequest(
+            FreeCAD.RecomputeRequest.fromDocumentObject(blocker)
+        )
+        return {"action": action, "queued": True}
+    raise ValueError(f"unsupported async_blocker_control action: {action}")
 
 
 def _local_save(_params: dict[str, Any]) -> dict[str, Any]:
