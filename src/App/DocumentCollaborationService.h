@@ -143,6 +143,8 @@ public:
     [[nodiscard]] bool cancelEdit(const std::string& sessionId,
                                   std::string reason = "cancelled by caller");
 
+    [[nodiscard]] CollaborationEditSnapshot captureSemanticRevisions(
+        std::vector<DocumentRevisionKey> keys) const;
     [[nodiscard]] CollaborationEditSnapshot snapshotForEdit(
         const std::string& sessionId,
         std::vector<DocumentRevisionKey> keys) const;
@@ -150,6 +152,12 @@ public:
                                            std::string operationId,
                                            const CollaborativeOperationIntent& intent,
                                            std::string provenance);
+    [[nodiscard]] PreparedEdit prepareEditWithExpectedRevisions(
+        const std::string& sessionId,
+        std::string operationId,
+        const CollaborativeOperationIntent& intent,
+        std::vector<DocumentRevisionObservation> expectedRevisions,
+        std::string provenance);
     [[nodiscard]] PreparedEditExecutionId prepareEditAsync(
         const std::string& sessionId,
         std::string operationId,
@@ -209,6 +217,8 @@ private:
     lifetimeGate() const;
 
     [[nodiscard]] EditSession requireActiveSession(const std::string& sessionId) const;
+    [[nodiscard]] CollaborationEditSnapshot captureSemanticRevisionsOnDocumentThread(
+        std::vector<DocumentRevisionKey> keys) const;
     [[nodiscard]] CollaborationEditSnapshot snapshotForEditOnDocumentThread(
         const std::string& sessionId,
         std::vector<DocumentRevisionKey> keys) const;
@@ -216,7 +226,8 @@ private:
         const std::string& sessionId,
         std::string operationId,
         const CollaborativeOperationIntent& intent,
-        std::string provenance);
+        std::string provenance,
+        const std::vector<DocumentRevisionObservation>* expectedRevisionFence = nullptr);
     [[nodiscard]] PreparedEditExecutionId prepareEditAsyncOnDocumentThread(
         const std::string& sessionId,
         std::string operationId,

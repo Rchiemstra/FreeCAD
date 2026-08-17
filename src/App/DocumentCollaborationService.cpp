@@ -18,6 +18,7 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace
@@ -403,6 +404,49 @@ EditSession DocumentCollaborationService::requireActiveSession(
     return found->second;
 }
 
+CollaborationEditSnapshot DocumentCollaborationService::captureSemanticRevisions(
+    std::vector<DocumentRevisionKey> keys) const
+{
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        throw Base::RuntimeError(
+            "cannot capture semantic revisions while document is closing");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "off-owner semantic revision capture requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<CollaborationEditSnapshot>(
+        [this, keys = std::move(keys)]() mutable {
+            return captureSemanticRevisionsOnDocumentThread(std::move(keys));
+        });
+}
+
+CollaborationEditSnapshot DocumentCollaborationService::captureSemanticRevisionsOnDocumentThread(
+    std::vector<DocumentRevisionKey> keys) const
+{
+    if (!_document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "semantic revision capture was not dispatched to the document owner thread");
+    }
+    std::lock_guard lock(_document.collaborationCommitMutex());
+    if (_document.collaborationStableReadBlocked()) {
+        throw Base::RuntimeError(
+            "semantic revision capture requires a stable document boundary");
+    }
+    _document.beginCollaborationStableReadCapture();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        _document.finishCollaborationStableReadCapture();
+    };
+    const auto identity = _document.collaborationIdentity();
+    if (identity.state != DocumentLifecycleState::Live) {
+        throw Base::RuntimeError("cannot capture semantic revisions for a non-live document");
+    }
+    keys = canonicalKeys(std::move(keys));
+    return {"", identity.instanceId, identity.lifecycleEpoch,
+            _document.collaborationRevisions().capture(keys)};
+}
+
 CollaborationEditSnapshot DocumentCollaborationService::snapshotForEdit(
     const std::string& sessionId,
     std::vector<DocumentRevisionKey> keys) const
@@ -473,7 +517,38 @@ PreparedEdit DocumentCollaborationService::prepareEdit(
             return prepareEditOnDocumentThread(sessionId,
                                                std::move(operationId),
                                                intent,
-                                               std::move(provenance));
+                                               std::move(provenance),
+                                               nullptr);
+        });
+}
+
+PreparedEdit DocumentCollaborationService::prepareEditWithExpectedRevisions(
+    const std::string& sessionId,
+    std::string operationId,
+    const CollaborativeOperationIntent& intent,
+    std::vector<DocumentRevisionObservation> expectedRevisions,
+    std::string provenance)
+{
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        throw Base::RuntimeError("cannot prepare collaboration work while document is closing");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "off-owner collaboration preparation requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<PreparedEdit>(
+        [this,
+         sessionId,
+         operationId = std::move(operationId),
+         &intent,
+         expectedRevisions = std::move(expectedRevisions),
+         provenance = std::move(provenance)]() mutable {
+            return prepareEditOnDocumentThread(sessionId,
+                                               std::move(operationId),
+                                               intent,
+                                               std::move(provenance),
+                                               &expectedRevisions);
         });
 }
 
@@ -481,7 +556,8 @@ PreparedEdit DocumentCollaborationService::prepareEditOnDocumentThread(
     const std::string& sessionId,
     std::string operationId,
     const CollaborativeOperationIntent& intent,
-    std::string provenance)
+    std::string provenance,
+    const std::vector<DocumentRevisionObservation>* expectedRevisionFence)
 {
     if (!_document.isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
@@ -522,7 +598,38 @@ PreparedEdit DocumentCollaborationService::prepareEditOnDocumentThread(
               [](const auto& left, const auto& right) { return left < right; });
     dependencyUnion.erase(std::unique(dependencyUnion.begin(), dependencyUnion.end()),
                           dependencyUnion.end());
-    auto expected = _document.collaborationRevisions().capture(dependencyUnion);
+
+    std::vector<DocumentRevisionObservation> expected;
+    if (expectedRevisionFence != nullptr && !expectedRevisionFence->empty()) {
+        std::unordered_map<DocumentRevisionKey,
+                           DocumentRevision,
+                           DocumentRevisionKeyHash>
+            fencedRevisions;
+        fencedRevisions.reserve(expectedRevisionFence->size());
+        for (const auto& observation : *expectedRevisionFence) {
+            if (!observation.key.valid()) {
+                throw std::invalid_argument("expected revision fence contains an invalid key");
+            }
+            const auto [inserted, unique] =
+                fencedRevisions.emplace(observation.key, observation.revision);
+            if (!unique) {
+                throw std::invalid_argument("expected revision fence contains duplicate keys");
+            }
+        }
+        expected.reserve(dependencyUnion.size());
+        for (const auto& key : dependencyUnion) {
+            const auto found = fencedRevisions.find(key);
+            if (found != fencedRevisions.end()) {
+                expected.emplace_back(key, found->second);
+            }
+            else {
+                expected.emplace_back(key, _document.collaborationRevisions().current(key));
+            }
+        }
+    }
+    else {
+        expected = _document.collaborationRevisions().capture(dependencyUnion);
+    }
 
     return PreparedEdit(PreparedEdit::ConstructionKey {},
                         preparation.registrationId,
