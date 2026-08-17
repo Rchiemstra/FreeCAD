@@ -183,6 +183,19 @@ private:
     PyObject* _traceback {nullptr};
 };
 
+const char* documentLifecycleStateName(DocumentLifecycleState state)
+{
+    switch (state) {
+        case DocumentLifecycleState::Live:
+            return "Live";
+        case DocumentLifecycleState::Closing:
+            return "Closing";
+        case DocumentLifecycleState::Closed:
+            return "Closed";
+    }
+    return "Closed";
+}
+
 const char* revisionKindName(DocumentRevisionKind kind)
 {
     switch (kind) {
@@ -272,6 +285,42 @@ std::vector<DocumentRevisionKey> revisionKeysFromPython(PyObject* object)
     }
     Py_DECREF(fast);
     return keys;
+}
+
+std::vector<DocumentRevisionObservation> revisionObservationsFromPython(PyObject* object)
+{
+    PyObject* fast =
+        PySequence_Fast(object, "expected_revisions must be a sequence of revision dicts");
+    if (!fast) {
+        throw Py::Exception();
+    }
+    std::vector<DocumentRevisionObservation> observations;
+    try {
+        const auto count = PySequence_Fast_GET_SIZE(fast);
+        observations.reserve(static_cast<std::size_t>(count));
+        PyObject** items = PySequence_Fast_ITEMS(fast);
+        for (Py_ssize_t index = 0; index < count; ++index) {
+            PyObject* item = items[index];
+            if (!PyDict_Check(item)) {
+                throw Py::TypeError("each expected revision must be a dict");
+            }
+            PyObject* revisionObject = PyDict_GetItemString(item, "revision");
+            if (!revisionObject || !PyLong_Check(revisionObject)) {
+                throw Py::TypeError("each expected revision must include an integer 'revision'");
+            }
+            const auto revision = static_cast<DocumentRevision>(PyLong_AsLong(revisionObject));
+            if (PyErr_Occurred()) {
+                throw Py::Exception();
+            }
+            observations.emplace_back(revisionKeyFromPython(item), revision);
+        }
+    }
+    catch (...) {
+        Py_DECREF(fast);
+        throw;
+    }
+    Py_DECREF(fast);
+    return observations;
 }
 
 std::map<std::string, std::string> stringMapFromPython(PyObject* object)
@@ -1211,6 +1260,47 @@ PyObject* DocumentPy::commitTransaction(PyObject* args)
     Py_Return;
 }
 
+PyObject* DocumentPy::collaborationIdentity(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto identity = getDocumentPtr()->collaborationIdentity();
+        Py::Dict result;
+        result["instance_id"] = Py::Long(identity.instanceId);
+        result["lifecycle_epoch"] = Py::Long(identity.lifecycleEpoch);
+        result["state"] = Py::String(documentLifecycleStateName(identity.state));
+        return Py::new_reference_to(result);
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::captureSemanticRevisions(PyObject* args)
+{
+    PyObject* revisionKeys = nullptr;
+    if (!PyArg_ParseTuple(args, "O", &revisionKeys)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        const auto snapshot =
+            getDocumentPtr()->collaborationService().captureSemanticRevisions(
+                revisionKeysFromPython(revisionKeys));
+        Py::Dict result;
+        result["document_instance_id"] = Py::Long(snapshot.documentInstanceId);
+        result["lifecycle_epoch"] = Py::Long(snapshot.lifecycleEpoch);
+        Py::List revisions;
+        for (const auto& observation : snapshot.revisions) {
+            revisions.append(revisionObservationToPython(observation));
+        }
+        result["revisions"] = revisions;
+        return Py::new_reference_to(result);
+    }
+    PY_CATCH;
+}
+
 PyObject* DocumentPy::beginEditSession(PyObject* args)
 {
     const char* actorId = nullptr;
@@ -1277,6 +1367,41 @@ PyObject* DocumentPy::prepareEdit(PyObject* args)
                                                                              operationId,
                                                                              intent,
                                                                              provenance);
+        return preparedEditToCapsule(std::make_unique<PreparedEdit>(std::move(prepared)));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::prepareEditWithExpectedRevisions(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    const char* operationId = nullptr;
+    const char* operationType = nullptr;
+    PyObject* arguments = nullptr;
+    PyObject* expectedRevisions = nullptr;
+    const char* provenance = "python";
+    if (!PyArg_ParseTuple(args,
+                          "sssOO|s",
+                          &sessionId,
+                          &operationId,
+                          &operationType,
+                          &arguments,
+                          &expectedRevisions,
+                          &provenance)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        CollaborativeOperationIntent intent;
+        intent.operationType = operationType;
+        intent.arguments = stringMapFromPython(arguments);
+        auto prepared =
+            getDocumentPtr()->collaborationService().prepareEditWithExpectedRevisions(
+                sessionId,
+                operationId,
+                intent,
+                revisionObservationsFromPython(expectedRevisions),
+                provenance);
         return preparedEditToCapsule(std::make_unique<PreparedEdit>(std::move(prepared)));
     }
     PY_CATCH;
@@ -1386,11 +1511,17 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
     PyObject* recompute = Py_True;
     PyObject* postcondition = Py_None;
     PyObject* trustedStructural = Py_False;
-    static const std::array<const char*, 6> kwlist {
-        "", "structural", "recompute", "postcondition", "trusted_structural", nullptr};
+    const char* objectName = nullptr;
+    static const std::array<const char*, 7> kwlist {"",
+                                                    "structural",
+                                                    "recompute",
+                                                    "postcondition",
+                                                    "trusted_structural",
+                                                    "object_name",
+                                                    nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!O!OO!:commitCompatibilityMutation",
+                                             "O|$O!O!OO!z:commitCompatibilityMutation",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
@@ -1399,7 +1530,8 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                                              &recompute,
                                              &postcondition,
                                              &PyBool_Type,
-                                             &trustedStructural)) {
+                                             &trustedStructural,
+                                             &objectName)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
@@ -1431,9 +1563,28 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
-            mutation.scope = Base::asBoolean(structural)
-                ? CollaborationCompatibilityScope::Structural
-                : CollaborationCompatibilityScope::UnknownModel;
+            const bool structuralScope = Base::asBoolean(structural);
+            if (objectName != nullptr && *objectName != '\0') {
+                if (structuralScope) {
+                    throw Base::ValueError(
+                        "commitCompatibilityMutation cannot combine structural=True with object_name");
+                }
+                const auto* object = getDocumentPtr()->getObject(objectName);
+                if (!object) {
+                    throw Base::ValueError(
+                        "commitCompatibilityMutation object_name does not name a live document object");
+                }
+                mutation.scope = CollaborationCompatibilityScope::ObjectModel;
+                mutation.objectName = objectName;
+                mutation.stableObjectIdentity =
+                    getDocumentPtr()->collaborationObjectIdentity(*object);
+            }
+            else if (structuralScope) {
+                mutation.scope = CollaborationCompatibilityScope::Structural;
+            }
+            else {
+                mutation.scope = CollaborationCompatibilityScope::UnknownModel;
+            }
             CollaborationCompatibilityCallback nativeCallback =
                 [retainedCallback = std::move(retainedCallback), callbackError] {
                     Base::PyGILStateLocker gil;

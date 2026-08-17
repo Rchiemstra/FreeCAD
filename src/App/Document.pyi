@@ -250,6 +250,18 @@ class Document(PropertyContainer):
         """Start an advisory collaboration edit session."""
         ...
 
+    def collaborationIdentity(self, /) -> dict[str, object]:
+        """Read the live document instance id, lifecycle epoch, and lifecycle state."""
+        ...
+
+    def captureSemanticRevisions(
+        self,
+        revision_keys: Sequence[dict[str, str]],
+        /,
+    ) -> dict[str, object]:
+        """Capture semantic revisions without minting an edit session."""
+        ...
+
     def snapshotForEdit(
         self,
         session_id: str,
@@ -269,6 +281,19 @@ class Document(PropertyContainer):
         /,
     ) -> object:
         """Prepare a registered native operation and return an opaque immutable handle."""
+        ...
+
+    def prepareEditWithExpectedRevisions(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        expected_revisions: Sequence[dict[str, object]],
+        provenance: str = "python",
+        /,
+    ) -> object:
+        """Prepare using begin-time expected revisions for fenced semantic keys."""
         ...
 
     def prepareEditAsync(
@@ -318,10 +343,12 @@ class Document(PropertyContainer):
         recompute: bool = True,
         postcondition: Callable[[], object] | None = None,
         trusted_structural: bool = False,
+        object_name: str | None = None,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
 
         Object creation and removal require the explicit ``structural=True`` scope.
+        ``object_name`` selects Gui-parity ObjectModel publication for that object.
         ``recompute=False`` preserves pending recompute work for recovery mutations.
         The optional postcondition runs once before publication; a false result rolls back.
         ``trusted_structural`` only widens the coordinator-owned recompute scope.
