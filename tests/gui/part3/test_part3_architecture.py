@@ -46,7 +46,8 @@ FORBIDDEN_PIVY_TOKENS = frozenset(
 READINESS_SLEEP_ALLOWLIST = frozenset(
     {
         ("local_user_driver.py", "wait_for_endpoint"),
-        ("conftest.py", "freecad_gui_session"),
+        ("conftest.py", "launch_freecad_gui_session"),
+        ("conftest.py", "_wait_for_port_closed"),
         ("rpc_session_client.py", "authenticate_json_rpc"),
         ("local_driver/actions.py", "_wait_for_property_editor"),
     }
@@ -233,3 +234,79 @@ def test_remote_agent_driver_methods_are_allowlisted() -> None:
 def test_retired_harness_is_absent() -> None:
     retired = REPO_ROOT / "tests" / "gui" / "collaboration_gui_stress.py"
     assert not retired.is_file()
+
+
+FORCE_KILL_HELPER_NAMES = frozenset(
+    {
+        "_force_kill_owned_process_tree",
+        "_terminate_owned_process_tree",
+    }
+)
+
+
+def _taskkill_force_call_sites(path: Path) -> list[tuple[str, int]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    sites: list[tuple[str, int]] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.function_stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            args: list[str] = []
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    args.append(arg.value)
+            if any("taskkill" in value for value in args) and any(
+                "/F" in value or value == "/F" for value in args
+            ):
+                func_name = self.function_stack[-1] if self.function_stack else "<module>"
+                sites.append((func_name, node.lineno))
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    return sites
+
+
+def test_taskkill_force_confined_to_last_resort_helper() -> None:
+    violations: list[str] = []
+    for rel in ("stress_coordinator.py", "conftest.py"):
+        path = PACKAGE_ROOT / rel
+        for func_name, line in _taskkill_force_call_sites(path):
+            if func_name not in FORCE_KILL_HELPER_NAMES:
+                violations.append(
+                    f"{rel}:{line} taskkill /F outside last-resort helper ({func_name})"
+                )
+    assert violations == [], "\n".join(violations)
+
+
+def test_shutdown_success_path_uses_graceful_sequence() -> None:
+    path = PACKAGE_ROOT / "stress_coordinator.py"
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+
+    graceful_fn: ast.FunctionDef | None = None
+    shutdown_launcher_fn: ast.FunctionDef | None = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "graceful_shutdown_owned_session":
+            graceful_fn = node
+        if isinstance(node, ast.ClassDef) and node.name == "StressCoordinator":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "shutdown_launcher":
+                    shutdown_launcher_fn = item
+
+    assert graceful_fn is not None, "graceful_shutdown_owned_session missing"
+    graceful_body = ast.get_source_segment(source, graceful_fn) or ""
+    assert "shutdown_rpc_server" in graceful_body
+    assert "close_main_window" in graceful_body
+    assert "_force_kill_owned_process_tree" in graceful_body
+
+    assert shutdown_launcher_fn is not None, "StressCoordinator.shutdown_launcher missing"
+    launcher_body = ast.get_source_segment(source, shutdown_launcher_fn) or ""
+    assert "graceful_shutdown_owned_session" in launcher_body
+    assert "_force_kill_owned_process_tree" not in launcher_body
