@@ -10,6 +10,16 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 
+SHUTDOWN_TIMESTAMP_KEYS = (
+    "requested_utc",
+    "rpc_admission_closed_utc",
+    "worker_shutdown_utc",
+    "documents_closed_utc",
+    "listener_shutdown_utc",
+    "window_closed_utc",
+    "process_exit_utc",
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -31,17 +41,34 @@ def empty_evidence(*, stage: str | None = None) -> dict[str, Any]:
         "saves": [],
         "conflicts": {"same_property": {}, "independent_property": {}},
         "pause_resume": {"pause": {}, "refused": {}, "resume": {}, "after": {}},
-        "shutdown": {
-            "deadline_seconds": 60,
-            "forced": False,
-            "stalled_stage": None,
-        },
+        "shutdown": empty_shutdown_record(),
         "artifacts": {"documents": [], "lock_anchors": [], "unexplained": []},
         "checks": [],
         "failed_checks": [],
         "verdict": None,
     }
     return payload
+
+
+def empty_shutdown_record() -> dict[str, Any]:
+    """ADR §8 shutdown envelope with null timestamps until stamped."""
+
+    record: dict[str, Any] = {key: None for key in SHUTDOWN_TIMESTAMP_KEYS}
+    record["deadline_seconds"] = 60
+    record["forced"] = False
+    record["stalled_stage"] = None
+    return record
+
+
+def stamp_shutdown_transition(
+    shutdown: dict[str, Any],
+    key: str,
+    *,
+    at: str | None = None,
+) -> None:
+    if key not in SHUTDOWN_TIMESTAMP_KEYS:
+        raise ValueError(f"unknown shutdown timestamp key: {key!r}")
+    shutdown[key] = at or utc_now_iso()
 
 
 def write_evidence(path: Path, payload: dict[str, Any]) -> None:
@@ -74,9 +101,12 @@ def print_verdict_line(verdict: str) -> None:
 
 __all__ = [
     "SCHEMA_VERSION",
+    "SHUTDOWN_TIMESTAMP_KEYS",
     "empty_evidence",
+    "empty_shutdown_record",
     "finalize_evidence",
     "print_verdict_line",
+    "stamp_shutdown_transition",
     "utc_now_iso",
     "write_evidence",
 ]

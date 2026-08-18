@@ -25,6 +25,7 @@ SUPPORTED_ACTIONS = frozenset(
         "provision_alpha_beta_fixture",
         "async_blocker_control",
         "close_document",
+        "close_main_window",
         "reset_property_editor",
     }
 )
@@ -52,6 +53,7 @@ def execute(action: str, params: dict[str, Any]) -> dict[str, Any]:
         "provision_alpha_beta_fixture": _provision_alpha_beta_fixture,
         "async_blocker_control": _async_blocker_control,
         "close_document": _close_document,
+        "close_main_window": _close_main_window,
         "reset_property_editor": _reset_property_editor,
     }
     return dispatch[action](params or {})
@@ -490,6 +492,17 @@ def _reset_property_editor(_params: dict[str, Any]) -> dict[str, Any]:
     FreeCADGui.Selection.clearSelection()
     FreeCADGui.updateGui()
     return {"reset": True}
+
+
+def _close_main_window(_params: dict[str, Any]) -> dict[str, Any]:
+    import FreeCADGui
+
+    main_window = FreeCADGui.getMainWindow()
+    if main_window is None:
+        raise RuntimeError("no main window")
+    main_window.close()
+    FreeCADGui.updateGui()
+    return {"closed": True}
 
 
 def _close_document(params: dict[str, Any]) -> dict[str, Any]:

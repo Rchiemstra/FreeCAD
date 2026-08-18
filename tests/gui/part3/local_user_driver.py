@@ -188,6 +188,46 @@ class LocalUserDriver:
         return response.get("result") or {}
 
 
+def _provision_disposable_auth_secret(secret_path: Path) -> None:
+    """Create or repair the profile auth secret with owner-only POSIX mode.
+
+    Mirrors ``create_profile_secret`` / ``setup_isolated_profile._ensure_auth_secret``
+    so disposable profiles match real isolated-profile provisioning.
+    """
+
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    if secret_path.is_file():
+        try:
+            size = secret_path.stat().st_size
+        except OSError:
+            size = -1
+        if size == 32:
+            try:
+                os.chmod(secret_path, 0o600)
+            except OSError:
+                pass
+            return
+        secret_path.unlink()
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(secret_path, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(secrets.token_bytes(32))
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            os.chmod(secret_path, 0o600)
+    except Exception:
+        try:
+            secret_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def ensure_disposable_profile_auth_secret(profile_root: Path) -> Path:
     """Create the 32-byte MCP handshake secret in a disposable isolated profile.
 
@@ -200,8 +240,7 @@ def ensure_disposable_profile_auth_secret(profile_root: Path) -> Path:
     fc_data = profile_root / "FreeCAD"
     fc_data.mkdir(parents=True, exist_ok=True)
     secret_path = fc_data / MCP_SECRET_FILENAME
-    if not secret_path.is_file() or secret_path.stat().st_size != 32:
-        secret_path.write_bytes(secrets.token_bytes(32))
+    _provision_disposable_auth_secret(secret_path)
     settings_path = fc_data / MCP_SETTINGS_FILENAME
     settings: dict[str, Any] = {}
     if settings_path.is_file():

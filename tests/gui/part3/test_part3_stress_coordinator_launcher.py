@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.gui.part3.local_user_driver import TOKEN_ENV, LocalUserDriver, generate_control_token
+from tests.gui.part3.local_user_driver import (
+    MCP_SECRET_FILENAME,
+    TOKEN_ENV,
+    LocalUserDriver,
+    ensure_disposable_profile_auth_secret,
+    generate_control_token,
+)
 from tests.gui.part3.remote_agent_driver import (
     FORBIDDEN_REMOTE_AGENT_RPC_METHODS,
     REMOTE_AGENT_TYPED_RPC_ALLOWLIST,
@@ -40,6 +46,7 @@ def test_coordinator_uses_tracked_start_freecad_launcher(tmp_path: Path) -> None
     )
     assert command[1].endswith("start_freecad.py")
     assert Path(command[1]).resolve() == coordinator.launcher_path
+    assert "--wait" in command
 
 
 def test_coordinator_launch_env_uses_isolated_profile(tmp_path: Path) -> None:
@@ -49,6 +56,20 @@ def test_coordinator_launch_env_uses_isolated_profile(tmp_path: Path) -> None:
     assert env["APPDATA"] == str(coordinator.profile_root)
     assert env[TOKEN_ENV]
     assert (coordinator.profile_root / "FreeCAD" / "Mod" / "Part3LocalDriver").exists()
+
+
+def test_disposable_profile_auth_secret_is_owner_only(tmp_path: Path) -> None:
+    profile_root = tmp_path / "appdata"
+    secret_path = ensure_disposable_profile_auth_secret(profile_root)
+    assert secret_path == profile_root / "FreeCAD" / MCP_SECRET_FILENAME
+    assert secret_path.stat().st_size == 32
+    if os.name == "nt":
+        return
+
+    assert (secret_path.stat().st_mode & 0o777) == 0o600
+    secret_path.chmod(0o644)
+    ensure_disposable_profile_auth_secret(profile_root)
+    assert (secret_path.stat().st_mode & 0o777) == 0o600
 
 
 def test_coordinator_refuses_occupied_mcp_port(
