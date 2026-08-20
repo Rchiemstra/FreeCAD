@@ -275,63 +275,372 @@ def _view_state(_params: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
+def _property_view_ancestor(widget):
+    """The ``Gui::PropertyView`` that owns ``widget``, or ``None``.
+
+    Ownership is structural rather than name-based: a PropertyView constructs
+    its data editor as a descendant (PropertyView.cpp:93-94), so walking up to
+    the owning view is what pins WHICH property view the harness is driving.
+    """
+
+    parent = widget.parentWidget()
+    while parent is not None:
+        if parent.metaObject().className() == "Gui::PropertyView":
+            return parent
+        parent = parent.parentWidget()
+    return None
+
+
+def _describe_widget(widget) -> str:
+    view = _property_view_ancestor(widget)
+    view_name = "none" if view is None else view.metaObject().className()
+    view_visible = "n/a" if view is None else str(view.isVisible())
+    return (
+        f"{widget.metaObject().className()}(visible={widget.isVisible()}, "
+        f"view={view_name}, view_visible={view_visible})"
+    )
+
+
+def _owned_by_visible_property_view(widget) -> bool:
+    """Whether ``widget`` belongs to a PropertyView that can still rebuild.
+
+    Visibility is checked on the OWNING VIEW, not on the editor page: a hidden
+    PropertyView detaches from selection and builds up empty in hideEvent
+    (PropertyView.cpp:188-197), and onTimer early-returns with an empty build
+    while detached (PropertyView.cpp:391-396). The editor page itself may be the
+    non-current tab and still be rebuilt correctly, so its own isVisible() is
+    reported for diagnostics but is not a qualification test.
+    """
+
+    view = _property_view_ancestor(widget)
+    return view is not None and view.isVisible()
+
+
 def _property_editor_data():
+    """Resolve the single usable Property Editor, or fail naming the ambiguity.
+
+    The object name "propertyEditorData" is not unique in FreeCAD: every
+    ``Gui::PropertyView`` names its data editor that way (PropertyView.cpp:93-94)
+    and PropertyView is instantiated both in the Combo View (ComboView.cpp:56)
+    and in the standalone dock (PropertyView.cpp:622). Taking the first match in
+    Qt's traversal order could therefore bind to a detached view that never
+    populates. This resolver requires exactly one candidate owned by a visible
+    PropertyView and raises an explicit error otherwise (GRK-P3-088).
+    """
+
     import FreeCADGui
+
     from PySide import QtWidgets
 
     main_window = FreeCADGui.getMainWindow()
     if main_window is None:
         raise RuntimeError("no main window")
-    editor = main_window.findChild(QtWidgets.QWidget, "propertyEditorData")
-    if editor is None:
-        tab = main_window.findChild(QtWidgets.QTabWidget, "propertyTab")
-        if tab is not None:
-            widget = tab.currentWidget()
-            if widget is not None and widget.objectName() == "propertyEditorData":
-                editor = widget
-    if editor is None:
+
+    named = list(main_window.findChildren(QtWidgets.QWidget, "propertyEditorData"))
+    tab = main_window.findChild(QtWidgets.QTabWidget, "propertyTab")
+    if tab is not None:
+        current = tab.currentWidget()
+        if (
+            current is not None
+            and current.objectName() == "propertyEditorData"
+            and all(current is not candidate for candidate in named)
+        ):
+            named.append(current)
+
+    if not named:
         raise RuntimeError("propertyEditorData not found")
-    return editor
+
+    usable = [widget for widget in named if _owned_by_visible_property_view(widget)]
+    if not usable:
+        raise RuntimeError(
+            "no property editor owned by a visible Gui::PropertyView; candidates: "
+            f"{[_describe_widget(widget) for widget in named]}"
+        )
+    if len(usable) > 1:
+        raise RuntimeError(
+            f"ambiguous property editor: {len(usable)} widgets named "
+            "propertyEditorData are owned by a visible Gui::PropertyView; "
+            f"candidates: {[_describe_widget(widget) for widget in usable]}"
+        )
+    return usable[0]
 
 
-def _wait_for_property_editor(editor, timeout_s: float = 5.0) -> None:
-    import time
+def _normalized_property_key(name: str) -> str:
+    """Compare-safe key for a property name or an editor display label.
 
-    from PySide import QtWidgets
+    Display labels are the property name camel-case split with spaces inserted
+    (PropertyItem::setPropertyName, PropertyItem.cpp:569-596), so spaces are not
+    significant; underscores are folded for the same reason the previous lookup
+    folded them.
+    """
 
-    model = editor.model()
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        QtWidgets.QApplication.processEvents()
-        if model.rowCount() > 0:
-            return
-        time.sleep(0.05)
-    raise RuntimeError("property editor did not populate")
+    return str(name).replace(" ", "").replace("_", "")
 
 
-def _find_property_value_index(editor, property_name: str):
+def _camel_split_property_name(name: str) -> str:
+    """Mirror step 1 of ``PropertyItem::setPropertyName`` (PropertyItem.cpp:578-590).
+
+    A space is inserted before an uppercase character whose predecessor is
+    lowercase - the exact rule FreeCAD applies before translating.
+    """
+
+    display = ""
+    for char in str(name):
+        if char.isupper() and display and display[-1].islower():
+            display += " "
+        display += char
+    return display
+
+
+def _expected_display_label(name: str) -> str:
+    """The label the Property Editor will actually show for property ``name``.
+
+    Mirrors ``PropertyItem::setPropertyName`` end to end
+    (PropertyItem.cpp:569-596): camel-case split, then
+    ``translate("App::Property", <split name>)``. FreeCAD calls
+    ``QApplication::translate``; ``QCoreApplication.translate`` is the same
+    static lookup against the same context and the same source string.
+
+    Computing the EXPECTED label this way - instead of comparing a translated
+    label against an untranslated property name - is what makes the binding
+    check locale-independent. The model's DisplayRole cannot supply the raw
+    name: ``PropertyItem::data`` returns ``displayName()`` for
+    ``Qt::DisplayRole`` (PropertyItem.cpp:727), which is ``displayText``
+    (:370-373), which is already translated (:595).
+    """
+
+    from PySide import QtCore
+
+    return str(
+        QtCore.QCoreApplication.translate(
+            "App::Property", _camel_split_property_name(name)
+        )
+    )
+
+
+def _property_label_keys(name: str) -> frozenset[str]:
+    """Every form in which the editor could legitimately display ``name``.
+
+    The translated label is what FreeCAD renders; the camel-split and raw forms
+    are kept so an untranslated or partially translated catalogue still matches.
+    All three describe the SAME property of the SAME object, so this widens
+    nothing about object identity - a foreign object's rows still fail.
+    """
+
+    return frozenset(
+        _normalized_property_key(form)
+        for form in (
+            str(name),
+            _camel_split_property_name(name),
+            _expected_display_label(name),
+        )
+    )
+
+
+def _expected_property_keys(obj) -> frozenset[str]:
+    """Accepted label keys for every property the requested object carries."""
+
+    keys: set[str] = set()
+    for name in obj.PropertiesList:
+        keys.update(_property_label_keys(name))
+    return frozenset(keys)
+
+
+def _selected_object_pairs() -> list[tuple[str, str]]:
+    """The live selection, read through the SAME call the rebuild consumes.
+
+    ``PropertyView::onTimer`` builds the data editor from
+    ``Gui::Selection().getSelectionEx("*")`` (PropertyView.cpp:427). Reading that
+    identical list here is what makes the binding assertion below meaningful
+    rather than merely suggestive.
+    """
+
+    import FreeCADGui
+
+    return [
+        (str(item.DocumentName), str(item.ObjectName))
+        for item in FreeCADGui.Selection.getSelectionEx("*")
+    ]
+
+
+def _require_selection_is(document_name: str, object_name: str) -> None:
+    """Fail loudly unless the selection is exactly the requested object."""
+
+    selected = _selected_object_pairs()
+    if selected != [(document_name, object_name)]:
+        listed = [f"{doc}#{obj}" for doc, obj in selected]
+        raise RuntimeError(
+            "property editor selection mismatch: expected exactly "
+            f"[{document_name}#{object_name}], live selection is {listed}"
+        )
+
+
+def _force_property_editor_rebuild(view) -> None:
+    """Run FreeCAD's own rebuild slot synchronously, in this call frame.
+
+    ``Gui::PropertyView::onTimer`` is declared ``public Q_SLOTS``
+    (PropertyView.h:72-75) and is already invoked directly in-tree by
+    ``PropertyView::setShowAll`` (PropertyView.cpp:173-186), so this is the
+    product code path and not a test-only bypass. Invoking it with
+    DirectConnection removes the dependence on the 100 ms single-shot timer
+    (PropertyView.cpp:79-81, 369-378; ViewParams.cpp:400); its first act is
+    ``timer->stop()`` (PropertyView.cpp:389), so a pending timer can no longer
+    replace the content underneath the edit either.
+    """
+
+    from PySide import QtCore
+
+    invoked = QtCore.QMetaObject.invokeMethod(
+        view, "onTimer", QtCore.Qt.DirectConnection
+    )
+    if not invoked:
+        raise RuntimeError(
+            "could not invoke Gui::PropertyView::onTimer on "
+            f"{view.metaObject().className()}"
+        )
+
+
+def _editor_property_labels(editor) -> list[str]:
+    """Labels of the property rows: the direct children of the group rows."""
+
     from PySide import QtCore
 
     model = editor.model()
     root = QtCore.QModelIndex()
-    normalized_name = property_name.replace("_", "")
+    labels: list[str] = []
+    for group_row in range(model.rowCount(root)):
+        group_index = model.index(group_row, 0, root)
+        for row in range(model.rowCount(group_index)):
+            labels.append(str(model.index(row, 0, group_index).data() or ""))
+    return labels
+
+
+def _property_editor_binding_defect(editor, property_name, expected_properties):
+    """Why the editor is not presenting the requested object, or ``None``."""
+
+    from PySide import QtCore
+
+    labels = _editor_property_labels(editor)
+    if not labels:
+        group_count = editor.model().rowCount(QtCore.QModelIndex())
+        return (
+            f"{group_count} group row(s) carry no property rows - this is the "
+            "emptied-group scaffolding left by PropertyModel::resetGroups "
+            "(PropertyModel.cpp:305-341), not a build for this object"
+        )
+    foreign = sorted(
+        {
+            label
+            for label in labels
+            if _normalized_property_key(label) not in expected_properties
+        }
+    )
+    if foreign:
+        return (
+            "editor is presenting properties that do not belong to the "
+            f"requested object: {foreign}"
+        )
+    present = {_normalized_property_key(label) for label in labels}
+    if not (_property_label_keys(property_name) & present):
+        return (
+            f"{property_name} (displayed as "
+            f"{_expected_display_label(property_name)!r}) is absent from the "
+            f"{len(labels)} property row(s) the editor is presenting"
+        )
+    return None
+
+
+def _wait_for_property_editor(
+    editor,
+    document_name: str,
+    object_name: str,
+    property_name: str,
+    expected_properties,
+    timeout_s: float = 5.0,
+) -> None:
+    """Prove the editor is presenting ``document_name``/``object_name``.
+
+    Readiness is no longer "the model has rows". That predicate is satisfied by
+    content left over from an earlier build and says nothing about the object
+    being edited (GRK-P3-083), which is how a stale editor holding another
+    object's emptied groups passed the old check. Each attempt instead:
+
+      1. asserts the live selection is exactly the requested object;
+      2. forces FreeCAD's own rebuild synchronously from that selection;
+      3. requires the resulting content to consist only of that object's
+         properties and to include the requested one.
+
+    No event-loop iteration runs between 1, 2 and 3, so the content inspected in
+    step 3 is the content step 2 built from the selection step 1 verified. The
+    bounded loop is a guard, not the mechanism: the rebuild is deterministic, so
+    a healthy call satisfies the contract on its first attempt.
+    """
+
+    import time
+
+    from PySide import QtWidgets
+
+    view = _property_view_ancestor(editor)
+    if view is None:
+        raise RuntimeError(
+            f"property editor has no Gui::PropertyView owner: {_describe_widget(editor)}"
+        )
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        _require_selection_is(document_name, object_name)
+        if not view.isVisible():
+            raise RuntimeError(
+                "Gui::PropertyView is not visible, so it is detached from "
+                "selection and cannot rebuild (PropertyView.cpp:188-197, 391-396)"
+            )
+        _force_property_editor_rebuild(view)
+        defect = _property_editor_binding_defect(
+            editor, property_name, expected_properties
+        )
+        if defect is None:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"property editor never bound to {document_name}#{object_name} "
+                f"within {timeout_s:.1f}s: {defect}"
+            )
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.05)
+
+
+def _find_property_value_index(editor, property_name: str):
+    """Value index for ``property_name``, searched only inside group rows.
+
+    Root rows are group headers, never properties, so they are not candidates.
+    The search runs only after _wait_for_property_editor has proved the editor
+    is presenting the requested object, and no event loop runs in between.
+
+    Matching accepts any form in which FreeCAD could display the property, so
+    the lookup does not depend on the UI language either.
+    """
+
+    from PySide import QtCore
+
+    model = editor.model()
+    root = QtCore.QModelIndex()
+    accepted = _property_label_keys(property_name)
 
     def walk(parent_index):
         for row in range(model.rowCount(parent_index)):
             idx0 = model.index(row, 0, parent_index)
-            if model.rowCount(idx0) > 0:
-                found = walk(idx0)
-                if found.isValid():
-                    return found
-            label = str(idx0.data() or "")
-            if label == property_name or label.replace(" ", "") == normalized_name:
+            if _normalized_property_key(str(idx0.data() or "")) in accepted:
                 return model.index(row, 1, parent_index)
+            found = walk(idx0)
+            if found.isValid():
+                return found
         return QtCore.QModelIndex()
 
-    index = walk(root)
-    if not index.isValid():
-        raise ValueError(f"property not found in Property Editor: {property_name}")
-    return index
+    for group_row in range(model.rowCount(root)):
+        index = walk(model.index(group_row, 0, root))
+        if index.isValid():
+            return index
+    raise ValueError(f"property not found in Property Editor: {property_name}")
 
 
 def _apply_property_editor_value(editor, index, value) -> None:
@@ -382,9 +691,18 @@ def _local_property_edit(params: dict[str, Any]) -> dict[str, Any]:
         gui_document.toggleTreeItem(obj, 2)
     FreeCADGui.updateGui()
 
+    expected_properties = _expected_property_keys(obj)
     editor = _property_editor_data()
-    _wait_for_property_editor(editor, timeout_s=8.0)
+    _wait_for_property_editor(
+        editor,
+        document_name,
+        object_name,
+        property_name,
+        expected_properties,
+        timeout_s=8.0,
+    )
     index = _find_property_value_index(editor, property_name)
+    _require_selection_is(document_name, object_name)
     _apply_property_editor_value(editor, index, params["value"])
 
     after_value = getattr(obj, property_name)
