@@ -76,11 +76,24 @@ SHUTDOWN_DEADLINE_SECONDS = 60
 
 def default_freecad_exe(repo_root: Path | None = None) -> Path | None:
     root = (repo_root or REPO_ROOT).resolve()
-    for candidate in (
-        root / "build" / "release" / "bin" / "FreeCAD.exe",
-        root / "build" / "release" / "bin" / "FreeCAD",
-    ):
-        if candidate.is_file():
+    windows = sys.platform == "win32"
+
+    def usable(candidate: Path) -> bool:
+        if windows:
+            return candidate.suffix.lower() == ".exe" and candidate.is_file()
+        return candidate.suffix.lower() != ".exe" and candidate.is_file()
+
+    for name in ("FREECAD", "FC_FREECAD", "FREECAD_EXE"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            override = Path(value).expanduser().resolve()
+            if usable(override):
+                return override
+
+    executable_name = "FreeCAD.exe" if windows else "FreeCAD"
+    for build_type in ("release", "debug"):
+        candidate = root / "build" / build_type / "bin" / executable_name
+        if usable(candidate):
             return candidate
     return None
 
@@ -448,7 +461,8 @@ class StressCoordinator:
         exe = freecad_exe or default_freecad_exe(self.repo_root)
         if exe is None or not exe.is_file():
             raise FileNotFoundError(
-                "FreeCAD GUI binary not found under build/release/bin"
+                "FreeCAD GUI binary not found via launcher overrides or "
+                "under build/release or build/debug"
             )
         self.assert_port_free()
         launcher_log = self.run_root / "launcher.log"
@@ -2301,7 +2315,11 @@ def run_stage(
     root = (repo_root or REPO_ROOT).resolve()
     exe = Path(freecad_exe) if freecad_exe is not None else default_freecad_exe(root)
     if exe is None or not exe.is_file():
-        print("FreeCAD GUI binary not found under build/release/bin", file=sys.stderr)
+        print(
+            "FreeCAD GUI binary not found via launcher overrides or "
+            "under build/release or build/debug",
+            file=sys.stderr,
+        )
         return 2
 
     coordinator = StressCoordinator(repo_root=root, run_root=run_root)
@@ -2492,7 +2510,11 @@ def _run_preflight_only() -> int:
 
     freecad_exe = default_freecad_exe(REPO_ROOT)
     if freecad_exe is None:
-        print("FreeCAD GUI binary not found under build/release/bin", file=sys.stderr)
+        print(
+            "FreeCAD GUI binary not found via launcher overrides or "
+            "under build/release or build/debug",
+            file=sys.stderr,
+        )
         return 2
 
     coordinator = StressCoordinator()

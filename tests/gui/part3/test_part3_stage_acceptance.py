@@ -81,6 +81,85 @@ LIVE_STAGE_OPT_IN_ENV = "PART3_STAGE_LIVE"
 LIVE_STAGE_OPT_IN_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
+def _clear_freecad_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("FREECAD", "FC_FREECAD", "FREECAD_EXE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_default_freecad_exe_linux_selects_extensionless_debug_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GRK-P3-094: a Windows PE must not mask a usable Linux debug build."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    _clear_freecad_overrides(monkeypatch)
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    windows_binary = tmp_path / "build" / "release" / "bin" / "FreeCAD.exe"
+    linux_binary = tmp_path / "build" / "debug" / "bin" / "FreeCAD"
+    windows_binary.parent.mkdir(parents=True)
+    linux_binary.parent.mkdir(parents=True)
+    windows_binary.write_bytes(b"MZ")
+    linux_binary.write_bytes(b"\x7fELF")
+
+    assert module.default_freecad_exe(tmp_path) == linux_binary
+
+
+@pytest.mark.parametrize("override_name", ("FREECAD", "FC_FREECAD", "FREECAD_EXE"))
+def test_default_freecad_exe_honors_launcher_override_names(
+    override_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The coordinator and tracked launcher share one override vocabulary."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    _clear_freecad_overrides(monkeypatch)
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    override = tmp_path / "custom" / "FreeCAD"
+    override.parent.mkdir()
+    override.write_bytes(b"\x7fELF")
+    monkeypatch.setenv(override_name, str(override))
+
+    assert module.default_freecad_exe(tmp_path) == override.resolve()
+
+
+def test_default_freecad_exe_windows_selects_only_exe_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An extensionless Linux artifact must never be selected on Windows."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    _clear_freecad_overrides(monkeypatch)
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    linux_binary = tmp_path / "build" / "release" / "bin" / "FreeCAD"
+    windows_binary = tmp_path / "build" / "debug" / "bin" / "FreeCAD.exe"
+    linux_binary.parent.mkdir(parents=True)
+    windows_binary.parent.mkdir(parents=True)
+    linux_binary.write_bytes(b"\x7fELF")
+    windows_binary.write_bytes(b"MZ")
+
+    assert module.default_freecad_exe(tmp_path) == windows_binary
+
+
+def test_default_freecad_exe_returns_none_when_candidates_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery remains fail closed when neither overrides nor builds exist."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    _clear_freecad_overrides(monkeypatch)
+    monkeypatch.setattr(module.sys, "platform", "linux")
+
+    assert module.default_freecad_exe(tmp_path) is None
+
+
 def live_stage_opt_in() -> bool:
     """True only when the operator explicitly asked for a real GUI session."""
 
@@ -111,7 +190,10 @@ def _require_stage_preconditions() -> None:
             "acceptance is unproven."
         )
     if default_freecad_exe(REPO_ROOT) is None:
-        pytest.skip("FreeCAD GUI binary not found under build/release/bin")
+        pytest.skip(
+            "FreeCAD GUI binary not found via launcher overrides or "
+            "under build/release or build/debug"
+        )
     if _port_is_open("127.0.0.1", MCP_RPC_PORT):
         pytest.skip(
             f"MCP port {MCP_RPC_PORT} is already occupied; "
