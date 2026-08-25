@@ -203,6 +203,7 @@ def _reset_pause_gate_between_tests(request) -> None:
         "test_part3_architecture.py",
         "test_part3_stress_coordinator_launcher.py",
         "test_part3_control_channel.py",
+        "test_evidence_system_integration.py",
     }:
         yield
         return
