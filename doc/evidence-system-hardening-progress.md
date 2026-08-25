@@ -2,7 +2,7 @@
 
 ## Status
 
-**IN PROGRESS — scope corrected to require tracked FreeCAD/MCP integration.**
+**IMPLEMENTED — tracked FreeCAD/MCP integration committed and pushed.**
 
 This record is Orchestrator-owned. Diagnostic-001 through Diagnostic-034 and
 all existing evidence are immutable predecessors. Diagnostic-044 work is
@@ -239,11 +239,12 @@ re-review or evidence writer.
 
 ## Final delivery
 
-Commit, push, and final verdict remain blocked until the behavior is present in
-tracked FreeCAD/MCP code and scoped tracked tests, those tests pass without the
-Diagnostic-044 directory, Luna passes the complete tracked gates, and Sol
-returns `NO_ISSUES` for the exact tested tracked hashes. An ignored-only
-Diagnostic-044 candidate cannot receive `IMPLEMENTED` status.
+All delivery gates are satisfied. The behavior is present in tracked MCP code,
+the scoped tracked tests pass without Diagnostic-044, Luna passed the complete
+tracked gates, and Sol returned exact `NO_ISSUES`. The nested implementation
+commit is `b2d657333ecec0e4f2d1172d3b8c8be380cf39e0`; the parent integration,
+progress, conftest-hunk, and gitlink delivery commit is
+`a1c13f13b312efc024e55a901bff5ccae2b48e77`. Both were pushed without force.
 
 ## Pause checkpoint — 2026-08-24T22:55:33.9111471Z
 
@@ -303,6 +304,23 @@ Diagnostic-044 candidate cannot receive `IMPLEMENTED` status.
   append its SHA here, narrowly stage the parent integration/progress/gitlink
   and only the one conftest exemption line, verify both cached diffs, commit and
   push parent without force, and verify local/upstream/remote SHA equality.
+
+## Delivery completion — 2026-08-25T07:32:04.0698787Z
+
+- Nested cached diff: 18 production files and 8 scoped tests/helpers only;
+  cached check clean. Commit `b2d657333ecec0e4f2d1172d3b8c8be380cf39e0`
+  pushed; nested local/upstream/remote equality verified.
+- Parent cached diff: this progress document, one parent integration test, one
+  exact conftest exemption line, and the intentional nested gitlink only;
+  cached check clean. Commit `a1c13f13b312efc024e55a901bff5ccae2b48e77`
+  pushed; parent local/upstream/remote equality verified.
+- Both indexes were empty after delivery. All unrelated parent and nested user
+  modifications remain unstaged. Diagnostic-044 is restored; the temporary
+  hold is absent; tracked caches are absent.
+- Final predecessor replay remains 873/873 byte-equal with canonical root
+  `63a82b3c2d5862939648f6a2518fbc7f70a3b135cdcbc6ed9c113b3bad4ac353`.
+- This documentation-only completion update is the final authorized mutation;
+  its commit SHA is reported in the final user handoff.
 
 ## Portability resumption — 2026-08-25T06:18:41.6950990Z
 
