@@ -291,14 +291,22 @@ def test_worker_imports_part_and_dispatches_only_registered_archive_operations()
     _, worker = _one_function(worker_source, "runGeometryWorkerMain")
     worker_with_literals = _compact(worker)
     assert 'Base::Interpreter().runString("importPart")' in worker_with_literals
-    _assert_order(
-        worker,
-        'Base::Interpreter().runString("import Part")',
-        "GeometryWorkerOperationRegistry::instance()",
-        "!registry.contains(operation)",
-        "return 13",
-        "registry.execute(operation, *input.archive, cancellation.token())",
+    compact_worker = _compact(worker)
+    registry = compact_worker.find("GeometryWorkerOperationRegistry::instance()")
+    app = compact_worker.find("ensureGenericIsolatedRecomputeRegistered()")
+    guards = [
+        match.start()
+        for match in re.finditer(
+            re.escape("!registry.contains(operation)"), compact_worker
+        )
+    ]
+    part = compact_worker.find('Base::Interpreter().runString("importPart")')
+    rejection = compact_worker.find("return13")
+    execute = compact_worker.find(
+        "registry.execute(operation,*input.archive,cancellation.token())"
     )
+    assert len(guards) == 2
+    assert 0 <= registry < app < guards[0] < part < guards[1] < rejection < execute
 
     registry_source = _read_source(WORKER_REGISTRY_SOURCE)
     _, execute = _one_function(registry_source, "execute")

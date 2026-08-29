@@ -4,6 +4,8 @@
 
 #include "DocumentCollaborationService.h"
 
+#include <Base/Exception.h>
+
 #include <algorithm>
 #include <limits>
 #include <set>
@@ -408,6 +410,19 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                 node.executionId = executionId;
             }
         }
+        catch (const Base::Exception& error) {
+            std::lock_guard stateLock(_stateMutex);
+            const auto foundJob = _jobs.find(id);
+            if (foundJob != _jobs.end()) {
+                auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = std::string("detached preparation submission failed: ")
+                    + error.what();
+                if (foundJob->second->diagnostic.empty()) {
+                    foundJob->second->diagnostic = node.diagnostic;
+                }
+            }
+        }
         catch (const std::exception& error) {
             std::lock_guard stateLock(_stateMutex);
             const auto foundJob = _jobs.find(id);
@@ -463,6 +478,18 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         try {
             execution = _service.preparedEditStatus(executionId);
         }
+        catch (const Base::Exception& error) {
+            std::lock_guard stateLock(_stateMutex);
+            auto& job = *_jobs.at(id);
+            auto& node = job.nodes.at(featureId);
+            node.state = DocumentRecomputeFeatureState::Failed;
+            node.diagnostic = std::string("preparation status failed: ") + error.what();
+            if (job.diagnostic.empty()) {
+                job.diagnostic = node.diagnostic;
+            }
+            changed = true;
+            continue;
+        }
         catch (const std::exception& error) {
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
@@ -507,12 +534,24 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 
         std::optional<CollaborationPreparedEditResult> terminal;
         try {
-            terminal = _service.takePreparedEdit(
+            terminal = _service.takeRecomputePreparedEdit(
                 [&] {
                     std::lock_guard stateLock(_stateMutex);
                     return _jobs.at(id)->sessionId;
                 }(),
                 executionId);
+        }
+        catch (const Base::Exception& error) {
+            std::lock_guard stateLock(_stateMutex);
+            auto& job = *_jobs.at(id);
+            auto& node = job.nodes.at(featureId);
+            node.state = DocumentRecomputeFeatureState::Failed;
+            node.diagnostic = std::string("preparation collection failed: ") + error.what();
+            if (job.diagnostic.empty()) {
+                job.diagnostic = node.diagnostic;
+            }
+            changed = true;
+            continue;
         }
         catch (const std::exception& error) {
             std::lock_guard stateLock(_stateMutex);
@@ -590,7 +629,11 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         }
         DocumentCommitResult commit;
         try {
-            commit = _service.commitEdit(sessionId, *terminal->preparedEdit);
+            commit = _service.commitRecomputeEdit(sessionId, *terminal->preparedEdit);
+        }
+        catch (const Base::Exception& error) {
+            commit.status = DocumentCommitStatus::ApplyFailed;
+            commit.message = std::string("recompute commit failed: ") + error.what();
         }
         catch (const std::exception& error) {
             commit.status = DocumentCommitStatus::ApplyFailed;

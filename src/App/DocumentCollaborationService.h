@@ -30,6 +30,7 @@ namespace App
 
 class Document;
 class Application;
+class DocumentRecomputeCoordinator;
 struct RecoverySnapshotSaveOptions;
 
 namespace Internal
@@ -187,6 +188,7 @@ public:
         CollaborationCompatibilityCallback callback);
 
 private:
+    friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
     friend class Application;
     friend class Document;
@@ -247,8 +249,18 @@ private:
         std::string provenance);
     [[nodiscard]] std::optional<CollaborationPreparedEditResult>
     takePreparedEditOnDocumentThread(const std::string& sessionId,
-                                     PreparedEditExecutionId executionId);
+                                     PreparedEditExecutionId executionId,
+                                     bool allowPendingRecompute = false);
+    [[nodiscard]] std::optional<CollaborationPreparedEditResult>
+    takeRecomputePreparedEdit(const std::string& sessionId,
+                              PreparedEditExecutionId executionId);
     [[nodiscard]] DocumentCommitResult commitEditOnDocumentThread(
+        const std::string& sessionId,
+        const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitRecomputeEdit(
+        const std::string& sessionId,
+        const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitRecomputeEditOnDocumentThread(
         const std::string& sessionId,
         const PreparedEdit& edit);
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(

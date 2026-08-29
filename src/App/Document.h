@@ -213,6 +213,7 @@ namespace Internal
 class DocumentCollaborationConcurrencyTestAccess;
 class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
+class GenericIsolatedRecomputeAccess;
 struct DocumentFileReplacementResult;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 enum class DocumentPostDurableSaveCheckpoint
@@ -630,6 +631,14 @@ public:
      * @param[in, out] out: The output stream to write to.
      */
     void exportObjects(const std::vector<DocumentObject*>& objs, std::ostream& out);
+
+    /**
+     * Export an immutable object closure for the trusted isolated-recompute
+     * worker. Unlike exportObjects(), this never adds diagnostic properties or
+     * invokes extension export hooks, so capture cannot mutate the live model.
+     */
+    void exportObjectsForIsolatedRecompute(const std::vector<DocumentObject*>& objs,
+                                           std::ostream& out);
 
     /**
      * @brief Write the dependency graph of this document.
@@ -1600,6 +1609,7 @@ public:
     friend class Internal::DocumentCollaborationConcurrencyTestAccess;
     friend class Internal::DocumentStructuralCompatibilityTestAccess;
     friend class Internal::CollaborationStructuralMutationRecorder;
+    friend class Internal::GenericIsolatedRecomputeAccess;
     friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
@@ -1916,6 +1926,7 @@ private:
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
+    [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
     [[nodiscard]] bool collaborationLifecycleMutationBlocked() const noexcept;
     void beginCollaborationStableReadCapture();
     void finishCollaborationStableReadCapture() noexcept;

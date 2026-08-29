@@ -799,30 +799,60 @@ def _worker_operation_violations(source: str) -> list[str]:
                     violations.append("native worker registry branch has no bounded body")
                 else:
                     native = body[else_open + 1:else_close]
-                    imported = native.find(
-                        'Base::Interpreter().runString("importPart")'
-                    )
                     registry = native.find(
                         "GeometryWorkerOperationRegistry::instance()"
                     )
-                    unsupported = native.find("if(!registry.contains(operation)){")
+                    app_registration = native.find(
+                        "Internal::ensureGenericIsolatedRecomputeRegistered()"
+                    )
+                    contains_guards = [
+                        match.start()
+                        for match in re.finditer(
+                            re.escape("if(!registry.contains(operation)){"), native
+                        )
+                    ]
+                    import_guard = contains_guards[0] if len(contains_guards) == 2 else -1
+                    unsupported = contains_guards[1] if len(contains_guards) == 2 else -1
+                    import_close = None
+                    unsupported_close = None
+                    if import_guard >= 0:
+                        import_open = native.find("{", import_guard)
+                        import_close = _matching_delimiter(
+                            native, import_open, "{", "}"
+                        )
                     if unsupported >= 0:
                         unsupported_open = native.find("{", unsupported)
                         unsupported_close = _matching_delimiter(
                             native, unsupported_open, "{", "}"
                         )
-                    else:
-                        unsupported_close = None
                     execute = native.find(
                         "registry.execute(operation,*input.archive,cancellation.token())"
                     )
-                    if imported < 0 or registry < imported:
+                    if registry < 0 or app_registration <= registry:
                         violations.append(
-                            "native worker operations are not registered by importing Part"
+                            "App generic worker registration is not after registry acquisition"
                         )
-                    if registry < 0 or unsupported <= registry:
+                    if len(contains_guards) != 2:
                         violations.append(
-                            "registry contains validation is not after registry acquisition"
+                            "worker must use exactly one conditional Part import and one fail-closed contains guard"
+                        )
+                    if import_guard >= 0 and import_close is not None:
+                        import_body = native[import_guard + len(
+                            "if(!registry.contains(operation)){"
+                        ):import_close]
+                        if import_body != 'Base::Interpreter().runString("importPart");':
+                            violations.append(
+                                "conditional module registration must only import Part"
+                            )
+                    if not (
+                        registry >= 0
+                        and app_registration > registry
+                        and import_guard > app_registration
+                        and import_close is not None
+                        and unsupported > import_close
+                    ):
+                        violations.append(
+                            "worker registration order is not App generic then optional Part then final validation"
                         )
                     if (
                         unsupported < 0
@@ -1425,7 +1455,7 @@ def test_worker_gate_rejects_unsupported_operation_fallback() -> None:
         {
             GeometryArchive output;
             if (operation == "FreeCAD.Internal.GeometryProbe") {
-                output = std::move(*input.archive);
+                output = *input.archive;
             }
             else {
                 output = executeFallback(operation);

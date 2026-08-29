@@ -208,6 +208,7 @@ SET(Document_CPP_SRCS
     GeometryProcessBackend.cpp
     GeometryWorkerMain.cpp
     GeometryWorkerOperationRegistry.cpp
+    GenericIsolatedRecompute.cpp
     GeoFeatureGroupExtensionPyImp.cpp
     GeoFeatureGroupExtension.cpp
     ImagePlane.cpp
@@ -282,6 +283,7 @@ SET(Document_HPP_SRCS
     GeometryProcessBackend.h
     GeometryWorkerMain.h
     GeometryWorkerOperationRegistry.h
+    GenericIsolatedRecompute.h
     PreparationPolicy.h
     GeoFeatureGroupExtension.h
     ImagePlane.h
