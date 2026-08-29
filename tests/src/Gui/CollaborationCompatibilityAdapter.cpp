@@ -16,10 +16,12 @@
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
 #include <App/MergeDocuments.h>
+#include <Base/Interpreter.h>
 #include <Base/Parameter.h>
 #include <Base/Stream.h>
 #include <Gui/Application.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
+#include <Gui/Command.h>
 #include <Gui/Document.h>
 #include <Gui/MainWindow.h>
 #include <Gui/MergeDocuments.h>
@@ -390,6 +392,94 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     EXPECT_EQ(after[0].revision, before[0].revision + 1);
     EXPECT_EQ(after[1].revision, before[1].revision + 1);
     EXPECT_FALSE(_document->hasPendingTransaction());
+}
+
+TEST(GuiPythonCommandBridgeTest, preservesFileEvalAndErrorSemanticsWithoutGuiBootstrap)
+{
+    tests::initApplication();
+    Base::PyGILStateLocker gil;
+
+    PyObject* fileResult = Gui::Command::runPythonCommand(
+        "__cc_wp04_bridge_value = 41",
+        Gui::Command::PythonCommandMode::File);
+    ASSERT_NE(fileResult, nullptr);
+    EXPECT_EQ(fileResult, Py_None);
+    Py_DECREF(fileResult);
+
+    PyObject* evalResult = Gui::Command::runPythonCommand(
+        "__cc_wp04_bridge_value + 1",
+        Gui::Command::PythonCommandMode::Eval);
+    ASSERT_NE(evalResult, nullptr);
+    EXPECT_EQ(PyLong_AsLong(evalResult), 42);
+    Py_DECREF(evalResult);
+
+    PyObject* invalidResult = Gui::Command::runPythonCommand(
+        "1 / 0",
+        Gui::Command::PythonCommandMode::Eval);
+    EXPECT_EQ(invalidResult, nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_ZeroDivisionError));
+    PyErr_Clear();
+
+    PyObject* systemExit = Gui::Command::runPythonCommand(
+        "raise SystemExit(7)", Gui::Command::PythonCommandMode::File);
+    EXPECT_EQ(systemExit, nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_SystemExit));
+    PyErr_Clear();
+}
+
+TEST(GuiCommandCoordinatorContractTest,
+     longLivedPublicTransactionMakesCompetingCompatibilityCommitBusy)
+{
+    tests::initApplication();
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto documentName =
+        App::GetApplication().getUniqueDocumentName("guiCommandCoordinatorContract");
+    auto* document = App::GetApplication().newDocument(
+        documentName.c_str(), "GUI command coordinator contract", flags);
+    ASSERT_NE(document, nullptr);
+    int transactionId = App::NullTransaction;
+    auto closeDocument = qScopeGuard([&] {
+        if (App::GetApplication().getDocument(documentName.c_str())) {
+            if (document->hasPendingTransaction() && transactionId != App::NullTransaction) {
+                App::GetApplication().abortTransaction(transactionId);
+            }
+            App::GetApplication().closeDocument(documentName.c_str());
+        }
+    });
+
+    auto* object = document->addObject("App::FeatureTest", "Target");
+    ASSERT_NE(object, nullptr);
+    object->Label.setValue("before");
+    document->recompute();
+    App::GetApplication().setActiveDocument(document);
+
+    transactionId = App::GetApplication().setActiveTransaction(
+        App::TransactionName {.name = "long-lived GUI task", .temporary = false});
+    ASSERT_NE(transactionId, App::NullTransaction);
+
+    int callbackCalls = 0;
+    const auto attemptCommit = [&] {
+        App::CollaborationCompatibilityMutation mutation;
+        mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
+        return document->collaborationService().commitCompatibilityMutation(
+            std::move(mutation),
+            [&] {
+                ++callbackCalls;
+                object->Label.setValue("after GUI task");
+            });
+    };
+
+    const auto busy = attemptCommit();
+    EXPECT_EQ(busy.status, App::DocumentCommitStatus::Busy);
+    EXPECT_EQ(callbackCalls, 0);
+    EXPECT_STREQ(object->Label.getValue(), "before");
+
+    ASSERT_TRUE(App::GetApplication().abortTransaction(transactionId));
+    const auto completed = attemptCommit();
+    ASSERT_TRUE(completed.committed()) << completed.message;
+    EXPECT_EQ(callbackCalls, 1);
+    EXPECT_STREQ(object->Label.getValue(), "after GUI task");
 }
 
 TEST_F(CollaborationCompatibilityIntegrationTest,
