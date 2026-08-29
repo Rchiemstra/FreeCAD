@@ -772,17 +772,81 @@ def _worker_operation_violations(source: str) -> list[str]:
     except AssertionError as error:
         return [str(error)]
     violations: list[str] = []
-    guard = body.find('if(operation!="FreeCAD.Internal.GeometryProbe"){')
-    if guard < 0:
+    probe_guard = body.find('if(operation=="FreeCAD.Internal.GeometryProbe"){')
+    if probe_guard < 0:
         violations.append("worker lacks the exact internal transport-probe allowlist")
     else:
-        opening = body.find("{", guard)
-        closing = _matching_delimiter(body, opening, "{", "}")
-        if closing is None or "return13;" not in body[opening + 1:closing]:
-            violations.append("unsupported worker operation does not fail closed")
-        output = body.find("GeometryArchiveoutput=", closing or guard)
-        if closing is None or output < closing:
-            violations.append("worker output path is not strictly after the unsupported-op rejection")
+        probe_open = body.find("{", probe_guard)
+        probe_close = _matching_delimiter(body, probe_open, "{", "}")
+        if probe_close is None:
+            violations.append("transport-probe special case has no bounded body")
+        else:
+            probe_body = body[probe_open + 1:probe_close]
+            if probe_body != "output=*input.archive;":
+                violations.append(
+                    "transport probe must only round-trip the validated input archive"
+                )
+
+            else_start = body.find("else{", probe_close)
+            if else_start != probe_close + 1:
+                violations.append(
+                    "all non-probe operations must enter one explicit registry branch"
+                )
+            else:
+                else_open = body.find("{", else_start)
+                else_close = _matching_delimiter(body, else_open, "{", "}")
+                if else_close is None:
+                    violations.append("native worker registry branch has no bounded body")
+                else:
+                    native = body[else_open + 1:else_close]
+                    imported = native.find(
+                        'Base::Interpreter().runString("importPart")'
+                    )
+                    registry = native.find(
+                        "GeometryWorkerOperationRegistry::instance()"
+                    )
+                    unsupported = native.find("if(!registry.contains(operation)){")
+                    if unsupported >= 0:
+                        unsupported_open = native.find("{", unsupported)
+                        unsupported_close = _matching_delimiter(
+                            native, unsupported_open, "{", "}"
+                        )
+                    else:
+                        unsupported_close = None
+                    execute = native.find(
+                        "registry.execute(operation,*input.archive,cancellation.token())"
+                    )
+                    if imported < 0 or registry < imported:
+                        violations.append(
+                            "native worker operations are not registered by importing Part"
+                        )
+                    if registry < 0 or unsupported <= registry:
+                        violations.append(
+                            "registry contains validation is not after registry acquisition"
+                        )
+                    if (
+                        unsupported < 0
+                        or unsupported_close is None
+                        or "return13;"
+                        not in native[unsupported_open + 1:unsupported_close]
+                    ):
+                        violations.append(
+                            "unsupported worker operation does not fail closed"
+                        )
+                    if (
+                        execute < 0
+                        or unsupported_close is None
+                        or execute <= unsupported_close
+                        or native.count("registry.execute(") != 1
+                    ):
+                        violations.append(
+                            "native worker execute is not after registry contains validation"
+                        )
+                    publication = body.find("output.metadata=input.archive->metadata;", else_close)
+                    if publication <= else_close:
+                        violations.append(
+                            "worker output publication is not after probe/native dispatch"
+                        )
     code = _suppress_cpp_non_code(source)
     for token in ("executeFallback", "runGenericGeometry", "recompute(", "recomputeFeature("):
         if token in code:
@@ -1359,10 +1423,14 @@ def test_worker_gate_rejects_unsupported_operation_fallback() -> None:
     source = """
         int App::Internal::runGeometryWorkerMain() noexcept
         {
-            if (operation != "FreeCAD.Internal.GeometryProbe") {
-                return executeFallback(operation);
+            GeometryArchive output;
+            if (operation == "FreeCAD.Internal.GeometryProbe") {
+                output = std::move(*input.archive);
             }
-            GeometryArchive output = input;
+            else {
+                output = executeFallback(operation);
+            }
+            output.metadata = input.archive->metadata;
             return 0;
         }
     """

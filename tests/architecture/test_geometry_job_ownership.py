@@ -13,7 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 APPLICATION_HEADER = "src/App/Application.h"
 APPLICATION_SOURCE = "src/App/Application.cpp"
 APP_CMAKE = "src/App/CMakeLists.txt"
-POLICY_HEADER = "src/App/CollaborativeOperationRegistry.h"
+POLICY_HEADER = "src/App/PreparationPolicy.h"
+COLLABORATIVE_REGISTRY_HEADER = "src/App/CollaborativeOperationRegistry.h"
 DCS_SOURCE = "src/App/DocumentCollaborationService.cpp"
 MANAGER_HEADER = "src/App/GeometryJobManager.h"
 MANAGER_SOURCE = "src/App/GeometryJobManager.cpp"
@@ -25,6 +26,7 @@ PRODUCTION_OWNERSHIP_SOURCES = (
     APPLICATION_HEADER,
     APPLICATION_SOURCE,
     POLICY_HEADER,
+    COLLABORATIVE_REGISTRY_HEADER,
     DCS_SOURCE,
     MANAGER_HEADER,
     MANAGER_SOURCE,
@@ -398,9 +400,20 @@ def test_geometry_and_lightweight_lanes_enforce_preparation_policy() -> None:
     )
     compact_dcs = _compact(dcs_body)
     assert "preparationPolicy=preparation.policy;" in compact_dcs
-    assert "executor.submit(std::move(detachedTask),preparationPolicy)" in compact_dcs
-    assert "if(preparation.policy!=PreparationPolicy::DetachedInProcess)" in compact_dcs
+    assert (
+        "preparedEditExecutor().submit(std::move(detachedTask),preparationPolicy)"
+        in compact_dcs
+    )
+    assert (
+        "if(preparation.policy!=PreparationPolicy::DetachedInProcess"
+        "&&preparation.policy!=PreparationPolicy::IsolatedProcess)" in compact_dcs
+    )
     assert "isolated geometry preparation requires a GeometryJobManager adapter" in dcs_raw_body
+    isolated = compact_dcs.find("if(isolatedTask){")
+    manager = compact_dcs.find("geometryJobManager().submit(", isolated)
+    lightweight = compact_dcs.find("}else{", manager)
+    executor = compact_dcs.find("preparedEditExecutor().submit(", lightweight)
+    assert 0 <= isolated < manager < lightweight < executor
 
 
 def test_prepared_edit_executor_contains_no_heavy_geometry() -> None:

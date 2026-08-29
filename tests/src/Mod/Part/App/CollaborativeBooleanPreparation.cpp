@@ -6,6 +6,7 @@
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
+#include <App/GeometryWorkerOperationRegistry.h>
 #include <Base/Exception.h>
 #include <Mod/Part/App/CollaborativeBooleanOperation.h>
 #include <Mod/Part/App/FCBRepAlgoAPI_Cut.h>
@@ -65,6 +66,29 @@ App::CollaborativeOperationIntent booleanIntent(std::string kind = "cut")
              {"tool", "Tool"},
              {"result", "Result"},
              {"kind", std::move(kind)}}};
+}
+
+std::unique_ptr<const App::CollaborativeOperation> materializeIsolated(
+    App::CollaborativeOperationPreparation::IsolatedTask& task,
+    const std::stop_token stopToken = {})
+{
+    task.inputArchive.metadata.operationType = task.request.operationType;
+    auto output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+        task.request.operationType, task.inputArchive, stopToken);
+    output.metadata = task.inputArchive.metadata;
+    output.metadata.kind = App::GeometryArchiveKind::Result;
+    return task.decodeResult(output);
+}
+
+std::unique_ptr<const App::CollaborativeOperation> materializeIsolated(
+    App::CollaborativeOperationPreparation& preparation,
+    const std::stop_token stopToken = {})
+{
+    if (preparation.policy != App::PreparationPolicy::IsolatedProcess
+        || preparation.detachedTask || !preparation.isolatedTask) {
+        throw std::runtime_error("Boolean adapter did not return isolated work");
+    }
+    return materializeIsolated(*preparation.isolatedTask, stopToken);
 }
 
 TopoDS_Shape manySidedPrism(double xOffset)
@@ -208,7 +232,7 @@ protected:
 }  // namespace
 
 TEST_F(CollaborativeBooleanPreparationTest,
-       adapterReturnsDetachedTaskWithoutSynchronousOperation)
+       adapterReturnsIsolatedTaskWithoutSynchronousOperation)
 {
     const TopoDS_Shape sentinel = BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Shape();
     _result->Shape.setValue(sentinel);
@@ -217,20 +241,29 @@ TEST_F(CollaborativeBooleanPreparationTest,
 
     EXPECT_TRUE(preparation.isDetached());
     EXPECT_EQ(preparation.operation.get(), nullptr);
-    EXPECT_TRUE(static_cast<bool>(preparation.detachedTask));
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    EXPECT_FALSE(static_cast<bool>(preparation.detachedTask));
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+    EXPECT_EQ(preparation.isolatedTask->request.policy,
+              App::PreparationPolicy::IsolatedProcess);
+    EXPECT_EQ(preparation.isolatedTask->request.operationType,
+              Part::CollaborativeBooleanOperationType);
+    EXPECT_FALSE(preparation.isolatedTask->inputArchive.sections.empty());
+    EXPECT_TRUE(static_cast<bool>(preparation.isolatedTask->decodeResult));
     EXPECT_TRUE(_result->Shape.getValue().IsEqual(sentinel));
 }
 
 TEST_F(CollaborativeBooleanPreparationTest,
-       detachedTaskRunsOffThreadAfterLiveDocumentIsGone)
+       isolatedArchiveRunsOffThreadAfterLiveDocumentIsGone)
 {
     auto preparation = prepare("fuse");
-    auto task = std::move(preparation.detachedTask);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+    auto task = std::move(preparation.isolatedTask);
     const auto ownerThread = std::this_thread::get_id();
     closeDocument();
 
     auto future = std::async(std::launch::async, [task = std::move(task)]() mutable {
-        auto operation = task(std::stop_token {});
+        auto operation = materializeIsolated(*task);
         return std::pair {std::this_thread::get_id(), std::move(operation)};
     });
     auto [workerThread, operation] = future.get();
@@ -249,7 +282,7 @@ TEST_F(CollaborativeBooleanPreparationTest, cancellationBeforeBooleanDoesNoWork)
     ASSERT_TRUE(cancellation.request_stop());
 
     EXPECT_THROW(
-        static_cast<void>(preparation.detachedTask(cancellation.get_token())),
+        static_cast<void>(materializeIsolated(preparation, cancellation.get_token())),
         std::runtime_error);
     EXPECT_TRUE(_result->Shape.getValue().IsEqual(sentinel));
 }
@@ -379,7 +412,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
        retryCopiesPristineResultAfterLiveTShapeMutation)
 {
     auto preparation = prepare("cut");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
     ASSERT_NEAR(volume(_result->Shape.getValue()), 4.0, 1e-7);
@@ -423,7 +456,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
     _document->recompute();
 
     auto preparation = prepare("cut");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
 
@@ -449,7 +482,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
     _document->recompute();
 
     auto preparation = prepare("cut");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
 
@@ -488,7 +521,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
             .Shape());
     _document->recompute();
     auto preparation = prepare("cut");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
     ASSERT_TRUE(operation->checkPostcondition(*_document).satisfied);
@@ -532,7 +565,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
         BRepPrimAPI_MakeBox(gp_Pnt(100.0, 100.0, 100.0), 1.0, 1.0, 1.0).Shape());
     _document->recompute();
     auto preparation = prepare("cut");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
     ASSERT_TRUE(operation->checkPostcondition(*_document).satisfied);
@@ -547,7 +580,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
        canonicalResultRejectsTopologyRegroupingOfSameGeometry)
 {
     auto preparation = prepare("fuse");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
     ASSERT_TRUE(operation->checkPostcondition(*_document).satisfied);
@@ -572,7 +605,7 @@ TEST_F(CollaborativeBooleanPreparationTest,
        canonicalResultIgnoresVolatileButPreservesSemanticTShapeFlags)
 {
     auto preparation = prepare("fuse");
-    auto operation = preparation.detachedTask(std::stop_token {});
+    auto operation = materializeIsolated(preparation);
     ASSERT_NE(operation, nullptr);
     operation->apply(*_document);
     ASSERT_TRUE(operation->checkPostcondition(*_document).satisfied);

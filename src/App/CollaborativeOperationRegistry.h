@@ -3,6 +3,9 @@
 
 #include "CollaborativeOperation.h"
 #include "DocumentRevisionIndex.h"
+#include "GeometryArchive.h"
+#include "GeometryJobManager.h"
+#include "PreparationPolicy.h"
 
 #include <FCGlobal.h>
 
@@ -21,13 +24,6 @@ namespace App
 
 class Document;
 
-enum class PreparationPolicy
-{
-    Inline,
-    DetachedInProcess,
-    IsolatedProcess
-};
-
 /** Pointer-free client intent. Only registered native adapters interpret it. */
 struct AppExport CollaborativeOperationIntent
 {
@@ -40,6 +36,15 @@ struct AppExport CollaborativeOperationPreparation
 {
     using DetachedTask =
         std::function<std::unique_ptr<const CollaborativeOperation>(std::stop_token)>;
+    using IsolatedResultDecoder =
+        std::function<std::unique_ptr<const CollaborativeOperation>(const GeometryArchive&)>;
+
+    struct IsolatedTask
+    {
+        GeometryJobRequest request;
+        GeometryArchive inputArchive;
+        IsolatedResultDecoder decodeResult;
+    };
 
     CollaborativeOperationPreparation(
         std::vector<DocumentRevisionKey> readSet,
@@ -57,6 +62,18 @@ struct AppExport CollaborativeOperationPreparation
         std::vector<DocumentRevisionKey> readSet,
         std::vector<DocumentRevisionKey> writeSet,
         std::vector<DocumentRevisionPublicationRequest> publicationEffects,
+        IsolatedTask isolatedTask)
+        : readSet(std::move(readSet))
+        , writeSet(std::move(writeSet))
+        , publicationEffects(std::move(publicationEffects))
+        , isolatedTask(std::make_unique<IsolatedTask>(std::move(isolatedTask)))
+        , policy(PreparationPolicy::IsolatedProcess)
+    {}
+
+    CollaborativeOperationPreparation(
+        std::vector<DocumentRevisionKey> readSet,
+        std::vector<DocumentRevisionKey> writeSet,
+        std::vector<DocumentRevisionPublicationRequest> publicationEffects,
         DetachedTask detachedTask,
         PreparationPolicy policy = PreparationPolicy::DetachedInProcess)
         : readSet(std::move(readSet))
@@ -68,7 +85,7 @@ struct AppExport CollaborativeOperationPreparation
 
     [[nodiscard]] bool isDetached() const noexcept
     {
-        return static_cast<bool>(detachedTask);
+        return static_cast<bool>(detachedTask) || static_cast<bool>(isolatedTask);
     }
 
     std::vector<DocumentRevisionKey> readSet;
@@ -76,6 +93,7 @@ struct AppExport CollaborativeOperationPreparation
     std::vector<DocumentRevisionPublicationRequest> publicationEffects;
     std::unique_ptr<const CollaborativeOperation> operation;
     DetachedTask detachedTask;
+    std::unique_ptr<IsolatedTask> isolatedTask;
     PreparationPolicy policy {PreparationPolicy::Inline};
     std::uint64_t registrationId {0};
 };
