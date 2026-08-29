@@ -2368,6 +2368,11 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
+    return collaborationService().openCompatibilityTransaction(std::move(name), tid);
+}
+
+int Document::openCompatibilityTransactionImpl(TransactionName name, int tid)
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2622,6 +2627,11 @@ void Document::_clearRedos()
 
 void Document::commitTransaction() // NOLINT
 {
+    collaborationService().commitCompatibilityTransaction();
+}
+
+void Document::commitCompatibilityTransactionImpl()
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2723,6 +2733,11 @@ bool Document::_commitTransaction(const bool notify)
 }
 
 void Document::abortTransaction() const
+{
+    const_cast<Document*>(this)->collaborationService().abortCompatibilityTransaction();
+}
+
+void Document::abortCompatibilityTransactionImpl() const
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);

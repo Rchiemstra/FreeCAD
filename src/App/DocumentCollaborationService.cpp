@@ -221,6 +221,23 @@ Document& DocumentCollaborationService::document() const noexcept
     return _document;
 }
 
+int DocumentCollaborationService::openCompatibilityTransaction(
+    TransactionName name,
+    const int transactionId)
+{
+    return _coordinator.openCompatibilityTransaction(std::move(name), transactionId);
+}
+
+void DocumentCollaborationService::commitCompatibilityTransaction()
+{
+    _coordinator.commitCompatibilityTransaction();
+}
+
+void DocumentCollaborationService::abortCompatibilityTransaction()
+{
+    _coordinator.abortCompatibilityTransaction();
+}
+
 EditSession DocumentCollaborationService::beginEditSession(std::string actorId)
 {
     auto lifecyclePin = pinDocumentAccess();
@@ -1437,7 +1454,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
         }
         const bool committed = _atomicCompatibilityCommitted;
         if (!committed) {
-            const auto rollback = _document.rollbackCollaborationTransaction();
+            const auto rollback = _coordinator.rollbackNativeCommitTransaction(false);
             if (!rollback.restored) {
                 _document.poisonCollaborationCommit(rollback.diagnostic.data());
             }
@@ -1450,7 +1467,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                                                                   emergencyCleanup);
 
     try {
-        if (_document.openCollaborationCommitTransaction(
+        if (_coordinator.openNativeCommitTransaction(
                 "Atomic shared-presentation compatibility")
             == 0) {
             clearAtomicState();
@@ -1518,7 +1535,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                                            "atomic compatibility transaction committed");
     }
 
-    const auto rollback = _document.rollbackCollaborationTransaction();
+    const auto rollback = _coordinator.rollbackNativeCommitTransaction(false);
     clearAtomicState();
     _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
     _document.finishCollaborationCommitNotificationBarrier(false);
@@ -1601,7 +1618,7 @@ DocumentCollaborationService::commitAtomicCompatibilityTransaction()
         return result;
     }
     try {
-        if (!_document.commitCollaborationCommitTransaction()) {
+        if (!_coordinator.commitNativeCommitTransaction()) {
             if (!_document.hasPendingTransaction()) {
                 _document.poisonCollaborationCommit(
                     "atomic native commit was refused after consuming its transaction");

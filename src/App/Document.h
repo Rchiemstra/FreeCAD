@@ -1938,6 +1938,9 @@ private:
     [[nodiscard]] std::vector<DocumentRevisionPublicationRequest>
     takeCollaborationObservedStructuralEffects();
     void ensureCollaborationTransactionControlAllowed() const;
+    [[nodiscard]] int openCompatibilityTransactionImpl(TransactionName name, int tid);
+    void commitCompatibilityTransactionImpl();
+    void abortCompatibilityTransactionImpl() const;
     void lockTransactionInternal();
     void unlockTransactionInternal();
     int openCollaborationCommitTransaction(std::string name);
