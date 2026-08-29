@@ -6,6 +6,7 @@
 #include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
 #include "DocumentObject.h"
+#include "GenericIsolatedRecompute.h"
 #include "MainThreadSignal.h"
 
 #include <Base/Exception.h>
@@ -810,7 +811,10 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
     };
     {
         std::lock_guard lock(_document.collaborationCommitMutex());
-        if (_document.collaborationStableReadBlocked()) {
+        const bool recomputeCapture =
+            intent.operationType == GenericIsolatedRecomputeOperationType;
+        if (recomputeCapture ? _document.collaborationRecomputeCaptureBlocked()
+                             : _document.collaborationStableReadBlocked()) {
             throw Base::RuntimeError(
                 "detached preparation requires a stable document boundary");
         }
@@ -822,7 +826,8 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
             || identity.instanceId != session.documentInstanceId()) {
             throw Base::RuntimeError("edit session targets a stale document instance");
         }
-        if (!_document.collaborationPreparationSupported()) {
+        if (!_document.collaborationPreparationSupported()
+            && intent.operationType != GenericIsolatedRecomputeOperationType) {
             throw Base::RuntimeError(
                 "document contains a mutable Python payload that cannot be prepared off-thread");
         }
@@ -1037,9 +1042,29 @@ DocumentCollaborationService::takePreparedEdit(
 }
 
 std::optional<CollaborationPreparedEditResult>
-DocumentCollaborationService::takePreparedEditOnDocumentThread(
+DocumentCollaborationService::takeRecomputePreparedEdit(
     const std::string& sessionId,
     const PreparedEditExecutionId executionId)
+{
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        return std::nullopt;
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "off-owner recompute result collection requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+        [this, sessionId, executionId] {
+            return takePreparedEditOnDocumentThread(sessionId, executionId, true);
+        });
+}
+
+std::optional<CollaborationPreparedEditResult>
+DocumentCollaborationService::takePreparedEditOnDocumentThread(
+    const std::string& sessionId,
+    const PreparedEditExecutionId executionId,
+    const bool allowPendingRecompute)
 {
     if (!_document.isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
@@ -1050,8 +1075,10 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
     {
         std::lock_guard lock(_document.collaborationCommitMutex());
         const auto identity = _document.collaborationIdentity();
-        if (identity.state != DocumentLifecycleState::Live
-            || _document.collaborationStableReadBlocked()) {
+        const bool captureBlocked = allowPendingRecompute
+            ? _document.collaborationRecomputeCaptureBlocked()
+            : _document.collaborationStableReadBlocked();
+        if (identity.state != DocumentLifecycleState::Live || captureBlocked) {
             return std::nullopt;
         }
         _document.beginCollaborationStableReadCapture();
@@ -1275,6 +1302,80 @@ DocumentCommitResult DocumentCollaborationService::commitEditOnDocumentThread(
                               "prepared edit adapter registration is no longer trusted");
     }
     return _coordinator.commit(edit);
+}
+
+DocumentCommitResult DocumentCollaborationService::commitRecomputeEdit(
+    const std::string& sessionId,
+    const PreparedEdit& edit)
+{
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                              edit,
+                              "document close has sealed collaboration access");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return rejectedCommit(
+            DocumentCommitStatus::Unsupported,
+            edit,
+            "derived recompute commit requires the document owner thread");
+    }
+    return invokeOnDocumentThread<DocumentCommitResult>([this, sessionId, &edit] {
+        return commitRecomputeEditOnDocumentThread(sessionId, edit);
+    });
+}
+
+DocumentCommitResult DocumentCollaborationService::commitRecomputeEditOnDocumentThread(
+    const std::string& sessionId,
+    const PreparedEdit& edit)
+{
+    if (!_document.isCollaborationOwnerThread()) {
+        return rejectedCommit(DocumentCommitStatus::Unsupported,
+                              edit,
+                              "derived recompute commit was not dispatched to the document owner thread");
+    }
+    std::lock_guard lock(_document.collaborationCommitMutex());
+    if (_document.collaborationNotificationsReplaying()) {
+        return rejectedCommit(DocumentCommitStatus::Busy,
+                              edit,
+                              "a committed collaboration boundary is notifying observers");
+    }
+    const auto identity = _document.collaborationIdentity();
+    if (identity.state != DocumentLifecycleState::Live
+        || identity.instanceId != edit.documentInstanceId()
+        || identity.lifecycleEpoch != edit.lifecycleEpoch()) {
+        return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                              edit,
+                              "prepared recompute targets a stale document lifecycle epoch");
+    }
+    const auto session = sessionStatus(sessionId);
+    if (!session) {
+        return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                              edit,
+                              "unknown recompute edit session");
+    }
+    if (session->documentInstanceId() != edit.documentInstanceId()) {
+        return rejectedCommit(DocumentCommitStatus::StaleDocument,
+                              edit,
+                              "recompute session and prepared edit target different documents");
+    }
+    if (session->status() != EditSessionStatus::Active) {
+        return rejectedCommit(DocumentCommitStatus::Cancelled,
+                              edit,
+                              session->cancellationReason().value_or(
+                                  "recompute edit session is cancelled"));
+    }
+    if (!CollaborativeOperationRegistry::instance().matches(
+            edit.adapterRegistrationId(), edit.operationType())) {
+        return rejectedCommit(DocumentCommitStatus::InvalidPreparedEdit,
+                              edit,
+                              "prepared recompute adapter registration is no longer trusted");
+    }
+    return _coordinator.commitWithPreparationPolicyAndRecompute(
+        edit,
+        false,
+        false,
+        CollaborationCompatibilityRecomputePolicy::Deferred);
 }
 
 DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(

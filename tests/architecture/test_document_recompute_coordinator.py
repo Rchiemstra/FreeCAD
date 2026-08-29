@@ -292,9 +292,11 @@ def test_coordinator_routes_capture_collection_and_commit_only_through_dcs() -> 
     assert "_service.beginEditSession(" in submit
     assert "_service.prepareEditAsync(" in schedule
     status = poll.find("_service.preparedEditStatus(")
-    take = poll.find("_service.takePreparedEdit(", status)
-    commit = poll.find("_service.commitEdit(", take)
+    take = poll.find("_service.takeRecomputePreparedEdit(", status)
+    commit = poll.find("_service.commitRecomputeEdit(", take)
     assert 0 <= status < take < commit
+    assert "_service.takePreparedEdit(" not in poll
+    assert "_service.commitEdit(" not in poll
     assert "_service.cancelPreparedEdit(" in cancel
     assert "_service.cancelEdit(" in _compact(source)
 

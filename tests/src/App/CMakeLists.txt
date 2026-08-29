@@ -29,6 +29,7 @@ add_executable(App_tests_run
         Expression.cpp
         ExpressionParser.cpp
         GeometryArchive.cpp
+        GenericIsolatedRecompute.cpp
         GeometryJobManager.cpp
         GeometryProcessBackend.cpp
         ElementMap.cpp

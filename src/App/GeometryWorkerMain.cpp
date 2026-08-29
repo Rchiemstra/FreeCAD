@@ -3,6 +3,7 @@
 #include "GeometryWorkerMain.h"
 
 #include "GeometryArchive.h"
+#include "GenericIsolatedRecompute.h"
 #include "GeometryWorkerOperationRegistry.h"
 
 #include <Base/Interpreter.h>
@@ -337,10 +338,12 @@ int App::Internal::runGeometryWorkerMain() noexcept
             output = *input.archive;
         }
         else {
-            // Loading Part registers only native archive-to-archive handlers.
-            // No document is opened and no live model pointer crosses this boundary.
-            Base::Interpreter().runString("import Part");
             auto& registry = Internal::GeometryWorkerOperationRegistry::instance();
+            Internal::ensureGenericIsolatedRecomputeRegistered();
+            if (!registry.contains(operation)) {
+                // Loading Part registers only native archive-to-archive OCC handlers.
+                Base::Interpreter().runString("import Part");
+            }
             if (!registry.contains(operation)) {
                 std::cerr << "unsupported isolated geometry operation\n";
                 return 13;

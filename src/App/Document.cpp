@@ -37,6 +37,7 @@
 #include <list>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <format>
@@ -44,6 +45,7 @@
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <thread>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/bimap.hpp>
@@ -58,6 +60,7 @@
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QString>
 
 #include <FCConfig.h>
@@ -90,6 +93,7 @@
 #include "DocumentCollaborationService.h"
 #include "DocumentRevisionIndex.h"
 #include "ExpressionParser.h"
+#include "GenericIsolatedRecompute.h"
 #include "GeoFeature.h"
 #include "License.h"
 #include "Link.h"
@@ -935,6 +939,16 @@ bool Document::collaborationStableReadBlocked() const noexcept
         || d->collaborationReplayingNotifications || hasPendingTransaction()
         || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
         || mustExecute()
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        || !d->pendingRemove.empty();
+}
+
+bool Document::collaborationRecomputeCaptureBlocked() const noexcept
+{
+    return d->collaborationCommitNotificationBarrier
+        || d->collaborationReplayingNotifications || hasPendingTransaction()
+        || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
         || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
         || d->pendingRemovalProcessing.load(std::memory_order_acquire)
         || !d->pendingRemove.empty();
@@ -3891,6 +3905,30 @@ void Document::exportObjects(const std::vector<DocumentObject*>& obj, std::ostre
     // write additional files
     writer.writeFiles();
     d->hashers.clear();
+}
+
+void Document::exportObjectsForIsolatedRecompute(
+    const std::vector<DocumentObject*>& objects,
+    std::ostream& out)
+{
+    DocumentExporting exporting(objects);
+    d->hashers.clear();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        d->hashers.clear();
+    };
+
+    Base::ZipWriter writer(out);
+    writer.putNextEntry("Document.xml");
+    writer.Stream() << "<?xml version='1.0' encoding='utf-8'?>\n"
+                    << R"(<Document SchemaVersion="4" ProgramVersion=")"
+                    << Application::Config()["BuildVersionMajor"] << "."
+                    << Application::Config()["BuildVersionMinor"] << "R"
+                    << Application::Config()["BuildRevision"] << R"(" FileVersion="1">)"
+                    << '\n'
+                    << "<Properties Count=\"0\">\n</Properties>\n";
+    writeObjects(objects, writer);
+    writer.Stream() << "</Document>\n";
+    writer.writeFiles();
 }
 
 constexpr auto fcAttrDependencies {"Dependencies"};
@@ -7164,29 +7202,89 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         return true;
     }
 
-    // delete recompute log
-    d->clearRecomputeLog(feature);
-
     // verify that the feature is (active) part of the document
-    if (!feature->isAttachedToDocument()) {
+    if (!feature || !feature->isAttachedToDocument() || feature->getDocument() != this) {
         return false;
     }
 
-    if (recursive) {
-        bool hasError = false;
-        recompute({feature}, true, &hasError);
-        return !hasError;
+    static thread_local std::set<const Document*> activeCompatibilityWaits;
+    if (!activeCompatibilityWaits.insert(this).second) {
+        d->addRecomputeLog("reentrant isolated feature recompute is not supported", feature);
+        return false;
     }
-    _recomputeFeature(feature);
-    publishCollaborationMutation(*feature, false);
-    if (d->collaborationCommitNotificationBarrier) {
-        d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::RecomputedObject, feature});
+    BOOST_SCOPE_EXIT_ALL(&) {
+        activeCompatibilityWaits.erase(this);
+    };
+
+    try {
+        Internal::ensureGenericIsolatedRecomputeRegistered();
+        auto request = Internal::makeGenericIsolatedRecomputeRequest(*this, *feature, recursive);
+        for (const auto& node : request.features) {
+            if (auto* object = getObject(node.featureId.c_str())) {
+                d->clearRecomputeLog(object);
+            }
+        }
+
+        auto& coordinator = recomputeCoordinator();
+        const auto recomputeId = coordinator.submit(std::move(request));
+        const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(6);
+        std::optional<DocumentRecomputeSnapshot> snapshot;
+        while ((snapshot = coordinator.status(recomputeId)) && !snapshot->terminal()) {
+            static_cast<void>(coordinator.poll(recomputeId));
+            if (QCoreApplication::instance()) {
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+            }
+            if (std::chrono::steady_clock::now() >= waitDeadline) {
+                static_cast<void>(coordinator.cancel(
+                    recomputeId, "isolated feature recompute compatibility wait timed out"));
+                static_cast<void>(coordinator.poll(recomputeId));
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        snapshot = coordinator.status(recomputeId);
+        if (!snapshot) {
+            d->addRecomputeLog("isolated feature recompute result is unavailable", feature);
+            return false;
+        }
+
+        bool succeeded = snapshot->state == DocumentRecomputeState::Completed;
+        for (const auto& node : snapshot->features) {
+            auto* object = getObject(node.featureId.c_str());
+            if (!object) {
+                succeeded = false;
+                continue;
+            }
+            if (node.state == DocumentRecomputeFeatureState::Committed) {
+                if (d->collaborationCommitNotificationBarrier) {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::RecomputedObject, object});
+                }
+                else {
+                    signalRecomputedObject(*object);
+                }
+            }
+            else {
+                const std::string diagnostic = node.diagnostic.empty()
+                    ? "isolated feature recompute did not commit"
+                    : node.diagnostic;
+                d->addRecomputeLog(diagnostic.c_str(), object);
+                publishCollaborationMutation(*object, false);
+                succeeded = false;
+            }
+        }
+        return succeeded;
     }
-    else {
-        signalRecomputedObject(*feature);
+    catch (const Base::Exception& error) {
+        d->addRecomputeLog(error.what(), feature);
     }
-    return feature->isValid();
+    catch (const std::exception& error) {
+        d->addRecomputeLog(error.what(), feature);
+    }
+    catch (...) {
+        d->addRecomputeLog("isolated feature recompute failed with an unknown exception", feature);
+    }
+    return false;
 }
 
 DocumentObject* Document::addObject(
