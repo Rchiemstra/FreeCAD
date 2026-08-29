@@ -264,7 +264,8 @@ PyMethodDef ApplicationPy::Methods[] = {
      "persist(False): This parameter has no effect and is kept for compatibility reasonss"
      "Returns the transaction ID for the active transaction. An application-wide\n"
      "active transaction causes any document changes to open a transaction with\n"
-     "the given name and ID."},
+     "the given name and ID. Commit is supported for one participating document;\n"
+     "multi-document commit requires a typed atomic adapter."},
     {"getActiveTransaction",
      (PyCFunction)ApplicationPy::sGetActiveTransaction,
      METH_VARARGS,
