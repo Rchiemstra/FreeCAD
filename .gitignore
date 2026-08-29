@@ -79,3 +79,4 @@ tsupdate_stdout.log
 .pixi
 tmp/
 /debug_logs/
+results/

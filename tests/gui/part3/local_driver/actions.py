@@ -237,17 +237,33 @@ def _resume_writes(_params: dict[str, Any]) -> dict[str, Any]:
     return {"paused": bool(checkbox.isChecked())}
 
 
-def _view_state(_params: dict[str, Any]) -> dict[str, Any]:
+def _view_state(params: dict[str, Any]) -> dict[str, Any]:
     import FreeCAD
     import FreeCADGui
 
-    active_document = FreeCADGui.ActiveDocument
-    if active_document is None:
+    active_gui_document = FreeCADGui.ActiveDocument
+    requested_name = str(params.get("document") or "")
+    if not requested_name and active_gui_document is None:
         return {"active_document": None}
-    document = active_document.Document
-    view = active_document.ActiveView
+    if requested_name:
+        document = FreeCAD.getDocument(requested_name)
+        if document is None or str(document.Name) != requested_name:
+            raise ValueError(f"document not found: {requested_name}")
+        observed_gui_document = FreeCADGui.getDocument(requested_name)
+    else:
+        observed_gui_document = active_gui_document
+        document = active_gui_document.Document
+    active_name = (
+        None
+        if active_gui_document is None
+        else str(active_gui_document.Document.Name)
+    )
+    view = (
+        None if observed_gui_document is None else observed_gui_document.ActiveView
+    )
     state = {
-        "active_document": str(document.Name),
+        "active_document": active_name,
+        "observed_document": str(document.Name),
         "selection": [
             item.ObjectName for item in FreeCADGui.Selection.getSelectionEx(str(document.Name))
         ],
@@ -675,6 +691,9 @@ def _local_property_edit(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("document, object, and property are required")
     if "value" not in params:
         raise ValueError("value is required")
+    stage_prepared = params.get("stage_prepared", False)
+    if not isinstance(stage_prepared, bool):
+        raise TypeError("stage_prepared must be a bool")
 
     document = FreeCAD.getDocument(document_name)
     obj = document.getObject(object_name)
@@ -683,12 +702,21 @@ def _local_property_edit(params: dict[str, Any]) -> dict[str, Any]:
     if property_name not in obj.PropertiesList:
         raise ValueError(f"property not found on object: {property_name}")
 
-    FreeCADGui.setActiveDocument(document_name)
-    FreeCADGui.Selection.clearSelection()
-    FreeCADGui.Selection.addSelection(document_name, object_name)
-    gui_document = FreeCADGui.getDocument(document_name)
-    if gui_document is not None:
-        gui_document.toggleTreeItem(obj, 2)
+    if stage_prepared:
+        active = FreeCADGui.ActiveDocument
+        active_name = None if active is None else str(active.Document.Name)
+        if active_name != document_name:
+            raise RuntimeError(
+                "stage-prepared property edit active-document mismatch: "
+                f"expected {document_name}, got {active_name}"
+            )
+    else:
+        FreeCADGui.setActiveDocument(document_name)
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(document_name, object_name)
+        gui_document = FreeCADGui.getDocument(document_name)
+        if gui_document is not None:
+            gui_document.toggleTreeItem(obj, 2)
     FreeCADGui.updateGui()
 
     expected_properties = _expected_property_keys(obj)

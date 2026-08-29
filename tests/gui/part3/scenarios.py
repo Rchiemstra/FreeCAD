@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Stage A/B/C cycle definitions for Part 3 stress (definitions only in WP06)."""
+"""Stage A/B/C cycle definitions and ADR §13 coverage checklist for Part 3 stress."""
 
 from __future__ import annotations
 
@@ -25,6 +25,34 @@ STAGES: dict[str, StageDefinition] = {
     STAGE_C.stage: STAGE_C,
 }
 
+#: Stages the WP10 execute path may run. Stage C is defined for WP11 only and is
+#: never executed here; plan P3-WP11 owns it as a separate fresh-session gate.
+EXECUTABLE_STAGES: frozenset[str] = frozenset({STAGE_A.stage, STAGE_B.stage})
+
+#: Every ADR §13 coverage item a Stage A/B run must exercise at least once.
+COVERAGE_ITEMS: tuple[str, ...] = (
+    "camera_rotation",
+    "pan",
+    "zoom",
+    "fit",
+    "selection",
+    "tree_expand",
+    "tree_collapse",
+    "active_view_switching",
+    "typed_model_mutation",
+    "recompute",
+    "save",
+    "unchanged_save",
+    "save_copy",
+    "history_undo",
+    "history_redo",
+    "two_documents",
+    "same_property_conflict",
+    "independent_property_success",
+    "local_pause",
+    "local_resume",
+)
+
 
 def resolve_stage(name: str) -> StageDefinition:
     key = name.strip().upper()
@@ -34,11 +62,29 @@ def resolve_stage(name: str) -> StageDefinition:
     return STAGES[key]
 
 
+def resolve_executable_stage(name: str) -> StageDefinition:
+    """Resolve a stage the WP10 execute path is allowed to run (A or B only)."""
+
+    definition = resolve_stage(name)
+    if definition.stage not in EXECUTABLE_STAGES:
+        executable = ", ".join(sorted(EXECUTABLE_STAGES))
+        raise ValueError(
+            f"stage {definition.stage} is not executable in P3-WP10; "
+            f"executable stages are {executable}. Stage C "
+            f"({STAGE_C.view_mutation_cycles}/{STAGE_C.save_cycles}) is the separate "
+            "P3-WP11 fresh-session gate and must not run here."
+        )
+    return definition
+
+
 __all__ = [
+    "COVERAGE_ITEMS",
+    "EXECUTABLE_STAGES",
     "STAGE_A",
     "STAGE_B",
     "STAGE_C",
     "STAGES",
     "StageDefinition",
+    "resolve_executable_stage",
     "resolve_stage",
 ]
