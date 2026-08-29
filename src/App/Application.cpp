@@ -147,6 +147,7 @@
 #include "SuppressibleExtension.h"
 #include "Part.h"
 #include "GeoFeaturePy.h"
+#include "GeometryJobManager.h"
 #include "Placement.h"
 #include "ProgramOptionsUtilities.h"
 #include "Property.h"
@@ -491,6 +492,7 @@ Application::Application(std::map<std::string,std::string> &mConfig)
     mpcPramManager["User parameter"] = _pcUserParamMngr;
 
     _preparedEditExecutor = std::make_unique<PreparedEditExecutor>();
+    _geometryJobManager = std::make_unique<GeometryJobManager>();
     _stopRecomputeThread = false;
     _recomputeThread = std::thread(&Application::recomputeWorker, this);
 
@@ -507,6 +509,7 @@ Application::~Application()
         _recomputeThread.join();
     }
 
+    _geometryJobManager.reset();
     _preparedEditExecutor.reset();
 }
 
@@ -1240,6 +1243,16 @@ bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 PreparedEditExecutor& Application::preparedEditExecutor() noexcept
 {
     return *_preparedEditExecutor;
+}
+
+GeometryJobManager& Application::geometryJobManager() noexcept
+{
+    return *_geometryJobManager;
+}
+
+const GeometryJobManager& Application::geometryJobManager() const noexcept
+{
+    return *_geometryJobManager;
 }
 
 void Application::registerCollaborationServiceLifetime(

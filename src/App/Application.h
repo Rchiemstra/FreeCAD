@@ -70,6 +70,7 @@ class Document;
 class DocumentObject;
 class DocumentCollaborationService;
 class PreparedEditExecutor;
+class GeometryJobManager;
 class CollaborationRegistry;
 class ApplicationDirectories;
 class ApplicationObserver;
@@ -218,6 +219,10 @@ public:
 
     /** Return the process-local registry for live collaboration identities. */
     const CollaborationRegistry& collaborationRegistry() const;
+
+    /** App-owned lifecycle manager for detached isolated geometry work. */
+    GeometryJobManager& geometryJobManager() noexcept;
+    const GeometryJobManager& geometryJobManager() const noexcept;
 
     /**
      * Preserve a stable native recovery point, cancel collaboration work, and
@@ -1082,6 +1087,7 @@ private:
     std::map<std::string,std::string> &_mConfig;
     std::unique_ptr<CollaborationRegistry> _collaborationRegistry;
     std::unique_ptr<PreparedEditExecutor> _preparedEditExecutor;
+    std::unique_ptr<GeometryJobManager> _geometryJobManager;
     std::mutex _collaborationServiceLifetimeMutex;
     std::unordered_map<const DocumentCollaborationService*,
                        std::shared_ptr<Internal::CollaborationServiceLifetimeGate>>
