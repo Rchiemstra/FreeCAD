@@ -1870,22 +1870,9 @@ PyObject* ApplicationPy::sDoCommand(PyObject* /*self*/, PyObject* args)
 
     Gui::Command::printPyCaller();
     Gui::Application::Instance->macroManager()->addLine(MacroManager::App, sCmd);
-
-    PyObject* module = nullptr;
-    PyObject* dict = nullptr;
-
-    Base::PyGILStateLocker locker;
-    module = PyImport_AddModule("__main__");
-    if (!module) {
-        return nullptr;
-    }
-
-    dict = PyModule_GetDict(module);
-    if (!dict) {
-        return nullptr;
-    }
-
-    return PyRun_String(sCmd, Py_file_input, dict, dict);
+    return Gui::Command::runPythonCommand(
+        sCmd,
+        Gui::Command::PythonCommandMode::File);
 }
 
 PyObject* ApplicationPy::sDoCommandGui(PyObject* /*self*/, PyObject* args)
@@ -1902,22 +1889,9 @@ PyObject* ApplicationPy::sDoCommandGui(PyObject* /*self*/, PyObject* args)
 
     Gui::Command::printPyCaller();
     Gui::Application::Instance->macroManager()->addLine(MacroManager::Gui, sCmd);
-
-    PyObject* module = nullptr;
-    PyObject* dict = nullptr;
-
-    Base::PyGILStateLocker locker;
-    module = PyImport_AddModule("__main__");
-    if (!module) {
-        return nullptr;
-    }
-
-    dict = PyModule_GetDict(module);
-    if (!dict) {
-        return nullptr;
-    }
-
-    return PyRun_String(sCmd, Py_file_input, dict, dict);
+    return Gui::Command::runPythonCommand(
+        sCmd,
+        Gui::Command::PythonCommandMode::File);
 }
 
 PyObject* ApplicationPy::sDoCommandEval(PyObject* /*self*/, PyObject* args)
@@ -1932,21 +1906,9 @@ PyObject* ApplicationPy::sDoCommandEval(PyObject* /*self*/, PyObject* args)
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
-    PyObject* module = nullptr;
-    PyObject* dict = nullptr;
-
-    Base::PyGILStateLocker locker;
-    module = PyImport_AddModule("__main__");
-    if (!module) {
-        return nullptr;
-    }
-
-    dict = PyModule_GetDict(module);
-    if (!dict) {
-        return nullptr;
-    }
-
-    return PyRun_String(sCmd, Py_eval_input, dict, dict);
+    return Gui::Command::runPythonCommand(
+        sCmd,
+        Gui::Command::PythonCommandMode::Eval);
 }
 
 PyObject* ApplicationPy::sDoCommandSkip(PyObject* /*self*/, PyObject* args)

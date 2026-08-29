@@ -823,18 +823,39 @@ void Command::_runCommand(const char* file, int line, DoCmd_Type eType, const ch
         Gui::Application::Instance->macroManager()->addLine(MacroManager::App, sCmd);
     }
 
-    try {
-        Base::Interpreter().runString(sCmd);
-    }
-    catch (Py::Exception&) {
+    PyObject* result = runPythonCommand(sCmd, PythonCommandMode::File);
+    if (!result) {
+        if (PyErr_ExceptionMatches(PyExc_SystemExit)) {
+            throw Base::SystemExitException();
+        }
         Base::PyException::throwException();
     }
+    Py_DECREF(result);
 }
 
 /// Run a App level Action
 void Command::_runCommand(const char* file, int line, DoCmd_Type eType, const QByteArray& sCmd)
 {
     _runCommand(file, line, eType, sCmd.constData());
+}
+
+PyObject*
+Command::runPythonCommand(const char* sCmd, PythonCommandMode mode)
+{
+    Base::PyGILStateLocker lock;
+
+    PyObject* module = PyImport_AddModule("__main__");
+    if (!module) {
+        return nullptr;
+    }
+
+    PyObject* dict = PyModule_GetDict(module);
+    if (!dict) {
+        return nullptr;
+    }
+
+    const int inputMode = mode == PythonCommandMode::Eval ? Py_eval_input : Py_file_input;
+    return PyRun_String(sCmd, inputMode, dict, dict);
 }
 
 void Command::addModule(DoCmd_Type eType, const char* sModuleName)
