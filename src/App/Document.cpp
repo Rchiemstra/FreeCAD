@@ -79,6 +79,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentRecomputeCoordinator.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
 #include "Application.h"
@@ -623,6 +624,16 @@ DocumentCollaborationService& Document::collaborationService()
         d->collaborationService.reset(new DocumentCollaborationService(*this));
     }
     return *d->collaborationService;
+}
+
+DocumentRecomputeCoordinator& Document::recomputeCoordinator()
+{
+    return *d->recomputeCoordinator;
+}
+
+const DocumentRecomputeCoordinator& Document::recomputeCoordinator() const
+{
+    return *d->recomputeCoordinator;
 }
 
 bool Document::collaborationRevisionPublicationSuppressed() const
@@ -3442,6 +3453,7 @@ Document::Document(const char* documentName)
     : d(new DocumentP), myName(documentName)
 {
     d->collaborationService.reset(new DocumentCollaborationService(*this));
+    d->recomputeCoordinator.reset(new DocumentRecomputeCoordinator(*d->collaborationService));
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
     // get a reference then the object wouldn't get deleted in the destructor.

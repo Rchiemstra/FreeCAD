@@ -201,6 +201,7 @@ class Application;
 class Transaction;
 class DocumentCommitCoordinator;
 class DocumentCollaborationService;
+class DocumentRecomputeCoordinator;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
@@ -689,6 +690,8 @@ public:
     DocumentRevisionIndex& collaborationRevisions();
     const DocumentRevisionIndex& collaborationRevisions() const;
     DocumentCollaborationService& collaborationService();
+    DocumentRecomputeCoordinator& recomputeCoordinator();
+    const DocumentRecomputeCoordinator& recomputeCoordinator() const;
     bool collaborationRevisionPublicationSuppressed() const;
     bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
     bool collaborationRevisionPublicationSuppressed(const Property* property) const;
