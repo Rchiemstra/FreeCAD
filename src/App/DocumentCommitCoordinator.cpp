@@ -197,6 +197,41 @@ Document& DocumentCommitCoordinator::document() const noexcept
     return _document;
 }
 
+int DocumentCommitCoordinator::openCompatibilityTransaction(
+    TransactionName name,
+    const int transactionId)
+{
+    return _document.openCompatibilityTransactionImpl(std::move(name), transactionId);
+}
+
+void DocumentCommitCoordinator::commitCompatibilityTransaction()
+{
+    _document.commitCompatibilityTransactionImpl();
+}
+
+void DocumentCommitCoordinator::abortCompatibilityTransaction()
+{
+    _document.abortCompatibilityTransactionImpl();
+}
+
+int DocumentCommitCoordinator::openNativeCommitTransaction(std::string name)
+{
+    return _document.openCollaborationCommitTransaction(std::move(name));
+}
+
+bool DocumentCommitCoordinator::commitNativeCommitTransaction()
+{
+    return _document.commitCollaborationCommitTransaction();
+}
+
+CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTransaction(
+    const bool preservePendingRecompute) noexcept
+{
+    return preservePendingRecompute
+        ? _document.rollbackCollaborationTransactionPreservingPendingRecompute()
+        : _document.rollbackCollaborationTransaction();
+}
+
 DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
 {
     return commitWithPreparationPolicy(edit, true, false);
@@ -496,9 +531,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred
         && preexistingPendingRecompute;
     const auto rollbackTransaction = [this, preservePendingRecomputeOnRollback]() noexcept {
-        return preservePendingRecomputeOnRollback
-            ? _document.rollbackCollaborationTransactionPreservingPendingRecompute()
-            : _document.rollbackCollaborationTransaction();
+        return rollbackNativeCommitTransaction(preservePendingRecomputeOnRollback);
     };
 
     bool cleanupRequired = true;
@@ -568,7 +601,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
 
     try {
         const std::string transactionName = "Collaborative operation " + edit.operationId();
-        if (_document.openCollaborationCommitTransaction(transactionName) == 0) {
+        if (openNativeCommitTransaction(transactionName) == 0) {
             restoreSuppression();
             discardNotifications();
             cleanupRequired = false;
@@ -892,7 +925,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                              edit,
                              "prepared edit committed");
     try {
-        if (!_document.commitCollaborationCommitTransaction()) {
+        if (!commitNativeCommitTransaction()) {
             reservation->cancel();
             reservation.reset();
             return abortAndRestore(makeResult(DocumentCommitStatus::ApplyFailed,

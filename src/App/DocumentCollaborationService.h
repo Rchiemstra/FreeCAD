@@ -213,6 +213,10 @@ private:
 
     explicit DocumentCollaborationService(Document& document);
 
+    [[nodiscard]] int openCompatibilityTransaction(TransactionName name, int transactionId);
+    void commitCompatibilityTransaction();
+    void abortCompatibilityTransaction();
+
     [[nodiscard]] LifecyclePin pinDocumentAccess() const;
     [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
     lifetimeGate() const;

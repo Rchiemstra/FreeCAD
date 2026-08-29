@@ -15,6 +15,8 @@ namespace App
 class Document;
 class DocumentCollaborationService;
 class PreparedEdit;
+struct CollaborationRollbackResult;
+struct TransactionName;
 enum class CollaborationCompatibilityRecomputePolicy;
 namespace Internal
 {
@@ -75,6 +77,13 @@ private:
     DocumentCommitCoordinator& operator=(const DocumentCommitCoordinator&) = delete;
 
     [[nodiscard]] Document& document() const noexcept;
+    [[nodiscard]] int openCompatibilityTransaction(TransactionName name, int transactionId);
+    void commitCompatibilityTransaction();
+    void abortCompatibilityTransaction();
+    [[nodiscard]] int openNativeCommitTransaction(std::string name);
+    [[nodiscard]] bool commitNativeCommitTransaction();
+    [[nodiscard]] CollaborationRollbackResult rollbackNativeCommitTransaction(
+        bool preservePendingRecompute) noexcept;
     [[nodiscard]] DocumentCommitResult commit(const PreparedEdit& edit);
     [[nodiscard]] DocumentCommitResult commitCompatibility(
         const PreparedEdit& edit,
