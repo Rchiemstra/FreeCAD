@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,11 +18,14 @@ namespace App
 
 class Document;
 class DocumentObject;
+struct GeometryArchive;
 
 namespace Internal
 {
 class GeometryJobManagerTestAccess;
 class GeometryJobProcessBackend;
+class GeometryProcessBackendTestAccess;
+struct GeometryProcessBackendOptions;
 }
 
 using GeometryJobId = std::uint64_t;
@@ -78,7 +82,7 @@ struct AppExport GeometryJobResult
 {
     GeometryJobId id {0};
     GeometryJobState state {GeometryJobState::Failed};
-    std::string resultArtifact;
+    std::filesystem::path resultArtifact;
     std::string resultDigest;
     std::string diagnostic;
 };
@@ -110,6 +114,8 @@ public:
     GeometryJobManager& operator=(GeometryJobManager&&) = delete;
 
     [[nodiscard]] GeometryJobId submit(GeometryJobRequest request);
+    [[nodiscard]] GeometryJobId submit(GeometryJobRequest request,
+                                       GeometryArchive inputArchive);
     [[nodiscard]] bool cancel(GeometryJobId id);
     [[nodiscard]] std::optional<GeometryJobStatus> status(GeometryJobId id) const;
     [[nodiscard]] std::optional<GeometryJobResult> takeResult(GeometryJobId id);
@@ -122,13 +128,19 @@ public:
 private:
     friend class Internal::GeometryJobManagerTestAccess;
     friend class Internal::GeometryJobProcessBackend;
+    friend class Internal::GeometryProcessBackendTestAccess;
+    friend class Application;
 
     [[nodiscard]] std::optional<GeometryJobDispatch> takeNext();
+    [[nodiscard]] std::optional<GeometryJobDispatch> takeNext(
+        GeometryArchive& inputArchive);
     [[nodiscard]] bool reportProgress(GeometryJobId id, GeometryJobProgress progress);
     [[nodiscard]] bool finish(GeometryJobResult result);
+    void startProcessBackend(Internal::GeometryProcessBackendOptions options);
 
     class Impl;
     std::unique_ptr<Impl> _impl;
+    std::unique_ptr<Internal::GeometryJobProcessBackend> _processBackend;
 };
 
 }  // namespace App

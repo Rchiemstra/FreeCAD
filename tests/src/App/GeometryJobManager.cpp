@@ -5,6 +5,7 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentObject.h>
+#include <App/GeometryArchive.h>
 #include <App/GeometryJobManager.h>
 
 #include <chrono>
@@ -30,6 +31,12 @@ public:
     static std::optional<GeometryJobDispatch> takeNext(GeometryJobManager& manager)
     {
         return manager.takeNext();
+    }
+
+    static std::optional<GeometryJobDispatch> takeNext(GeometryJobManager& manager,
+                                                       GeometryArchive& archive)
+    {
+        return manager.takeNext(archive);
     }
 
     static bool reportProgress(GeometryJobManager& manager,
@@ -138,6 +145,31 @@ TEST(GeometryJobManagerTest, validatesBoundedIsolatedRequests)
     oversizedDigest.inputDigest.assign(257, 'd');
     EXPECT_THROW(static_cast<void>(manager.submit(std::move(oversizedDigest))),
                  std::invalid_argument);
+}
+
+TEST(GeometryJobManagerTest, processDispatchAtomicallyCarriesItsPointerFreeArchive)
+{
+    GeometryJobManager manager(1, 2);
+    const auto manualId = manager.submit(request("manual"));
+    GeometryArchive input;
+    input.sections = {{"payload", {1, 2, 3}}};
+    const auto processId = manager.submit(request("process"), input);
+
+    GeometryArchive dispatchedArchive;
+    const auto processDispatch =
+        Internal::GeometryJobManagerTestAccess::takeNext(manager, dispatchedArchive);
+    ASSERT_TRUE(processDispatch.has_value());
+    EXPECT_EQ(processDispatch->id, processId);
+    EXPECT_EQ(dispatchedArchive.sections, input.sections);
+    EXPECT_EQ(manager.queuedCount(), 1U);
+
+    EXPECT_TRUE(Internal::GeometryJobManagerTestAccess::finish(
+        manager, completed(processId)));
+    const auto manualDispatch = Internal::GeometryJobManagerTestAccess::takeNext(manager);
+    ASSERT_TRUE(manualDispatch.has_value());
+    EXPECT_EQ(manualDispatch->id, manualId);
+    EXPECT_TRUE(Internal::GeometryJobManagerTestAccess::finish(
+        manager, completed(manualId)));
 }
 
 TEST(GeometryJobManagerTest, boundsQueueAndActiveDispatch)
