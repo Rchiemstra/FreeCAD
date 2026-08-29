@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -33,6 +34,10 @@ from typing import Any
 import pytest
 
 from tests.gui.part3.evidence import (
+    ALPHA_MODEL_KEY,
+    ALPHA_PROPERTY_KEY,
+    BETA_MODEL_KEY,
+    BETA_PROPERTY_KEY,
     SHUTDOWN_TIMESTAMP_KEYS,
     binary_fingerprint,
     classify_artifact,
@@ -67,8 +72,20 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 COORDINATOR = PACKAGE_ROOT / "stress_coordinator.py"
 MCP_RPC_PORT = 9875
 EVIDENCE_LINE = re.compile(r"^evidence:\s*(?P<path>.+)$", re.MULTILINE)
+HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 
 STAGE_TIMEOUTS = {"a": 3600.0, "b": 10800.0}
+
+
+def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
+    """Build the canonical revision vector emitted by personal snapshots."""
+
+    return [
+        {"key": ALPHA_PROPERTY_KEY, "revision": base_revision},
+        {"key": BETA_PROPERTY_KEY, "revision": base_revision + 1},
+        {"key": ALPHA_MODEL_KEY, "revision": base_revision + 2},
+        {"key": BETA_MODEL_KEY, "revision": base_revision + 3},
+    ]
 
 
 def _port_is_open(host: str, port: int) -> bool:
@@ -215,6 +232,30 @@ def _run_stage_cli(stage: str) -> tuple[subprocess.CompletedProcess[str], dict[s
     evidence_path = Path(match.group("path").strip())
     assert evidence_path.is_file(), evidence_path
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    handoff_value = os.environ.get(HANDOFF_ENV, "").strip()
+    if handoff_value:
+        handoff_path = Path(handoff_value)
+        handoff_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = handoff_path.with_name(f".{handoff_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stage": stage.upper(),
+                    "coordinator_return_code": int(completed.returncode),
+                    "evidence_path": str(evidence_path.resolve()),
+                    "launcher_path": str(
+                        (evidence_path.parents[1] / "launcher.log").resolve()
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, handoff_path)
     return completed, evidence
 
 
@@ -229,102 +270,1135 @@ def _assert_green_stage(
     assert "PART3_RESULT: PASSED" in (completed.stdout or ""), tail
     assert completed.returncode == 0, tail
 
-    assert evidence["schema_version"] == 2
-    assert evidence["stage"] == stage
-    assert evidence["verdict"] == "PASSED", evidence.get("failed_checks")
-    assert evidence["failed_checks"] == [], evidence["failed_checks"]
+    # Both the direct stage assertion and retained packets use one production
+    # predicate.  Passing explicit counts keeps reduced unit fixtures honest
+    # without maintaining a second semantic validator here.
+    from tests.gui.part3.evidence import validate_completed_stage_evidence
+    try:
+        validate_completed_stage_evidence(
+            evidence,
+            stage=stage,
+            view_mutation_cycles=view_mutation_cycles,
+            save_cycles=save_cycles,
+            repo_root=REPO_ROOT,
+        )
+    except ValueError as exc:
+        raise AssertionError(str(exc)) from exc
 
-    assert len(evidence["cycles"]) == view_mutation_cycles
-    assert len(evidence["saves"]) == save_cycles
-    assert [cycle["index"] for cycle in evidence["cycles"]] == list(
-        range(view_mutation_cycles)
+
+def _personal_view_stage_fixture(*, clean: bool) -> dict[str, Any]:
+    """Small complete `_assert_green_stage` fixture for ADR section 4."""
+
+    if clean:
+        # Reuse the complete producer-shaped fixture so the direct assertion
+        # cannot drift from the retained-packet semantic schedule.
+        from tests.gui.part3.test_part3_stage_gate_runner import _stage_evidence
+
+        evidence = _stage_evidence("A")
+        evidence["cycles"] = evidence["cycles"][:2]
+        evidence["saves"] = evidence["saves"][:1]
+        canonical = Path(evidence["saves"][-1]["canonical_path"])
+        copy = Path(evidence["saves"][-1]["save_copy"]["destination"])
+        canonical.write_bytes(copy.read_bytes())
+        final_hash = sha256_file(canonical)
+        evidence["saves"][-1]["canonical_artifact_sha256"] = final_hash
+        canonical_artifact = next(
+            entry for entry in evidence["artifacts"]["documents"]
+            if entry["path"] == str(canonical)
+        )
+        canonical_artifact["size"] = canonical.stat().st_size
+        canonical_artifact["sha256"] = final_hash
+        retained_proofs = evidence["personal_action_proofs"][:20]
+        out_of_cycle_action = evidence["out_of_cycle_local_actions"][0]
+        out_of_cycle_proof = dict(
+            evidence["personal_action_proofs"][
+                out_of_cycle_action["personal_action_proof_index"]
+            ]
+        )
+        out_of_cycle_proof["index"] = len(retained_proofs)
+        out_of_cycle_proof["operation_id"] = out_of_cycle_action["operation_id"]
+        out_of_cycle_action["personal_action_proof_index"] = out_of_cycle_proof["index"]
+        evidence["personal_action_proofs"] = retained_proofs + [out_of_cycle_proof]
+        evidence["_complete_fixture"] = True
+        return evidence
+
+    from tests.gui.part3.stress_coordinator import STAGE_SOURCE_FILES
+    from tests.gui.part3.test_part3_stage_gate_runner import _stage_evidence
+
+    fixture_documents = _stage_evidence("A")["artifacts"]["documents"]
+    fixture_canonical = fixture_documents[0]["path"]
+    fixture_copy = fixture_documents[1]["path"]
+    file_state = {
+        "pending_changes": [] if clean else ["model"],
+        "has_pending_file_changes": not clean,
+    }
+    return {
+        "schema_version": 2,
+        "stage": "A",
+        "mode": "stage",
+        "verdict": "PASSED",
+        "failed_checks": [],
+        "cycles": [
+            {
+                "index": 0,
+                "checks": {
+                    "personal_view_state_inert": True,
+                    "personal_view_state_not_dirtying": clean,
+                    "typed_mutation_committed_once": True,
+                },
+                "document": "Primary",
+                "written_result": {"saved": True, "save_disposition": "written", "file_written": True, "durability_verified": True},
+                "revisions_before": [{"key": "ObjectProperty:Beta:Length", "revision": 1}],
+                "revisions_after_personal_view": [{"key": "ObjectProperty:Beta:Length", "revision": 1}],
+                "revisions_after": [{"key": "ObjectProperty:Beta:Length", "revision": 2}],
+                "file_change_state_before": dict(file_state),
+                "file_change_state_after_personal_view": dict(file_state),
+                "file_change_state_after": dict(file_state),
+                "readiness": {"success": True, "documents": [{"quarantined": False, "collaboration_poisoned": False}]},
+                "typed_mutation": {"operation_id": "remote-commit-0", "revision_before": 1, "revision_after": 2, "expected_value": 100, "landed_value": 100, "first_result": {"success": True, "committed": True}, "replay_result": {"success": True, "committed": True}},
+                "local_actions": [{
+                    "operation_id": "local-personal-0", "action": "rotate_camera",
+                    "ack_utc": "2026-08-22T00:00:00+00:00", "observed": {},
+                    "personal_action_proof_index": 0,
+                }],
+                "remote_actions": [{
+                    "operation_id": "remote-commit-0", "method": "commit_checked_property",
+                    "ack_utc": "2026-08-22T00:00:00+00:00", "result_envelope": {"success": True, "committed": True},
+                }, {
+                    "operation_id": "remote-commit-0", "method": "commit_checked_property",
+                    "ack_utc": "2026-08-22T00:00:00+00:00", "result_envelope": {"success": True, "committed": True}, "committed_once": True,
+                }, {
+                    "operation_id": "remote-recompute-0", "method": "recompute_document",
+                    "ack_utc": "2026-08-22T00:00:00+00:00", "result_envelope": {"success": True},
+                }],
+            }
+        ],
+        "personal_action_proofs": [
+            {
+                "index": 0,
+                "operation_id": "local-personal-0",
+                "action": "rotate_camera",
+                "documents": ["Primary"],
+                "before": {
+                    "Primary": {
+                        "observed_document": "Primary",
+                        "identity_selector": {
+                            "document_uid": "uid-Primary",
+                            "document_instance_id": 11,
+                            "lifecycle_epoch": 2,
+                            "document_name": "Primary",
+                        },
+                        "file_change_state": dict(file_state),
+                        "semantic_revisions": _personal_revision_vector(1),
+                    }
+                },
+                "after": {
+                    "Primary": {
+                        "observed_document": "Primary",
+                        "identity_selector": {
+                            "document_uid": "uid-Primary",
+                            "document_instance_id": 11,
+                            "lifecycle_epoch": 2,
+                            "document_name": "Primary",
+                        },
+                        "file_change_state": dict(file_state),
+                        "semantic_revisions": _personal_revision_vector(1),
+                    }
+                },
+                "clean_before": clean,
+                "clean_after": clean,
+                "semantic_revisions_unchanged": True,
+                "passed": clean,
+            }
+        ],
+        "saves": [
+            {
+                "index": 0,
+                "truthful": True,
+                "disposition": "written",
+                "file_written": True,
+                "durability_verified": True,
+                "sha256_before": "a" * 64,
+                "sha256_after": "b" * 64,
+                "document": "Primary",
+                "written_result": {"saved": True, "save_disposition": "written", "file_written": True, "durability_verified": True},
+                "unchanged_save": {
+                    "file_written": False,
+                    "disposition": "unchanged",
+                    "sha256_after": "b" * 64,
+                    "result": {"unchanged": True, "save_disposition": "unchanged", "file_written": False},
+                },
+                "actual_save_operations": [
+                    {"kind": "canonical_written_save", "document": "Primary", "sha256_before": "a" * 64, "sha256_after": "b" * 64, "disposition": "written", "file_written": True, "durability_verified": True, "truthful": True, "result": {"saved": True, "save_disposition": "written", "file_written": True, "durability_verified": True}},
+                    {"kind": "canonical_unchanged_save", "document": "Primary", "sha256_before": "b" * 64, "sha256_after": "b" * 64, "disposition": "unchanged", "file_written": False, "truthful": True, "result": {"unchanged": True, "save_disposition": "unchanged", "file_written": False}},
+                    {"kind": "save_copy", "document": "Primary", "destination": fixture_copy, "canonical_sha256_before": "b" * 64, "canonical_sha256_after": "b" * 64, "disposition": "copy_written", "file_written": True, "truthful": True, "result": {"saved": True, "save_disposition": "copy_written", "file_written": True}},
+                ],
+                "canonical_path": fixture_canonical,
+                "save_copy": {
+                    "destination": fixture_copy,
+                    "readable_archive": True,
+                    "canonical_unchanged": True,
+                    "result": {"saved": True, "save_disposition": "copy_written", "file_written": True},
+                },
+            }
+        ],
+        "shutdown": {
+            "forced": False,
+            "stalled_stage": None,
+            "failed_step": None,
+            "rpc_error": None,
+            "deadline_seconds": 60,
+            "requested_utc": "2026-08-22T00:00:00+00:00",
+            "documents_closed_utc": "2026-08-22T00:00:01+00:00",
+            "rpc_admission_closed_utc": "2026-08-22T00:00:02+00:00",
+            "worker_shutdown_utc": "2026-08-22T00:00:03+00:00",
+            "listener_shutdown_utc": "2026-08-22T00:00:04+00:00",
+            "window_closed_utc": "2026-08-22T00:00:05+00:00",
+            "process_exit_utc": "2026-08-22T00:00:06+00:00",
+        },
+        "environment": {
+            "binary_fingerprint": {
+                "FreeCAD.exe": {"sha256": "c" * 64, "size": 1, "mtime_ns": 1}
+            },
+            "git": {
+                "parent_commit": "d" * 40,
+                "nested_commit": "e" * 40,
+                "recorded_gitlink": "e" * 40,
+                "branch": "fix/change-aware-save-mcp-autonomy",
+            },
+            "isolation_verified": True,
+            "reported_user_app_data": "isolated-profile",
+            "auth": {
+                "v2_session": True,
+                "session_token_present": True,
+                "session_token_length": 32,
+                "mcp_instance_id": "instance",
+                "profile_instance_id": "profile",
+                "protocol_version": 2,
+            },
+            "remote_actor": {
+                "mode": "in_process_typed_session",
+                "child_token_absence_proved": True,
+                "adr_deviation": "section 1.1",
+                "holds_rpc_session_in_coordinator_process": True,
+            },
+            "session_ttl": {
+                "environment_variable": "FREECAD_MCP_SESSION_TTL_SECONDS",
+                "override_present": False,
+                "override_value": None,
+                "effective_seconds": 300.0,
+                "default_seconds": 300.0,
+                "source": "default",
+            },
+            "build_provenance": {
+                "head_commit": "d" * 40,
+                "head_committed_utc": "2026-08-22T00:00:00+00:00",
+                "history_depth": 1,
+                "binaries": {
+                    "FreeCAD.exe": {
+                        "mtime_utc": "2026-08-22T00:00:00+00:00",
+                        "commits_not_in_binary": [], "predates_head": False,
+                    }
+                },
+                "binaries_predating_head": [],
+                "binary_commit_binding_enforced": False,
+                "provenance_caveat": "Recorded, not enforced.",
+                "stage_sources": {
+                    relative: sha256_file(REPO_ROOT.joinpath(*relative.split("/")))
+                    for relative in STAGE_SOURCE_FILES
+                },
+            },
+        },
+        "artifacts": {
+            "documents": [
+                dict(fixture_documents[0]),
+                dict(fixture_documents[1]),
+            ],
+            "lock_anchors": [], "unexplained": [],
+        },
+        "coverage": {
+            "required": list(COVERAGE_ITEMS),
+            "observed": list(COVERAGE_ITEMS),
+            "missing": [],
+        },
+        "conflicts": {
+            "same_property": {"document": "Primary", "targeted": True, "write_lane_healthy": True, "refusal": {"success": False, "error_code": "DOCUMENT_CONFLICT"}, "changed_semantic_keys": ["ObjectProperty:Alpha:Length"], "expected_revisions": {"ObjectProperty:Alpha:Length": 1}, "current_revisions": {"ObjectProperty:Alpha:Length": 2}, "readiness": {"success": True, "documents": [{"document": "Primary", "ready": True, "quarantined": False, "collaboration_poisoned": False}]}},
+            "independent_property": {"document": "Secondary", "both_landed": True, "committed_once": True, "commit": {"success": True, "committed": True}, "replay": {"success": True, "committed": True}, "alpha_revision_before": 1, "alpha_revision_after": 2, "beta_revision_before": 1, "beta_revision_after": 2, "alpha_value": 11, "beta_value": 30},
+        },
+        "pause_resume": {
+            "pause": {"observed": {"paused": True}},
+            "refused": {
+                "success": False, "error_code": "AUTOMATION_PAUSED",
+                "error": "paused new MCP writes", "data": {},
+            },
+            "readiness_while_paused": {
+                "success": True,
+                "documents": [{"automation_paused": True, "active_write_count": 0}],
+                "automation_pause": {"paused": True, "active_write_count": 0},
+            },
+            "resume": {"observed": {"paused": False}},
+            "after": {"commit": {"success": True}, "value": 55},
+        },
+        "history": {
+            "undo_head": {"count": 1, "head": "undo"},
+            "undo_head_refusal": {
+                "success": False,
+                "error_code": "HISTORY_HEAD_REJECTED",
+                "current_undo_count": 1,
+                "current_undo_head": "undo",
+            },
+            "undo_result": {"success": True}, "value_after_edit": 77, "value_after_undo": 0,
+            "redo_head": {"count": 1, "head": "redo"},
+            "redo_head_refusal": {
+                "success": False,
+                "error_code": "HISTORY_HEAD_REJECTED",
+                "current_redo_count": 1, "current_redo_head": "redo",
+            },
+            "redo_result": {"success": True}, "value_after_redo": 77,
+            "mismatched_head_refused": True,
+        },
+    }
+
+
+def _record_personal_view_fixture_aggregate(payload: dict[str, Any]) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    aggregate_names = {
+        module.CYCLE_COUNT_CHECK,
+        module.SAVE_COUNT_CHECK,
+        "adr_section_13_coverage_complete",
+        "every_save_cycle_is_truthful",
+        "every_personal_action_has_exact_clean_revision_proof",
+        "every_cycle_keeps_personal_view_state_inert",
+        "every_cycle_starts_and_ends_personal_view_file_clean",
+        "every_cycle_commits_its_typed_mutation_once",
+    }
+    payload["checks"] = [
+        entry for entry in payload.get("checks", [])
+        if not isinstance(entry, dict) or entry.get("name") not in aggregate_names
+    ]
+    payload["failed_checks"] = [
+        entry for entry in payload.get("failed_checks", [])
+        if not isinstance(entry, dict) or entry.get("name") not in aggregate_names
+    ]
+    coverage = payload.get("coverage")
+    observed = coverage.get("observed", []) if isinstance(coverage, dict) else []
+    context = SimpleNamespace(
+        payload=payload,
+        definition=SimpleNamespace(
+            view_mutation_cycles=len(payload["cycles"]),
+            save_cycles=len(payload["saves"]),
+        ),
+        coverage=set(observed),
     )
-    assert [save["index"] for save in evidence["saves"]] == list(range(save_cycles))
+    payload.pop("_complete_fixture", None)
+    module._record_stage_aggregates(context)
+    # This reduced fixture models the producer's post-shutdown observations
+    # that the normal stage runner records after aggregate collection.
+    from tests.gui.part3.evidence import record_check
 
-    shutdown = evidence["shutdown"]
-    assert shutdown["forced"] is False, shutdown
-    assert shutdown["stalled_stage"] is None, shutdown
-    assert shutdown["deadline_seconds"] == 60
-    for key in (
-        "requested_utc",
-        "documents_closed_utc",
-        "rpc_admission_closed_utc",
-        "window_closed_utc",
-        "process_exit_utc",
+    existing = {entry["name"] for entry in payload.get("checks", [])}
+    for name in (
+        "artifact_scan_has_no_unexplained_files",
+        "saved_documents_are_ordinarily_readable_archives",
+        "lock_anchors_are_classified_separately",
+        "build_provenance_is_recorded_for_binaries_and_stage_sources",
+        "head_bound_undo_reverts_the_local_transaction",
+        "redo_stack_records_the_reverted_transaction",
+        "head_bound_redo_restores_the_reverted_transaction",
+        "remote_write_refused_while_paused",
+        "reads_remain_available_while_paused",
+        "next_typed_mutation_succeeds_after_resume",
+        "graceful_shutdown_completed_without_forced_termination",
     ):
-        assert shutdown[key], (key, shutdown)
+        if name not in existing:
+            record_check(payload, name, True, {"fixture": True})
 
-    environment = evidence["environment"]
-    fingerprints = environment["binary_fingerprint"]
-    assert fingerprints, environment
-    for name, fingerprint in fingerprints.items():
-        assert len(fingerprint["sha256"]) == 64, name
-        assert fingerprint["size"] > 0, name
-        assert fingerprint["mtime_ns"] > 0, name
-    git = environment["git"]
-    assert len(git["parent_commit"]) == 40
-    assert len(git["nested_commit"]) == 40
-    assert git["branch"]
-    assert evidence["mode"] == "stage", evidence.get("mode")
-    assert environment["isolation_verified"] is True
-    assert environment["reported_user_app_data"], environment
 
-    # auth must be derived from the session in hand, not written as a constant.
-    auth = environment["auth"]
-    assert auth["v2_session"] is True, auth
-    assert auth["session_token_present"] is True, auth
-    assert auth["session_token_length"] > 0, auth
-    assert auth["mcp_instance_id"], auth
-    assert auth["profile_instance_id"], auth
-    assert auth["protocol_version"] is not None, auth
+def test_dirty_personal_view_fixture_fails_stage_aggregate() -> None:
+    """GRK-P3-122 RED: equality of two dirty observations is not clean-state proof."""
 
-    # The actor boundary this path really has (GRK-P3-076, ADR section 1.4).
-    actor = environment["remote_actor"]
-    assert actor["mode"] == "in_process_typed_session", actor
-    assert actor["child_token_absence_proved"] is True, actor
-    assert actor["adr_deviation"] == "section 1.1", actor
-    assert actor["holds_rpc_session_in_coordinator_process"] is True, actor
+    evidence = _personal_view_stage_fixture(clean=False)
+    _record_personal_view_fixture_aggregate(evidence)
+    checks = {entry["name"]: entry for entry in evidence["checks"]}
+    exact = checks["every_cycle_starts_and_ends_personal_view_file_clean"]
+    assert exact["passed"] is False, exact
+    assert exact in evidence["failed_checks"]
 
-    assert evidence["artifacts"]["unexplained"] == [], evidence["artifacts"]
-    assert evidence["artifacts"]["documents"]
-    assert evidence["coverage"]["missing"] == []
-    assert set(evidence["coverage"]["required"]) == set(COVERAGE_ITEMS)
 
-    for cycle in evidence["cycles"]:
-        assert cycle["checks"]["personal_view_state_inert"] is True, cycle["index"]
-        assert cycle["checks"]["typed_mutation_committed_once"] is True, cycle["index"]
-        assert cycle["local_actions"], cycle["index"]
-        assert cycle["remote_actions"], cycle["index"]
-    for save in evidence["saves"]:
-        assert save["truthful"] is True, save
-        assert save["disposition"].lower() == "written", save
-        assert save["file_written"] is True, save
-        assert save["durability_verified"] is True, save
-        assert save["sha256_after"] and save["sha256_after"] != save["sha256_before"]
-        assert save["unchanged_save"]["file_written"] is False, save
-        assert str(save["unchanged_save"]["disposition"]).lower() == "unchanged", save
-        assert save["save_copy"]["readable_archive"] is True, save
-        assert save["save_copy"]["canonical_unchanged"] is True, save
+def test_dirty_personal_view_fixture_fails_green_stage_validator() -> None:
+    """GRK-P3-122 RED: the final validator must reject unchanged-but-dirty state."""
 
-    assert evidence["conflicts"]["same_property"]["targeted"] is True
-    assert evidence["conflicts"]["same_property"]["write_lane_healthy"] is True
-    assert evidence["conflicts"]["independent_property"]["both_landed"] is True
-    assert evidence["pause_resume"]["pause"]["observed"]["paused"] is True
-    assert evidence["pause_resume"]["resume"]["observed"]["paused"] is False
-    # The history refusal must be the envelope the server returned, not a
-    # literal the producer wrote next to it (GRK-P3-078).
-    history = evidence["history"]
-    assert history["undo_head"]["count"] > 0
-    undo_refusal = history["undo_head_refusal"]
-    assert undo_refusal["success"] is False, undo_refusal
-    assert undo_refusal["error_code"] == "HISTORY_HEAD_REJECTED", undo_refusal
-    assert int(undo_refusal["current_undo_count"]) == history["undo_head"]["count"]
-    assert str(undo_refusal["current_undo_head"]) == history["undo_head"]["head"]
-    redo_refusal = history["redo_head_refusal"]
-    assert redo_refusal["success"] is False, redo_refusal
-    assert redo_refusal["error_code"] == "HISTORY_HEAD_REJECTED", redo_refusal
-    assert int(redo_refusal["current_redo_count"]) == history["redo_head"]["count"]
-    assert history["mismatched_head_refused"] is True
+    evidence = _personal_view_stage_fixture(clean=False)
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(completed, evidence, "A", 1, 1)
+
+
+def test_clean_personal_view_fixture_passes_both_validators() -> None:
+    """GRK-P3-122 clean control: before/after empty and false remains green."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    proof_indexes = [proof["index"] for proof in evidence["personal_action_proofs"]]
+    out_of_cycle_action = evidence["out_of_cycle_local_actions"][0]
+    assert proof_indexes == list(range(21))
+    assert out_of_cycle_action["personal_action_proof_index"] == proof_indexes[-1]
+    assert (
+        evidence["personal_action_proofs"][-1]["operation_id"]
+        == out_of_cycle_action["operation_id"]
+    )
+    _record_personal_view_fixture_aggregate(evidence)
+    checks = {entry["name"]: entry for entry in evidence["checks"]}
+    exact = checks["every_cycle_starts_and_ends_personal_view_file_clean"]
+    assert exact["passed"] is True, exact
+    assert evidence["failed_checks"] == []
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    _assert_green_stage(
+        completed, evidence, "A", len(evidence["cycles"]), len(evidence["saves"])
+    )
+
+
+@pytest.mark.parametrize("stage", ["A", "B"])
+@pytest.mark.parametrize("defect", ["binary_path", "git_identity"])
+def test_direct_stage_assertion_rejects_fake_runtime_provenance(
+    stage: str, defect: str
+) -> None:
+    """Completed direct A/B evidence is always bound to this repository/runtime."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["stage"] = stage
+    _record_personal_view_fixture_aggregate(evidence)
+    if defect == "binary_path":
+        evidence["environment"]["binary_fingerprint"]["FreeCAD.exe"]["path"] = "missing/FreeCAD.exe"
+    else:
+        evidence["environment"]["git"]["parent_commit"] = "f" * 40
+        evidence["environment"]["build_provenance"]["head_commit"] = "f" * 40
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(
+            completed,
+            evidence,
+            stage,
+            len(evidence["cycles"]),
+            len(evidence["saves"]),
+        )
+
+
+@pytest.mark.parametrize("stage", ["A", "B"])
+@pytest.mark.parametrize("defect", ["missing", "corrupt"])
+@pytest.mark.parametrize(
+    "family",
+    [
+        "provenance", "archive", "paused_refusal", "paused_read", "post_resume", "undo", "redo",
+        "history_values", "provenance_commit", "provenance_binaries", "provenance_predating",
+        "artifact_backup", "artifact_wrong_bucket", "artifact_malformed",
+    ],
+)
+def test_shared_green_stage_predicate_rejects_each_new_decisive_field(
+    stage: str, defect: str, family: str
+) -> None:
+    """Direct A/B assertions use the same strict predicate as packets."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["stage"] = stage
+    _record_personal_view_fixture_aggregate(evidence)
+    if family == "provenance":
+        target = evidence["environment"]
+        key = "build_provenance"
+        if defect == "missing":
+            target.pop(key)
+        else:
+            target[key]["stage_sources"] = {"source": "bad"}
+    elif family == "archive":
+        if defect == "missing":
+            evidence["artifacts"].pop("lock_anchors")
+        else:
+            evidence["artifacts"]["documents"][0]["readable_archive"] = False
+    elif family == "paused_refusal":
+        if defect == "missing":
+            evidence["pause_resume"].pop("refused")
+        else:
+            evidence["pause_resume"]["refused"]["success"] = True
+    elif family == "paused_read":
+        if defect == "missing":
+            evidence["pause_resume"].pop("readiness_while_paused")
+        else:
+            evidence["pause_resume"]["readiness_while_paused"] = {
+                "mutation_readiness": [{"ready": True}],
+            }
+    elif family == "post_resume":
+        if defect == "missing":
+            evidence["pause_resume"].pop("after")
+        else:
+            evidence["pause_resume"]["after"]["value"] = 0
+    elif family == "undo":
+        if defect == "missing":
+            evidence["history"].pop("undo_result")
+        else:
+            evidence["history"]["undo_result"]["success"] = False
+    elif defect == "missing":
+        if family == "redo":
+            evidence["history"]["redo_head_refusal"].pop("current_redo_head")
+        elif family == "history_values":
+            evidence["history"].pop("value_after_edit")
+        elif family == "provenance_commit":
+            evidence["environment"]["build_provenance"].pop("head_commit")
+        elif family == "provenance_binaries":
+            evidence["environment"]["build_provenance"].pop("binaries")
+        elif family == "provenance_predating":
+            evidence["environment"]["build_provenance"].pop("binaries_predating_head")
+        else:
+            evidence["artifacts"].pop("documents")
+    elif family == "history_values":
+        evidence["history"]["value_after_undo"] = evidence["history"]["value_after_edit"]
+        evidence["history"]["value_after_redo"] = 0
+    elif family == "provenance_commit":
+        evidence["environment"]["build_provenance"]["head_commit"] = "f" * 40
+    elif family == "provenance_binaries":
+        evidence["environment"]["build_provenance"]["binaries"] = {"wrong": {}}
+    elif family == "provenance_predating":
+        evidence["environment"]["build_provenance"]["binaries_predating_head"] = ["FreeCAD.exe"]
+    elif family == "artifact_backup":
+        evidence["artifacts"]["documents"] = [{"path": "legacy.fcbak", "size": 1, "readable_archive": False}]
+    elif family == "artifact_wrong_bucket":
+        evidence["artifacts"]["documents"] = [{"path": "model.FCStd.FreeCAD-save.lock", "size": 1}]
+    elif family == "artifact_malformed":
+        evidence["artifacts"]["documents"] = [{"path": "model.FCStd", "readable_archive": True}]
+    else:
+        evidence["history"]["redo_result"]["success"] = False
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(
+            completed,
+            evidence,
+            stage,
+            len(evidence["cycles"]),
+            len(evidence["saves"]),
+        )
+
+
+@pytest.mark.parametrize("stage", ["A", "B"])
+def test_shared_green_stage_predicate_accepts_producer_shaped_backup_artifacts(
+    stage: str,
+) -> None:
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["stage"] = stage
+    evidence["artifacts"]["documents"].extend(
+        [
+            {"path": "legacy.fcbak", "size": 2},
+            {"path": "numbered.FCStd1", "size": 3},
+        ]
+    )
+    _record_personal_view_fixture_aggregate(evidence)
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    _assert_green_stage(
+        completed, evidence, stage, len(evidence["cycles"]), len(evidence["saves"])
+    )
+
+
+def test_shared_green_stage_predicate_accepts_real_paused_readiness_shape() -> None:
+    evidence = _personal_view_stage_fixture(clean=True)
+    primary_document = evidence["cycles"][0]["document"]
+    readiness = {
+        "success": True,
+        "documents": [{
+            "document": primary_document,
+            "automation_paused": True,
+            "active_write_count": 0,
+        }],
+        "automation_pause": {"paused": True, "active_write_count": 0},
+    }
+    evidence["pause_resume"]["readiness_while_paused"] = readiness
+    _record_personal_view_fixture_aggregate(evidence)
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    _assert_green_stage(
+        completed, evidence, "A", len(evidence["cycles"]), len(evidence["saves"])
+    )
+
+
+@pytest.mark.parametrize("stage", ["A", "B"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "orphan_canonical", "orphan_copy", "source_digest", "commit_relation",
+        "gitlink", "readiness_active", "readiness_missing_count", "readiness_extra_document",
+    ],
+)
+def test_shared_green_stage_predicate_rejects_exact_evidence_bindings(
+    stage: str, defect: str
+) -> None:
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["stage"] = stage
+    _record_personal_view_fixture_aggregate(evidence)
+    if defect == "orphan_canonical":
+        canonical_path = evidence["saves"][0]["canonical_path"]
+        evidence["artifacts"]["documents"] = [
+            entry for entry in evidence["artifacts"]["documents"]
+            if entry["path"] != canonical_path
+        ]
+    elif defect == "orphan_copy":
+        copy_path = evidence["saves"][0]["save_copy"]["destination"]
+        evidence["artifacts"]["documents"] = [
+            entry for entry in evidence["artifacts"]["documents"]
+            if entry["path"] != copy_path
+        ]
+    elif defect == "source_digest":
+        source = next(iter(evidence["environment"]["build_provenance"]["stage_sources"]))
+        evidence["environment"]["build_provenance"]["stage_sources"][source] = "z" * 64
+    elif defect == "commit_relation":
+        binary = evidence["environment"]["build_provenance"]["binaries"]["FreeCAD.exe"]
+        binary["commits_not_in_binary"] = ["f" * 40]
+        binary["predates_head"] = False
+    elif defect == "gitlink":
+        evidence["environment"]["git"]["recorded_gitlink"] = "f" * 40
+    else:
+        readiness = evidence["pause_resume"]["readiness_while_paused"]
+        if defect == "readiness_active":
+            readiness["documents"][0]["active_write_count"] = 3
+        elif defect == "readiness_missing_count":
+            readiness["automation_pause"].pop("active_write_count")
+        else:
+            readiness["documents"].append(
+                {"automation_paused": True, "active_write_count": 0}
+            )
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(
+            completed,
+            evidence,
+            stage,
+            len(evidence["cycles"]),
+            len(evidence["saves"]),
+        )
+
+
+@pytest.mark.parametrize("stage", ["A", "B"])
+@pytest.mark.parametrize(
+    "defect",
+    ["binary_digest", "save_digest", "active_bool", "ordinary_size_bool", "backup_size_bool", "provenance_bool", "fingerprint_size_bool", "fingerprint_mtime_bool"],
+)
+def test_shared_green_stage_predicate_rejects_boolean_and_nonhex_fields(
+    stage: str, defect: str
+) -> None:
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["stage"] = stage
+    _record_personal_view_fixture_aggregate(evidence)
+    if defect == "binary_digest":
+        evidence["environment"]["binary_fingerprint"]["FreeCAD.exe"]["sha256"] = "Z" * 64
+    elif defect == "save_digest":
+        evidence["saves"][0]["sha256_before"] = "not-a-digest"
+    elif defect == "active_bool":
+        evidence["pause_resume"]["readiness_while_paused"]["automation_pause"]["active_write_count"] = True
+    elif defect == "ordinary_size_bool":
+        evidence["artifacts"]["documents"][0]["size"] = True
+    elif defect == "backup_size_bool":
+        evidence["artifacts"]["documents"].append({"path": "legacy.fcbak", "size": False})
+    elif defect == "fingerprint_size_bool":
+        evidence["environment"]["binary_fingerprint"]["FreeCAD.exe"]["size"] = True
+    elif defect == "fingerprint_mtime_bool":
+        evidence["environment"]["binary_fingerprint"]["FreeCAD.exe"]["mtime_ns"] = False
+    else:
+        evidence["environment"]["build_provenance"]["history_depth"] = True
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(
+            completed,
+            evidence,
+            stage,
+            len(evidence["cycles"]),
+            len(evidence["saves"]),
+        )
+
+
+def test_clean_observation_precedes_every_personal_view_action() -> None:
+    """GRK-P3-122: active-view switching belongs inside the proved sequence."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    source = inspect.getsource(module._run_view_mutation_cycle)
+    clean_position = source.index("_ensure_document_clean_for_personal_view")
+    observation_position = source.index('cycle["file_change_state_before"]')
+    first_local_action_position = source.index("_local_action(")
+    assert clean_position < observation_position < first_local_action_position
+
+
+def _active_switch_personal_proof(*, secondary_clean: bool) -> dict[str, Any]:
+    def snapshot(document: str, *, clean: bool, revision: int) -> dict[str, Any]:
+        return {
+            "observed_document": document,
+            "identity_selector": {
+                "document_uid": f"uid-{document}",
+                "document_instance_id": 11 if document == "Primary" else 17,
+                "lifecycle_epoch": 2,
+                "document_name": document,
+            },
+            "file_change_state": {
+                "pending_changes": [] if clean else ["model"],
+                "has_pending_file_changes": not clean,
+            },
+            "semantic_revisions": _personal_revision_vector(revision),
+        }
+
+    return {
+        "action": "set_active_document",
+        "documents": ["Primary", "Secondary"],
+        "left_document": "Primary",
+        "activated_document": "Secondary",
+        "before": {
+            "Primary": snapshot("Primary", clean=True, revision=3),
+            "Secondary": snapshot(
+                "Secondary", clean=secondary_clean, revision=7
+            ),
+        },
+        "after": {
+            "Primary": snapshot("Primary", clean=True, revision=3),
+            "Secondary": snapshot(
+                "Secondary", clean=secondary_clean, revision=7
+            ),
+        },
+        "clean_before": True,
+        "clean_after": True,
+        "semantic_revisions_unchanged": True,
+        "passed": True,
+    }
+
+
+def _assert_dirty_secondary_active_switch_is_rejected() -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    proof = _active_switch_personal_proof(secondary_clean=False)
+    assert not module._personal_action_proof_is_exact(proof)
+
+
+def test_active_switch_complete_clean_two_document_proof_passes() -> None:
+    """REVIEW-P3-WP26-007: exact Primary+Secondary clean proof is accepted."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    proof = _active_switch_personal_proof(secondary_clean=True)
+    assert module._personal_action_proof_is_exact(proof)
+
+
+def test_active_switch_proof_fails_when_only_secondary_is_dirty() -> None:
+    """REVIEW-P3-WP26-007: rejection depends only on Secondary's dirty state."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["personal_action_proofs"] = [
+        _active_switch_personal_proof(secondary_clean=False)
+    ]
+
+    _record_personal_view_fixture_aggregate(evidence)
+    checks = {entry["name"]: entry for entry in evidence["checks"]}
+    exact = checks["every_personal_action_has_exact_clean_revision_proof"]
+    assert exact["passed"] is False, exact
+    completed = SimpleNamespace(returncode=0, stdout="PART3_RESULT: PASSED\n", stderr="")
+    with pytest.raises(AssertionError):
+        _assert_green_stage(
+            completed,
+            evidence,
+            "A",
+            len(evidence["cycles"]),
+            len(evidence["saves"]),
+        )
+
+
+def test_active_switch_dirty_secondary_bites_per_document_clean_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REVIEW-P3-WP26-007: neutralising the nested clean guard breaks the negative."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    _assert_dirty_secondary_active_switch_is_rejected()
+    monkeypatch.setattr(module, "_file_change_state_is_clean", lambda _state: True)
+    with pytest.raises(AssertionError):
+        _assert_dirty_secondary_active_switch_is_rejected()
+
+
+def test_complete_fixture_aggregate_replaces_stale_pass_after_coverage_mutation() -> None:
+    """A complete fixture cannot retain aggregate credit after mutation."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence["coverage"]["observed"] = []
+    _record_personal_view_fixture_aggregate(evidence)
+    checks = {entry["name"]: entry for entry in evidence["checks"]}
+    coverage = checks["adr_section_13_coverage_complete"]
+    assert coverage["passed"] is False
+    assert coverage in evidence["failed_checks"]
+
+
+def test_missing_personal_action_proofs_fail_closed() -> None:
+    """REVIEW-P3-WP25-001: a stage cannot substitute cycle-level aggregates."""
+
+    evidence = _personal_view_stage_fixture(clean=True)
+    evidence.pop("personal_action_proofs")
+    _record_personal_view_fixture_aggregate(evidence)
+    checks = {entry["name"]: entry for entry in evidence["checks"]}
+    assert checks["every_personal_action_has_exact_clean_revision_proof"]["passed"] is False
+
+
+class _OfflineDocument:
+    def __init__(self, name: str, *, revision: int) -> None:
+        self.Name = name
+        self.Uid = SimpleNamespace(Value=f"uid-{name}")
+        self.revision = revision
+        self.PropertiesList = ["AlphaValue"]
+        self.AlphaValue = 1
+
+    def isTouched(self) -> bool:
+        return False
+
+    def hasPendingFileChanges(self) -> bool:
+        return False
+
+    def getFileChangeState(self) -> dict[str, Any]:
+        return {
+            "pending_changes": [],
+            "has_pending_file_changes": False,
+            "document": self.Name,
+        }
+
+    def collaborationIdentity(self) -> dict[str, int]:
+        return {"instance_id": self.revision + 10, "lifecycle_epoch": 2}
+
+    def getObject(self, name: str) -> Any:
+        return self if name == "StressBox" else None
+
+
+class _OfflineGuiDocument:
+    def __init__(self, document: _OfflineDocument) -> None:
+        self.Document = document
+        self.ActiveView = None
+
+    def toggleTreeItem(self, _obj: Any, _mod: int) -> None:
+        raise AssertionError("stage-prepared edit repeated toggleTreeItem")
+
+
+def _install_offline_freecad_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_OfflineDocument, _OfflineDocument, Any]:
+    primary = _OfflineDocument("Primary", revision=3)
+    secondary = _OfflineDocument("Secondary", revision=7)
+    documents = {document.Name: document for document in (primary, secondary)}
+    gui_documents = {
+        name: _OfflineGuiDocument(document) for name, document in documents.items()
+    }
+
+    def get_document(name: str) -> _OfflineDocument:
+        if name not in documents:
+            raise ValueError(f"unknown document: {name}")
+        return documents[name]
+
+    selection = SimpleNamespace(
+        getSelectionEx=lambda _name: [],
+        clearSelection=lambda: None,
+        addSelection=lambda _document, _object: None,
+    )
+    freecad = SimpleNamespace(getDocument=get_document)
+    freecad_gui = SimpleNamespace(
+        ActiveDocument=gui_documents["Primary"],
+        Selection=selection,
+        getDocument=lambda name: gui_documents.get(name),
+        setActiveDocument=lambda _name: None,
+        updateGui=lambda: None,
+    )
+    monkeypatch.setitem(sys.modules, "FreeCAD", freecad)
+    monkeypatch.setitem(sys.modules, "FreeCADGui", freecad_gui)
+    return primary, secondary, freecad_gui
+
+
+def test_view_state_selector_observes_inactive_document_without_switching_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REVIEW-P3-WP26-001 RED: read Secondary while Primary stays GUI-active."""
+
+    from tests.gui.part3.local_driver import actions
+
+    _primary, secondary, freecad_gui = _install_offline_freecad_modules(monkeypatch)
+    switches: list[str] = []
+    freecad_gui.setActiveDocument = switches.append
+
+    state = actions._view_state({"document": "Secondary"})
+
+    assert switches == []
+    assert state["active_document"] == "Primary"
+    assert state["observed_document"] == "Secondary"
+    assert state["file_change_state"] == secondary.getFileChangeState()
+    assert state["identity_selector"]["document_name"] == "Secondary"
+
+
+def test_view_state_without_selector_preserves_active_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selectorless callers retain the original active-document observation."""
+
+    from tests.gui.part3.local_driver import actions
+
+    primary, _secondary, _freecad_gui = _install_offline_freecad_modules(monkeypatch)
+    state = actions._view_state({})
+    assert state["active_document"] == "Primary"
+    assert state.get("observed_document", "Primary") == "Primary"
+    assert state["file_change_state"] == primary.getFileChangeState()
+    assert state["identity_selector"]["document_name"] == "Primary"
+
+
+def test_view_state_selector_rejects_unknown_document_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown selector must fail hard instead of silently reading Primary."""
+
+    from tests.gui.part3.local_driver import actions
+
+    _install_offline_freecad_modules(monkeypatch)
+    with pytest.raises((ValueError, RuntimeError)):
+        actions._view_state({"document": "Missing"})
+
+
+def test_inactive_personal_snapshot_binds_exact_document_and_revision_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """REVIEW-P3-WP26-001 RED: snapshot and RPC selector both bind Secondary."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    local_calls: list[tuple[str, dict[str, Any]]] = []
+    revision_inputs: list[dict[str, Any]] = []
+
+    class Local:
+        def invoke(
+            self, action: str, params: dict[str, Any] | None = None, **_kwargs: Any
+        ) -> dict[str, Any]:
+            supplied = params or {}
+            local_calls.append((action, supplied))
+            observed = str(supplied.get("document") or "Primary")
+            return {
+                "result": {
+                    "active_document": "Primary",
+                    "observed_document": observed,
+                    "file_change_state": {
+                        "pending_changes": [],
+                        "has_pending_file_changes": False,
+                    },
+                    "identity_selector": {
+                        "document_uid": f"uid-{observed}",
+                        "document_instance_id": 17,
+                        "lifecycle_epoch": 2,
+                        "document_name": observed,
+                    },
+                }
+            }
+
+    class Rpc:
+        def call(self, method: str, params: dict[str, Any], **_kwargs: Any) -> Any:
+            assert method == "get_semantic_revisions"
+            revision_inputs.append(params)
+            return {"revisions": _personal_revision_vector(7)}
+
+    evidence_path = tmp_path / "evidence.json"
+    write_evidence(evidence_path, empty_evidence(stage="A"))
+    context = SimpleNamespace(
+        local=Local(),
+        rpc=Rpc(),
+        payload=empty_evidence(stage="A"),
+        evidence_path=evidence_path,
+    )
+    snapshot = module._personal_document_snapshot(context, "Secondary")
+
+    assert local_calls == [("view_state", {"document": "Secondary"})]
+    assert snapshot["observed_document"] == "Secondary"
+    assert snapshot["identity_selector"]["document_name"] == "Secondary"
+    assert revision_inputs[0]["doc_selector"]["document_name"] == "Secondary"
+
+
+def _exact_personal_proof() -> dict[str, Any]:
+    selector = {
+        "document_uid": "uid-Secondary",
+        "document_instance_id": 17,
+        "lifecycle_epoch": 2,
+        "document_name": "Secondary",
+    }
+    def snapshot() -> dict[str, Any]:
+        return {
+            "observed_document": "Secondary",
+            "identity_selector": dict(selector),
+            "file_change_state": {
+                "pending_changes": [],
+                "has_pending_file_changes": False,
+            },
+            "semantic_revisions": _personal_revision_vector(7),
+        }
+
+    return {
+        "action": "rotate_camera",
+        "documents": ["Secondary"],
+        "left_document": None,
+        "activated_document": None,
+        "before": {"Secondary": snapshot()},
+        "after": {"Secondary": snapshot()},
+        "clean_before": True,
+        "clean_after": True,
+        "semantic_revisions_unchanged": True,
+        "passed": True,
+    }
+
+
+def test_personal_proof_rejects_observed_document_or_identity_mismatch() -> None:
+    """Proof attribution rejects document and stable-identity substitution."""
+
+    from tests.gui.part3 import stress_coordinator as module
+
+    valid = _exact_personal_proof()
+    assert module._personal_action_proof_is_exact(valid)
+
+    observed_mismatch = _exact_personal_proof()
+    observed_mismatch["after"]["Secondary"]["observed_document"] = "Primary"
+    assert not module._personal_action_proof_is_exact(observed_mismatch)
+
+    selector_mismatch = _exact_personal_proof()
+    selector_mismatch["after"]["Secondary"]["identity_selector"] = {
+        **selector_mismatch["after"]["Secondary"]["identity_selector"],
+        "document_instance_id": 99,
+    }
+    assert not module._personal_action_proof_is_exact(selector_mismatch)
+
+    missing_lifecycle = _exact_personal_proof()
+    missing_lifecycle["before"]["Secondary"]["identity_selector"].pop(
+        "lifecycle_epoch"
+    )
+    missing_lifecycle["after"]["Secondary"]["identity_selector"].pop(
+        "lifecycle_epoch"
+    )
+    assert not module._personal_action_proof_is_exact(missing_lifecycle)
+
+
+def test_stage_local_property_edit_does_not_repeat_unproved_personal_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REVIEW-P3-WP26-002 RED: prepared mode performs one model edit only."""
+
+    from tests.gui.part3 import stress_coordinator as coordinator
+    from tests.gui.part3.local_driver import actions
+
+    _primary, secondary, freecad_gui = _install_offline_freecad_modules(monkeypatch)
+    freecad_gui.ActiveDocument = freecad_gui.getDocument("Secondary")
+    repeated: list[str] = []
+    freecad_gui.setActiveDocument = lambda _name: repeated.append("setActiveDocument")
+    freecad_gui.Selection.clearSelection = lambda: repeated.append("clearSelection")
+    freecad_gui.Selection.addSelection = lambda *_args: repeated.append("addSelection")
+    binding_checks: list[tuple[str, str]] = []
+    edits: list[int] = []
+    monkeypatch.setattr(actions, "_expected_property_keys", lambda _obj: frozenset())
+    monkeypatch.setattr(actions, "_property_editor_data", lambda: object())
+    monkeypatch.setattr(actions, "_wait_for_property_editor", lambda *_a, **_k: None)
+    monkeypatch.setattr(actions, "_find_property_value_index", lambda *_a: object())
+    monkeypatch.setattr(
+        actions,
+        "_require_selection_is",
+        lambda document, obj: binding_checks.append((document, obj)),
+    )
+
+    def apply_value(_editor: Any, _index: Any, value: int) -> None:
+        edits.append(value)
+        secondary.AlphaValue = value
+
+    monkeypatch.setattr(actions, "_apply_property_editor_value", apply_value)
+    result = actions._local_property_edit(
+        {
+            "document": "Secondary",
+            "object": "StressBox",
+            "property": "AlphaValue",
+            "value": 42,
+            "stage_prepared": True,
+        }
+    )
+
+    assert repeated == []
+    assert binding_checks == [("Secondary", "StressBox")]
+    assert edits == [42]
+    assert result["value"] == 42
+
+    preparation_source = inspect.getsource(coordinator._prepare_local_property_edit)
+    preparation_positions = [
+        preparation_source.index(f'"{action}"')
+        for action in (
+            "reset_property_editor",
+            "clear_selection",
+            "set_active_document",
+            "select_object",
+            "expand_tree",
+        )
+    ]
+    assert preparation_positions == sorted(preparation_positions)
+    edit_source = inspect.getsource(coordinator._local_property_edit)
+    assert edit_source.index("_prepare_local_property_edit") < edit_source.index(
+        '"stage_prepared": True'
+    )
+
+
+def test_direct_local_property_edit_preserves_personal_preparation_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default focused-caller mode still performs its own preparation."""
+
+    from tests.gui.part3.local_driver import actions
+
+    _primary, secondary, freecad_gui = _install_offline_freecad_modules(monkeypatch)
+    calls: list[str] = []
+    freecad_gui.setActiveDocument = lambda _name: calls.append("setActiveDocument")
+    freecad_gui.Selection.clearSelection = lambda: calls.append("clearSelection")
+    freecad_gui.Selection.addSelection = lambda *_args: calls.append("addSelection")
+    freecad_gui.getDocument("Secondary").toggleTreeItem = (
+        lambda _obj, _mod: calls.append("toggleTreeItem")
+    )
+    monkeypatch.setattr(actions, "_expected_property_keys", lambda _obj: frozenset())
+    monkeypatch.setattr(actions, "_property_editor_data", lambda: object())
+    monkeypatch.setattr(actions, "_wait_for_property_editor", lambda *_a, **_k: None)
+    monkeypatch.setattr(actions, "_find_property_value_index", lambda *_a: object())
+    monkeypatch.setattr(actions, "_require_selection_is", lambda *_a: None)
+    edits: list[int] = []
+
+    def apply_value(_editor: Any, _index: Any, value: int) -> None:
+        edits.append(value)
+        secondary.AlphaValue = value
+
+    monkeypatch.setattr(actions, "_apply_property_editor_value", apply_value)
+    actions._local_property_edit(
+        {
+            "document": "Secondary",
+            "object": "StressBox",
+            "property": "AlphaValue",
+            "value": 21,
+        }
+    )
+
+    assert calls == [
+        "setActiveDocument",
+        "clearSelection",
+        "addSelection",
+        "toggleTreeItem",
+    ]
+    assert edits == [21]
+
+
+def test_stage_prepared_property_edit_requires_exact_active_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prepared mode fails before editing when the requested document is inactive."""
+
+    from tests.gui.part3.local_driver import actions
+
+    _install_offline_freecad_modules(monkeypatch)
+    with pytest.raises(RuntimeError, match="active-document mismatch"):
+        actions._local_property_edit(
+            {
+                "document": "Secondary",
+                "object": "StressBox",
+                "property": "AlphaValue",
+                "value": 42,
+                "stage_prepared": True,
+            }
+        )
 
 
 def test_stage_a_runs_ten_view_cycles_and_five_save_cycles() -> None:
@@ -3073,3 +4147,11 @@ def test_every_shutdown_gate_asks_the_one_shared_predicate() -> None:
     forced = dict(complete)
     forced["forced"] = True
     assert module.ordered_shutdown_completed(success, forced) is False
+    for malformed in ("not-a-timestamp", "2026-08-25T00:00:00", "2026-08-25T00:00:00+01:00"):
+        invalid = dict(complete)
+        invalid["documents_closed_utc"] = malformed
+        assert module.ordered_shutdown_completed(success, invalid) is False, malformed
+    reversed_order = dict(complete)
+    reversed_order["requested_utc"] = "2026-08-25T00:00:01+00:00"
+    reversed_order["documents_closed_utc"] = "2026-08-25T00:00:00+00:00"
+    assert module.ordered_shutdown_completed(success, reversed_order) is False

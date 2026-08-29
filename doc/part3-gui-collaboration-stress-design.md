@@ -85,7 +85,9 @@ control token. The StressCoordinator provisions it but does not use it for remot
 Executes in a **separate child process** spawned by the StressCoordinator. That child process's
 environment and `argv` **never** receive the local control token. RemoteAgentDriver speaks only
 to the JSON-RPC listener on port 9875; it cannot reach the local control channel. WP04 must
-prove the child process lacks the token (process environment inspection or equivalent).
+prove the child process lacks the token (process environment inspection or equivalent). The
+coordinator's child-inspection proof passes only a fixed non-secret sentinel on stdin; the real
+control bearer is removed from the child environment and never sent through that proof channel.
 
 Speaks only supported typed JSON-RPC. It may create and close disposable documents, create
 model objects, set properties, create and edit sketches and features, recompute under native
@@ -114,6 +116,35 @@ disposable directories, spawns **RemoteAgentDriver as a child process** (§1.1),
 LocalUserDriver client, interleaves local GUI activity with remote typed mutations, collects
 evidence, validates shutdown, and never attaches to an unknown existing session. It executes no
 arbitrary Python inside FreeCAD.
+
+### 1.4 Accepted deviation (P3-WP10): in-process typed session
+
+Stage A and Stage B as implemented in P3-WP10 issue their typed CAD mutations **from the
+StressCoordinator process**, not from a persistent RemoteAgentDriver child. The child is still
+spawned and still proves that the local control token never reaches it (§1.1), and the local
+control channel is still reachable only from the LocalUser side, but the authenticated
+JSON-RPC session lives in the coordinator process for the duration of the stage.
+
+This departs from §1 and §1.1. It is recorded here as a decision rather than left implicit:
+
+- WP09's `graceful_shutdown_owned_session` already authenticates a typed session in the
+  coordinator process and was accepted at that boundary; §1 itself assigns shutdown
+  orchestration to the coordinator, so the document is internally in tension on this point.
+- The invariant the boundary protects — that a remote client cannot reach camera, tree or
+  Pause/Resume — is enforced server-side and proved separately (the typed allowlist, the local
+  control token, `test_remote_rpc_cannot_resume_local_pause`), not by which OS process owns
+  the socket.
+- A per-call child would mint a new session per call and destroy the §2.2 `(session,
+  operation_id)` exactly-once replay proof the stage program depends on.
+
+The deviation must remain visible in the evidence, never papered over:
+`environment.remote_actor` records `mode: "in_process_typed_session"`,
+`child_token_absence_proved` and `adr_deviation: "section 1.1"`, and
+`StressCoordinator.holds_rpc_session()` reports the real state rather than a constant.
+
+Nothing here licenses arbitrary Python inside FreeCAD, `execute_code` on the acceptance path,
+or a remote client reaching a local surface: those remain forbidden. A persistent-child
+RemoteAgentDriver may reinstate the literal §1.1 split in a later work package.
 
 ---
 
@@ -282,6 +313,12 @@ unchanged."* note, without ever marking the document dirty.
 **The Part 3 proof reads `Document.getFileChangeState()`** before and after every personal
 view action and requires `pending_changes == []` and `has_pending_file_changes is False`,
 while `get_semantic_revisions(...)` returns an unchanged revision vector.
+The coordinator classifies those actions centrally and retains one fail-closed evidence record
+per action. An active-document switch binds the before/after file state and semantic revisions
+of both the document being left and the document being activated; observing the inactive side
+must not itself activate it. Provisioning performs the initial canonical save before any
+classified personal action, and any later cleaning write is a typed, truth-checked operation
+accounted to the owning save-cycle record without changing the Stage A/B 5/20 cycle counts.
 
 ---
 
@@ -425,8 +462,8 @@ Written to `<run>/evidence/evidence.json`, extending the existing shape.
   "conflicts":    {"same_property": {...}, "independent_property": {...}},
   "pause_resume": {"pause": {...}, "refused": {...}, "resume": {...}, "after": {...}},
   "shutdown": {
-    "requested_utc", "rpc_admission_closed_utc", "worker_shutdown_utc",
-    "documents_closed_utc", "listener_shutdown_utc", "window_closed_utc",
+    "requested_utc", "documents_closed_utc", "rpc_admission_closed_utc",
+    "worker_shutdown_utc", "listener_shutdown_utc", "window_closed_utc",
     "process_exit_utc", "deadline_seconds": 60, "forced": false,
     "stalled_stage": null
   },

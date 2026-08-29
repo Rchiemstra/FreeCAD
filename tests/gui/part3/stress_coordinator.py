@@ -30,6 +30,11 @@ if str(REPO_ROOT) not in sys.path:
 #   python -m tests.gui.part3.stress_coordinator --stage a
 # resolve the package; the plan names the first form as the Stage A/B command.
 from tests.gui.part3.evidence import (  # noqa: E402
+    ALPHA_OBJECT,
+    ALPHA_PROPERTY,
+    BETA_OBJECT,
+    BETA_PROPERTY,
+    _paused_read_revisions_are_exact,
     LOCK_ANCHOR_SUFFIX,
     SHUTDOWN_TIMESTAMP_KEYS,
     archive_has_document_xml,
@@ -47,7 +52,10 @@ from tests.gui.part3.evidence import (  # noqa: E402
     record_pause_resume,
     record_save,
     scan_artifacts,
+    session_ttl_provenance,
     sha256_file,
+    shutdown_transitions_are_complete_and_ordered,
+    stage_revision_vector_is_exact,
     stamp_shutdown_transition,
     utc_now_iso,
     verdict_from_checks,
@@ -72,6 +80,20 @@ LAUNCHER_IMPL = REPO_ROOT / "tools" / "launcher" / "start_freecad_impl.py"
 REMOTE_AGENT_DRIVER = Path(__file__).resolve().parent / "remote_agent_driver.py"
 DEFAULT_FREECAD = REPO_ROOT / "build" / "release" / "bin" / "FreeCAD.exe"
 SHUTDOWN_DEADLINE_SECONDS = 60
+PERSONAL_STATE_ACTIONS = frozenset(
+    {
+        "set_active_document",
+        "rotate_camera",
+        "pan_view",
+        "zoom_view",
+        "fit_all",
+        "select_object",
+        "expand_tree",
+        "collapse_tree",
+        "clear_selection",
+        "reset_property_editor",
+    }
+)
 
 
 def default_freecad_exe(repo_root: Path | None = None) -> Path | None:
@@ -116,16 +138,85 @@ def _port_is_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def _force_kill_owned_process_tree(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
+def _windows_owned_pid_inventory(
+    root_pid: int, *, exact_pids: list[int] | None = None
+) -> dict[str, Any]:
+    """Return a bounded, fail-closed inventory of owned or exact PIDs."""
+
+    if exact_pids is not None:
+        if not exact_pids or not all(type(pid) is int and pid > 0 for pid in exact_pids):
+            return {"complete": False, "existing": [], "queried_pids": [], "diagnostics": "invalid exact PID query", "timed_out": False}
+        targets = ",".join(str(pid) for pid in sorted(set(exact_pids)))
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            f"$targets=@({targets}); "
+            "$all=Get-CimInstance Win32_Process | Select-Object ProcessId; "
+            "$found=@($all | Where-Object {$targets -contains [int]$_.ProcessId} | "
+            "ForEach-Object {[int]$_.ProcessId}); "
+            "if($found.Count -eq 0){Write-Output '[]'}else{$found | ConvertTo-Json -Compress}"
         )
     else:
+        script = (
+        "$ErrorActionPreference='Stop'; "
+        f"$root={int(root_pid)}; "
+        "$all=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId; "
+        "$rootProcess=$all | Where-Object {$_.ProcessId -eq $root}; "
+        "if($null -eq $rootProcess){ Write-Output '[]'; exit 0 }; "
+        "$seen=New-Object 'System.Collections.Generic.HashSet[int]'; "
+        "$todo=New-Object 'System.Collections.Generic.Queue[int]'; $todo.Enqueue($root); "
+        "while($todo.Count){$currentPid=$todo.Dequeue(); if($seen.Add($currentPid)){"
+        "$all | Where-Object {$_.ParentProcessId -eq $currentPid} | ForEach-Object {$todo.Enqueue([int]$_.ProcessId)}}}; "
+            "$seen | ConvertTo-Json -Compress"
+        )
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, check=False, timeout=10.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {"complete": False, "existing": [], "queried_pids": list(exact_pids or []), "diagnostics": str(exc), "timed_out": True}
+    if completed.returncode != 0 or completed.stderr.strip():
+        return {"complete": False, "existing": [], "queried_pids": list(exact_pids or []), "diagnostics": completed.stderr.strip() or completed.stdout.strip(), "timed_out": False}
+    try:
+        parsed = json.loads(completed.stdout)
+        pids = parsed if isinstance(parsed, list) else [parsed]
+        if not all(type(pid) is int and pid > 0 for pid in pids):
+            raise ValueError("invalid PID inventory")
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {"complete": False, "existing": [], "queried_pids": list(exact_pids or []), "diagnostics": str(exc), "timed_out": False}
+    return {"complete": True, "existing": sorted(set(pids)), "queried_pids": sorted(set(exact_pids or pids)), "diagnostics": "", "timed_out": False}
+
+
+def _force_kill_owned_process_tree(process: subprocess.Popen) -> dict[str, Any]:
+    """Bounded last resort kill with exact Windows tree verification."""
+
+    if process.poll() is not None:
+        return {"passed": True, "initial": {"complete": True, "existing": []}, "aftermath": {"complete": True, "existing": []}}
+    if os.name == "nt":
+        initial = _windows_owned_pid_inventory(process.pid)
+        if not initial["complete"]:
+            return {"passed": False, "initial": initial, "aftermath": {"complete": False, "existing": [], "diagnostics": "initial inventory incomplete"}}
+        try:
+            terminated = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True, text=True, check=False, timeout=10.0,
+            )
+            termination = {"return_code": terminated.returncode, "stdout": terminated.stdout, "stderr": terminated.stderr, "timed_out": False}
+        except subprocess.TimeoutExpired as exc:
+            termination = {"return_code": None, "stdout": "", "stderr": str(exc), "timed_out": True}
+        aftermath = _windows_owned_pid_inventory(
+            process.pid, exact_pids=initial["existing"]
+        )
+        passed = bool(
+            not termination["timed_out"]
+            and termination["return_code"] == 0
+            and aftermath["complete"]
+            and not aftermath["existing"]
+            and process.poll() is not None
+        )
+        return {"passed": passed, "initial": initial, "termination": termination, "aftermath": aftermath}
+    else:
+        initial = {"complete": True, "existing": [process.pid], "diagnostics": ""}
         process.terminate()
     try:
         process.wait(timeout=10)
@@ -133,6 +224,7 @@ def _force_kill_owned_process_tree(process: subprocess.Popen) -> None:
         if os.name != "nt":
             process.kill()
         process.wait(timeout=5)
+    return {"passed": process.poll() is not None, "initial": initial, "aftermath": {"complete": process.poll() is not None, "existing": [] if process.poll() is not None else [process.pid], "diagnostics": ""}}
 
 
 def _wait_for_process_exit(process: subprocess.Popen, deadline_s: float) -> bool:
@@ -319,9 +411,17 @@ def graceful_shutdown_owned_session(
     shutdown["stalled_stage"] = stalled_stage
     shutdown["forced"] = True
     _persist_shutdown_evidence(evidence_path, shutdown)
-    _force_kill_owned_process_tree(process)
-    if process.poll() is not None:
+    cleanup = _force_kill_owned_process_tree(process)
+    if not isinstance(cleanup, dict):
+        # Compatibility for old test/embedding hooks: an unstructured result
+        # is never proof of cleanup, but it must not crash teardown reporting.
+        cleanup = {"passed": False, "diagnostics": "cleanup helper returned no structured result"}
+    shutdown["forced_cleanup"] = cleanup
+    if cleanup.get("passed") and process.poll() is not None:
         stamp_shutdown_transition(shutdown, "process_exit_utc")
+    elif not cleanup.get("passed"):
+        shutdown["forced_cleanup_failed"] = True
+        shutdown["forced_cleanup_error"] = str(cleanup)
     _persist_shutdown_evidence(evidence_path, shutdown, verdict="FAILED")
     return {
         "success": False,
@@ -560,13 +660,20 @@ class StressCoordinator:
         ]
         if inspect_only:
             argv.append("--inspect-token-absence")
+        # The child checks only a fixed non-secret sentinel. Passing the real
+        # bearer on stdin made the absence proof itself a token disclosure.
         completed = subprocess.run(
             argv,
-            input=json.dumps({"token": token}) if token else None,
+            input=(
+                json.dumps({"token": TOKEN_ABSENCE_SENTINEL})
+                if inspect_only
+                else None
+            ),
             env=env,
             capture_output=True,
             text=True,
             check=False,
+            timeout=30.0,
         )
         return completed
 
@@ -623,15 +730,12 @@ def time_monotonic() -> float:
     return time.monotonic()
 
 
-ALPHA_OBJECT = "StressBox"
-ALPHA_PROPERTY = "AlphaValue"
-BETA_OBJECT = "SecondBox"
-BETA_PROPERTY = "BetaValue"
 HISTORY_HEAD_PROBE = "part3-history-head-probe"
 HISTORY_HEAD_REJECTED = "HISTORY_HEAD_REJECTED"
 
 
 REMOTE_ACTOR_MODE = "in_process_typed_session"
+TOKEN_ABSENCE_SENTINEL = "part3-child-token-absence-sentinel"
 
 
 def _remote_actor_record(*, child_token_absence_proved: bool) -> dict[str, Any]:
@@ -676,6 +780,8 @@ class StageContext:
     document_paths: dict[str, Path] = field(default_factory=dict)
     coverage: set[str] = field(default_factory=set)
     last_view: dict[str, Any] = field(default_factory=dict)
+    active_save_record: dict[str, Any] | None = None
+    active_document: str | None = None
 
 
 def _persist(context: StageContext) -> None:
@@ -733,8 +839,15 @@ def _call_expecting_failure(
     return {"success": True, "result": result}
 
 
-def _view_state(context: StageContext) -> dict[str, Any]:
-    response = context.local.invoke("view_state", timeout=30.0)
+def _view_state(
+    context: StageContext, document_name: str | None = None
+) -> dict[str, Any]:
+    if document_name:
+        response = context.local.invoke(
+            "view_state", {"document": document_name}, timeout=30.0
+        )
+    else:
+        response = context.local.invoke("view_state", timeout=30.0)
     result = response.get("result")
     return result if isinstance(result, dict) else {}
 
@@ -749,18 +862,31 @@ def _local_action(
     timeout: float = 30.0,
     observe_view: bool = True,
 ) -> dict[str, Any]:
-    """Drive one real local GUI action and record its acknowledgement."""
+    """Drive one local action; classified personal actions carry exact proof."""
 
+    action_params = params or {}
+    personal_documents: list[str] = []
+    personal_before: dict[str, Any] = {}
+    left_document = context.active_document
+    if action in PERSONAL_STATE_ACTIONS:
+        personal_documents = _personal_action_documents(context, action, action_params)
+        for document_name in personal_documents:
+            _ensure_document_clean_for_personal_view(context, document_name)
+        personal_before = {
+            document_name: _personal_document_snapshot(context, document_name)
+            for document_name in personal_documents
+        }
     operation_id = str(uuid.uuid4())
     response = context.local.invoke(
         action,
-        params or {},
+        action_params,
         operation_id=operation_id,
         timeout=timeout,
     )
     entry: dict[str, Any] = {
         "operation_id": operation_id,
         "action": action,
+        "parameters": dict(action_params),
         "ack_utc": utc_now_iso(),
         "observed": response.get("result"),
     }
@@ -772,6 +898,54 @@ def _local_action(
         context.coverage.add(coverage)
     if cycle is not None:
         cycle["local_actions"].append(entry)
+    else:
+        out_of_cycle = context.payload.setdefault("out_of_cycle_local_actions", [])
+        entry["out_of_cycle_index"] = len(out_of_cycle)
+        out_of_cycle.append(entry)
+    if action in PERSONAL_STATE_ACTIONS:
+        if action == "set_active_document":
+            context.active_document = str(action_params["document"])
+        personal_after = {
+            document_name: _personal_document_snapshot(context, document_name)
+            for document_name in personal_documents
+        }
+        clean_before = all(
+            _file_change_state_is_clean(snapshot.get("file_change_state"))
+            for snapshot in personal_before.values()
+        )
+        clean_after = all(
+            _file_change_state_is_clean(snapshot.get("file_change_state"))
+            for snapshot in personal_after.values()
+        )
+        revisions_unchanged = all(
+            personal_before[document_name].get("semantic_revisions")
+            == personal_after[document_name].get("semantic_revisions")
+            for document_name in personal_documents
+        )
+        proof = {
+            "index": len(context.payload.setdefault("personal_action_proofs", [])),
+            "operation_id": operation_id,
+            "action": action,
+            "documents": personal_documents,
+            "left_document": left_document if action == "set_active_document" else None,
+            "activated_document": (
+                context.active_document if action == "set_active_document" else None
+            ),
+            "before": personal_before,
+            "after": personal_after,
+            "clean_before": clean_before,
+            "clean_after": clean_after,
+            "semantic_revisions_unchanged": revisions_unchanged,
+            "passed": bool(clean_before and clean_after and revisions_unchanged),
+        }
+        context.payload["personal_action_proofs"].append(proof)
+        entry["personal_action_proof_index"] = proof["index"]
+        _require(
+            context,
+            "personal_action_has_exact_clean_revision_proof",
+            bool(proof["passed"]),
+            proof,
+        )
     return entry
 
 
@@ -792,6 +966,7 @@ def _remote_action(
     entry: dict[str, Any] = {
         "operation_id": operation_id,
         "method": method,
+        "parameters": params,
         "ack_utc": utc_now_iso(),
         "result_envelope": result,
     }
@@ -804,33 +979,49 @@ def _remote_action(
     return result
 
 
+def _identity_selector_is_exact(selector: object, document_name: str) -> bool:
+    if not isinstance(selector, dict):
+        return False
+    instance_id = selector.get("document_instance_id")
+    lifecycle_epoch = selector.get("lifecycle_epoch")
+    return (
+        isinstance(selector.get("document_uid"), str)
+        and bool(selector.get("document_uid"))
+        and isinstance(instance_id, int)
+        and not isinstance(instance_id, bool)
+        and isinstance(lifecycle_epoch, int)
+        and not isinstance(lifecycle_epoch, bool)
+        and selector.get("document_name") == document_name
+    )
+
+
 def _identity_selector(context: StageContext, document_name: str) -> dict[str, Any]:
-    state = _view_state(context)
+    state = _view_state(context, document_name)
     context.last_view = state
     _require(
         context,
-        "identity_selector_active_document",
-        state.get("active_document") == document_name,
-        {"expected": document_name, "observed": state.get("active_document")},
+        "identity_selector_observed_document",
+        state.get("observed_document") == document_name,
+        {"expected": document_name, "state": state},
     )
     selector = state.get("identity_selector")
     _require(
         context,
         "identity_selector_present",
-        isinstance(selector, dict) and bool(selector.get("document_uid")),
+        _identity_selector_is_exact(selector, document_name),
         selector,
     )
     return selector
 
 
 def _file_change_state(context: StageContext, document_name: str) -> dict[str, Any]:
-    state = _view_state(context)
+    state = _view_state(context, document_name)
     context.last_view = state
     _require(
         context,
-        "file_change_state_active_document",
-        state.get("active_document") == document_name,
-        {"expected": document_name, "observed": state.get("active_document")},
+        "file_change_state_observed_document",
+        state.get("observed_document") == document_name,
+        {"expected": document_name, "state": state},
     )
     file_state = state.get("file_change_state")
     return file_state if isinstance(file_state, dict) else {}
@@ -933,6 +1124,7 @@ def _begin_checked_edit(
     cycle: dict[str, Any] | None,
     selector: dict[str, Any],
     revision_keys: list[dict[str, str]],
+    capture: dict[str, Any] | None = None,
 ) -> str:
     operation_id = f"{uuid.uuid4()}-begin"
     begin = _remote_action(
@@ -952,6 +1144,17 @@ def _begin_checked_edit(
         isinstance(begin, dict) and begin.get("success") is True,
         begin,
     )
+    if capture is not None:
+        capture["begin"] = {
+            "operation_id": operation_id,
+            "method": "begin_checked_edit",
+            "parameters": {
+                "doc_selector": selector,
+                "revision_keys": revision_keys,
+                "operation_id": operation_id,
+            },
+            "result": begin,
+        }
     return str(begin["session_id"])
 
 
@@ -965,6 +1168,8 @@ def _commit_checked_integer(
     property_name: str,
     value: int,
     prove_exactly_once: bool,
+    capture: dict[str, Any] | None = None,
+    capture_key: str = "commit_operation",
 ) -> dict[str, Any]:
     """Commit one typed integer property, optionally replaying the operation id."""
 
@@ -994,8 +1199,15 @@ def _commit_checked_integer(
         and first.get("committed") is True,
         first,
     )
+    if capture is not None:
+        capture[capture_key] = {
+            "operation_id": operation_id,
+            "method": "commit_checked_property",
+            "parameters": commit_params,
+            "result": first,
+        }
     if not prove_exactly_once:
-        return {"first": first, "replay": None, "committed_once": None}
+        return {"operation_id": operation_id, "first": first, "replay": None, "committed_once": None}
     replay = _remote_action(
         context,
         cycle,
@@ -1011,7 +1223,15 @@ def _commit_checked_integer(
         replay == first,
         {"first": first, "replay": replay},
     )
-    return {"first": first, "replay": replay, "committed_once": True}
+    if capture is not None:
+        capture[f"{capture_key}_replay"] = {
+            "operation_id": operation_id,
+            "method": "commit_checked_property",
+            "parameters": commit_params,
+            "result": replay,
+            "replay_of_operation_id": operation_id,
+        }
+    return {"operation_id": operation_id, "first": first, "replay": replay, "committed_once": True}
 
 
 def _provision_stage_documents(context: StageContext) -> None:
@@ -1022,20 +1242,13 @@ def _provision_stage_documents(context: StageContext) -> None:
             context.rpc.call("create_document", {"name": document_name}, timeout=60.0)
         except context.launcher_module.JsonRpcError:
             context.rpc.call("create_document", [document_name], timeout=60.0)
+        context.active_document = document_name
         _local_action(
             context,
             None,
             "provision_alpha_beta_fixture",
             {"document": document_name, "alpha": 0, "beta": 0},
             timeout=120.0,
-            observe_view=False,
-        )
-        _local_action(
-            context,
-            None,
-            "set_active_document",
-            {"document": document_name},
-            coverage="active_view_switching",
             observe_view=False,
         )
         destination = context.documents_dir / f"{document_name}.FCStd"
@@ -1055,7 +1268,140 @@ def _provision_stage_documents(context: StageContext) -> None:
             isinstance(saved, dict) and saved.get("saved") is True,
             saved,
         )
+        _local_action(
+            context,
+            None,
+            "set_active_document",
+            {"document": document_name},
+            coverage="active_view_switching",
+            observe_view=False,
+        )
     context.coverage.add("two_documents")
+
+
+def _file_change_state_is_clean(state: object) -> bool:
+    """ADR §4 exact clean observation, not equality of two dirty states."""
+
+    return (
+        isinstance(state, dict)
+        and state.get("pending_changes") == []
+        and state.get("has_pending_file_changes") is False
+    )
+
+
+def _ensure_document_clean_for_personal_view(
+    context: StageContext,
+    document: str,
+) -> None:
+    """Persist a dirty document and bind that extra save to its save-cycle record."""
+
+    before_state = _file_change_state(context, document)
+    if _file_change_state_is_clean(before_state):
+        return
+    if context.active_save_record is None:
+        raise RuntimeError("personal-view cleaning save has no owning save-cycle record")
+
+    path = context.document_paths[document]
+    sha_before = sha256_file(path)
+    result = context.rpc.call(
+        "save_document",
+        {"selector": {"document_name": document}},
+        timeout=120.0,
+    )
+    sha_after = sha256_file(path)
+    after_state = _file_change_state(context, document)
+    truthful = bool(
+        isinstance(result, dict)
+        and str(result.get("save_disposition") or "").lower() == "written"
+        and result.get("file_written") is True
+        and result.get("durability_verified") is True
+        and result.get("saved") is True
+        and bool(sha_after)
+        and sha_after != sha_before
+        and _file_change_state_is_clean(after_state)
+    )
+    operation = {
+        "kind": "pre_personal_view_clean_save",
+        "document": document,
+        "canonical_path": str(path),
+        "before_file_change_state": before_state,
+        "after_file_change_state": after_state,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "disposition": result.get("save_disposition") if isinstance(result, dict) else None,
+        "file_written": result.get("file_written") if isinstance(result, dict) else None,
+        "durability_verified": (
+            result.get("durability_verified") if isinstance(result, dict) else None
+        ),
+        "truthful": truthful,
+        "result": result,
+    }
+    context.active_save_record.setdefault("actual_save_operations", []).append(operation)
+    context.active_save_record["truthful"] = bool(
+        context.active_save_record.get("truthful") and truthful
+    )
+    _require(
+        context,
+        "pre_personal_view_clean_save_is_recorded_and_truthful",
+        truthful,
+        operation,
+    )
+    _persist(context)
+
+
+def _personal_action_documents(
+    context: StageContext,
+    action: str,
+    params: dict[str, Any],
+) -> list[str]:
+    """Return every stage document whose personal state the action can observe/change."""
+
+    candidates: list[str | None]
+    if action == "set_active_document":
+        candidates = [context.active_document, str(params.get("document") or "")]
+    elif action in {"select_object", "expand_tree", "collapse_tree"}:
+        candidates = [str(params.get("document") or "")]
+    elif action in {"clear_selection", "reset_property_editor"}:
+        candidates = list(context.document_paths)
+    else:
+        candidates = [context.active_document]
+    documents: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate in context.document_paths and candidate not in documents:
+            documents.append(candidate)
+    if not documents:
+        raise RuntimeError(f"personal action {action!r} is not bound to a stage document")
+    return documents
+
+
+def _personal_document_snapshot(
+    context: StageContext, document_name: str
+) -> dict[str, Any]:
+    """Observe exact state for one named document, failing closed otherwise."""
+
+    state = _view_state(context, document_name)
+    _require(
+        context,
+        "personal_action_observation_document_bound",
+        state.get("observed_document") == document_name,
+        {"expected": document_name, "state": state},
+    )
+    selector = state.get("identity_selector")
+    _require(
+        context,
+        "personal_action_identity_selector_present",
+        _identity_selector_is_exact(selector, document_name),
+        {"document": document_name, "selector": selector},
+    )
+    file_state = state.get("file_change_state")
+    return {
+        "observed_document": state.get("observed_document"),
+        "identity_selector": selector,
+        "file_change_state": file_state if isinstance(file_state, dict) else {},
+        "semantic_revisions": _semantic_revisions(
+            context, dict(selector), _stage_revision_keys()
+        ),
+    }
 
 
 def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
@@ -1066,6 +1412,15 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
     other = context.secondary if index % 2 == 0 else context.primary
     cycle["document"] = document
 
+    _ensure_document_clean_for_personal_view(context, document)
+
+    selector = _identity_selector(context, document)
+    keys = _stage_revision_keys()
+    cycle["revisions_before"] = _semantic_revisions(context, selector, keys)
+    cycle["file_change_state_before"] = _file_change_state(context, document)
+
+    view_before = _view_state(context)
+    context.last_view = view_before
     _local_action(
         context,
         cycle,
@@ -1080,14 +1435,6 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
         {"document": document},
         coverage="active_view_switching",
     )
-
-    selector = _identity_selector(context, document)
-    keys = _stage_revision_keys()
-    cycle["revisions_before"] = _semantic_revisions(context, selector, keys)
-    cycle["file_change_state_before"] = _file_change_state(context, document)
-
-    view_before = _view_state(context)
-    context.last_view = view_before
     _local_action(
         context,
         cycle,
@@ -1138,9 +1485,9 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
     cycle["revisions_after_personal_view"] = _semantic_revisions(context, selector, keys)
     cycle["file_change_state_after_personal_view"] = _file_change_state(context, document)
     inert = cycle["revisions_after_personal_view"] == cycle["revisions_before"]
-    not_dirtied = bool(
-        cycle["file_change_state_after_personal_view"].get("has_pending_file_changes")
-    ) == bool(cycle["file_change_state_before"].get("has_pending_file_changes"))
+    not_dirtied = _file_change_state_is_clean(
+        cycle["file_change_state_before"]
+    ) and _file_change_state_is_clean(cycle["file_change_state_after_personal_view"])
     camera_changed = (
         view_after.get("camera_orientation") != view_before.get("camera_orientation")
         or view_after.get("view_position") != view_before.get("view_position")
@@ -1196,6 +1543,15 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
     )
     beta_after = _property_revision(context, selector, BETA_OBJECT, BETA_PROPERTY)
     cycle["checks"]["typed_mutation_committed_once"] = beta_after == beta_before + 1
+    cycle["typed_mutation"] = {
+        "operation_id": committed["operation_id"],
+        "revision_before": beta_before,
+        "revision_after": beta_after,
+        "expected_value": 100 + index,
+        "landed_value": _property_value(context, document, BETA_OBJECT, BETA_PROPERTY),
+        "first_result": committed["first"],
+        "replay_result": committed["replay"],
+    }
     _require(
         context,
         "typed_mutation_advances_revision_exactly_once",
@@ -1214,13 +1570,20 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
         {"cycle": index, "expected": 100 + index},
     )
 
-    _remote_action(
+    recompute_result = _remote_action(
         context,
         cycle,
         "recompute_document",
         [document],
         coverage="recompute",
         timeout=120.0,
+        operation_id=str(uuid.uuid4()),
+    )
+    _require(
+        context,
+        "cycle_recompute_succeeds",
+        isinstance(recompute_result, dict) and recompute_result.get("success") is True,
+        recompute_result,
     )
     readiness = _mutation_readiness(context, document)
     cycle["readiness"] = readiness
@@ -1233,6 +1596,8 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
     )
 
     cycle["revisions_after"] = _semantic_revisions(context, selector, keys)
+    cycle["typed_mutation"]["revisions_before"] = cycle["revisions_before"]
+    cycle["typed_mutation"]["revisions_after"] = cycle["revisions_after"]
     cycle["file_change_state_after"] = _file_change_state(context, document)
     record_cycle(context.payload, cycle)
     _persist(context)
@@ -1297,6 +1662,7 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
     )
     context.coverage.add("save_copy")
     sha_after_copy = sha256_file(path)
+    sha_copy = sha256_file(copy_path)
     copy_readable = archive_has_document_xml(copy_path)
 
     written_result = written if isinstance(written, dict) else {}
@@ -1323,11 +1689,10 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
         and copy.get("saved") is True
         and copy_readable
         and sha_after_copy == sha_after
+        and sha_copy == sha_after
     )
     truthful = bool(written_ok and unchanged_ok and copy_ok)
-    record_save(
-        context.payload,
-        {
+    save_record = {
             "index": int(index),
             "document": document,
             "disposition": str(written_result.get("save_disposition") or ""),
@@ -1354,11 +1719,65 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
                 "disposition": copy.get("save_disposition") if isinstance(copy, dict) else None,
                 "readable_archive": bool(copy_readable),
                 "canonical_unchanged": sha_after_copy == sha_after,
+                "sha256_after": sha_copy,
+                "artifact_sha256": None,
                 "truthful": bool(copy_ok),
                 "result": copy,
             },
-        },
-    )
+            "canonical_artifact_sha256": None,
+            "actual_save_operations": [
+                {
+                    "kind": "canonical_written_save",
+                    "document": document,
+                    "canonical_path": str(path),
+                    "sha256_before": sha_before,
+                    "sha256_after": sha_after,
+                    "disposition": written_result.get("save_disposition"),
+                    "file_written": written_result.get("file_written"),
+                    "durability_verified": written_result.get("durability_verified"),
+                    "truthful": bool(written_ok),
+                    "result": written,
+                },
+                {
+                    "kind": "canonical_unchanged_save",
+                    "document": document,
+                    "canonical_path": str(path),
+                    "sha256_before": sha_after,
+                    "sha256_after": sha_unchanged,
+                    "disposition": (
+                        unchanged.get("save_disposition")
+                        if isinstance(unchanged, dict)
+                        else None
+                    ),
+                    "file_written": (
+                        unchanged.get("file_written")
+                        if isinstance(unchanged, dict)
+                        else None
+                    ),
+                    "truthful": bool(unchanged_ok),
+                    "result": unchanged,
+                },
+                {
+                    "kind": "save_copy",
+                    "document": document,
+                    "canonical_path": str(path),
+                    "destination": str(copy_path),
+                    "canonical_sha256_before": sha_after,
+                    "canonical_sha256_after": sha_after_copy,
+                    "sha256_after": sha_copy,
+                    "disposition": (
+                        copy.get("save_disposition") if isinstance(copy, dict) else None
+                    ),
+                    "file_written": (
+                        copy.get("file_written") if isinstance(copy, dict) else None
+                    ),
+                    "truthful": bool(copy_ok),
+                    "result": copy,
+                },
+            ],
+        }
+    record_save(context.payload, save_record)
+    context.active_save_record = save_record
     _require(
         context,
         "written_save_is_truthful_against_observed_sha256",
@@ -1377,6 +1796,7 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
         copy_ok,
         {"index": index, "result": copy, "readable_archive": copy_readable},
     )
+    _ensure_document_clean_for_personal_view(context, context.secondary)
     _persist(context)
 
 
@@ -1432,6 +1852,7 @@ def _local_property_edit(
             "object": object_name,
             "property": property_name,
             "value": int(value),
+            "stage_prepared": True,
         },
         timeout=120.0,
         observe_view=False,
@@ -1450,14 +1871,19 @@ def _run_same_property_conflict(context: StageContext) -> None:
         observe_view=False,
     )
     selector = _identity_selector(context, document)
+    operations: dict[str, Any] = {"selector": selector}
     session_id = _begin_checked_edit(
         context,
         None,
         selector,
         [{"kind": "ObjectModel", "subject": ALPHA_OBJECT}],
+        capture=operations,
     )
     _semantic_revisions(context, selector, [_property_key(ALPHA_OBJECT, ALPHA_PROPERTY)])
-    _local_property_edit(context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 42)
+    local_edit = _local_property_edit(
+        context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 42
+    )
+    operations["local_edit"] = local_edit
     _require(
         context,
         "local_property_edit_landed",
@@ -1465,21 +1891,24 @@ def _run_same_property_conflict(context: StageContext) -> None:
         {"document": document},
     )
 
+    refusal_params = {
+        "session_id": session_id,
+        "doc_selector": selector,
+        "object_name": ALPHA_OBJECT,
+        "property_name": ALPHA_PROPERTY,
+        "value_type": "integer",
+        "value": "10",
+        "operation_id": str(uuid.uuid4()),
+    }
     refusal = _call_expecting_failure(
         context,
         "commit_checked_property",
-        {
-            "session_id": session_id,
-            "doc_selector": selector,
-            "object_name": ALPHA_OBJECT,
-            "property_name": ALPHA_PROPERTY,
-            "value_type": "integer",
-            "value": "10",
-            "operation_id": str(uuid.uuid4()),
-        },
+        refusal_params,
     )
     data = refusal.get("data") or {}
     changed = data.get("changed_semantic_keys") or []
+    expected = data.get("expected_revisions") or {}
+    current = data.get("current_revisions") or {}
     targeted = refusal.get("success") is False and (
         refusal.get("error_code") == "DOCUMENT_CONFLICT"
         or "semantic revisions changed" in str(refusal.get("error") or "")
@@ -1493,18 +1922,37 @@ def _run_same_property_conflict(context: StageContext) -> None:
         _readiness_flag(readiness, "quarantined") is False
         and _readiness_flag(readiness, "collaboration_poisoned") is not True
     )
+    normalized_refusal = dict(refusal)
+    normalized_refusal["data"] = {
+        "changed_semantic_keys": changed,
+        "expected_revisions": expected,
+        "current_revisions": current,
+    }
+    operations["refused_commit"] = {
+        "operation_id": refusal_params["operation_id"],
+        "method": "commit_checked_property",
+        "parameters": refusal_params,
+        "result": normalized_refusal,
+    }
+    operations["observed"] = {
+        "document": document,
+        "alpha_value": _property_value(context, document, ALPHA_OBJECT, ALPHA_PROPERTY),
+        "expected_revisions": expected,
+        "current_revisions": current,
+    }
     record_conflict(
         context.payload,
         "same_property",
         {
             "document": document,
-            "refusal": refusal,
+            "refusal": normalized_refusal,
             "changed_semantic_keys": changed,
-            "expected_revisions": data.get("expected_revisions"),
-            "current_revisions": data.get("current_revisions"),
+            "expected_revisions": expected,
+            "current_revisions": current,
             "readiness": readiness,
             "targeted": bool(targeted and named),
             "write_lane_healthy": bool(healthy),
+            "stage_operations": operations,
         },
     )
     context.coverage.add("same_property_conflict")
@@ -1538,15 +1986,20 @@ def _run_independent_property_success(context: StageContext) -> None:
         observe_view=False,
     )
     selector = _identity_selector(context, document)
+    operations: dict[str, Any] = {"selector": selector}
     alpha_before = _property_revision(context, selector, ALPHA_OBJECT, ALPHA_PROPERTY)
     beta_before = _property_revision(context, selector, BETA_OBJECT, BETA_PROPERTY)
 
-    _local_property_edit(context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 11)
+    local_edit = _local_property_edit(
+        context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 11
+    )
+    operations["local_edit"] = local_edit
     session_id = _begin_checked_edit(
         context,
         None,
         selector,
         [_property_key(BETA_OBJECT, BETA_PROPERTY)],
+        capture=operations,
     )
     committed = _commit_checked_integer(
         context,
@@ -1557,6 +2010,7 @@ def _run_independent_property_success(context: StageContext) -> None:
         property_name=BETA_PROPERTY,
         value=30,
         prove_exactly_once=True,
+        capture=operations,
     )
     alpha_after = _property_revision(context, selector, ALPHA_OBJECT, ALPHA_PROPERTY)
     beta_after = _property_revision(context, selector, BETA_OBJECT, BETA_PROPERTY)
@@ -1566,6 +2020,8 @@ def _run_independent_property_success(context: StageContext) -> None:
         and alpha_after == alpha_before + 1
         and beta_after == beta_before + 1
     )
+    alpha_value = _property_value(context, document, ALPHA_OBJECT, ALPHA_PROPERTY)
+    beta_value = _property_value(context, document, BETA_OBJECT, BETA_PROPERTY)
     record_conflict(
         context.payload,
         "independent_property",
@@ -1576,8 +2032,23 @@ def _run_independent_property_success(context: StageContext) -> None:
             "beta_revision_before": beta_before,
             "beta_revision_after": beta_after,
             "commit": committed["first"],
+            "replay": committed["replay"],
             "committed_once": True,
+            "alpha_value": alpha_value,
+            "beta_value": beta_value,
             "both_landed": bool(both_landed),
+            "stage_operations": {
+                **operations,
+                "observed": {
+                    "document": document,
+                    "alpha_revision_before": alpha_before,
+                    "alpha_revision_after": alpha_after,
+                    "beta_revision_before": beta_before,
+                    "beta_revision_after": beta_after,
+                    "alpha_value": alpha_value,
+                    "beta_value": beta_value,
+                },
+            },
         },
     )
     context.coverage.add("independent_property_success")
@@ -1596,6 +2067,7 @@ def _probe_history_head(
     context: StageContext,
     selector: dict[str, Any],
     method: str,
+    capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Learn the live history head from a deliberately mismatched typed refusal."""
 
@@ -1627,6 +2099,11 @@ def _probe_history_head(
     if method == "undo":
         envelope["current_undo_count"] = data.get("current_undo_count")
         envelope["current_undo_head"] = data.get("current_undo_head")
+        if capture is not None:
+            capture["undo_probe"] = {
+                "operation_id": params["operation_id"], "method": method,
+                "parameters": params, "result": envelope,
+            }
         return {
             "count": int(data.get("current_undo_count") or 0),
             "head": str(data.get("current_undo_head") or ""),
@@ -1634,6 +2111,11 @@ def _probe_history_head(
         }
     envelope["current_redo_count"] = data.get("current_redo_count")
     envelope["current_redo_head"] = data.get("current_redo_head")
+    if capture is not None:
+        capture["redo_probe"] = {
+            "operation_id": params["operation_id"], "method": method,
+            "parameters": params, "result": envelope,
+        }
     return {
         "count": int(data.get("current_redo_count") or 0),
         "head": str(data.get("current_redo_head") or ""),
@@ -1653,7 +2135,10 @@ def _run_history_segment(context: StageContext) -> None:
         observe_view=False,
     )
     selector = _identity_selector(context, document)
-    _local_property_edit(context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 77)
+    operations: dict[str, Any] = {"selector": selector}
+    operations["local_edit"] = _local_property_edit(
+        context, document, ALPHA_OBJECT, ALPHA_PROPERTY, 77
+    )
     value_after_edit = _property_value(context, document, ALPHA_OBJECT, ALPHA_PROPERTY)
     _require(
         context,
@@ -1662,23 +2147,30 @@ def _run_history_segment(context: StageContext) -> None:
         {"observed": value_after_edit},
     )
 
-    undo_head = _probe_history_head(context, selector, "undo")
+    undo_head = _probe_history_head(context, selector, "undo", capture=operations)
     _require(
         context,
         "history_stack_records_the_local_transaction",
         undo_head["count"] > 0,
         undo_head,
     )
-    undo_result = context.rpc.call(
+    undo_params = {
+        "doc_selector": selector,
+        "operation_id": str(uuid.uuid4()),
+        "expected_undo_count": undo_head["count"],
+        "expected_undo_head": undo_head["head"],
+    }
+    undo_result = _remote_action(
+        context,
+        None,
         "undo",
-        {
-            "doc_selector": selector,
-            "operation_id": str(uuid.uuid4()),
-            "expected_undo_count": undo_head["count"],
-            "expected_undo_head": undo_head["head"],
-        },
+        undo_params,
         timeout=120.0,
     )
+    operations["undo"] = {
+        "operation_id": undo_params["operation_id"], "method": "undo",
+        "parameters": undo_params, "result": undo_result,
+    }
     context.coverage.add("history_undo")
     value_after_undo = _property_value(context, document, ALPHA_OBJECT, ALPHA_PROPERTY)
     _require(
@@ -1690,23 +2182,30 @@ def _run_history_segment(context: StageContext) -> None:
         {"result": undo_result, "before": value_after_edit, "after": value_after_undo},
     )
 
-    redo_head = _probe_history_head(context, selector, "redo")
+    redo_head = _probe_history_head(context, selector, "redo", capture=operations)
     _require(
         context,
         "redo_stack_records_the_reverted_transaction",
         redo_head["count"] > 0,
         redo_head,
     )
-    redo_result = context.rpc.call(
+    redo_params = {
+        "doc_selector": selector,
+        "operation_id": str(uuid.uuid4()),
+        "expected_redo_count": redo_head["count"],
+        "expected_redo_head": redo_head["head"],
+    }
+    redo_result = _remote_action(
+        context,
+        None,
         "redo",
-        {
-            "doc_selector": selector,
-            "operation_id": str(uuid.uuid4()),
-            "expected_redo_count": redo_head["count"],
-            "expected_redo_head": redo_head["head"],
-        },
+        redo_params,
         timeout=120.0,
     )
+    operations["redo"] = {
+        "operation_id": redo_params["operation_id"], "method": "redo",
+        "parameters": redo_params, "result": redo_result,
+    }
     context.coverage.add("history_redo")
     value_after_redo = _property_value(context, document, ALPHA_OBJECT, ALPHA_PROPERTY)
     _require(
@@ -1730,12 +2229,21 @@ def _run_history_segment(context: StageContext) -> None:
         "undo_head": {"count": undo_head["count"], "head": undo_head["head"]},
         "undo_head_refusal": undo_refusal,
         "undo_result": undo_result,
+        "value_after_edit": value_after_edit,
         "value_after_undo": value_after_undo,
         "redo_head": {"count": redo_head["count"], "head": redo_head["head"]},
         "redo_head_refusal": redo_refusal,
         "redo_result": redo_result,
         "value_after_redo": value_after_redo,
         "mismatched_head_refused": mismatched_head_refused,
+        "stage_operations": {
+            **operations,
+            "observed": {
+                "value_after_edit": value_after_edit,
+                "value_after_undo": value_after_undo,
+                "value_after_redo": value_after_redo,
+            },
+        },
     }
     _persist(context)
     _require(
@@ -1758,7 +2266,9 @@ def _run_pause_resume_segment(context: StageContext) -> None:
         observe_view=False,
     )
     selector = _identity_selector(context, document)
+    operations: dict[str, Any] = {"document": document, "selector": selector}
     paused = _local_action(context, None, "pause_writes", observe_view=False)
+    operations["pause"] = paused
     context.coverage.add("local_pause")
     _require(
         context,
@@ -1768,15 +2278,19 @@ def _run_pause_resume_segment(context: StageContext) -> None:
     )
     record_pause_resume(context.payload, "pause", paused)
 
+    refusal_params = {
+        "doc_name": document,
+        "obj_name": BETA_OBJECT,
+        "properties": {"Properties": {BETA_PROPERTY: 7}},
+    }
     refusal = _call_expecting_failure(
         context,
         "edit_object",
-        {
-            "doc_name": document,
-            "obj_name": BETA_OBJECT,
-            "properties": {"Properties": {BETA_PROPERTY: 7}},
-        },
+        refusal_params,
     )
+    operations["refused_write"] = {
+        "method": "edit_object", "parameters": refusal_params, "result": refusal,
+    }
     refusal_text = f"{refusal.get('error')} {refusal.get('error_code')} {refusal.get('data')}"
     record_pause_resume(context.payload, "refused", refusal)
     _require(
@@ -1789,21 +2303,35 @@ def _run_pause_resume_segment(context: StageContext) -> None:
         ),
         refusal,
     )
-    reads = _semantic_revisions(
+    read_params = {
+        "doc_selector": selector,
+        "revision_keys": [_property_key(BETA_OBJECT, BETA_PROPERTY)],
+    }
+    read_result = _remote_action(
         context,
-        selector,
-        [_property_key(BETA_OBJECT, BETA_PROPERTY)],
+        None,
+        "get_semantic_revisions",
+        read_params,
+        timeout=30.0,
     )
+    reads = read_result.get("revisions") if isinstance(read_result, dict) else None
+    operations["paused_read"] = {
+        "operation_id": None, "method": "get_semantic_revisions",
+        "parameters": read_params, "result": read_result,
+    }
+    operations["paused_read_result"] = read_result
     _require(
         context,
         "reads_remain_available_while_paused",
-        bool(reads),
+        _paused_read_revisions_are_exact(read_result),
         reads,
     )
     readiness = _mutation_readiness(context, document)
+    operations["readiness"] = readiness
     context.payload["pause_resume"]["readiness_while_paused"] = readiness
 
     resumed = _local_action(context, None, "resume_writes", observe_view=False)
+    operations["resume"] = resumed
     context.coverage.add("local_resume")
     _require(
         context,
@@ -1818,6 +2346,7 @@ def _run_pause_resume_segment(context: StageContext) -> None:
         None,
         selector,
         [_property_key(BETA_OBJECT, BETA_PROPERTY)],
+        capture=operations,
     )
     committed = _commit_checked_integer(
         context,
@@ -1828,13 +2357,18 @@ def _run_pause_resume_segment(context: StageContext) -> None:
         property_name=BETA_PROPERTY,
         value=55,
         prove_exactly_once=False,
+        capture=operations,
+        capture_key="after_commit",
     )
+    value_after_resume = _property_value(context, document, BETA_OBJECT, BETA_PROPERTY)
+    operations["value_after_resume"] = value_after_resume
+    context.payload["pause_resume"]["stage_operations"] = operations
     record_pause_resume(
         context.payload,
         "after",
         {
             "commit": committed["first"],
-            "value": _property_value(context, document, BETA_OBJECT, BETA_PROPERTY),
+            "value": value_after_resume,
         },
     )
     _require(
@@ -1852,29 +2386,101 @@ def _run_cycle_program(context: StageContext) -> None:
     definition = context.definition
     _provision_stage_documents(context)
 
-    save_interval = max(1, definition.view_mutation_cycles // definition.save_cycles)
     segments = {
         1: _run_same_property_conflict,
         2: _run_history_segment,
         3: _run_independent_property_success,
         4: _run_pause_resume_segment,
     }
-    saves_done = 0
-    for index in range(definition.view_mutation_cycles):
-        _run_view_mutation_cycle(context, index)
-        segment = segments.get(index)
-        if segment is not None:
-            segment(context)
-        if saves_done < definition.save_cycles and (index + 1) % save_interval == 0:
-            _run_save_cycle(context, saves_done)
-            saves_done += 1
-    while saves_done < definition.save_cycles:
-        _run_save_cycle(context, saves_done)
-        saves_done += 1
+    base_size, extra = divmod(
+        definition.view_mutation_cycles, definition.save_cycles
+    )
+    next_cycle = 0
+    for save_index in range(definition.save_cycles):
+        _run_save_cycle(context, save_index)
+        group_size = base_size + (1 if save_index < extra else 0)
+        for _ in range(group_size):
+            _run_view_mutation_cycle(context, next_cycle)
+            segment = segments.get(next_cycle)
+            if segment is not None:
+                segment(context)
+            next_cycle += 1
 
 
 CYCLE_COUNT_CHECK = "cycle_count_matches_stage_definition"
 SAVE_COUNT_CHECK = "save_count_matches_stage_definition"
+
+
+def _personal_action_proof_is_exact(proof: object) -> bool:
+    if not isinstance(proof, dict):
+        return False
+    action = proof.get("action")
+    documents = proof.get("documents")
+    before = proof.get("before")
+    after = proof.get("after")
+    if (
+        action not in PERSONAL_STATE_ACTIONS
+        or not isinstance(documents, list)
+        or not documents
+        or len(documents) != len(set(documents))
+        or not isinstance(before, dict)
+        or not isinstance(after, dict)
+        or set(before) != set(documents)
+        or set(after) != set(documents)
+    ):
+        return False
+    if action == "set_active_document" and (
+        proof.get("left_document") not in documents
+        or proof.get("activated_document") not in documents
+    ):
+        return False
+    for document_name in documents:
+        before_snapshot = before.get(document_name)
+        after_snapshot = after.get(document_name)
+        if not isinstance(before_snapshot, dict) or not isinstance(after_snapshot, dict):
+            return False
+        if (
+            before_snapshot.get("observed_document") != document_name
+            or after_snapshot.get("observed_document") != document_name
+        ):
+            return False
+        before_selector = before_snapshot.get("identity_selector")
+        after_selector = after_snapshot.get("identity_selector")
+        if not _identity_selector_is_exact(
+            before_selector, document_name
+        ) or not _identity_selector_is_exact(after_selector, document_name):
+            return False
+        identity_fields = (
+            "document_uid",
+            "document_instance_id",
+            "lifecycle_epoch",
+            "document_name",
+        )
+        if (
+            any(
+                before_selector.get(field) != after_selector.get(field)
+                for field in identity_fields
+            )
+        ):
+            return False
+        if not _file_change_state_is_clean(before_snapshot.get("file_change_state")):
+            return False
+        if not _file_change_state_is_clean(after_snapshot.get("file_change_state")):
+            return False
+        before_revisions = before_snapshot.get("semantic_revisions")
+        after_revisions = after_snapshot.get("semantic_revisions")
+        if (
+            not stage_revision_vector_is_exact(before_revisions)
+            or not stage_revision_vector_is_exact(after_revisions)
+            or before_revisions != after_revisions
+        ):
+            return False
+    return (
+        proof.get("clean_before") is True
+        and proof.get("clean_after") is True
+        and proof.get("semantic_revisions_unchanged") is True
+        and proof.get("passed") is True
+    )
 
 
 def _record_stage_counts(context: StageContext) -> None:
@@ -1942,6 +2548,21 @@ def _record_stage_aggregates(context: StageContext) -> None:
         },
     )
     cycles = payload.get("cycles") or []
+    personal_proofs = payload.get("personal_action_proofs") or []
+    record_check(
+        payload,
+        "every_personal_action_has_exact_clean_revision_proof",
+        bool(personal_proofs)
+        and all(_personal_action_proof_is_exact(entry) for entry in personal_proofs),
+        {
+            "proof_count": len(personal_proofs),
+            "violations": [
+                entry.get("index") if isinstance(entry, dict) else None
+                for entry in personal_proofs
+                if not _personal_action_proof_is_exact(entry)
+            ],
+        },
+    )
     record_check(
         payload,
         "every_cycle_keeps_personal_view_state_inert",
@@ -1955,6 +2576,32 @@ def _record_stage_aggregates(context: StageContext) -> None:
                 entry.get("index")
                 for entry in cycles
                 if not (entry.get("checks") or {}).get("personal_view_state_inert")
+            ]
+        },
+    )
+    record_check(
+        payload,
+        "every_cycle_starts_and_ends_personal_view_file_clean",
+        bool(cycles)
+        and all(
+            bool((entry.get("checks") or {}).get("personal_view_state_inert"))
+            and bool(
+                (entry.get("checks") or {}).get(
+                    "personal_view_state_not_dirtying"
+                )
+            )
+            for entry in cycles
+        ),
+        {
+            "violations": [
+                entry.get("index")
+                for entry in cycles
+                if not (
+                    (entry.get("checks") or {}).get("personal_view_state_inert")
+                    and (entry.get("checks") or {}).get(
+                        "personal_view_state_not_dirtying"
+                    )
+                )
             ]
         },
     )
@@ -2001,6 +2648,46 @@ def _record_post_shutdown_artifact_scan(
         for entry in scan["documents"]
         if entry.get("readable_archive") is False
     ]
+    ordinary = {
+        os.path.normcase(os.path.normpath(str(entry.get("path") or ""))).casefold(): entry
+        for entry in scan["documents"]
+        if str(entry.get("path") or "").lower().endswith(".fcstd")
+        and entry.get("readable_archive") is True
+        and type(entry.get("size")) is int
+        and entry["size"] > 0
+    }
+    required_save_paths: list[str] = []
+    for save in payload.get("saves") or []:
+        if not isinstance(save, dict):
+            required_save_paths.append("<malformed-save>")
+            continue
+        canonical = save.get("canonical_path")
+        copy = save.get("save_copy")
+        destination = copy.get("destination") if isinstance(copy, dict) else None
+        required_save_paths.append(canonical if isinstance(canonical, str) and canonical else "<missing-canonical>")
+        required_save_paths.append(destination if isinstance(destination, str) and destination else "<missing-save-copy>")
+    missing_save_artifacts = [
+        path for path in required_save_paths
+        if os.path.normcase(os.path.normpath(path)).casefold() not in ordinary
+    ]
+    ordinary_hashes = {
+        os.path.normcase(os.path.normpath(str(entry["path"]))).casefold(): entry.get("sha256")
+        for entry in scan["documents"]
+        if str(entry.get("path") or "").lower().endswith(".fcstd")
+    }
+    for save in payload.get("saves") or []:
+        if not isinstance(save, dict):
+            continue
+        canonical = save.get("canonical_path")
+        copy = save.get("save_copy")
+        if isinstance(canonical, str):
+            save["canonical_artifact_sha256"] = ordinary_hashes.get(
+                os.path.normcase(os.path.normpath(canonical)).casefold()
+            )
+        if isinstance(copy, dict) and isinstance(copy.get("destination"), str):
+            copy["artifact_sha256"] = ordinary_hashes.get(
+                os.path.normcase(os.path.normpath(copy["destination"])).casefold()
+            )
     record_check(
         payload,
         "artifact_scan_has_no_unexplained_files",
@@ -2010,8 +2697,11 @@ def _record_post_shutdown_artifact_scan(
     record_check(
         payload,
         "saved_documents_are_ordinarily_readable_archives",
-        not unreadable,
-        {"phase": "post_shutdown", "unreadable": unreadable},
+        not unreadable and not missing_save_artifacts,
+        {
+            "phase": "post_shutdown", "unreadable": unreadable,
+            "missing_canonical_or_copy": missing_save_artifacts,
+        },
     )
     record_check(
         payload,
@@ -2042,6 +2732,7 @@ LOCAL_DRIVER_PACKAGE = "tests/gui/part3/local_driver"
 
 COORDINATOR_SOURCE_FILES = (
     "tests/gui/part3/stress_coordinator.py",
+    "tests/gui/part3/stage_gate_runner.py",
     "tests/gui/part3/local_driver/actions.py",
     "tests/gui/part3/local_user_driver.py",
     "tests/gui/part3/remote_agent_driver.py",
@@ -2277,7 +2968,7 @@ def ordered_shutdown_completed(
         and record.get("forced") is False
         and record.get("failed_step") is None
         and record.get("rpc_error") is None
-        and all(record.get(key) for key in COMPLETED_SHUTDOWN_TRANSITIONS)
+        and shutdown_transitions_are_complete_and_ordered(record)
     )
 
 
@@ -2348,6 +3039,7 @@ def run_stage(
                 "view_mutation_cycles": definition.view_mutation_cycles,
                 "save_cycles": definition.save_cycles,
             },
+            "session_ttl": session_ttl_provenance(root),
         }
     )
     # Named for what it tests. It goes green whenever provenance was RECORDED,
