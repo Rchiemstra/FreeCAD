@@ -1119,6 +1119,54 @@ TEST_F(DocumentCollaborationBoundaryTest,
     EXPECT_STREQ(target->Label.getValue(), "Committed");
 }
 
+TEST_F(DocumentCollaborationBoundaryTest,
+       applicationTransactionRejectsUntypedCrossDocumentCommitBeforeClosingEitherDocument)
+{
+    ScopedApplicationDocument otherDocument("collaborationBoundaryOther");
+    ASSERT_NE(otherDocument.document, nullptr);
+    otherDocument.document->setMaxUndoStackSize(20);
+
+    auto* first = document()->addObject<App::FeatureTest>("FirstTarget");
+    auto* second = otherDocument.document->addObject<App::FeatureTest>("SecondTarget");
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    first->Label.setValue("Before first");
+    second->Label.setValue("Before second");
+    document()->clearUndos();
+    otherDocument.document->clearUndos();
+
+    auto& application = App::GetApplication();
+    const auto transactionId = application.openGlobalTransaction(
+        App::TransactionName {.name = "unsupported cross-document commit", .temporary = false});
+    ASSERT_NE(transactionId, App::NullTransaction);
+    first->Label.setValue("Pending first");
+    second->Label.setValue("Pending second");
+    ASSERT_TRUE(document()->hasPendingTransaction());
+    ASSERT_TRUE(otherDocument.document->hasPendingTransaction());
+    ASSERT_EQ(document()->getBookedTransactionID(), transactionId);
+    ASSERT_EQ(otherDocument.document->getBookedTransactionID(), transactionId);
+    ASSERT_EQ(document()->getAvailableUndos(), 1);
+    ASSERT_EQ(otherDocument.document->getAvailableUndos(), 1);
+
+    EXPECT_FALSE(application.commitTransaction(transactionId));
+    EXPECT_TRUE(application.transactionIsActive(transactionId));
+    EXPECT_TRUE(document()->hasPendingTransaction());
+    EXPECT_TRUE(otherDocument.document->hasPendingTransaction());
+    EXPECT_EQ(document()->getAvailableUndos(), 1);
+    EXPECT_EQ(otherDocument.document->getAvailableUndos(), 1);
+    EXPECT_STREQ(first->Label.getValue(), "Pending first");
+    EXPECT_STREQ(second->Label.getValue(), "Pending second");
+
+    ASSERT_TRUE(application.abortTransaction(transactionId));
+    EXPECT_FALSE(application.transactionIsActive(transactionId));
+    EXPECT_FALSE(document()->hasPendingTransaction());
+    EXPECT_FALSE(otherDocument.document->hasPendingTransaction());
+    EXPECT_EQ(document()->getAvailableUndos(), 0);
+    EXPECT_EQ(otherDocument.document->getAvailableUndos(), 0);
+    EXPECT_STREQ(first->Label.getValue(), "Before first");
+    EXPECT_STREQ(second->Label.getValue(), "Before second");
+}
+
 TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedRejectedOrReviewed)
 {
     const auto repository = locateRepository();

@@ -380,9 +380,11 @@ public:
      * active document already has a transaction setup it will either commit the
      * current transaction or rename it, depending on the tmpName flag of the 
      * currently setup transaction. No new transaction is created by this call. Any subsequent
-     * changes in any current opening document will auto create a transaction
-     * with the given name and ID. If more than one document is changed, the
-     * transactions will share the same ID, and will be undo/redo together.
+     * changes in an open document will auto create a transaction with the
+     * given name and ID. A transaction may be booked by more than one document
+     * for compatibility, but commit is rejected before any participant closes
+     * unless a typed cross-document atomic adapter owns the operation. Abort
+     * remains available to roll back every booked participant.
      *
      * @param[in] name The new transaction name
      * @param[in] persist By default, if the calling code is inside any invocation
@@ -413,7 +415,8 @@ public:
      * if 1) any new transaction is created with a different ID, or 2) any
      * transaction with the current active transaction ID is either committed or
      * aborted
-     * returns true if it succeeded in closing the transaction
+     * Returns true if it succeeded in closing the transaction. A commit that
+     * spans multiple documents returns false without closing any participant.
      */
     bool closeActiveTransaction(TransactionCloseMode mode = TransactionCloseMode::Commit, int id=0);
 

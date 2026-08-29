@@ -202,6 +202,17 @@ bool Application::closeActiveTransaction(TransactionCloseMode mode, int id)
         docsToPoke.push_back(docNameAndDoc.second);
     }
 
+    // A shared transaction ID does not provide atomic rollback or publication
+    // across documents.  Reject the commit before closing any participant;
+    // callers can still abort the pending group without leaving partial history.
+    if (!abort && docsToPoke.size() > 1) {
+        FC_WARN("cannot commit transaction " << id
+                                               << " across multiple documents without a typed "
+                                                  "atomic adapter");
+        currentlyClosingID = 0;
+        return false;
+    }
+
     FC_LOG("close transaction '" << _activeTransactionDescriptions[id].name.name << "' " << abort);
     _activeTransactionDescriptions.erase(id);
     if (id == _globalTransactionID) {
