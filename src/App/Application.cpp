@@ -152,6 +152,7 @@
 #include "SuppressibleExtension.h"
 #include "Part.h"
 #include "GeoFeaturePy.h"
+#include "GeometryJobManager.h"
 #include "Placement.h"
 #include "ProgramOptionsUtilities.h"
 #include "Property.h"
@@ -478,6 +479,7 @@ Application::Application(std::map<std::string,std::string> &mConfig)
     mpcPramManager["User parameter"] = _pcUserParamMngr;
 
     _preparedEditExecutor = std::make_unique<PreparedEditExecutor>();
+    _geometryJobManager = std::make_unique<GeometryJobManager>();
     _stopRecomputeThread = false;
     _recomputeThread = std::thread(&Application::recomputeWorker, this);
 
@@ -494,6 +496,7 @@ Application::~Application()
         _recomputeThread.join();
     }
 
+    _geometryJobManager.reset();
     _preparedEditExecutor.reset();
 }
 
@@ -1223,6 +1226,216 @@ bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
 
     Document* document = req.resolveDocument();
     return !document || documentCanRecomputeOnWorker(*document);
+}
+
+PreparedEditExecutor& Application::preparedEditExecutor() noexcept
+{
+    return *_preparedEditExecutor;
+}
+
+GeometryJobManager& Application::geometryJobManager() noexcept
+{
+    return *_geometryJobManager;
+}
+
+const GeometryJobManager& Application::geometryJobManager() const noexcept
+{
+    return *_geometryJobManager;
+}
+
+void Application::registerCollaborationServiceLifetime(
+    DocumentCollaborationService& service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    const auto [position, inserted] = _collaborationServiceLifetimeGates.emplace(
+        &service, std::make_shared<Internal::CollaborationServiceLifetimeGate>());
+    static_cast<void>(position);
+    if (!inserted) {
+        throw Base::RuntimeError("duplicate collaboration service lifetime registration");
+    }
+}
+
+std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
+Application::collaborationServiceLifetimeGate(
+    const DocumentCollaborationService& service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    const auto found = _collaborationServiceLifetimeGates.find(&service);
+    return found == _collaborationServiceLifetimeGates.end()
+        ? nullptr
+        : found->second;
+}
+
+void Application::unregisterCollaborationServiceLifetime(
+    const DocumentCollaborationService* service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    _collaborationServiceLifetimeGates.erase(service);
+}
+
+RecomputeResult Application::processRecomputeRequestSerialized(RecomputeRequest& request)
+{
+    if (Document* document = request.resolveDocument()) {
+        // The recompute queue mutex is never held here. Stable capture and
+        // commit use the same document mutex, so live recompute cannot overlap
+        // either boundary and no executor/recompute lock cycle is introduced.
+        std::lock_guard serialized(document->collaborationCommitMutex());
+        return processRecomputeRequestUnserialized(request);
+    }
+    return processRecomputeRequestUnserialized(request);
+}
+
+void Application::queueRecomputeRequest(RecomputeRequest req)
+{
+    const std::string documentName = req.documentName;
+    const std::thread::id activityOwner = std::this_thread::get_id();
+    const auto rejectClosingRequest = [&req] {
+        RecomputeResult result;
+        result.success = false;
+        result.failure = RecomputeFailure::Exception;
+        result.exception =
+            std::make_unique<Base::RuntimeError>("document is closing");
+        if (req.callback) {
+            req.callback(req, result);
+        }
+    };
+    const auto finishActivity = [this, &documentName, &activityOwner] {
+        if (documentName.empty()) {
+            return;
+        }
+        std::lock_guard lock(_recomputeMutex);
+        const auto found = _recomputeDocumentActivityCounts.find(documentName);
+        if (found != _recomputeDocumentActivityCounts.end()) {
+            if (--found->second == 0) {
+                _recomputeDocumentActivityCounts.erase(found);
+            }
+        }
+        const auto documentOwners =
+            _recomputeDocumentActivityOwners.find(documentName);
+        if (documentOwners != _recomputeDocumentActivityOwners.end()) {
+            const auto owner = documentOwners->second.find(activityOwner);
+            if (owner != documentOwners->second.end()
+                && --owner->second == 0) {
+                documentOwners->second.erase(owner);
+            }
+            if (documentOwners->second.empty()) {
+                _recomputeDocumentActivityOwners.erase(documentOwners);
+            }
+        }
+        _recomputeStateChanged.notify_all();
+    };
+
+    bool activityRegistered = false;
+    bool rejectedAtAdmission = false;
+    bool sealedAtAdmission = false;
+    if (!documentName.empty()) {
+        std::lock_guard lock(_recomputeMutex);
+        if (_recomputeDocumentsSealed.contains(documentName)) {
+            sealedAtAdmission = true;
+        }
+        else {
+            ++_recomputeDocumentActivityCounts[documentName];
+            ++_recomputeDocumentActivityOwners[documentName][activityOwner];
+            activityRegistered = true;
+            rejectedAtAdmission =
+                _recomputeDocumentsClosing.contains(documentName);
+        }
+    }
+    if (sealedAtAdmission) {
+        return;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (activityRegistered) {
+            finishActivity();
+        }
+    };
+    if (rejectedAtAdmission) {
+        rejectClosingRequest();
+        return;
+    }
+
+    const bool workerSafe = canRecomputeRequestOnWorker(req);
+
+    if (workerSafe) {
+        bool rejected = false;
+        {
+            std::lock_guard lock(_recomputeMutex);
+            if (!documentName.empty()
+                && _recomputeDocumentsClosing.contains(documentName)) {
+                rejected = true;
+            }
+            else {
+                _recomputeRequests.push_back(std::move(req));
+            }
+            // A queued request transfers its admission activity to the worker.
+            // A rejected request keeps this activity until its callback returns.
+            if (!rejected && activityRegistered) {
+                const auto found =
+                    _recomputeDocumentActivityCounts.find(documentName);
+                if (found != _recomputeDocumentActivityCounts.end()
+                    && --found->second == 0) {
+                    _recomputeDocumentActivityCounts.erase(found);
+                }
+                const auto documentOwners =
+                    _recomputeDocumentActivityOwners.find(documentName);
+                if (documentOwners != _recomputeDocumentActivityOwners.end()) {
+                    const auto owner =
+                        documentOwners->second.find(activityOwner);
+                    if (owner != documentOwners->second.end()
+                        && --owner->second == 0) {
+                        documentOwners->second.erase(owner);
+                    }
+                    if (documentOwners->second.empty()) {
+                        _recomputeDocumentActivityOwners.erase(documentOwners);
+                    }
+                }
+                activityRegistered = false;
+                _recomputeStateChanged.notify_all();
+            }
+        }
+        if (rejected) {
+            rejectClosingRequest();
+        }
+        else {
+            notifyRecomputeWorker();
+        }
+        return;
+    }
+
+    RecomputeResult result;
+
+    // Requests that are not worker-safe stay on the caller thread unless a
+    // GUI main-thread hop is required. In App-only/headless mode there are no
+    // GUI hooks, so processing inline preserves the "stay off the worker"
+    // guarantee without inventing a synthetic main thread.
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        bool rejected = false;
+        {
+            std::lock_guard lock(_recomputeMutex);
+            if (!documentName.empty()
+                && _recomputeDocumentsClosing.contains(documentName)) {
+                rejected = true;
+            }
+        }
+        if (rejected) {
+            rejectClosingRequest();
+            return;
+        }
+        App::MainThreadSignalConfig::invoke(
+            [this, &req, &result]() {
+                result = processRecomputeRequestSerialized(req);
+            },
+            /*blocking=*/true
+        );
+    }
+    else {
+        result = processRecomputeRequestSerialized(req);
+    }
+
+    if (req.callback) {
+        req.callback(req, result);
+    }
 }
 
 PreparedEditExecutor& Application::preparedEditExecutor() noexcept

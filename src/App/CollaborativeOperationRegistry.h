@@ -21,6 +21,13 @@ namespace App
 
 class Document;
 
+enum class PreparationPolicy
+{
+    Inline,
+    DetachedInProcess,
+    IsolatedProcess
+};
+
 /** Pointer-free client intent. Only registered native adapters interpret it. */
 struct AppExport CollaborativeOperationIntent
 {
@@ -43,17 +50,20 @@ struct AppExport CollaborativeOperationPreparation
         , writeSet(std::move(writeSet))
         , publicationEffects(std::move(publicationEffects))
         , operation(std::move(operation))
+        , policy(PreparationPolicy::Inline)
     {}
 
     CollaborativeOperationPreparation(
         std::vector<DocumentRevisionKey> readSet,
         std::vector<DocumentRevisionKey> writeSet,
         std::vector<DocumentRevisionPublicationRequest> publicationEffects,
-        DetachedTask detachedTask)
+        DetachedTask detachedTask,
+        PreparationPolicy policy = PreparationPolicy::DetachedInProcess)
         : readSet(std::move(readSet))
         , writeSet(std::move(writeSet))
         , publicationEffects(std::move(publicationEffects))
         , detachedTask(std::move(detachedTask))
+        , policy(policy)
     {}
 
     [[nodiscard]] bool isDetached() const noexcept
@@ -66,6 +76,7 @@ struct AppExport CollaborativeOperationPreparation
     std::vector<DocumentRevisionPublicationRequest> publicationEffects;
     std::unique_ptr<const CollaborativeOperation> operation;
     DetachedTask detachedTask;
+    PreparationPolicy policy {PreparationPolicy::Inline};
     std::uint64_t registrationId {0};
 };
 

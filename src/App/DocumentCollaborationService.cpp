@@ -742,6 +742,7 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
 
     PendingDetachedPreparation pending;
     CollaborativeOperationPreparation::DetachedTask detachedTask;
+    PreparationPolicy preparationPolicy {PreparationPolicy::Inline};
     bool lifecyclePinned = false;
     BOOST_SCOPE_EXIT_ALL(&) {
         if (lifecyclePinned) {
@@ -772,6 +773,10 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         if (!preparation.isDetached()) {
             throw Base::RuntimeError(
                 "operation does not provide detached preparation");
+        }
+        if (preparation.policy != PreparationPolicy::DetachedInProcess) {
+            throw Base::RuntimeError(
+                "isolated geometry preparation requires a GeometryJobManager adapter");
         }
 
         std::vector<DocumentRevisionKey> dependencyUnion = preparation.readSet;
@@ -816,11 +821,12 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         pending.writeSet = std::move(canonical.writeSet);
         pending.publicationEffects = std::move(canonical.publicationEffects);
         detachedTask = std::move(preparation.detachedTask);
+        preparationPolicy = preparation.policy;
     }
 
     // Never acquire the executor queue while the document commit mutex is held.
     auto& executor = GetApplication().preparedEditExecutor();
-    const auto executionId = executor.submit(std::move(detachedTask));
+    const auto executionId = executor.submit(std::move(detachedTask), preparationPolicy);
     if (const auto hook = _postSubmitTestHook.load(std::memory_order_acquire)) {
         hook();
     }
