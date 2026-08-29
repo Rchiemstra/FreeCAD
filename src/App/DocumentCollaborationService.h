@@ -214,8 +214,15 @@ private:
     explicit DocumentCollaborationService(Document& document);
 
     [[nodiscard]] int openCompatibilityTransaction(TransactionName name, int transactionId);
+    [[nodiscard]] int openMutationTransaction(std::string name, int transactionId);
+    [[nodiscard]] int setActiveCompatibilityTransaction(TransactionName name, int transactionId);
     void commitCompatibilityTransaction();
     void abortCompatibilityTransaction();
+    [[nodiscard]] bool undoCompatibilityTransaction(int transactionId);
+    [[nodiscard]] bool redoCompatibilityTransaction(int transactionId);
+    void clearCompatibilityTransactionHistory();
+    [[nodiscard]] bool commitApplicationTransaction();
+    void abortApplicationTransaction();
 
     [[nodiscard]] LifecyclePin pinDocumentAccess() const;
     [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>

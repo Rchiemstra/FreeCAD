@@ -228,6 +228,20 @@ int DocumentCollaborationService::openCompatibilityTransaction(
     return _coordinator.openCompatibilityTransaction(std::move(name), transactionId);
 }
 
+int DocumentCollaborationService::openMutationTransaction(
+    std::string name,
+    const int transactionId)
+{
+    return _coordinator.openMutationTransaction(std::move(name), transactionId);
+}
+
+int DocumentCollaborationService::setActiveCompatibilityTransaction(
+    TransactionName name,
+    const int transactionId)
+{
+    return _coordinator.setActiveCompatibilityTransaction(std::move(name), transactionId);
+}
+
 void DocumentCollaborationService::commitCompatibilityTransaction()
 {
     _coordinator.commitCompatibilityTransaction();
@@ -236,6 +250,31 @@ void DocumentCollaborationService::commitCompatibilityTransaction()
 void DocumentCollaborationService::abortCompatibilityTransaction()
 {
     _coordinator.abortCompatibilityTransaction();
+}
+
+bool DocumentCollaborationService::undoCompatibilityTransaction(const int transactionId)
+{
+    return _coordinator.undoCompatibilityTransaction(transactionId);
+}
+
+bool DocumentCollaborationService::redoCompatibilityTransaction(const int transactionId)
+{
+    return _coordinator.redoCompatibilityTransaction(transactionId);
+}
+
+void DocumentCollaborationService::clearCompatibilityTransactionHistory()
+{
+    _coordinator.clearCompatibilityTransactionHistory();
+}
+
+bool DocumentCollaborationService::commitApplicationTransaction()
+{
+    return _coordinator.commitApplicationTransaction();
+}
+
+void DocumentCollaborationService::abortApplicationTransaction()
+{
+    _coordinator.abortApplicationTransaction();
 }
 
 EditSession DocumentCollaborationService::beginEditSession(std::string actorId)

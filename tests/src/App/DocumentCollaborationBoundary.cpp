@@ -1083,6 +1083,42 @@ TEST_F(DocumentCollaborationBoundaryTest, emptyNewDocumentHasNoPendingFileChange
     EXPECT_EQ(document()->getPendingFileChanges().toUnderlyingType(), 0);
 }
 
+TEST_F(DocumentCollaborationBoundaryTest,
+       applicationTransactionCloseAndPublicHistoryPreserveNativeSemantics)
+{
+    auto* target = document()->addObject<App::FeatureTest>("HistoryTarget");
+    ASSERT_NE(target, nullptr);
+    target->Label.setValue("Before");
+    document()->clearUndos();
+    App::GetApplication().setActiveDocument(document());
+
+    const auto commitId = App::GetApplication().setActiveTransaction(
+        App::TransactionName {.name = "coordinator application commit", .temporary = false});
+    ASSERT_NE(commitId, App::NullTransaction);
+    target->Label.setValue("Committed");
+    ASSERT_TRUE(document()->hasPendingTransaction());
+    EXPECT_TRUE(App::GetApplication().commitTransaction(commitId));
+    EXPECT_FALSE(document()->hasPendingTransaction());
+    EXPECT_EQ(document()->getAvailableUndos(), 1);
+    EXPECT_STREQ(target->Label.getValue(), "Committed");
+
+    ASSERT_TRUE(document()->undo());
+    EXPECT_STREQ(target->Label.getValue(), "Before");
+    ASSERT_TRUE(document()->redo());
+    EXPECT_STREQ(target->Label.getValue(), "Committed");
+    document()->clearUndos();
+
+    const auto abortId = App::GetApplication().setActiveTransaction(
+        App::TransactionName {.name = "coordinator application abort", .temporary = false});
+    ASSERT_NE(abortId, App::NullTransaction);
+    target->Label.setValue("Aborted");
+    ASSERT_TRUE(document()->hasPendingTransaction());
+    EXPECT_TRUE(App::GetApplication().abortTransaction(abortId));
+    EXPECT_FALSE(document()->hasPendingTransaction());
+    EXPECT_EQ(document()->getAvailableUndos(), 0);
+    EXPECT_STREQ(target->Label.getValue(), "Committed");
+}
+
 TEST(DocumentCollaborationBoundaryInventory, everyPropertyMutatorIsBracketedRejectedOrReviewed)
 {
     const auto repository = locateRepository();

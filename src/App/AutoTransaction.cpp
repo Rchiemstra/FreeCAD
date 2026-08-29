@@ -212,10 +212,10 @@ bool Application::closeActiveTransaction(TransactionCloseMode mode, int id)
 
     for (auto& doc : docsToPoke) {
         if (abort) {
-            doc->_abortTransaction();
+            doc->abortApplicationTransactionThroughCoordinator();
         }
         else {
-            doc->_commitTransaction();
+            static_cast<void>(doc->commitApplicationTransactionThroughCoordinator());
         }
     }
     currentlyClosingID = 0;

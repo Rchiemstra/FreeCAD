@@ -24,8 +24,11 @@ static_assert(!std::is_constructible_v<DocumentCommitResult, DocumentObject*>);
 
 using OpenTransactionByName = int (Document::*)(TransactionName, int);
 using OpenTransactionByString = int (Document::*)(std::string, int);
+using SetActiveTransaction = int (Document::*)(TransactionName, int);
 using CommitTransaction = void (Document::*)();
 using AbortTransaction = void (Document::*)() const;
+using HistoryTransaction = bool (Document::*)(int);
+using ClearTransactionHistory = void (Document::*)();
 
 static_assert(std::is_same_v<
               decltype(static_cast<OpenTransactionByName>(&Document::openTransaction)),
@@ -35,6 +38,10 @@ static_assert(std::is_same_v<
               OpenTransactionByString>);
 static_assert(std::is_same_v<decltype(&Document::commitTransaction), CommitTransaction>);
 static_assert(std::is_same_v<decltype(&Document::abortTransaction), AbortTransaction>);
+static_assert(std::is_same_v<decltype(&Document::setActiveTransaction), SetActiveTransaction>);
+static_assert(std::is_same_v<decltype(&Document::undo), HistoryTransaction>);
+static_assert(std::is_same_v<decltype(&Document::redo), HistoryTransaction>);
+static_assert(std::is_same_v<decltype(&Document::clearUndos), ClearTransactionHistory>);
 
 TEST(DocumentCommitResultTest, exposesStableStatusNames)
 {
