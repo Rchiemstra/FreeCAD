@@ -29,6 +29,7 @@ add_executable(App_tests_run
         ExpressionParser.cpp
         GeometryArchive.cpp
         GeometryJobManager.cpp
+        GeometryProcessBackend.cpp
         ElementMap.cpp
         ElementNamingUtils.cpp
         IndexedName.cpp
@@ -51,6 +52,19 @@ add_executable(App_tests_run
 
 target_compile_definitions(App_tests_run PRIVATE DATADIR="${CMAKE_SOURCE_DIR}/data")
 target_compile_definitions(App_tests_run PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+
+add_executable(GeometryProcessTestWorker GeometryProcessTestWorker.cpp)
+if(WIN32)
+    set_target_properties(GeometryProcessTestWorker PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+else()
+    set_target_properties(GeometryProcessTestWorker PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+endif()
+add_dependencies(App_tests_run GeometryProcessTestWorker FreeCADMainCmd)
+target_compile_definitions(App_tests_run PRIVATE
+    GEOMETRY_PROCESS_TEST_WORKER_PATH="$<TARGET_FILE:GeometryProcessTestWorker>"
+    GEOMETRY_INSTALLED_WORKER_PATH="$<TARGET_FILE:FreeCADMainCmd>")
 
 target_link_libraries(App_tests_run PRIVATE
     GTest::gmock_main

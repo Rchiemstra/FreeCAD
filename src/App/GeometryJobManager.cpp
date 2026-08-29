@@ -2,6 +2,9 @@
 
 #include "GeometryJobManager.h"
 
+#include "GeometryArchive.h"
+#include "GeometryProcessBackend.h"
+
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -87,6 +90,7 @@ public:
         bool cancellationRequested {false};
         std::string diagnostic;
         std::optional<GeometryJobResult> result;
+        std::optional<GeometryArchive> inputArchive;
     };
 
     Impl(const std::size_t requestedActiveCapacity,
@@ -124,7 +128,8 @@ public:
         }
     }
 
-    GeometryJobId submit(GeometryJobRequest request)
+    GeometryJobId submit(GeometryJobRequest request,
+                         std::optional<GeometryArchive> inputArchive = std::nullopt)
     {
         validateRequest(request);
         const auto now = std::chrono::steady_clock::now();
@@ -142,6 +147,7 @@ public:
             Job job;
             job.id = id;
             job.request = std::move(request);
+            job.inputArchive = std::move(inputArchive);
             makeTerminal(job,
                          GeometryJobState::DeadlineExceeded,
                          "geometry job deadline elapsed before admission");
@@ -178,6 +184,7 @@ public:
         Job job;
         job.id = id;
         job.request = std::move(request);
+        job.inputArchive = std::move(inputArchive);
         const auto [position, inserted] = jobs.emplace(id, std::move(job));
         if (!inserted) {
             throw std::runtime_error("duplicate geometry job identity");
@@ -247,22 +254,31 @@ public:
         return result;
     }
 
-    std::optional<GeometryJobDispatch> takeNext()
+    std::optional<GeometryJobDispatch> takeNext(GeometryArchive* inputArchive = nullptr)
     {
         std::lock_guard lock(mutex);
         if (activeJobs >= activeCapacityValue) {
             return std::nullopt;
         }
         expireDeadlines(std::chrono::steady_clock::now());
-        while (!queue.empty()) {
-            const GeometryJobId id = queue.front();
-            queue.pop_front();
+        for (auto queued = queue.begin(); queued != queue.end();) {
+            const GeometryJobId id = *queued;
             const auto found = jobs.find(id);
             if (found == jobs.end() || found->second.state != GeometryJobState::Queued) {
+                queued = queue.erase(queued);
                 continue;
             }
+            if (inputArchive && !found->second.inputArchive) {
+                ++queued;
+                continue;
+            }
+            queue.erase(queued);
             found->second.state = GeometryJobState::Running;
             ++activeJobs;
+            if (inputArchive) {
+                *inputArchive = std::move(*found->second.inputArchive);
+                found->second.inputArchive.reset();
+            }
             return GeometryJobDispatch {id, found->second.request};
         }
         return std::nullopt;
@@ -462,6 +478,12 @@ GeometryJobId GeometryJobManager::submit(GeometryJobRequest request)
     return _impl->submit(std::move(request));
 }
 
+GeometryJobId GeometryJobManager::submit(GeometryJobRequest request,
+                                         GeometryArchive inputArchive)
+{
+    return _impl->submit(std::move(request), std::move(inputArchive));
+}
+
 bool GeometryJobManager::cancel(const GeometryJobId id)
 {
     return _impl->cancel(id);
@@ -502,6 +524,12 @@ std::optional<GeometryJobDispatch> GeometryJobManager::takeNext()
     return _impl->takeNext();
 }
 
+std::optional<GeometryJobDispatch> GeometryJobManager::takeNext(
+    GeometryArchive& inputArchive)
+{
+    return _impl->takeNext(&inputArchive);
+}
+
 bool GeometryJobManager::reportProgress(const GeometryJobId id,
                                         GeometryJobProgress progress)
 {
@@ -511,4 +539,14 @@ bool GeometryJobManager::reportProgress(const GeometryJobId id,
 bool GeometryJobManager::finish(GeometryJobResult result)
 {
     return _impl->finish(std::move(result));
+}
+
+void GeometryJobManager::startProcessBackend(
+    Internal::GeometryProcessBackendOptions options)
+{
+    if (_processBackend) {
+        throw std::logic_error("geometry process backend is already running");
+    }
+    _processBackend = std::make_unique<Internal::GeometryJobProcessBackend>(
+        *this, std::move(options));
 }

@@ -148,6 +148,8 @@
 #include "Part.h"
 #include "GeoFeaturePy.h"
 #include "GeometryJobManager.h"
+#include "GeometryProcessBackend.h"
+#include "GeometryWorkerMain.h"
 #include "Placement.h"
 #include "ProgramOptionsUtilities.h"
 #include "Property.h"
@@ -493,6 +495,10 @@ Application::Application(std::map<std::string,std::string> &mConfig)
 
     _preparedEditExecutor = std::make_unique<PreparedEditExecutor>();
     _geometryJobManager = std::make_unique<GeometryJobManager>();
+    if (!Internal::geometryWorkerRequested()) {
+        _geometryJobManager->startProcessBackend(
+            Internal::GeometryProcessBackendOptions {});
+    }
     _stopRecomputeThread = false;
     _recomputeThread = std::thread(&Application::recomputeWorker, this);
 
