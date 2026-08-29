@@ -24,6 +24,48 @@
 namespace
 {
 
+constexpr App::PreparedEditExecutionId IsolatedExecutionBit =
+    App::PreparedEditExecutionId {1} << 63;
+
+App::PreparedEditExecutionId publicGeometryExecutionId(const App::GeometryJobId id)
+{
+    if (id == 0 || (id & IsolatedExecutionBit) != 0) {
+        throw std::overflow_error("geometry job identity exceeds collaboration range");
+    }
+    return id | IsolatedExecutionBit;
+}
+
+bool isGeometryExecution(const App::PreparedEditExecutionId id) noexcept
+{
+    return (id & IsolatedExecutionBit) != 0;
+}
+
+App::GeometryJobId geometryJobId(const App::PreparedEditExecutionId id) noexcept
+{
+    return id & ~IsolatedExecutionBit;
+}
+
+App::PreparedEditExecutionStatus preparationStatus(const App::GeometryJobState state)
+{
+    switch (state) {
+        case App::GeometryJobState::Queued:
+            return App::PreparedEditExecutionStatus::Queued;
+        case App::GeometryJobState::Running:
+        case App::GeometryJobState::Cancelling:
+            return App::PreparedEditExecutionStatus::Running;
+        case App::GeometryJobState::Completed:
+            return App::PreparedEditExecutionStatus::Completed;
+        case App::GeometryJobState::Cancelled:
+            return App::PreparedEditExecutionStatus::Cancelled;
+        case App::GeometryJobState::DeadlineExceeded:
+        case App::GeometryJobState::WorkerCrashed:
+        case App::GeometryJobState::WorkerOutOfMemory:
+        case App::GeometryJobState::Failed:
+            return App::PreparedEditExecutionStatus::Failed;
+    }
+    return App::PreparedEditExecutionStatus::Failed;
+}
+
 template<typename Result, typename Callable>
 Result invokeOnDocumentThread(Callable&& callable)
 {
@@ -210,9 +252,14 @@ DocumentCollaborationService::~DocumentCollaborationService()
         _pendingDetachedPreparations.clear();
     }
 
-    auto& executor = GetApplication().preparedEditExecutor();
     for (const auto executionId : preparationIds) {
-        static_cast<void>(executor.abandon(executionId));
+        if (isGeometryExecution(executionId)) {
+            static_cast<void>(GetApplication().geometryJobManager().cancel(
+                geometryJobId(executionId)));
+        }
+        else {
+            static_cast<void>(GetApplication().preparedEditExecutor().abandon(executionId));
+        }
     }
 }
 
@@ -390,7 +437,13 @@ bool DocumentCollaborationService::cancelEdit(const std::string& sessionId, std:
         }
     }
     for (const auto executionId : preparationIds) {
-        static_cast<void>(GetApplication().preparedEditExecutor().cancel(executionId));
+        if (isGeometryExecution(executionId)) {
+            static_cast<void>(GetApplication().geometryJobManager().cancel(
+                geometryJobId(executionId)));
+        }
+        else {
+            static_cast<void>(GetApplication().preparedEditExecutor().cancel(executionId));
+        }
     }
     return true;
 }
@@ -440,9 +493,14 @@ DocumentCollaborationService::cancelAllForLifecycle(std::string reason)
 void DocumentCollaborationService::abandonLifecyclePreparations(
     const std::vector<PreparedEditExecutionId>& executionIds) noexcept
 {
-    auto& executor = GetApplication().preparedEditExecutor();
     for (const auto executionId : executionIds) {
-        static_cast<void>(executor.abandon(executionId));
+        if (isGeometryExecution(executionId)) {
+            static_cast<void>(GetApplication().geometryJobManager().cancel(
+                geometryJobId(executionId)));
+        }
+        else {
+            static_cast<void>(GetApplication().preparedEditExecutor().abandon(executionId));
+        }
     }
 }
 
@@ -742,6 +800,7 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
 
     PendingDetachedPreparation pending;
     CollaborativeOperationPreparation::DetachedTask detachedTask;
+    std::unique_ptr<CollaborativeOperationPreparation::IsolatedTask> isolatedTask;
     PreparationPolicy preparationPolicy {PreparationPolicy::Inline};
     bool lifecyclePinned = false;
     BOOST_SCOPE_EXIT_ALL(&) {
@@ -774,7 +833,13 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
             throw Base::RuntimeError(
                 "operation does not provide detached preparation");
         }
-        if (preparation.policy != PreparationPolicy::DetachedInProcess) {
+        if (preparation.policy != PreparationPolicy::DetachedInProcess
+            && preparation.policy != PreparationPolicy::IsolatedProcess) {
+            throw Base::RuntimeError(
+                "detached preparation returned an invalid execution policy");
+        }
+        if (preparation.policy == PreparationPolicy::IsolatedProcess
+            && !preparation.isolatedTask) {
             throw Base::RuntimeError(
                 "isolated geometry preparation requires a GeometryJobManager adapter");
         }
@@ -821,12 +886,26 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         pending.writeSet = std::move(canonical.writeSet);
         pending.publicationEffects = std::move(canonical.publicationEffects);
         detachedTask = std::move(preparation.detachedTask);
+        isolatedTask = std::move(preparation.isolatedTask);
         preparationPolicy = preparation.policy;
+        if (isolatedTask) {
+            pending.backend = PendingDetachedPreparation::Backend::IsolatedProcess;
+            pending.isolatedResultDecoder = isolatedTask->decodeResult;
+        }
     }
 
-    // Never acquire the executor queue while the document commit mutex is held.
-    auto& executor = GetApplication().preparedEditExecutor();
-    const auto executionId = executor.submit(std::move(detachedTask), preparationPolicy);
+    // Never acquire either execution queue while the document commit mutex is held.
+    PreparedEditExecutionId executionId = 0;
+    if (isolatedTask) {
+        const auto jobId = GetApplication().geometryJobManager().submit(
+            std::move(isolatedTask->request),
+            std::move(isolatedTask->inputArchive));
+        executionId = publicGeometryExecutionId(jobId);
+    }
+    else {
+        executionId = GetApplication().preparedEditExecutor().submit(
+            std::move(detachedTask), preparationPolicy);
+    }
     if (const auto hook = _postSubmitTestHook.load(std::memory_order_acquire)) {
         hook();
     }
@@ -839,13 +918,25 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         }
     }
     catch (...) {
-        static_cast<void>(executor.abandon(executionId));
+        if (isGeometryExecution(executionId)) {
+            static_cast<void>(GetApplication().geometryJobManager().cancel(
+                geometryJobId(executionId)));
+        }
+        else {
+            static_cast<void>(GetApplication().preparedEditExecutor().abandon(executionId));
+        }
         throw;
     }
 
     const auto currentSession = sessionStatus(sessionId);
     if (!currentSession || currentSession->status() != EditSessionStatus::Active) {
-        static_cast<void>(executor.cancel(executionId));
+        if (isGeometryExecution(executionId)) {
+            static_cast<void>(GetApplication().geometryJobManager().cancel(
+                geometryJobId(executionId)));
+        }
+        else {
+            static_cast<void>(GetApplication().preparedEditExecutor().cancel(executionId));
+        }
     }
     return executionId;
 }
@@ -879,7 +970,17 @@ DocumentCollaborationService::preparedEditStatus(
             return std::nullopt;
         }
     }
-    return GetApplication().preparedEditExecutor().status(executionId);
+    if (!isGeometryExecution(executionId)) {
+        return GetApplication().preparedEditExecutor().status(executionId);
+    }
+    const auto geometryStatus = GetApplication().geometryJobManager().status(
+        geometryJobId(executionId));
+    if (!geometryStatus) {
+        return std::nullopt;
+    }
+    return PreparedEditExecutionSnapshot {executionId,
+                                          preparationStatus(geometryStatus->state),
+                                          geometryStatus->diagnostic};
 }
 
 bool DocumentCollaborationService::cancelPreparedEdit(
@@ -909,6 +1010,9 @@ bool DocumentCollaborationService::cancelPreparedEdit(
         if (!_pendingDetachedPreparations.contains(executionId)) {
             return false;
         }
+    }
+    if (isGeometryExecution(executionId)) {
+        return GetApplication().geometryJobManager().cancel(geometryJobId(executionId));
     }
     return GetApplication().preparedEditExecutor().cancel(executionId);
 }
@@ -961,6 +1065,7 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
 
     PendingDetachedPreparation pending;
     std::optional<PreparedEditExecutionResult> terminal;
+    std::optional<GeometryJobResult> geometryTerminal;
     {
         std::lock_guard lock(_preparationMutex);
         const auto found = _pendingDetachedPreparations.find(executionId);
@@ -977,8 +1082,14 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
         found->second.collecting = true;
     }
 
-    // Executor locks and the document-service mutex must never be nested.
-    terminal = GetApplication().preparedEditExecutor().takeResult(executionId);
+    // Execution-queue locks and the document-service mutex must never be nested.
+    if (isGeometryExecution(executionId)) {
+        geometryTerminal = GetApplication().geometryJobManager().takeResult(
+            geometryJobId(executionId));
+    }
+    else {
+        terminal = GetApplication().preparedEditExecutor().takeResult(executionId);
+    }
     if (const auto hook = _postTakeResultTestHook.load(std::memory_order_acquire)) {
         hook();
     }
@@ -988,12 +1099,56 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
         if (found == _pendingDetachedPreparations.end()) {
             return std::nullopt;
         }
-        if (!terminal) {
+        if (!terminal && !geometryTerminal) {
             found->second.collecting = false;
             return std::nullopt;
         }
         pending = std::move(found->second);
         _pendingDetachedPreparations.erase(found);
+    }
+
+    if (geometryTerminal) {
+        terminal.emplace();
+        terminal->id = executionId;
+        terminal->status = preparationStatus(geometryTerminal->state);
+        terminal->diagnostic = geometryTerminal->diagnostic;
+        if (terminal->status == PreparedEditExecutionStatus::Completed) {
+            try {
+                if (pending.backend
+                        != PendingDetachedPreparation::Backend::IsolatedProcess
+                    || !pending.isolatedResultDecoder) {
+                    throw std::runtime_error(
+                        "isolated geometry result has no trusted parent decoder");
+                }
+                GeometryArchiveExpectation expectation;
+                expectation.kind = GeometryArchiveKind::Result;
+                expectation.jobId = geometryTerminal->id;
+                expectation.operationType = geometryTerminal->operationType;
+                expectation.buildFingerprint = geometryTerminal->buildFingerprint;
+                expectation.inputDigest = geometryTerminal->inputDigest;
+                auto decoded = GeometryArchiveCodec::readValidated(
+                    geometryTerminal->resultArtifact, expectation);
+                if (!decoded.success()) {
+                    throw std::runtime_error(decoded.error.code + ": "
+                                             + decoded.error.message);
+                }
+                if (decoded.archive->archiveDigest != geometryTerminal->resultDigest) {
+                    throw std::runtime_error(
+                        "isolated geometry result publication digest mismatch");
+                }
+                terminal->operation = pending.isolatedResultDecoder(*decoded.archive);
+            }
+            catch (const std::exception& error) {
+                terminal->status = PreparedEditExecutionStatus::Failed;
+                terminal->diagnostic =
+                    std::string("isolated geometry result rejected: ") + error.what();
+            }
+            catch (...) {
+                terminal->status = PreparedEditExecutionStatus::Failed;
+                terminal->diagnostic =
+                    "isolated geometry result rejected with an unknown exception";
+            }
+        }
     }
 
     CollaborationPreparedEditResult result;

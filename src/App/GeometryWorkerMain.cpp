@@ -3,6 +3,9 @@
 #include "GeometryWorkerMain.h"
 
 #include "GeometryArchive.h"
+#include "GeometryWorkerOperationRegistry.h"
+
+#include <Base/Interpreter.h>
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -186,6 +189,35 @@ private:
     std::thread thread;
 };
 
+class CancellationMonitor
+{
+public:
+    explicit CancellationMonitor(std::filesystem::path path)
+        : cancelPath(std::move(path))
+        , thread([this](const std::stop_token monitorStop) {
+            std::error_code error;
+            while (!monitorStop.stop_requested()) {
+                if (std::filesystem::is_regular_file(cancelPath, error)) {
+                    operationStop.request_stop();
+                    return;
+                }
+                error.clear();
+                std::this_thread::sleep_for(10ms);
+            }
+        })
+    {}
+
+    [[nodiscard]] std::stop_token token() const noexcept
+    {
+        return operationStop.get_token();
+    }
+
+private:
+    std::filesystem::path cancelPath;
+    std::stop_source operationStop;
+    std::jthread thread;
+};
+
 }  // namespace
 
 bool App::Internal::geometryWorkerRequested() noexcept
@@ -300,13 +332,27 @@ int App::Internal::runGeometryWorkerMain() noexcept
             return 12;
         }
 
-        // CC-WP08 supplies a transport probe only. Native OCC adapters are
-        // registered explicitly by CC-WP09; unsupported operations fail closed.
-        if (operation != "FreeCAD.Internal.GeometryProbe") {
-            std::cerr << "unsupported isolated geometry operation\n";
-            return 13;
+        GeometryArchive output;
+        if (operation == "FreeCAD.Internal.GeometryProbe") {
+            output = *input.archive;
         }
-        GeometryArchive output = std::move(*input.archive);
+        else {
+            // Loading Part registers only native archive-to-archive handlers.
+            // No document is opened and no live model pointer crosses this boundary.
+            Base::Interpreter().runString("import Part");
+            auto& registry = Internal::GeometryWorkerOperationRegistry::instance();
+            if (!registry.contains(operation)) {
+                std::cerr << "unsupported isolated geometry operation\n";
+                return 13;
+            }
+            CancellationMonitor cancellation(cancelPath);
+            output = registry.execute(operation, *input.archive, cancellation.token());
+            if (cancellation.token().stop_requested()) {
+                std::cerr << "isolated geometry operation cancelled\n";
+                return 20;
+            }
+        }
+        output.metadata = input.archive->metadata;
         output.metadata.kind = GeometryArchiveKind::Result;
         output.archiveDigest.clear();
         const auto written = GeometryArchiveCodec::writeAtomic(resultPath, output);

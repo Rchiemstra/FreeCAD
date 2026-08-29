@@ -292,6 +292,12 @@ private:
 
     struct PendingDetachedPreparation
     {
+        enum class Backend
+        {
+            InProcess,
+            IsolatedProcess
+        };
+
         std::string sessionId;
         std::uint64_t adapterRegistrationId {0};
         std::string operationId;
@@ -303,6 +309,8 @@ private:
         std::vector<DocumentRevisionKey> writeSet;
         std::vector<DocumentRevisionPublicationRequest> publicationEffects;
         std::string provenance;
+        Backend backend {Backend::InProcess};
+        CollaborativeOperationPreparation::IsolatedResultDecoder isolatedResultDecoder;
         bool collecting {false};
     };
 

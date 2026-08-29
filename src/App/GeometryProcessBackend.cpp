@@ -749,7 +749,10 @@ private:
                                           GeometryJobState::Completed,
                                           completedPath,
                                           published.archiveDigest,
-                                          {}});
+                                          {},
+                                          dispatchPacket.request.operationType,
+                                          buildFingerprint,
+                                          dispatchPacket.request.inputDigest});
     }
 
     GeometryJobManager& manager;

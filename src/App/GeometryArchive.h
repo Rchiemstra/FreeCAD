@@ -3,8 +3,8 @@
 
 #include <FCGlobal.h>
 
-#include "CollaborativeOperationRegistry.h"
 #include "GeometryJobManager.h"
+#include "PreparationPolicy.h"
 
 #include <atomic>
 #include <cstddef>

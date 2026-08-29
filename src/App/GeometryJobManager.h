@@ -3,7 +3,7 @@
 
 #include <FCGlobal.h>
 
-#include "CollaborativeOperationRegistry.h"
+#include "PreparationPolicy.h"
 
 #include <chrono>
 #include <cstddef>
@@ -85,6 +85,9 @@ struct AppExport GeometryJobResult
     std::filesystem::path resultArtifact;
     std::string resultDigest;
     std::string diagnostic;
+    std::string operationType;
+    std::string buildFingerprint;
+    std::string inputDigest;
 };
 
 /** Immutable dispatch packet consumed only by the trusted process backend. */
