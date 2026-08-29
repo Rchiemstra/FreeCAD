@@ -196,6 +196,7 @@ SET(Document_CPP_SRCS
     FeaturePython.cpp
     FeatureTest.cpp
     GeoFeature.cpp
+    GeometryArchive.cpp
     GeometryJobManager.cpp
     GeoFeatureGroupExtensionPyImp.cpp
     GeoFeatureGroupExtension.cpp
@@ -265,6 +266,7 @@ SET(Document_HPP_SRCS
     FeaturePythonPyImp.inl
     FeatureTest.h
     GeoFeature.h
+    GeometryArchive.h
     GeometryJobManager.h
     GeoFeatureGroupExtension.h
     ImagePlane.h
