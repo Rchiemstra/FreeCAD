@@ -204,6 +204,20 @@ int DocumentCommitCoordinator::openCompatibilityTransaction(
     return _document.openCompatibilityTransactionImpl(std::move(name), transactionId);
 }
 
+int DocumentCommitCoordinator::openMutationTransaction(
+    std::string name,
+    const int transactionId)
+{
+    return _document._openTransaction(std::move(name), transactionId);
+}
+
+int DocumentCommitCoordinator::setActiveCompatibilityTransaction(
+    TransactionName name,
+    const int transactionId)
+{
+    return _document.setActiveCompatibilityTransactionImpl(std::move(name), transactionId);
+}
+
 void DocumentCommitCoordinator::commitCompatibilityTransaction()
 {
     _document.commitCompatibilityTransactionImpl();
@@ -212,6 +226,31 @@ void DocumentCommitCoordinator::commitCompatibilityTransaction()
 void DocumentCommitCoordinator::abortCompatibilityTransaction()
 {
     _document.abortCompatibilityTransactionImpl();
+}
+
+bool DocumentCommitCoordinator::undoCompatibilityTransaction(const int transactionId)
+{
+    return _document.undoCompatibilityTransactionImpl(transactionId);
+}
+
+bool DocumentCommitCoordinator::redoCompatibilityTransaction(const int transactionId)
+{
+    return _document.redoCompatibilityTransactionImpl(transactionId);
+}
+
+void DocumentCommitCoordinator::clearCompatibilityTransactionHistory()
+{
+    _document.clearCompatibilityTransactionHistoryImpl();
+}
+
+bool DocumentCommitCoordinator::commitApplicationTransaction()
+{
+    return _document._commitTransaction();
+}
+
+void DocumentCommitCoordinator::abortApplicationTransaction()
+{
+    _document._abortTransaction();
 }
 
 int DocumentCommitCoordinator::openNativeCommitTransaction(std::string name)

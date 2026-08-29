@@ -2181,6 +2181,11 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    return collaborationService().undoCompatibilityTransaction(id);
+}
+
+bool Document::undoCompatibilityTransactionImpl(const int id)
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2191,7 +2196,7 @@ bool Document::undo(const int id)
         }
         if (it->second != d->activeUndoTransaction) {
             while (!mUndoTransactions.empty() && mUndoTransactions.back() != it->second) {
-                undo(0);
+                undoCompatibilityTransactionImpl(0);
             }
         }
     }
@@ -2239,6 +2244,11 @@ bool Document::undo(const int id)
 
 bool Document::redo(const int id)
 {
+    return collaborationService().redoCompatibilityTransaction(id);
+}
+
+bool Document::redoCompatibilityTransactionImpl(const int id)
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2248,7 +2258,7 @@ bool Document::redo(const int id)
             return false;
         }
         while (!mRedoTransactions.empty() && mRedoTransactions.back() != it->second) {
-            redo(0);
+            redoCompatibilityTransactionImpl(0);
         }
     }
 
@@ -2311,7 +2321,9 @@ void Document::changePropertyOfObject(TransactionalObject* obj,
             if (d->bookedTransaction == NullTransaction) {
                 d->bookedTransaction = GetApplication().getGlobalTransaction();
             } else {
-                _openTransaction(GetApplication().getTransactionName(d->bookedTransaction), d->bookedTransaction);
+                static_cast<void>(collaborationService().openMutationTransaction(
+                    GetApplication().getTransactionName(d->bookedTransaction),
+                    d->bookedTransaction));
             }
         }
     }
@@ -2478,7 +2490,9 @@ int Document::_openTransaction(std::string name, int id)
     if (transactionInitiator && transactionInitiator != this && !transactionInitiator->hasPendingTransaction()) {
         std::string aname = std::format("-> {}", d->activeUndoTransaction->Name);
         FC_LOG("auto transaction " << getName() << " -> " << transactionInitiator->getName());
-        transactionInitiator->_openTransaction(aname, id);
+        static_cast<void>(transactionInitiator->collaborationService().openMutationTransaction(
+            std::move(aname),
+            id));
     }
     return id;
 }
@@ -2497,6 +2511,11 @@ void Document::renameTransaction(const std::string& name, const int id) const
     }
 }
 int Document::setActiveTransaction(TransactionName name, int tid)
+{
+    return collaborationService().setActiveCompatibilityTransaction(std::move(name), tid);
+}
+
+int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int tid)
 {
     ensureCollaborationTransactionControlAllowed();
     // Probably a group transaction situation
@@ -2608,7 +2627,8 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
                 }
             }
             if (!ignore) {
-                _openTransaction(name, d->bookedTransaction);
+                static_cast<void>(
+                    collaborationService().openMutationTransaction(name, d->bookedTransaction));
             }
             return;
         }
@@ -2621,7 +2641,7 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
     std::list<Transaction*>::iterator it;
     for (it = mUndoTransactions.begin(); it != mUndoTransactions.end(); ++it) {
         if ((*it)->hasObject(pcDelObj)) {
-            _openTransaction("Delete");
+            static_cast<void>(collaborationService().openMutationTransaction("Delete", 0));
             break;
         }
     }
@@ -3141,6 +3161,11 @@ void Document::clearDocument() // NOLINT
 
 void Document::clearUndos()
 {
+    collaborationService().clearCompatibilityTransactionHistory();
+}
+
+void Document::clearCompatibilityTransactionHistoryImpl()
+{
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear undos while transacting");
@@ -3172,6 +3197,16 @@ void Document::clearUndos()
     _clearRedos();
     d->transactionFileChanges.clear();
     d->collaborationTransactionPropertyStatusStates.clear();
+}
+
+bool Document::commitApplicationTransactionThroughCoordinator()
+{
+    return collaborationService().commitApplicationTransaction();
+}
+
+void Document::abortApplicationTransactionThroughCoordinator()
+{
+    collaborationService().abortApplicationTransaction();
 }
 
 int Document::getAvailableUndos(const int id) const

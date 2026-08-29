@@ -1072,6 +1072,7 @@ TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandle
 TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundary)
 {
     auto prepared = prepare("set-label", "After");
+    const auto undosBefore = _document->getAvailableUndos();
     const auto modelKey = DocumentRevisionKey::objectModel("Target");
     const auto before = _document->collaborationRevisions().current(modelKey);
     bool observerRan = false;
@@ -1087,6 +1088,8 @@ TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundar
     EXPECT_TRUE(observerRan);
     EXPECT_EQ(_target->Label.getStrValue(), "After");
     EXPECT_EQ(_document->collaborationRevisions().current(modelKey), before + 1);
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore + 1)
+        << "the coordinator mutation and its derived recompute share one user undo entry";
 }
 
 TEST_F(DocumentCollaborationServiceTest,

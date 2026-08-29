@@ -78,8 +78,15 @@ private:
 
     [[nodiscard]] Document& document() const noexcept;
     [[nodiscard]] int openCompatibilityTransaction(TransactionName name, int transactionId);
+    [[nodiscard]] int openMutationTransaction(std::string name, int transactionId);
+    [[nodiscard]] int setActiveCompatibilityTransaction(TransactionName name, int transactionId);
     void commitCompatibilityTransaction();
     void abortCompatibilityTransaction();
+    [[nodiscard]] bool undoCompatibilityTransaction(int transactionId);
+    [[nodiscard]] bool redoCompatibilityTransaction(int transactionId);
+    void clearCompatibilityTransactionHistory();
+    [[nodiscard]] bool commitApplicationTransaction();
+    void abortApplicationTransaction();
     [[nodiscard]] int openNativeCommitTransaction(std::string name);
     [[nodiscard]] bool commitNativeCommitTransaction();
     [[nodiscard]] CollaborationRollbackResult rollbackNativeCommitTransaction(

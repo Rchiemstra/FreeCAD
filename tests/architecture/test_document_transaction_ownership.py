@@ -6,12 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src"
-INVENTORY_PATH = REPO_ROOT / "doc" / "document-collaboration-ingress-inventory.md"
 
 CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
 EXCLUDED_PARTS = frozenset({"test", "tests", "build", "generated", "autogen", "cmakefiles"})
@@ -39,6 +38,9 @@ DOCUMENT_SOURCE = "src/App/Document.cpp"
 COORDINATOR_SOURCE = "src/App/DocumentCommitCoordinator.cpp"
 AUTO_TRANSACTION_SOURCE = "src/App/AutoTransaction.cpp"
 COLLABORATION_SERVICE_SOURCE = "src/App/DocumentCollaborationService.cpp"
+DOCUMENT_PY_SOURCE = "src/App/DocumentPyImp.cpp"
+APPLICATION_PY_SOURCE = "src/App/ApplicationPy.cpp"
+PROPERTY_STANDARD_SOURCE = "src/App/PropertyStandard.cpp"
 
 
 @dataclass(frozen=True)
@@ -181,21 +183,10 @@ def _ownership_violations(sources: Mapping[str, str]) -> list[str]:
                 # Document.cpp contains the primitive definitions and their internal mechanics.
                 continue
             elif path == COORDINATOR_SOURCE:
-                if occurrence.declaration or occurrence.symbol not in COLLABORATION_CONTROLS:
+                if occurrence.declaration:
                     violations.append(
                         occurrence.diagnostic(
-                            "the coordinator may invoke collaboration commit/rollback primitives only"
-                        )
-                    )
-            elif path == AUTO_TRANSACTION_SOURCE:
-                if occurrence.declaration or occurrence.symbol not in {
-                    "_commitTransaction",
-                    "_abortTransaction",
-                }:
-                    violations.append(
-                        occurrence.diagnostic(
-                            "AutoTransaction's temporary CC-WP03 classification covers _commitTransaction "
-                            "and _abortTransaction only"
+                            "the coordinator may invoke private native controls but may not declare them"
                         )
                     )
             else:
@@ -260,7 +251,12 @@ def _body_for(
 ) -> str:
     candidates = _function_bodies(source, qualified_name)
     if signature_contains is not None:
-        candidates = [item for item in candidates if signature_contains in item[0]]
+        normalized_fragment = re.sub(r"\s+", "", signature_contains)
+        candidates = [
+            item
+            for item in candidates
+            if normalized_fragment in re.sub(r"\s+", "", item[0])
+        ]
     assert len(candidates) == 1, (
         f"expected one definition of {qualified_name!r}"
         + (f" containing {signature_contains!r}" if signature_contains else "")
@@ -275,13 +271,42 @@ def _assert_body_calls(body: str, expression: str, owner: str) -> None:
     assert compact_expression in compact_body, f"{owner} must call {expression}"
 
 
-def _inventory_rows() -> Iterable[list[str]]:
-    for line in INVENTORY_PATH.read_text(encoding="utf-8").splitlines():
-        if not line.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) == 9:
-            yield cells
+def _assert_no_internal_transaction_route(body: str, owner: str) -> None:
+    forbidden = (
+        "collaborationService(",
+        "_coordinator.",
+        "CompatibilityTransaction",
+        "ApplicationTransactionThroughCoordinator",
+    )
+    compact_body = re.sub(r"\s+", "", body)
+    leaked = [token for token in forbidden if token in compact_body]
+    leaked.extend(
+        occurrence.symbol
+        for occurrence in _control_occurrences(f"<{owner}>", body)
+    )
+    assert not leaked, f"{owner} bypasses its public facade via {sorted(set(leaked))}"
+
+
+def _assert_exact_public_transaction_calls(
+    body: str,
+    expected: set[str],
+    owner: str,
+) -> None:
+    public_facades = (
+        "openTransaction",
+        "commitTransaction",
+        "abortTransaction",
+        "setActiveTransaction",
+        "closeActiveTransaction",
+        "undo",
+        "redo",
+        "clearUndos",
+    )
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(" + "|".join(public_facades) + r")\s*\("
+    )
+    actual = {match.group(1) for match in pattern.finditer(_suppress_cpp_non_code(body))}
+    assert actual == expected, f"{owner} public transaction calls: expected {expected}, got {actual}"
 
 
 def test_private_native_controls_have_only_classified_owners() -> None:
@@ -290,66 +315,189 @@ def test_private_native_controls_have_only_classified_owners() -> None:
 
 
 def test_collaboration_service_has_no_direct_private_control() -> None:
-    source = (REPO_ROOT / COLLABORATION_SERVICE_SOURCE).read_text(encoding="utf-8")
+    source = _read_cpp_source(REPO_ROOT / COLLABORATION_SERVICE_SOURCE)
     occurrences = _control_occurrences(COLLABORATION_SERVICE_SOURCE, source)
     assert not occurrences, "DCS private-control bypasses:\n" + "\n".join(
         occurrence.diagnostic("DCS must delegate to DCC") for occurrence in occurrences
     )
 
 
-def test_auto_transaction_exception_is_concrete_and_owned_by_cc_wp03() -> None:
-    matching_rows = [
-        cells
-        for cells in _inventory_rows()
-        if cells[1] == f"`{AUTO_TRANSACTION_SOURCE}`"
-        and "Application::closeActiveTransaction" in cells[2]
-        and cells[6] == "migrate"
-        and cells[7] == "CC-WP03"
-        and "commit transaction" in cells[3]
-        and "abort transaction" in cells[3]
-    ]
-    assert matching_rows, (
-        f"{AUTO_TRANSACTION_SOURCE} _commitTransaction/_abortTransaction must have a concrete "
-        "Application::closeActiveTransaction migration row assigned to CC-WP03"
+def test_application_close_routes_document_bridges_to_dcc_terminals() -> None:
+    auto_transaction = _read_cpp_source(REPO_ROOT / AUTO_TRANSACTION_SOURCE)
+    document = _read_cpp_source(REPO_ROOT / DOCUMENT_SOURCE)
+    dcs = _read_cpp_source(REPO_ROOT / COLLABORATION_SERVICE_SOURCE)
+    dcc = _read_cpp_source(REPO_ROOT / COORDINATOR_SOURCE)
+
+    close_body = _body_for(auto_transaction, "Application::closeActiveTransaction")
+    _assert_body_calls(
+        close_body,
+        "doc->commitApplicationTransactionThroughCoordinator()",
+        "Application::closeActiveTransaction",
     )
+    _assert_body_calls(
+        close_body,
+        "doc->abortApplicationTransactionThroughCoordinator()",
+        "Application::closeActiveTransaction",
+    )
+
+    application_routes = (
+        ("commit", "_commitTransaction("),
+        ("abort", "_abortTransaction("),
+    )
+    for operation, terminal_call in application_routes:
+        bridge = f"{operation}ApplicationTransactionThroughCoordinator"
+        dcs_method = f"{operation}ApplicationTransaction"
+        _assert_body_calls(
+            _body_for(document, f"Document::{bridge}"),
+            f"collaborationService().{dcs_method}(",
+            f"Document::{bridge}",
+        )
+        _assert_body_calls(
+            _body_for(dcs, f"DocumentCollaborationService::{dcs_method}"),
+            f"_coordinator.{dcs_method}(",
+            f"DocumentCollaborationService::{dcs_method}",
+        )
+        _assert_body_calls(
+            _body_for(dcc, f"DocumentCommitCoordinator::{dcs_method}"),
+            f"_document.{terminal_call}",
+            f"DocumentCommitCoordinator::{dcs_method}",
+        )
 
 
 def test_public_compatibility_transactions_follow_dcs_to_dcc_route() -> None:
-    document = (REPO_ROOT / DOCUMENT_SOURCE).read_text(encoding="utf-8")
-    dcs = (REPO_ROOT / COLLABORATION_SERVICE_SOURCE).read_text(encoding="utf-8")
-    dcc = (REPO_ROOT / COORDINATOR_SOURCE).read_text(encoding="utf-8")
+    document = _read_cpp_source(REPO_ROOT / DOCUMENT_SOURCE)
+    dcs = _read_cpp_source(REPO_ROOT / COLLABORATION_SERVICE_SOURCE)
+    dcc = _read_cpp_source(REPO_ROOT / COORDINATOR_SOURCE)
 
-    open_body = _body_for(
-        document, "Document::openTransaction", signature_contains="TransactionName"
+    routes = (
+        (
+            "openTransaction",
+            "TransactionName",
+            "openCompatibilityTransaction",
+            "openCompatibilityTransactionImpl",
+        ),
+        (
+            "setActiveTransaction",
+            None,
+            "setActiveCompatibilityTransaction",
+            "setActiveCompatibilityTransactionImpl",
+        ),
+        (
+            "commitTransaction",
+            None,
+            "commitCompatibilityTransaction",
+            "commitCompatibilityTransactionImpl",
+        ),
+        (
+            "abortTransaction",
+            None,
+            "abortCompatibilityTransaction",
+            "abortCompatibilityTransactionImpl",
+        ),
+        (
+            "undo",
+            None,
+            "undoCompatibilityTransaction",
+            "undoCompatibilityTransactionImpl",
+        ),
+        (
+            "redo",
+            None,
+            "redoCompatibilityTransaction",
+            "redoCompatibilityTransactionImpl",
+        ),
+        (
+            "clearUndos",
+            None,
+            "clearCompatibilityTransactionHistory",
+            "clearCompatibilityTransactionHistoryImpl",
+        ),
     )
-    _assert_body_calls(
-        open_body,
-        "collaborationService().openCompatibilityTransaction(",
-        "Document::openTransaction(TransactionName)",
-    )
-    _assert_body_calls(
-        _body_for(document, "Document::commitTransaction"),
-        "collaborationService().commitCompatibilityTransaction()",
-        "Document::commitTransaction",
-    )
-    _assert_body_calls(
-        _body_for(document, "Document::abortTransaction"),
-        "collaborationService().abortCompatibilityTransaction()",
-        "Document::abortTransaction",
-    )
-
-    for operation in ("open", "commit", "abort"):
-        method = f"{operation}CompatibilityTransaction"
+    for document_method, signature, service_method, impl_method in routes:
+        owner = f"Document::{document_method}"
+        body = _body_for(document, owner, signature_contains=signature)
+        _assert_body_calls(body, f"collaborationService().{service_method}(", owner)
         _assert_body_calls(
-            _body_for(dcs, f"DocumentCollaborationService::{method}"),
-            f"_coordinator.{method}(",
-            f"DocumentCollaborationService::{method}",
+            _body_for(dcs, f"DocumentCollaborationService::{service_method}"),
+            f"_coordinator.{service_method}(",
+            f"DocumentCollaborationService::{service_method}",
         )
         _assert_body_calls(
-            _body_for(dcc, f"DocumentCommitCoordinator::{method}"),
-            f"_document.{method}Impl(",
-            f"DocumentCommitCoordinator::{method}",
+            _body_for(dcc, f"DocumentCommitCoordinator::{service_method}"),
+            f"_document.{impl_method}(",
+            f"DocumentCommitCoordinator::{service_method}",
         )
+
+
+def test_lazy_mutation_opening_routes_through_dcs_and_dcc() -> None:
+    document = _read_cpp_source(REPO_ROOT / DOCUMENT_SOURCE)
+    dcs = _read_cpp_source(REPO_ROOT / COLLABORATION_SERVICE_SOURCE)
+    dcc = _read_cpp_source(REPO_ROOT / COORDINATOR_SOURCE)
+
+    for document_method in ("_checkTransaction", "changePropertyOfObject"):
+        _assert_body_calls(
+            _body_for(document, f"Document::{document_method}"),
+            "collaborationService().openMutationTransaction(",
+            f"Document::{document_method}",
+        )
+    _assert_body_calls(
+        _body_for(dcs, "DocumentCollaborationService::openMutationTransaction"),
+        "_coordinator.openMutationTransaction(",
+        "DocumentCollaborationService::openMutationTransaction",
+    )
+    _assert_body_calls(
+        _body_for(dcc, "DocumentCommitCoordinator::openMutationTransaction"),
+        "_document._openTransaction(",
+        "DocumentCommitCoordinator::openMutationTransaction",
+    )
+    _assert_body_calls(
+        _body_for(document, "Document::_openTransaction"),
+        "transactionInitiator->collaborationService().openMutationTransaction(",
+        "Document::_openTransaction cross-document recursion",
+    )
+
+
+def test_language_bindings_and_property_string_use_public_facades_only() -> None:
+    document_py = _read_cpp_source(REPO_ROOT / DOCUMENT_PY_SOURCE)
+    application_py = _read_cpp_source(REPO_ROOT / APPLICATION_PY_SOURCE)
+    property_standard = _read_cpp_source(REPO_ROOT / PROPERTY_STANDARD_SOURCE)
+
+    for method in ("openTransaction", "commitTransaction", "abortTransaction", "undo", "redo", "clearUndos"):
+        owner = f"DocumentPy::{method}"
+        body = _body_for(document_py, owner)
+        _assert_body_calls(body, f"getDocumentPtr()->{method}(", owner)
+        _assert_exact_public_transaction_calls(body, {method}, owner)
+        _assert_no_internal_transaction_route(body, owner)
+
+    application_routes = (
+        ("sSetActiveTransaction", "GetApplication().setActiveTransaction("),
+        ("sCloseActiveTransaction", "GetApplication().closeActiveTransaction("),
+    )
+    for method, expression in application_routes:
+        owner = f"ApplicationPy::{method}"
+        body = _body_for(application_py, owner)
+        _assert_body_calls(body, expression, owner)
+        _assert_exact_public_transaction_calls(
+            body,
+            {"setActiveTransaction" if method == "sSetActiveTransaction" else "closeActiveTransaction"},
+            owner,
+        )
+        _assert_no_internal_transaction_route(body, owner)
+
+    property_owner = "PropertyString::setValue(const char*)"
+    property_body = _body_for(
+        property_standard,
+        "PropertyString::setValue",
+        signature_contains="const char*",
+    )
+    _assert_body_calls(property_body, "obj->getDocument()->openTransaction(", property_owner)
+    _assert_body_calls(property_body, "obj->getDocument()->commitTransaction(", property_owner)
+    _assert_exact_public_transaction_calls(
+        property_body,
+        {"openTransaction", "commitTransaction"},
+        property_owner,
+    )
+    _assert_no_internal_transaction_route(property_body, property_owner)
 
 
 def test_scanner_rejects_unclassified_private_control() -> None:
@@ -387,9 +535,12 @@ def test_scanner_ignores_comments_and_literals() -> None:
     assert not _ownership_violations({"src/Mod/Example/Inert.cpp": source})
 
 
-def test_scanner_rejects_widening_auto_transaction_exception() -> None:
+def test_scanner_rejects_private_control_in_auto_transaction() -> None:
     violations = _ownership_violations(
         {AUTO_TRANSACTION_SOURCE: 'void widen(Document& doc) { doc._openTransaction("bad"); }'}
     )
     assert len(violations) == 1
-    assert "covers _commitTransaction and _abortTransaction only" in violations[0]
+    assert violations[0].startswith(
+        f"{AUTO_TRANSACTION_SOURCE}:1: _openTransaction: unclassified private native "
+        "transaction control outside the sole-owner boundary"
+    )

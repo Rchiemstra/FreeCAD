@@ -1951,8 +1951,14 @@ private:
     takeCollaborationObservedStructuralEffects();
     void ensureCollaborationTransactionControlAllowed() const;
     [[nodiscard]] int openCompatibilityTransactionImpl(TransactionName name, int tid);
+    [[nodiscard]] int setActiveCompatibilityTransactionImpl(TransactionName name, int tid);
     void commitCompatibilityTransactionImpl();
     void abortCompatibilityTransactionImpl() const;
+    [[nodiscard]] bool undoCompatibilityTransactionImpl(int id);
+    [[nodiscard]] bool redoCompatibilityTransactionImpl(int id);
+    void clearCompatibilityTransactionHistoryImpl();
+    [[nodiscard]] bool commitApplicationTransactionThroughCoordinator();
+    void abortApplicationTransactionThroughCoordinator();
     void lockTransactionInternal();
     void unlockTransactionInternal();
     int openCollaborationCommitTransaction(std::string name);
