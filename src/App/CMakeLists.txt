@@ -166,6 +166,7 @@ SET(Document_CPP_SRCS
     DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
+    DocumentRecomputeCoordinator.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
     MutationClassification.cpp
@@ -243,6 +244,7 @@ SET(Document_HPP_SRCS
     DocumentFileWriter.h
     DocumentCollaborationService.h
     DocumentCommitCoordinator.h
+    DocumentRecomputeCoordinator.h
     DocumentRevisionIndex.h
     EditSession.h
     MutationClassification.h

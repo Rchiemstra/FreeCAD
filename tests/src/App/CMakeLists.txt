@@ -22,6 +22,7 @@ add_executable(App_tests_run
         DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
         DocumentPropertyRevision.cpp
+        DocumentRecomputeCoordinator.cpp
         DocumentRevisionIndex.cpp
         DocumentObject.cpp
         DocumentObserver.cpp
