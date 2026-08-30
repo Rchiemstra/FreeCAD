@@ -182,9 +182,6 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIn("main thread", str(result["exception"]).lower())
 
     def testRefreshRejectsUnoptedFeaturePythonWithoutLiveExecution(self):
-        params = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document")
-        old_async = params.GetBool("EnableAsyncRecompute", True)
-
         class RefreshProxy:
             def __init__(self):
                 self.executed_thread_id = None
@@ -203,20 +200,16 @@ class TestGuiDocument(unittest.TestCase):
         obj.Proxy = proxy
         obj.touch()
 
-        try:
-            params.SetBool("EnableAsyncRecompute", True)
+        start = time.monotonic()
+        FreeCADGui.runCommand("Std_Refresh", 0)
+        elapsed = time.monotonic() - start
 
-            start = time.monotonic()
-            FreeCADGui.runCommand("Std_Refresh", 0)
-            # Drain the queued compatibility request so the assertions prove
-            # the isolated adapter rejected the feature, not merely that the
-            # GUI command returned before its work began.
+        deadline = time.monotonic() + 2.0
+        while "Invalid" not in obj.State and time.monotonic() < deadline:
             FreeCADGui.updateGui()
-            elapsed = time.monotonic() - start
-        finally:
-            params.SetBool("EnableAsyncRecompute", old_async)
+            time.sleep(0.005)
 
-        self.assertLess(elapsed, 2.0)
+        self.assertLess(elapsed, 0.033)
         self.assertEqual(proxy.execute_count, 0)
         self.assertIsNone(proxy.executed_thread_id)
         self.assertEqual(obj.Result, -1)

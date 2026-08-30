@@ -94,8 +94,11 @@ public:
 class LazyStructuralExecuteFeature final: public App::FeatureTest
 {
 public:
+    static inline int TotalExecuteCalls {0};
+
     App::DocumentObjectExecReturn* execute() override
     {
+        ++TotalExecuteCalls;
         ++executeCalls;
         if (addOwnSchema && !getPropertyByName("LazyExecuteProperty")) {
             addDynamicProperty("App::PropertyString", "LazyExecuteProperty");
@@ -1495,8 +1498,7 @@ PyObject* callCompatibilityMutationWithOptions(
     PyObject* callback,
     const bool structural,
     const bool recompute,
-    PyObject* postcondition,
-    const bool trustedStructural)
+    PyObject* postcondition)
 {
     PyObjectRef method(PyObject_GetAttrString(document, "commitCompatibilityMutation"));
     if (!method.get()) {
@@ -1516,10 +1518,6 @@ PyObject* callCompatibilityMutationWithOptions(
             < 0
         || PyDict_SetItemString(
                keywords.get(), "postcondition", postcondition ? postcondition : Py_None)
-            < 0
-        || PyDict_SetItemString(keywords.get(),
-                                "trusted_structural",
-                                trustedStructural ? Py_True : Py_False)
             < 0) {
         return nullptr;
     }
@@ -1852,7 +1850,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef document(_document->getPyObject());
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, Py_None, false));
+        document.get(), callback.get(), false, true, Py_None));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -1910,7 +1908,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef document(_document->getPyObject());
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, postcondition.get(), false));
+        document.get(), callback.get(), false, true, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -1942,7 +1940,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef noneCallback(makeCompatibilityCallback(noneProbe));
     ASSERT_TRUE(pythonObjectAvailable(noneCallback.get()));
     PyObjectRef noneResult(callCompatibilityMutationWithOptions(
-        document.get(), noneCallback.get(), false, true, Py_None, false));
+        document.get(), noneCallback.get(), false, true, Py_None));
     ASSERT_TRUE(pythonObjectAvailable(noneResult.get()));
     ASSERT_TRUE(PyDict_Check(noneResult.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(
@@ -1961,7 +1959,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
     ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
     PyObjectRef trueResult(callCompatibilityMutationWithOptions(
-        document.get(), trueCallback.get(), false, true, postcondition.get(), false));
+        document.get(), trueCallback.get(), false, true, postcondition.get()));
     ASSERT_TRUE(pythonObjectAvailable(trueResult.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(
                      PyDict_GetItemString(trueResult.get(), "status")),
@@ -1986,7 +1984,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     const auto wildcardBefore = wildcardRevision();
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, postcondition.get(), false));
+        document.get(), callback.get(), false, true, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2014,7 +2012,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, postcondition.get(), false));
+        document.get(), callback.get(), false, true, postcondition.get()));
 
     EXPECT_EQ(result.get(), nullptr);
     const auto error = takePythonError(PyExc_ValueError);
@@ -2042,8 +2040,39 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
                                                             callback.get(),
                                                             false,
                                                             true,
-                                                            invalidPostcondition.get(),
-                                                            false));
+                                                            invalidPostcondition.get()));
+
+    EXPECT_EQ(result.get(), nullptr);
+    const auto error = takePythonError(PyExc_TypeError);
+    EXPECT_TRUE(error.present);
+    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
+    EXPECT_EQ(callbackProbe.calls, 0);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       removedStructuralAuthorityKeywordIsRejectedBeforeCallbackOrTransaction)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe callbackProbe;
+    callbackProbe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
+    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
+    PyObjectRef method(
+        PyObject_GetAttrString(document.get(), "commitCompatibilityMutation"));
+    PyObjectRef positional(PyTuple_Pack(1, callback.get()));
+    PyObjectRef keywords(PyDict_New());
+    ASSERT_TRUE(pythonObjectAvailable(method.get()));
+    ASSERT_TRUE(pythonObjectAvailable(positional.get()));
+    ASSERT_TRUE(pythonObjectAvailable(keywords.get()));
+    const std::string removedKeyword = std::string("trusted_") + "structural";
+    ASSERT_EQ(PyDict_SetItemString(
+                  keywords.get(), removedKeyword.c_str(), Py_True),
+              0);
+
+    PyObjectRef result(PyObject_Call(method.get(), positional.get(), keywords.get()));
 
     EXPECT_EQ(result.get(), nullptr);
     const auto error = takePythonError(PyExc_TypeError);
@@ -2066,7 +2095,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, false, postcondition.get(), false));
+        document.get(), callback.get(), false, false, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2078,13 +2107,19 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       structuralRecomputeUsesNarrowTrustedGrantAndValidatesBeforeCommit)
+       unsupportedStructuralFeatureFailsWithoutLiveExecutionAndRestoresExactBoundary)
 {
     Base::PyGILStateLocker gil;
     auto* editorProperty = _target->addDynamicProperty(
         "App::PropertyString", "ExistingMetadataProperty");
     ASSERT_NE(editorProperty, nullptr);
     _document->recompute();
+    const auto targetLabelBefore = _target->Label.getStrValue();
+    const auto targetStatusBefore = _target->getStatus();
+    const auto editorStatusBefore = editorProperty->getStatus();
+    const auto undoCountBefore = _document->getAvailableUndos();
+    const auto objectCountBefore = _document->getObjects().size();
+    LazyStructuralExecuteFeature::TotalExecuteCalls = 0;
     PyObjectRef document(_document->getPyObject());
     CallbackProbe callbackProbe;
     callbackProbe.nativeDocument = _document;
@@ -2095,215 +2130,34 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     callbackProbe.lazyAttemptRestrictedMutations = true;
     PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
     ASSERT_TRUE(pythonObjectAvailable(callback.get()));
-    PostconditionProbe postconditionProbe;
-    postconditionProbe.document = _document;
-    postconditionProbe.target = _target;
-    postconditionProbe.requireLazyFeature = true;
-    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
-    ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, postcondition.get(), true));
+        document.get(), callback.get(), true, true, Py_None));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
+    ASSERT_TRUE(PyDict_Check(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "Committed");
-    auto* lazy = dynamic_cast<LazyStructuralExecuteFeature*>(
-        _document->getObject("LazyStructuralFeature"));
-    ASSERT_NE(lazy, nullptr);
-    EXPECT_EQ(lazy->executeCalls, 1);
-    EXPECT_NE(lazy->getPropertyByName("LazyExecuteProperty"), nullptr);
-    EXPECT_TRUE(lazy->editorStatusChanged);
-    EXPECT_FALSE(lazy->editorStatusRejected);
-    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_TRUE(lazy->existingSchemaRejected);
-    EXPECT_TRUE(lazy->objectAddRejected);
-    EXPECT_TRUE(lazy->objectRemoveRejected);
-    EXPECT_TRUE(lazy->transactionControlRejected);
-    EXPECT_TRUE(lazy->historyControlRejected);
+                 "RecomputeFailed");
+    EXPECT_EQ(callbackProbe.calls, 1);
+    EXPECT_EQ(LazyStructuralExecuteFeature::TotalExecuteCalls, 0);
+    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
+    EXPECT_EQ(_document->getObject("Target"), _target);
+    EXPECT_EQ(_target->Label.getStrValue(), targetLabelBefore);
+    EXPECT_EQ(_target->getStatus(), targetStatusBefore);
+    auto* restoredEditorProperty =
+        _target->getPropertyByName("ExistingMetadataProperty");
+    ASSERT_NE(restoredEditorProperty, nullptr);
+    EXPECT_EQ(restoredEditorProperty->getStatus(), editorStatusBefore);
+    EXPECT_EQ(_document->getAvailableUndos(), undoCountBefore);
+    EXPECT_EQ(_document->getObjects().size(), objectCountBefore);
     EXPECT_EQ(_document->getObject("ForbiddenExecuteObject"), nullptr);
     EXPECT_EQ(_target->getPropertyByName("ForbiddenExistingSchema"), nullptr);
-    EXPECT_EQ(_document->getObject("Target"), _target);
-    EXPECT_EQ(postconditionProbe.calls, 1);
     EXPECT_FALSE(_document->hasPendingTransaction());
+    EXPECT_FALSE(_document->getMutationReadiness().poisoned);
 }
 
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       trustedEditorStatusFollowsCommittedUndoRedoFileState)
-{
-    Base::PyGILStateLocker gil;
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    _document->recompute();
-    ScopedTemporaryPath canonical(
-        "fc_trusted_status_" + _documentName);
-    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
-              App::DocumentSaveDisposition::Written);
-    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
 
-    PyObjectRef document(_document->getPyObject());
-    ASSERT_TRUE(pythonObjectAvailable(document.get()));
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyAddOwnSchema = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
 
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, Py_None, true));
-
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    ASSERT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "Committed");
-    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
-    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
-        App::DocumentFileChange::Model));
-
-    int statusNotifications = 0;
-    auto statusConnection = _document->signalChangePropertyEditor.connect(
-        [&](const App::Document&, const App::Property& property) {
-            if (&property == editorProperty) {
-                ++statusNotifications;
-            }
-        });
-    const auto targetStructureRevision = [&] {
-        return _document->collaborationRevisions()
-            .capture({App::DocumentRevisionKey::objectStructure("Target")})
-            .front()
-            .revision;
-    };
-    const auto statusRevisionBeforeUndo = targetStructureRevision();
-
-    ASSERT_TRUE(_document->undo());
-    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    EXPECT_FALSE(_document->hasPendingFileChanges());
-    EXPECT_EQ(statusNotifications, 1);
-    EXPECT_EQ(targetStructureRevision(), statusRevisionBeforeUndo + 1);
-
-    ASSERT_TRUE(_document->redo());
-    EXPECT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_NE(_document->getObject("LazyStructuralFeature"), nullptr);
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
-    EXPECT_TRUE(_document->getPendingFileChanges().testFlag(
-        App::DocumentFileChange::Model));
-    EXPECT_EQ(statusNotifications, 2);
-    EXPECT_EQ(targetStructureRevision(), statusRevisionBeforeUndo + 2);
-}
-
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       trustedStatusHistorySurvivesPropertyAndObjectRemovalWithoutRawPointers)
-{
-    Base::PyGILStateLocker gil;
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    const auto targetId = _target->getID();
-    const auto propertyId = editorProperty->getID();
-    _document->recompute();
-    ScopedTemporaryPath canonical(
-        "fc_trusted_status_removal_" + _documentName);
-    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
-              App::DocumentSaveDisposition::Written);
-
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, Py_None, true));
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    ASSERT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
-
-    ASSERT_NE(_document->openTransaction("remove trusted-status property"), 0);
-    ASSERT_TRUE(_target->removeDynamicProperty("ExistingMetadataProperty"));
-    _document->commitTransaction();
-    ASSERT_EQ(_target->getPropertyByName("ExistingMetadataProperty"), nullptr);
-
-    ASSERT_NE(_document->openTransaction("remove trusted-status object"), 0);
-    _document->removeObject("Target");
-    _document->commitTransaction();
-    ASSERT_EQ(_document->getObject("Target"), nullptr);
-
-    ASSERT_TRUE(_document->undo());
-    auto* restoredTarget = _document->getObject("Target");
-    ASSERT_NE(restoredTarget, nullptr);
-    EXPECT_EQ(restoredTarget->getID(), targetId);
-    EXPECT_EQ(restoredTarget->getPropertyByName("ExistingMetadataProperty"), nullptr);
-
-    ASSERT_TRUE(_document->undo());
-    auto* restoredProperty = restoredTarget->getPropertyByName(
-        "ExistingMetadataProperty");
-    ASSERT_NE(restoredProperty, nullptr);
-    EXPECT_EQ(restoredProperty->getID(), propertyId);
-    EXPECT_TRUE(restoredProperty->testStatus(App::Property::ReadOnly));
-
-    ASSERT_TRUE(_document->undo());
-    EXPECT_FALSE(restoredProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    EXPECT_FALSE(_document->hasPendingFileChanges());
-
-    ASSERT_TRUE(_document->redo());
-    EXPECT_TRUE(restoredProperty->testStatus(App::Property::ReadOnly));
-    ASSERT_TRUE(_document->redo());
-    EXPECT_EQ(restoredTarget->getPropertyByName("ExistingMetadataProperty"), nullptr);
-    ASSERT_TRUE(_document->redo());
-    EXPECT_EQ(_document->getObject("Target"), nullptr);
-    _target = nullptr;
-    _document->clearUndos();
-}
-
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       trustedStatusHistoryIgnoresNonTransactionalSameNameReplacement)
-{
-    Base::PyGILStateLocker gil;
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    const auto originalPropertyId = editorProperty->getID();
-    _document->recompute();
-    ScopedTemporaryPath canonical(
-        "fc_trusted_status_replacement_" + _documentName);
-    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
-              App::DocumentSaveDisposition::Written);
-
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, Py_None, true));
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    ASSERT_TRUE(editorProperty->testStatus(App::Property::ReadOnly));
-
-    ASSERT_TRUE(_target->removeDynamicProperty("ExistingMetadataProperty"));
-    auto* replacement = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(replacement, nullptr);
-    ASSERT_NE(replacement->getID(), originalPropertyId);
-    ASSERT_FALSE(replacement->testStatus(App::Property::ReadOnly));
-
-    ASSERT_TRUE(_document->undo());
-    EXPECT_FALSE(replacement->testStatus(App::Property::ReadOnly));
-    EXPECT_EQ(_target->getPropertyByName("ExistingMetadataProperty"), replacement);
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Modified);
-    EXPECT_TRUE(_document->hasPendingFileChanges());
-    _document->clearUndos();
-}
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        stablePythonObserverRunsAfterReplayAndTargetUnwindDespiteThrowingSlots)
@@ -2444,8 +2298,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         abortCallback.get(),
         false,
         true,
-        falsePostcondition.get(),
-        false));
+        falsePostcondition.get()));
     ASSERT_TRUE(pythonObjectAvailable(abortResult.get()));
     ASSERT_EQ(PyList_Size(events.get()), 1);
     EXPECT_STREQ(eventName(0), "stable");
@@ -2529,8 +2382,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     CallbackProbe callbackProbe;
     callbackProbe.nativeDocument = _document;
     callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyAddOwnSchema = true;
+    callbackProbe.changeTargetLabel = true;
     PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
     ASSERT_TRUE(pythonObjectAvailable(callback.get()));
     PostconditionProbe postconditionProbe;
@@ -2539,7 +2391,6 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     postconditionProbe.foreignDocument = foreign;
     postconditionProbe.foreignTarget = foreignTarget;
     postconditionProbe.rawStatusTarget = rawStatusTarget;
-    postconditionProbe.requireLazyFeature = true;
     postconditionProbe.attemptRestrictedMutations = true;
     postconditionProbe.attemptOrdinaryValueMutation = true;
     postconditionProbe.attemptTouch = true;
@@ -2555,7 +2406,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     const auto wildcardBefore = wildcardRevision();
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, postcondition.get(), true));
+        document.get(), callback.get(), true, true, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2609,7 +2460,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, Py_None, false));
+        document.get(), callback.get(), false, true, Py_None));
 
     EXPECT_EQ(result.get(), nullptr);
     const auto error = takePythonError(PyExc_RuntimeError);
@@ -2650,7 +2501,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(callback.get()));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, Py_None, false));
+        document.get(), callback.get(), false, true, Py_None));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2698,7 +2549,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, postcondition.get(), false));
+        document.get(), callback.get(), false, true, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2768,7 +2619,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         ASSERT_TRUE(pythonObjectAvailable(callback.get()));
 
         PyObjectRef result(callCompatibilityMutationWithOptions(
-            document.get(), callback.get(), false, true, Py_None, false));
+            document.get(), callback.get(), false, true, Py_None));
 
         EXPECT_EQ(result.get(), nullptr);
         const auto error = takePythonError(PyExc_RuntimeError);
@@ -2851,7 +2702,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
         PyObjectRef result(callCompatibilityMutationWithOptions(
-            document.get(), callback.get(), false, true, postcondition.get(), false));
+            document.get(), callback.get(), false, true, postcondition.get()));
 
         ASSERT_TRUE(pythonObjectAvailable(result.get()));
         EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -2876,128 +2727,8 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     }
 }
 
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       untrustedStructuralRecomputeCannotChangeExistingEditorStatus)
-{
-    Base::PyGILStateLocker gil;
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    _document->recompute();
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyAddOwnSchema = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    ASSERT_TRUE(pythonObjectAvailable(callback.get()));
-    PostconditionProbe postconditionProbe;
-    postconditionProbe.document = _document;
-    postconditionProbe.requireLazyFeature = true;
-    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
 
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, postcondition.get(), false));
 
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "Committed");
-    auto* lazy = dynamic_cast<LazyStructuralExecuteFeature*>(
-        _document->getObject("LazyStructuralFeature"));
-    ASSERT_NE(lazy, nullptr);
-    EXPECT_TRUE(lazy->editorStatusRejected);
-    EXPECT_FALSE(lazy->editorStatusChanged);
-    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_NE(lazy->getPropertyByName("LazyExecuteProperty"), nullptr);
-}
-
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       trustedStructuralGrantCannotBeBorrowedByAnExistingExecutingObject)
-{
-    Base::PyGILStateLocker gil;
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    auto unrelated = std::make_unique<LazyStructuralExecuteFeature>();
-    auto* unrelatedExecute = unrelated.get();
-    unrelatedExecute->editorTarget = _target;
-    _document->addObject(unrelated.get(), "UnrelatedExecute");
-    static_cast<void>(unrelated.release());
-    _document->recompute();
-    unrelatedExecute->executeCalls = 0;
-    unrelatedExecute->changeEditorStatus = true;
-
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = unrelatedExecute;
-    callbackProbe.touchTarget = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, Py_None, true));
-
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "Committed");
-    EXPECT_EQ(unrelatedExecute->executeCalls, 1);
-    EXPECT_TRUE(unrelatedExecute->editorStatusRejected);
-    EXPECT_FALSE(unrelatedExecute->editorStatusChanged);
-    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_FALSE(_document->mustExecute());
-}
-
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       falsePostconditionRestoresTrustedEditorStatusAndNewSchema)
-{
-    Base::PyGILStateLocker gil;
-    auto rawStatus = std::make_unique<RawStatusFeature>();
-    auto* rawStatusTarget = rawStatus.get();
-    _document->addObject(rawStatus.get(), "FalseRawStatusTarget");
-    static_cast<void>(rawStatus.release());
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    _document->recompute();
-    ScopedTemporaryPath canonical("fc_false_postcondition_" + _documentName);
-    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
-              App::DocumentSaveDisposition::Written);
-    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    ASSERT_FALSE(_document->hasPendingFileChanges());
-    const auto undosBefore = _document->getAvailableUndos();
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyAddOwnSchema = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    PostconditionProbe postconditionProbe;
-    postconditionProbe.rawStatusTarget = rawStatusTarget;
-    postconditionProbe.bypassNoTouchGuard = true;
-    postconditionProbe.satisfied = false;
-    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
-
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, postcondition.get(), true));
-
-    ASSERT_TRUE(pythonObjectAvailable(result.get()));
-    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "PostconditionFailed");
-    EXPECT_EQ(postconditionProbe.calls, 1);
-    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_FALSE(rawStatusTarget->testStatus(App::ObjectStatus::NoTouch));
-    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
-    EXPECT_EQ(_document->getObject("Target"), _target);
-    EXPECT_FALSE(_document->hasPendingTransaction());
-    EXPECT_FALSE(_document->mustExecute());
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    EXPECT_FALSE(_document->hasPendingFileChanges());
-    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
-}
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        falsePostconditionPreservesPreexistingStableErrorWithoutPoisoningRollback)
@@ -3029,7 +2760,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
     PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), false, true, postcondition.get(), false));
+        document.get(), callback.get(), false, true, postcondition.get()));
 
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
@@ -3043,56 +2774,6 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_FALSE(_document->mustExecute());
 }
 
-TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       exceptionalPostconditionRestoresTrustedEditorStatusBeforeRethrow)
-{
-    Base::PyGILStateLocker gil;
-    auto rawStatus = std::make_unique<RawStatusFeature>();
-    auto* rawStatusTarget = rawStatus.get();
-    _document->addObject(rawStatus.get(), "ExceptionalRawStatusTarget");
-    static_cast<void>(rawStatus.release());
-    auto* editorProperty = _target->addDynamicProperty(
-        "App::PropertyString", "ExistingMetadataProperty");
-    ASSERT_NE(editorProperty, nullptr);
-    _document->recompute();
-    ScopedTemporaryPath canonical("fc_exceptional_postcondition_" + _documentName);
-    ASSERT_EQ(_document->saveAsWithOutcome(canonical.path.string().c_str()).disposition,
-              App::DocumentSaveDisposition::Written);
-    ASSERT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    ASSERT_FALSE(_document->hasPendingFileChanges());
-    const auto undosBefore = _document->getAvailableUndos();
-    PyObjectRef document(_document->getPyObject());
-    CallbackProbe callbackProbe;
-    callbackProbe.nativeDocument = _document;
-    callbackProbe.target = _target;
-    callbackProbe.addLazyStructuralFeature = true;
-    callbackProbe.lazyAddOwnSchema = true;
-    callbackProbe.lazyChangeEditorStatus = true;
-    PyObjectRef callback(makeCompatibilityCallback(callbackProbe));
-    PostconditionProbe postconditionProbe;
-    postconditionProbe.rawStatusTarget = rawStatusTarget;
-    postconditionProbe.bypassNoTouchGuard = true;
-    postconditionProbe.raisePythonError = true;
-    PyObjectRef postcondition(makeCompatibilityPostcondition(postconditionProbe));
-
-    PyObjectRef result(callCompatibilityMutationWithOptions(
-        document.get(), callback.get(), true, true, postcondition.get(), true));
-
-    EXPECT_EQ(result.get(), nullptr);
-    const auto error = takePythonError(PyExc_ValueError);
-    EXPECT_TRUE(error.present);
-    EXPECT_TRUE(error.matchesExpected) << error.type << ": " << error.message;
-    EXPECT_EQ(postconditionProbe.calls, 1);
-    EXPECT_FALSE(editorProperty->testStatus(App::Property::ReadOnly));
-    EXPECT_FALSE(rawStatusTarget->testStatus(App::ObjectStatus::NoTouch));
-    EXPECT_EQ(_document->getObject("LazyStructuralFeature"), nullptr);
-    EXPECT_EQ(_document->getObject("Target"), _target);
-    EXPECT_FALSE(_document->hasPendingTransaction());
-    EXPECT_FALSE(_document->mustExecute());
-    EXPECT_EQ(_document->getFileChangeState(), App::DocumentFileState::Clean);
-    EXPECT_FALSE(_document->hasPendingFileChanges());
-    EXPECT_EQ(_document->getAvailableUndos(), undosBefore);
-}
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        deferredPolicyCommitsWithoutConsumingPendingRecompute)
@@ -3585,7 +3266,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         ASSERT_TRUE(pythonObjectAvailable(postcondition.get()));
 
         PyObjectRef result(callCompatibilityMutationWithOptions(
-            document.get(), callback.get(), true, true, postcondition.get(), false));
+            document.get(), callback.get(), true, true, postcondition.get()));
 
         if (failDuringApply) {
             EXPECT_EQ(result.get(), nullptr);
@@ -3806,7 +3487,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       structuralCallbackDocumentAndObjectRecomputeDeferExecuteUntilAfterGrantCloses)
+       structuralCallbackRecomputeRejectsUnserializableRuntimeTypeWithoutLiveExecution)
 {
     Base::PyGILStateLocker gil;
     auto* executeProbe = new StructureAddingOnExecuteFeature;
@@ -3828,18 +3509,17 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 
     PyObjectRef result(callStructuralCompatibilityMutation(document.get(), callback.get()));
 
-    if (!result.get()) {
-        PyErr_Print();
-        FAIL() << "structural compatibility recompute deferral failed";
-        return;
-    }
+    ASSERT_TRUE(pythonObjectAvailable(result.get()));
     EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
-                 "Committed");
+                 "RecomputeFailed");
     EXPECT_EQ(probe.executeCallsObservedAfterCallbackRecompute, 0);
-    EXPECT_EQ(executeProbe->executeCalls, 1);
-    EXPECT_TRUE(executeProbe->rejected);
+    EXPECT_EQ(executeProbe->executeCalls, 0);
+    EXPECT_FALSE(executeProbe->rejected);
     EXPECT_FALSE(executeProbe->admitted);
     EXPECT_EQ(_document->getObject("ExecuteBorrowedStructure"), nullptr);
+    EXPECT_EQ(_document->getObject("ExecuteProbe"), executeProbe);
+    EXPECT_FALSE(executeProbe->isTouched());
+    EXPECT_FALSE(_document->hasPendingTransaction());
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

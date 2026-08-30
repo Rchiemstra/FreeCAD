@@ -220,14 +220,10 @@ struct DocumentP
     bool collaborationCommitNotificationBarrier {false};
     bool collaborationTransactionControlGranted {false};
     bool collaborationCompatibilityStructuralMutationGranted {false};
-    bool collaborationCompatibilityRecomputeMutationGranted {false};
-    bool collaborationCompatibilityTrustedStructuralMutationGranted {false};
     bool collaborationDerivedRecomputeGranted {false};
     bool collaborationDeferredRecomputeBlocked {false};
     bool collaborationRecomputeStableNotificationDeferred {false};
-    const DocumentObject* collaborationCompatibilityRecomputeSourceObject {nullptr};
     bool collaborationImportDeferralActive {false};
-    bool collaborationRollbackStabilizing {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
     bool collaborationAtomicPresentationAuditActive {false};
@@ -274,26 +270,6 @@ struct DocumentP
     std::vector<CollaborationBoundaryObjectSchedulerState>
         collaborationBoundaryObjectSchedulerStates;
     std::unordered_set<DocumentObject*> collaborationBoundaryTouchedObjects;
-    struct CollaborationBoundaryPropertyStatusState
-    {
-        long objectId {0};
-        std::int64_t propertyId {0};
-        std::string propertyName;
-        unsigned long before {0};
-        unsigned long after {0};
-    };
-    std::vector<CollaborationBoundaryPropertyStatusState>
-        collaborationBoundaryPropertyStatusStates;
-    struct CollaborationTransactionPropertyStatusState
-    {
-        long objectId {0};
-        std::int64_t propertyId {0};
-        std::string propertyName;
-        unsigned long before {0};
-        unsigned long after {0};
-    };
-    std::unordered_map<int, std::vector<CollaborationTransactionPropertyStatusState>>
-        collaborationTransactionPropertyStatusStates;
     std::vector<DocumentObject*> collaborationBoundaryObjectOrder;
     std::vector<DocumentObjectT> collaborationBoundaryPendingRemove;
     DocumentObject* collaborationBoundaryActiveObject {nullptr};

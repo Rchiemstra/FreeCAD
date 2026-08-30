@@ -1583,8 +1583,7 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     return _coordinator.commitCompatibilityWithOptions(
         edit,
         mutation.scope == CollaborationCompatibilityScope::Structural,
-        options.recomputePolicy,
-        options.trustedStructural);
+        options.recomputePolicy);
 }
 
 DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallback(

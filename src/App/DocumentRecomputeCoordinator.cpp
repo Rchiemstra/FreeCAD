@@ -760,6 +760,14 @@ void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId 
             job.state = DocumentRecomputeState::Completed;
             reason = "recompute plan completed";
         }
+        for (const auto& [featureId, node] : job.nodes) {
+            if (node.state == DocumentRecomputeFeatureState::Committed) {
+                _unresolvedFeatures.erase(featureId);
+            }
+            else {
+                _unresolvedFeatures.insert(featureId);
+            }
+        }
         if (!job.sessionFinalized && !job.sessionId.empty()) {
             job.sessionFinalized = true;
             sessionId = job.sessionId;
@@ -820,6 +828,15 @@ bool DocumentRecomputeCoordinator::hasPendingWork() const
     return std::ranges::any_of(_jobs, [](const auto& entry) {
         return !jobTerminal(entry.second->state);
     });
+}
+
+bool DocumentRecomputeCoordinator::hasUnresolvedWork() const
+{
+    std::lock_guard stateLock(_stateMutex);
+    return !_unresolvedFeatures.empty()
+        || std::ranges::any_of(_jobs, [](const auto& entry) {
+               return !jobTerminal(entry.second->state);
+           });
 }
 
 bool DocumentRecomputeCoordinator::claimPresentationFinalization(

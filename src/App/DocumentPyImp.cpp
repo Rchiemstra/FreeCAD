@@ -1511,18 +1511,16 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
     PyObject* structural = Py_False;
     PyObject* recompute = Py_True;
     PyObject* postcondition = Py_None;
-    PyObject* trustedStructural = Py_False;
     const char* objectName = nullptr;
-    static const std::array<const char*, 7> kwlist {"",
+    static const std::array<const char*, 6> kwlist {"",
                                                     "structural",
                                                     "recompute",
                                                     "postcondition",
-                                                    "trusted_structural",
                                                     "object_name",
                                                     nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!O!OO!z:commitCompatibilityMutation",
+                                             "O|$O!O!Oz:commitCompatibilityMutation",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
@@ -1530,8 +1528,6 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                                              &PyBool_Type,
                                              &recompute,
                                              &postcondition,
-                                             &PyBool_Type,
-                                             &trustedStructural,
                                              &objectName)) {
         return nullptr;
     }
@@ -1621,7 +1617,6 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
             options.recomputePolicy = Base::asBoolean(recompute)
                 ? CollaborationCompatibilityRecomputePolicy::Eager
                 : CollaborationCompatibilityRecomputePolicy::Deferred;
-            options.trustedStructural = Base::asBoolean(trustedStructural);
             options.postcondition = std::move(nativePostcondition);
             const auto result = getDocumentPtr()
                                     ->collaborationService()

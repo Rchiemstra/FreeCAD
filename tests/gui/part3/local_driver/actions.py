@@ -5,6 +5,34 @@ from __future__ import annotations
 
 from typing import Any
 
+
+_ASYNC_RECOMPUTE_HANDLES: dict[Any, Any] = {}
+
+
+def _poll_async_recompute_handle(document, handle) -> None:
+    from PySide import QtCore
+
+    if _ASYNC_RECOMPUTE_HANDLES.get(document) is not handle:
+        return
+    if handle.done():
+        _ASYNC_RECOMPUTE_HANDLES.pop(document, None)
+        return
+    QtCore.QTimer.singleShot(
+        5,
+        lambda: _poll_async_recompute_handle(document, handle),
+    )
+
+
+def _retain_async_recompute_handle(document, handle) -> None:
+    from PySide import QtCore
+
+    _ASYNC_RECOMPUTE_HANDLES[document] = handle
+    QtCore.QTimer.singleShot(
+        5,
+        lambda: _poll_async_recompute_handle(document, handle),
+    )
+
+
 SUPPORTED_ACTIONS = frozenset(
     {
         "preflight",
@@ -893,6 +921,9 @@ def _async_blocker_control(params: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("FreeCAD.FeatureTestAsyncBlocker is unavailable")
 
     if action == "reset":
+        retained = _ASYNC_RECOMPUTE_HANDLES.pop(document, None)
+        if retained is not None:
+            retained.cancel("async blocker control reset")
         blocker_api.resetBlocker()
         return {"action": action}
     if action == "release":
@@ -901,9 +932,8 @@ def _async_blocker_control(params: dict[str, Any]) -> dict[str, Any]:
     if action == "touch_and_queue_recompute":
         blocker_api.resetBlocker()
         blocker.touch()
-        FreeCAD.queueRecomputeRequest(
-            FreeCAD.RecomputeRequest.fromDocumentObject(blocker)
-        )
+        handle = document.recomputeAsync([blocker])
+        _retain_async_recompute_handle(document, handle)
         return {"action": action, "queued": True}
     raise ValueError(f"unsupported async_blocker_control action: {action}")
 

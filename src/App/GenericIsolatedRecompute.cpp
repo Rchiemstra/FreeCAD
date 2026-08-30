@@ -35,6 +35,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <typeinfo>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -797,6 +798,13 @@ std::vector<App::DocumentObject*> collectClosure(
         if (!object->canRecomputeOnWorker()) {
             throw std::invalid_argument(
                 "generic recompute object has not opted into isolated execution: "
+                + std::string(object->getNameInDocument()));
+        }
+        std::unique_ptr<App::DocumentObject> registeredType(
+            static_cast<App::DocumentObject*>(object->getTypeId().createInstance()));
+        if (!registeredType || typeid(*registeredType) != typeid(*object)) {
+            throw std::invalid_argument(
+                "generic recompute object runtime type is not serializable: "
                 + std::string(object->getNameInDocument()));
         }
         closure.push_back(object);

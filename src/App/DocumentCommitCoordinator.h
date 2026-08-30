@@ -104,8 +104,7 @@ private:
     [[nodiscard]] DocumentCommitResult commitCompatibilityWithOptions(
         const PreparedEdit& edit,
         bool structural,
-        CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool trustedStructural);
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
     [[nodiscard]] DocumentCommitResult commitWithPreparationPolicy(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
@@ -120,7 +119,6 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool trustedStructural,
         bool retainUndoHistory = true);
     [[nodiscard]] DocumentCommitResult commitOnDocumentThread(
         const PreparedEdit& edit,
@@ -136,7 +134,6 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool trustedStructural,
         bool retainUndoHistory);
     [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
         const PreparedEdit& edit);

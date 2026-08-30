@@ -22,6 +22,7 @@
 
 #include <Inventor/nodes/SoCamera.h>
 #include <algorithm>
+#include <memory>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -29,6 +30,7 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QTextStream>
+#include <QTimer>
 #include <QTreeWidgetItem>
 
 #include <boost/regex.hpp>
@@ -39,6 +41,7 @@
 #include <App/DocumentObject.h>
 #include <App/Expression.h>
 #include <App/GeoFeature.h>
+#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
@@ -1829,39 +1832,35 @@ bool shouldProceedAfterDependencyCycle()
         == QMessageBox::Yes;
 }
 
-void handleDocumentRecomputeResult(const std::string& documentName, App::RecomputeFailure failure)
+void scheduleDocumentRecomputePoll(std::shared_ptr<App::RecomputeHandle> handle)
 {
-    if (failure == App::RecomputeFailure::None) {
-        return;
-    }
-
-    if (failure != App::RecomputeFailure::DependencyCycle) {
-        return;
-    }
-
-    App::Document* document = App::GetApplication().getDocument(documentName.c_str());
-    if (!document) {
-        return;
-    }
-
-    if (!shouldProceedAfterDependencyCycle()) {
-        return;
-    }
-
-    // If the user wants to proceed, enqueue another recompute request without
-    // the cycle-check option so the document recomputes like the legacy path.
-    App::RecomputeRequest newRequest = App::RecomputeRequest::fromDocument(*document, /*force=*/true);
-    App::GetApplication().queueRecomputeRequest(newRequest);
+    QTimer::singleShot(5, qApp, [handle = std::move(handle)] {
+        const auto snapshot = handle->status();
+        if (!snapshot.terminal()) {
+            scheduleDocumentRecomputePoll(handle);
+            return;
+        }
+        if (snapshot.state != App::DocumentRecomputeState::Completed) {
+            FC_ERR("Detached document recompute "
+                   << App::documentRecomputeStateName(snapshot.state) << ": "
+                   << (snapshot.diagnostic.empty()
+                           ? "no diagnostic was provided"
+                           : snapshot.diagnostic));
+        }
+    });
 }
 
-void refreshDocumentSynchronously(App::Document& document)
+void submitDocumentRecompute(App::Document& document, const int options)
 {
     try {
-        document.recompute({}, true, nullptr, App::Document::DepNoCycle);
+        auto handle = document.recomputeAsync({}, true, options);
+        scheduleDocumentRecomputePoll(
+            std::shared_ptr<App::RecomputeHandle>(std::move(handle)));
     }
     catch (Base::BadGraphError&) {
-        if (shouldProceedAfterDependencyCycle()) {
-            document.recompute({}, true);
+        if ((options & App::Document::DepNoCycle) != 0
+            && shouldProceedAfterDependencyCycle()) {
+            submitDocumentRecompute(document, 0);
         }
     }
     catch (Base::Exception& exception) {
@@ -1880,27 +1879,7 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
     App::AutoTransaction trans((eType & NoTransaction) ? 0 : openActiveDocumentCommand("Recompute"));
     auto doc = getActiveGuiDocument()->getDocument();
 
-    App::RecomputeRequest request
-        = App::RecomputeRequest::fromDocument(*doc, true, App::Document::DepNoCycle);
-
-    if (!App::GetApplication().isAsyncRecomputeEnabled()
-        || !App::GetApplication().canRecomputeRequestOnWorker(request)) {
-        refreshDocumentSynchronously(*doc);
-        return;
-    }
-
-    request.callback = [](App::RecomputeRequest& request, App::RecomputeResult& result) {
-        // Handle the result in the UI thread.
-        QMetaObject::invokeMethod(
-            qApp,
-            [documentName = request.documentName, failure = result.failure]() {
-                handleDocumentRecomputeResult(documentName, failure);
-            },
-            Qt::QueuedConnection
-        );
-    };
-
-    App::GetApplication().queueRecomputeRequest(request);
+    submitDocumentRecompute(*doc, App::Document::DepNoCycle);
 }
 
 bool StdCmdRefresh::isActive()

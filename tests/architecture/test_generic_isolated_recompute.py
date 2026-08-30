@@ -227,93 +227,55 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
             line = source.count("\n", 0, match.start()) + 1
             matches.append(f"{path.relative_to(REPO_ROOT).as_posix()}:{line}")
     owners = [entry.rsplit(":", 1)[0] for entry in matches]
-    assert owners.count(DOCUMENT_SOURCE) == 2, matches
+    assert owners.count(DOCUMENT_SOURCE) == 1, matches
     assert owners.count(GENERIC_SOURCE) == 1, matches
-    assert len(matches) == 3, (
+    assert len(matches) == 2, (
         "_recomputeFeature has an unclassified live caller: " + ", ".join(matches)
     )
 
     document = _read(DOCUMENT_SOURCE)
     full = _compact(_body(document, "Document::recompute"))
-    legacy = _compact(_body(document, "Document::recomputeLegacy"))
     facade = _compact(_body(document, "Document::recomputeFeature"))
     friend = _compact(_body(_read(GENERIC_SOURCE), "execute"))
     assert "recomputeAsync(objs,force,options)" in full
     assert "_recomputeFeature(" not in full
-    assert "_recomputeFeature(obj)" in legacy
     assert "_recomputeFeature(" not in facade
     assert "recomputeCoordinator()" in facade
     assert "makeGenericIsolatedRecomputeRequest(*this,*feature,recursive)" in facade
-    assert "document.testStatus(Document::TempDoc)" in friend
-    assert "feature.getDocument()!=&document" in friend
-    assert "returndocument._recomputeFeature(&feature);" in friend
 
-    stripped_document = _suppress_cpp(document)
-    rollback_body = _body(document, "Document::rollbackCollaborationTransactionImpl")
-    rollback_start = stripped_document.find(rollback_body)
-    assert rollback_start >= 0
-    assert stripped_document.find(rollback_body, rollback_start + 1) < 0
-    rollback_end = rollback_start + len(rollback_body)
+    temp_document = friend.find("document.testStatus(Document::TempDoc)")
+    ownership = friend.find("feature.getDocument()!=&document", temp_document)
+    attached = friend.find("!feature.isAttachedToDocument()", ownership)
+    private_call = friend.find("returndocument._recomputeFeature(&feature);", attached)
+    assert 0 <= temp_document < ownership < attached < private_call
+
+    legacy_matches: list[str] = []
+    for path in (REPO_ROOT / "src").rglob("*"):
+        if path.suffix not in {".cpp", ".h", ".hpp"}:
+            continue
+        source = _read(path)
+        for match in re.finditer(r"\brecomputeLegacy\s*\(", source):
+            line = source.count("\n", 0, match.start()) + 1
+            legacy_matches.append(
+                f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
+            )
+    assert not legacy_matches, (
+        "recomputeLegacy remains in production source: " + ", ".join(legacy_matches)
+    )
+
+    document_rollback = _compact(
+        _body(document, "Document::rollbackCollaborationTransaction")
+    )
+    assert "recompute(" not in document_rollback
+    assert "recomputeAsync(" not in document_rollback
 
     commit_source = _read(COMMIT_SOURCE)
-    coordinator_body = _body(
-        commit_source,
-        "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
+    coordinator = _compact(
+        _body(
+            commit_source,
+            "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
+        )
     )
-    stripped_commit = _suppress_cpp(commit_source)
-    coordinator_start = stripped_commit.find(coordinator_body)
-    assert coordinator_start >= 0
-    assert stripped_commit.find(coordinator_body, coordinator_start + 1) < 0
-    coordinator_end = coordinator_start + len(coordinator_body)
-
-    rollback_callers: list[str] = []
-    coordinator_callers: list[str] = []
-    forbidden_legacy_callers: list[str] = []
-    for path in (REPO_ROOT / "src").rglob("*.cpp"):
-        source = _suppress_cpp(_read(path))
-        for match in re.finditer(r"\brecomputeLegacy\s*\(", source):
-            prefix = source[max(0, match.start() - 40) : match.start()]
-            if path == REPO_ROOT / DOCUMENT_SOURCE and re.search(r"Document::\s*$", prefix):
-                continue
-            line = source.count("\n", 0, match.start()) + 1
-            location = f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
-            if (
-                path == REPO_ROOT / DOCUMENT_SOURCE
-                and rollback_start <= match.start() < rollback_end
-            ):
-                rollback_callers.append(location)
-            elif (
-                path == REPO_ROOT / COMMIT_SOURCE
-                and coordinator_start <= match.start() < coordinator_end
-            ):
-                coordinator_callers.append(location)
-            else:
-                forbidden_legacy_callers.append(location)
-    assert len(rollback_callers) == 1, (
-        "expected the single WP12 rollback-stabilization caller, found: "
-        + ", ".join(rollback_callers)
-    )
-    assert len(coordinator_callers) == 1, (
-        "expected the single structural coordinator caller, found: "
-        + ", ".join(coordinator_callers)
-    )
-    assert not forbidden_legacy_callers, (
-        "private recomputeLegacy has an unclassified source caller: "
-        + ", ".join(forbidden_legacy_callers)
-    )
-
-    rollback_raw = _body(
-        document, "Document::rollbackCollaborationTransactionImpl", raw=True
-    )
-    rollback_call = rollback_raw.find("recomputeLegacy(")
-    assert rollback_call >= 0
-    removal_note = rollback_raw[max(0, rollback_call - 400):rollback_call]
-    assert re.search(
-        r"//[^\n]*CC-WP13 removes\s*\n\s*//\s*the legacy body",
-        removal_note,
-    )
-
-    coordinator = _compact(coordinator_body)
     eager = coordinator.find(
         "if(recomputePolicy==CollaborationCompatibilityRecomputePolicy::Eager){"
     )
@@ -322,56 +284,95 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     eager_closing = _matching(coordinator, eager_opening, "{", "}")
     assert eager_closing is not None
     eager_stage = coordinator[eager_opening + 1:eager_closing]
-
+    scoped_targets = eager_stage.find(
+        "autorecomputeTargets=pendingTransactionRecomputeTargets(_document);"
+    )
+    empty = eager_stage.find("if(recomputeTargets.empty()){", scoped_targets)
+    empty_finalize = eager_stage.find(
+        "_document.finalizeEmptyDetachedRecompute();", empty
+    )
     derived_grant = eager_stage.find(
         "autoderivedRecompute=_document.openCollaborationDerivedRecomputeGrant();"
     )
-    structural = eager_stage.find("if(structuralCompatibility){", derived_grant)
-    structural_opening = eager_stage.find("{", structural)
-    structural_closing = _matching(eager_stage, structural_opening, "{", "}")
-    assert structural_closing is not None
-    structural_stage = eager_stage[structural_opening + 1:structural_closing]
-
-    structural_grant = structural_stage.find(
-        "autogrant=_document.openCollaborationStructuralRecomputeGrant("
-        "trustedStructural);"
+    detached_recompute = eager_stage.find(
+        "static_cast<void>(_document.recompute("
+        "recomputeTargets,true,&recomputeHasError));",
+        derived_grant,
     )
-    legacy_call = structural_stage.find(
-        "_document.recomputeLegacy({},true,&recomputeHasError,0)",
-        structural_grant,
-    )
-    assert 0 <= derived_grant < structural < structural_opening
-    assert 0 <= structural_grant < legacy_call
+    assert 0 <= scoped_targets < empty < empty_finalize < derived_grant < detached_recompute
     assert eager_stage.count("openCollaborationDerivedRecomputeGrant()") == 1
-    assert eager_stage.count("openCollaborationStructuralRecomputeGrant(") == 1
-    assert structural_stage.count("_document.recomputeLegacy(") == 1
-    assert "_document.recompute(" not in structural_stage
-    assert eager_stage.count("_document.recomputeLegacy(") == 1
-    assert coordinator.count("_document.recomputeLegacy(") == 1
-
-    ordinary_else = eager_stage.find("else{", structural_closing)
-    ordinary_opening = eager_stage.find("{", ordinary_else)
-    ordinary_closing = _matching(eager_stage, ordinary_opening, "{", "}")
-    assert ordinary_closing is not None
-    assert structural_closing < ordinary_else < ordinary_opening
-    ordinary_stage = eager_stage[ordinary_opening + 1:ordinary_closing]
-    assert "_document.recompute({},true,&recomputeHasError)" in ordinary_stage
-    assert "recomputeLegacy(" not in ordinary_stage
     assert eager_stage.count("_document.recompute(") == 1
-    assert coordinator.count("_document.recompute(") == 1
+    assert "structuralCompatibility" not in eager_stage
+    assert "openCollaborationStructuralRecomputeGrant(" not in eager_stage
+    assert "recomputeLegacy(" not in eager_stage
+    assert "trustedStructural" not in eager_stage
 
-    coordinator_raw = _body(
-        commit_source,
-        "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
-        raw=True,
+    rollback = _compact(
+        _body(
+            commit_source,
+            "DocumentCommitCoordinator::rollbackNativeCommitTransaction",
+        )
     )
-    raw_legacy = coordinator_raw.find("_document.recomputeLegacy(")
-    assert raw_legacy >= 0
-    assert coordinator_raw.find("_document.recomputeLegacy(", raw_legacy + 1) < 0
-    coordinator_removal_note = coordinator_raw[max(0, raw_legacy - 450):raw_legacy]
-    assert re.search(
-        r"//[^\n]*CC-WP13\s*\n\s*//\s*removes this live compatibility path",
-        coordinator_removal_note,
+    rollback_literals = _compact(
+        _suppress_cpp(
+            _body(
+                commit_source,
+                "DocumentCommitCoordinator::rollbackNativeCommitTransaction",
+                raw=True,
+            ),
+            literals=False,
+        )
+    )
+    initial_rollback = rollback.find(
+        "autorollback=_document.rollbackCollaborationTransaction();"
+    )
+    recovery_lambda = rollback.find(
+        "constautorestoreFailedStabilization=[&]()noexcept{",
+        initial_rollback,
+    )
+    recovery_opening = rollback.find("{", recovery_lambda)
+    recovery_closing = _matching(rollback, recovery_opening, "{", "}")
+    assert recovery_closing is not None
+    recovery_stage = rollback[recovery_opening + 1:recovery_closing]
+    assert (
+        recovery_stage.count("_document.rollbackCollaborationTransaction()")
+        == 1
+    )
+    open_stabilization = rollback.find(
+        "openNativeCommitTransaction(,false)",
+        recovery_closing,
+    )
+    derived_grant = rollback.find(
+        "_document.openCollaborationDerivedRecomputeGrant()",
+        open_stabilization,
+    )
+    detached_recompute = rollback.find(
+        "_document.recompute(recomputeTargets,true,&recomputeHasError)",
+        derived_grant,
+    )
+    failed_recompute = rollback.find("if(recomputeHasError){", detached_recompute)
+    recovery_call = rollback.find(
+        "if(restoreFailedStabilization()){",
+        failed_recompute,
+    )
+    assert (
+        0
+        <= initial_rollback
+        < recovery_lambda
+        < recovery_closing
+        < open_stabilization
+        < derived_grant
+        < detached_recompute
+        < failed_recompute
+        < recovery_call
+    )
+    assert rollback.count("_document.rollbackCollaborationTransaction()") == 2
+    assert rollback.find(
+        "_document.rollbackCollaborationTransaction()", initial_rollback
+    ) == initial_rollback + len("autorollback=")
+    assert (
+        'openNativeCommitTransaction("Detachedrollbackstabilization",false)'
+        in rollback_literals
     )
 
 
@@ -598,7 +599,6 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         "false",
         "false",
         "CollaborationCompatibilityRecomputePolicy::Deferred",
-        "false",
         "false",
     ]
     assert 0 <= grant < grant_open < derived < grant_close < ordinary

@@ -13,6 +13,7 @@
 #include <Base/Exception.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -113,6 +114,37 @@ std::string pendingRecomputeDetail(App::Document& document, std::string message)
         message += "]";
     }
     return message;
+}
+
+std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
+    App::Document& document)
+{
+    const auto objects = document.getObjects();
+    std::unordered_set<App::DocumentObject*> selected;
+    selected.reserve(objects.size());
+    for (auto* object : objects) {
+        if (!object
+            || (!object->isTouched()
+                && !document.collaborationTransactionOwnsNewObject(*object))) {
+            continue;
+        }
+        selected.insert(object);
+        for (auto* dependent : object->getInListRecursive()) {
+            if (dependent && dependent->getDocument() == &document
+                && dependent->isAttachedToDocument()) {
+                selected.insert(dependent);
+            }
+        }
+    }
+
+    std::vector<App::DocumentObject*> targets;
+    targets.reserve(selected.size());
+    for (auto* object : objects) {
+        if (selected.contains(object)) {
+            targets.push_back(object);
+        }
+    }
+    return targets;
 }
 
 struct PostconditionObjectState
@@ -289,9 +321,78 @@ bool DocumentCommitCoordinator::commitNativeCommitTransaction(
 CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTransaction(
     const bool preservePendingRecompute) noexcept
 {
-    return preservePendingRecompute
-        ? _document.rollbackCollaborationTransactionPreservingPendingRecompute()
-        : _document.rollbackCollaborationTransaction();
+    auto rollback = _document.rollbackCollaborationTransaction();
+    if (!rollback.restored || preservePendingRecompute || !_document.mustExecute()) {
+        return rollback;
+    }
+    auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
+    if (recomputeTargets.empty()) {
+        return rollback;
+    }
+
+    const auto recordStabilizationFailure = [&](const char* stage,
+                                                const char* detail = nullptr) noexcept {
+        std::snprintf(rollback.diagnostic.data(),
+                      rollback.diagnostic.size(),
+                      "%s%s%s; exact pre-commit boundary restored",
+                      stage,
+                      detail ? ": " : "",
+                      detail ? detail : "");
+    };
+    const auto restoreFailedStabilization = [&]() noexcept {
+        if (!_document.hasPendingTransaction()) {
+            return true;
+        }
+        const auto recovery = _document.rollbackCollaborationTransaction();
+        if (recovery.restored) {
+            return true;
+        }
+        rollback = recovery;
+        return false;
+    };
+
+    try {
+        if (openNativeCommitTransaction("Detached rollback stabilization", false) == 0) {
+            recordStabilizationFailure("rollback stabilization transaction was refused");
+            return rollback;
+        }
+
+        bool recomputeHasError = false;
+        {
+            auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
+            static_cast<void>(
+                _document.recompute(recomputeTargets, true, &recomputeHasError));
+        }
+        if (recomputeHasError) {
+            if (restoreFailedStabilization()) {
+                recordStabilizationFailure("detached rollback stabilization failed");
+            }
+            return rollback;
+        }
+
+        _document.prepareCollaborationCommitFinalization();
+        if (!commitNativeCommitTransaction(false)) {
+            if (restoreFailedStabilization()) {
+                recordStabilizationFailure("rollback stabilization commit was refused");
+            }
+        }
+    }
+    catch (const Base::Exception& exception) {
+        if (restoreFailedStabilization()) {
+            recordStabilizationFailure("rollback stabilization failed", exception.what());
+        }
+    }
+    catch (const std::exception& exception) {
+        if (restoreFailedStabilization()) {
+            recordStabilizationFailure("rollback stabilization failed", exception.what());
+        }
+    }
+    catch (...) {
+        if (restoreFailedStabilization()) {
+            recordStabilizationFailure("rollback stabilization failed with an unknown exception");
+        }
+    }
+    return rollback;
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
@@ -314,7 +415,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitRecompute(const PreparedEd
         false,
         false,
         CollaborationCompatibilityRecomputePolicy::Deferred,
-        false,
         false);
 }
 
@@ -331,17 +431,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitCompatibilityWithPolicy(
     const bool structural,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy)
 {
-    return commitCompatibilityWithOptions(edit, structural, recomputePolicy, false);
+    return commitCompatibilityWithOptions(edit, structural, recomputePolicy);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitCompatibilityWithOptions(
     const PreparedEdit& edit,
     const bool structural,
-    const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool trustedStructural)
+    const CollaborationCompatibilityRecomputePolicy recomputePolicy)
 {
     return commitWithPreparationPolicyAndOptions(
-        edit, false, structural, recomputePolicy, trustedStructural);
+        edit, false, structural, recomputePolicy);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicy(
@@ -366,8 +465,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndRe
         edit,
         requireDetachedPreparationSupport,
         structuralCompatibility,
-        recomputePolicy,
-        false);
+        recomputePolicy);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions(
@@ -375,7 +473,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool trustedStructural,
     const bool retainUndoHistory)
 {
     if (!MainThreadSignalConfig::hasHooks()) {
@@ -388,7 +485,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 trustedStructural,
                                                  retainUndoHistory);
     }
     if (MainThreadSignalConfig::isMainThread()) {
@@ -396,7 +492,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 trustedStructural,
                                                  retainUndoHistory);
     }
 
@@ -415,7 +510,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
               requireDetachedPreparationSupport,
               structuralCompatibility,
               recomputePolicy,
-              trustedStructural,
               retainUndoHistory] {
                 try {
                     result.emplace(commitOnDocumentThreadWithOptions(
@@ -423,7 +517,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                         requireDetachedPreparationSupport,
                         structuralCompatibility,
                         recomputePolicy,
-                        trustedStructural,
                         retainUndoHistory));
                 }
                 catch (...) {
@@ -463,7 +556,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithRecomp
                                              requireDetachedPreparationSupport,
                                              structuralCompatibility,
                                              recomputePolicy,
-                                             false,
                                              true);
 }
 
@@ -628,7 +720,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool trustedStructural,
     const bool retainUndoHistory)
 {
     if (!_document.isCollaborationOwnerThread()) {
@@ -712,9 +803,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                   "one or more semantic revisions changed before commit",
                                   std::move(conflicts));
     }
-    // An eager recompute below is document-wide. Start only from a clean
-    // boundary so operation.apply() is the sole source of pending recompute
-    // work and the adapter's frozen publication closure remains complete.
+    // The eager recompute below is scoped to transaction-owned new objects
+    // and work made pending by operation.apply(), plus downstream dependents.
+    // Start only from a clean boundary so that scoped capture is complete.
     // Revision conflicts take precedence over this admission state so a
     // changed dependency still receives the more precise terminal result.
     const bool preexistingPendingRecompute = _document.mustExecute();
@@ -916,21 +1007,14 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool recomputeHasError = false;
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager) {
         try {
-            auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
-            if (structuralCompatibility) {
-                auto grant = _document.openCollaborationStructuralRecomputeGrant(
-                    trustedStructural);
-                // Temporary coordinator-owned compatibility kill switch:
-                // transaction-local structural callbacks can contain native
-                // objects whose exact dynamic type is intentionally not
-                // serializable. The grant still distinguishes trusted schema
-                // mutation from untrusted execute-time attempts. CC-WP13
-                // removes this live compatibility path after qualification.
-                static_cast<void>(
-                    _document.recomputeLegacy({}, true, &recomputeHasError, 0));
+            auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
+            if (recomputeTargets.empty()) {
+                _document.finalizeEmptyDetachedRecompute();
             }
             else {
-                static_cast<void>(_document.recompute({}, true, &recomputeHasError));
+                auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
+                static_cast<void>(
+                    _document.recompute(recomputeTargets, true, &recomputeHasError));
             }
         }
         catch (const Base::Exception& exception) {

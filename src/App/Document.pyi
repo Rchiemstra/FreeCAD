@@ -343,7 +343,6 @@ class Document(PropertyContainer):
         structural: bool = False,
         recompute: bool = True,
         postcondition: Callable[[], object] | None = None,
-        trusted_structural: bool = False,
         object_name: str | None = None,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
@@ -352,7 +351,6 @@ class Document(PropertyContainer):
         ``object_name`` selects Gui-parity ObjectModel publication for that object.
         ``recompute=False`` preserves pending recompute work for recovery mutations.
         The optional postcondition runs once before publication; a false result rolls back.
-        ``trusted_structural`` only widens the coordinator-owned recompute scope.
         """
         ...
 
