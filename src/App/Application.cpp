@@ -221,113 +221,6 @@ namespace fs = std::filesystem;
 namespace
 {
 
-RecomputeRequest takeNextRecomputeRequest(std::deque<RecomputeRequest>& requests)
-{
-    RecomputeRequest request = std::move(requests.front());
-    requests.pop_front();
-    return request;
-}
-
-bool requestTargetsDocument(const RecomputeRequest& request, const std::string& documentName)
-{
-    return request.documentName == documentName;
-}
-
-bool documentCanRecomputeOnWorker(const Document& document)
-{
-    try {
-        const auto& objects = document.getObjects();
-        std::vector<DocumentObject*> recomputeRoots(objects.begin(), objects.end());
-        const auto recomputeObjects = Document::getDependencyList(recomputeRoots, Document::DepSort);
-
-        return std::ranges::all_of(recomputeObjects, [](const DocumentObject* object) {
-            return object && object->canRecomputeOnWorker();
-        });
-    }
-    catch (const Base::BadGraphError&) {
-        return false;
-    }
-}
-
-void reportRecomputeException(const Base::Exception& exception)
-{
-    if (App::MainThreadSignalConfig::hasHooks()) {
-        if (auto* app = QCoreApplication::instance()) {
-            QMetaObject::invokeMethod(
-                app,
-                [exception]() mutable { exception.reportException(); },
-                Qt::QueuedConnection
-            );
-            return;
-        }
-    }
-
-    exception.reportException();
-}
-
-RecomputeResult processRecomputeRequestUnserialized(RecomputeRequest& request)
-{
-    RecomputeResult result;
-
-    try {
-        Document* document = request.resolveDocument();
-        if (!request.documentName.empty() && !document) {
-            throw Base::RuntimeError(
-                "recompute target document instance is no longer live");
-        }
-        if (document) {
-            bool recomputeHasError = false;
-            document->recompute({}, request.force, &recomputeHasError, request.options);
-            if (recomputeHasError) {
-                result.success = false;
-                result.failure = RecomputeFailure::Exception;
-                result.exception = std::make_unique<Base::RuntimeError>(
-                    "document recompute did not complete successfully");
-            }
-        }
-
-        DocumentObject* documentObject = request.documentObjectName.empty() || !document
-            ? nullptr
-            : document->getObject(request.documentObjectName.c_str());
-        if (!request.documentObjectName.empty() && !documentObject) {
-            throw Base::RuntimeError(
-                "recompute target object is no longer live");
-        }
-        if (documentObject && !documentObject->recomputeFeature(request.recursive)) {
-            result.success = false;
-            result.failure = RecomputeFailure::Exception;
-            if (!result.exception) {
-                result.exception = std::make_unique<Base::RuntimeError>(
-                    "document object recompute did not complete successfully");
-            }
-        }
-    }
-    catch (Base::BadGraphError& exception) {
-        result.exception = std::make_unique<Base::BadGraphError>(std::move(exception));
-        result.failure = RecomputeFailure::DependencyCycle;
-        result.success = false;
-    }
-    catch (Base::Exception& exception) {
-        reportRecomputeException(exception);
-        result.exception = std::make_unique<Base::Exception>(std::move(exception));
-        result.failure = RecomputeFailure::Exception;
-        result.success = false;
-    }
-    catch (const std::exception& exception) {
-        result.exception = std::make_unique<Base::RuntimeError>(exception.what());
-        result.failure = RecomputeFailure::Exception;
-        result.success = false;
-    }
-    catch (...) {
-        result.exception =
-            std::make_unique<Base::RuntimeError>("unknown recompute failure");
-        result.failure = RecomputeFailure::Exception;
-        result.success = false;
-    }
-
-    return result;
-}
-
 void reportIrrevocableCloseFailure(const char* phase, const char* detail) noexcept
 {
     try {
@@ -370,66 +263,6 @@ Base::ConsoleObserverFile *Application::_pConsoleObserverFile = nullptr;
 
 AppExport std::map<std::string, std::string> Application::mConfig;
 std::unique_ptr<ApplicationDirectories> Application::_appDirs;
-
-RecomputeRequest RecomputeRequest::fromDocument(const Document& document, bool force, int options)
-{
-    RecomputeRequest request;
-    request.documentName = document.getName();
-    const auto identity = document.collaborationIdentity();
-    request.documentInstanceId = identity.instanceId;
-    request.documentLifecycleEpoch = identity.lifecycleEpoch;
-    request.force = force;
-    request.options = options;
-    return request;
-}
-
-RecomputeRequest RecomputeRequest::fromDocumentObject(const DocumentObject& documentObject, bool recursive)
-{
-    RecomputeRequest request;
-
-    if (const Document* document = documentObject.getDocument()) {
-        request.documentName = document->getName();
-        const auto identity = document->collaborationIdentity();
-        request.documentInstanceId = identity.instanceId;
-        request.documentLifecycleEpoch = identity.lifecycleEpoch;
-    }
-
-    request.documentObjectName = documentObject.getNameInDocument();
-    request.recursive = recursive;
-    return request;
-}
-
-Document* RecomputeRequest::resolveDocument() const
-{
-    if (documentName.empty()) {
-        return nullptr;
-    }
-
-    Document* document = GetApplication().getDocument(documentName.c_str());
-    if (!document || documentInstanceId == 0 || documentLifecycleEpoch == 0) {
-        return nullptr;
-    }
-    const auto identity = document->collaborationIdentity();
-    return identity.state == DocumentLifecycleState::Live
-            && identity.instanceId == documentInstanceId
-            && identity.lifecycleEpoch == documentLifecycleEpoch
-        ? document
-        : nullptr;
-}
-
-DocumentObject* RecomputeRequest::resolveDocumentObject() const
-{
-    if (documentObjectName.empty()) {
-        return nullptr;
-    }
-
-    if (Document* document = resolveDocument()) {
-        return document->getObject(documentObjectName.c_str());
-    }
-
-    return nullptr;
-}
-
 
 //**************************************************************************
 // Construction and destruction
@@ -512,24 +345,11 @@ Application::Application(std::map<std::string,std::string> &mConfig)
         _geometryJobManager->startProcessBackend(
             Internal::GeometryProcessBackendOptions {});
     }
-    // The legacy live-document recompute worker is intentionally dormant.
-    // queueRecomputeRequest() below routes through Document's coordinator-backed
-    // compatibility facade on the document/GUI owner thread.
-    _stopRecomputeThread = true;
-
     setupPythonTypes();
 }
 
 Application::~Application()
 {
-    // Signal the recompute worker thread to stop and join it.
-    _stopRecomputeThread = true;
-    _recomputeRequestAvailable.notify_all();
-
-    if (_recomputeThread.joinable()) {
-        _recomputeThread.join();
-    }
-
     _geometryJobManager.reset();
     _preparedEditExecutor.reset();
 }
@@ -716,16 +536,6 @@ Document* Application::newDocument(const char * proposedName, const char * propo
         }
     }
 
-    // A successful close leaves a recompute-admission tombstone until the
-    // document name is intentionally reused. Clear it before constructing the
-    // new instance; no callback targeting the destroyed instance can then run
-    // during the close/destructor boundary.
-    {
-        std::lock_guard recomputeState(_recomputeMutex);
-        _recomputeDocumentsClosing.erase(name);
-        _recomputeDocumentsSealed.erase(name);
-    }
-
     // Determine the document's Label
     std::string label;
     if (!Base::Tools::isNullOrEmpty(proposedLabel)) {
@@ -814,31 +624,6 @@ bool Application::closeDocument(const char* name)
 {
     enforceCollaborationLifecycleMutationAllowed();
 
-    const std::string documentName(name);
-
-    // Serialize close admission by stable document name before consulting the
-    // unprotected document map. This gate also makes recompute admission fail
-    // before it can resolve a live pointer for a document being closed.
-    {
-        std::lock_guard recomputeState(_recomputeMutex);
-        if (!_recomputeDocumentsClosing.insert(documentName).second) {
-            return false;
-        }
-    }
-    if (const auto hook = _postRecomputeClosingAdmissionTestHook.load(
-            std::memory_order_acquire)) {
-        hook();
-    }
-    bool recomputeCloseGateActive = true;
-    BOOST_SCOPE_EXIT_ALL(&) {
-        if (recomputeCloseGateActive) {
-            std::lock_guard recomputeState(_recomputeMutex);
-            _recomputeDocumentsClosing.erase(documentName);
-            _recomputeDocumentsSealed.erase(documentName);
-            _recomputeStateChanged.notify_all();
-        }
-    };
-
     auto pos = DocMap.find(name);
     if (pos == DocMap.end()) {  // no such document
         return false;
@@ -893,43 +678,6 @@ bool Application::closeDocument(const char* name)
         collaborationAccessGateSealed = true;
     }
 
-    // Rejected callbacks that entered after Closing was announced above are
-    // activity-counted. Seal further callback admission and remove queued
-    // work atomically, so the worker cannot acquire new document-dependent
-    // activity after this check.
-    bool recomputeActivityAtSeal = false;
-    {
-        std::lock_guard recomputeState(_recomputeMutex);
-        _recomputeDocumentsSealed.insert(documentName);
-        std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
-            return requestTargetsDocument(request, documentName);
-        });
-        recomputeActivityAtSeal =
-            _recomputeDocumentActivityCounts.contains(documentName);
-    }
-
-    // An active service call may own the document serialization mutex while
-    // running observers; an active recompute may be waiting for that mutex.
-    // A close must not wait between them. If recompute is already active,
-    // atomically pre-seal an idle service gate or reject this close attempt.
-    if (recomputeActivityAtSeal && !collaborationAccessGateSealed) {
-        std::lock_guard lock(collaborationLifetimeGate->mutex);
-        if (collaborationLifetimeGate->activeAccesses != 0) {
-            return false;
-        }
-        collaborationLifetimeGate->sealed = true;
-        collaborationAccessGateSealed = true;
-    }
-
-    if (!cancelRecomputeRequestsForDocument(documentName)) {
-        return false;
-    }
-
-    pos = DocMap.find(name);
-    if (pos == DocMap.end()) {  // it may have been closed while we waited
-        return false;
-    }
-
     // Serialize final lifecycle admission with commit and capture admission.
     // The identity is marked closing before this lock is released, so no new
     // collaboration operation can enter after this point.
@@ -976,9 +724,9 @@ bool Application::closeDocument(const char* name)
     }
     serialized.unlock();
 
-    // Do not hold the document serialization mutex, recompute mutex, GUI lock,
-    // GIL, or any global lock while admitted service calls observe Closing and
-    // unwind. The sealed gate prevents a zero-count/new-admission race.
+    // Do not hold the document serialization mutex, GUI lock, GIL, or any
+    // global lock while admitted service calls observe Closing and unwind.
+    // The sealed gate prevents a zero-count/new-admission race.
     {
         std::unique_lock lock(collaborationLifetimeGate->mutex);
         collaborationLifetimeGate->changed.wait(lock, [&] {
@@ -1034,18 +782,13 @@ bool Application::closeDocument(const char* name)
     runIrrevocableCloseStep(
         "post-delete observer notification", [&] { signalDeletedDocument(); });
 
-    // Keep both admission seals active until Document and its collaboration
-    // service have actually been destroyed.
+    // Keep collaboration admission sealed until Document and its service have
+    // actually been destroyed.
     delDoc.reset();
     runIrrevocableCloseStep("collaboration service unregister", [&] {
         unregisterCollaborationServiceLifetime(collaborationService);
     });
     collaborationAccessGateSealed = false;
-    // Keep a name-keyed tombstone after destruction. newDocument() removes it
-    // only when a new instance intentionally reuses this name.
-    recomputeCloseGateActive = false;
-    _recomputeStateChanged.notify_all();
-
     return true;
 }
 
@@ -1234,15 +977,6 @@ bool Application::isClosingAll() const {
     return _isClosingAll;
 }
 
-bool Application::isAsyncRecomputeEnabled()
-{
-    static const ParameterGrp::handle hGrp = GetParameterGroupByPath(
-        "User parameter:BaseApp/Preferences/Document"
-    );
-    bool enableAsyncRecompute = hGrp->GetBool("EnableAsyncRecompute", true);
-    return enableAsyncRecompute;
-}
-
 bool Application::isFineGrainedRecomputeEnabled()
 {
     static const ParameterGrp::handle hGrp = GetParameterGroupByPath(
@@ -1250,16 +984,6 @@ bool Application::isFineGrainedRecomputeEnabled()
     );
     bool enableFineGrainedRecompute = hGrp->GetBool("FineGrainedRecompute");
     return enableFineGrainedRecompute;
-}
-
-bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
-{
-    if (DocumentObject* documentObject = req.resolveDocumentObject()) {
-        return documentObject->canRecomputeOnWorker();
-    }
-
-    Document* document = req.resolveDocument();
-    return !document || documentCanRecomputeOnWorker(*document);
 }
 
 PreparedEditExecutor& Application::preparedEditExecutor() noexcept
@@ -1305,143 +1029,6 @@ void Application::unregisterCollaborationServiceLifetime(
 {
     std::lock_guard lock(_collaborationServiceLifetimeMutex);
     _collaborationServiceLifetimeGates.erase(service);
-}
-
-RecomputeResult Application::processRecomputeRequestSerialized(RecomputeRequest& request)
-{
-    if (Document* document = request.resolveDocument()) {
-        // The recompute queue mutex is never held here. Stable capture and
-        // commit use the same document mutex, so live recompute cannot overlap
-        // either boundary and no executor/recompute lock cycle is introduced.
-        std::lock_guard serialized(document->collaborationCommitMutex());
-        return processRecomputeRequestUnserialized(request);
-    }
-    return processRecomputeRequestUnserialized(request);
-}
-
-void Application::queueRecomputeRequest(RecomputeRequest req)
-{
-    const std::string documentName = req.documentName;
-    const std::thread::id activityOwner = std::this_thread::get_id();
-    bool rejectedAtAdmission = false;
-    if (!documentName.empty()) {
-        std::lock_guard lock(_recomputeMutex);
-        if (_recomputeDocumentsSealed.contains(documentName)) {
-            return;
-        }
-        ++_recomputeDocumentActivityCounts[documentName];
-        ++_recomputeDocumentActivityOwners[documentName][activityOwner];
-        rejectedAtAdmission = _recomputeDocumentsClosing.contains(documentName);
-    }
-
-    auto request = std::make_shared<RecomputeRequest>(std::move(req));
-    auto execute = [this,
-                    request,
-                    documentName,
-                    activityOwner,
-                    rejectedAtAdmission]() mutable {
-        RecomputeResult result;
-        bool rejected = rejectedAtAdmission;
-        if (!rejected && !documentName.empty()) {
-            std::lock_guard lock(_recomputeMutex);
-            rejected = _recomputeDocumentsClosing.contains(documentName)
-                || _recomputeDocumentsSealed.contains(documentName);
-        }
-        if (rejected) {
-            result.success = false;
-            result.failure = RecomputeFailure::Exception;
-            result.exception =
-                std::make_unique<Base::RuntimeError>("document is closing");
-        }
-        else {
-            result = processRecomputeRequestSerialized(*request);
-        }
-
-        if (request->callback) {
-            try {
-                request->callback(*request, result);
-            }
-            catch (const std::exception& exception) {
-                Base::Console().error(
-                    "Unhandled coordinator recompute callback exception: %s\n",
-                    exception.what());
-            }
-            catch (...) {
-                Base::Console().error(
-                    "Unhandled coordinator recompute callback exception\n");
-            }
-        }
-
-        if (!documentName.empty()) {
-            std::lock_guard lock(_recomputeMutex);
-            const auto activity = _recomputeDocumentActivityCounts.find(documentName);
-            if (activity != _recomputeDocumentActivityCounts.end()
-                && --activity->second == 0) {
-                _recomputeDocumentActivityCounts.erase(activity);
-            }
-            const auto owners = _recomputeDocumentActivityOwners.find(documentName);
-            if (owners != _recomputeDocumentActivityOwners.end()) {
-                const auto owner = owners->second.find(activityOwner);
-                if (owner != owners->second.end() && --owner->second == 0) {
-                    owners->second.erase(owner);
-                }
-                if (owners->second.empty()) {
-                    _recomputeDocumentActivityOwners.erase(owners);
-                }
-            }
-            _recomputeStateChanged.notify_all();
-        }
-    };
-
-    // EnableAsyncRecompute is now only a coordinator-backed scheduling kill
-    // switch. It cannot reactivate the removed live-document worker.
-    if (!rejectedAtAdmission && isAsyncRecomputeEnabled()
-        && canRecomputeRequestOnWorker(*request)
-        && MainThreadSignalConfig::hasHooks() && QCoreApplication::instance()) {
-        QMetaObject::invokeMethod(QCoreApplication::instance(),
-                                  std::move(execute),
-                                  Qt::QueuedConnection);
-        return;
-    }
-    execute();
-}
-
-bool Application::cancelRecomputeRequestsForDocument(const std::string& documentName)
-{
-    if (documentName.empty()) {
-        return true;
-    }
-
-    std::unique_lock<std::mutex> lock(_recomputeMutex);
-    // Close seals admission before calling this helper. Remove queued work
-    // before waiting so the worker cannot turn it into document activity.
-    std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
-        return requestTargetsDocument(request, documentName);
-    });
-    const std::thread::id caller = std::this_thread::get_id();
-    const auto callerOwnsActivity = [this, &documentName, &caller] {
-        const auto documentOwners =
-            _recomputeDocumentActivityOwners.find(documentName);
-        return documentOwners != _recomputeDocumentActivityOwners.end()
-            && documentOwners->second.contains(caller);
-    };
-    const auto ownerThreadCannotWait = [this, &documentName] {
-        return MainThreadSignalConfig::hasHooks()
-            && MainThreadSignalConfig::isMainThread()
-            && _recomputeDocumentActivityCounts.contains(documentName);
-    };
-    _recomputeStateChanged.wait(lock, [this,
-                                       &documentName,
-                                       &callerOwnsActivity,
-                                       &ownerThreadCannotWait] {
-        return !_recomputeDocumentActivityCounts.contains(documentName)
-            || callerOwnsActivity() || ownerThreadCannotWait();
-    });
-    if (callerOwnsActivity() || ownerThreadCannotWait()) {
-        return false;
-    }
-
-    return true;
 }
 
 struct DocTiming {
@@ -3779,97 +3366,6 @@ void Application::runApplication()
     }
     else {
         Base::Console().log("Unknown Run mode (%d) in main()?!?\n\n", mConfig["RunMode"].c_str());
-    }
-}
-
-void Application::notifyRecomputeWorker()
-{
-    _recomputeRequestAvailable.notify_one();
-}
-
-void Application::recomputeWorker()
-{
-    while (!_stopRecomputeThread) {
-        std::unique_lock<std::mutex> lock(_recomputeMutex);
-        // Wait until either stop is signaled or there is at least one pending request.
-        _recomputeRequestAvailable.wait(lock, [this] {
-            return _stopRecomputeThread || !_recomputeRequests.empty();
-        });
-        if (_stopRecomputeThread) {
-            break;
-        }
-
-        // Process all pending recompute requests.
-        while (!_recomputeRequests.empty()) {
-            RecomputeRequest request = takeNextRecomputeRequest(_recomputeRequests);
-            if (!request.documentName.empty()) {
-                ++_recomputeDocumentActivityCounts[request.documentName];
-                ++_recomputeDocumentActivityOwners[request.documentName]
-                                                  [std::this_thread::get_id()];
-                _recomputeStateChanged.notify_all();
-            }
-
-            // Unlock while processing to allow other threads to add new requests.
-            lock.unlock();
-            bool activityRegistered = !request.documentName.empty();
-            const auto finishWorkerActivity = [&] {
-                lock.lock();
-                const auto found =
-                    _recomputeDocumentActivityCounts.find(request.documentName);
-                if (found != _recomputeDocumentActivityCounts.end()
-                    && --found->second == 0) {
-                    _recomputeDocumentActivityCounts.erase(found);
-                }
-                const auto documentOwners =
-                    _recomputeDocumentActivityOwners.find(request.documentName);
-                if (documentOwners != _recomputeDocumentActivityOwners.end()) {
-                    const auto owner = documentOwners->second.find(
-                        std::this_thread::get_id());
-                    if (owner != documentOwners->second.end()
-                        && --owner->second == 0) {
-                        documentOwners->second.erase(owner);
-                    }
-                    if (documentOwners->second.empty()) {
-                        _recomputeDocumentActivityOwners.erase(documentOwners);
-                    }
-                }
-                _recomputeStateChanged.notify_all();
-                lock.unlock();
-            };
-            BOOST_SCOPE_EXIT_ALL(&) {
-                if (activityRegistered) {
-                    finishWorkerActivity();
-                }
-            };
-
-            RecomputeResult result = processRecomputeRequestSerialized(request);
-
-            // Keep the document activity registered through arbitrary callback
-            // code. A recursive close from the callback observes ownership and
-            // rejects instead of self-waiting; an external close drains this
-            // activity before the document becomes deletable.
-            if (request.callback) {
-                try {
-                    request.callback(request, result);
-                }
-                catch (const std::exception& exception) {
-                    Base::Console().error(
-                        "Unhandled asynchronous recompute callback exception: %s\n",
-                        exception.what());
-                }
-                catch (...) {
-                    Base::Console().error(
-                        "Unhandled unknown asynchronous recompute callback exception\n");
-                }
-            }
-
-            if (activityRegistered) {
-                finishWorkerActivity();
-                activityRegistered = false;
-            }
-
-            lock.lock();
-        }
     }
 }
 

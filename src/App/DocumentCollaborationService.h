@@ -101,7 +101,6 @@ struct AppExport CollaborationCompatibilityMutationOptions
 {
     CollaborationCompatibilityRecomputePolicy recomputePolicy {
         CollaborationCompatibilityRecomputePolicy::Eager};
-    bool trustedStructural {false};
     CollaborationCompatibilityPostcondition postcondition;
 };
 

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 add_executable(App_tests_run
-        AsyncRecompute.cpp
         Application.cpp
         ApplicationDirectories.cpp
         BackupPolicy.cpp

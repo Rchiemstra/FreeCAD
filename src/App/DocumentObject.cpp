@@ -1892,17 +1892,15 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
             && !prop.testStatus(Property::PropNoPersist);
         if (affectsPersistence) {
             // Existing-object status changes are not part of Transaction's
-            // property payload and therefore remain sticky unless the
-            // compatibility coordinator snapshots its narrow trusted editor
-            // status grant. A transaction-owned new object is removed as a
-            // whole on abort/undo, including its serialized property status.
+            // property payload and therefore remain sticky. A
+            // transaction-owned new object is removed as a whole on
+            // abort/undo, including its serialized property status.
             const bool transactionOwnedNewObject =
                 Internal::CollaborationStructuralMutationRecorder::
                     isTransactionOwnedNewObject(*getDocument(), *this);
             getDocument()->markFileChange(
                 DocumentFileChange::Model,
-                (getDocument()->collaborationTrustedPropertyStatusMutationActive()
-                 || transactionOwnedNewObject)
+                transactionOwnedNewObject
                     ? DocumentFileChangeOwnership::AutoTransaction
                     : DocumentFileChangeOwnership::Sticky);
         }

@@ -1710,7 +1710,6 @@ protected:
                                      bool clearFailure,
                                      std::string canonicalPath) noexcept;
     void restoreTransactionFileState(int transactionId, bool after);
-    void restoreTransactionPropertyStatusState(int transactionId, bool after);
     void discardTransactionFileState(int transactionId);
     [[nodiscard]] bool shouldTrackFileChange(const Property* property) const;
     void emitFileChangeStateIfChanged(DocumentFileState previousState,
@@ -1826,8 +1825,7 @@ private:
     {
         Restricted,
         Object,
-        DynamicPropertyOnNewObject,
-        TrustedPropertyEditorStatus
+        DynamicPropertyOnNewObject
     };
     class AppExport CollaborationStructuralMutationGrant final
     {
@@ -1839,21 +1837,6 @@ private:
             const CollaborationStructuralMutationGrant&) = delete;
         CollaborationStructuralMutationGrant& operator=(
             const CollaborationStructuralMutationGrant&) = delete;
-
-    private:
-        Document& _document;
-    };
-
-    class AppExport CollaborationStructuralRecomputeGrant final
-    {
-    public:
-        CollaborationStructuralRecomputeGrant(Document& document, bool trustedStructural);
-        ~CollaborationStructuralRecomputeGrant();
-
-        CollaborationStructuralRecomputeGrant(
-            const CollaborationStructuralRecomputeGrant&) = delete;
-        CollaborationStructuralRecomputeGrant& operator=(
-            const CollaborationStructuralRecomputeGrant&) = delete;
 
     private:
         Document& _document;
@@ -1976,12 +1959,8 @@ private:
         const std::vector<DocumentRevisionPublicationRequest>& effects);
     void recordCollaborationObservedStructuralMutation(
         const PropertyContainer& container);
-    void recordCollaborationTrustedPropertyStatusBoundary(Property& property,
-                                                          unsigned long newStatus);
     [[nodiscard]] CollaborationStructuralMutationGrant
     openCollaborationStructuralMutationGrant();
-    [[nodiscard]] CollaborationStructuralRecomputeGrant
-    openCollaborationStructuralRecomputeGrant(bool trustedStructural);
     [[nodiscard]] CollaborationDeferredRecomputeFence
     openCollaborationDeferredRecomputeFence();
     [[nodiscard]] CollaborationDerivedRecomputeGrant
@@ -1989,7 +1968,6 @@ private:
     [[nodiscard]] CollaborationRecomputeStableNotificationDeferral
     openCollaborationRecomputeStableNotificationDeferral();
     [[nodiscard]] bool collaborationDerivedRecomputeGranted() const noexcept;
-    [[nodiscard]] bool collaborationTrustedPropertyStatusMutationActive() const noexcept;
     [[nodiscard]] bool collaborationStructuralImportDeferralRequired() const noexcept;
     [[nodiscard]] bool collaborationImportBoundaryActive() const noexcept;
     [[nodiscard]] CollaborationImportDeferralScope
@@ -2035,16 +2013,9 @@ private:
     [[nodiscard]] bool discardCollaborationTransientObjectNotifications(
         DocumentObject& object);
     void finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot);
+    void finalizeEmptyDetachedRecompute();
     void finalizeCollaborationRecomputeTeardown();
-    int recomputeLegacy(const std::vector<DocumentObject*>& objs,
-                        bool force,
-                        bool* hasError,
-                        int options);
     CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
-    CollaborationRollbackResult
-    rollbackCollaborationTransactionPreservingPendingRecompute() noexcept;
-    CollaborationRollbackResult rollbackCollaborationTransactionImpl(
-        bool stabilize) noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);
 

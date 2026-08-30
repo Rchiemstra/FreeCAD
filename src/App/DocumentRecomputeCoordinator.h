@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -120,6 +121,7 @@ public:
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> status(
         DocumentRecomputeId id) const;
     [[nodiscard]] bool hasPendingWork() const;
+    [[nodiscard]] bool hasUnresolvedWork() const;
 
 private:
     friend class RecomputeHandle;
@@ -136,6 +138,7 @@ private:
     mutable std::recursive_mutex _operationMutex;
     mutable std::mutex _stateMutex;
     std::map<DocumentRecomputeId, std::unique_ptr<Job>> _jobs;
+    std::set<std::string> _unresolvedFeatures;
     DocumentRecomputeId _nextId {1};
     bool _operationActive {false};
 };

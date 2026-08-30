@@ -70,11 +70,8 @@ void CollaborationStructuralMutationRecorder::ensurePropertySchemaMutationAllowe
     const PropertyContainer& container)
 {
     const auto* object = dynamic_cast<const DocumentObject*>(&container);
-    const bool recomputeOwnsNewObject = !document.d->collaborationCompatibilityRecomputeMutationGranted
-        || document.d->collaborationCompatibilityRecomputeSourceObject == object;
     const auto kind = object && object->getDocument() == &document
             && document.containsObject(object) && isNewStructuralObject(*document.d, *object)
-            && recomputeOwnsNewObject
         ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
         : Document::CollaborationStructuralMutationKind::Restricted;
     std::string mutation = "propertySchema on ";
@@ -96,26 +93,15 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
 {
     auto* container = property.getContainer();
     const auto* object = dynamic_cast<const DocumentObject*>(container);
-    constexpr unsigned long editorStatusMask =
-        (1UL << Property::ReadOnly) | (1UL << Property::Hidden);
-    const unsigned long changedStatus = oldStatus ^ newStatus;
+    static_cast<void>(oldStatus);
+    static_cast<void>(newStatus);
     const bool attachedStructuralObject = object && object->getDocument() == &document
         && document.containsObject(object);
     const bool newStructuralObject = attachedStructuralObject
         && isNewStructuralObject(*document.d, *object);
-    const auto* recomputeSource =
-        document.d->collaborationCompatibilityRecomputeSourceObject;
-    const bool recomputeOwnsNewObject =
-        !document.d->collaborationCompatibilityRecomputeMutationGranted
-        || recomputeSource == object;
-    const bool trustedNewObjectExecute = recomputeSource
-        && isNewStructuralObject(*document.d, *recomputeSource);
-    const auto kind = newStructuralObject && recomputeOwnsNewObject
+    const auto kind = newStructuralObject
         ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
-        : (attachedStructuralObject && trustedNewObjectExecute && changedStatus != 0
-               && (changedStatus & ~editorStatusMask) == 0
-               ? Document::CollaborationStructuralMutationKind::TrustedPropertyEditorStatus
-               : Document::CollaborationStructuralMutationKind::Restricted);
+        : Document::CollaborationStructuralMutationKind::Restricted;
     std::string mutation = "propertyStatus on ";
     if (object) {
         const char* objectName = object->getNameInDocument();
@@ -132,9 +118,6 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
         mutation += propertyName;
     }
     document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
-    if (kind == Document::CollaborationStructuralMutationKind::TrustedPropertyEditorStatus) {
-        document.recordCollaborationTrustedPropertyStatusBoundary(property, newStatus);
-    }
 }
 
 bool CollaborationStructuralMutationRecorder::isTransactionOwnedNewObject(

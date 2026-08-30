@@ -788,7 +788,6 @@ void Document::recordCollaborationObservedStructuralEffects(
     const std::vector<DocumentRevisionPublicationRequest>& effects)
 {
     if (!d->collaborationCompatibilityStructuralMutationGranted
-        && !d->collaborationCompatibilityRecomputeMutationGranted
         && !d->collaborationSpreadsheetRecomputeSchemaObject) {
         return;
     }
@@ -1025,23 +1024,9 @@ void Document::ensureCollaborationStructuralMutationAllowed(
         && !d->collaborationAtomicPresentationAuditActive
         && !d->collaborationCommitPoisoned
         && !d->collaborationReplayingNotifications;
-    const bool recomputeGrant =
-        (kind == CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
-         || (kind == CollaborationStructuralMutationKind::TrustedPropertyEditorStatus
-             && d->collaborationCompatibilityTrustedStructuralMutationGranted))
-        && d->collaborationCompatibilityRecomputeMutationGranted
-        && isCollaborationOwnerThread()
-        && d->collaborationCommitNotificationBarrier
-        && d->activeUndoTransaction
-        && d->suppressCollaborationRevisionPublication
-        && d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) == 1
-        && !d->collaborationAtomicPresentationAuditActive
-        && !d->collaborationCommitPoisoned
-        && !d->collaborationReplayingNotifications;
-    const bool compatibilityGrant = applyGrant || recomputeGrant;
     if ((d->collaborationCommitNotificationBarrier
          || collaborationLifecycleMutationBlocked())
-        && !compatibilityGrant) {
+        && !applyGrant) {
         const char* kindName = "Unknown";
         switch (kind) {
             case CollaborationStructuralMutationKind::Restricted:
@@ -1052,9 +1037,6 @@ void Document::ensureCollaborationStructuralMutationAllowed(
                 break;
             case CollaborationStructuralMutationKind::DynamicPropertyOnNewObject:
                 kindName = "DynamicPropertyOnNewObject";
-                break;
-            case CollaborationStructuralMutationKind::TrustedPropertyEditorStatus:
-                kindName = "TrustedPropertyEditorStatus";
                 break;
         }
         std::stringstream message;
@@ -1151,7 +1133,7 @@ Document::CollaborationSpreadsheetRecomputeSchemaScope::
         || state.collaborationCommitPoisoned
         || object.getDocument() != document
         || !document->containsObject(&object)
-        || (!authoritativeCommitRecompute && !state.collaborationRollbackStabilizing)) {
+        || !authoritativeCommitRecompute) {
         throw Base::RuntimeError(
             "spreadsheet transient schema requires the authoritative collaboration recompute");
     }
@@ -1250,55 +1232,10 @@ void Document::emitCollaborationBecameStable() const
     d->collaborationStableNotificationDepth.fetch_sub(1, std::memory_order_release);
 }
 
-Document::CollaborationStructuralRecomputeGrant::CollaborationStructuralRecomputeGrant(
-    Document& document,
-    const bool trustedStructural)
-    : _document(document)
-{
-    auto& state = *document.d;
-    if (!document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "structural recompute grant requires the document owner thread");
-    }
-    if (!state.collaborationCommitNotificationBarrier || !state.activeUndoTransaction
-        || !state.suppressCollaborationRevisionPublication) {
-        throw Base::RuntimeError(
-            "structural recompute grant requires the coordinator commit boundary");
-    }
-    if (state.collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 1) {
-        throw Base::RuntimeError(
-            "structural recompute grant is blocked by a foreign stable read");
-    }
-    if (state.collaborationCompatibilityStructuralMutationGranted
-        || state.collaborationCompatibilityRecomputeMutationGranted) {
-        throw Base::RuntimeError("structural recompute grant is not reentrant");
-    }
-    if (state.collaborationAtomicPresentationAuditActive || state.collaborationCommitPoisoned
-        || state.collaborationReplayingNotifications || state.rollback) {
-        throw Base::RuntimeError(
-            "structural recompute grant is unavailable in the current coordinator state");
-    }
-    state.collaborationCompatibilityRecomputeMutationGranted = true;
-    state.collaborationCompatibilityTrustedStructuralMutationGranted = trustedStructural;
-}
-
-Document::CollaborationStructuralRecomputeGrant::~CollaborationStructuralRecomputeGrant()
-{
-    _document.d->collaborationCompatibilityRecomputeSourceObject = nullptr;
-    _document.d->collaborationCompatibilityTrustedStructuralMutationGranted = false;
-    _document.d->collaborationCompatibilityRecomputeMutationGranted = false;
-}
-
 Document::CollaborationStructuralMutationGrant
 Document::openCollaborationStructuralMutationGrant()
 {
     return CollaborationStructuralMutationGrant(*this);
-}
-
-Document::CollaborationStructuralRecomputeGrant
-Document::openCollaborationStructuralRecomputeGrant(const bool trustedStructural)
-{
-    return CollaborationStructuralRecomputeGrant(*this, trustedStructural);
 }
 
 Document::CollaborationDeferredRecomputeFence::CollaborationDeferredRecomputeFence(
@@ -1397,47 +1334,6 @@ Document::openCollaborationRecomputeStableNotificationDeferral()
     return CollaborationRecomputeStableNotificationDeferral(*this);
 }
 
-bool Document::collaborationTrustedPropertyStatusMutationActive() const noexcept
-{
-    return d->collaborationCompatibilityRecomputeMutationGranted
-        && d->collaborationCompatibilityTrustedStructuralMutationGranted;
-}
-
-void Document::recordCollaborationTrustedPropertyStatusBoundary(
-    Property& property,
-    const unsigned long newStatus)
-{
-    if (!collaborationTrustedPropertyStatusMutationActive()) {
-        return;
-    }
-    auto* object = dynamic_cast<DocumentObject*>(property.getContainer());
-    const char* propertyName = property.getName();
-    if (!object || object->getDocument() != this || !containsObject(object)
-        || !propertyName || !*propertyName) {
-        throw Base::RuntimeError(
-            "trusted property-status mutation has no stable document owner");
-    }
-    const auto objectId = object->getID();
-    const auto propertyId = property.getID();
-    const auto found = std::ranges::find_if(
-        d->collaborationBoundaryPropertyStatusStates,
-        [objectId,
-         propertyId](const DocumentP::CollaborationBoundaryPropertyStatusState& state) {
-            return state.objectId == objectId && state.propertyId == propertyId;
-        });
-    if (found == d->collaborationBoundaryPropertyStatusStates.end()) {
-        d->collaborationBoundaryPropertyStatusStates.push_back(
-            {objectId,
-             propertyId,
-             propertyName,
-             property.getStatus(),
-             newStatus});
-    }
-    else {
-        found->after = newStatus;
-    }
-}
-
 bool Document::collaborationStructuralImportDeferralRequired() const noexcept
 {
     return d->collaborationCompatibilityStructuralMutationGranted
@@ -1494,10 +1390,6 @@ Document::takeCollaborationObservedStructuralEffects()
     if (d->collaborationCompatibilityStructuralMutationGranted) {
         throw Base::RuntimeError(
             "observed structural effects cannot be taken while the grant is active");
-    }
-    if (d->collaborationCompatibilityRecomputeMutationGranted) {
-        throw Base::RuntimeError(
-            "observed structural effects cannot be taken while the recompute grant is active");
     }
     auto effects = std::move(d->collaborationObservedStructuralEffects);
     d->collaborationObservedStructuralEffects.clear();
@@ -1598,7 +1490,6 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationImportNewObjects.clear();
     d->collaborationActiveImportReplay.reset();
     d->collaborationImportDeferralActive = false;
-    d->collaborationRollbackStabilizing = false;
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
@@ -1609,8 +1500,6 @@ void Document::beginCollaborationCommitNotificationBarrier()
         std::move(boundaryObjectSchedulerStates);
     d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
     d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
-    d->collaborationBoundaryPropertyStatusStates.clear();
-    d->collaborationBoundaryPropertyStatusStates.reserve(16);
     d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationCommitNotificationBarrier = true;
@@ -1626,36 +1515,6 @@ void Document::prepareCollaborationCommitFinalization()
         d->collaborationDeferredNotifications.size() + 4);
     if (d->collaborationPreparedUndoSlot.empty()) {
         d->collaborationPreparedUndoSlot.push_back(nullptr);
-    }
-    if (d->activeUndoTransaction) {
-        std::vector<DocumentP::CollaborationTransactionPropertyStatusState>
-            propertyStatusStates;
-        propertyStatusStates.reserve(
-            d->collaborationBoundaryPropertyStatusStates.size());
-        for (const auto& state : d->collaborationBoundaryPropertyStatusStates) {
-            if (state.before == state.after) {
-                continue;
-            }
-            auto* object = getObjectByID(state.objectId);
-            auto* property = object
-                ? object->getPropertyByName(state.propertyName.c_str())
-                : nullptr;
-            if (!property || property->getID() != state.propertyId
-                || property->getStatus() != state.after) {
-                throw Base::RuntimeError(
-                    "trusted property-status transaction lost its owning property");
-            }
-            propertyStatusStates.push_back(
-                {state.objectId,
-                 state.propertyId,
-                 state.propertyName,
-                 state.before,
-                 state.after});
-        }
-        if (!propertyStatusStates.empty()) {
-            d->collaborationTransactionPropertyStatusStates[
-                d->activeUndoTransaction->getID()] = std::move(propertyStatusStates);
-        }
     }
 }
 
@@ -1675,13 +1534,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationTransactionControlGranted = false;
     d->collaborationCompatibilityStructuralMutationGranted = false;
-    d->collaborationCompatibilityRecomputeMutationGranted = false;
-    d->collaborationCompatibilityTrustedStructuralMutationGranted = false;
     d->collaborationDerivedRecomputeGranted = false;
     d->collaborationDeferredRecomputeBlocked = false;
-    d->collaborationCompatibilityRecomputeSourceObject = nullptr;
     d->collaborationImportDeferralActive = false;
-    d->collaborationRollbackStabilizing = false;
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationCommitNotificationBarrier = false;
     d->collaborationBoundaryObjectOrder.clear();
@@ -1690,7 +1545,6 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationBoundaryObjectSchedulerStates.clear();
     d->collaborationBoundaryTouchedObjects.clear();
     d->collaborationBoundaryRecomputeLog.clear();
-    d->collaborationBoundaryPropertyStatusStates.clear();
     d->collaborationBoundaryActiveObject = nullptr;
     try {
         GetApplication().endCollaborationTransactionSignalSuppression();
@@ -2359,7 +2213,6 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
         }
     }
 
-    restoreTransactionPropertyStatusState(mRedoTransactions.back()->getID(), false);
     restoreTransactionFileState(mRedoTransactions.back()->getID(), false);
     signalUndo(*this);  // now signal the undo
     emitCollaborationBecameStable();
@@ -2419,7 +2272,6 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
         }
     }
 
-    restoreTransactionPropertyStatusState(mUndoTransactions.back()->getID(), true);
     restoreTransactionFileState(mUndoTransactions.back()->getID(), true);
     signalRedo(*this);
     emitCollaborationBecameStable();
@@ -2977,18 +2829,6 @@ void Document::_abortTransaction()
 
 CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcept
 {
-    return rollbackCollaborationTransactionImpl(true);
-}
-
-CollaborationRollbackResult
-Document::rollbackCollaborationTransactionPreservingPendingRecompute() noexcept
-{
-    return rollbackCollaborationTransactionImpl(false);
-}
-
-CollaborationRollbackResult Document::rollbackCollaborationTransactionImpl(
-    const bool stabilize) noexcept
-{
     static_assert(noexcept(std::declval<std::unordered_set<std::string>&>().swap(
         std::declval<std::unordered_set<std::string>&>())));
     static_assert(noexcept(std::declval<std::unordered_set<DocumentObject*>&>().swap(
@@ -3071,23 +2911,6 @@ CollaborationRollbackResult Document::rollbackCollaborationTransactionImpl(
             d->collaborationObjectIdentities.swap(
                 d->collaborationBoundaryObjectIdentities);
             d->activeObject = d->collaborationBoundaryActiveObject;
-            for (const auto& state : d->collaborationBoundaryPropertyStatusStates) {
-                auto* object = getObjectByID(state.objectId);
-                auto* property = object
-                    ? object->getPropertyByName(state.propertyName.c_str())
-                    : nullptr;
-                if (!property || property->getID() != state.propertyId) {
-                    appendDiagnostic(
-                        "property editor status owner could not be restored: ",
-                        state.propertyName.c_str());
-                    continue;
-                }
-                property->StatusBits = std::bitset<32>(state.before);
-                if (property->getStatus() != state.before) {
-                    appendDiagnostic("property editor status could not be restored: ",
-                                     state.propertyName.c_str());
-                }
-            }
             boundaryStateRestored = true;
         }
     }
@@ -3115,48 +2938,8 @@ CollaborationRollbackResult Document::rollbackCollaborationTransactionImpl(
         appendDiagnostic("abort notification failed with an unknown exception");
     }
 
-    if (stabilize) {
-        bool recomputeHasError = false;
-        try {
-            Base::FlagToggler<bool> rollbackStabilizing(
-                d->collaborationRollbackStabilizing);
-            // Rollback has already restored the exact pre-commit model and
-            // owns no live transaction in which detached results could be
-            // published. Keep this private stabilizer until CC-WP13 removes
-            // the legacy body; public recompute never reaches it.
-            static_cast<void>(recomputeLegacy({}, true, &recomputeHasError, 0));
-        }
-        catch (const Base::Exception& exception) {
-            appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
-        }
-        catch (const std::exception& exception) {
-            appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
-        }
-        catch (...) {
-            appendDiagnostic("rollback stabilization recompute failed with an unknown exception");
-        }
-        if (recomputeHasError) {
-            const bool unexpectedError = std::ranges::any_of(
-                d->_RecomputeLog,
-                [&](const auto& current) {
-                    const auto baseline =
-                        d->collaborationBoundaryRecomputeLog.equal_range(current.first);
-                    return std::ranges::none_of(
-                        std::ranges::subrange(baseline.first, baseline.second),
-                        [&](const auto& expected) {
-                            return expected.second->Why == current.second->Why;
-                        });
-                });
-            if (unexpectedError) {
-                appendDiagnostic(
-                    "rollback stabilization recompute reported a new object error");
-            }
-        }
-    }
-
     if (boundaryStateRestored) {
-        // Recompute owns the temporary failure log while stabilizing. Swap the
-        // fully preallocated boundary snapshot back afterward, then restore
+        // Swap the fully preallocated boundary snapshot back, then restore
         // the exact scheduler/status provenance for both eager and deferred
         // rollback. This covers NoTouch and pre-existing object errors without
         // allocating in the noexcept recovery path.
@@ -3319,7 +3102,6 @@ void Document::clearCompatibilityTransactionHistoryImpl()
 
     _clearRedos();
     d->transactionFileChanges.clear();
-    d->collaborationTransactionPropertyStatusStates.clear();
 }
 
 bool Document::commitApplicationTransactionThroughCoordinator()
@@ -5036,6 +4818,12 @@ DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent inten
         return finish();
     };
 
+    if (recomputeCoordinator().hasUnresolvedWork()) {
+        return fail("RECOMPUTE_PENDING",
+                    "Canonical save refused while document recompute is pending",
+                    false);
+    }
+
     try {
         enforceAtomicPresentationMutationTarget(*this);
     }
@@ -5832,42 +5620,9 @@ void Document::restoreTransactionFileState(const int transactionId, const bool a
     emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure, true);
 }
 
-void Document::restoreTransactionPropertyStatusState(const int transactionId,
-                                                     const bool after)
-{
-    const auto found =
-        d->collaborationTransactionPropertyStatusStates.find(transactionId);
-    if (found == d->collaborationTransactionPropertyStatusStates.end()) {
-        return;
-    }
-
-    FileChangeTrackingScope suppressFileState(*this);
-    for (const auto& state : found->second) {
-        if (state.before == state.after) {
-            continue;
-        }
-        auto* object = getObjectByID(state.objectId);
-        auto* property = object
-            ? object->getPropertyByName(state.propertyName.c_str())
-            : nullptr;
-        if (!property || property->getID() != state.propertyId) {
-            continue;
-        }
-        const auto expectedCurrent = after ? state.before : state.after;
-        const auto target = after ? state.after : state.before;
-        // Preserve a newer status edit in the same way the file-token ledger
-        // preserves a newer non-transactional edit in the same category.
-        if (property->getStatus() != expectedCurrent) {
-            continue;
-        }
-        property->setStatusValue(target);
-    }
-}
-
 void Document::discardTransactionFileState(const int transactionId)
 {
     d->transactionFileChanges.erase(transactionId);
-    d->collaborationTransactionPropertyStatusStates.erase(transactionId);
 }
 
 void Document::establishCanonicalSavepoint(const std::array<std::uint64_t, 6> tokens,
@@ -6708,7 +6463,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (!object || !object->isAttachedToDocument()
             || object->getDocument() != this
-            || (!object->isTouched() && object->mustRecompute() == 0)) {
+            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
             continue;
         }
         scheduled.insert(object);
@@ -6776,6 +6531,22 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
         signalRecomputed(*this, recomputed);
     }
     finalizeCollaborationRecomputeTeardown();
+}
+
+void Document::finalizeEmptyDetachedRecompute()
+{
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::BeforeRecompute});
+    }
+    else {
+        signalBeforeRecompute(*this);
+    }
+
+    DocumentRecomputeSnapshot snapshot;
+    snapshot.state = DocumentRecomputeState::Completed;
+    snapshot.progress = 1.0;
+    finalizeDetachedRecompute(snapshot);
 }
 
 void Document::finalizeCollaborationRecomputeTeardown()
@@ -6940,406 +6711,6 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
         *hasError = snapshot.state != DocumentRecomputeState::Completed;
     }
     return static_cast<int>(snapshot.completedFeatures + snapshot.failedFeatures);
-}
-
-int Document::recomputeLegacy(const std::vector<DocumentObject*>& objs,
-                              bool force,
-                              bool* hasError,
-                              int options)
-{
-    ZoneScoped;
-
-    enforceAtomicPresentationMutationTarget(*this);
-
-    // A document-wide recompute pass owns pending-removal teardown for every
-    // live document. Re-entrant recompute from a deletion observer must not
-    // enter a second pass or publish an early stable event.
-    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
-        if (hasError) {
-            *hasError = false;
-        }
-        return 0;
-    }
-
-    // Compatibility callbacks frequently retain historical, eager recompute
-    // calls.  Running them here would execute arbitrary object code while the
-    // narrowly scoped structural grant is live.  The commit coordinator always
-    // performs the authoritative recompute after the callback and after the
-    // grant has closed, so treat this request as deferred.
-    if (d->collaborationCompatibilityStructuralMutationGranted
-        || d->collaborationDeferredRecomputeBlocked) {
-        if (hasError) {
-            *hasError = false;
-        }
-        return 0;
-    }
-
-    // Recompute can execute Python-backed features. Keep the GIL for the full
-    // recompute so async recompute still serializes Python execution the same
-    // way the main-thread path does, preserving compatibility with existing
-    // Python-backed objects and addons. Main-thread signal hops such as
-    // signalBeforeRecompute() temporarily release it when they need to run
-    // Python on the GUI thread to avoid deadlocks.
-    Base::PyGILStateLocker locker;
-
-    if (d->undoing || d->rollback) {
-        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Ignore document recompute on undo/redo");
-        }
-        return 0;
-    }
-
-    int objectCount = 0;
-    if (testStatus(Document::PartialDoc)) {
-        if (mustExecute()) {
-            FC_WARN("Please reload partial document '" << Label.getValue()
-                                                       << "' for recomputation.");
-        }
-        return 0;
-    }
-    if (testStatus(Document::Recomputing)) {
-        // this is clearly a bug in the calling instance
-        FC_ERR("Recursive calling of recompute for document " << getName());
-        return 0;
-    }
-    // The 'SkipRecompute' flag can be (tmp.) set to avoid too many
-    // time expensive recomputes
-    if (!force && testStatus(Document::SkipRecompute)) {
-        signalSkipRecompute(*this, objs);
-        return 0;
-    }
-
-    // delete recompute log
-    d->clearRecomputeLog();
-
-    Base::TimeTracker tracker("Document::recompute");
-    std::optional<Base::ObjectStatusLocker<Document::Status, Document>> recomputingStatus;
-    recomputingStatus.emplace(Document::Recomputing, this);
-
-    if (d->collaborationCommitNotificationBarrier) {
-        d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::BeforeRecompute});
-    }
-    else {
-        signalBeforeRecompute(*this);
-    }
-
-    bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
-
-    //////////////////////////////////////////////////////////////////////////
-    // FIXME Comment by Realthunder:
-    // the topologicalSrot() below cannot handle partial recompute, haven't got
-    // time to figure out the code yet, simply use back boost::topological_sort
-    // for now, that is, rely on getDependencyList() to do the sorting. The
-    // downside is, it didn't take advantage of the ready built InList, nor will
-    // it report for cyclic dependency.
-    //////////////////////////////////////////////////////////////////////////
-
-    /*   // get the sorted vector of all dependent objects and go though it from the end
-       auto depObjs = getDependencyList(objs.empty()?d->objectArray:objs);
-       vector<DocumentObject*> topoSortedObjects = topologicalSort(depObjs);
-       if (topoSortedObjects.size() != depObjs.size()){
-           cerr << "Document::recompute(): cyclic dependency detected" << '\n';
-           topoSortedObjects = d->partialTopologicalSort(depObjs);
-       }
-       std::reverse(topoSortedObjects.begin(),topoSortedObjects.end());
-   */
-
-    // alt:
-    auto topoSortedObjects =
-        getDependencyList(objs.empty() ? d->objectArray : objs, DepSort | options);
-
-    for (auto obj : topoSortedObjects) {
-        obj->setStatus(ObjectStatus::PendingRecompute, true);
-    }
-
-    ParameterGrp::handle hGrp =
-        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
-    bool canAbort = hGrp->GetBool("CanAbortRecompute", true);
-
-    tracker.checkpoint("pre-recompute & topo sort");
-
-    try {
-        std::set<DocumentObject*> filter;
-        size_t idx = 0;
-        // maximum two passes to allow some form of dependency inversion
-        for (int passes = 0; passes < 2 && idx < topoSortedObjects.size(); ++passes) {
-            std::unique_ptr<Base::SequencerLauncher> seq;
-            if (canAbort) {
-                seq = std::make_unique<Base::SequencerLauncher>("Recompute...",
-                                                                topoSortedObjects.size());
-            }
-            FC_LOG("Recompute pass " << passes);
-            for (; idx < topoSortedObjects.size(); ++idx) {
-                auto obj = topoSortedObjects[idx];
-                if (!obj->isAttachedToDocument() || filter.find(obj) != filter.end()) {
-                    continue;
-                }
-                // ask the object if it should be recomputed
-                bool doRecompute = false;
-                if (obj->mustRecompute()) {
-                    doRecompute = true;
-                    ++objectCount;
-                    int res = _recomputeFeature(obj);
-                    publishCollaborationMutation(*obj, false);
-                    if (res != 0) {
-                        if (hasError) {
-                            *hasError = true;
-                        }
-                        if (res < 0) {
-                            passes = 2;
-                            break;
-                        }
-                        // if something happened filter all object in its
-                        // inListRecursive from the queue then proceed
-                        obj->getInListEx(filter, true);
-                        filter.insert(obj);
-                        continue;
-                    }
-                }
-                if (obj->isTouched() || doRecompute) {
-                    if (d->collaborationCommitNotificationBarrier) {
-                        d->collaborationDeferredNotifications.push_back(
-                            {CollaborationDeferredNotificationKind::RecomputedObject, obj});
-                    }
-                    else {
-                        signalRecomputedObject(*obj);
-                    }
-                    if (fineGrained) {
-                        // set all dependent objects touched based on properties
-                        std::vector<DepEdge> inList = obj->getInListProp();
-                        for (auto& [objFrom, propFrom, objTo, propTo] : inList) {
-                            if (obj->touchedProps.contains(propTo) || propTo.empty()) {
-                                objFrom->enforceRecompute(propFrom);
-                            }
-                        }
-                        obj->purgeTouched();
-                    }
-                    else {
-                        obj->purgeTouched();
-                        // set all dependent objects touched to force recompute
-                        for (auto inObjIt : obj->getInList()) {
-                            inObjIt->enforceRecompute();
-                        }
-                    }
-                }
-                if (seq) {
-                    seq->next(true);
-                }
-            }
-            // check if all objects are recomputed but still thouched
-            for (size_t i = 0; i < topoSortedObjects.size(); ++i) {
-                auto obj = topoSortedObjects[i];
-                obj->setStatus(ObjectStatus::Recompute2, false);
-                if (!filter.contains(obj) && obj->isTouched()) {
-                    if (passes > 0) {
-                        FC_ERR(obj->getFullName() << " still touched after recompute");
-                    }
-                    else {
-                        FC_LOG(obj->getFullName() << " still touched after recompute");
-                        if (idx >= topoSortedObjects.size()) {
-                            // let's start the next pass on the first touched object
-                            idx = i;
-                        }
-                        obj->setStatus(ObjectStatus::Recompute2, true);
-                    }
-                }
-            }
-        }
-    }
-    catch (Base::Exception& e) {
-        e.reportException();
-    }
-
-    tracker.checkpoint("Recompute");
-
-    for (auto obj : topoSortedObjects) {
-        if (!obj->isAttachedToDocument()) {
-            continue;
-        }
-        obj->setStatus(ObjectStatus::PendingRecompute, false);
-        obj->setStatus(ObjectStatus::Recompute2, false);
-    }
-
-    // Keep the document marked as Recomputing while signalRecomputed() runs.
-    // Those observers may execute Python or GUI code; clearing the status
-    // first would let re-entrant code see the document as stable before
-    // recompute teardown has finished. signalBecameStable() is the first
-    // point where observers may treat the document as stable again.
-
-    if (d->collaborationCommitNotificationBarrier) {
-        CollaborationDeferredNotification notification {
-            CollaborationDeferredNotificationKind::Recomputed};
-        notification.objects = topoSortedObjects;
-        d->collaborationDeferredNotifications.push_back(std::move(notification));
-    }
-    else {
-        signalRecomputed(*this, topoSortedObjects);
-    }
-
-    // Pending removals are part of recompute teardown. Snapshot and protect
-    // every document before clearing this document's Recomputing status, so
-    // neither readiness nor lifecycle admission has a transient stable gap.
-    const auto teardownDocuments = GetApplication().getDocuments();
-    std::size_t protectedDocumentCount = 0;
-    try {
-        for (auto* teardownDocument : teardownDocuments) {
-            const auto previous =
-                teardownDocument->d->collaborationStableNotificationDepth.fetch_add(
-                    1, std::memory_order_acq_rel);
-            if (previous == std::numeric_limits<unsigned int>::max()) {
-                teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
-                    1, std::memory_order_release);
-                throw Base::RuntimeError(
-                    "recompute teardown lifecycle depth overflow");
-            }
-            ++protectedDocumentCount;
-        }
-    }
-    catch (...) {
-        for (std::size_t index = 0; index < protectedDocumentCount; ++index) {
-            teardownDocuments[index]->d->collaborationStableNotificationDepth.fetch_sub(
-                1, std::memory_order_release);
-        }
-        throw;
-    }
-    BOOST_SCOPE_EXIT_ALL(&) {
-        for (auto* teardownDocument : teardownDocuments) {
-            teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
-                1, std::memory_order_release);
-        }
-    };
-
-    std::size_t teardownProtectedDocumentCount = 0;
-    try {
-        for (auto* teardownDocument : teardownDocuments) {
-            const auto previous =
-                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_add(
-                    1, std::memory_order_acq_rel);
-            if (previous == std::numeric_limits<unsigned int>::max()) {
-                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
-                    1, std::memory_order_release);
-                throw Base::RuntimeError(
-                    "recompute teardown readiness depth overflow");
-            }
-            ++teardownProtectedDocumentCount;
-        }
-    }
-    catch (...) {
-        for (std::size_t index = 0;
-             index < teardownProtectedDocumentCount;
-             ++index) {
-            teardownDocuments[index]->d->collaborationRecomputeTeardownDepth.fetch_sub(
-                1, std::memory_order_release);
-        }
-        throw;
-    }
-    bool teardownReadinessActive = true;
-    BOOST_SCOPE_EXIT_ALL(&) {
-        if (teardownReadinessActive) {
-            for (auto* teardownDocument : teardownDocuments) {
-                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
-                    1, std::memory_order_release);
-            }
-        }
-    };
-
-    recomputingStatus.reset();
-
-    tracker.checkpoint("Recompute total");
-
-    if (!d->_RecomputeLog.empty()) {
-        if (!testStatus(Status::IgnoreErrorOnRecompute)) {
-            for (auto it : topoSortedObjects) {
-                if (it->isError()) {
-                    const char* text = getErrorDescription(it);
-                    if (text) {
-                        Base::Console().error("%s: %s\n", it->Label.getValue(), text);
-                    }
-                }
-            }
-        }
-    }
-
-    std::vector<Document*> drainedPendingRemovalDocuments;
-    for (auto doc : teardownDocuments) {
-        decltype(doc->d->pendingRemove) objects;
-        objects.swap(doc->d->pendingRemove);
-        if (!objects.empty()) {
-            const bool previousProcessing =
-                doc->d->pendingRemovalProcessing.exchange(
-                    true, std::memory_order_acq_rel);
-            BOOST_SCOPE_EXIT_ALL(&) {
-                doc->d->pendingRemovalProcessing.store(
-                    previousProcessing, std::memory_order_release);
-            };
-            for (auto& o : objects) {
-                auto* const pendingObject = o.getObject();
-                const auto retainIfStillPending = [&] {
-                    if (pendingObject && o.getObject() == pendingObject
-                        && std::ranges::find(doc->d->pendingRemove, o)
-                            == doc->d->pendingRemove.end()) {
-                        doc->d->pendingRemove.push_back(o);
-                    }
-                };
-                try {
-                    if (pendingObject) {
-                        pendingObject->getDocument()->removeObject(
-                            pendingObject->getNameInDocument());
-                    }
-                    // Some legacy removal paths decline without throwing.
-                    // Treat a still-live handle as retained work, not
-                    // completed teardown.
-                    retainIfStillPending();
-                }
-                catch (Base::Exception& e) {
-                    e.reportException();
-                    FC_ERR("error when removing object "
-                           << o.getDocumentName() << '#' << o.getObjectName());
-                    // A foreign document removal can be rejected by the
-                    // prepared target. Retain it rather than losing the
-                    // request after the queue swap.
-                    retainIfStillPending();
-                }
-                catch (const std::exception& e) {
-                    FC_ERR("error when removing object "
-                           << o.getDocumentName() << '#' << o.getObjectName()
-                           << ": " << e.what());
-                    retainIfStillPending();
-                }
-                catch (...) {
-                    FC_ERR("unknown error when removing object "
-                           << o.getDocumentName() << '#' << o.getObjectName());
-                    retainIfStillPending();
-                }
-            }
-        }
-        if (!objects.empty() && doc->d->pendingRemove.empty()) {
-            drainedPendingRemovalDocuments.push_back(doc);
-        }
-    }
-
-    for (auto* teardownDocument : teardownDocuments) {
-        teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
-            1, std::memory_order_release);
-    }
-    teardownReadinessActive = false;
-
-    if (d->pendingRemove.empty()
-        && std::ranges::find(drainedPendingRemovalDocuments, this)
-            == drainedPendingRemovalDocuments.end()) {
-        drainedPendingRemovalDocuments.push_back(this);
-    }
-    for (auto* stableDocument : drainedPendingRemovalDocuments) {
-        if (stableDocument->d->collaborationCommitNotificationBarrier) {
-            stableDocument->d->collaborationDeferredNotifications.push_back(
-                {CollaborationDeferredNotificationKind::BecameStable});
-        }
-        else if (stableDocument->getMutationReadiness().ready) {
-            stableDocument->emitCollaborationBecameStable();
-        }
-    }
-    return objectCount;
 }
 
 /*!
@@ -7529,30 +6900,6 @@ const char* Document::getErrorDescription(const DocumentObject* Obj) const
 int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 {
     FC_LOG("Recomputing " << Feat->getFullName());
-
-    struct RecomputeSourceScope
-    {
-        DocumentP& state;
-        const DocumentObject* previous {nullptr};
-        bool active {false};
-
-        RecomputeSourceScope(DocumentP& state, DocumentObject* object)
-            : state(state)
-            , previous(state.collaborationCompatibilityRecomputeSourceObject)
-            , active(state.collaborationCompatibilityRecomputeMutationGranted)
-        {
-            if (active) {
-                state.collaborationCompatibilityRecomputeSourceObject = object;
-            }
-        }
-
-        ~RecomputeSourceScope()
-        {
-            if (active) {
-                state.collaborationCompatibilityRecomputeSourceObject = previous;
-            }
-        }
-    } recomputeSource(*d, Feat);
 
     DocumentObjectExecReturn* returnCode = nullptr;
     try {

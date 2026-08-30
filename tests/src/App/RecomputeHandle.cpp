@@ -14,6 +14,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -177,6 +179,10 @@ protected:
             && App::GetApplication().getDocument(_documentName.c_str()) == _document) {
             App::GetApplication().closeDocument(_documentName.c_str());
         }
+        if (!_savePath.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(_savePath, ignored);
+        }
     }
 
     std::unique_ptr<App::RecomputeHandle> blockingHandle()
@@ -198,7 +204,14 @@ protected:
     std::string _blockingToken;
     App::Document* _document {nullptr};
     std::shared_ptr<BlockingRecomputeState> _blocking;
+    std::filesystem::path _savePath;
 };
+
+std::string readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
 
 }  // namespace
 
@@ -311,6 +324,47 @@ TEST_F(RecomputeHandleTest, zeroTimeoutObservesNonterminalWorkAndCancellationTer
     EXPECT_EQ(cancelled.diagnostic, "native handle cancellation");
     EXPECT_TRUE(handle->poll());
     EXPECT_FALSE(handle->cancel("already terminal"));
+}
+
+TEST_F(RecomputeHandleTest, canonicalSaveRefusesActiveRecomputeWithoutReplacingTheFile)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("PendingSaveFeature");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("E");
+    auto initialRecompute = _document->recomputeAsync({feature});
+    ASSERT_EQ(initialRecompute->wait(30s).state, App::DocumentRecomputeState::Completed);
+
+    _savePath = std::filesystem::temp_directory_path()
+        / (_documentName + "-pending-save.FCStd");
+    const auto firstSave = _document->saveAsWithOutcome(_savePath.string().c_str());
+    ASSERT_EQ(firstSave.disposition, App::DocumentSaveDisposition::Written);
+    const auto canonicalBytes = readFileBytes(_savePath);
+    ASSERT_FALSE(canonicalBytes.empty());
+
+    feature->Label.setValue("unsaved while recompute is active");
+    auto handle = blockingHandle();
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+
+    const auto pendingSave = _document->saveWithOutcome();
+    EXPECT_EQ(pendingSave.disposition, App::DocumentSaveDisposition::Failed);
+    EXPECT_EQ(pendingSave.errorCode, "RECOMPUTE_PENDING");
+    EXPECT_FALSE(pendingSave.fileWritten);
+    EXPECT_FALSE(pendingSave.lastCanonicalSaveFailed);
+    EXPECT_EQ(readFileBytes(_savePath), canonicalBytes);
+
+    _blocking->release();
+    const auto completed = handle->wait(3s);
+    ASSERT_EQ(completed.state, App::DocumentRecomputeState::Completed)
+        << completed.diagnostic;
+
+    const auto written = _document->saveWithOutcome();
+    EXPECT_EQ(written.disposition, App::DocumentSaveDisposition::Written);
+    EXPECT_TRUE(written.fileWritten);
+    EXPECT_NE(readFileBytes(_savePath), canonicalBytes);
+
+    const auto unchanged = _document->saveWithOutcome();
+    EXPECT_EQ(unchanged.disposition, App::DocumentSaveDisposition::Unchanged);
+    EXPECT_FALSE(unchanged.fileWritten);
 }
 
 TEST_F(RecomputeHandleTest, documentCloseLeavesAStablePointerFreeTerminalSnapshot)
