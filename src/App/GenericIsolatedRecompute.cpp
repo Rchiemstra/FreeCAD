@@ -1078,6 +1078,12 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
 
     DocumentRecomputeRequest request;
     request.coalescingKey = std::string(coalescingPrefix);
+    // Compatibility recompute publishes the broad UnknownModelMutation key.
+    // Preparing every independent node against the same revision would make
+    // the first successful sibling commit stale all remaining siblings. Keep
+    // detached execution pointer-free while refreshing each later capture
+    // after the preceding coordinator-owned commit.
+    request.refreshRevisionFenceAfterEachCommit = preserveLegacyRevisionSemantics;
     for (const auto& [name, object] : byName) {
         DocumentRecomputeFeatureRequest node;
         node.featureId = name;

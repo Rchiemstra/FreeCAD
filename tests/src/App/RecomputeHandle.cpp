@@ -244,6 +244,32 @@ TEST_F(RecomputeHandleTest, asyncFacadeCommitsThroughTheProductionFreeCADCmdBack
     EXPECT_TRUE(feature->isValid());
 }
 
+TEST_F(RecomputeHandleTest,
+       fullDocumentFacadeDoesNotMakeIndependentSiblingCommitsStale)
+{
+    auto* first = _document->addObject<App::FeatureTest>("IndependentFirst");
+    auto* second = _document->addObject<App::FeatureTest>("IndependentSecond");
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    first->touch();
+    second->touch();
+
+    auto handle = _document->recomputeAsync();
+    ASSERT_NE(handle, nullptr);
+    const auto snapshot = handle->wait(60s);
+
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.completedFeatures, 2U);
+    EXPECT_EQ(snapshot.failedFeatures, 0U);
+    EXPECT_EQ(snapshot.totalFeatures, 2U);
+    EXPECT_FALSE(first->mustRecompute());
+    EXPECT_FALSE(second->mustRecompute());
+    EXPECT_TRUE(first->isValid());
+    EXPECT_TRUE(second->isValid());
+}
+
 TEST_F(RecomputeHandleTest, standaloneSyncAndAsyncFacadesDoNotCreateUserUndoEntries)
 {
     auto* feature = _document->addObject<App::FeatureTest>("UndoNeutralFeature");

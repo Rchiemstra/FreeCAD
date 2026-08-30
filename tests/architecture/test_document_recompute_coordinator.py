@@ -206,6 +206,7 @@ def test_request_and_snapshot_contracts_are_pointer_free_values() -> None:
     request = _compact(_type_body(header, "struct", "DocumentRecomputeRequest"))
     assert "std::vector<DocumentRecomputeFeatureRequest>features;" in request
     assert "std::stringcoalescingKey;" in request
+    assert "boolrefreshRevisionFenceAfterEachCommit{false};" in request
 
     feature_states = set(
         re.findall(
