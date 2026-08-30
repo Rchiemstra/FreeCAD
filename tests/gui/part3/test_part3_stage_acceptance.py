@@ -77,6 +77,156 @@ HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 STAGE_TIMEOUTS = {"a": 3600.0, "b": 10800.0}
 
 
+def test_provision_waits_for_transient_readiness_before_each_first_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.gui.part3 import stress_coordinator as coordinator
+
+    events: list[tuple[Any, ...]] = []
+    readiness_calls: dict[str, int] = {}
+    waits: list[float] = []
+    checks: list[tuple[str, Any]] = []
+
+    class Rpc:
+        def call(self, method: str, params: Any, *, timeout: float) -> Any:
+            del timeout
+            if method == "create_document":
+                events.append(("create", params["name"]))
+                return {"success": True}
+            if method == "get_mutation_readiness":
+                document = params["doc_name"]
+                call = readiness_calls.get(document, 0)
+                readiness_calls[document] = call + 1
+                ready = call > 0
+                snapshot = {
+                    "ready": ready,
+                    "quarantined": False,
+                    "collaboration_poisoned": False,
+                }
+                events.append(("readiness", document, ready))
+                return snapshot
+            if method == "save_document_as":
+                document = params["selector"]["document_name"]
+                events.append(("save", document))
+                assert readiness_calls[document] == 2
+                return {"saved": True}
+            raise AssertionError(f"unexpected RPC method: {method}")
+
+    context = SimpleNamespace(
+        primary="Primary",
+        secondary="Secondary",
+        rpc=Rpc(),
+        launcher_module=SimpleNamespace(JsonRpcError=RuntimeError),
+        active_document=None,
+        documents_dir=tmp_path,
+        document_paths={},
+        coverage=set(),
+    )
+
+    def local_action(
+        _context: Any,
+        _cycle: Any,
+        action: str,
+        params: dict[str, Any],
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        events.append((action, params["document"]))
+        return {"success": True}
+
+    def require(_context: Any, name: str, passed: bool, detail: Any = None) -> None:
+        assert passed is True
+        checks.append((name, detail))
+
+    monkeypatch.setattr(coordinator, "_local_action", local_action)
+    monkeypatch.setattr(coordinator, "_require", require)
+    monkeypatch.setattr(
+        coordinator,
+        "_DOCUMENT_READINESS_POLL_EVENT",
+        SimpleNamespace(wait=lambda seconds: waits.append(seconds)),
+    )
+
+    coordinator._provision_stage_documents(context)
+
+    for document in (context.primary, context.secondary):
+        assert events.index(("provision_alpha_beta_fixture", document)) < events.index(
+            ("readiness", document, False)
+        )
+        assert events.index(("readiness", document, False)) < events.index(
+            ("readiness", document, True)
+        ) < events.index(("save", document))
+    ready_checks = [
+        detail
+        for name, detail in checks
+        if name == "stage_document_ready_before_first_save"
+    ]
+    assert [detail["document"] for detail in ready_checks] == ["Primary", "Secondary"]
+    assert all(detail["readiness"]["ready"] is True for detail in ready_checks)
+    assert waits and all(
+        0 < seconds <= coordinator.DOCUMENT_READINESS_POLL_INTERVAL_SECONDS
+        for seconds in waits
+    )
+
+
+@pytest.mark.parametrize("poison_field", ["quarantined", "collaboration_poisoned"])
+def test_first_save_readiness_poison_fails_closed_without_polling(
+    monkeypatch: pytest.MonkeyPatch, poison_field: str
+) -> None:
+    from tests.gui.part3 import stress_coordinator as coordinator
+
+    snapshot = {
+        "ready": False,
+        "quarantined": poison_field == "quarantined",
+        "collaboration_poisoned": poison_field == "collaboration_poisoned",
+    }
+    context = SimpleNamespace(
+        rpc=SimpleNamespace(
+            call=lambda method, params, timeout: snapshot
+        )
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_DOCUMENT_READINESS_POLL_EVENT",
+        SimpleNamespace(
+            wait=lambda _seconds: pytest.fail("poison must fail without polling")
+        ),
+    )
+
+    with pytest.raises(coordinator.StageCheckFailed, match=poison_field):
+        coordinator._wait_for_document_ready_before_first_save(context, "Poisoned")
+
+
+def test_first_save_readiness_timeout_is_bounded_without_real_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3 import stress_coordinator as coordinator
+
+    snapshot = {"ready": False, "reason": "pending recompute"}
+    ticks = iter([0.0, 0.0, 120.0])
+    context = SimpleNamespace(
+        rpc=SimpleNamespace(
+            call=lambda method, params, timeout: snapshot
+        )
+    )
+    monkeypatch.setattr(coordinator, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        coordinator,
+        "_DOCUMENT_READINESS_POLL_EVENT",
+        SimpleNamespace(
+            wait=lambda _seconds: pytest.fail("deadline control must not really wait")
+        ),
+    )
+
+    assert coordinator.DOCUMENT_READY_BEFORE_FIRST_SAVE_TIMEOUT_SECONDS == 120.0
+    with pytest.raises(TimeoutError) as error:
+        coordinator._wait_for_document_ready_before_first_save(
+            context,
+            "Pending",
+            timeout_seconds=coordinator.DOCUMENT_READY_BEFORE_FIRST_SAVE_TIMEOUT_SECONDS,
+        )
+    assert "last_readiness" in str(error.value)
+    assert repr(snapshot) in str(error.value)
+
+
 def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
     """Build the canonical revision vector emitted by personal snapshots."""
 

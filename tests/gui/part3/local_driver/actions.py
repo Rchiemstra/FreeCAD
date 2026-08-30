@@ -870,13 +870,20 @@ def _reset_property_editor(_params: dict[str, Any]) -> dict[str, Any]:
 
 def _close_main_window(_params: dict[str, Any]) -> dict[str, Any]:
     import FreeCADGui
+    from PySide import QtCore
 
     main_window = FreeCADGui.getMainWindow()
     if main_window is None:
         raise RuntimeError("no main window")
-    main_window.close()
-    FreeCADGui.updateGui()
-    return {"closed": True}
+    # The action is invoked through an HTTP worker which waits for the Qt-owner
+    # acknowledgement. Closing the last window synchronously can stop the Qt
+    # event loop before that acknowledgement is written, making a graceful
+    # shutdown look like a stalled control request. Return first, then close on
+    # the owner thread after the response has had a bounded opportunity to
+    # leave the process.
+    delay_ms = 250
+    QtCore.QTimer.singleShot(delay_ms, main_window.close)
+    return {"close_scheduled": True, "delay_ms": delay_ms}
 
 
 def _close_document(params: dict[str, Any]) -> dict[str, Any]:

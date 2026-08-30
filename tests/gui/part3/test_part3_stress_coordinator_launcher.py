@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,7 +74,17 @@ def test_coordinator_launch_env_uses_isolated_profile(tmp_path: Path) -> None:
     coordinator = StressCoordinator(run_root=tmp_path / "run", repo_root=REPO_ROOT)
     coordinator.provision()
     env = coordinator.launch_env()
+    config_root = coordinator.profile_root / "config"
+    cache_root = coordinator.profile_root / "cache"
+    assert env["HOME"] == str(coordinator.profile_root)
     assert env["APPDATA"] == str(coordinator.profile_root)
+    assert env["XDG_CONFIG_HOME"] == str(config_root)
+    assert env["XDG_CACHE_HOME"] == str(cache_root)
+    assert env["XDG_DATA_HOME"] == str(coordinator.profile_root)
+    assert config_root.is_dir()
+    assert cache_root.is_dir()
+    for key in ("HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
+        assert Path(env[key]).resolve().is_relative_to(coordinator.profile_root.resolve())
     assert env[TOKEN_ENV]
     assert (coordinator.profile_root / "FreeCAD" / "Mod" / "Part3LocalDriver").exists()
 
@@ -201,6 +213,110 @@ def test_windows_forced_cleanup_queries_each_initial_descendant_after_taskkill(
     assert calls == [None, [1234, 5678]]
     assert result["passed"] is False
     assert result["aftermath"]["existing"] == [5678]
+
+
+def test_posix_owned_group_inventory_filters_exact_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    completed = subprocess.CompletedProcess(
+        ["ps"], 0, " 100 100\n 101 100\n 200 200\n", ""
+    )
+    monkeypatch.setattr(module.subprocess, "run", lambda *_args, **_kwargs: completed)
+    inventory = module._posix_owned_process_group_inventory(100)
+    assert inventory["complete"] is True
+    assert inventory["existing"] == [100, 101]
+    assert inventory["process_group_id"] == 100
+
+
+def test_posix_forced_cleanup_signals_and_verifies_whole_owned_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    class Process:
+        pid = 1234
+        exited = False
+
+        def poll(self):
+            return 0 if self.exited else None
+
+    process = Process()
+    inventories = iter(
+        [
+            {
+                "complete": True,
+                "existing": [1234, 5678],
+                "process_group_id": 1234,
+                "diagnostics": "",
+            },
+            {
+                "complete": True,
+                "existing": [],
+                "process_group_id": 1234,
+                "diagnostics": "",
+            },
+        ]
+    )
+    signals: list[tuple[int, int]] = []
+
+    def killpg(process_group_id: int, sent_signal: int) -> None:
+        signals.append((process_group_id, sent_signal))
+        process.exited = True
+
+    monkeypatch.setattr(
+        module,
+        "os",
+        SimpleNamespace(name="posix", killpg=killpg),
+    )
+    monkeypatch.setattr(
+        module, "_posix_owned_process_group_inventory", lambda _pgid: next(inventories)
+    )
+    result = module._force_kill_owned_process_tree(process)
+    assert signals == [(1234, signal.SIGTERM)]
+    assert result["passed"] is True
+    assert result["initial"]["existing"] == [1234, 5678]
+    assert result["aftermath"]["existing"] == []
+
+
+def test_close_main_window_acknowledges_before_scheduled_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3.local_driver import actions
+
+    callbacks: list[object] = []
+
+    class MainWindow:
+        close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    main_window = MainWindow()
+
+    class QTimer:
+        @staticmethod
+        def singleShot(delay_ms: int, callback: object) -> None:
+            callbacks.append((delay_ms, callback))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "FreeCADGui",
+        SimpleNamespace(getMainWindow=lambda: main_window),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "PySide",
+        SimpleNamespace(QtCore=SimpleNamespace(QTimer=QTimer)),
+    )
+    result = actions._close_main_window({})
+    assert result == {"close_scheduled": True, "delay_ms": 250}
+    assert main_window.close_calls == 0
+    delay_ms, callback = callbacks.pop()
+    assert delay_ms == 250
+    callback()
+    assert main_window.close_calls == 1
 
 
 def test_remote_child_inspect_with_known_token_value() -> None:

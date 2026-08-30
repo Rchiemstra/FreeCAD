@@ -9,14 +9,17 @@ import contextlib
 import importlib.util
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,6 +83,9 @@ LAUNCHER_IMPL = REPO_ROOT / "tools" / "launcher" / "start_freecad_impl.py"
 REMOTE_AGENT_DRIVER = Path(__file__).resolve().parent / "remote_agent_driver.py"
 DEFAULT_FREECAD = REPO_ROOT / "build" / "release" / "bin" / "FreeCAD.exe"
 SHUTDOWN_DEADLINE_SECONDS = 60
+DOCUMENT_READY_BEFORE_FIRST_SAVE_TIMEOUT_SECONDS = 120.0
+DOCUMENT_READINESS_POLL_INTERVAL_SECONDS = 0.010
+_DOCUMENT_READINESS_POLL_EVENT = threading.Event()
 PERSONAL_STATE_ACTIONS = frozenset(
     {
         "set_active_document",
@@ -187,12 +193,65 @@ def _windows_owned_pid_inventory(
     return {"complete": True, "existing": sorted(set(pids)), "queried_pids": sorted(set(exact_pids or pids)), "diagnostics": "", "timed_out": False}
 
 
-def _force_kill_owned_process_tree(process: subprocess.Popen) -> dict[str, Any]:
-    """Bounded last resort kill with exact Windows tree verification."""
+def _posix_owned_process_group_inventory(process_group_id: int) -> dict[str, Any]:
+    """Return every process in the coordinator-created POSIX process group."""
 
-    if process.poll() is not None:
-        return {"passed": True, "initial": {"complete": True, "existing": []}, "aftermath": {"complete": True, "existing": []}}
+    if type(process_group_id) is not int or process_group_id <= 0:
+        return {
+            "complete": False,
+            "existing": [],
+            "process_group_id": process_group_id,
+            "diagnostics": "invalid process group id",
+            "timed_out": False,
+        }
+    command = ["ps", "-eo", "pid=,pgid="]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=10.0
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "complete": False,
+            "existing": [],
+            "process_group_id": process_group_id,
+            "diagnostics": str(exc),
+            "timed_out": True,
+        }
+    if completed.returncode != 0 or completed.stderr.strip():
+        return {
+            "complete": False,
+            "existing": [],
+            "process_group_id": process_group_id,
+            "diagnostics": completed.stderr.strip() or completed.stdout.strip(),
+            "timed_out": False,
+        }
+    try:
+        pairs = [tuple(int(value) for value in line.split()) for line in completed.stdout.splitlines()]
+        if any(len(pair) != 2 or pair[0] <= 0 or pair[1] <= 0 for pair in pairs):
+            raise ValueError("invalid ps PID/PGID inventory")
+    except ValueError as exc:
+        return {
+            "complete": False,
+            "existing": [],
+            "process_group_id": process_group_id,
+            "diagnostics": str(exc),
+            "timed_out": False,
+        }
+    return {
+        "complete": True,
+        "existing": sorted(pid for pid, pgid in pairs if pgid == process_group_id),
+        "process_group_id": process_group_id,
+        "diagnostics": "",
+        "timed_out": False,
+    }
+
+
+def _force_kill_owned_process_tree(process: subprocess.Popen) -> dict[str, Any]:
+    """Bounded last resort kill with exact owned-tree verification."""
+
     if os.name == "nt":
+        if process.poll() is not None:
+            return {"passed": True, "initial": {"complete": True, "existing": []}, "aftermath": {"complete": True, "existing": []}}
         initial = _windows_owned_pid_inventory(process.pid)
         if not initial["complete"]:
             return {"passed": False, "initial": initial, "aftermath": {"complete": False, "existing": [], "diagnostics": "initial inventory incomplete"}}
@@ -215,16 +274,83 @@ def _force_kill_owned_process_tree(process: subprocess.Popen) -> dict[str, Any]:
             and process.poll() is not None
         )
         return {"passed": passed, "initial": initial, "termination": termination, "aftermath": aftermath}
-    else:
-        initial = {"complete": True, "existing": [process.pid], "diagnostics": ""}
-        process.terminate()
+
+    # ``launch_freecad`` starts the launcher as the leader of a new session,
+    # so the launcher, pixi (when present), FreeCAD, and descendants inherit
+    # this exact process-group id. Killing only the launcher lets FreeCAD be
+    # reparented to PID 1; operating on the isolated group remains exact even
+    # after the group leader exits.
+    process_group_id = int(process.pid)
+    initial = _posix_owned_process_group_inventory(process_group_id)
+    if not initial["complete"]:
+        return {
+            "passed": False,
+            "initial": initial,
+            "aftermath": {
+                "complete": False,
+                "existing": [],
+                "diagnostics": "initial process-group inventory incomplete",
+            },
+        }
+    if not initial["existing"]:
+        exited = process.poll() is not None
+        return {
+            "passed": exited,
+            "initial": initial,
+            "aftermath": {
+                "complete": True,
+                "existing": [],
+                "diagnostics": "" if exited else "live launcher is not its process-group leader",
+            },
+        }
+
+    termination: dict[str, Any] = {
+        "process_group_id": process_group_id,
+        "term_sent": False,
+        "kill_sent": False,
+        "diagnostics": "",
+    }
     try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        if os.name != "nt":
-            process.kill()
-        process.wait(timeout=5)
-    return {"passed": process.poll() is not None, "initial": initial, "aftermath": {"complete": process.poll() is not None, "existing": [] if process.poll() is not None else [process.pid], "diagnostics": ""}}
+        os.killpg(process_group_id, signal.SIGTERM)
+        termination["term_sent"] = True
+    except OSError as exc:
+        termination["diagnostics"] = str(exc)
+
+    deadline = monotonic() + 10.0
+    aftermath = initial
+    while termination["term_sent"] and monotonic() < deadline:
+        process.poll()
+        aftermath = _posix_owned_process_group_inventory(process_group_id)
+        if not aftermath["complete"] or not aftermath["existing"]:
+            break
+        sleep(0.05)
+
+    if aftermath.get("existing"):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+            termination["kill_sent"] = True
+        except OSError as exc:
+            termination["diagnostics"] = str(exc)
+        deadline = monotonic() + 5.0
+        while termination["kill_sent"] and monotonic() < deadline:
+            process.poll()
+            aftermath = _posix_owned_process_group_inventory(process_group_id)
+            if not aftermath["complete"] or not aftermath["existing"]:
+                break
+            sleep(0.05)
+
+    process.poll()
+    passed = bool(
+        aftermath["complete"]
+        and not aftermath["existing"]
+        and process.poll() is not None
+    )
+    return {
+        "passed": passed,
+        "initial": initial,
+        "termination": termination,
+        "aftermath": aftermath,
+    }
 
 
 def _wait_for_process_exit(process: subprocess.Popen, deadline_s: float) -> bool:
@@ -574,6 +700,7 @@ class StressCoordinator:
                 env=self.launch_env(),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
+                start_new_session=os.name != "nt",
             )
         self._launcher_process = process
         return process
@@ -1110,13 +1237,64 @@ def _readiness_flag(readiness: dict[str, Any], field_name: str) -> Any:
     return None
 
 
-def _mutation_readiness(context: StageContext, document_name: str) -> dict[str, Any]:
+def _mutation_readiness(
+    context: StageContext,
+    document_name: str,
+    *,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
     readiness = context.rpc.call(
         "get_mutation_readiness",
         {"doc_name": document_name},
-        timeout=30.0,
+        timeout=timeout_seconds,
     )
     return readiness if isinstance(readiness, dict) else {}
+
+
+def _wait_for_document_ready_before_first_save(
+    context: StageContext,
+    document_name: str,
+    *,
+    timeout_seconds: float = DOCUMENT_READY_BEFORE_FIRST_SAVE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Wait boundedly for the typed mutation boundary before the canonical save."""
+
+    deadline = monotonic() + timeout_seconds
+    last_readiness: dict[str, Any] = {}
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                "stage document did not become ready before first save within "
+                f"{timeout_seconds}s: document={document_name!r}, "
+                f"last_readiness={last_readiness!r}"
+            )
+        last_readiness = _mutation_readiness(
+            context,
+            document_name,
+            timeout_seconds=min(30.0, remaining),
+        )
+        quarantined = _readiness_flag(last_readiness, "quarantined") is True
+        poisoned = (
+            _readiness_flag(last_readiness, "collaboration_poisoned") is True
+        )
+        if quarantined or poisoned:
+            raise StageCheckFailed(
+                "stage document cannot become ready before first save: "
+                f"document={document_name!r}, readiness={last_readiness!r}"
+            )
+        if _readiness_flag(last_readiness, "ready") is True:
+            return last_readiness
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                "stage document did not become ready before first save within "
+                f"{timeout_seconds}s: document={document_name!r}, "
+                f"last_readiness={last_readiness!r}"
+            )
+        _DOCUMENT_READINESS_POLL_EVENT.wait(
+            min(DOCUMENT_READINESS_POLL_INTERVAL_SECONDS, remaining)
+        )
 
 
 def _begin_checked_edit(
@@ -1250,6 +1428,15 @@ def _provision_stage_documents(context: StageContext) -> None:
             {"document": document_name, "alpha": 0, "beta": 0},
             timeout=120.0,
             observe_view=False,
+        )
+        readiness = _wait_for_document_ready_before_first_save(
+            context, document_name
+        )
+        _require(
+            context,
+            "stage_document_ready_before_first_save",
+            _readiness_flag(readiness, "ready") is True,
+            {"document": document_name, "readiness": readiness},
         )
         destination = context.documents_dir / f"{document_name}.FCStd"
         context.document_paths[document_name] = destination
