@@ -38,12 +38,17 @@ struct AppExport CollaborativeOperationPreparation
         std::function<std::unique_ptr<const CollaborativeOperation>(std::stop_token)>;
     using IsolatedResultDecoder =
         std::function<std::unique_ptr<const CollaborativeOperation>(const GeometryArchive&)>;
+    using IsolatedPublicationEffectDecoder =
+        std::function<std::vector<DocumentRevisionPublicationRequest>(
+            const GeometryArchive&)>;
 
     struct IsolatedTask
     {
         GeometryJobRequest request;
         GeometryArchive inputArchive;
         IsolatedResultDecoder decodeResult;
+        /** Optional trusted parent-side refinement of frozen effect counts. */
+        IsolatedPublicationEffectDecoder decodePublicationEffects;
     };
 
     CollaborativeOperationPreparation(

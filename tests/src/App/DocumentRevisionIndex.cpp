@@ -191,6 +191,112 @@ TEST(DocumentRevisionIndexTest, publicationIncrementsEachDistinctKeyOnce)
     EXPECT_EQ(index.current(structure), 1U);
 }
 
+TEST(DocumentRevisionIndexTest, declaredPositiveDeltasAdvanceMultipleKeysAtomically)
+{
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+    const auto structure = DocumentRevisionKey::objectStructure("Cube");
+    const auto documentStructure = DocumentRevisionKey::documentStructure();
+
+    const auto published = index.publish(
+        std::vector<DocumentRevisionPublicationRequest> {
+            {model, std::string {"17"}, 2},
+            {structure, std::string {"17"}, 4},
+            {documentStructure, std::nullopt, 3},
+        });
+
+    ASSERT_EQ(published.size(), 3U);
+    EXPECT_EQ(published[0], DocumentRevisionObservation(model, 2));
+    EXPECT_EQ(published[1], DocumentRevisionObservation(structure, 4));
+    EXPECT_EQ(published[2], DocumentRevisionObservation(documentStructure, 3));
+    EXPECT_EQ(index.current(model), 2U);
+    EXPECT_EQ(index.current(structure), 4U);
+    EXPECT_EQ(index.current(documentStructure), 3U);
+
+    const auto journal = index.pollPublications(testCursor(0));
+    EXPECT_EQ(journal.latestSequence, 1U);
+    ASSERT_EQ(journal.events.size(), 1U);
+    ASSERT_EQ(journal.events.front().changes.size(), 3U);
+    EXPECT_EQ(journal.events.front().changes[0].revision, 2U);
+    EXPECT_EQ(journal.events.front().changes[1].revision, 4U);
+    EXPECT_EQ(journal.events.front().changes[2].revision, 3U);
+}
+
+TEST(DocumentRevisionIndexTest, duplicateAndExpandedObjectModelDeltasMergeByMaximum)
+{
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto angle = DocumentRevisionKey::objectProperty("Cube", "Angle");
+    const auto label = DocumentRevisionKey::objectProperty("Cube", "Label");
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+
+    const auto published = index.publish(
+        std::vector<DocumentRevisionPublicationRequest> {
+            {angle, std::string {"17"}, 2},
+            {model, std::string {"17"}, 5},
+            {label, std::string {"17"}, 3},
+            {model, std::string {"17"}, 4},
+        });
+
+    ASSERT_EQ(published.size(), 3U);
+    EXPECT_EQ(published[0], DocumentRevisionObservation(angle, 2));
+    EXPECT_EQ(published[1], DocumentRevisionObservation(model, 5));
+    EXPECT_EQ(published[2], DocumentRevisionObservation(label, 3));
+    EXPECT_EQ(index.current(angle), 2U);
+    EXPECT_EQ(index.current(label), 3U);
+    EXPECT_EQ(index.current(model), 5U);
+
+    const auto journal = index.pollPublications(testCursor(0));
+    EXPECT_EQ(journal.latestSequence, 1U);
+    ASSERT_EQ(journal.events.size(), 1U);
+    ASSERT_EQ(journal.events.front().changes.size(), 3U);
+}
+
+TEST(DocumentRevisionIndexTest, zeroDeltaIsRejectedWithoutPublishingAnyState)
+{
+    DocumentRevisionIndex index;
+    bindTestIdentity(index);
+    const auto model = DocumentRevisionKey::objectModel("Cube");
+    const auto structure = DocumentRevisionKey::objectStructure("Cube");
+    const auto before = index.pollPublications(testCursor(0)).toJson();
+
+    EXPECT_THROW(
+        static_cast<void>(index.publish(
+            std::vector<DocumentRevisionPublicationRequest> {
+                {model, std::string {"17"}, 2},
+                {structure, std::string {"17"}, 0},
+            })),
+        std::invalid_argument);
+    EXPECT_EQ(index.current(model), 0U);
+    EXPECT_EQ(index.current(structure), 0U);
+    EXPECT_EQ(index.pollPublications(testCursor(0)).toJson(), before);
+}
+
+TEST(DocumentRevisionIndexTest, declaredDeltaOverflowPreservesEveryPublicationState)
+{
+    DocumentRevisionIndex index(5);
+    bindTestIdentity(index);
+    const auto exhausted = DocumentRevisionKey::objectModel("Cube");
+    const auto other = DocumentRevisionKey::objectModel("Sphere");
+    static_cast<void>(index.publish(
+        std::vector<DocumentRevisionPublicationRequest> {
+            {exhausted, std::string {"17"}, 4},
+        }));
+    const auto beforeOverflow = index.pollPublications(testCursor(0)).toJson();
+
+    EXPECT_THROW(
+        static_cast<void>(index.publish(
+            std::vector<DocumentRevisionPublicationRequest> {
+                {other, std::string {"29"}, 3},
+                {exhausted, std::string {"17"}, 2},
+            })),
+        std::overflow_error);
+    EXPECT_EQ(index.current(exhausted), 4U);
+    EXPECT_EQ(index.current(other), 0U);
+    EXPECT_EQ(index.pollPublications(testCursor(0)).toJson(), beforeOverflow);
+}
+
 TEST(DocumentRevisionIndexTest, publicationRequestScopesAndDuplicateIdentitiesAreAtomic)
 {
     DocumentRevisionIndex index;

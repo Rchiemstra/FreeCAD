@@ -180,7 +180,7 @@ private:
     {
         document.beginCollaborationCommitNotificationBarrier();
         document.setCollaborationRevisionPublicationSuppressed(suppressRevisions);
-        if (document.openCollaborationCommitTransaction("structural grant test") == 0) {
+        if (document.openCollaborationCommitTransaction("structural grant test", true) == 0) {
             throw std::runtime_error("test failed to open collaboration transaction");
         }
     }
@@ -1240,12 +1240,25 @@ TEST_F(DocumentCollaborationServiceTest, stableReadAdmissionRequiresCleanNativeS
     EXPECT_THROW(static_cast<void>(_document->collaborationService().snapshotForEdit(
                      _session.sessionId(), {DocumentRevisionKey::objectModel("Target")})),
                  Base::RuntimeError);
-    EXPECT_THROW(static_cast<void>(_document->collaborationService().prepareEdit(
-                     _session.sessionId(),
-                     "dirty-preparation",
-                     intent("Must Not Prepare"),
-                     "native-test")),
-                 Base::RuntimeError);
+    const auto modelKey = DocumentRevisionKey::objectModel("Target");
+    const auto modelRevisionBefore =
+        _document->collaborationRevisions().current(modelKey);
+    auto dirtyPrepared = _document->collaborationService().prepareEdit(
+        _session.sessionId(),
+        "dirty-preparation",
+        intent("Must Not Apply"),
+        "native-test");
+    const auto dirtyResult = _document->collaborationService().commitEdit(
+        _session.sessionId(), dirtyPrepared);
+    EXPECT_EQ(dirtyResult.status, DocumentCommitStatus::Busy) << dirtyResult.message;
+    EXPECT_NE(dirtyResult.message.find(
+                  "pending recompute work outside the prepared operation"),
+              std::string::npos)
+        << dirtyResult.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_document->collaborationRevisions().current(modelKey),
+              modelRevisionBefore);
+    EXPECT_TRUE(dirtyResult.publishedRevisions.empty());
 
     _document->recompute();
     ASSERT_NE(_document->openTransaction("ordinary native transaction"), 0);

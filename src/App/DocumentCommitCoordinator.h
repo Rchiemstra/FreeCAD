@@ -87,11 +87,13 @@ private:
     void clearCompatibilityTransactionHistory();
     [[nodiscard]] bool commitApplicationTransaction();
     void abortApplicationTransaction();
-    [[nodiscard]] int openNativeCommitTransaction(std::string name);
-    [[nodiscard]] bool commitNativeCommitTransaction();
+    [[nodiscard]] int openNativeCommitTransaction(std::string name,
+                                                  bool retainUndoHistory);
+    [[nodiscard]] bool commitNativeCommitTransaction(bool retainUndoHistory);
     [[nodiscard]] CollaborationRollbackResult rollbackNativeCommitTransaction(
         bool preservePendingRecompute) noexcept;
     [[nodiscard]] DocumentCommitResult commit(const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitRecompute(const PreparedEdit& edit);
     [[nodiscard]] DocumentCommitResult commitCompatibility(
         const PreparedEdit& edit,
         bool structural);
@@ -118,7 +120,8 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool trustedStructural);
+        bool trustedStructural,
+        bool retainUndoHistory = true);
     [[nodiscard]] DocumentCommitResult commitOnDocumentThread(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
@@ -133,7 +136,10 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool trustedStructural);
+        bool trustedStructural,
+        bool retainUndoHistory);
+    [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
+        const PreparedEdit& edit);
 
     using PostReservationTestHook = void (*)();
     static std::atomic<PostReservationTestHook> _postReservationTestHook;

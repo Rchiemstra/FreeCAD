@@ -19,6 +19,7 @@ namespace App
 {
 
 class DocumentCollaborationService;
+class RecomputeHandle;
 
 using DocumentRecomputeId = std::uint64_t;
 
@@ -121,12 +122,15 @@ public:
     [[nodiscard]] bool hasPendingWork() const;
 
 private:
+    friend class RecomputeHandle;
+
     struct Job;
 
     void scheduleReady(DocumentRecomputeId id);
     void finalizeIfTerminal(DocumentRecomputeId id);
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> statusLocked(
         DocumentRecomputeId id) const;
+    [[nodiscard]] bool claimPresentationFinalization(DocumentRecomputeId id);
 
     DocumentCollaborationService& _service;
     mutable std::recursive_mutex _operationMutex;

@@ -202,11 +202,13 @@ class Transaction;
 class DocumentCommitCoordinator;
 class DocumentCollaborationService;
 class DocumentRecomputeCoordinator;
+class RecomputeHandle;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
 struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
+struct DocumentRecomputeSnapshot;
 struct RecoverySnapshotSaveOptions;
 namespace Internal
 {
@@ -1106,6 +1108,12 @@ public:
                   bool* hasError = nullptr,
                   int options = 0);
 
+    /** Submit the same detached recompute used by recompute() and return immediately. */
+    [[nodiscard]] std::unique_ptr<RecomputeHandle> recomputeAsync(
+        const std::vector<DocumentObject*>& objs = {},
+        bool force = false,
+        int options = 0);
+
     /**
      * @brief Recompute a single object.
      *
@@ -1603,6 +1611,7 @@ public:
     friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class RecomputeHandle;
     friend class Gui::Document;
     friend class Gui::MergeDocuments;
     friend class Gui::ViewProviderDocumentObject;
@@ -1783,7 +1792,9 @@ protected:
      * This function creates an actual transaction regardless of Application
      * AutoTransaction setting.
      */
-    int _openTransaction(std::string name = "", int id = 0);
+    int _openTransaction(std::string name = "",
+                         int id = 0,
+                         bool preserveRedoHistory = false);
     /**
      * @brief Commit the Command transaction.
      *
@@ -1792,7 +1803,7 @@ protected:
      *
      * @param notify If true, notify the application to close the transaction.
      */
-    bool _commitTransaction(bool notify = false);
+    bool _commitTransaction(bool notify = false, bool retainUndoHistory = true);
     /**
      * @brief Abort the running transaction.
      *
@@ -1870,6 +1881,36 @@ private:
             const CollaborationDeferredRecomputeFence&) = delete;
         CollaborationDeferredRecomputeFence& operator=(
             const CollaborationDeferredRecomputeFence&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationDerivedRecomputeGrant final
+    {
+    public:
+        explicit CollaborationDerivedRecomputeGrant(Document& document);
+        ~CollaborationDerivedRecomputeGrant();
+
+        CollaborationDerivedRecomputeGrant(
+            const CollaborationDerivedRecomputeGrant&) = delete;
+        CollaborationDerivedRecomputeGrant& operator=(
+            const CollaborationDerivedRecomputeGrant&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationRecomputeStableNotificationDeferral final
+    {
+    public:
+        explicit CollaborationRecomputeStableNotificationDeferral(Document& document);
+        ~CollaborationRecomputeStableNotificationDeferral();
+
+        CollaborationRecomputeStableNotificationDeferral(
+            const CollaborationRecomputeStableNotificationDeferral&) = delete;
+        CollaborationRecomputeStableNotificationDeferral& operator=(
+            const CollaborationRecomputeStableNotificationDeferral&) = delete;
 
     private:
         Document& _document;
@@ -1955,6 +1996,11 @@ private:
     openCollaborationStructuralRecomputeGrant(bool trustedStructural);
     [[nodiscard]] CollaborationDeferredRecomputeFence
     openCollaborationDeferredRecomputeFence();
+    [[nodiscard]] CollaborationDerivedRecomputeGrant
+    openCollaborationDerivedRecomputeGrant();
+    [[nodiscard]] CollaborationRecomputeStableNotificationDeferral
+    openCollaborationRecomputeStableNotificationDeferral();
+    [[nodiscard]] bool collaborationDerivedRecomputeGranted() const noexcept;
     [[nodiscard]] bool collaborationTrustedPropertyStatusMutationActive() const noexcept;
     [[nodiscard]] bool collaborationStructuralImportDeferralRequired() const noexcept;
     [[nodiscard]] bool collaborationImportBoundaryActive() const noexcept;
@@ -1975,8 +2021,10 @@ private:
     void abortApplicationTransactionThroughCoordinator();
     void lockTransactionInternal();
     void unlockTransactionInternal();
-    int openCollaborationCommitTransaction(std::string name);
-    bool commitCollaborationCommitTransaction();
+    int openCollaborationCommitTransaction(std::string name, bool retainUndoHistory);
+    bool commitCollaborationCommitTransaction(bool retainUndoHistory);
+    void applyCollaborationRecomputeFailure(DocumentObject& object,
+                                            std::string_view diagnostic);
     void setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept;
     void beginCollaborationCommitNotificationBarrier();
     void prepareCollaborationCommitFinalization();
@@ -1998,6 +2046,12 @@ private:
     void emitCollaborationChangePropertyEditor(const Property& property);
     [[nodiscard]] bool discardCollaborationTransientObjectNotifications(
         DocumentObject& object);
+    void finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot);
+    void finalizeCollaborationRecomputeTeardown();
+    int recomputeLegacy(const std::vector<DocumentObject*>& objs,
+                        bool force,
+                        bool* hasError,
+                        int options);
     CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     CollaborationRollbackResult
     rollbackCollaborationTransactionPreservingPendingRecompute() noexcept;

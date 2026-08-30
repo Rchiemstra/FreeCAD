@@ -37,6 +37,7 @@
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <App/PropertyStandard.h>
+#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <Base/Interpreter.h>
 #include <Base/Parameter.h>
@@ -1507,10 +1508,81 @@ TEST_F(DocumentCollaborationBoundaryTest, recomputeResultClassifiesKnownAndUnkno
     const int executionsBefore = feature->ExecCount.getValue();
     const auto before = captureFor(feature->getNameInDocument());
 
-    ASSERT_GT(document()->recompute(), 0);
+    const int recomputeResult = document()->recompute();
+    const char* diagnostic = document()->getErrorDescription(feature);
+    ASSERT_GT(recomputeResult, 0) << (diagnostic ? diagnostic : "no recompute diagnostic");
 
-    EXPECT_GT(feature->ExecCount.getValue(), executionsBefore);
+    EXPECT_GT(feature->ExecCount.getValue(), executionsBefore)
+        << (diagnostic ? diagnostic : "no recompute diagnostic");
     expectExactDeltasAndConflicts(before, {0, 4, 0, 0, 2}, "recompute output writes");
+}
+
+TEST_F(DocumentCollaborationBoundaryTest,
+       structuredFailedRecomputeCommitsOnlyAuthorizedFailureEffects)
+{
+    auto* feature =
+        document()->addObject<App::FeatureTestException>("StructuredFailureIngress");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_TRUE(feature->isValid());
+    feature->touch();
+
+    const auto modelKey = DocumentRevisionKey::objectModel(feature->getNameInDocument());
+    const auto unknownKey = DocumentRevisionKey::unknownModelMutation();
+    const auto execCountKey = DocumentRevisionKey::objectProperty(
+        feature->getNameInDocument(), "ExecCount");
+    const auto execResultKey = DocumentRevisionKey::objectProperty(
+        feature->getNameInDocument(), "ExecResult");
+    const auto modelBefore = revisions().current(modelKey);
+    const auto unknownBefore = revisions().current(unknownKey);
+    const auto execCountBefore = revisions().current(execCountKey);
+    const auto execResultBefore = revisions().current(execResultKey);
+    const auto identity = document()->collaborationIdentity();
+    App::DocumentRevisionCursor cursor {
+        identity.instanceId,
+        identity.lifecycleEpoch,
+        revisions().pollPublications(
+            {identity.instanceId, identity.lifecycleEpoch, 0}, 0).latestSequence,
+    };
+
+    auto handle = document()->recomputeAsync({feature});
+    ASSERT_NE(handle, nullptr);
+    const auto snapshot = handle->wait(std::chrono::seconds(30));
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::PartialFailure)
+        << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.completedFeatures, 0U);
+    EXPECT_EQ(snapshot.failedFeatures, 1U);
+    ASSERT_EQ(snapshot.features.size(), 1U);
+    EXPECT_EQ(snapshot.features.front().state,
+              App::DocumentRecomputeFeatureState::Failed);
+    EXPECT_FALSE(snapshot.features.front().diagnostic.empty());
+    EXPECT_FALSE(feature->isValid());
+    EXPECT_TRUE(feature->mustRecompute());
+
+    EXPECT_EQ(revisions().current(modelKey), modelBefore + 1);
+    EXPECT_EQ(revisions().current(unknownKey), unknownBefore + 1);
+    EXPECT_EQ(revisions().current(execCountKey), execCountBefore);
+    EXPECT_EQ(revisions().current(execResultKey), execResultBefore);
+
+    const auto publications = revisions().pollPublications(cursor);
+    ASSERT_EQ(publications.status, App::DocumentRevisionCursorStatus::Valid);
+    ASSERT_FALSE(publications.gap);
+    ASSERT_EQ(publications.events.size(), 1U);
+    ASSERT_EQ(publications.events.front().changes.size(), 2U);
+    EXPECT_NE(std::ranges::find(publications.events.front().changes,
+                                modelKey,
+                                &App::DocumentRevisionChange::key),
+              publications.events.front().changes.end());
+    EXPECT_NE(std::ranges::find(publications.events.front().changes,
+                                unknownKey,
+                                &App::DocumentRevisionChange::key),
+              publications.events.front().changes.end());
+    EXPECT_EQ(std::ranges::find_if(publications.events.front().changes,
+                  [](const auto& change) {
+                      return change.key.kind
+                          == App::DocumentRevisionKind::ObjectProperty;
+                  }),
+              publications.events.front().changes.end());
 }
 
 TEST_F(DocumentCollaborationBoundaryTest, errorOnlyFeatureRecomputePublishesEveryAttempt)

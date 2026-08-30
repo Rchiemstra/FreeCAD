@@ -235,15 +235,144 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
 
     document = _read(DOCUMENT_SOURCE)
     full = _compact(_body(document, "Document::recompute"))
+    legacy = _compact(_body(document, "Document::recomputeLegacy"))
     facade = _compact(_body(document, "Document::recomputeFeature"))
     friend = _compact(_body(_read(GENERIC_SOURCE), "execute"))
-    assert "_recomputeFeature(obj)" in full
+    assert "recomputeAsync(objs,force,options)" in full
+    assert "_recomputeFeature(" not in full
+    assert "_recomputeFeature(obj)" in legacy
     assert "_recomputeFeature(" not in facade
     assert "recomputeCoordinator()" in facade
     assert "makeGenericIsolatedRecomputeRequest(*this,*feature,recursive)" in facade
     assert "document.testStatus(Document::TempDoc)" in friend
     assert "feature.getDocument()!=&document" in friend
     assert "returndocument._recomputeFeature(&feature);" in friend
+
+    stripped_document = _suppress_cpp(document)
+    rollback_body = _body(document, "Document::rollbackCollaborationTransactionImpl")
+    rollback_start = stripped_document.find(rollback_body)
+    assert rollback_start >= 0
+    assert stripped_document.find(rollback_body, rollback_start + 1) < 0
+    rollback_end = rollback_start + len(rollback_body)
+
+    commit_source = _read(COMMIT_SOURCE)
+    coordinator_body = _body(
+        commit_source,
+        "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
+    )
+    stripped_commit = _suppress_cpp(commit_source)
+    coordinator_start = stripped_commit.find(coordinator_body)
+    assert coordinator_start >= 0
+    assert stripped_commit.find(coordinator_body, coordinator_start + 1) < 0
+    coordinator_end = coordinator_start + len(coordinator_body)
+
+    rollback_callers: list[str] = []
+    coordinator_callers: list[str] = []
+    forbidden_legacy_callers: list[str] = []
+    for path in (REPO_ROOT / "src").rglob("*.cpp"):
+        source = _suppress_cpp(_read(path))
+        for match in re.finditer(r"\brecomputeLegacy\s*\(", source):
+            prefix = source[max(0, match.start() - 40) : match.start()]
+            if path == REPO_ROOT / DOCUMENT_SOURCE and re.search(r"Document::\s*$", prefix):
+                continue
+            line = source.count("\n", 0, match.start()) + 1
+            location = f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
+            if (
+                path == REPO_ROOT / DOCUMENT_SOURCE
+                and rollback_start <= match.start() < rollback_end
+            ):
+                rollback_callers.append(location)
+            elif (
+                path == REPO_ROOT / COMMIT_SOURCE
+                and coordinator_start <= match.start() < coordinator_end
+            ):
+                coordinator_callers.append(location)
+            else:
+                forbidden_legacy_callers.append(location)
+    assert len(rollback_callers) == 1, (
+        "expected the single WP12 rollback-stabilization caller, found: "
+        + ", ".join(rollback_callers)
+    )
+    assert len(coordinator_callers) == 1, (
+        "expected the single structural coordinator caller, found: "
+        + ", ".join(coordinator_callers)
+    )
+    assert not forbidden_legacy_callers, (
+        "private recomputeLegacy has an unclassified source caller: "
+        + ", ".join(forbidden_legacy_callers)
+    )
+
+    rollback_raw = _body(
+        document, "Document::rollbackCollaborationTransactionImpl", raw=True
+    )
+    rollback_call = rollback_raw.find("recomputeLegacy(")
+    assert rollback_call >= 0
+    removal_note = rollback_raw[max(0, rollback_call - 400):rollback_call]
+    assert re.search(
+        r"//[^\n]*CC-WP13 removes\s*\n\s*//\s*the legacy body",
+        removal_note,
+    )
+
+    coordinator = _compact(coordinator_body)
+    eager = coordinator.find(
+        "if(recomputePolicy==CollaborationCompatibilityRecomputePolicy::Eager){"
+    )
+    assert eager >= 0
+    eager_opening = coordinator.find("{", eager)
+    eager_closing = _matching(coordinator, eager_opening, "{", "}")
+    assert eager_closing is not None
+    eager_stage = coordinator[eager_opening + 1:eager_closing]
+
+    derived_grant = eager_stage.find(
+        "autoderivedRecompute=_document.openCollaborationDerivedRecomputeGrant();"
+    )
+    structural = eager_stage.find("if(structuralCompatibility){", derived_grant)
+    structural_opening = eager_stage.find("{", structural)
+    structural_closing = _matching(eager_stage, structural_opening, "{", "}")
+    assert structural_closing is not None
+    structural_stage = eager_stage[structural_opening + 1:structural_closing]
+
+    structural_grant = structural_stage.find(
+        "autogrant=_document.openCollaborationStructuralRecomputeGrant("
+        "trustedStructural);"
+    )
+    legacy_call = structural_stage.find(
+        "_document.recomputeLegacy({},true,&recomputeHasError,0)",
+        structural_grant,
+    )
+    assert 0 <= derived_grant < structural < structural_opening
+    assert 0 <= structural_grant < legacy_call
+    assert eager_stage.count("openCollaborationDerivedRecomputeGrant()") == 1
+    assert eager_stage.count("openCollaborationStructuralRecomputeGrant(") == 1
+    assert structural_stage.count("_document.recomputeLegacy(") == 1
+    assert "_document.recompute(" not in structural_stage
+    assert eager_stage.count("_document.recomputeLegacy(") == 1
+    assert coordinator.count("_document.recomputeLegacy(") == 1
+
+    ordinary_else = eager_stage.find("else{", structural_closing)
+    ordinary_opening = eager_stage.find("{", ordinary_else)
+    ordinary_closing = _matching(eager_stage, ordinary_opening, "{", "}")
+    assert ordinary_closing is not None
+    assert structural_closing < ordinary_else < ordinary_opening
+    ordinary_stage = eager_stage[ordinary_opening + 1:ordinary_closing]
+    assert "_document.recompute({},true,&recomputeHasError)" in ordinary_stage
+    assert "recomputeLegacy(" not in ordinary_stage
+    assert eager_stage.count("_document.recompute(") == 1
+    assert coordinator.count("_document.recompute(") == 1
+
+    coordinator_raw = _body(
+        commit_source,
+        "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
+        raw=True,
+    )
+    raw_legacy = coordinator_raw.find("_document.recomputeLegacy(")
+    assert raw_legacy >= 0
+    assert coordinator_raw.find("_document.recomputeLegacy(", raw_legacy + 1) < 0
+    coordinator_removal_note = coordinator_raw[max(0, raw_legacy - 450):raw_legacy]
+    assert re.search(
+        r"//[^\n]*CC-WP13\s*\n\s*//\s*removes this live compatibility path",
+        coordinator_removal_note,
+    )
 
 
 def test_documentobject_python_and_gui_delegate_to_the_isolated_document_facade() -> None:
@@ -265,7 +394,7 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     literals = _compact(_suppress_cpp(source, literals=False))
     for fragment in (
         "constexprstd::uint32_tProtocolMagic=0x31524947U;",
-        "constexprstd::uint32_tProtocolVersion=1;",
+        "constexprstd::uint32_tProtocolVersion=2;",
         "constexprstd::size_tMaxObjects=10'000;",
         "constexprstd::size_tMaxProperties=1'000'000;",
         "constexprstd::size_tMaxFieldBytes=1U<<20;",
@@ -273,8 +402,29 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     ):
         assert fragment in literals, f"missing generic protocol bound: {fragment}"
 
-    prepare = _compact(_suppress_cpp(_body(source, "prepareGenericRecompute", raw=True), literals=False))
-    assert 'intent.arguments.size()!=1||!intent.arguments.contains("feature")' in prepare
+    prepare = _compact(
+        _suppress_cpp(
+            _body(source, "prepareGenericRecompute", raw=True), literals=False
+        )
+    )
+    assert (
+        'constautolegacyMode=intent.arguments.find("legacy_revision_semantics")'
+        in prepare
+    )
+    assert "(intent.arguments.size()!=1&&intent.arguments.size()!=2)" in prepare
+    assert '!intent.arguments.contains("feature")' in prepare
+    assert (
+        "(intent.arguments.size()==2&&legacyMode==intent.arguments.end())"
+        in prepare
+    )
+    assert (
+        "constboolpreserveLegacyRevisionSemantics="
+        "legacyMode!=intent.arguments.end()" in prepare
+    )
+    assert 'preserveLegacyRevisionSemantics&&legacyMode->second!="1"' in prepare
+    schema_rejection = prepare.find("throwstd::invalid_argument(")
+    target_lookup = prepare.find('intent.arguments.at("feature")')
+    assert 0 <= schema_rejection < target_lookup
     assert 'input.sections.push_back({"document.fcstd"' in prepare
     assert 'input.sections.push_back({"recompute.params",encodeParameters(' in prepare
     assert "PropertyLinkBase" in prepare
@@ -283,7 +433,11 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     assert "request.policy=App::PreparationPolicy::IsolatedProcess" in prepare
     assert "IsolatedTaskisolated" in prepare
 
-    execute = _compact(_suppress_cpp(_body(source, "executeGenericRecompute", raw=True), literals=False))
+    execute = _compact(
+        _suppress_cpp(
+            _body(source, "executeGenericRecompute", raw=True), literals=False
+        )
+    )
     document_section = execute.find('requireSection(input,"document.fcstd",2)')
     parameter_section = execute.find('requireSection(input,"recompute.params",2)')
     decode = execute.find("decodeParameters(parameterSection.bytes)")
@@ -291,21 +445,93 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     baseline = execute.find("capturePropertySnapshots(*detached,manifests)")
     run = execute.find("GenericIsolatedRecomputeAccess::execute(*detached,*target)")
     second_schema = execute.find("validateDetachedSchema(*detached,manifests)", first_schema + 1)
+    failure_branch = execute.find("if(result!=0){", second_schema)
+    failure_publication = execute.find(
+        '{"recompute.outputs",encodeFailure(targetName,failureDiagnostic)}',
+        failure_branch,
+    )
     side_effect = execute.find('"genericrecomputeproducedanundeclaredpropertysideeffect:')
     publication = execute.find('{"recompute.outputs",encodeOutputs(')
     assert 0 <= document_section < parameter_section < decode < first_schema < baseline < run
-    assert run < second_schema < side_effect < publication
+    assert run < second_schema < failure_branch < failure_publication < side_effect < publication
     assert execute.count("validateDetachedSchema(*detached,manifests)") == 2
 
-    decoder = _compact(_suppress_cpp(_body(source, "decodeResult", raw=True), literals=False))
+    success_encoder = _compact(
+        _suppress_cpp(_body(source, "encodeOutputs", raw=True), literals=False)
+    )
+    success_magic = success_encoder.find("appendU32(result,ProtocolMagic)")
+    success_version = success_encoder.find(
+        "appendU32(result,ProtocolVersion)", success_magic
+    )
+    success_target = success_encoder.find("appendString(result,targetName)", success_version)
+    success_status = success_encoder.find("appendU32(result,1)", success_target)
+    success_count = success_encoder.find(
+        "appendU32(result,static_cast<std::uint32_t>(changed.size()))",
+        success_status,
+    )
+    assert 0 <= success_magic < success_version < success_target < success_status < success_count
+
+    failure_encoder = _compact(
+        _suppress_cpp(_body(source, "encodeFailure", raw=True), literals=False)
+    )
+    assert 'if(diagnostic.empty()){diagnostic="detachedfeaturerecomputefailed";}' in failure_encoder
+    failure_magic = failure_encoder.find("appendU32(result,ProtocolMagic)")
+    failure_version = failure_encoder.find(
+        "appendU32(result,ProtocolVersion)", failure_magic
+    )
+    failure_target = failure_encoder.find("appendString(result,targetName)", failure_version)
+    failure_status = failure_encoder.find("appendU32(result,0)", failure_target)
+    failure_diagnostic = failure_encoder.find(
+        "appendString(result,diagnostic)", failure_status
+    )
+    assert 0 <= failure_magic < failure_version < failure_target < failure_status < failure_diagnostic
+
+    decoder = _compact(
+        _suppress_cpp(_body(source, "decodeResult", raw=True), literals=False)
+    )
     for fragment in (
         'requireSection(archive,"recompute.outputs",1)',
+        "constautosucceeded=reader.u32()",
+        "succeeded>1",
+        "if(succeeded==0)",
+        "diagnostic.empty()",
         "count>expectedOutputs.size()",
         "expected==expectedOutputs.end()||expected->second!=type",
         "!seen.insert(name).second",
         "reader.finish()",
     ):
         assert fragment in decoder, f"result decoder is not fail closed: {fragment}"
+
+    effects_decoder = _compact(
+        _suppress_cpp(
+            _body(source, "decodeLegacyPublicationEffects", raw=True),
+            literals=False,
+        )
+    )
+    failure_status = effects_decoder.find("if(succeeded==0){")
+    failure_filter = effects_decoder.find("std::erase_if(effects", failure_status)
+    model_only = effects_decoder.find(
+        "effect.key!=App::DocumentRevisionKey::objectModel(target)",
+        failure_filter,
+    )
+    unknown_only = effects_decoder.find(
+        "App::DocumentRevisionKind::UnknownModelMutation", model_only
+    )
+    unit_delta = effects_decoder.find("effect.revisionDelta=1", unknown_only)
+    assert 0 <= failure_status < failure_filter < model_only < unknown_only < unit_delta
+
+    failure_apply = _compact(
+        _body(source, "apply")
+    )
+    assert (
+        "if(_failureDiagnostic){"
+        "App::Internal::GenericIsolatedRecomputeAccess::applyFailure("
+        "document,*target,*_failureDiagnostic);return;}" in failure_apply
+    )
+    outcome = _compact(
+        _body(source, "recomputeOutcomeSucceeded")
+    )
+    assert "return!_failureDiagnostic.has_value();" in outcome
 
 
 def test_worker_boundary_has_no_parent_authority_and_featurepython_is_explicit_opt_in() -> None:
@@ -347,8 +573,39 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         _read(SERVICE_SOURCE),
         "DocumentCollaborationService::commitRecomputeEditOnDocumentThread",
     ))
-    assert "_coordinator.commitWithPreparationPolicyAndRecompute(" in service
-    assert "CollaborationCompatibilityRecomputePolicy::Deferred" in service
+    assert "return_coordinator.commitRecompute(edit);" in service
+    assert service.count("_coordinator.commitRecompute(edit)") == 1
+
+    routing = _compact(_body(
+        _read(COMMIT_SOURCE),
+        "DocumentCommitCoordinator::commitRecompute",
+    ))
+    grant = routing.find("if(_document.collaborationDerivedRecomputeGranted()){")
+    grant_open = routing.find("{", grant)
+    grant_close = _matching(routing, grant_open, "{", "}")
+    assert grant_close is not None
+    derived = routing.find(
+        "returncommitDerivedRecomputeInActiveTransaction(edit);", grant_open
+    )
+    ordinary = routing.find("returncommitWithPreparationPolicyAndOptions(", grant_close)
+    assert ordinary >= 0
+    ordinary_open = routing.find("(", ordinary)
+    ordinary_close = _matching(routing, ordinary_open, "(", ")")
+    assert ordinary_close is not None
+    ordinary_arguments = routing[ordinary_open + 1:ordinary_close].split(",")
+    assert ordinary_arguments == [
+        "edit",
+        "false",
+        "false",
+        "CollaborationCompatibilityRecomputePolicy::Deferred",
+        "false",
+        "false",
+    ]
+    assert 0 <= grant < grant_open < derived < grant_close < ordinary
+    assert ordinary < ordinary_open < ordinary_close
+    assert routing.count("commitDerivedRecomputeInActiveTransaction(edit)") == 1
+    assert routing.count("commitWithPreparationPolicyAndOptions(") == 1
+    assert "commitWithPreparationPolicyAndRecompute(" not in routing
 
     commit = _compact(_body(
         _read(COMMIT_SOURCE),

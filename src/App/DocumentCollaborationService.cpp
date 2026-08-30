@@ -20,6 +20,7 @@
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace
@@ -679,7 +680,12 @@ PreparedEdit DocumentCollaborationService::prepareEditOnDocumentThread(
             "collaboration preparation was not dispatched to the document owner thread");
     }
     std::lock_guard lock(_document.collaborationCommitMutex());
-    if (_document.collaborationStableReadBlocked()) {
+    // Inline typed intent may be prepared while objects are merely touched.
+    // The final DCC admission still rejects an eager commit until pending
+    // recompute is resolved, and revisions protect a preparation from any
+    // detached result committed in the meantime. Active transaction,
+    // lifecycle, replay, and teardown boundaries remain excluded.
+    if (_document.collaborationRecomputeCaptureBlocked()) {
         throw Base::RuntimeError(
             "collaboration preparation requires a stable document boundary");
     }
@@ -896,6 +902,8 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         if (isolatedTask) {
             pending.backend = PendingDetachedPreparation::Backend::IsolatedProcess;
             pending.isolatedResultDecoder = isolatedTask->decodeResult;
+            pending.isolatedPublicationEffectDecoder =
+                isolatedTask->decodePublicationEffects;
         }
     }
 
@@ -1164,6 +1172,31 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
                         "isolated geometry result publication digest mismatch");
                 }
                 terminal->operation = pending.isolatedResultDecoder(*decoded.archive);
+                if (pending.isolatedPublicationEffectDecoder) {
+                    auto refinedEffects =
+                        pending.isolatedPublicationEffectDecoder(*decoded.archive);
+                    std::unordered_set<DocumentRevisionKey, DocumentRevisionKeyHash>
+                        authorizedWrites(pending.writeSet.begin(), pending.writeSet.end());
+                    std::unordered_set<DocumentRevisionKey, DocumentRevisionKeyHash>
+                        refinedWrites;
+                    for (const auto& effect : refinedEffects) {
+                        if (!effect.key.valid() || effect.revisionDelta == 0
+                            || !authorizedWrites.contains(effect.key)
+                            || !refinedWrites.insert(effect.key).second) {
+                            throw std::runtime_error(
+                                "trusted isolated result effects exceed the prepared write authority");
+                        }
+                    }
+                    std::vector<DocumentRevisionKey> refinedWriteSet;
+                    refinedWriteSet.reserve(refinedWrites.size());
+                    for (const auto& key : pending.writeSet) {
+                        if (refinedWrites.contains(key)) {
+                            refinedWriteSet.push_back(key);
+                        }
+                    }
+                    pending.writeSet = std::move(refinedWriteSet);
+                    pending.publicationEffects = std::move(refinedEffects);
+                }
             }
             catch (const std::exception& error) {
                 terminal->status = PreparedEditExecutionStatus::Failed;
@@ -1371,11 +1404,7 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEditOnDocument
                               edit,
                               "prepared recompute adapter registration is no longer trusted");
     }
-    return _coordinator.commitWithPreparationPolicyAndRecompute(
-        edit,
-        false,
-        false,
-        CollaborationCompatibilityRecomputePolicy::Deferred);
+    return _coordinator.commitRecompute(edit);
 }
 
 DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
@@ -1769,7 +1798,7 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
 
     try {
         if (_coordinator.openNativeCommitTransaction(
-                "Atomic shared-presentation compatibility")
+                "Atomic shared-presentation compatibility", true)
             == 0) {
             clearAtomicState();
             _document.setCollaborationRevisionPublicationSuppressed(priorSuppression);
@@ -1919,7 +1948,7 @@ DocumentCollaborationService::commitAtomicCompatibilityTransaction()
         return result;
     }
     try {
-        if (!_coordinator.commitNativeCommitTransaction()) {
+        if (!_coordinator.commitNativeCommitTransaction(true)) {
             if (!_document.hasPendingTransaction()) {
                 _document.poisonCollaborationCommit(
                     "atomic native commit was refused after consuming its transaction");

@@ -181,20 +181,25 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
-    def testRefreshFallsBackToSyncForFeaturePython(self):
+    def testRefreshRejectsUnoptedFeaturePythonWithoutLiveExecution(self):
         params = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document")
         old_async = params.GetBool("EnableAsyncRecompute", True)
 
         class RefreshProxy:
             def __init__(self):
                 self.executed_thread_id = None
+                self.execute_count = 0
 
             def execute(self, obj):
+                self.execute_count += 1
                 self.executed_thread_id = threading.get_ident()
                 time.sleep(0.05)
+                obj.Result = 42
 
         proxy = RefreshProxy()
         obj = self.doc.addObject("App::FeaturePython", "PythonFeature")
+        obj.addProperty("App::PropertyInteger", "Result")
+        obj.Result = -1
         obj.Proxy = proxy
         obj.touch()
 
@@ -203,12 +208,21 @@ class TestGuiDocument(unittest.TestCase):
 
             start = time.monotonic()
             FreeCADGui.runCommand("Std_Refresh", 0)
+            # Drain the queued compatibility request so the assertions prove
+            # the isolated adapter rejected the feature, not merely that the
+            # GUI command returned before its work began.
+            FreeCADGui.updateGui()
             elapsed = time.monotonic() - start
         finally:
             params.SetBool("EnableAsyncRecompute", old_async)
 
-        self.assertEqual(proxy.executed_thread_id, threading.get_ident())
-        self.assertGreaterEqual(elapsed, 0.04)
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(proxy.execute_count, 0)
+        self.assertIsNone(proxy.executed_thread_id)
+        self.assertEqual(obj.Result, -1)
+        self.assertIn("Touched", obj.State)
+        self.assertIn("Invalid", obj.State)
+        self.assertNotIn("Up-to-date", obj.State)
 
     def testSaveCommandDoesNotUseDeprecatedAPI(self):
         with tempfile.TemporaryDirectory() as temp_dir:

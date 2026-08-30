@@ -209,6 +209,20 @@ def _archive_handler_violations(source: str, function: str) -> list[str]:
             violations.append(f"{function}: live authority token {token}")
     if re.search(r"\b(?:getDocument|collaborationService)\s*\(", clean_body):
         violations.append(f"{function}: attempts to recover document authority")
+    parent_only = (
+        "DocumentRevisionKey",
+        "DocumentRevisionPublicationRequest",
+        "IsolatedPublicationEffectDecoder",
+        "readSet",
+        "writeSet",
+        "publicationEffects",
+        "decodePublicationEffects",
+    )
+    for identifier in parent_only:
+        if re.search(rf"\b{identifier}\b", clean_body):
+            violations.append(
+                f"{function}: attempts to choose parent-side dependencies/effects via {identifier}"
+            )
     return violations
 
 
@@ -219,8 +233,9 @@ def _isolated_task_field_violations(source: str) -> list[str]:
         "GeometryJobRequestrequest",
         "GeometryArchiveinputArchive",
         "IsolatedResultDecoderdecodeResult",
+        "IsolatedPublicationEffectDecoderdecodePublicationEffects",
     }
-    return [] if len(statements) == 3 and set(statements) == expected else statements
+    return [] if len(statements) == 4 and set(statements) == expected else statements
 
 
 def test_collaborative_preparation_has_one_trusted_isolated_task_contract() -> None:
@@ -232,6 +247,14 @@ def test_collaborative_preparation_has_one_trusted_isolated_task_contract() -> N
         "usingIsolatedResultDecoder=std::function<std::unique_ptr<constCollaborativeOperation>"
         "(constGeometryArchive&)>;" in compact
     )
+    assert (
+        "usingIsolatedPublicationEffectDecoder="
+        "std::function<std::vector<DocumentRevisionPublicationRequest>"
+        "(constGeometryArchive&)>;" in compact
+    )
+    assert compact.count(
+        "IsolatedPublicationEffectDecoderdecodePublicationEffects;"
+    ) == 1
     assert compact.count("std::unique_ptr<IsolatedTask>isolatedTask;") == 1
     assert "std::vector<IsolatedTask>" not in compact
     assert "std::shared_ptr<IsolatedTask>" not in compact
@@ -253,6 +276,17 @@ def test_dcs_owns_isolated_submission_status_cancellation_and_collection() -> No
     assert "preparation.policy==PreparationPolicy::IsolatedProcess" in compact_prepare
     assert "!preparation.isolatedTask" in compact_prepare
     assert "pending.isolatedResultDecoder=isolatedTask->decodeResult" in compact_prepare
+    assert (
+        "pending.isolatedPublicationEffectDecoder="
+        "isolatedTask->decodePublicationEffects" in compact_prepare
+    )
+    _assert_order(
+        prepare,
+        "pending.publicationEffects = std::move(preparation.publicationEffects)",
+        "validatePreparedEditMetadata",
+        "pending.isolatedPublicationEffectDecoder = isolatedTask->decodePublicationEffects",
+        "geometryJobManager().submit",
+    )
     assert re.search(
         r"if\(isolatedTask\)\{.*geometryJobManager\(\)\.submit\(.*?\)"
         r";\}else\{.*preparedEditExecutor\(\)\.submit\(",
@@ -276,12 +310,34 @@ def test_dcs_owns_isolated_submission_status_cancellation_and_collection() -> No
         "expectation.inputDigest=geometryTerminal->inputDigest",
     ):
         assert binding in compact_take
+    assert (
+        "authorizedWrites(pending.writeSet.begin(),pending.writeSet.end())"
+        in compact_take
+    )
+    assert (
+        "if(!effect.key.valid()||effect.revisionDelta==0"
+        "||!authorizedWrites.contains(effect.key)"
+        "||!refinedWrites.insert(effect.key).second)" in compact_take
+    )
+    assert (
+        "for(constauto&key:pending.writeSet){"
+        "if(refinedWrites.contains(key)){refinedWriteSet.push_back(key);}}"
+        in compact_take
+    )
+    assert "pending.writeSet=std::move(refinedWriteSet)" in compact_take
+    assert "pending.publicationEffects=std::move(refinedEffects)" in compact_take
     _assert_order(
         take,
         "geometryJobManager().takeResult",
         "GeometryArchiveCodec::readValidated",
         "decoded.archive->archiveDigest != geometryTerminal->resultDigest",
         "pending.isolatedResultDecoder(*decoded.archive)",
+        "if (pending.isolatedPublicationEffectDecoder)",
+        "pending.isolatedPublicationEffectDecoder(*decoded.archive)",
+        "authorizedWrites(pending.writeSet.begin(), pending.writeSet.end())",
+        "for (const auto& effect : refinedEffects)",
+        "pending.writeSet = std::move(refinedWriteSet)",
+        "pending.publicationEffects = std::move(refinedEffects)",
         "new PreparedEdit",
     )
 
@@ -492,6 +548,21 @@ def test_scanner_rejects_live_authority_but_ignores_comments_and_literals() -> N
     assert any("Document" in violation for violation in violations)
     assert any("GetApplication" in violation for violation in violations)
 
+    worker_chosen_effect = r'''
+        App::GeometryArchive executeSweep(const App::GeometryArchive& input,
+                                          const std::stop_token stopToken)
+        {
+            std::vector<App::DocumentRevisionPublicationRequest> publicationEffects;
+            return input;
+        }
+    '''
+    effect_violations = _archive_handler_violations(worker_chosen_effect, "executeSweep")
+    assert any(
+        "DocumentRevisionPublicationRequest" in violation
+        for violation in effect_violations
+    )
+    assert any("publicationEffects" in violation for violation in effect_violations)
+
 
 def test_isolated_task_scanner_rejects_a_second_authority_field() -> None:
     unsafe = """
@@ -499,6 +570,7 @@ def test_isolated_task_scanner_rejects_a_second_authority_field() -> None:
             GeometryJobRequest request;
             GeometryArchive inputArchive;
             IsolatedResultDecoder decodeResult;
+            IsolatedPublicationEffectDecoder decodePublicationEffects;
             void* liveAuthority;
         };
     """

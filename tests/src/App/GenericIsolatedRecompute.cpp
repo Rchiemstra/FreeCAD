@@ -16,9 +16,11 @@
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -51,12 +53,18 @@ protected:
         }
     }
 
-    App::CollaborativeOperationPreparation prepare(const std::string& featureName)
+    App::CollaborativeOperationPreparation prepare(
+        const std::string& featureName,
+        const bool preserveLegacyRevisionSemantics = false)
     {
+        App::CollaborativeOperationIntent intent {
+            std::string(App::GenericIsolatedRecomputeOperationType),
+            {{"feature", featureName}}};
+        if (preserveLegacyRevisionSemantics) {
+            intent.arguments.emplace("legacy_revision_semantics", "1");
+        }
         return App::CollaborativeOperationRegistry::instance().prepare(
-            *_document,
-            {std::string(App::GenericIsolatedRecomputeOperationType),
-             {{"feature", featureName}}});
+            *_document, intent);
     }
 
     App::Document* createOtherDocument()
@@ -86,6 +94,37 @@ const App::DocumentRecomputeFeatureRequest& node(
     return *found;
 }
 
+constexpr std::uint32_t GenericProtocolMagic = 0x31524947U;
+constexpr std::uint32_t GenericProtocolVersion = 2;
+
+void appendProtocolU32(std::vector<std::uint8_t>& bytes, const std::uint32_t value)
+{
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+        bytes.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffU));
+    }
+}
+
+void appendProtocolString(std::vector<std::uint8_t>& bytes, const std::string_view value)
+{
+    appendProtocolU32(bytes, static_cast<std::uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+App::GeometryArchive resultArchive(const std::string_view target,
+                                   const std::uint32_t status,
+                                   const std::string_view diagnostic)
+{
+    App::GeometryArchive archive;
+    std::vector<std::uint8_t> bytes;
+    appendProtocolU32(bytes, GenericProtocolMagic);
+    appendProtocolU32(bytes, GenericProtocolVersion);
+    appendProtocolString(bytes, target);
+    appendProtocolU32(bytes, status);
+    appendProtocolString(bytes, diagnostic);
+    archive.sections.push_back({"recompute.outputs", std::move(bytes)});
+    return archive;
+}
+
 }  // namespace
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -113,8 +152,136 @@ TEST_F(GenericIsolatedRecomputeTest,
 
     auto operation = preparation.isolatedTask->decodeResult(output);
     ASSERT_NE(operation, nullptr);
+    EXPECT_TRUE(operation->recomputeOutcomeSucceeded());
+    EXPECT_TRUE(operation->recomputeOutcomeDiagnostic().empty());
     operation->apply(*_document);
     EXPECT_EQ(feature->Value.getValue(), App::decodeColumn("C"));
+    const auto postcondition = operation->checkPostcondition(*_document);
+    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       workerFailureReturnsStructuredArchiveAndNarrowsAuthorizedEffects)
+{
+    auto* feature = _document->addObject<App::FeatureTestException>("FailureFeature");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_TRUE(feature->isValid());
+
+    auto preparation = prepare("FailureFeature", true);
+    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+    ASSERT_TRUE(preparation.isolatedTask->decodePublicationEffects);
+
+    App::GeometryArchive output;
+    EXPECT_NO_THROW(
+        output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+            std::string(App::GenericIsolatedRecomputeOperationType),
+            preparation.isolatedTask->inputArchive,
+            std::stop_token {}));
+    ASSERT_EQ(output.sections.size(), 1U);
+    EXPECT_EQ(output.sections.front().name, "recompute.outputs");
+    EXPECT_TRUE(feature->isValid())
+        << "detached failure execution must not mutate the live feature";
+
+    auto operation = preparation.isolatedTask->decodeResult(output);
+    ASSERT_NE(operation, nullptr);
+    EXPECT_FALSE(operation->recomputeOutcomeSucceeded());
+    EXPECT_FALSE(operation->recomputeOutcomeDiagnostic().empty());
+
+    const auto effects =
+        preparation.isolatedTask->decodePublicationEffects(output);
+    ASSERT_EQ(effects.size(), 2U);
+    const auto modelKey = App::DocumentRevisionKey::objectModel("FailureFeature");
+    const auto unknownKey = App::DocumentRevisionKey::unknownModelMutation();
+    const auto model = std::ranges::find(
+        effects, modelKey, &App::DocumentRevisionPublicationRequest::key);
+    const auto unknown = std::ranges::find(
+        effects, unknownKey, &App::DocumentRevisionPublicationRequest::key);
+    ASSERT_NE(model, effects.end());
+    ASSERT_NE(unknown, effects.end());
+    EXPECT_EQ(model->revisionDelta, 1U);
+    EXPECT_EQ(unknown->revisionDelta, 1U);
+    EXPECT_EQ(std::ranges::find_if(effects, [](const auto& effect) {
+                  return effect.key.kind == App::DocumentRevisionKind::ObjectProperty;
+              }),
+              effects.end());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       malformedStatusAndEmptyFailureDiagnosticAreRejectedByTrustedDecoders)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("Column");
+    ASSERT_NE(feature, nullptr);
+    auto preparation = prepare("Column", true);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+    ASSERT_TRUE(preparation.isolatedTask->decodePublicationEffects);
+
+    const auto malformedStatus = resultArchive("Column", 2, "invalid status");
+    EXPECT_THROW(
+        static_cast<void>(preparation.isolatedTask->decodeResult(malformedStatus)),
+        std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(
+            preparation.isolatedTask->decodePublicationEffects(malformedStatus)),
+        std::invalid_argument);
+
+    const auto emptyFailure = resultArchive("Column", 0, {});
+    EXPECT_THROW(
+        static_cast<void>(preparation.isolatedTask->decodeResult(emptyFailure)),
+        std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(
+            preparation.isolatedTask->decodePublicationEffects(emptyFailure)),
+        std::invalid_argument);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       semanticEqualityIgnoresNormalizedNonOutputStateAndPublishesOnlyOutputs)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("SemanticFeature");
+    ASSERT_NE(feature, nullptr);
+    feature->Angle.setValue(17.25);
+    feature->Integer.setValue(1729);
+    feature->String.setValue("archive-normalized baseline");
+
+    ASSERT_TRUE(feature->isOutputProperty(&feature->ExecCount));
+    ASSERT_TRUE(feature->isOutputProperty(&feature->ExecResult));
+    ASSERT_FALSE(feature->isOutputProperty(&feature->Angle));
+    ASSERT_FALSE(feature->isOutputProperty(&feature->Integer));
+    ASSERT_FALSE(feature->isOutputProperty(&feature->String));
+    ASSERT_EQ(feature->ExecCount.getValue(), 0);
+    ASSERT_EQ(feature->ExecResult.getStrValue(), "empty");
+    const double angleBefore = feature->Angle.getValue();
+    const long integerBefore = feature->Integer.getValue();
+    const std::string stringBefore = feature->String.getStrValue();
+
+    auto preparation = prepare("SemanticFeature");
+    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+
+    const auto output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+        std::string(App::GenericIsolatedRecomputeOperationType),
+        preparation.isolatedTask->inputArchive,
+        std::stop_token {});
+    ASSERT_EQ(output.sections.size(), 1U);
+    EXPECT_EQ(output.sections.front().name, "recompute.outputs");
+
+    // Detached execution must not leak state into the live document before apply.
+    EXPECT_EQ(feature->ExecCount.getValue(), 0);
+    EXPECT_EQ(feature->ExecResult.getStrValue(), "empty");
+    EXPECT_DOUBLE_EQ(feature->Angle.getValue(), angleBefore);
+    EXPECT_EQ(feature->Integer.getValue(), integerBefore);
+    EXPECT_EQ(feature->String.getStrValue(), stringBefore);
+
+    auto operation = preparation.isolatedTask->decodeResult(output);
+    ASSERT_NE(operation, nullptr);
+    operation->apply(*_document);
+
+    EXPECT_EQ(feature->ExecCount.getValue(), 1);
+    EXPECT_EQ(feature->ExecResult.getStrValue(), "Exec");
+    EXPECT_DOUBLE_EQ(feature->Angle.getValue(), angleBefore);
+    EXPECT_EQ(feature->Integer.getValue(), integerBefore);
+    EXPECT_EQ(feature->String.getStrValue(), stringBefore);
     const auto postcondition = operation->checkPostcondition(*_document);
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
 }

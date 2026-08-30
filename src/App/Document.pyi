@@ -6,6 +6,7 @@ from Base.Metadata import constmethod
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
+from RecomputeHandle import RecomputeHandle
 from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload
 
 if TYPE_CHECKING:
@@ -587,6 +588,21 @@ class Document(PropertyContainer):
     ) -> int:
         """
         Recompute the document and returns the amount of recomputed features.
+        """
+        ...
+
+    def recomputeAsync(
+        self,
+        objs: Sequence[DocumentObject] = None,
+        force: bool = False,
+        check_cycle: bool = False,
+        /,
+    ) -> RecomputeHandle:
+        """
+        Submit the same isolated recompute used by recompute() and return immediately.
+
+        Poll status(), progress(), or done() on the returned handle to advance
+        dependency-ready work, or call wait() for a responsive compatibility wait.
         """
         ...
 

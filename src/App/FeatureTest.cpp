@@ -122,13 +122,13 @@ FeatureTest::FeatureTest()
     ADD_PROPERTY_TYPE(Source1, (nullptr), group, Prop_None, "Source for testing links");
     ADD_PROPERTY_TYPE(Source2, (nullptr), group, Prop_None, "Source for testing links");
     ADD_PROPERTY_TYPE(SourceN, (nullptr), group, Prop_None, "Source for testing links");
-    ADD_PROPERTY_TYPE(ExecResult, ("empty"), group, Prop_None, "Result of the execution");
+    ADD_PROPERTY_TYPE(ExecResult, ("empty"), group, Prop_Output, "Result of the execution");
     ADD_PROPERTY_TYPE(ExceptionType,
                       (0),
                       group,
                       Prop_None,
                       "The type of exception the execution method throws");
-    ADD_PROPERTY_TYPE(ExecCount, (0), group, Prop_None, "Number of executions");
+    ADD_PROPERTY_TYPE(ExecCount, (0), group, Prop_Output, "Number of executions");
 
     // properties with types
     ADD_PROPERTY_TYPE(TypeHidden,

@@ -215,6 +215,7 @@ struct DocumentRecomputeCoordinator::Job
     std::map<std::string, Node> nodes;
     bool cancelRequested {false};
     bool sessionFinalized {false};
+    bool presentationFinalized {false};
     std::string diagnostic;
 };
 
@@ -628,6 +629,10 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             sessionId = job.sessionId;
         }
         DocumentCommitResult commit;
+        const bool recomputeSucceeded =
+            terminal->preparedEdit->operation().recomputeOutcomeSucceeded();
+        const std::string recomputeDiagnostic(
+            terminal->preparedEdit->operation().recomputeOutcomeDiagnostic());
         try {
             commit = _service.commitRecomputeEdit(sessionId, *terminal->preparedEdit);
         }
@@ -650,7 +655,14 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             node.diagnostic = commit.message;
             switch (commit.status) {
                 case DocumentCommitStatus::Committed:
-                    node.state = DocumentRecomputeFeatureState::Committed;
+                    node.state = recomputeSucceeded
+                        ? DocumentRecomputeFeatureState::Committed
+                        : DocumentRecomputeFeatureState::Failed;
+                    if (!recomputeSucceeded) {
+                        node.diagnostic = recomputeDiagnostic.empty()
+                            ? "detached feature recompute failed"
+                            : recomputeDiagnostic;
+                    }
                     break;
                 case DocumentCommitStatus::Conflict:
                 case DocumentCommitStatus::StaleDocument:
@@ -808,6 +820,19 @@ bool DocumentRecomputeCoordinator::hasPendingWork() const
     return std::ranges::any_of(_jobs, [](const auto& entry) {
         return !jobTerminal(entry.second->state);
     });
+}
+
+bool DocumentRecomputeCoordinator::claimPresentationFinalization(
+    const DocumentRecomputeId id)
+{
+    std::lock_guard stateLock(_stateMutex);
+    const auto found = _jobs.find(id);
+    if (found == _jobs.end() || !jobTerminal(found->second->state)
+        || found->second->presentationFinalized) {
+        return false;
+    }
+    found->second->presentationFinalized = true;
+    return true;
 }
 
 }  // namespace App
