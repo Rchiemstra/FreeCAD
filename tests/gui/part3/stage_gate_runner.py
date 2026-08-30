@@ -1532,22 +1532,26 @@ def _retain_linux_binary_copies(
 
 
 def _collect_windows_artifacts(
-    *, output: Path, stage_key: str, runner_log: Path, handoff_path: Path
+    *,
+    output: Path,
+    stage_key: str,
+    runner_log: Path,
+    handoff_path: Path,
+    retain_fcstd: bool,
 ) -> dict[str, Any]:
     _require(handoff_path.is_file(), "pytest did not produce the stage evidence handoff")
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     _require(
         handoff.get("schema_version") == 1
         and handoff.get("stage") == stage_key.upper()
-        and type(handoff.get("coordinator_return_code")) is int
-        and handoff.get("coordinator_return_code") == 0,
-        "stage evidence handoff is malformed or reports coordinator failure",
+        and type(handoff.get("coordinator_return_code")) is int,
+        "stage evidence handoff is malformed",
     )
     evidence_source = Path(str(handoff.get("evidence_path") or ""))
     launcher_source = Path(str(handoff.get("launcher_path") or ""))
     evidence = json.loads(evidence_source.read_text(encoding="utf-8"))
     _require(isinstance(evidence, dict), "stage evidence is malformed")
-    return {
+    artifacts = {
         "runner_log": _artifact_record(runner_log),
         "junit": _artifact_record(output / f"stage-{stage_key}-junit.xml"),
         "handoff": _artifact_record(handoff_path),
@@ -1557,8 +1561,11 @@ def _collect_windows_artifacts(
         "launcher_log": _copy_retained(
             launcher_source, output / f"stage-{stage_key}-launcher.log"
         ),
-        "fcstd": _retain_host_fcstd_copies(evidence, output),
     }
+    artifacts["fcstd"] = (
+        _retain_host_fcstd_copies(evidence, output) if retain_fcstd else {}
+    )
+    return artifacts
 
 
 def run_windows(
@@ -1633,12 +1640,16 @@ def run_windows(
             stage_key=stage_key,
             runner_log=runner_log,
             handoff_path=handoff_path,
+            retain_fcstd=return_code == 0,
         )
     except Exception as exc:
         packet["artifact_collection_error"] = f"{type(exc).__name__}: {exc}"
         _write_packet(packet_path, packet)
-        raise
+        if return_code == 0:
+            raise
     _write_packet(packet_path, packet)
+    if return_code != 0:
+        return return_code
     validate_packet(packet)
     return return_code
 
@@ -1681,7 +1692,6 @@ try:
     assert payload.get("schema_version") == 1
     assert payload.get("stage") == stage
     assert type(payload.get("coordinator_return_code")) is int
-    assert payload.get("coordinator_return_code") == 0
     evidence = payload.get("evidence_path")
     launcher = payload.get("launcher_path")
     assert isinstance(evidence, str) and evidence
@@ -2327,26 +2337,56 @@ def run_linux_docker(
                 "finished_utc": utc_now_iso(),
             }
         _write_packet(packet_path, packet)
-        packet["artifacts"] = {
-            "runner_log": _artifact_record(output / f"stage-{stage_key}-runner.log"),
-            "evidence": _artifact_record(output / f"stage-{stage_key}-evidence.json"),
-            "launcher_log": _artifact_record(output / f"stage-{stage_key}-launcher.log"),
-            "junit": _artifact_record(output / f"stage-{stage_key}-junit.xml"),
-            "handoff": _artifact_record(output / f"stage-{stage_key}-handoff.json"),
-            "aftermath": _artifact_record(output / f"stage-{stage_key}-aftermath.txt"),
-            "container_script": _artifact_record(script_path),
-            "release_barrier": _artifact_record(release_path),
+        artifact_paths = {
+            "runner_log": output / f"stage-{stage_key}-runner.log",
+            "evidence": output / f"stage-{stage_key}-evidence.json",
+            "launcher_log": output / f"stage-{stage_key}-launcher.log",
+            "junit": output / f"stage-{stage_key}-junit.xml",
+            "handoff": output / f"stage-{stage_key}-handoff.json",
+            "aftermath": output / f"stage-{stage_key}-aftermath.txt",
+            "container_script": script_path,
+            "release_barrier": release_path,
         }
-        packet["artifacts"]["fcstd"] = _retain_linux_fcstd_copies(
-            packet, output=output, container_id=container_id
-        )
-        _retain_linux_binary_copies(packet, output=output, container_id=container_id)
+        try:
+            if int(return_code) == 0:
+                packet["artifacts"] = {
+                    name: _artifact_record(path)
+                    for name, path in artifact_paths.items()
+                }
+                packet["artifacts"]["fcstd"] = _retain_linux_fcstd_copies(
+                    packet, output=output, container_id=container_id
+                )
+                _retain_linux_binary_copies(
+                    packet, output=output, container_id=container_id
+                )
+            else:
+                packet["artifacts"] = {
+                    name: _artifact_record(path)
+                    for name, path in artifact_paths.items()
+                    if path.is_file()
+                }
+                missing = sorted(
+                    name for name, path in artifact_paths.items() if not path.is_file()
+                )
+                packet["artifacts"]["fcstd"] = {}
+                if missing:
+                    packet["artifact_collection_error"] = (
+                        "failed stage did not publish: " + ", ".join(missing)
+                    )
+        except Exception as exc:
+            packet["artifact_collection_error"] = f"{type(exc).__name__}: {exc}"
+            _write_packet(packet_path, packet)
+            if int(return_code) == 0:
+                raise
         _write_packet(packet_path, packet)
         cleanup_ok = _cleanup_linux_container(
             packet, container_id=container_id, container_name=name
         )
+        packet["execution"]["cleanup_verified"] = cleanup_ok
         _write_packet(packet_path, packet)
         _require(cleanup_ok, "Docker cleanup did not prove exact id/name absence")
+        if int(return_code) != 0:
+            return int(return_code)
         validate_packet(packet)
         return int(return_code)
     finally:

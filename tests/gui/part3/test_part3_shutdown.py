@@ -140,6 +140,7 @@ def _launch_owned_session() -> dict[str, object]:
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
+            start_new_session=sys.platform != "win32",
         )
 
     _wait_for_mcp_ready(launcher_module, process, 120.0)
@@ -282,6 +283,7 @@ def test_stall_without_window_close_fails_with_forced_true() -> None:
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
+            start_new_session=sys.platform != "win32",
         )
     try:
         _wait_for_mcp_ready(launcher_module, process, 120.0)

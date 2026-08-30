@@ -272,14 +272,21 @@ def launch_env_for_isolated_profile(
     repo_root: Path | None = None,
 ) -> dict[str, str]:
     fc_data = profile_root / "FreeCAD"
+    config_root = profile_root / "config"
+    cache_root = profile_root / "cache"
     fc_data.mkdir(parents=True, exist_ok=True)
+    config_root.mkdir(parents=True, exist_ok=True)
+    cache_root.mkdir(parents=True, exist_ok=True)
     (fc_data / "temp").mkdir(exist_ok=True)
     endpoint_dir.mkdir(parents=True, exist_ok=True)
     install_part3_local_driver(profile_root, repo_root)
     install_mcp_addon_import_path(profile_root, repo_root)
     ensure_disposable_profile_auth_secret(profile_root)
     env = os.environ.copy()
+    env["HOME"] = str(profile_root)
     env["APPDATA"] = str(profile_root)
+    env["XDG_CONFIG_HOME"] = str(config_root)
+    env["XDG_CACHE_HOME"] = str(cache_root)
     env["XDG_DATA_HOME"] = str(profile_root)
     env["FREECAD_USER_HOME"] = str(fc_data)
     env["FREECAD_USER_DATA"] = str(fc_data)

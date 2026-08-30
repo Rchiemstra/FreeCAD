@@ -2942,7 +2942,10 @@ def test_linux_runner_uses_current_handoff_when_newer_decoy_run_exists() -> None
     assert "PART3_STAGE_EVIDENCE_HANDOFF" in script
     assert "find /tmp" not in script
     assert "coordinator_return_code" in script
+    assert 'type(payload.get("coordinator_return_code")) is int' in script
+    assert 'payload.get("coordinator_return_code") == 0' not in script
     assert "shutil.copy2(evidence, evidence_target)" in script
+    assert "shutil.copy2(launcher, launcher_target)" in script
 
 
 @pytest.mark.parametrize("mutation", ["missing", "malformed"])
@@ -3606,6 +3609,138 @@ def test_linux_normal_launch_still_reaches_successful_cleanup(
     packet = json.loads((tmp_path / "stage-a-execution-packet.json").read_text(encoding="utf-8"))
     assert packet["docker"]["container_id"] == container_id
     assert packet["docker"]["cleanup"]["command"] == ["docker", "rm", "-f", container_id]
+
+
+def test_linux_runner_retains_nonzero_stage_artifacts_and_cleanup_before_returning_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    container_id = "7" * 64
+    validation_calls: list[dict[str, Any]] = []
+
+    def fake_json(_command: list[str], *, phase: str) -> dict[str, Any]:
+        if phase == "image-inspect":
+            return {"Id": "sha256:" + "a" * 64}
+        return _inspect(container_id)
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[:2] == ["docker", "run"]
+        return subprocess.CompletedProcess(command, 0, container_id + "\n", "")
+
+    def fake_probe(_container: str, destination: str) -> dict[str, Any]:
+        return {
+            "path": destination,
+            "container_id": container_id,
+            "command": ["docker", "exec", container_id, "probe", destination],
+            "return_code": 73,
+            "errno": 30,
+            "errno_name": "EROFS",
+            "strerror": "Read-only file system",
+            "refused": True,
+            "pre_inspect": _inspect(container_id),
+            "post_inspect": _inspect(container_id),
+        }
+
+    def fake_result(
+        command: list[str], *, timeout: int | None = None
+    ) -> dict[str, Any]:
+        del timeout
+        if command[:2] == ["docker", "wait"]:
+            return {
+                "command": list(command),
+                "return_code": 0,
+                "stdout": "7\n",
+                "stderr": "",
+                "timed_out": False,
+            }
+        if command[:2] == ["docker", "logs"]:
+            _write(tmp_path / "stage-a-evidence.json", '{"verdict":"FAILED"}\n')
+            _write(tmp_path / "stage-a-launcher.log", "retained failure launcher\n")
+            _write(
+                tmp_path / "stage-a-junit.xml",
+                '<testsuite tests="1" failures="1" errors="0" skipped="0" />\n',
+            )
+            _write(
+                tmp_path / "stage-a-handoff.json",
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "stage": "A",
+                        "coordinator_return_code": 7,
+                        "evidence_path": "/tmp/failure-evidence.json",
+                        "launcher_path": "/tmp/failure-launcher.log",
+                    }
+                )
+                + "\n",
+            )
+            _write(tmp_path / "stage-a-aftermath.txt", "pytest_rc=7\n")
+            return {
+                "command": list(command),
+                "return_code": 0,
+                "stdout": "stage failed\n",
+                "stderr": "",
+                "timed_out": False,
+            }
+        if command[:3] == ["docker", "rm", "-f"]:
+            return {
+                "command": list(command),
+                "return_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "timed_out": False,
+            }
+        return {
+            "command": list(command),
+            "return_code": 1,
+            "stdout": "[]\n",
+            "stderr": f"Error: No such object: {command[-1]}",
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(runner, "_docker_json", fake_json)
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner, "_run_erofs_probe", fake_probe)
+    monkeypatch.setattr(runner, "_docker_result", fake_result)
+    monkeypatch.setattr(
+        runner, "validate_packet", lambda packet: validation_calls.append(packet)
+    )
+
+    result = runner.run_linux_docker(
+        repo_root=REPO_ROOT,
+        build_root=REPO_ROOT / "build",
+        output_dir=tmp_path,
+        stage="a",
+        image="synthetic",
+    )
+
+    packet = json.loads(
+        (tmp_path / "stage-a-execution-packet.json").read_text(encoding="utf-8")
+    )
+    assert result == 7
+    assert packet["execution"]["return_code"] == 7
+    assert packet["execution"]["cleanup_verified"] is True
+    assert packet["docker"]["cleanup"]["command"] == [
+        "docker",
+        "rm",
+        "-f",
+        container_id,
+    ]
+    assert "artifact_collection_error" not in packet
+    assert set(packet["artifacts"]) >= {
+        "evidence",
+        "launcher_log",
+        "handoff",
+        "junit",
+        "runner_log",
+    }
+    assert (tmp_path / "stage-a-evidence.json").read_text(encoding="utf-8") == (
+        '{"verdict":"FAILED"}\n'
+    )
+    assert (tmp_path / "stage-a-launcher.log").read_text(encoding="utf-8") == (
+        "retained failure launcher\n"
+    )
+    assert validation_calls == []
 
 
 def test_linux_failed_logs_cannot_return_zero_and_retains_cleanup(
@@ -4284,6 +4419,80 @@ def test_windows_runner_collects_synthetic_handoff_end_to_end(
     packet = json.loads((output / "stage-a-execution-packet.json").read_text(encoding="utf-8"))
     assert runner.validate_packet(packet)["platform"] == "windows"
     assert set(packet["artifacts"]) >= {"evidence", "launcher_log", "junit", "runner_log"}
+
+
+def test_windows_runner_retains_nonzero_stage_artifacts_before_returning_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    output = tmp_path / "out"
+    validation_calls: list[dict[str, Any]] = []
+
+    def fake_run(command, *, cwd, env, log_path):
+        del command, cwd
+        evidence = tmp_path / "owned" / "evidence" / "evidence.json"
+        launcher = evidence.parents[1] / "launcher.log"
+        _write(evidence, '{"verdict":"FAILED"}\n')
+        _write(launcher, "retained failure launcher\n")
+        _write(
+            Path(env[runner.HANDOFF_ENV]),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stage": "A",
+                    "coordinator_return_code": 7,
+                    "evidence_path": str(evidence),
+                    "launcher_path": str(launcher),
+                }
+            )
+            + "\n",
+        )
+        _write(Path(log_path), "stage failed\n")
+        junit_arg = next(
+            item
+            for item in runner._windows_stage_command(
+                Path(sys.executable), output, "a"
+            )
+            if item.startswith("--junitxml=")
+        )
+        _write(
+            Path(junit_arg.split("=", 1)[1]),
+            '<testsuite tests="1" failures="1" errors="0" skipped="0" />\n',
+        )
+        return 7
+
+    monkeypatch.setattr(runner, "_run_and_log", fake_run)
+    monkeypatch.setattr(
+        runner, "validate_packet", lambda packet: validation_calls.append(packet)
+    )
+
+    result = runner.run_windows(
+        repo_root=REPO_ROOT,
+        output_dir=output,
+        stage="a",
+        python_executable=Path(sys.executable),
+    )
+
+    packet = json.loads(
+        (output / "stage-a-execution-packet.json").read_text(encoding="utf-8")
+    )
+    assert result == 7
+    assert packet["execution"]["return_code"] == 7
+    assert "artifact_collection_error" not in packet
+    assert set(packet["artifacts"]) >= {
+        "evidence",
+        "launcher_log",
+        "junit",
+        "runner_log",
+    }
+    assert (output / "stage-a-evidence.json").read_text(encoding="utf-8") == (
+        '{"verdict":"FAILED"}\n'
+    )
+    assert (output / "stage-a-launcher.log").read_text(encoding="utf-8") == (
+        "retained failure launcher\n"
+    )
+    assert validation_calls == []
 
 
 def test_windows_runner_retains_failure_when_handoff_is_absent(
