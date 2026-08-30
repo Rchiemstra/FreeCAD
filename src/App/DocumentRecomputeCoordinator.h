@@ -67,6 +67,8 @@ struct AppExport DocumentRecomputeRequest
 {
     std::vector<DocumentRecomputeFeatureRequest> features;
     std::string coalescingKey;
+    /** Capture only one ready node at a time so each node observes prior commits. */
+    bool refreshRevisionFenceAfterEachCommit {false};
 };
 
 struct AppExport DocumentRecomputeFeatureSnapshot

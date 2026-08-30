@@ -174,6 +174,8 @@ std::string canonicalizeAndSign(App::DocumentRecomputeRequest& request)
     std::string signature;
     signature.reserve(bytes + request.features.size() * 32);
     appendField(signature, request.coalescingKey);
+    signature.push_back(request.refreshRevisionFenceAfterEachCommit ? '1' : '0');
+    signature.push_back('\n');
     for (const auto& feature : request.features) {
         appendField(signature, feature.featureId);
         appendField(signature, feature.operationId);
@@ -213,6 +215,7 @@ struct DocumentRecomputeCoordinator::Job
     std::string signature;
     std::string sessionId;
     std::map<std::string, Node> nodes;
+    bool refreshRevisionFenceAfterEachCommit {false};
     bool cancelRequested {false};
     bool sessionFinalized {false};
     bool presentationFinalized {false};
@@ -312,6 +315,8 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeReques
     job->coalescingKey = std::move(request.coalescingKey);
     job->signature = signature;
     job->sessionId = std::move(sessionId);
+    job->refreshRevisionFenceAfterEachCommit =
+        request.refreshRevisionFenceAfterEachCommit;
     for (auto& feature : request.features) {
         const std::string featureId = feature.featureId;
         job->nodes.emplace(featureId, Job::Node {std::move(feature)});
@@ -364,6 +369,16 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                     node.diagnostic = "dependency did not commit: " + *failedDependency;
                     changed = true;
                 }
+            }
+
+            if (job.refreshRevisionFenceAfterEachCommit
+                && std::ranges::any_of(job.nodes, [](const auto& entry) {
+                       const auto state = entry.second.state;
+                       return state == DocumentRecomputeFeatureState::Preparing
+                           || state == DocumentRecomputeFeatureState::Committing
+                           || state == DocumentRecomputeFeatureState::Cancelling;
+                   })) {
+                break;
             }
 
             const auto ready = std::ranges::find_if(job.nodes, [&job](const auto& entry) {

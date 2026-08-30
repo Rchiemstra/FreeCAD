@@ -440,6 +440,28 @@ TEST_F(DocumentRecomputeCoordinatorTest, independentRootsComplete)
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,
+       revisionFenceRefreshCapturesEachIndependentRootAfterThePriorCommit)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    auto plan = request(
+        {feature("first", {}, _scenarioToken, "First", "first-after", {}, {}, true),
+         feature("second", {}, _scenarioToken, "Second", "second-after")});
+    plan.refreshRevisionFenceAfterEachCommit = true;
+    const auto id = coordinator.submit(std::move(plan));
+
+    ASSERT_TRUE(_scenario->waitCaptured("first"));
+    EXPECT_FALSE(_scenario->captured("second"));
+    _scenario->release("first");
+
+    const auto snapshot = waitTerminal(coordinator, id);
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_TRUE(_scenario->captured("second"));
+    EXPECT_EQ(object("First").Label.getStrValue(), "first-after");
+    EXPECT_EQ(object("Second").Label.getStrValue(), "second-after");
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
        staleRevisionIsRejectedWithoutOverwritingLiveState)
 {
     auto& coordinator = _document->recomputeCoordinator();
@@ -488,6 +510,11 @@ TEST_F(DocumentRecomputeCoordinatorTest,
     auto mismatch = plan;
     mismatch.features.front().intent.arguments["value"] = "different";
     EXPECT_THROW(static_cast<void>(coordinator.submit(std::move(mismatch))),
+                 std::invalid_argument);
+
+    auto differentFence = plan;
+    differentFence.refreshRevisionFenceAfterEachCommit = true;
+    EXPECT_THROW(static_cast<void>(coordinator.submit(std::move(differentFence))),
                  std::invalid_argument);
 
     _scenario->release("coalesced");
