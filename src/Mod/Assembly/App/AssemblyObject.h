@@ -25,6 +25,8 @@
 #pragma once
 
 #include <boost/signals2.hpp>
+#include <unordered_map>
+#include <vector>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
 
@@ -137,6 +139,7 @@ public:
     void clearUndo();
 
     void exportAsASMT(std::string fileName);
+    bool requiresRigidSolveForMove(const std::vector<App::DocumentObject*>& movedParts);
 
     Base::Placement getMbdPlacement(std::shared_ptr<MbD::ASMTPart> mbdPart);
     bool validateNewPlacements();
@@ -175,7 +178,8 @@ public:
     std::string handleOneSideOfJoint(
         App::DocumentObject* joint,
         const char* propRefName,
-        const char* propPlcName
+        const char* propPlcName,
+        const std::string& markerName = std::string()
     );
     void getRackPinionMarkers(
         App::DocumentObject* joint,
@@ -192,6 +196,7 @@ public:
 
     std::vector<App::DocumentObject*> getJoints(bool delBadJoints = false, bool subJoints = true);
     std::vector<App::DocumentObject*> getGroundedJoints();
+    std::vector<App::DocumentObject*> getRigidGroups();
     std::vector<App::DocumentObject*> getJointsOfObj(App::DocumentObject* obj);
     std::vector<App::DocumentObject*> getJointsOfPart(App::DocumentObject* part);
     App::DocumentObject* getJointOfPartConnectingToGround(
@@ -290,9 +295,18 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    void rebuildRigidClusters();
+    App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
+    const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
+    void syncActiveRigidGroupPlacements();
+    void updateRigidPlacementCache();
+
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
     std::unordered_map<App::DocumentObject*, MbDPartData> objectPartMap;
+    std::unordered_map<App::DocumentObject*, App::DocumentObject*> rigidRepByPart;
+    std::unordered_map<App::DocumentObject*, std::vector<App::DocumentObject*>> rigidMembersByRep;
+    std::unordered_map<App::DocumentObject*, Base::Placement> rigidPlacementCache;
     std::vector<std::pair<App::DocumentObject*, double>> objMasses;
     std::vector<App::DocumentObject*> draggedParts;
     std::vector<App::DocumentObject*> motions;

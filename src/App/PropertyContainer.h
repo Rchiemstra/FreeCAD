@@ -519,8 +519,8 @@ public:
    * @param[in] doc The new documentation string for this property.
    * @return `true` if the update was successful; `false` otherwise.
    */
-  virtual bool changeDynamicProperty(const Property *prop, const char *group, const char *doc) {
-      return dynamicProps.changeDynamicProperty(prop,group,doc);
+  bool changeDynamicProperty(const Property *prop, const char *group, const char *doc) {
+      return dynamicProps.changeDynamicProperty(prop, group, doc);
   }
 
   /**
@@ -533,7 +533,7 @@ public:
    * @throw Base::NameError If the new name is invalid or already exists.
    */
   virtual bool renameDynamicProperty(Property *prop, const char *name) {
-      return dynamicProps.renameDynamicProperty(prop,name);
+      return dynamicProps.renameDynamicProperty(prop, name);
   }
 
   /**

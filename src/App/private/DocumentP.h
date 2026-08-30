@@ -158,6 +158,7 @@ struct DocumentP
     bool rollback {false};
     bool undoing {false};  ///< document in the middle of undo or redo
     bool committing {false};
+    bool definingTransaction {false};
     bool opentransaction {false};
     bool suppressCollaborationRevisionPublication {true};
     bool collaborationCommitNotificationBarrier {false};

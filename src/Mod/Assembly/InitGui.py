@@ -103,6 +103,7 @@ class AssemblyWorkbench(Workbench):
 
         cmdListJoints = [
             "Assembly_ToggleGrounded",
+            "Assembly_CreateJointRigidGroup",
             "Separator",
             "Assembly_CreateJointFixed",
             "Assembly_CreateJointRevolute",

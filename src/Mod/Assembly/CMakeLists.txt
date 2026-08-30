@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+disable_occt8_deprecation_warnings()
+
 if (NOT FREECAD_USE_EXTERNAL_ONDSELSOLVER)
 include_directories(
     ${CMAKE_SOURCE_DIR}/src/3rdParty/OndselSolver
@@ -59,6 +61,7 @@ SET(AssemblyScripts_SRCS
 SET(AssemblyTests_SRCS
     AssemblyTests/__init__.py
     AssemblyTests/TestCore.py
+    AssemblyTests/TestCommandCreateView.py
     AssemblyTests/TestCommandInsertLink.py
     AssemblyTests/TestCrossBodyDatumStaleness.py
     AssemblyTests/TestOverlayIconsAndOrigin.py

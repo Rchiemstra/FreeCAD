@@ -539,6 +539,7 @@ DocumentRecoveryPrivate::Info DocumentRecoveryPrivate::getRecoveryInfo(const QFi
 }
 
 
+
 static zipios::ConstEntryPointer findEntry(zipios::ZipFile& zf, const std::string& name)
 {
     auto entries = zf.entries();
