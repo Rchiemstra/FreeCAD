@@ -57,7 +57,8 @@ bool effectsExactlyCoverWrites(
     KeySet effectKeys;
     effectKeys.reserve(effects.size());
     for (const auto& effect : effects) {
-        if (!effect.key.valid() || !effectKeys.insert(effect.key).second) {
+        if (!effect.key.valid() || effect.revisionDelta == 0
+            || !effectKeys.insert(effect.key).second) {
             return false;
         }
     }
@@ -93,6 +94,24 @@ std::string stageFailure(std::string_view stage, const char* detail)
     std::string message(stage);
     message += ": ";
     message += detail ? detail : "unknown failure";
+    return message;
+}
+
+std::string pendingRecomputeDetail(App::Document& document, std::string message)
+{
+    bool first = true;
+    for (auto* object : document.getObjects()) {
+        if (!object || (!object->isTouched() && object->mustExecute() == 0)) {
+            continue;
+        }
+        message += first ? ": " : ", ";
+        first = false;
+        const char* name = object->getNameInDocument();
+        message += name && *name ? name : "<unnamed>";
+        message += " [";
+        message += object->getStatusString();
+        message += "]";
+    }
     return message;
 }
 
@@ -253,14 +272,18 @@ void DocumentCommitCoordinator::abortApplicationTransaction()
     _document._abortTransaction();
 }
 
-int DocumentCommitCoordinator::openNativeCommitTransaction(std::string name)
+int DocumentCommitCoordinator::openNativeCommitTransaction(
+    std::string name,
+    const bool retainUndoHistory)
 {
-    return _document.openCollaborationCommitTransaction(std::move(name));
+    return _document.openCollaborationCommitTransaction(
+        std::move(name), retainUndoHistory);
 }
 
-bool DocumentCommitCoordinator::commitNativeCommitTransaction()
+bool DocumentCommitCoordinator::commitNativeCommitTransaction(
+    const bool retainUndoHistory)
 {
-    return _document.commitCollaborationCommitTransaction();
+    return _document.commitCollaborationCommitTransaction(retainUndoHistory);
 }
 
 CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTransaction(
@@ -274,6 +297,25 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
 DocumentCommitResult DocumentCommitCoordinator::commit(const PreparedEdit& edit)
 {
     return commitWithPreparationPolicy(edit, true, false);
+}
+
+DocumentCommitResult DocumentCommitCoordinator::commitRecompute(const PreparedEdit& edit)
+{
+    if (_document.collaborationDerivedRecomputeGranted()) {
+        return commitDerivedRecomputeInActiveTransaction(edit);
+    }
+    // A full recompute owns the single externally visible stable boundary.
+    // Per-feature coordinator commits remain atomic, but their intermediate
+    // stable signals are deferred until RecomputeHandle finalization.
+    auto stableNotificationDeferral =
+        _document.openCollaborationRecomputeStableNotificationDeferral();
+    return commitWithPreparationPolicyAndOptions(
+        edit,
+        false,
+        false,
+        CollaborationCompatibilityRecomputePolicy::Deferred,
+        false,
+        false);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitCompatibility(
@@ -333,7 +375,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool trustedStructural)
+    const bool trustedStructural,
+    const bool retainUndoHistory)
 {
     if (!MainThreadSignalConfig::hasHooks()) {
         if (!_document.isCollaborationOwnerThread()) {
@@ -345,14 +388,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 trustedStructural);
+                                                 trustedStructural,
+                                                 retainUndoHistory);
     }
     if (MainThreadSignalConfig::isMainThread()) {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 trustedStructural);
+                                                 trustedStructural,
+                                                 retainUndoHistory);
     }
 
     std::optional<DocumentCommitResult> result;
@@ -370,14 +415,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
               requireDetachedPreparationSupport,
               structuralCompatibility,
               recomputePolicy,
-              trustedStructural] {
+              trustedStructural,
+              retainUndoHistory] {
                 try {
                     result.emplace(commitOnDocumentThreadWithOptions(
                         edit,
                         requireDetachedPreparationSupport,
                         structuralCompatibility,
                         recomputePolicy,
-                        trustedStructural));
+                        trustedStructural,
+                        retainUndoHistory));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -416,7 +463,164 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithRecomp
                                              requireDetachedPreparationSupport,
                                              structuralCompatibility,
                                              recomputePolicy,
-                                             false);
+                                             false,
+                                             true);
+}
+
+DocumentCommitResult
+DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
+    const PreparedEdit& edit)
+{
+    if (!_document.isCollaborationOwnerThread()) {
+        return makeResult(DocumentCommitStatus::Unsupported,
+                          edit,
+                          "derived recompute was not dispatched to the document owner thread");
+    }
+    if (!_document.collaborationDerivedRecomputeGranted()
+        || !_document.hasPendingTransaction()
+        || !_document.collaborationRevisionPublicationSuppressed()) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          "derived recompute requires the active coordinator transaction");
+    }
+    if (_document.collaborationNotificationsReplaying()) {
+        return makeResult(DocumentCommitStatus::Busy,
+                          edit,
+                          "a committed collaboration boundary is notifying observers");
+    }
+    if (_document.collaborationCommitPoisoned()) {
+        return makeResult(DocumentCommitStatus::RollbackFailed,
+                          edit,
+                          _document.collaborationCommitPoisonDiagnostic());
+    }
+
+    std::optional<DocumentIdentity> identity;
+    try {
+        identity = _document.collaborationIdentity();
+    }
+    catch (const Base::Exception& exception) {
+        return makeResult(DocumentCommitStatus::StaleDocument,
+                          edit,
+                          stageFailure("document identity unavailable", exception.what()));
+    }
+    catch (const std::exception& exception) {
+        return makeResult(DocumentCommitStatus::StaleDocument,
+                          edit,
+                          stageFailure("document identity unavailable", exception.what()));
+    }
+    if (!identity || identity->instanceId != edit.documentInstanceId()
+        || identity->lifecycleEpoch != edit.lifecycleEpoch()
+        || identity->state != DocumentLifecycleState::Live) {
+        return makeResult(DocumentCommitStatus::StaleDocument,
+                          edit,
+                          "prepared recompute targets a stale or non-live document instance");
+    }
+
+    const auto& operation = edit.operation();
+    if (operation.typeId().empty() || operation.typeId() != edit.operationType()) {
+        return makeResult(DocumentCommitStatus::InvalidPreparedEdit,
+                          edit,
+                          "prepared recompute payload does not match its declared type");
+    }
+    const auto& declaredEffects = edit.publicationEffects();
+    if (!effectsExactlyCoverWrites(declaredEffects, edit.writeSet())) {
+        return makeResult(
+            DocumentCommitStatus::InvalidPreparedEdit,
+            edit,
+            "recompute revision effects must exactly match the declared write set");
+    }
+    auto conflicts = _document.collaborationRevisions().validate(edit.expectedRevisions());
+    if (!conflicts.empty()) {
+        return makeConflictResult(edit,
+                                  "recompute revisions changed before derived commit",
+                                  std::move(conflicts));
+    }
+
+    try {
+        operation.apply(_document);
+    }
+    catch (const Base::Exception& exception) {
+        return makeResult(DocumentCommitStatus::ApplyFailed,
+                          edit,
+                          stageFailure("derived recompute apply failed", exception.what()));
+    }
+    catch (const std::exception& exception) {
+        return makeResult(DocumentCommitStatus::ApplyFailed,
+                          edit,
+                          stageFailure("derived recompute apply failed", exception.what()));
+    }
+    catch (...) {
+        return makeResult(DocumentCommitStatus::ApplyFailed,
+                          edit,
+                          "derived recompute apply failed with an unknown exception");
+    }
+    if (!_document.hasPendingTransaction()) {
+        _document.poisonCollaborationCommit(
+            "derived recompute escaped its coordinator transaction");
+        return makeResult(DocumentCommitStatus::RollbackFailed,
+                          edit,
+                          "derived recompute escaped its coordinator transaction");
+    }
+
+    CollaborativePostconditionResult postcondition;
+    bool postconditionMutationAttempted = false;
+    try {
+        const auto postconditionState = capturePostconditionState(_document);
+        _document.beginCollaborationPreparedReadOnlyPostconditionAudit();
+        try {
+            postcondition = operation.checkPostcondition(_document);
+            postconditionMutationAttempted =
+                _document.collaborationAtomicPresentationAuditViolated()
+                || !postconditionStateUnchanged(_document, postconditionState);
+        }
+        catch (...) {
+            _document.endCollaborationPreparedAtomicPresentationAudit();
+            throw;
+        }
+        _document.endCollaborationPreparedAtomicPresentationAudit();
+    }
+    catch (const Base::Exception& exception) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          stageFailure("derived recompute postcondition failed",
+                                       exception.what()));
+    }
+    catch (const std::exception& exception) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          stageFailure("derived recompute postcondition failed",
+                                       exception.what()));
+    }
+    catch (...) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          "derived recompute postcondition failed with an unknown exception");
+    }
+    if (postconditionMutationAttempted) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          "derived recompute postcondition attempted to mutate document state");
+    }
+    if (!postcondition.satisfied) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          postcondition.message.empty()
+                              ? "derived recompute postcondition was not satisfied"
+                              : std::move(postcondition.message));
+    }
+    if (_document.getMutationReadiness().pendingRemoval) {
+        return makeResult(DocumentCommitStatus::PostconditionFailed,
+                          edit,
+                          "derived recompute left pending object removal work");
+    }
+
+    // The outer PreparedEdit already owns the authoritative, frozen semantic
+    // closure for this mutation and its downstream recompute.  A worker result
+    // may apply values inside that transaction, but it must not widen the
+    // outer publication with result-local property details.
+    return makeResult(DocumentCommitStatus::Committed,
+                      edit,
+                      "derived recompute applied in the active coordinator transaction");
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOptions(
@@ -424,7 +628,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool trustedStructural)
+    const bool trustedStructural,
+    const bool retainUndoHistory)
 {
     if (!_document.isCollaborationOwnerThread()) {
         return makeResult(DocumentCommitStatus::Unsupported,
@@ -640,7 +845,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
 
     try {
         const std::string transactionName = "Collaborative operation " + edit.operationId();
-        if (openNativeCommitTransaction(transactionName) == 0) {
+        if (openNativeCommitTransaction(transactionName, retainUndoHistory) == 0) {
             restoreSuppression();
             discardNotifications();
             cleanupRequired = false;
@@ -711,10 +916,18 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool recomputeHasError = false;
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager) {
         try {
+            auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
             if (structuralCompatibility) {
                 auto grant = _document.openCollaborationStructuralRecomputeGrant(
                     trustedStructural);
-                static_cast<void>(_document.recompute({}, true, &recomputeHasError));
+                // Temporary coordinator-owned compatibility kill switch:
+                // transaction-local structural callbacks can contain native
+                // objects whose exact dynamic type is intentionally not
+                // serializable. The grant still distinguishes trusted schema
+                // mutation from untrusted execute-time attempts. CC-WP13
+                // removes this live compatibility path after qualification.
+                static_cast<void>(
+                    _document.recomputeLegacy({}, true, &recomputeHasError, 0));
             }
             else {
                 static_cast<void>(_document.recompute({}, true, &recomputeHasError));
@@ -762,7 +975,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         return abortAndRestore(makeResult(
             DocumentCommitStatus::RecomputeFailed,
             edit,
-            "document still has pending recompute work after the authoritative recompute"));
+            pendingRecomputeDetail(
+                _document,
+                "document still has pending recompute work after the authoritative recompute")));
     }
 
     CollaborativePostconditionResult postcondition;
@@ -808,7 +1023,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         return abortAndRestore(makeResult(
             DocumentCommitStatus::PostconditionFailed,
             edit,
-            "postcondition left pending recompute work after validation"));
+            pendingRecomputeDetail(
+                _document,
+                "postcondition left pending recompute work after validation")));
     }
     if (!postcondition.satisfied) {
         return abortAndRestore(makeResult(DocumentCommitStatus::PostconditionFailed,
@@ -842,13 +1059,23 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             }
             return left.stableObjectIdentity < right.stableObjectIdentity;
         };
-        const auto effectEqual = [](const DocumentRevisionPublicationRequest& left,
-                                    const DocumentRevisionPublicationRequest& right) {
-            return left.key == right.key
-                && left.stableObjectIdentity == right.stableObjectIdentity;
-        };
         std::sort(effects.begin(), effects.end(), effectLess);
-        effects.erase(std::unique(effects.begin(), effects.end(), effectEqual), effects.end());
+        auto output = effects.begin();
+        for (auto current = effects.begin(); current != effects.end(); ++current) {
+            if (output != effects.begin()
+                && (output - 1)->key == current->key
+                && (output - 1)->stableObjectIdentity
+                    == current->stableObjectIdentity) {
+                (output - 1)->revisionDelta = std::max(
+                    (output - 1)->revisionDelta, current->revisionDelta);
+                continue;
+            }
+            if (output != current) {
+                *output = std::move(*current);
+            }
+            ++output;
+        }
+        effects.erase(output, effects.end());
     }
     catch (const Base::Exception& exception) {
         return abortAndRestore(makeResult(
@@ -964,7 +1191,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                              edit,
                              "prepared edit committed");
     try {
-        if (!commitNativeCommitTransaction()) {
+        if (!commitNativeCommitTransaction(retainUndoHistory)) {
             reservation->cancel();
             reservation.reset();
             return abortAndRestore(makeResult(DocumentCommitStatus::ApplyFailed,

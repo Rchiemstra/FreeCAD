@@ -129,6 +129,7 @@
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
 #include "RecoverySnapshot.h"
+#include "RecomputeHandlePy.h"
 #include "FeaturePython.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
@@ -275,7 +276,14 @@ RecomputeResult processRecomputeRequestUnserialized(RecomputeRequest& request)
                 "recompute target document instance is no longer live");
         }
         if (document) {
-            document->recompute({}, request.force, nullptr, request.options);
+            bool recomputeHasError = false;
+            document->recompute({}, request.force, &recomputeHasError, request.options);
+            if (recomputeHasError) {
+                result.success = false;
+                result.failure = RecomputeFailure::Exception;
+                result.exception = std::make_unique<Base::RuntimeError>(
+                    "document recompute did not complete successfully");
+            }
         }
 
         DocumentObject* documentObject = request.documentObjectName.empty() || !document
@@ -285,8 +293,13 @@ RecomputeResult processRecomputeRequestUnserialized(RecomputeRequest& request)
             throw Base::RuntimeError(
                 "recompute target object is no longer live");
         }
-        if (documentObject) {
-            documentObject->recomputeFeature(request.recursive);
+        if (documentObject && !documentObject->recomputeFeature(request.recursive)) {
+            result.success = false;
+            result.failure = RecomputeFailure::Exception;
+            if (!result.exception) {
+                result.exception = std::make_unique<Base::RuntimeError>(
+                    "document object recompute did not complete successfully");
+            }
         }
     }
     catch (Base::BadGraphError& exception) {
@@ -499,8 +512,10 @@ Application::Application(std::map<std::string,std::string> &mConfig)
         _geometryJobManager->startProcessBackend(
             Internal::GeometryProcessBackendOptions {});
     }
-    _stopRecomputeThread = false;
-    _recomputeThread = std::thread(&Application::recomputeWorker, this);
+    // The legacy live-document recompute worker is intentionally dormant.
+    // queueRecomputeRequest() below routes through Document's coordinator-backed
+    // compatibility facade on the document/GUI owner thread.
+    _stopRecomputeThread = true;
 
     setupPythonTypes();
 }
@@ -598,6 +613,7 @@ void Application::setupPythonTypes()
     Base::InterpreterSingleton::addType(&ExtensionContainerPy::Type, pAppModule, "ExtensionContainer");
     Base::InterpreterSingleton::addType(&DocumentPy::Type, pAppModule, "Document");
     Base::InterpreterSingleton::addType(&DocumentSettingsPy::Type, pAppModule, "DocumentSettings");
+    Base::InterpreterSingleton::addType(&RecomputeHandlePy::Type, pAppModule, "RecomputeHandle");
     Base::InterpreterSingleton::addType(&DocumentObjectPy::Type, pAppModule, "DocumentObject");
     Base::InterpreterSingleton::addType(&DocumentObjectGroupPy::Type, pAppModule, "DocumentObjectGroup");
     Base::InterpreterSingleton::addType(&GeoFeaturePy::Type, pAppModule, "GeoFeature");
@@ -1307,153 +1323,87 @@ void Application::queueRecomputeRequest(RecomputeRequest req)
 {
     const std::string documentName = req.documentName;
     const std::thread::id activityOwner = std::this_thread::get_id();
-    const auto rejectClosingRequest = [&req] {
-        RecomputeResult result;
-        result.success = false;
-        result.failure = RecomputeFailure::Exception;
-        result.exception =
-            std::make_unique<Base::RuntimeError>("document is closing");
-        if (req.callback) {
-            req.callback(req, result);
-        }
-    };
-    const auto finishActivity = [this, &documentName, &activityOwner] {
-        if (documentName.empty()) {
-            return;
-        }
-        std::lock_guard lock(_recomputeMutex);
-        const auto found = _recomputeDocumentActivityCounts.find(documentName);
-        if (found != _recomputeDocumentActivityCounts.end()) {
-            if (--found->second == 0) {
-                _recomputeDocumentActivityCounts.erase(found);
-            }
-        }
-        const auto documentOwners =
-            _recomputeDocumentActivityOwners.find(documentName);
-        if (documentOwners != _recomputeDocumentActivityOwners.end()) {
-            const auto owner = documentOwners->second.find(activityOwner);
-            if (owner != documentOwners->second.end()
-                && --owner->second == 0) {
-                documentOwners->second.erase(owner);
-            }
-            if (documentOwners->second.empty()) {
-                _recomputeDocumentActivityOwners.erase(documentOwners);
-            }
-        }
-        _recomputeStateChanged.notify_all();
-    };
-
-    bool activityRegistered = false;
     bool rejectedAtAdmission = false;
-    bool sealedAtAdmission = false;
     if (!documentName.empty()) {
         std::lock_guard lock(_recomputeMutex);
         if (_recomputeDocumentsSealed.contains(documentName)) {
-            sealedAtAdmission = true;
-        }
-        else {
-            ++_recomputeDocumentActivityCounts[documentName];
-            ++_recomputeDocumentActivityOwners[documentName][activityOwner];
-            activityRegistered = true;
-            rejectedAtAdmission =
-                _recomputeDocumentsClosing.contains(documentName);
-        }
-    }
-    if (sealedAtAdmission) {
-        return;
-    }
-    BOOST_SCOPE_EXIT_ALL(&) {
-        if (activityRegistered) {
-            finishActivity();
-        }
-    };
-    if (rejectedAtAdmission) {
-        rejectClosingRequest();
-        return;
-    }
-
-    const bool workerSafe = canRecomputeRequestOnWorker(req);
-
-    if (workerSafe) {
-        bool rejected = false;
-        {
-            std::lock_guard lock(_recomputeMutex);
-            if (!documentName.empty()
-                && _recomputeDocumentsClosing.contains(documentName)) {
-                rejected = true;
-            }
-            else {
-                _recomputeRequests.push_back(std::move(req));
-            }
-            // A queued request transfers its admission activity to the worker.
-            // A rejected request keeps this activity until its callback returns.
-            if (!rejected && activityRegistered) {
-                const auto found =
-                    _recomputeDocumentActivityCounts.find(documentName);
-                if (found != _recomputeDocumentActivityCounts.end()
-                    && --found->second == 0) {
-                    _recomputeDocumentActivityCounts.erase(found);
-                }
-                const auto documentOwners =
-                    _recomputeDocumentActivityOwners.find(documentName);
-                if (documentOwners != _recomputeDocumentActivityOwners.end()) {
-                    const auto owner =
-                        documentOwners->second.find(activityOwner);
-                    if (owner != documentOwners->second.end()
-                        && --owner->second == 0) {
-                        documentOwners->second.erase(owner);
-                    }
-                    if (documentOwners->second.empty()) {
-                        _recomputeDocumentActivityOwners.erase(documentOwners);
-                    }
-                }
-                activityRegistered = false;
-                _recomputeStateChanged.notify_all();
-            }
-        }
-        if (rejected) {
-            rejectClosingRequest();
-        }
-        else {
-            notifyRecomputeWorker();
-        }
-        return;
-    }
-
-    RecomputeResult result;
-
-    // Requests that are not worker-safe stay on the caller thread unless a
-    // GUI main-thread hop is required. In App-only/headless mode there are no
-    // GUI hooks, so processing inline preserves the "stay off the worker"
-    // guarantee without inventing a synthetic main thread.
-    if (App::MainThreadSignalConfig::hasHooks()
-        && !App::MainThreadSignalConfig::isMainThread()) {
-        bool rejected = false;
-        {
-            std::lock_guard lock(_recomputeMutex);
-            if (!documentName.empty()
-                && _recomputeDocumentsClosing.contains(documentName)) {
-                rejected = true;
-            }
-        }
-        if (rejected) {
-            rejectClosingRequest();
             return;
         }
-        App::MainThreadSignalConfig::invoke(
-            [this, &req, &result]() {
-                result = processRecomputeRequestSerialized(req);
-            },
-            /*blocking=*/true
-        );
-    }
-    else {
-        result = processRecomputeRequestSerialized(req);
+        ++_recomputeDocumentActivityCounts[documentName];
+        ++_recomputeDocumentActivityOwners[documentName][activityOwner];
+        rejectedAtAdmission = _recomputeDocumentsClosing.contains(documentName);
     }
 
-    if (req.callback) {
-        req.callback(req, result);
+    auto request = std::make_shared<RecomputeRequest>(std::move(req));
+    auto execute = [this,
+                    request,
+                    documentName,
+                    activityOwner,
+                    rejectedAtAdmission]() mutable {
+        RecomputeResult result;
+        bool rejected = rejectedAtAdmission;
+        if (!rejected && !documentName.empty()) {
+            std::lock_guard lock(_recomputeMutex);
+            rejected = _recomputeDocumentsClosing.contains(documentName)
+                || _recomputeDocumentsSealed.contains(documentName);
+        }
+        if (rejected) {
+            result.success = false;
+            result.failure = RecomputeFailure::Exception;
+            result.exception =
+                std::make_unique<Base::RuntimeError>("document is closing");
+        }
+        else {
+            result = processRecomputeRequestSerialized(*request);
+        }
+
+        if (request->callback) {
+            try {
+                request->callback(*request, result);
+            }
+            catch (const std::exception& exception) {
+                Base::Console().error(
+                    "Unhandled coordinator recompute callback exception: %s\n",
+                    exception.what());
+            }
+            catch (...) {
+                Base::Console().error(
+                    "Unhandled coordinator recompute callback exception\n");
+            }
+        }
+
+        if (!documentName.empty()) {
+            std::lock_guard lock(_recomputeMutex);
+            const auto activity = _recomputeDocumentActivityCounts.find(documentName);
+            if (activity != _recomputeDocumentActivityCounts.end()
+                && --activity->second == 0) {
+                _recomputeDocumentActivityCounts.erase(activity);
+            }
+            const auto owners = _recomputeDocumentActivityOwners.find(documentName);
+            if (owners != _recomputeDocumentActivityOwners.end()) {
+                const auto owner = owners->second.find(activityOwner);
+                if (owner != owners->second.end() && --owner->second == 0) {
+                    owners->second.erase(owner);
+                }
+                if (owners->second.empty()) {
+                    _recomputeDocumentActivityOwners.erase(owners);
+                }
+            }
+            _recomputeStateChanged.notify_all();
+        }
+    };
+
+    // EnableAsyncRecompute is now only a coordinator-backed scheduling kill
+    // switch. It cannot reactivate the removed live-document worker.
+    if (!rejectedAtAdmission && isAsyncRecomputeEnabled()
+        && canRecomputeRequestOnWorker(*request)
+        && MainThreadSignalConfig::hasHooks() && QCoreApplication::instance()) {
+        QMetaObject::invokeMethod(QCoreApplication::instance(),
+                                  std::move(execute),
+                                  Qt::QueuedConnection);
+        return;
     }
+    execute();
 }
 
 bool Application::cancelRecomputeRequestsForDocument(const std::string& documentName)

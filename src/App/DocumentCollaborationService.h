@@ -323,6 +323,8 @@ private:
         std::string provenance;
         Backend backend {Backend::InProcess};
         CollaborativeOperationPreparation::IsolatedResultDecoder isolatedResultDecoder;
+        CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder
+            isolatedPublicationEffectDecoder;
         bool collecting {false};
     };
 

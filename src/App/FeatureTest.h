@@ -230,7 +230,9 @@ public:
     FeatureTestAsyncBlocker();
     ~FeatureTestAsyncBlocker() override;
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    // The blocker coordinates through process-local condition variables and
+    // therefore cannot be executed by the isolated FreeCADCmd backend.
+    bool canRecomputeOnWorker() const override { return false; }
 
     static void resetBlocker();
     static bool waitUntilStarted(std::chrono::milliseconds timeout);

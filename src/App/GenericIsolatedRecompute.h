@@ -7,6 +7,7 @@
 #include <FCGlobal.h>
 
 #include <string_view>
+#include <vector>
 
 namespace App
 {
@@ -27,7 +28,16 @@ AppExport void ensureGenericIsolatedRecomputeRegistered();
 [[nodiscard]] AppExport DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     Document& document,
     DocumentObject& feature,
-    bool recursive);
+    bool recursive,
+    bool preserveLegacyRevisionSemantics = true);
+
+/** Build an immutable plan for an already dependency-filtered feature set. */
+[[nodiscard]] AppExport DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
+    Document& document,
+    const std::vector<DocumentObject*>& features,
+    std::string_view provenance,
+    std::string_view coalescingPrefix,
+    bool preserveLegacyRevisionSemantics = false);
 
 /** Narrow friend used only by the isolated worker implementation. */
 class GenericIsolatedRecomputeAccess;

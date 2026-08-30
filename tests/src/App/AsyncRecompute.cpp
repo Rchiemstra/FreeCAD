@@ -21,12 +21,9 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <deque>
-#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <thread>
 
 #include <boost/scope_exit.hpp>
@@ -37,6 +34,7 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/FeatureTest.h"
+#include "Base/Parameter.h"
 #include <src/App/InitApplication.h>
 
 using namespace std::chrono_literals;
@@ -44,86 +42,40 @@ using namespace std::chrono_literals;
 namespace
 {
 
-class BlockingRecomputeDispatcher
+class ScopedBoolPreference
 {
 public:
-    BlockingRecomputeDispatcher()
-        : _owner(std::this_thread::get_id())
+    ScopedBoolPreference(ParameterGrp::handle group,
+                         std::string name,
+                         const bool value)
+        : _group(std::move(group))
+        , _name(std::move(name))
     {
-        Active = this;
-        App::MainThreadSignalConfig::setHooks(&isOwnerThread, &invoke);
-    }
-
-    ~BlockingRecomputeDispatcher()
-    {
-        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
-        Active = nullptr;
-    }
-
-    bool waitUntilQueued(std::chrono::milliseconds timeout = 2s)
-    {
-        std::unique_lock lock(_mutex);
-        return _changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); });
-    }
-
-    bool runOneFor(std::chrono::milliseconds timeout)
-    {
-        std::shared_ptr<Task> task;
-        {
-            std::unique_lock lock(_mutex);
-            if (!_changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); })) {
-                return false;
+        for (const auto& [key, existing] : _group->GetBoolMap()) {
+            if (key == _name) {
+                _wasPresent = true;
+                _previous = existing;
+                break;
             }
-            task = std::move(_tasks.front());
-            _tasks.pop_front();
         }
-        task->callback();
-        {
-            std::lock_guard lock(task->mutex);
-            task->done = true;
+        _group->SetBool(_name.c_str(), value);
+    }
+
+    ~ScopedBoolPreference()
+    {
+        if (_wasPresent) {
+            _group->SetBool(_name.c_str(), _previous);
         }
-        task->changed.notify_all();
-        return true;
+        else {
+            _group->RemoveBool(_name.c_str());
+        }
     }
 
 private:
-    struct Task
-    {
-        std::function<void()> callback;
-        std::mutex mutex;
-        std::condition_variable changed;
-        bool done {false};
-    };
-
-    static bool isOwnerThread()
-    {
-        return Active && std::this_thread::get_id() == Active->_owner;
-    }
-
-    static void invoke(std::function<void()>&& callback, bool blocking)
-    {
-        if (!Active || isOwnerThread()) {
-            callback();
-            return;
-        }
-        auto task = std::make_shared<Task>();
-        task->callback = std::move(callback);
-        {
-            std::lock_guard lock(Active->_mutex);
-            Active->_tasks.push_back(task);
-        }
-        Active->_changed.notify_one();
-        if (blocking) {
-            std::unique_lock lock(task->mutex);
-            task->changed.wait(lock, [&] { return task->done; });
-        }
-    }
-
-    static inline BlockingRecomputeDispatcher* Active {nullptr};
-    const std::thread::id _owner;
-    std::mutex _mutex;
-    std::condition_variable _changed;
-    std::deque<std::shared_ptr<Task>> _tasks;
+    ParameterGrp::handle _group;
+    std::string _name;
+    bool _wasPresent {false};
+    bool _previous {false};
 };
 
 class RecomputeCloseHookBarrier
@@ -185,19 +137,6 @@ public:
             hook, std::memory_order_release);
     }
 
-    static bool waitUntilDocumentInProgress(Application& application,
-                                            const std::string& documentName,
-                                            std::chrono::milliseconds timeout)
-    {
-        std::unique_lock lock(application._recomputeMutex);
-        return application._recomputeStateChanged.wait_for(
-            lock,
-            timeout,
-            [&application, &documentName] {
-                return application._recomputeDocumentActivityCounts.contains(documentName);
-            });
-    }
-
     static bool documentIsActive(Application& application,
                                  const std::string& documentName)
     {
@@ -233,7 +172,7 @@ protected:
     App::Document* _doc {};
 };
 
-TEST_F(AsyncRecomputeTest, CloseDocumentWaitsForInFlightAsyncRecompute)
+TEST_F(AsyncRecomputeTest, ProcessLocalBlockerIsRejectedAndDocumentClosesPromptly)
 {
     auto* object = dynamic_cast<App::FeatureTestAsyncBlocker*>(
         _doc->addObject("App::FeatureTestAsyncBlocker", "BlockingFeature")
@@ -248,22 +187,31 @@ TEST_F(AsyncRecomputeTest, CloseDocumentWaitsForInFlightAsyncRecompute)
 
     object->touch();
 
-    App::GetApplication().queueRecomputeRequest(App::RecomputeRequest::fromDocumentObject(*object));
+    bool callbackRan = false;
+    bool callbackSucceeded = true;
+    App::RecomputeFailure failure = App::RecomputeFailure::None;
+    auto request = App::RecomputeRequest::fromDocumentObject(*object);
+    request.callback = [&](App::RecomputeRequest&, App::RecomputeResult& result) {
+        callbackRan = true;
+        callbackSucceeded = result.success;
+        failure = result.failure;
+    };
 
-    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(2s));
+    const auto started = std::chrono::steady_clock::now();
+    App::GetApplication().queueRecomputeRequest(std::move(request));
+    EXPECT_LT(std::chrono::steady_clock::now() - started, 2s);
+    EXPECT_TRUE(callbackRan);
+    EXPECT_FALSE(callbackSucceeded);
+    EXPECT_EQ(failure, App::RecomputeFailure::Exception);
+    EXPECT_FALSE(App::FeatureTestAsyncBlocker::waitUntilStarted(50ms));
 
-    auto closeFuture = std::async(std::launch::async, [this] {
-        return App::GetApplication().closeDocument(_docName.c_str());
-    });
-
-    EXPECT_EQ(closeFuture.wait_for(50ms), std::future_status::timeout);
-
-    App::FeatureTestAsyncBlocker::releaseBlocker();
-
-    ASSERT_EQ(closeFuture.wait_for(2s), std::future_status::ready);
-    EXPECT_TRUE(closeFuture.get());
-
-    _doc = nullptr;
+    const auto closeStarted = std::chrono::steady_clock::now();
+    const bool closed = App::GetApplication().closeDocument(_docName.c_str());
+    EXPECT_LT(std::chrono::steady_clock::now() - closeStarted, 2s);
+    EXPECT_TRUE(closed);
+    if (closed) {
+        _doc = nullptr;
+    }
 }
 
 TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)
@@ -274,9 +222,13 @@ TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)
     auto* unsafeObject = dynamic_cast<App::FeatureTestAttribute*>(
         _doc->addObject("App::FeatureTestAttribute", "UnsafeFeature")
     );
+    auto* processLocalBlocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        _doc->addObject("App::FeatureTestAsyncBlocker", "ProcessLocalBlocker")
+    );
 
     ASSERT_NE(safeObject, nullptr);
     ASSERT_NE(unsafeObject, nullptr);
+    ASSERT_NE(processLocalBlocker, nullptr);
 
     EXPECT_TRUE(
         App::GetApplication().canRecomputeRequestOnWorker(
@@ -286,6 +238,11 @@ TEST_F(AsyncRecomputeTest, WorkerSafetyIsCheckedFromRequest)
     EXPECT_FALSE(
         App::GetApplication().canRecomputeRequestOnWorker(
             App::RecomputeRequest::fromDocumentObject(*unsafeObject)
+        )
+    );
+    EXPECT_FALSE(
+        App::GetApplication().canRecomputeRequestOnWorker(
+            App::RecomputeRequest::fromDocumentObject(*processLocalBlocker)
         )
     );
     EXPECT_FALSE(
@@ -320,37 +277,42 @@ TEST_F(AsyncRecomputeTest, InlineRecomputeObserverCloseRejectsWithoutSelfWait)
     EXPECT_EQ(App::GetApplication().getDocument(_docName.c_str()), _doc);
 }
 
-TEST_F(AsyncRecomputeTest, OwnerCloseRejectsQueuedOwnerThreadRecompute)
+TEST_F(AsyncRecomputeTest, DisabledAsyncSwitchRunsCoordinatorFacadeSynchronously)
 {
-    BlockingRecomputeDispatcher dispatcher;
-    auto* object = dynamic_cast<App::FeatureTest*>(
-        _doc->addObject("App::FeatureTest", "OwnerDispatchFeature")
+    auto preferences = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document");
+    ScopedBoolPreference disableAsync(preferences, "EnableAsyncRecompute", false);
+
+    auto* object = dynamic_cast<App::FeatureTestColumn*>(
+        _doc->addObject("App::FeatureTestColumn", "SynchronousCoordinatorFeature")
     );
     ASSERT_NE(object, nullptr);
+    object->Column.setValue("E");
     object->touch();
-    auto completionPromise = std::make_shared<std::promise<void>>();
-    auto recompute = completionPromise->get_future();
-    auto request = App::RecomputeRequest::fromDocument(*_doc);
-    request.callback = [completionPromise](App::RecomputeRequest&,
-                                             App::RecomputeResult&) {
-        completionPromise->set_value();
+    ASSERT_TRUE(App::GetApplication().canRecomputeRequestOnWorker(
+        App::RecomputeRequest::fromDocumentObject(*object)));
+
+    bool callbackRan = false;
+    bool callbackSucceeded = false;
+    std::thread::id callbackThread;
+    const auto ownerThread = std::this_thread::get_id();
+    auto request = App::RecomputeRequest::fromDocumentObject(*object);
+    request.callback = [&](App::RecomputeRequest&, App::RecomputeResult& result) {
+        callbackRan = true;
+        callbackSucceeded = result.success;
+        callbackThread = std::this_thread::get_id();
     };
     App::GetApplication().queueRecomputeRequest(std::move(request));
-    ASSERT_TRUE(dispatcher.waitUntilQueued());
 
-    EXPECT_FALSE(App::GetApplication().closeDocument(_docName.c_str()));
-
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (recompute.wait_for(0ms) != std::future_status::ready
-           && std::chrono::steady_clock::now() < deadline) {
-        static_cast<void>(dispatcher.runOneFor(100ms));
-    }
-    ASSERT_EQ(recompute.wait_for(0ms), std::future_status::ready);
-    recompute.get();
+    EXPECT_TRUE(callbackRan);
+    EXPECT_TRUE(callbackSucceeded);
+    EXPECT_EQ(callbackThread, ownerThread);
+    EXPECT_EQ(object->Value.getValue(), 4);
+    EXPECT_FALSE(object->mustRecompute());
     EXPECT_EQ(App::GetApplication().getDocument(_docName.c_str()), _doc);
 }
 
-TEST_F(AsyncRecomputeTest, WorkerCompletionCallbackRetainsActivityAndCannotCloseItsDocument)
+TEST_F(AsyncRecomputeTest, CoordinatorCallbackRetainsActivityAndCannotCloseItsDocument)
 {
     auto* object = dynamic_cast<App::FeatureTest*>(
         _doc->addObject("App::FeatureTest", "CallbackCloseFeature")
@@ -538,75 +500,95 @@ TEST_F(AsyncRecomputeTest, DelayedRequestCannotTargetReplacementDocumentWithSame
     EXPECT_TRUE(completed.get());
 }
 
-TEST_F(AsyncRecomputeTest, CommitObserverCloseDoesNotWaitForQueuedRecompute)
+TEST_F(AsyncRecomputeTest, CommitObserverQueueReturnsStructuredReplayRejectionWithoutDeadlock)
 {
-    auto* object = dynamic_cast<App::FeatureTest*>(
-        _doc->addObject("App::FeatureTest", "ObserverCloseFeature")
+    auto* object = dynamic_cast<App::FeatureTestColumn*>(
+        _doc->addObject("App::FeatureTestColumn", "ObserverColumnFeature")
     );
     ASSERT_NE(object, nullptr);
+    object->Column.setValue("A");
     _doc->recompute();
+    ASSERT_EQ(object->Column.getStrValue(), "A");
+    ASSERT_EQ(object->Value.getValue(), 0);
 
     const auto session = _doc->collaborationService().beginEditSession("observer-close");
     App::CollaborativeOperationIntent intent;
     intent.operationType = std::string(App::CollaborativeSetPropertyOperationType);
     intent.arguments = {{"object", object->getNameInDocument()},
-                        {"property", "Integer"},
-                        {"value_type", "integer"},
-                        {"value", "42"}};
+                        {"property", "Column"},
+                        {"value_type", "string"},
+                        {"value", "E"}};
     auto prepared = _doc->collaborationService().prepareEdit(session.sessionId(),
                                                               "observer-close",
                                                               intent,
                                                               "async-recompute-test");
+    const auto undosBefore = _doc->getAvailableUndos();
 
-    std::promise<bool> closeResultPromise;
-    auto closeResultFuture = closeResultPromise.get_future();
-    std::optional<std::thread> closeThread;
+    auto preferences = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/Document");
+    ScopedBoolPreference disableAsync(preferences, "EnableAsyncRecompute", false);
+
     bool observerRan = false;
-    bool recomputeWasInProgress = false;
-    bool closeCompletedInsideObserver = false;
-    std::optional<bool> closeResult;
+    bool callbackRan = false;
+    bool callbackSucceeded = true;
+    App::RecomputeFailure callbackFailure = App::RecomputeFailure::None;
+    bool callbackExceptionPresent = false;
+    std::string callbackDiagnostic;
+    bool callbackRetainedActivity = false;
+    bool activityClearedBeforeReturn = false;
+    std::thread::id callbackThread;
+    std::chrono::steady_clock::duration queueDuration {};
+    const auto ownerThread = std::this_thread::get_id();
     auto connection = _doc->signalCommitTransaction.connect([&](const App::Document&) {
         observerRan = true;
-        App::GetApplication().queueRecomputeRequest(
-            App::RecomputeRequest::fromDocumentObject(*object));
-        recomputeWasInProgress =
-            App::Internal::AsyncRecomputeTestAccess::waitUntilDocumentInProgress(
-                App::GetApplication(), _docName, 2s);
-        if (!recomputeWasInProgress) {
-            return;
-        }
-
-        // Run close on a separate thread so a regression reports a bounded
-        // observer failure and can unwind the commit instead of hanging the
-        // entire test process. It still begins at the observer boundary while
-        // the recompute is waiting on this document's serialization mutex.
-        closeThread.emplace([&] {
-            closeResultPromise.set_value(
-                App::GetApplication().closeDocument(_docName.c_str()));
-        });
-        closeCompletedInsideObserver =
-            closeResultFuture.wait_for(1s) == std::future_status::ready;
-        if (closeCompletedInsideObserver) {
-            closeResult = closeResultFuture.get();
-        }
+        auto request = App::RecomputeRequest::fromDocumentObject(*object);
+        request.callback = [&](App::RecomputeRequest& completed,
+                               App::RecomputeResult& result) {
+            callbackRan = true;
+            callbackSucceeded = result.success;
+            callbackFailure = result.failure;
+            callbackExceptionPresent = result.exception != nullptr;
+            if (result.exception) {
+                callbackDiagnostic = result.exception->what();
+            }
+            callbackThread = std::this_thread::get_id();
+            callbackRetainedActivity =
+                App::Internal::AsyncRecomputeTestAccess::documentIsActive(
+                    App::GetApplication(), completed.documentName);
+        };
+        const auto queueStarted = std::chrono::steady_clock::now();
+        App::GetApplication().queueRecomputeRequest(std::move(request));
+        queueDuration = std::chrono::steady_clock::now() - queueStarted;
+        activityClearedBeforeReturn =
+            !App::Internal::AsyncRecomputeTestAccess::documentIsActive(
+                App::GetApplication(), _docName);
     });
 
+    const auto commitStarted = std::chrono::steady_clock::now();
     const auto commitResult =
         _doc->collaborationService().commitEdit(session.sessionId(), prepared);
+    const auto commitDuration = std::chrono::steady_clock::now() - commitStarted;
     connection.disconnect();
 
-    EXPECT_TRUE(commitResult.committed());
+    EXPECT_TRUE(commitResult.committed())
+        << App::documentCommitStatusName(commitResult.status) << ": "
+        << commitResult.message;
     EXPECT_TRUE(observerRan);
-    EXPECT_TRUE(recomputeWasInProgress);
-    EXPECT_TRUE(closeCompletedInsideObserver);
-    ASSERT_TRUE(closeThread.has_value());
-    if (!closeResult) {
-        ASSERT_EQ(closeResultFuture.wait_for(2s), std::future_status::ready);
-        closeResult = closeResultFuture.get();
-    }
-    closeThread->join();
-    EXPECT_FALSE(*closeResult);
-    if (*closeResult) {
-        _doc = nullptr;
-    }
+    EXPECT_TRUE(callbackRan);
+    EXPECT_FALSE(callbackSucceeded);
+    EXPECT_EQ(callbackFailure, App::RecomputeFailure::Exception);
+    EXPECT_TRUE(callbackExceptionPresent);
+    EXPECT_NE(callbackDiagnostic.find("document object recompute did not complete successfully"),
+              std::string::npos)
+        << callbackDiagnostic;
+    EXPECT_TRUE(callbackRetainedActivity);
+    EXPECT_TRUE(activityClearedBeforeReturn);
+    EXPECT_EQ(callbackThread, ownerThread);
+    EXPECT_LT(queueDuration, 2s);
+    EXPECT_LT(commitDuration, 2s);
+    EXPECT_EQ(object->Column.getStrValue(), "E");
+    EXPECT_EQ(object->Value.getValue(), 4);
+    EXPECT_EQ(_doc->getAvailableUndos(), undosBefore + 1)
+        << "the set-property intent and its derived recompute share one user undo entry";
+    EXPECT_EQ(App::GetApplication().getDocument(_docName.c_str()), _doc);
 }

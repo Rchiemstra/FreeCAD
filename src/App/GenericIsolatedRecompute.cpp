@@ -8,6 +8,7 @@
 #include "DocumentObject.h"
 #include "GeometryWorkerOperationRegistry.h"
 #include "MergeDocuments.h"
+#include "ObjectIdentifier.h"
 #include "PropertyLinks.h"
 #include "PropertyPythonObject.h"
 #include "private/CollaborativeOperationRegistryInternal.h"
@@ -27,6 +28,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <sstream>
@@ -53,6 +55,13 @@ public:
         }
         return document._recomputeFeature(&feature);
     }
+
+    static void applyFailure(Document& document,
+                             DocumentObject& feature,
+                             const std::string_view diagnostic)
+    {
+        document.applyCollaborationRecomputeFailure(feature, diagnostic);
+    }
 };
 
 }  // namespace App::Internal
@@ -61,7 +70,7 @@ namespace
 {
 
 constexpr std::uint32_t ProtocolMagic = 0x31524947U;  // GIR1
-constexpr std::uint32_t ProtocolVersion = 1;
+constexpr std::uint32_t ProtocolVersion = 2;
 constexpr std::size_t MaxObjects = 10'000;
 constexpr std::size_t MaxProperties = 1'000'000;
 constexpr std::size_t MaxFieldBytes = 1U << 20;
@@ -237,6 +246,14 @@ std::vector<std::pair<std::string, App::Property*>> namedProperties(
     return result;
 }
 
+bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
+                               const App::Property& property)
+{
+    return object.isOutputProperty(&property)
+        || static_cast<bool>(
+            object.getExpression(App::ObjectIdentifier(property)).expression);
+}
+
 ObjectManifest manifestFor(const App::DocumentObject& object)
 {
     if (!object.getNameInDocument()) {
@@ -249,7 +266,7 @@ ObjectManifest manifestFor(const App::DocumentObject& object)
         result.properties.push_back(
             {name,
              std::string(property->getTypeId().getName()),
-             object.isOutputProperty(property)});
+             isDeclaredRecomputeOutput(object, *property)});
     }
     return result;
 }
@@ -392,7 +409,8 @@ void validateDetachedSchema(
             const auto& expectedProperty = object.properties[index];
             if (name != expectedProperty.name
                 || property->getTypeId().getName() != expectedProperty.type
-                || found->second->isOutputProperty(property) != expectedProperty.output) {
+                || isDeclaredRecomputeOutput(*found->second, *property)
+                    != expectedProperty.output) {
                 throw std::runtime_error("generic recompute changed a property schema");
             }
         }
@@ -414,10 +432,16 @@ PropertySnapshots capturePropertySnapshots(
         }
         auto& properties = result[objectManifest.name];
         for (const auto& [name, property] : namedProperties(*object)) {
-            std::unique_ptr<App::Property> copy(property->Copy());
+            // Some legacy Copy() implementations return a base property (for
+            // example PropertyAngle inherits PropertyFloat::Copy).  Construct
+            // the registered concrete type before pasting so later semantic
+            // equality compares like with like.
+            std::unique_ptr<App::Property> copy(
+                static_cast<App::Property*>(property->getTypeId().createInstance()));
             if (!copy) {
                 throw std::runtime_error("generic recompute property cannot be copied: " + name);
             }
+            copy->Paste(*property);
             properties.emplace(name, std::move(copy));
         }
     }
@@ -436,6 +460,18 @@ bool sameSerializedProperty(const App::Property& left, const App::Property& righ
     if (left.getTypeId() != right.getTypeId()) {
         return false;
     }
+
+    // Prefer the property's semantic equality contract.  Archive round-trips
+    // may legitimately normalize non-value serialization details (for
+    // example PropertyQuantity's display format), which must not be reported
+    // as an undeclared recompute side effect.
+    if (left.isSame(right)) {
+        return true;
+    }
+
+    // Property's base implementation also compares allocation-sensitive
+    // memory usage.  Keep the serialized fallback for property types that do
+    // not provide a value-aware isSame() override.
     Base::StringWriter leftWriter;
     Base::StringWriter rightWriter;
     left.Save(leftWriter);
@@ -482,12 +518,29 @@ std::vector<std::uint8_t> encodeOutputs(
     appendU32(result, ProtocolMagic);
     appendU32(result, ProtocolVersion);
     appendString(result, targetName);
+    appendU32(result, 1);
     appendU32(result, static_cast<std::uint32_t>(changed.size()));
     for (const auto& output : changed) {
         appendString(result, output.name);
         appendString(result, output.type);
         appendBytes(result, output.bytes);
     }
+    return result;
+}
+
+std::vector<std::uint8_t> encodeFailure(
+    const std::string& targetName,
+    std::string diagnostic)
+{
+    if (diagnostic.empty()) {
+        diagnostic = "detached feature recompute failed";
+    }
+    std::vector<std::uint8_t> result;
+    appendU32(result, ProtocolMagic);
+    appendU32(result, ProtocolVersion);
+    appendString(result, targetName);
+    appendU32(result, 0);
+    appendString(result, diagnostic);
     return result;
 }
 
@@ -520,6 +573,14 @@ public:
         , _outputs(std::move(outputs))
     {}
 
+    GenericRecomputeOperation(std::string target,
+                              std::string stableIdentity,
+                              std::string failureDiagnostic)
+        : _target(std::move(target))
+        , _stableIdentity(std::move(stableIdentity))
+        , _failureDiagnostic(std::move(failureDiagnostic))
+    {}
+
     std::string_view typeId() const noexcept override
     {
         return App::GenericIsolatedRecomputeOperationType;
@@ -528,10 +589,15 @@ public:
     void apply(App::Document& document) const override
     {
         auto* target = requireTarget(document);
+        if (_failureDiagnostic) {
+            App::Internal::GenericIsolatedRecomputeAccess::applyFailure(
+                document, *target, *_failureDiagnostic);
+            return;
+        }
         for (const auto& output : _outputs) {
             auto* property = target->getPropertyByName(output.name.c_str());
             if (!property || property->getTypeId().getName() != output.type
-                || !target->isOutputProperty(property)
+                || !isDeclaredRecomputeOutput(*target, *property)
                 || property->isDerivedFrom<App::PropertyLinkBase>()
                 || property->isDerivedFrom<App::PropertyPythonObject>()) {
                 throw std::runtime_error(
@@ -548,6 +614,14 @@ public:
     {
         try {
             const auto* target = requireTarget(document);
+            if (_failureDiagnostic) {
+                const bool failureStateApplied =
+                    !target->isValid() && target->mustRecompute();
+                return {failureStateApplied,
+                        failureStateApplied
+                            ? std::string {}
+                            : "generic recompute failure state was not applied"};
+            }
             for (const auto& output : _outputs) {
                 const auto* property = target->getPropertyByName(output.name.c_str());
                 if (!property || !sameSerializedProperty(*property, *output.value)) {
@@ -564,6 +638,17 @@ public:
         }
     }
 
+    bool recomputeOutcomeSucceeded() const noexcept override
+    {
+        return !_failureDiagnostic.has_value();
+    }
+
+    std::string_view recomputeOutcomeDiagnostic() const noexcept override
+    {
+        return _failureDiagnostic ? std::string_view(*_failureDiagnostic)
+                                  : std::string_view {};
+    }
+
 private:
     App::DocumentObject* requireTarget(const App::Document& document) const
     {
@@ -578,6 +663,7 @@ private:
     std::string _target;
     std::string _stableIdentity;
     std::vector<DecodedOutput> _outputs;
+    std::optional<std::string> _failureDiagnostic;
 };
 
 std::unique_ptr<const App::CollaborativeOperation> decodeResult(
@@ -591,6 +677,19 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     if (reader.u32() != ProtocolMagic || reader.u32() != ProtocolVersion
         || reader.string() != target) {
         throw std::invalid_argument("generic recompute output binding is invalid");
+    }
+    const auto succeeded = reader.u32();
+    if (succeeded > 1) {
+        throw std::invalid_argument("generic recompute output status is invalid");
+    }
+    if (succeeded == 0) {
+        std::string diagnostic = reader.string();
+        if (diagnostic.empty()) {
+            throw std::invalid_argument("generic recompute failure diagnostic is empty");
+        }
+        reader.finish();
+        return std::make_unique<const GenericRecomputeOperation>(
+            target, stableIdentity, std::move(diagnostic));
     }
     const auto count = static_cast<std::size_t>(reader.u32());
     if (count > expectedOutputs.size()) {
@@ -613,6 +712,68 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     reader.finish();
     return std::make_unique<const GenericRecomputeOperation>(
         target, stableIdentity, std::move(outputs));
+}
+
+std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffects(
+    const App::GeometryArchive& archive,
+    const std::string& target,
+    const std::map<std::string, std::string>& expectedOutputs,
+    std::vector<App::DocumentRevisionPublicationRequest> effects)
+{
+    const auto& section = requireSection(archive, "recompute.outputs", 1);
+    BinaryReader reader(section.bytes);
+    if (reader.u32() != ProtocolMagic || reader.u32() != ProtocolVersion
+        || reader.string() != target) {
+        throw std::invalid_argument("generic recompute output binding is invalid");
+    }
+    const auto succeeded = reader.u32();
+    if (succeeded > 1) {
+        throw std::invalid_argument("generic recompute output status is invalid");
+    }
+    if (succeeded == 0) {
+        const std::string diagnostic = reader.string();
+        if (diagnostic.empty()) {
+            throw std::invalid_argument("generic recompute failure diagnostic is empty");
+        }
+        reader.finish();
+        std::erase_if(effects, [&](const auto& effect) {
+            return effect.key != App::DocumentRevisionKey::objectModel(target)
+                && effect.key.kind
+                    != App::DocumentRevisionKind::UnknownModelMutation;
+        });
+        for (auto& effect : effects) {
+            effect.revisionDelta = 1;
+        }
+        return effects;
+    }
+    const auto count = static_cast<std::size_t>(reader.u32());
+    if (count > expectedOutputs.size()) {
+        throw std::invalid_argument("generic recompute returned too many output properties");
+    }
+    std::set<std::string> seen;
+    for (std::size_t index = 0; index < count; ++index) {
+        const std::string name = reader.string();
+        const std::string type = reader.string();
+        static_cast<void>(reader.value());
+        const auto expected = expectedOutputs.find(name);
+        if (expected == expectedOutputs.end() || expected->second != type
+            || !seen.insert(name).second) {
+            throw std::invalid_argument("generic recompute returned an undeclared output");
+        }
+    }
+    reader.finish();
+
+    const auto outputDelta = static_cast<App::DocumentRevision>(count) + 2;
+    for (auto& effect : effects) {
+        if (effect.key == App::DocumentRevisionKey::objectModel(target)) {
+            effect.revisionDelta = outputDelta;
+        }
+        else if (effect.key.kind
+                 == App::DocumentRevisionKind::UnknownModelMutation) {
+            effect.revisionDelta = 2;
+        }
+    }
+    return effects;
 }
 
 std::vector<App::DocumentObject*> collectClosure(
@@ -658,9 +819,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     const App::Document& document,
     const App::CollaborativeOperationIntent& intent)
 {
-    if (intent.arguments.size() != 1 || !intent.arguments.contains("feature")) {
+    const auto legacyMode = intent.arguments.find("legacy_revision_semantics");
+    if ((intent.arguments.size() != 1 && intent.arguments.size() != 2)
+        || !intent.arguments.contains("feature")
+        || (intent.arguments.size() == 2 && legacyMode == intent.arguments.end())) {
         throw std::invalid_argument(
-            "generic recompute requires exactly one feature argument");
+            "generic recompute requires a feature and optional revision mode");
+    }
+    const bool preserveLegacyRevisionSemantics = legacyMode != intent.arguments.end();
+    if (preserveLegacyRevisionSemantics && legacyMode->second != "1") {
+        throw std::invalid_argument("generic recompute revision mode is invalid");
     }
     const std::string targetName = intent.arguments.at("feature");
     auto* target = document.getObject(targetName.c_str());
@@ -733,6 +901,11 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         writes.push_back(key);
         effects.push_back({std::move(key), document.collaborationObjectIdentity(*target)});
     }
+    if (preserveLegacyRevisionSemantics) {
+        writes.push_back(App::DocumentRevisionKey::unknownModelMutation());
+        effects.push_back(
+            {App::DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+    }
 
     App::GeometryJobRequest request;
     request.operationType = std::string(App::GenericIsolatedRecomputeOperationType);
@@ -742,15 +915,27 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     request.coalescing = App::GeometryJobCoalescing::LatestWins;
     request.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 
+    auto publicationEffectsTemplate = effects;
+    auto operationExpectedOutputs = expectedOutputs;
     App::CollaborativeOperationPreparation::IsolatedTask isolated {
         std::move(request),
         std::move(input),
         [targetName,
          stableIdentity = document.collaborationObjectIdentity(*target),
-         expectedOutputs = std::move(expectedOutputs)](
+         expectedOutputs = std::move(operationExpectedOutputs)](
             const App::GeometryArchive& output) {
             return decodeResult(output, targetName, stableIdentity, expectedOutputs);
-        }};
+        },
+        preserveLegacyRevisionSemantics
+            ? App::CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder(
+                  [targetName,
+                   expectedOutputs,
+                   effects = std::move(publicationEffectsTemplate)](
+                      const App::GeometryArchive& output) mutable {
+                      return decodeLegacyPublicationEffects(
+                          output, targetName, expectedOutputs, effects);
+                  })
+            : App::CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder {}};
     return {std::move(reads), std::move(writes), std::move(effects), std::move(isolated)};
 }
 
@@ -800,15 +985,25 @@ App::GeometryArchive executeGenericRecompute(
     }
     const int result = App::Internal::GenericIsolatedRecomputeAccess::execute(
         *detached, *target);
-    if (result != 0) {
-        const char* diagnostic = detached->getErrorDescription(target);
-        throw std::runtime_error(diagnostic ? diagnostic : "detached feature recompute failed");
-    }
+    const char* failureDescription = result == 0
+        ? nullptr
+        : detached->getErrorDescription(target);
+    const std::string failureDiagnostic = result == 0
+        ? std::string {}
+        : failureDescription && *failureDescription
+            ? std::string(failureDescription)
+            : "detached feature recompute failed";
     if (stopToken.stop_requested()) {
         throw std::runtime_error("generic recompute cancelled after feature execution");
     }
 
     validateDetachedSchema(*detached, manifests);
+    if (result != 0) {
+        App::GeometryArchive output;
+        output.sections.push_back(
+            {"recompute.outputs", encodeFailure(targetName, failureDiagnostic)});
+        return output;
+    }
     const auto targetManifest = std::ranges::find(
         manifests, targetName, &ObjectManifest::name);
     if (targetManifest == manifests.end()) {
@@ -856,38 +1051,35 @@ void ensureGenericIsolatedRecomputeRegistered()
 
 DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     Document& document,
-    DocumentObject& feature,
-    const bool recursive)
+    const std::vector<DocumentObject*>& features,
+    const std::string_view provenance,
+    const std::string_view coalescingPrefix,
+    const bool preserveLegacyRevisionSemantics)
 {
-    if (!feature.isAttachedToDocument() || feature.getDocument() != &document
-        || !feature.getNameInDocument()) {
-        throw std::invalid_argument("generic recompute feature is not attached to this document");
-    }
-
-    std::vector<DocumentObject*> selected {&feature};
-    if (recursive) {
-        auto dependents = feature.getInListRecursive();
-        selected.insert(selected.end(), dependents.begin(), dependents.end());
-    }
     std::map<std::string, DocumentObject*> byName;
-    for (auto* object : selected) {
+    for (auto* object : features) {
         if (!object || object->getDocument() != &document || !object->isAttachedToDocument()
             || !object->getNameInDocument()) {
             throw std::invalid_argument(
-                "generic recursive recompute crosses a document boundary");
+                "generic recompute plan contains a detached or cross-document feature");
         }
-        byName.emplace(object->getNameInDocument(), object);
+        if (!byName.emplace(object->getNameInDocument(), object).second) {
+            throw std::invalid_argument("generic recompute plan contains a duplicate feature");
+        }
     }
 
     DocumentRecomputeRequest request;
-    request.coalescingKey = "generic:";
+    request.coalescingKey = std::string(coalescingPrefix);
     for (const auto& [name, object] : byName) {
         DocumentRecomputeFeatureRequest node;
         node.featureId = name;
         node.operationId = "generic-recompute:" + name;
         node.intent.operationType = std::string(GenericIsolatedRecomputeOperationType);
         node.intent.arguments.emplace("feature", name);
-        node.provenance = "App::Document::recomputeFeature isolated adapter";
+        if (preserveLegacyRevisionSemantics) {
+            node.intent.arguments.emplace("legacy_revision_semantics", "1");
+        }
+        node.provenance = std::string(provenance);
         for (auto* dependency : object->getOutList()) {
             if (dependency && dependency->getNameInDocument()
                 && byName.contains(dependency->getNameInDocument())) {
@@ -902,6 +1094,30 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         request.features.push_back(std::move(node));
     }
     return request;
+}
+
+DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
+    Document& document,
+    DocumentObject& feature,
+    const bool recursive,
+    const bool preserveLegacyRevisionSemantics)
+{
+    if (!feature.isAttachedToDocument() || feature.getDocument() != &document
+        || !feature.getNameInDocument()) {
+        throw std::invalid_argument("generic recompute feature is not attached to this document");
+    }
+
+    std::vector<DocumentObject*> selected {&feature};
+    if (recursive) {
+        auto dependents = feature.getInListRecursive();
+        selected.insert(selected.end(), dependents.begin(), dependents.end());
+    }
+    return makeGenericIsolatedRecomputeRequest(
+        document,
+        selected,
+        "App::Document::recomputeFeature isolated adapter",
+        "generic-feature:",
+        preserveLegacyRevisionSemantics);
 }
 
 }  // namespace App::Internal

@@ -221,7 +221,9 @@ struct DocumentP
     bool collaborationCompatibilityStructuralMutationGranted {false};
     bool collaborationCompatibilityRecomputeMutationGranted {false};
     bool collaborationCompatibilityTrustedStructuralMutationGranted {false};
+    bool collaborationDerivedRecomputeGranted {false};
     bool collaborationDeferredRecomputeBlocked {false};
+    bool collaborationRecomputeStableNotificationDeferred {false};
     const DocumentObject* collaborationCompatibilityRecomputeSourceObject {nullptr};
     bool collaborationImportDeferralActive {false};
     bool collaborationRollbackStabilizing {false};

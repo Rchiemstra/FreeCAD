@@ -100,6 +100,7 @@
 #include "MergeDocuments.h"
 #include "MutationClassification.h"
 #include "PropertyPythonObject.h"
+#include "RecomputeHandle.h"
 #include "StringHasher.h"
 #include "Transactions.h"
 
@@ -946,9 +947,11 @@ bool Document::collaborationStableReadBlocked() const noexcept
 
 bool Document::collaborationRecomputeCaptureBlocked() const noexcept
 {
-    return d->collaborationCommitNotificationBarrier
-        || d->collaborationReplayingNotifications || hasPendingTransaction()
-        || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
+    const bool foreignMutationBoundary = d->collaborationCommitNotificationBarrier
+        || hasPendingTransaction() || transacting() || getBookedTransactionID() != 0
+        || isTransactionLocked();
+    return (foreignMutationBoundary && !d->collaborationDerivedRecomputeGranted)
+        || d->collaborationReplayingNotifications
         || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
         || d->pendingRemovalProcessing.load(std::memory_order_acquire)
         || !d->pendingRemove.empty();
@@ -1327,6 +1330,73 @@ Document::openCollaborationDeferredRecomputeFence()
     return CollaborationDeferredRecomputeFence(*this);
 }
 
+Document::CollaborationDerivedRecomputeGrant::CollaborationDerivedRecomputeGrant(
+    Document& document)
+    : _document(document)
+{
+    auto& state = *document.d;
+    if (!document.isCollaborationOwnerThread()
+        || !state.collaborationCommitNotificationBarrier
+        || !state.activeUndoTransaction
+        || !state.suppressCollaborationRevisionPublication) {
+        throw Base::RuntimeError(
+            "derived recompute requires the coordinator commit boundary");
+    }
+    if (state.collaborationDerivedRecomputeGranted) {
+        throw Base::RuntimeError("derived recompute grant is not reentrant");
+    }
+    if (state.collaborationAtomicPresentationAuditActive
+        || state.collaborationCommitPoisoned
+        || state.collaborationReplayingNotifications || state.rollback) {
+        throw Base::RuntimeError(
+            "derived recompute is unavailable in the current coordinator state");
+    }
+    state.collaborationDerivedRecomputeGranted = true;
+}
+
+Document::CollaborationDerivedRecomputeGrant::~CollaborationDerivedRecomputeGrant()
+{
+    _document.d->collaborationDerivedRecomputeGranted = false;
+}
+
+Document::CollaborationDerivedRecomputeGrant
+Document::openCollaborationDerivedRecomputeGrant()
+{
+    return CollaborationDerivedRecomputeGrant(*this);
+}
+
+bool Document::collaborationDerivedRecomputeGranted() const noexcept
+{
+    return d->collaborationDerivedRecomputeGranted;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral::
+    CollaborationRecomputeStableNotificationDeferral(Document& document)
+    : _document(document)
+{
+    if (!document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "recompute stable-notification deferral requires the document owner thread");
+    }
+    if (document.d->collaborationRecomputeStableNotificationDeferred) {
+        throw Base::RuntimeError(
+            "recompute stable-notification deferral is not reentrant");
+    }
+    document.d->collaborationRecomputeStableNotificationDeferred = true;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral::
+    ~CollaborationRecomputeStableNotificationDeferral()
+{
+    _document.d->collaborationRecomputeStableNotificationDeferred = false;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral
+Document::openCollaborationRecomputeStableNotificationDeferral()
+{
+    return CollaborationRecomputeStableNotificationDeferral(*this);
+}
+
 bool Document::collaborationTrustedPropertyStatusMutationActive() const noexcept
 {
     return d->collaborationCompatibilityRecomputeMutationGranted
@@ -1451,22 +1521,41 @@ void Document::ensureCollaborationTransactionControlAllowed() const
     }
 }
 
-int Document::openCollaborationCommitTransaction(std::string name)
+int Document::openCollaborationCommitTransaction(
+    std::string name,
+    const bool retainUndoHistory)
 {
     if (!d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _openTransaction(std::move(name));
+    return _openTransaction(std::move(name), 0, !retainUndoHistory);
 }
 
-bool Document::commitCollaborationCommitTransaction()
+bool Document::commitCollaborationCommitTransaction(const bool retainUndoHistory)
 {
     if (!d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _commitTransaction(false);
+    return _commitTransaction(false, retainUndoHistory);
+}
+
+void Document::applyCollaborationRecomputeFailure(
+    DocumentObject& object,
+    const std::string_view diagnostic)
+{
+    if (!isCollaborationOwnerThread() || !d->collaborationCommitNotificationBarrier
+        || !d->activeUndoTransaction || !d->suppressCollaborationRevisionPublication
+        || object.getDocument() != this || !containsObject(&object)) {
+        throw Base::RuntimeError(
+            "detached recompute failure requires the coordinator commit boundary");
+    }
+    d->addRecomputeLog(
+        diagnostic.empty() ? "detached feature recompute failed"
+                           : std::string(diagnostic),
+        &object);
+    object.touch();
 }
 
 void Document::beginCollaborationCommitNotificationBarrier()
@@ -1572,6 +1661,8 @@ void Document::prepareCollaborationCommitFinalization()
 
 void Document::finishCollaborationCommitNotificationBarrier(bool committed) noexcept
 {
+    const bool deferStableNotification =
+        d->collaborationRecomputeStableNotificationDeferred;
     if (!d->collaborationCommitNotificationBarrier) {
         return;
     }
@@ -1586,6 +1677,7 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationCompatibilityStructuralMutationGranted = false;
     d->collaborationCompatibilityRecomputeMutationGranted = false;
     d->collaborationCompatibilityTrustedStructuralMutationGranted = false;
+    d->collaborationDerivedRecomputeGranted = false;
     d->collaborationDeferredRecomputeBlocked = false;
     d->collaborationCompatibilityRecomputeSourceObject = nullptr;
     d->collaborationImportDeferralActive = false;
@@ -1611,7 +1703,10 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         FC_ERR("Failed to end collaboration transaction signal suppression");
     }
 
-    const auto emitBecameStable = [this]() noexcept {
+    const auto emitBecameStable = [this, deferStableNotification]() noexcept {
+        if (deferStableNotification) {
+            return;
+        }
         if (d->pendingRemovalProcessing.load(std::memory_order_acquire)
             || !d->pendingRemove.empty()) {
             return;
@@ -1690,9 +1785,14 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                 signalRecomputed(*this, notification.objects);
                 break;
             case CollaborationDeferredNotificationKind::OpenTransaction:
-                signalOpenTransaction(*this, notification.text);
+                if (!deferStableNotification) {
+                    signalOpenTransaction(*this, notification.text);
+                }
                 break;
             case CollaborationDeferredNotificationKind::CommitTransaction:
+                if (deferStableNotification) {
+                    break;
+                }
                 if (!globalBeforeCloseEmitted) {
                     globalBeforeCloseEmitted = true;
                     GetApplication().signalBeforeCloseTransaction(false);
@@ -2438,7 +2538,10 @@ int Document::openTransaction(std::string name, int tid)
     return openTransaction(TransactionName {.name = name, .temporary = false}, tid);
 }
 
-int Document::_openTransaction(std::string name, int id)
+int Document::_openTransaction(
+    std::string name,
+    int id,
+    const bool preserveRedoHistory)
 {
     ensureCollaborationTransactionControlAllowed();
     if (isTransactionLocked() && id != d->bookedTransaction) {
@@ -2468,7 +2571,9 @@ int Document::_openTransaction(std::string name, int id)
     if (d->activeUndoTransaction) {
         _commitTransaction(true);
     }
-    _clearRedos();
+    if (!preserveRedoHistory) {
+        _clearRedos();
+    }
 
     // When id == 0, this creates a new id
     // for instance, when there is no global transaction
@@ -2700,7 +2805,7 @@ void Document::commitCompatibilityTransactionImpl()
     }
 }
 
-bool Document::_commitTransaction(const bool notify)
+bool Document::_commitTransaction(const bool notify, const bool retainUndoHistory)
 {
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction()) {
@@ -2722,12 +2827,18 @@ bool Document::_commitTransaction(const bool notify)
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
-            if (d->activeTransactionFileChanges) {
+            if (retainUndoHistory && d->activeTransactionFileChanges) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
-                d->activeTransactionFileChanges.reset();
             }
+            d->activeTransactionFileChanges.reset();
 
-            if (d->collaborationCommitNotificationBarrier) {
+            if (!retainUndoHistory) {
+                mUndoMap.erase(id);
+                discardTransactionFileState(id);
+                delete d->activeUndoTransaction;
+                d->activeUndoTransaction = nullptr;
+            }
+            else if (d->collaborationCommitNotificationBarrier) {
                 if (d->collaborationPreparedUndoSlot.empty()) {
                     throw Base::RuntimeError(
                         "collaboration commit finalization was not prepared");
@@ -2736,14 +2847,15 @@ bool Document::_commitTransaction(const bool notify)
                 mUndoTransactions.splice(mUndoTransactions.end(),
                                          d->collaborationPreparedUndoSlot,
                                          d->collaborationPreparedUndoSlot.begin());
+                d->activeUndoTransaction = nullptr;
             }
             else {
                 mUndoTransactions.push_back(d->activeUndoTransaction);
+                d->activeUndoTransaction = nullptr;
             }
-            d->activeUndoTransaction = nullptr;
 
             // check the stack for the limits
-            if (!d->collaborationCommitNotificationBarrier
+            if (retainUndoHistory && !d->collaborationCommitNotificationBarrier
                 && mUndoTransactions.size() > d->UndoMaxStackSize) {
                 discardTransactionFileState(mUndoTransactions.front()->getID());
                 mUndoMap.erase(mUndoTransactions.front()->getID());
@@ -3008,7 +3120,11 @@ CollaborationRollbackResult Document::rollbackCollaborationTransactionImpl(
         try {
             Base::FlagToggler<bool> rollbackStabilizing(
                 d->collaborationRollbackStabilizing);
-            static_cast<void>(recompute({}, true, &recomputeHasError));
+            // Rollback has already restored the exact pre-commit model and
+            // owns no live transaction in which detached results could be
+            // published. Keep this private stabilizer until CC-WP13 removes
+            // the legacy body; public recompute never reaches it.
+            static_cast<void>(recomputeLegacy({}, true, &recomputeHasError, 0));
         }
         catch (const Base::Exception& exception) {
             appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
@@ -6526,10 +6642,310 @@ void Document::renameObjectIdentifiers(
     }
 }
 
+std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
+    const std::vector<DocumentObject*>& objs,
+    const bool force,
+    const int options)
+{
+    enforceAtomicPresentationMutationTarget(*this);
+
+    const auto submitEmpty = [this] {
+        DocumentRecomputeRequest request;
+        request.coalescingKey = "empty-document-recompute";
+        const auto id = recomputeCoordinator().submit(std::move(request));
+        return std::make_unique<RecomputeHandle>(*this, id);
+    };
+
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->collaborationCompatibilityStructuralMutationGranted
+        || d->collaborationDeferredRecomputeBlocked || d->undoing || d->rollback) {
+        return submitEmpty();
+    }
+    if (testStatus(Document::PartialDoc)) {
+        if (mustExecute()) {
+            FC_WARN("Please reload partial document '" << Label.getValue()
+                                                       << "' for recomputation.");
+        }
+        return submitEmpty();
+    }
+    if (testStatus(Document::Recomputing)) {
+        FC_ERR("Recursive calling of recompute for document " << getName());
+        return submitEmpty();
+    }
+    if (!force && testStatus(Document::SkipRecompute)) {
+        signalSkipRecompute(*this, objs);
+        return submitEmpty();
+    }
+
+    static thread_local std::set<const Document*> activeSubmissions;
+    if (!activeSubmissions.insert(this).second) {
+        throw Base::RuntimeError("reentrant document recompute submission is not supported");
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        activeSubmissions.erase(this);
+    };
+
+    d->clearRecomputeLog();
+    if (d->collaborationCommitNotificationBarrier) {
+        d->collaborationDeferredNotifications.push_back(
+            {CollaborationDeferredNotificationKind::BeforeRecompute});
+    }
+    else {
+        signalBeforeRecompute(*this);
+    }
+
+    const auto ordered = getDependencyList(
+        objs.empty() ? d->objectArray : objs,
+        DepSort | options);
+    // Legacy recompute decides whether each downstream object must execute
+    // only after its upstream dependencies have committed.  A detached plan
+    // must therefore include the in-document downstream closure of every
+    // object that is dirty at capture time; otherwise a dependency that is
+    // clean now can be touched by an upstream result after the immutable plan
+    // has already omitted it.
+    std::unordered_set<DocumentObject*> scheduled;
+    scheduled.reserve(ordered.size());
+    for (auto* object : ordered) {
+        if (!object || !object->isAttachedToDocument()
+            || object->getDocument() != this
+            || (!object->isTouched() && object->mustRecompute() == 0)) {
+            continue;
+        }
+        scheduled.insert(object);
+        for (auto* dependent : object->getInListRecursive()) {
+            if (dependent && dependent->isAttachedToDocument()
+                && dependent->getDocument() == this) {
+                scheduled.insert(dependent);
+            }
+        }
+    }
+    std::vector<DocumentObject*> selected;
+    selected.reserve(ordered.size());
+    for (auto* object : ordered) {
+        if (object && object->isAttachedToDocument() && object->getDocument() == this
+            && scheduled.contains(object)) {
+            selected.push_back(object);
+        }
+    }
+
+    Internal::ensureGenericIsolatedRecomputeRegistered();
+    auto request = Internal::makeGenericIsolatedRecomputeRequest(
+        *this,
+        selected,
+        "App::Document::recomputeAsync isolated compatibility facade",
+        "generic-document:",
+        !collaborationDerivedRecomputeGranted());
+    request.coalescingKey += force ? "force;" : "normal;";
+    request.coalescingKey += "options=" + std::to_string(options) + ";";
+    const auto id = recomputeCoordinator().submit(std::move(request));
+    return std::make_unique<RecomputeHandle>(*this, id);
+}
+
+void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot)
+{
+    std::vector<DocumentObject*> recomputed;
+    recomputed.reserve(snapshot.features.size());
+    for (const auto& node : snapshot.features) {
+        auto* object = getObject(node.featureId.c_str());
+        if (!object) {
+            continue;
+        }
+        recomputed.push_back(object);
+        if (node.state == DocumentRecomputeFeatureState::Committed) {
+            if (d->collaborationCommitNotificationBarrier) {
+                d->collaborationDeferredNotifications.push_back(
+                    {CollaborationDeferredNotificationKind::RecomputedObject, object});
+            }
+            else {
+                signalRecomputedObject(*object);
+            }
+            continue;
+        }
+        const std::string diagnostic = node.diagnostic.empty()
+            ? "isolated document recompute did not commit"
+            : node.diagnostic;
+        d->addRecomputeLog(diagnostic.c_str(), object);
+    }
+    if (d->collaborationCommitNotificationBarrier) {
+        CollaborationDeferredNotification notification {
+            CollaborationDeferredNotificationKind::Recomputed};
+        notification.objects = recomputed;
+        d->collaborationDeferredNotifications.push_back(std::move(notification));
+    }
+    else {
+        signalRecomputed(*this, recomputed);
+    }
+    finalizeCollaborationRecomputeTeardown();
+}
+
+void Document::finalizeCollaborationRecomputeTeardown()
+{
+    // A deletion observer can request a nested recompute while the outer pass
+    // is draining pending removals.  The outer pass owns that teardown and is
+    // the only pass allowed to publish the subsequent stable notifications.
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
+        return;
+    }
+
+    const auto teardownDocuments = GetApplication().getDocuments();
+    std::size_t protectedDocumentCount = 0;
+    try {
+        for (auto* teardownDocument : teardownDocuments) {
+            const auto previous =
+                teardownDocument->d->collaborationStableNotificationDepth.fetch_add(
+                    1, std::memory_order_acq_rel);
+            if (previous == std::numeric_limits<unsigned int>::max()) {
+                teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
+                    1, std::memory_order_release);
+                throw Base::RuntimeError(
+                    "recompute teardown lifecycle depth overflow");
+            }
+            ++protectedDocumentCount;
+        }
+    }
+    catch (...) {
+        for (std::size_t index = 0; index < protectedDocumentCount; ++index) {
+            teardownDocuments[index]->d->collaborationStableNotificationDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+        throw;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        for (auto* teardownDocument : teardownDocuments) {
+            teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+    };
+
+    std::size_t readinessProtectedDocumentCount = 0;
+    try {
+        for (auto* teardownDocument : teardownDocuments) {
+            const auto previous =
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_add(
+                    1, std::memory_order_acq_rel);
+            if (previous == std::numeric_limits<unsigned int>::max()) {
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                    1, std::memory_order_release);
+                throw Base::RuntimeError(
+                    "recompute teardown readiness depth overflow");
+            }
+            ++readinessProtectedDocumentCount;
+        }
+    }
+    catch (...) {
+        for (std::size_t index = 0;
+             index < readinessProtectedDocumentCount;
+             ++index) {
+            teardownDocuments[index]->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+        throw;
+    }
+    bool teardownReadinessActive = true;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (teardownReadinessActive) {
+            for (auto* teardownDocument : teardownDocuments) {
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                    1, std::memory_order_release);
+            }
+        }
+    };
+
+    std::vector<Document*> drainedPendingRemovalDocuments;
+    for (auto* document : teardownDocuments) {
+        decltype(document->d->pendingRemove) objects;
+        objects.swap(document->d->pendingRemove);
+        if (!objects.empty()) {
+            const bool previousProcessing =
+                document->d->pendingRemovalProcessing.exchange(
+                    true, std::memory_order_acq_rel);
+            BOOST_SCOPE_EXIT_ALL(&) {
+                document->d->pendingRemovalProcessing.store(
+                    previousProcessing, std::memory_order_release);
+            };
+            for (auto& object : objects) {
+                auto* const pendingObject = object.getObject();
+                const auto retainIfStillPending = [&] {
+                    if (pendingObject && object.getObject() == pendingObject
+                        && std::ranges::find(document->d->pendingRemove, object)
+                            == document->d->pendingRemove.end()) {
+                        document->d->pendingRemove.push_back(object);
+                    }
+                };
+                try {
+                    if (pendingObject) {
+                        pendingObject->getDocument()->removeObject(
+                            pendingObject->getNameInDocument());
+                    }
+                    retainIfStillPending();
+                }
+                catch (Base::Exception& error) {
+                    error.reportException();
+                    FC_ERR("error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName());
+                    retainIfStillPending();
+                }
+                catch (const std::exception& error) {
+                    FC_ERR("error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName()
+                           << ": " << error.what());
+                    retainIfStillPending();
+                }
+                catch (...) {
+                    FC_ERR("unknown error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName());
+                    retainIfStillPending();
+                }
+            }
+        }
+        if (!objects.empty() && document->d->pendingRemove.empty()) {
+            drainedPendingRemovalDocuments.push_back(document);
+        }
+    }
+
+    for (auto* teardownDocument : teardownDocuments) {
+        teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+            1, std::memory_order_release);
+    }
+    teardownReadinessActive = false;
+
+    if (d->pendingRemove.empty()
+        && std::ranges::find(drainedPendingRemovalDocuments, this)
+            == drainedPendingRemovalDocuments.end()) {
+        drainedPendingRemovalDocuments.push_back(this);
+    }
+    for (auto* stableDocument : drainedPendingRemovalDocuments) {
+        if (stableDocument->d->collaborationCommitNotificationBarrier) {
+            stableDocument->d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::BecameStable});
+        }
+        else if (stableDocument->getMutationReadiness().ready) {
+            stableDocument->emitCollaborationBecameStable();
+        }
+    }
+}
+
 int Document::recompute(const std::vector<DocumentObject*>& objs,
-                        bool force,
+                        const bool force,
                         bool* hasError,
-                        int options)
+                        const int options)
+{
+    auto handle = recomputeAsync(objs, force, options);
+    auto snapshot = handle->wait(std::chrono::minutes(6));
+    if (!snapshot.terminal()) {
+        static_cast<void>(handle->cancel("document recompute compatibility wait timed out"));
+        snapshot = handle->wait(std::chrono::seconds(30));
+    }
+    if (hasError) {
+        *hasError = snapshot.state != DocumentRecomputeState::Completed;
+    }
+    return static_cast<int>(snapshot.completedFeatures + snapshot.failedFeatures);
+}
+
+int Document::recomputeLegacy(const std::vector<DocumentObject*>& objs,
+                              bool force,
+                              bool* hasError,
+                              int options)
 {
     ZoneScoped;
 
@@ -7269,7 +7685,6 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
                     ? "isolated feature recompute did not commit"
                     : node.diagnostic;
                 d->addRecomputeLog(diagnostic.c_str(), object);
-                publishCollaborationMutation(*object, false);
                 succeeded = false;
             }
         }
