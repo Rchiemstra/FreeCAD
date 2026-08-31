@@ -57,6 +57,7 @@
 #include "Namespace.h"
 #include "Selection/Selection.h"
 
+#include "CornerCrossLetters.h"
 #include "View3DInventorSelection.h"
 #include "Quarter/SoQTQuarterAdaptor.h"
 

@@ -519,7 +519,7 @@ public:
    * @param[in] doc The new documentation string for this property.
    * @return `true` if the update was successful; `false` otherwise.
    */
-  bool changeDynamicProperty(const Property *prop, const char *group, const char *doc) {
+  virtual bool changeDynamicProperty(const Property *prop, const char *group, const char *doc) {
       return dynamicProps.changeDynamicProperty(prop, group, doc);
   }
 

@@ -29,27 +29,27 @@ for `.FCStd` files, and an MCP server. Measured against `main`: **175 commits,
 
 | Addition | What it does | Source |
 | --- | --- | --- |
-| Review Notes | `Assembly::ReviewNote` / `ReviewNoteGroup` — 3D-anchored review annotations with leader lines glued to component faces, `@Object.FaceN` autocomplete, clickable refs, and resolved/broken states | [ReviewNote.cpp](src/Mod/Assembly/App/ReviewNote.cpp), [CommandReviewNote.py](src/Mod/Assembly/CommandReviewNote.py) |
-| Interference detection | `Check Interference` and `Check Selected Components` commands, backed by a cancellable scan session with per-pair exclusion rules that can cite a Review Note as the reason | [InterferenceScan.cpp](src/Mod/Assembly/App/InterferenceScan.cpp), [TaskInterferenceCheck.cpp](src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp) |
+| **Review Notes**<br><img src="/.github/images/features/review-notes.gif" width="330"> | `Assembly::ReviewNote` / `ReviewNoteGroup` — 3D-anchored review annotations with leader lines glued to component faces, `@Object.FaceN` autocomplete, clickable refs, and resolved/broken states | [ReviewNote.cpp](src/Mod/Assembly/App/ReviewNote.cpp), [CommandReviewNote.py](src/Mod/Assembly/CommandReviewNote.py) |
+| **Interference detection**<br><img src="/.github/images/features/interference.gif" width="340"> | `Check Interference` and `Check Selected Components` commands, backed by a cancellable scan session with per-pair exclusion rules that can cite a Review Note as the reason | [InterferenceScan.cpp](src/Mod/Assembly/App/InterferenceScan.cpp), [TaskInterferenceCheck.cpp](src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp) |
 | Webots PROTO export | Exports an assembly as a Webots R2025a PROTO robot description | [WebotsExport.py](src/Mod/Assembly/WebotsExport.py) |
-| Headless Python API | `Assembly.api` — create assemblies, joints and joint references without the GUI | [api.py](src/Mod/Assembly/Assembly/api.py) |
+| **Headless Python API**<br><img src="/.github/images/features/assembly-api.gif" width="340"> | `Assembly.api` — create assemblies, joints and joint references without the GUI | [api.py](src/Mod/Assembly/Assembly/api.py) |
 | Nested-container fixes | Attachment placement across nested `App::Part` groups, cross-body datum staleness after joint moves, overlay icons and Origin-in-Group handling | [UtilsAssembly.py](src/Mod/Assembly/UtilsAssembly.py), [Groups.cpp](src/Mod/Assembly/App/Groups.cpp) |
 
 ### Sketcher
 
 | Addition | What it does | Source |
 | --- | --- | --- |
-| Delta position constraint | Driving/driven constraint for the dx/dy between two points, with an edit dialog and toolbar entry | [EditDeltaPositionDialog.cpp](src/Mod/Sketcher/Gui/EditDeltaPositionDialog.cpp) |
+| **Delta position constraint**<br><img src="/.github/images/features/delta-position.gif" width="340"> | Driving/driven constraint for the dx/dy between two points, with an edit dialog and toolbar entry | [EditDeltaPositionDialog.cpp](src/Mod/Sketcher/Gui/EditDeltaPositionDialog.cpp) |
 | Constrained offset modes | The offset tool emits geometry that stays constrained instead of loose copies | [DrawSketchHandlerOffset.h](src/Mod/Sketcher/Gui/DrawSketchHandlerOffset.h) |
-| `addExternal()` returns a GeoId | External geometry is addressable from scripts immediately after creation | [SketchObjectPyImp.cpp](src/Mod/Sketcher/App/SketchObjectPyImp.cpp) |
-| Malformed-constraint guard | Single-point `DistanceX`/`DistanceY` constraints raise on creation instead of producing a corrupt sketch | [SketchObjectConstraints.cpp](src/Mod/Sketcher/App/SketchObjectConstraints.cpp) |
+| **`addExternal()` returns a GeoId**<br><img src="/.github/images/features/add-external.gif" width="340"> | External geometry is addressable from scripts immediately after creation | [SketchObjectPyImp.cpp](src/Mod/Sketcher/App/SketchObjectPyImp.cpp) |
+| **Malformed-constraint guard**<br><img src="/.github/images/features/malformed-guard.gif" width="340"> | Single-point `DistanceX`/`DistanceY` constraints raise on creation instead of producing a corrupt sketch | [SketchObjectConstraints.cpp](src/Mod/Sketcher/App/SketchObjectConstraints.cpp) |
 
 ### Part
 
 | Addition | What it does | Source |
 | --- | --- | --- |
-| `removeSplitter()` corruption fix | Stops the refine pass mutating the shape it was called on | [modelRefine.cpp](src/Mod/Part/App/modelRefine.cpp) |
-| `Direction` / `Normal` aliases | `Part.Circle` and `Part.Ellipse` expose both as aliases of `Axis`, removing the Direction-vs-Axis trap | [ConicPyImp.cpp](src/Mod/Part/App/ConicPyImp.cpp) |
+| **`removeSplitter()` corruption fix**<br><img src="/.github/images/features/remove-splitter.gif" width="340"> | Stops the refine pass mutating the shape it was called on | [modelRefine.cpp](src/Mod/Part/App/modelRefine.cpp) |
+| **`Direction` / `Normal` aliases**<br><img src="/.github/images/features/conic-aliases.gif" width="340"> | `Part.Circle` and `Part.Ellipse` expose both as aliases of `Axis`, removing the Direction-vs-Axis trap | [ConicPyImp.cpp](src/Mod/Part/App/ConicPyImp.cpp) |
 | Interference kernel | Shared clash and clearance primitives used by the Assembly scan | [InterferenceDetection.cpp](src/Mod/Part/App/InterferenceDetection.cpp) |
 | Placement regression tests | Shape/Placement absorption, Deactivated placement, and FlatFace origin repros | [TopoShapeTest.py](src/Mod/Part/parttests/TopoShapeTest.py) |
 
