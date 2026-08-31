@@ -33,8 +33,20 @@ dump_gtest_failure() {
     return
   fi
   echo "-- failure context (filtered) --"
-  grep -E 'FAILED|Expected|FAIL|Assertion|Error|native personal|empty image|renderToImage' "$log" 2>/dev/null \
-    | tail -n 80 || true
+  # gtest writes each failure as a "<file>:<line>: Failure" header followed by the
+  # message body, terminated by a blank line. Match on that structure rather than on
+  # keywords: an EXPECT_NEAR body ("The difference between ... exceeds ...") contains
+  # none of FAILED/Expected/FAIL/Assertion/Error, so a keyword grep drops it entirely
+  # and leaves only the "[  FAILED  ]" summary with no reason attached.
+  awk '
+    /^\[  FAILED  \]/ { print; next }
+    /: Failure$/ || /: Skipped$/ { hold = 20; print; next }
+    hold > 0 {
+      if ($0 ~ /^[[:space:]]*$/) { hold = 0 } else { print; hold-- }
+      next
+    }
+    /native personal|empty image|renderToImage/ { print }
+  ' "$log" 2>/dev/null | tail -n 200 || true
   lines=$(wc -l <"$log" 2>/dev/null || echo 0)
   if [ "$lines" -le 200 ]; then
     echo "-- full log ($lines lines) --"
