@@ -35,8 +35,12 @@ import pytest
 
 from tests.gui.part3.evidence import (
     ALPHA_MODEL_KEY,
+    ALPHA_OBJECT,
+    ALPHA_PROPERTY,
     ALPHA_PROPERTY_KEY,
     BETA_MODEL_KEY,
+    BETA_OBJECT,
+    BETA_PROPERTY,
     BETA_PROPERTY_KEY,
     SHUTDOWN_TIMESTAMP_KEYS,
     binary_fingerprint,
@@ -231,10 +235,16 @@ def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
     """Build the canonical revision vector emitted by personal snapshots."""
 
     return [
-        {"key": ALPHA_PROPERTY_KEY, "revision": base_revision},
-        {"key": BETA_PROPERTY_KEY, "revision": base_revision + 1},
-        {"key": ALPHA_MODEL_KEY, "revision": base_revision + 2},
-        {"key": BETA_MODEL_KEY, "revision": base_revision + 3},
+        {"kind": "ObjectModel", "subject": BETA_OBJECT, "revision": base_revision + 3},
+        {"kind": "ObjectModel", "subject": ALPHA_OBJECT, "revision": base_revision + 2},
+        {
+            "kind": "ObjectProperty", "subject": BETA_OBJECT,
+            "property_name": BETA_PROPERTY, "revision": base_revision + 1,
+        },
+        {
+            "kind": "ObjectProperty", "subject": ALPHA_OBJECT,
+            "property_name": ALPHA_PROPERTY, "revision": base_revision,
+        },
     ]
 
 
@@ -2874,8 +2884,13 @@ def test_stage_evidence_binds_the_build_and_its_sources_to_commits(
     os.utime(ancient, (0, 0))
     aged = module._build_provenance(REPO_ROOT, ancient)
     aged_entry = aged["binaries"]["FreeCAD.exe"]
+    relevant_history = module._binary_relevant_history(
+        REPO_ROOT, module._commit_history(REPO_ROOT)
+    )
     assert aged_entry["predates_head"] is True, aged_entry
-    assert len(aged_entry["commits_not_in_binary"]) == aged["history_depth"]
+    assert aged_entry["commits_not_in_binary"] == [
+        commit for commit, _epoch in relevant_history
+    ]
 
     # And a stage run records it in the artifact, with its own check.
     run = _run_stubbed_stage(monkeypatch, tmp_path / "stage", on_shutdown=lambda _c: None)

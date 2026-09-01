@@ -57,8 +57,22 @@ BETA_PROPERTY_KEY = f"ObjectProperty:{BETA_OBJECT}:{BETA_PROPERTY}"
 ALPHA_MODEL_KEY = f"ObjectModel:{ALPHA_OBJECT}"
 BETA_MODEL_KEY = f"ObjectModel:{BETA_OBJECT}"
 _STAGE_REVISION_KEYS = (
-    ALPHA_PROPERTY_KEY, BETA_PROPERTY_KEY, ALPHA_MODEL_KEY, BETA_MODEL_KEY,
+    BETA_MODEL_KEY, ALPHA_MODEL_KEY, BETA_PROPERTY_KEY, ALPHA_PROPERTY_KEY,
 )
+_STAGE_REVISION_FIELDS = {
+    BETA_MODEL_KEY: {"kind": "ObjectModel", "subject": BETA_OBJECT},
+    ALPHA_MODEL_KEY: {"kind": "ObjectModel", "subject": ALPHA_OBJECT},
+    BETA_PROPERTY_KEY: {
+        "kind": "ObjectProperty",
+        "subject": BETA_OBJECT,
+        "property_name": BETA_PROPERTY,
+    },
+    ALPHA_PROPERTY_KEY: {
+        "kind": "ObjectProperty",
+        "subject": ALPHA_OBJECT,
+        "property_name": ALPHA_PROPERTY,
+    },
+}
 
 
 def _normalized_artifact_path(value: str) -> str:
@@ -207,19 +221,42 @@ def _healthy_cycle_readiness(readiness: object, document: object) -> bool:
     )
 
 
+def _revision_observation_key(item: object) -> str | None:
+    if not isinstance(item, dict) or type(item.get("revision")) is not int:
+        return None
+    kind = item.get("kind")
+    subject = item.get("subject")
+    if kind == "ObjectModel" and set(item) == {"kind", "subject", "revision"}:
+        key = f"ObjectModel:{subject}" if isinstance(subject, str) else None
+    elif kind == "ObjectProperty" and set(item) == {
+        "kind", "subject", "property_name", "revision",
+    }:
+        property_name = item.get("property_name")
+        key = (
+            f"ObjectProperty:{subject}:{property_name}"
+            if isinstance(subject, str) and isinstance(property_name, str)
+            else None
+        )
+    else:
+        return None
+    expected = _STAGE_REVISION_FIELDS.get(key)
+    return (
+        key
+        if expected is not None
+        and all(item.get(name) == value for name, value in expected.items())
+        else None
+    )
+
+
 def _revision_map(observation: object) -> dict[str, int] | None:
     if not isinstance(observation, list) or len(observation) != len(_STAGE_REVISION_KEYS):
         return None
     result: dict[str, int] = {}
     for item in observation:
-        if (
-            not isinstance(item, dict)
-            or set(item) != {"key", "revision"}
-            or not isinstance(item.get("key"), str)
-            or type(item.get("revision")) is not int
-        ):
+        key = _revision_observation_key(item)
+        if key is None or key in result:
             return None
-        result[item["key"]] = item["revision"]
+        result[key] = item["revision"]
     return result if tuple(result) == _STAGE_REVISION_KEYS else None
 
 
@@ -891,9 +928,7 @@ def _paused_read_revisions_are_exact(result: object) -> bool:
     return (
         isinstance(revisions, list)
         and len(revisions) == 1
-        and isinstance(revisions[0], dict)
-        and revisions[0].get("key") == BETA_PROPERTY_KEY
-        and type(revisions[0].get("revision")) is int
+        and _revision_observation_key(revisions[0]) == BETA_PROPERTY_KEY
     )
 
 
@@ -1453,12 +1488,17 @@ def validate_completed_stage_evidence(
         )
     ):
         raise ValueError("stage build provenance is incomplete")
-    from tests.gui.part3.stress_coordinator import _commit_history, _epoch_to_utc_iso
+    from tests.gui.part3.stress_coordinator import (
+        _binary_relevant_history,
+        _commit_history,
+        _epoch_to_utc_iso,
+    )
 
     actual_history = _commit_history(repo_root)
     if not actual_history:
         raise ValueError("packet repository history is unavailable")
     actual_head, actual_head_epoch = actual_history[0]
+    binary_history = _binary_relevant_history(repo_root, actual_history)
     if (
         provenance["head_commit"] != actual_head
         or provenance["head_committed_utc"] != _epoch_to_utc_iso(actual_head_epoch)
@@ -1472,7 +1512,7 @@ def validate_completed_stage_evidence(
             copy = (retained_binary_copies or {}).get(name)
             binary_path = Path(str(copy.get("path") if isinstance(copy, dict) else ""))
         written = binary_path.stat().st_mtime
-        missing = [commit for commit, epoch in actual_history if epoch > written]
+        missing = [commit for commit, epoch in binary_history if epoch > written]
         if (
             entry["mtime_utc"] != _epoch_to_utc_iso(written)
             or entry["commits_not_in_binary"] != missing
