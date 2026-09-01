@@ -315,6 +315,7 @@ TEST_F(CollaborativeSweepFilletOperationsTest,
 
     ASSERT_FALSE(_sweepResult->Shape.getValue().IsNull());
     EXPECT_TRUE(BRepCheck_Analyzer(_sweepResult->Shape.getValue()).IsValid());
+    EXPECT_FALSE(_sweepResult->isTouched());
     const auto postcondition = operation->checkPostcondition(*_document);
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
 }
@@ -331,6 +332,7 @@ TEST_F(CollaborativeSweepFilletOperationsTest,
 
     ASSERT_FALSE(_filletResult->Shape.getValue().IsNull());
     EXPECT_TRUE(BRepCheck_Analyzer(_filletResult->Shape.getValue()).IsValid());
+    EXPECT_FALSE(_filletResult->isTouched());
     const auto postcondition = operation->checkPostcondition(*_document);
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
 }
@@ -407,6 +409,7 @@ TEST_F(CollaborativeSweepFilletOperationsTest,
     ASSERT_TRUE(commit.committed()) << commit.message;
     EXPECT_FALSE(_sweepResult->Shape.getValue().IsNull());
     EXPECT_TRUE(BRepCheck_Analyzer(_sweepResult->Shape.getValue()).IsValid());
+    EXPECT_FALSE(_sweepResult->isTouched());
     EXPECT_TRUE(prepared.operation().checkPostcondition(*_document).satisfied);
 }
 
@@ -420,5 +423,6 @@ TEST_F(CollaborativeSweepFilletOperationsTest,
     ASSERT_TRUE(commit.committed()) << commit.message;
     EXPECT_FALSE(_filletResult->Shape.getValue().IsNull());
     EXPECT_TRUE(BRepCheck_Analyzer(_filletResult->Shape.getValue()).IsValid());
+    EXPECT_FALSE(_filletResult->isTouched());
     EXPECT_TRUE(prepared.operation().checkPostcondition(*_document).satisfied);
 }

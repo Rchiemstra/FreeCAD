@@ -1424,6 +1424,7 @@ def validate_completed_stage_evidence(
         or not isinstance(provenance.get("binaries"), dict)
         or not provenance["binaries"]
         or not isinstance(provenance.get("binaries_predating_head"), list)
+        or bool(provenance["binaries_predating_head"])
         or provenance.get("binary_commit_binding_enforced") is not False
         or not isinstance(provenance.get("provenance_caveat"), str)
         or not provenance["provenance_caveat"]

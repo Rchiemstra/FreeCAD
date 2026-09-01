@@ -1790,6 +1790,42 @@ def _run_view_mutation_cycle(context: StageContext, index: int) -> None:
     _persist(context)
 
 
+def _save_copy_is_truthful(
+    result: object,
+    *,
+    destination: Path,
+    canonical_sha256_before: str,
+    canonical_sha256_after: str,
+    copy_sha256: str,
+    readable_archive: bool,
+) -> bool:
+    """Bind Save Copy claims to both files without requiring identical ZIP bytes."""
+
+    if not isinstance(result, dict):
+        return False
+    evidence = result.get("file_evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    archive = evidence.get("archive")
+    archive = archive if isinstance(archive, dict) else {}
+    expected_destination = os.path.normcase(os.path.realpath(destination))
+    return bool(
+        str(result.get("save_disposition") or "").lower() == "copy_written"
+        and result.get("file_written") is True
+        and result.get("saved") is True
+        and readable_archive
+        and bool(copy_sha256)
+        and canonical_sha256_after == canonical_sha256_before
+        and evidence.get("sha256") == copy_sha256
+        and archive.get("ok") is True
+        and os.path.normcase(os.path.realpath(str(result.get("target_path") or "")))
+        == expected_destination
+        and os.path.normcase(
+            os.path.realpath(str(evidence.get("canonical_path") or ""))
+        )
+        == expected_destination
+    )
+
+
 def _run_save_cycle(context: StageContext, index: int) -> None:
     """One ADR §13 save cycle: written save, Unchanged save and Save Copy."""
 
@@ -1869,14 +1905,13 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
         and unchanged.get("unchanged") is True
         and sha_unchanged == sha_after
     )
-    copy_ok = (
-        isinstance(copy, dict)
-        and str(copy.get("save_disposition") or "").lower() == "copy_written"
-        and copy.get("file_written") is True
-        and copy.get("saved") is True
-        and copy_readable
-        and sha_after_copy == sha_after
-        and sha_copy == sha_after
+    copy_ok = _save_copy_is_truthful(
+        copy,
+        destination=copy_path,
+        canonical_sha256_before=sha_after,
+        canonical_sha256_after=sha_after_copy,
+        copy_sha256=sha_copy,
+        readable_archive=copy_readable,
     )
     truthful = bool(written_ok and unchanged_ok and copy_ok)
     save_record = {
@@ -1981,7 +2016,14 @@ def _run_save_cycle(context: StageContext, index: int) -> None:
         context,
         "save_copy_is_truthful_and_leaves_canonical_intact",
         copy_ok,
-        {"index": index, "result": copy, "readable_archive": copy_readable},
+        {
+            "index": index,
+            "result": copy,
+            "readable_archive": copy_readable,
+            "canonical_sha256_before": sha_after,
+            "canonical_sha256_after": sha_after_copy,
+            "copy_sha256": sha_copy,
+        },
     )
     _ensure_document_clean_for_personal_view(context, context.secondary)
     _persist(context)
@@ -3007,8 +3049,10 @@ def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
     afterwards is flagged stale while actually containing the change. Nothing
     here hashes a binary against a build of a known commit, so the record is
     surfaced as a record - ``binary_commit_binding_enforced`` is False and
-    ``binaries_predating_head`` sits in the artifact beside it - rather than
-    being claimed as a binding by the name of the check that reports it.
+    ``binaries_predating_head`` sits in the artifact beside it.  Completed
+    stage validation rejects a non-empty list as a necessary freshness
+    condition, while still refusing to mislabel mtime ordering as a sufficient
+    source-to-binary binding.
     """
 
     root = Path(repo_root)
@@ -3038,8 +3082,9 @@ def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
             "Recorded, not enforced. commits_not_in_binary compares a binary's "
             "mtime with commit timestamps, which is an upper bound on staleness "
             "and not proof that any binary was built from any commit. No check "
-            "here fails a stage on a lagging binary; whether a run counts "
-            "toward ADR §13 acceptance is the operator's decision."
+            "here proves which source bytes produced a binary. Completed-stage "
+            "validation rejects binaries known to predate HEAD, but exact "
+            "source-to-binary binding remains an operator qualification."
         ),
         "stage_sources": {
             relative: sha256_file(root.joinpath(*relative.split("/")))
@@ -3230,11 +3275,9 @@ def run_stage(
         }
     )
     # Named for what it tests. It goes green whenever provenance was RECORDED,
-    # whatever the provenance says - it never consults ``predates_head`` or
-    # ``commits_not_in_binary`` - and it went green on a run whose binaries
-    # were up to 39 commits behind HEAD, which was then read as validating a
-    # binding (GRK-P3-101). Whether a lagging binary should fail a stage is an
-    # ADR §13 policy decision and is deliberately not decided here.
+    # whatever the provenance says. It does not claim source-to-binary binding;
+    # the shared completed-stage validator separately rejects a binary known
+    # to predate HEAD (GRK-P3-101).
     record_check(
         payload,
         "build_provenance_is_recorded_for_binaries_and_stage_sources",
