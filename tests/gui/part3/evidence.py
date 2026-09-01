@@ -1782,7 +1782,9 @@ def validate_completed_stage_evidence(
             or not _looks_like_digest(save.get("canonical_artifact_sha256"))
             or not _looks_like_digest(save["save_copy"].get("sha256_after"))
             or not _looks_like_digest(save["save_copy"].get("artifact_sha256"))
-            or save["save_copy"]["sha256_after"] != save["sha256_after"]
+            or save["save_copy"].get("truthful") is not True
+            or str(save["save_copy"].get("disposition") or "").lower()
+            != "copy_written"
             or (
                 previous_endpoint is not None
                 and save["sha256_before"] != previous_endpoint

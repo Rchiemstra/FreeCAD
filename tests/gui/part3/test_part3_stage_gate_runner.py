@@ -765,19 +765,24 @@ def _stage_evidence(
     ]
     for index, copy_path in enumerate(copy_paths):
         _write_minimal_fcstd(copy_path, f"{stage}-save-{index}")
-    shutil.copy2(copy_paths[-1], canonical_path)
+    _write_minimal_fcstd(canonical_path, f"{stage}-canonical-final")
     _write_minimal_fcstd(secondary_path, f"{stage}-secondary")
     copy_hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in copy_paths]
     final_canonical_hash = hashlib.sha256(canonical_path.read_bytes()).hexdigest()
+    canonical_hashes = [
+        hashlib.sha256(f"{stage}-canonical-{index}".encode("utf-8")).hexdigest()
+        for index in range(definition.save_cycles - 1)
+    ] + [final_canonical_hash]
     secondary_hash = hashlib.sha256(secondary_path.read_bytes()).hexdigest()
     saves = []
     for index in range(definition.save_cycles):
         before = (
             hashlib.sha256(f"{stage}-initial".encode("utf-8")).hexdigest()
             if index == 0
-            else copy_hashes[index - 1]
+            else canonical_hashes[index - 1]
         )
-        after = copy_hashes[index]
+        after = canonical_hashes[index]
+        copy_hash = copy_hashes[index]
         copy = str(copy_paths[index])
         written_result = {"saved": True, "save_disposition": "written", "file_written": True, "durability_verified": True}
         unchanged_result = {"unchanged": True, "save_disposition": "unchanged", "file_written": False}
@@ -790,11 +795,11 @@ def _stage_evidence(
             "canonical_artifact_sha256": final_canonical_hash,
             "written_result": written_result,
             "unchanged_save": {"file_written": False, "disposition": "unchanged", "sha256_after": after, "result": unchanged_result},
-            "save_copy": {"destination": copy, "readable_archive": True, "canonical_unchanged": True, "sha256_after": after, "artifact_sha256": after, "result": copy_result},
+            "save_copy": {"destination": copy, "disposition": "copy_written", "readable_archive": True, "canonical_unchanged": True, "sha256_after": copy_hash, "artifact_sha256": copy_hash, "truthful": True, "result": copy_result},
             "actual_save_operations": [
                 {"kind": "canonical_written_save", "document": primary, "canonical_path": str(canonical_path), "sha256_before": before, "sha256_after": after, "disposition": "written", "file_written": True, "durability_verified": True, "truthful": True, "result": written_result},
                 {"kind": "canonical_unchanged_save", "document": primary, "canonical_path": str(canonical_path), "sha256_before": after, "sha256_after": after, "disposition": "unchanged", "file_written": False, "truthful": True, "result": unchanged_result},
-                {"kind": "save_copy", "document": primary, "canonical_path": str(canonical_path), "destination": copy, "canonical_sha256_before": after, "canonical_sha256_after": after, "sha256_after": after, "disposition": "copy_written", "file_written": True, "truthful": True, "result": copy_result},
+                {"kind": "save_copy", "document": primary, "canonical_path": str(canonical_path), "destination": copy, "canonical_sha256_before": after, "canonical_sha256_after": after, "sha256_after": copy_hash, "disposition": "copy_written", "file_written": True, "truthful": True, "result": copy_result},
             ],
         })
     payload = {

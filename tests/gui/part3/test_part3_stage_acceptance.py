@@ -456,18 +456,9 @@ def _personal_view_stage_fixture(*, clean: bool) -> dict[str, Any]:
 
         evidence = _stage_evidence("A")
         evidence["cycles"] = evidence["cycles"][:2]
-        evidence["saves"] = evidence["saves"][:1]
-        canonical = Path(evidence["saves"][-1]["canonical_path"])
-        copy = Path(evidence["saves"][-1]["save_copy"]["destination"])
-        canonical.write_bytes(copy.read_bytes())
-        final_hash = sha256_file(canonical)
-        evidence["saves"][-1]["canonical_artifact_sha256"] = final_hash
-        canonical_artifact = next(
-            entry for entry in evidence["artifacts"]["documents"]
-            if entry["path"] == str(canonical)
-        )
-        canonical_artifact["size"] = canonical.stat().st_size
-        canonical_artifact["sha256"] = final_hash
+        final_save = evidence["saves"][-1]
+        final_save["index"] = 0
+        evidence["saves"] = [final_save]
         retained_proofs = evidence["personal_action_proofs"][:20]
         out_of_cycle_action = evidence["out_of_cycle_local_actions"][0]
         out_of_cycle_proof = dict(
