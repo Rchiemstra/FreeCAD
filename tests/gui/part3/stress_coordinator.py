@@ -2507,68 +2507,69 @@ def _run_pause_resume_segment(context: StageContext) -> None:
     )
     record_pause_resume(context.payload, "pause", paused)
 
-    refusal_params = {
-        "doc_name": document,
-        "obj_name": BETA_OBJECT,
-        "properties": {"Properties": {BETA_PROPERTY: 7}},
-    }
-    refusal = _call_expecting_failure(
-        context,
-        "edit_object",
-        refusal_params,
-    )
-    operations["refused_write"] = {
-        "method": "edit_object", "parameters": refusal_params, "result": refusal,
-    }
-    refusal_text = f"{refusal.get('error')} {refusal.get('error_code')} {refusal.get('data')}"
-    record_pause_resume(context.payload, "refused", refusal)
-    _require(
-        context,
-        "remote_write_refused_while_paused",
-        refusal.get("success") is False
-        and (
-            "AUTOMATION_PAUSED" in refusal_text
-            or "paused new MCP writes" in refusal_text
-        ),
-        refusal,
-    )
-    read_params = {
-        "doc_selector": selector,
-        "revision_keys": [_property_key(BETA_OBJECT, BETA_PROPERTY)],
-    }
-    read_result = _remote_action(
-        context,
-        None,
-        "get_semantic_revisions",
-        read_params,
-        timeout=30.0,
-    )
-    reads = read_result.get("revisions") if isinstance(read_result, dict) else None
-    operations["paused_read"] = {
-        "operation_id": None, "method": "get_semantic_revisions",
-        "parameters": read_params, "result": read_result,
-    }
-    operations["paused_read_result"] = read_result
-    _require(
-        context,
-        "reads_remain_available_while_paused",
-        _paused_read_revisions_are_exact(read_result),
-        reads,
-    )
-    readiness = _mutation_readiness(context, document)
-    operations["readiness"] = readiness
-    context.payload["pause_resume"]["readiness_while_paused"] = readiness
-
-    resumed = _local_action(context, None, "resume_writes", observe_view=False)
-    operations["resume"] = resumed
-    context.coverage.add("local_resume")
-    _require(
-        context,
-        "resume_checkbox_reports_resumed",
-        (resumed.get("observed") or {}).get("paused") is False,
-        resumed,
-    )
-    record_pause_resume(context.payload, "resume", resumed)
+    try:
+        refusal_params = {
+            "doc_name": document,
+            "obj_name": BETA_OBJECT,
+            "properties": {"Properties": {BETA_PROPERTY: 7}},
+        }
+        refusal = _call_expecting_failure(
+            context,
+            "edit_object",
+            refusal_params,
+        )
+        operations["refused_write"] = {
+            "method": "edit_object", "parameters": refusal_params, "result": refusal,
+        }
+        refusal_text = f"{refusal.get('error')} {refusal.get('error_code')} {refusal.get('data')}"
+        record_pause_resume(context.payload, "refused", refusal)
+        _require(
+            context,
+            "remote_write_refused_while_paused",
+            refusal.get("success") is False
+            and (
+                "AUTOMATION_PAUSED" in refusal_text
+                or "paused new MCP writes" in refusal_text
+            ),
+            refusal,
+        )
+        read_params = {
+            "doc_selector": selector,
+            "revision_keys": [_property_key(BETA_OBJECT, BETA_PROPERTY)],
+        }
+        read_result = _remote_action(
+            context,
+            None,
+            "get_semantic_revisions",
+            read_params,
+            timeout=30.0,
+        )
+        reads = read_result.get("revisions") if isinstance(read_result, dict) else None
+        operations["paused_read"] = {
+            "operation_id": None, "method": "get_semantic_revisions",
+            "parameters": read_params, "result": read_result,
+        }
+        operations["paused_read_result"] = read_result
+        _require(
+            context,
+            "reads_remain_available_while_paused",
+            _paused_read_revisions_are_exact(read_result),
+            reads,
+        )
+        readiness = _mutation_readiness(context, document)
+        operations["readiness"] = readiness
+        context.payload["pause_resume"]["readiness_while_paused"] = readiness
+    finally:
+        resumed = _local_action(context, None, "resume_writes", observe_view=False)
+        operations["resume"] = resumed
+        context.coverage.add("local_resume")
+        record_pause_resume(context.payload, "resume", resumed)
+        _require(
+            context,
+            "resume_checkbox_reports_resumed",
+            (resumed.get("observed") or {}).get("paused") is False,
+            resumed,
+        )
 
     session_id = _begin_checked_edit(
         context,
@@ -2997,6 +2998,11 @@ def _stage_source_files(repo_root: Path = REPO_ROOT) -> tuple[str, ...]:
 
 
 STAGE_SOURCE_FILES = _stage_source_files()
+BINARY_INDEPENDENT_PATHS = frozenset({
+    *STAGE_SOURCE_FILES,
+    "tests/gui/part3/test_part3_stage_gate_runner.py",
+    "tests/gui/part3/test_part3_stage_acceptance.py",
+})
 
 PROVENANCE_HISTORY_DEPTH = 40
 
@@ -3029,6 +3035,37 @@ def _commit_history(repo_root: Path) -> list[tuple[str, int]]:
     return history
 
 
+def _binary_relevant_history(
+    repo_root: Path, history: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """Return runtime-affecting entries using one fail-closed history query."""
+
+    if not history:
+        return []
+    lines = _git_lines(
+        repo_root,
+        [
+            "log",
+            f"-{PROVENANCE_HISTORY_DEPTH}",
+            "--format=%H %ct",
+            "--",
+            ".",
+            *(
+                f":(top,exclude){path}"
+                for path in sorted(BINARY_INDEPENDENT_PATHS)
+            ),
+        ],
+    )
+    if not lines:
+        return list(history)
+    relevant = {
+        fields[0]
+        for line in lines
+        if len(fields := line.split()) == 2 and fields[1].isdigit()
+    }
+    return [entry for entry in history if entry[0] in relevant]
+
+
 def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
     """ADR §13 provenance: tie the launched build and stage sources to commits.
 
@@ -3037,10 +3074,12 @@ def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
     said which commit the build came from, so a run on a build older than
     HEAD was indistinguishable from a run on a build of HEAD (GRK-P3-098).
 
-    ``commits_not_in_binary`` lists the HEAD-ancestry commits committed after
-    a binary was written; those commits cannot be present in it. Each binary
-    is compared on its own because this build tree is mixed rather than
-    uniformly stale, and a per-file answer is the only truthful one.
+    ``commits_not_in_binary`` lists binary-relevant HEAD-ancestry commits
+    committed after a binary was written. Commits confined to the separately
+    hashed stage program or to non-runtime validator tests cannot affect
+    compiled FreeCAD bytes and are deliberately excluded. Unknown paths fail
+    closed as binary-relevant. Each binary is compared on its own because this
+    build tree is mixed rather than uniformly stale.
 
     What this is NOT (GRK-P3-101): mtime-versus-commit-time ordering is
     necessary but not sufficient for a binding. A binary built later from a
@@ -3057,12 +3096,13 @@ def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
 
     root = Path(repo_root)
     history = _commit_history(root)
+    binary_history = _binary_relevant_history(root, history)
     head_commit, head_epoch = history[0] if history else ("", 0)
 
     binaries: dict[str, Any] = {}
     for path in freecad_binary_paths(Path(executable)):
         written = path.stat().st_mtime
-        missing = [commit for commit, epoch in history if epoch > written]
+        missing = [commit for commit, epoch in binary_history if epoch > written]
         binaries[path.name] = {
             "mtime_utc": _epoch_to_utc_iso(written),
             "commits_not_in_binary": missing,
@@ -3080,11 +3120,13 @@ def _build_provenance(repo_root: Path, executable: Path) -> dict[str, Any]:
         "binary_commit_binding_enforced": False,
         "provenance_caveat": (
             "Recorded, not enforced. commits_not_in_binary compares a binary's "
-            "mtime with commit timestamps, which is an upper bound on staleness "
-            "and not proof that any binary was built from any commit. No check "
-            "here proves which source bytes produced a binary. Completed-stage "
-            "validation rejects binaries known to predate HEAD, but exact "
-            "source-to-binary binding remains an operator qualification."
+            "mtime with timestamps of commits that change binary-relevant or "
+            "unclassified paths. Stage-program paths are hashed independently; "
+            "validator tests do not execute in a stage. Neither makes compiled "
+            "binaries stale. "
+            "This remains an upper bound, not proof of which source bytes "
+            "produced a binary; exact source-to-binary binding remains an "
+            "operator qualification."
         ),
         "stage_sources": {
             relative: sha256_file(root.joinpath(*relative.split("/")))

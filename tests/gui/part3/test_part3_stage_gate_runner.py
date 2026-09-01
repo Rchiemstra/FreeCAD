@@ -19,8 +19,12 @@ import pytest
 
 from tests.gui.part3.evidence import (
     ALPHA_MODEL_KEY,
+    ALPHA_OBJECT,
+    ALPHA_PROPERTY,
     ALPHA_PROPERTY_KEY,
     BETA_MODEL_KEY,
+    BETA_OBJECT,
+    BETA_PROPERTY,
     BETA_PROPERTY_KEY,
     stage_revision_vector_is_exact,
 )
@@ -35,11 +39,93 @@ def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
     """Build the exact ordered vector observed by the live personal driver."""
 
     return [
-        {"key": ALPHA_PROPERTY_KEY, "revision": base_revision},
-        {"key": BETA_PROPERTY_KEY, "revision": base_revision + 1},
-        {"key": ALPHA_MODEL_KEY, "revision": base_revision + 2},
-        {"key": BETA_MODEL_KEY, "revision": base_revision + 3},
+        {"kind": "ObjectModel", "subject": BETA_OBJECT, "revision": base_revision + 3},
+        {"kind": "ObjectModel", "subject": ALPHA_OBJECT, "revision": base_revision + 2},
+        {
+            "kind": "ObjectProperty", "subject": BETA_OBJECT,
+            "property_name": BETA_PROPERTY, "revision": base_revision + 1,
+        },
+        {
+            "kind": "ObjectProperty", "subject": ALPHA_OBJECT,
+            "property_name": ALPHA_PROPERTY, "revision": base_revision,
+        },
     ]
+
+
+def _cycle_revision_vector(beta_revision: int) -> list[dict[str, int | str]]:
+    return [
+        {"kind": "ObjectModel", "subject": BETA_OBJECT, "revision": 1},
+        {"kind": "ObjectModel", "subject": ALPHA_OBJECT, "revision": 1},
+        {
+            "kind": "ObjectProperty", "subject": BETA_OBJECT,
+            "property_name": BETA_PROPERTY, "revision": beta_revision,
+        },
+        {
+            "kind": "ObjectProperty", "subject": ALPHA_OBJECT,
+            "property_name": ALPHA_PROPERTY, "revision": 1,
+        },
+    ]
+
+
+def _fixture_revision_key(item: dict[str, Any]) -> str | None:
+    if item.get("kind") == "ObjectModel":
+        return f"ObjectModel:{item.get('subject')}"
+    if item.get("kind") == "ObjectProperty":
+        return f"ObjectProperty:{item.get('subject')}:{item.get('property_name')}"
+    return None
+
+
+def test_paused_revision_read_requires_current_typed_contract() -> None:
+    from tests.gui.part3.evidence import _paused_read_revisions_are_exact
+
+    typed = {
+        "revisions": [{
+            "kind": "ObjectProperty",
+            "subject": BETA_OBJECT,
+            "property_name": BETA_PROPERTY,
+            "revision": 7,
+        }]
+    }
+    assert _paused_read_revisions_are_exact(typed)
+    assert not _paused_read_revisions_are_exact(
+        {"revisions": [{"key": BETA_PROPERTY_KEY, "revision": 7}]}
+    )
+
+
+@pytest.mark.parametrize("lines", [[], [f"{'c' * 40} 3"]])
+def test_binary_provenance_history_query_is_bounded_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, lines: list[str]
+) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    history = [("a" * 40, 5), ("b" * 40, 4)]
+    captured: list[list[str]] = []
+
+    def git_lines(_repo: Path, arguments: list[str]) -> list[str]:
+        captured.append(arguments)
+        return lines
+
+    monkeypatch.setattr(module, "_git_lines", git_lines)
+    expected = history if not lines else []
+    assert module._binary_relevant_history(REPO_ROOT, history) == expected
+    assert len(captured) == 1
+    assert "." in captured[0]
+    assert ":(top,exclude)tests/gui/part3/evidence.py" in captured[0]
+    assert ":(top,exclude)tests/gui/part3/test_part3_stage_acceptance.py" in captured[0]
+
+
+def test_binary_provenance_history_retains_runtime_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    history = [("a" * 40, 5), ("b" * 40, 4)]
+    monkeypatch.setattr(
+        module,
+        "_git_lines",
+        lambda _repo, _arguments: [f"{history[0][0]} {history[0][1]}"],
+    )
+    assert module._binary_relevant_history(REPO_ROOT, history) == [history[0]]
 
 
 def test_save_copy_truthfulness_allows_fresh_fcstd_container_bytes(tmp_path: Path) -> None:
@@ -575,9 +661,8 @@ def _stage_evidence(
         operation_id = f"local-personal-{index}"
         commit_id = f"remote-commit-{index}"
         commit_result = {"success": True, "committed": True, "value": 100 + index}
-        revisions = [{"key": BETA_PROPERTY_KEY, "revision": index + 1}]
-        before_revisions = [{"key": ALPHA_PROPERTY_KEY, "revision": 1}, *revisions, {"key": ALPHA_MODEL_KEY, "revision": 1}, {"key": BETA_MODEL_KEY, "revision": 1}]
-        after_revisions = [{"key": ALPHA_PROPERTY_KEY, "revision": 1}, {"key": BETA_PROPERTY_KEY, "revision": index + 2}, {"key": ALPHA_MODEL_KEY, "revision": 1}, {"key": BETA_MODEL_KEY, "revision": 1}]
+        before_revisions = _cycle_revision_vector(index + 1)
+        after_revisions = _cycle_revision_vector(index + 2)
         clean_state = {"pending_changes": [], "has_pending_file_changes": False}
         cycles.append(
             {
@@ -865,8 +950,8 @@ def _stage_evidence(
         "pause": {"operation_id": "pause-local", "action": "pause_writes", "parameters": {}, "observed": {"paused": True}},
         "resume": {"operation_id": "resume-local", "action": "resume_writes", "parameters": {}, "observed": {"paused": False}},
         "refused_write": {"method": "edit_object", "parameters": {"doc_name": primary, "obj_name": "SecondBox", "properties": {"Properties": {"BetaValue": 7}}}, "result": pause["refused"]},
-        "paused_read": {"operation_id": None, "method": "get_semantic_revisions", "parameters": {"doc_selector": primary_selector, "revision_keys": [beta_key]}, "result": {"revisions": [{"key": BETA_PROPERTY_KEY, "revision": 5}]}},
-        "paused_read_result": {"revisions": [{"key": BETA_PROPERTY_KEY, "revision": 5}]}, "readiness": pause["readiness_while_paused"],
+        "paused_read": {"operation_id": None, "method": "get_semantic_revisions", "parameters": {"doc_selector": primary_selector, "revision_keys": [beta_key]}, "result": {"revisions": [{**beta_key, "revision": 5}]}},
+        "paused_read_result": {"revisions": [{**beta_key, "revision": 5}]}, "readiness": pause["readiness_while_paused"],
         "begin": operation("begin_checked_edit", primary, primary_selector, "pause-begin", {"success": True, "session_id": "pause-session"}, revision_keys=[beta_key]),
         "after_commit": operation("commit_checked_property", primary, primary_selector, "pause-commit", pause["after"]["commit"], session_id="pause-session", object_name="SecondBox", property_name="BetaValue", value_type="integer", value="55"),
         "value_after_resume": 55,
@@ -2692,7 +2777,7 @@ def test_completed_evidence_rejects_bound_cycle_and_conflict_corruptions(defect:
     if defect == "document":
         cycle.pop("document")
     elif defect == "revisions":
-        cycle["revisions_before"][0]["key"] = "ObjectNonsense"
+        cycle["revisions_before"][0]["kind"] = "ObjectNonsense"
     elif defect == "readiness":
         cycle["readiness"]["documents"][0]["document"] = "Other"
     elif defect == "begin":
@@ -2857,10 +2942,10 @@ def _advance_exact_revision_targets(
     """Advance one canonical key in both observations with a clear fixture error."""
 
     for observation in (cycle["revisions_after"], mutation["revisions_after"]):
-        targets = [item for item in observation if item.get("key") == key]
+        targets = [item for item in observation if _fixture_revision_key(item) == key]
         assert len(targets) == 1, (
             f"fixture must contain canonical revision key {key!r} exactly once; "
-            f"found {[item.get('key') for item in observation]!r}"
+            f"found {[_fixture_revision_key(item) for item in observation]!r}"
         )
         targets[0]["revision"] += 1
 
@@ -4151,7 +4236,7 @@ def _corrupt_final13_boundary(evidence: dict[str, Any], defect: str) -> None:
         evidence["pause_resume"]["readiness_while_paused"]["documents"][0]["document"] = evidence["cycles"][1]["document"]
     elif defect == "paused_unrelated_key":
         read = evidence["pause_resume"]["stage_operations"]["paused_read"]
-        read["result"]["revisions"][0]["key"] = "ObjectProperty:Ghost:Width"
+        read["result"]["revisions"][0]["subject"] = "Ghost"
         evidence["pause_resume"]["stage_operations"]["paused_read_result"] = read["result"]
     else:
         raise AssertionError(defect)
@@ -4215,15 +4300,16 @@ def _corrupt_personal_revision_vector(
 
     def corrupt(revisions: list[dict[str, Any]]) -> None:
         if defect == "unrelated":
-            revisions[0]["key"] = "ObjectProperty:Ghost:Width"
+            revisions[0]["subject"] = "Ghost"
         elif defect == "missing":
             revisions.pop()
         elif defect == "duplicate":
-            revisions[-1]["key"] = revisions[-2]["key"]
+            revision = revisions[-1]["revision"]
+            revisions[-1] = {**revisions[-2], "revision": revision}
         elif defect == "reordered":
             revisions[0], revisions[1] = revisions[1], revisions[0]
         elif defect == "malformed":
-            revisions[0] = {"key": ALPHA_PROPERTY_KEY}
+            revisions[0] = {"kind": "ObjectModel", "subject": BETA_OBJECT}
         elif defect == "boolean":
             revisions[0]["revision"] = True
         else:
