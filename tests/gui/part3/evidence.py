@@ -160,6 +160,27 @@ def _file_change_state_is_clean(state: object) -> bool:
     )
 
 
+def _file_change_state_is_exact(
+    state: object, *, canonical_path: str, pending_changes: list[str]
+) -> bool:
+    expected_state = "clean" if not pending_changes else "modified"
+    return (
+        isinstance(state, dict)
+        and set(state) == {
+            "state",
+            "canonical_path",
+            "has_pending_file_changes",
+            "last_canonical_save_failed",
+            "pending_changes",
+        }
+        and state.get("state") == expected_state
+        and state.get("canonical_path") == canonical_path
+        and state.get("pending_changes") == pending_changes
+        and state.get("has_pending_file_changes") is bool(pending_changes)
+        and state.get("last_canonical_save_failed") is False
+    )
+
+
 def _cleaning_save_operations_are_exact(
     operations: list[dict[str, Any]],
     known_documents: set[str],
@@ -293,9 +314,7 @@ def _cycle_mutation_is_exact(mutation: object, remote_actions: object, revisions
     if before_map is None or after_map is None:
         return False
     target_key = BETA_PROPERTY_KEY
-    unchanged_keys = (
-        ALPHA_PROPERTY_KEY, ALPHA_MODEL_KEY, BETA_MODEL_KEY,
-    )
+    unchanged_keys = (ALPHA_PROPERTY_KEY, ALPHA_MODEL_KEY)
     return (
         isinstance(begin.get("operation_id"), str)
         and bool(begin["operation_id"])
@@ -320,6 +339,7 @@ def _cycle_mutation_is_exact(mutation: object, remote_actions: object, revisions
         and revision_before == before_map[target_key]
         and revision_after == after_map[target_key]
         and after_map[target_key] == before_map[target_key] + 1
+        and after_map[BETA_MODEL_KEY] == before_map[BETA_MODEL_KEY] + 1
         and all(after_map[key] == before_map[key] for key in unchanged_keys)
         and revisions_before == mutation.get("revisions_before")
         and revisions_after == mutation.get("revisions_after")
@@ -1290,6 +1310,11 @@ def validate_completed_stage_evidence(
         mutation = cycle.get("typed_mutation")
         local_actions = cycle.get("local_actions")
         remote_actions = cycle.get("remote_actions")
+        canonical_path = (
+            before_state.get("canonical_path")
+            if isinstance(before_state, dict)
+            else None
+        )
         if (
             not isinstance(cycle_checks, dict)
             or cycle_checks.get("personal_view_state_inert") is not True
@@ -1300,17 +1325,19 @@ def validate_completed_stage_evidence(
             or not local_actions
             or not isinstance(remote_actions, list)
             or not remote_actions
-            or not isinstance(before_state, dict)
-            or before_state.get("pending_changes") != []
-            or before_state.get("has_pending_file_changes") is not False
-            or not isinstance(after_state, dict)
-            or after_state.get("pending_changes") != []
-            or after_state.get("has_pending_file_changes") is not False
-            or not isinstance(final_state, dict)
-            or set(final_state) != {"pending_changes", "has_pending_file_changes"}
-            or not isinstance(final_state.get("pending_changes"), list)
-            or type(final_state.get("has_pending_file_changes")) is not bool
-            or final_state["has_pending_file_changes"] != bool(final_state["pending_changes"])
+            or not isinstance(canonical_path, str)
+            or not canonical_path
+            or not _file_change_state_is_exact(
+                before_state, canonical_path=canonical_path, pending_changes=[]
+            )
+            or not _file_change_state_is_exact(
+                after_state, canonical_path=canonical_path, pending_changes=[]
+            )
+            or not _file_change_state_is_exact(
+                final_state,
+                canonical_path=canonical_path,
+                pending_changes=["model"],
+            )
             or cycle.get("document") != stage_documents[index % 2]
             or not isinstance(revisions_before, list)
             or not revisions_before

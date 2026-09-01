@@ -52,9 +52,14 @@ def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
     ]
 
 
-def _cycle_revision_vector(beta_revision: int) -> list[dict[str, int | str]]:
+def _cycle_revision_vector(
+    beta_revision: int, beta_model_revision: int
+) -> list[dict[str, int | str]]:
     return [
-        {"kind": "ObjectModel", "subject": BETA_OBJECT, "revision": 1},
+        {
+            "kind": "ObjectModel", "subject": BETA_OBJECT,
+            "revision": beta_model_revision,
+        },
         {"kind": "ObjectModel", "subject": ALPHA_OBJECT, "revision": 1},
         {
             "kind": "ObjectProperty", "subject": BETA_OBJECT,
@@ -608,6 +613,8 @@ def _stage_evidence(
     ]
     primary = f"Part3Stage{stage}Primarycafebabe"
     secondary = f"Part3Stage{stage}Secondarycafebabe"
+    canonical_path = root / f"{primary}.FCStd"
+    secondary_path = root / f"{secondary}.FCStd"
     snapshot = {
         "observed_document": primary,
         "identity_selector": {
@@ -616,7 +623,13 @@ def _stage_evidence(
             "lifecycle_epoch": 1,
             "document_name": primary,
         },
-        "file_change_state": {"pending_changes": [], "has_pending_file_changes": False},
+        "file_change_state": {
+            "state": "clean",
+            "canonical_path": str(canonical_path),
+            "pending_changes": [],
+            "has_pending_file_changes": False,
+            "last_canonical_save_failed": False,
+        },
         "semantic_revisions": _personal_revision_vector(10),
     }
     secondary_snapshot = {
@@ -626,6 +639,10 @@ def _stage_evidence(
             **snapshot["identity_selector"],
             "document_uid": "uid-secondary",
             "document_name": secondary,
+        },
+        "file_change_state": {
+            **snapshot["file_change_state"],
+            "canonical_path": str(secondary_path),
         },
         "semantic_revisions": _personal_revision_vector(20),
     }
@@ -661,9 +678,22 @@ def _stage_evidence(
         operation_id = f"local-personal-{index}"
         commit_id = f"remote-commit-{index}"
         commit_result = {"success": True, "committed": True, "value": 100 + index}
-        before_revisions = _cycle_revision_vector(index + 1)
-        after_revisions = _cycle_revision_vector(index + 2)
-        clean_state = {"pending_changes": [], "has_pending_file_changes": False}
+        before_revisions = _cycle_revision_vector(index + 1, index + 10)
+        after_revisions = _cycle_revision_vector(index + 2, index + 11)
+        cycle_path = canonical_path if document == primary else secondary_path
+        clean_state = {
+            "state": "clean",
+            "canonical_path": str(cycle_path),
+            "pending_changes": [],
+            "has_pending_file_changes": False,
+            "last_canonical_save_failed": False,
+        }
+        modified_state = {
+            **clean_state,
+            "state": "modified",
+            "pending_changes": ["model"],
+            "has_pending_file_changes": True,
+        }
         cycles.append(
             {
                 "index": index,
@@ -679,7 +709,7 @@ def _stage_evidence(
                 "revisions_after": after_revisions,
                 "file_change_state_before": dict(clean_state),
                 "file_change_state_after_personal_view": dict(clean_state),
-                "file_change_state_after": dict(clean_state),
+                "file_change_state_after": dict(modified_state),
                 "readiness": {"success": True, "documents": [{"document": document, "ready": True, "quarantined": False, "collaboration_poisoned": False}]},
                 "typed_mutation": {"operation_id": commit_id, "revision_before": index + 1, "revision_after": index + 2, "expected_value": 100 + index, "landed_value": 100 + index, "first_result": commit_result, "replay_result": commit_result, "revisions_before": before_revisions, "revisions_after": after_revisions},
                 "local_actions": [],
@@ -729,8 +759,6 @@ def _stage_evidence(
             )
             cycles[-1]["local_actions"].append({"operation_id": action_id, "action": action_name, "parameters": parameters, "ack_utc": "2026-08-25T00:00:00+00:00", "observed": observed, "personal_action_proof_index": proof_index})
             proofs.append({"index": proof_index, "operation_id": action_id, "action": action_name, "documents": documents, "before": {name: deepcopy(snapshots[name]) for name in documents}, "after": {name: deepcopy(snapshots[name]) for name in documents}, "left_document": document if action_name == "set_active_document" else None, "activated_document": parameters.get("document") if action_name == "set_active_document" else None, "clean_before": True, "clean_after": True, "semantic_revisions_unchanged": True, "passed": True})
-    canonical_path = root / f"{primary}.FCStd"
-    secondary_path = root / f"{secondary}.FCStd"
     copy_paths = [
         root / "copies" / f"{primary}-copy-{index}.FCStd"
         for index in range(definition.save_cycles)
@@ -1905,6 +1933,12 @@ def _corrupt_final6_cycle(evidence: dict[str, Any], defect: str) -> None:
         cycle["checks"]["camera_changed"] = False
     elif defect == "file_state":
         cycle["file_change_state_after"] = {"pending_changes": [], "has_pending_file_changes": True}
+    elif defect == "file_state_extra":
+        cycle["file_change_state_after"]["unexpected"] = True
+    elif defect == "file_state_path":
+        cycle["file_change_state_after"]["canonical_path"] = "other.FCStd"
+    elif defect == "file_state_label":
+        cycle["file_change_state_after"]["state"] = "clean"
     elif defect == "value":
         cycle["typed_mutation"]["expected_value"] = 999
     elif defect == "operation":
@@ -2010,7 +2044,14 @@ def test_packets_reject_literal_document_identity_substitution(
         validate_packet(packet)
 
 
-@pytest.mark.parametrize("defect", ["readiness", "observed", "ack", "camera", "file_state", "value", "operation", "schedule"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "readiness", "observed", "ack", "camera", "file_state",
+        "file_state_extra", "file_state_path", "file_state_label",
+        "value", "operation", "schedule",
+    ],
+)
 def test_completed_evidence_rejects_final6_exact_cycle_mutations(defect: str) -> None:
     from tests.gui.part3.evidence import validate_completed_stage_evidence
 
@@ -2022,7 +2063,14 @@ def test_completed_evidence_rejects_final6_exact_cycle_mutations(defect: str) ->
 
 @pytest.mark.parametrize("platform", ["windows", "linux-docker"])
 @pytest.mark.parametrize("stage", ["a", "b"])
-@pytest.mark.parametrize("defect", ["readiness", "observed", "ack", "camera", "file_state", "value", "operation", "schedule"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "readiness", "observed", "ack", "camera", "file_state",
+        "file_state_extra", "file_state_path", "file_state_label",
+        "value", "operation", "schedule",
+    ],
+)
 def test_packets_reject_final6_exact_cycle_mutations(
     tmp_path: Path, platform: str, stage: str, defect: str
 ) -> None:
@@ -2937,9 +2985,9 @@ def test_packets_reject_remote_identity_reused_by_local_stream(
 
 
 def _advance_exact_revision_targets(
-    cycle: dict[str, Any], mutation: dict[str, Any], key: str
+    cycle: dict[str, Any], mutation: dict[str, Any], key: str, *, delta: int = 1
 ) -> None:
-    """Advance one canonical key in both observations with a clear fixture error."""
+    """Shift one canonical key in both observations with a clear fixture error."""
 
     for observation in (cycle["revisions_after"], mutation["revisions_after"]):
         targets = [item for item in observation if _fixture_revision_key(item) == key]
@@ -2947,7 +2995,7 @@ def _advance_exact_revision_targets(
             f"fixture must contain canonical revision key {key!r} exactly once; "
             f"found {[_fixture_revision_key(item) for item in observation]!r}"
         )
-        targets[0]["revision"] += 1
+        targets[0]["revision"] += delta
 
 
 @pytest.mark.parametrize("stage", ["A", "B"])
@@ -2955,6 +3003,7 @@ def _advance_exact_revision_targets(
     "defect",
     [
         "scalar_beta_mismatch",
+        "missing_beta_model_advance",
         ALPHA_PROPERTY_KEY,
         ALPHA_MODEL_KEY,
         BETA_MODEL_KEY,
@@ -2973,6 +3022,10 @@ def test_completed_evidence_rejects_unbound_or_advanced_cycle_revisions(
     if defect == "scalar_beta_mismatch":
         mutation["revision_before"] = 100
         mutation["revision_after"] = 101
+    elif defect == "missing_beta_model_advance":
+        _advance_exact_revision_targets(
+            cycle, mutation, BETA_MODEL_KEY, delta=-1
+        )
     else:
         _advance_exact_revision_targets(cycle, mutation, defect)
     with pytest.raises(ValueError):
@@ -2985,6 +3038,7 @@ def test_completed_evidence_rejects_unbound_or_advanced_cycle_revisions(
     "defect",
     [
         "scalar_beta_mismatch",
+        "missing_beta_model_advance",
         ALPHA_PROPERTY_KEY,
         ALPHA_MODEL_KEY,
         BETA_MODEL_KEY,
@@ -3007,6 +3061,10 @@ def test_packets_reject_unbound_or_advanced_cycle_revisions(
     if defect == "scalar_beta_mismatch":
         mutation["revision_before"] = 100
         mutation["revision_after"] = 101
+    elif defect == "missing_beta_model_advance":
+        _advance_exact_revision_targets(
+            cycle, mutation, BETA_MODEL_KEY, delta=-1
+        )
     else:
         _advance_exact_revision_targets(cycle, mutation, defect)
     evidence_path = Path(packet["artifacts"]["evidence"]["path"])
