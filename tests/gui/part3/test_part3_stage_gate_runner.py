@@ -42,6 +42,52 @@ def _personal_revision_vector(base_revision: int) -> list[dict[str, int | str]]:
     ]
 
 
+def test_save_copy_truthfulness_allows_fresh_fcstd_container_bytes(tmp_path: Path) -> None:
+    from tests.gui.part3.stress_coordinator import _save_copy_is_truthful
+
+    destination = tmp_path / "copy.FCStd"
+    destination.write_bytes(b"fresh-copy-container")
+    copy_sha256 = hashlib.sha256(destination.read_bytes()).hexdigest()
+    result = {
+        "saved": True,
+        "save_disposition": "copy_written",
+        "file_written": True,
+        "target_path": str(destination),
+        "file_evidence": {
+            "canonical_path": str(destination),
+            "sha256": copy_sha256,
+            "archive": {"ok": True},
+        },
+    }
+
+    assert _save_copy_is_truthful(
+        result,
+        destination=destination,
+        canonical_sha256_before="a" * 64,
+        canonical_sha256_after="a" * 64,
+        copy_sha256=copy_sha256,
+        readable_archive=True,
+    )
+    corrupted = deepcopy(result)
+    corrupted["file_evidence"]["sha256"] = "b" * 64
+    assert not _save_copy_is_truthful(
+        corrupted,
+        destination=destination,
+        canonical_sha256_before="a" * 64,
+        canonical_sha256_after="a" * 64,
+        copy_sha256=copy_sha256,
+        readable_archive=True,
+    )
+    assert not _save_copy_is_truthful(
+        result,
+        destination=destination,
+        canonical_sha256_before="a" * 64,
+        canonical_sha256_after="c" * 64,
+        copy_sha256=copy_sha256,
+        readable_archive=True,
+    )
+
+
 def test_luna_snapshot_contract_requires_all_candidates_and_two_binaries() -> None:
     from tests.gui.part3.stage_gate_runner import LUNA_SNAPSHOT_CANDIDATE_PATHS
 
@@ -462,10 +508,15 @@ def _stage_evidence(
     )
 
     definition = resolve_executable_stage(stage)
-    fixture_binary = REPO_ROOT / "tests" / "gui" / "part3" / "stage_gate_runner.py"
-    fixture_fingerprint = file_fingerprint(fixture_binary)
     fixture_git = git_state(REPO_ROOT)
     fixture_history = _commit_history(REPO_ROOT)
+    root = documents_root or (Path(_FIXTURE_DOCUMENTS.name) / stage.lower())
+    fixture_binary = root / "runtime" / "FreeCAD.exe"
+    fixture_binary.parent.mkdir(parents=True, exist_ok=True)
+    fixture_binary.write_bytes(b"synthetic stage fixture binary\n")
+    fresh_epoch = max(epoch for _, epoch in fixture_history) + 1
+    os.utime(fixture_binary, (fresh_epoch, fresh_epoch))
+    fixture_fingerprint = file_fingerprint(fixture_binary)
     fixture_missing = [
         commit for commit, epoch in fixture_history if epoch > fixture_binary.stat().st_mtime
     ]
@@ -593,7 +644,6 @@ def _stage_evidence(
             )
             cycles[-1]["local_actions"].append({"operation_id": action_id, "action": action_name, "parameters": parameters, "ack_utc": "2026-08-25T00:00:00+00:00", "observed": observed, "personal_action_proof_index": proof_index})
             proofs.append({"index": proof_index, "operation_id": action_id, "action": action_name, "documents": documents, "before": {name: deepcopy(snapshots[name]) for name in documents}, "after": {name: deepcopy(snapshots[name]) for name in documents}, "left_document": document if action_name == "set_active_document" else None, "activated_document": parameters.get("document") if action_name == "set_active_document" else None, "clean_before": True, "clean_after": True, "semantic_revisions_unchanged": True, "passed": True})
-    root = documents_root or (Path(_FIXTURE_DOCUMENTS.name) / stage.lower())
     canonical_path = root / f"{primary}.FCStd"
     secondary_path = root / f"{secondary}.FCStd"
     copy_paths = [

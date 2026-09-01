@@ -23,6 +23,7 @@ TEST_APP_CMAKE = "tests/src/App/CMakeLists.txt"
 MANAGER_TEST = "tests/src/App/GeometryJobManager.cpp"
 BACKEND_TEST = "tests/src/App/GeometryProcessBackend.cpp"
 TEST_WORKER_SOURCE = "tests/src/App/GeometryProcessTestWorker.cpp"
+GENERIC_RECOMPUTE_SOURCE = "src/App/GenericIsolatedRecompute.cpp"
 
 BOUNDARY_FILES = (
     MANAGER_HEADER,
@@ -1184,12 +1185,14 @@ def test_production_and_native_process_fixtures_are_wired() -> None:
         "add_dependencies(App_tests_runGeometryProcessTestWorkerFreeCADMainCmd)",
         'GEOMETRY_PROCESS_TEST_WORKER_PATH="$<TARGET_FILE:GeometryProcessTestWorker>"',
         'GEOMETRY_INSTALLED_WORKER_PATH="$<TARGET_FILE:FreeCADMainCmd>"',
+        'if(NOTWIN32)add_custom_command(TARGETApp_tests_runPOST_BUILDCOMMAND${CMAKE_COMMAND}-Ecopy_if_different"$<TARGET_FILE:FreeCADMainCmd>""$<TARGET_FILE_DIR:App_tests_run>/$<TARGET_FILE_NAME:FreeCADMainCmd>")endif()',
     ):
         assert fragment in test_cmake, f"missing native fixture wiring: {fragment}"
 
     backend_tests = _read_source(REPO_ROOT / BACKEND_TEST)
     for test_name in (
         "installedFreeCADCmdRoundTripsAValidatedProbe",
+        "installedWorkerDoesNotLoadTheLiveGuiUserProfile",
         "janitorRemovesOnlyDeadOwnedWorkspaces",
         "classifiesCrashOomTimeoutAndLostHeartbeat",
         "cancellationTerminatesTheCompleteWorkerTree",
@@ -1213,6 +1216,21 @@ def test_process_boundary_contains_no_occ_or_synchronous_geometry_fallback() -> 
     sources = {path: _read_source(REPO_ROOT / path) for path in BOUNDARY_FILES}
     violations = _execution_boundary_violations(sources)
     assert not violations, "process boundary execution violations:\n" + "\n".join(violations)
+
+
+def test_part_shape_recompute_compatibility_is_narrow_and_non_abi() -> None:
+    generic = _suppress_cpp_comments(
+        _read_source(REPO_ROOT / GENERIC_RECOMPUTE_SOURCE)
+    )
+    body = _compact(
+        _body_for(generic, "isPartFeatureShapeRecomputeOutput", raw=True)
+    )
+    assert 'Base::Type::fromName("Part::Feature")' in body
+    assert "object.getTypeId().isDerivedFrom(partFeatureType)" in body
+    assert 'object.getPropertyByName("Shape")==&property' in body
+
+    document_object = _read_source(REPO_ROOT / "src/App/DocumentObject.h")
+    assert "isRecomputeOutputProperty" not in document_object
 
 
 def test_executable_gate_rejects_bare_path_lookup_program() -> None:

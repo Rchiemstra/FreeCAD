@@ -154,10 +154,13 @@ TEST_F(GenericIsolatedRecomputeTest,
     ASSERT_NE(operation, nullptr);
     EXPECT_TRUE(operation->recomputeOutcomeSucceeded());
     EXPECT_TRUE(operation->recomputeOutcomeDiagnostic().empty());
+    EXPECT_FALSE(operation->checkPostcondition(*_document).satisfied);
     operation->apply(*_document);
     EXPECT_EQ(feature->Value.getValue(), App::decodeColumn("C"));
     const auto postcondition = operation->checkPostcondition(*_document);
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    feature->Value.setValue(feature->Value.getValue() + 1);
+    EXPECT_FALSE(operation->checkPostcondition(*_document).satisfied);
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

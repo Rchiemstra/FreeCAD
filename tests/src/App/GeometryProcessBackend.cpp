@@ -88,6 +88,49 @@ public:
     std::filesystem::path path;
 };
 
+class ScopedEnvironment
+{
+public:
+    ScopedEnvironment(std::string nameValue, const std::string& value)
+        : name(std::move(nameValue))
+    {
+        if (const char* current = std::getenv(name.c_str())) {
+            previous = current;
+        }
+        set(value);
+    }
+
+    ~ScopedEnvironment()
+    {
+        if (previous) {
+            set(*previous);
+        }
+        else {
+#ifdef _WIN32
+            static_cast<void>(_putenv_s(name.c_str(), ""));
+#else
+            static_cast<void>(unsetenv(name.c_str()));
+#endif
+        }
+    }
+
+    ScopedEnvironment(const ScopedEnvironment&) = delete;
+    ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
+
+private:
+    void set(const std::string& value) const
+    {
+#ifdef _WIN32
+        EXPECT_EQ(_putenv_s(name.c_str(), value.c_str()), 0);
+#else
+        EXPECT_EQ(setenv(name.c_str(), value.c_str(), 1), 0);
+#endif
+    }
+
+    std::string name;
+    std::optional<std::string> previous;
+};
+
 GeometryJobRequest request(const std::string& operation,
                            const std::chrono::milliseconds lifetime = 10s)
 {
@@ -203,6 +246,22 @@ bool processIsAlive(const unsigned long processId)
     CloseHandle(process);
     return alive;
 #else
+# ifdef __linux__
+    // kill(pid, 0) also succeeds for a terminated zombie awaiting adoption or
+    // reaping by the container's PID 1.  Such a process cannot execute and is
+    // not a surviving worker; distinguish it from a live descendant.
+    std::ifstream stat("/proc/" + std::to_string(processId) + "/stat");
+    std::string record;
+    if (stat && std::getline(stat, record)) {
+        const auto commandEnd = record.rfind(") ");
+        if (commandEnd != std::string::npos && commandEnd + 2 < record.size()) {
+            const char state = record[commandEnd + 2];
+            if (state == 'Z' || state == 'X') {
+                return false;
+            }
+        }
+    }
+# endif
     return ::kill(static_cast<pid_t>(processId), 0) == 0 || errno == EPERM;
 #endif
 }
@@ -271,6 +330,65 @@ TEST(GeometryProcessBackendTest, installedFreeCADCmdRoundTripsAValidatedProbe)
     EXPECT_EQ(decoded.archive->sections.front().bytes,
               (std::vector<std::uint8_t> {1, 3, 3, 7}));
     EXPECT_TRUE(waitForNoJobDirectories(unicodeRoot));
+}
+
+TEST(GeometryProcessBackendTest, installedWorkerDoesNotLoadTheLiveGuiUserProfile)
+{
+    TemporaryDirectory directory;
+    const std::filesystem::path worker = installedWorkerPath();
+    ASSERT_TRUE(std::filesystem::is_regular_file(worker)) << worker;
+
+    const auto inheritedProfile = directory.path / "live-gui-profile";
+    const auto poison = inheritedProfile / "Mod" / "InheritedProfilePoison";
+    const auto marker = directory.path / "inherited-profile-loaded";
+    const auto pythonPath = inheritedProfile / "python-path";
+    const auto pythonMarker = directory.path / "inherited-python-path-loaded";
+    std::filesystem::create_directories(poison);
+    std::filesystem::create_directories(pythonPath);
+    {
+        std::ofstream init(poison / "Init.py", std::ios::out | std::ios::trunc);
+        init << "from pathlib import Path\n"
+             << "Path('" << marker.generic_string() << "').write_text('loaded')\n";
+        ASSERT_TRUE(init);
+    }
+    {
+        std::ofstream sitecustomize(
+            pythonPath / "sitecustomize.py", std::ios::out | std::ios::trunc);
+        sitecustomize << "from pathlib import Path\n"
+                      << "Path('" << pythonMarker.generic_string()
+                      << "').write_text('loaded')\n";
+        ASSERT_TRUE(sitecustomize);
+    }
+
+    const auto profile = inheritedProfile.string();
+    ScopedEnvironment home("HOME", profile);
+    ScopedEnvironment userProfile("USERPROFILE", profile);
+    ScopedEnvironment appData("APPDATA", profile);
+    ScopedEnvironment localAppData("LOCALAPPDATA", profile);
+    ScopedEnvironment xdgConfig("XDG_CONFIG_HOME", profile);
+    ScopedEnvironment xdgData("XDG_DATA_HOME", profile);
+    ScopedEnvironment xdgCache("XDG_CACHE_HOME", profile);
+    ScopedEnvironment freecadHome("FREECAD_USER_HOME", profile);
+    ScopedEnvironment freecadData("FREECAD_USER_DATA", profile);
+    ScopedEnvironment freecadTemp("FREECAD_USER_TEMP", profile);
+    ScopedEnvironment pythonHome("PYTHONHOME", profile);
+    ScopedEnvironment pythonPathEnvironment("PYTHONPATH", pythonPath.string());
+    ScopedEnvironment pythonStartup("PYTHONSTARTUP", (pythonPath / "sitecustomize.py").string());
+    ScopedEnvironment pythonInspect("PYTHONINSPECT", "1");
+    ScopedEnvironment controlToken("PART3_LOCAL_CONTROL_TOKEN", "must-not-reach-worker");
+    ScopedEnvironment controlEndpoint("PART3_CONTROL_ENDPOINT_DIR", profile);
+
+    GeometryJobManager manager(1, 2);
+    const auto root = directory.path / "geometry-jobs";
+    std::filesystem::create_directories(root);
+    Internal::GeometryProcessBackendTestAccess::start(manager, worker, root);
+    const auto id = manager.submit(request("FreeCAD.Internal.GeometryProbe"), archive());
+    const auto status = waitForTerminal(manager, id);
+    ASSERT_TRUE(status.has_value());
+    ASSERT_EQ(status->state, GeometryJobState::Completed) << status->diagnostic;
+    EXPECT_FALSE(std::filesystem::exists(marker));
+    EXPECT_FALSE(std::filesystem::exists(pythonMarker));
+    EXPECT_TRUE(waitForNoJobDirectories(root));
 }
 
 TEST(GeometryProcessBackendTest, janitorRemovesOnlyDeadOwnedWorkspaces)

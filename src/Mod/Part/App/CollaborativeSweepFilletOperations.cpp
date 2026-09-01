@@ -420,6 +420,7 @@ public:
 
     void apply(App::Document& document) const override
     {
+        _appliedDigest.reset();
         std::vector<const Part::Feature*> inputs;
         inputs.reserve(_inputs.size());
         for (const auto& reference : _inputs) {
@@ -435,6 +436,11 @@ public:
             throw std::runtime_error("Part collaborative result application copy failed");
         }
         result.Shape.setValue(Part::TopoShape(copy.Shape()));
+        // The detached worker result is the authoritative value for this exact
+        // Part::Feature.  Leaving it touched makes the commit coordinator run a
+        // redundant live recompute, which can rewrite valid fillet topology.
+        result.purgeError();
+        result.purgeTouched();
         _appliedDigest =
             Part::Internal::collaborativeGeometryShapeDigest(result.Shape.getValue());
     }

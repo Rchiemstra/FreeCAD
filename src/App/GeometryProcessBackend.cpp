@@ -187,7 +187,7 @@ void runStartupJanitor(const GeometryProcessBackendOptions& options)
 }
 
 std::filesystem::path createWorkspace(const GeometryProcessBackendOptions& options,
-                                      const GeometryJobId id)
+                                       const GeometryJobId id)
 {
     for (int attempt = 0; attempt < 32; ++attempt) {
         const auto nonce = QRandomGenerator::system()->generate64();
@@ -221,6 +221,84 @@ std::filesystem::path createWorkspace(const GeometryProcessBackendOptions& optio
         return path;
     }
     throw std::runtime_error("cannot allocate unique isolated geometry workspace");
+}
+
+struct WorkerProfile
+{
+    std::filesystem::path home;
+    std::filesystem::path config;
+    std::filesystem::path data;
+    std::filesystem::path cache;
+    std::filesystem::path temporary;
+};
+
+WorkerProfile createWorkerProfile(const std::filesystem::path& workspace)
+{
+    WorkerProfile profile;
+    profile.home = workspace / "profile";
+    profile.config = profile.home / "config";
+    profile.data = profile.home / "data";
+    profile.cache = profile.home / "cache";
+    profile.temporary = profile.home / "temp";
+    for (const auto& path : {
+             profile.home,
+             profile.config,
+             profile.data,
+             profile.cache,
+             profile.temporary}) {
+        std::error_code error;
+        std::filesystem::create_directories(path, error);
+        if (error || !std::filesystem::is_directory(path, error)) {
+            throw std::runtime_error("cannot create isolated geometry worker profile");
+        }
+#ifndef Q_OS_WIN
+        std::filesystem::permissions(path,
+                                     std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace,
+                                     error);
+        if (error) {
+            throw std::runtime_error("cannot secure isolated geometry worker profile");
+        }
+#endif
+    }
+    return profile;
+}
+
+void isolateWorkerProfile(QProcessEnvironment& environment, const WorkerProfile& profile)
+{
+    const auto home = toQStringPath(profile.home);
+    const auto config = toQStringPath(profile.config);
+    const auto data = toQStringPath(profile.data);
+    const auto cache = toQStringPath(profile.cache);
+    const auto temporary = toQStringPath(profile.temporary);
+
+    // A trusted geometry worker must not load the live GUI's user Mods,
+    // preferences, Python user site, RPC credentials, or cache locks. Apart
+    // from being an isolation breach, sharing those locations lets GUI-only
+    // startup hooks delay FreeCADCmd before its first heartbeat. Keep the
+    // platform runtime environment (PATH/loader paths) but give every job a
+    // private profile inside its already owner-only workspace.
+    environment.insert("HOME", home);
+    environment.insert("USERPROFILE", home);
+    environment.insert("APPDATA", data);
+    environment.insert("LOCALAPPDATA", data);
+    environment.insert("XDG_CONFIG_HOME", config);
+    environment.insert("XDG_DATA_HOME", data);
+    environment.insert("XDG_CACHE_HOME", cache);
+    environment.insert("TMPDIR", temporary);
+    environment.insert("TMP", temporary);
+    environment.insert("TEMP", temporary);
+    environment.insert("FREECAD_USER_HOME", data);
+    environment.insert("FREECAD_USER_DATA", data);
+    environment.insert("FREECAD_USER_TEMP", temporary);
+    environment.insert("PYTHONUSERBASE", data);
+    environment.insert("PYTHONNOUSERSITE", "1");
+    environment.remove("PYTHONHOME");
+    environment.remove("PYTHONPATH");
+    environment.remove("PYTHONSTARTUP");
+    environment.remove("PYTHONINSPECT");
+    environment.remove("PART3_LOCAL_CONTROL_TOKEN");
+    environment.remove("PART3_CONTROL_ENDPOINT_DIR");
 }
 
 class WorkspaceCleanup
@@ -498,6 +576,10 @@ private:
                                               "trusted FreeCADCmd worker is missing"});
             return;
         }
+        // Fingerprinting a cold installed binary can exceed the public progress
+        // visibility bound on slower filesystems.  Publish preparation before
+        // doing that I/O; the worker heartbeat remains the liveness authority.
+        publishProgress(dispatchPacket.id, {0.01, "worker-preparing"});
         const std::string buildFingerprint =
             Internal::geometryWorkerBuildFingerprint(options.executable);
         if (buildFingerprint.empty()) {
@@ -510,6 +592,7 @@ private:
         }
         const auto workspace = createWorkspace(options, dispatchPacket.id);
         WorkspaceCleanup cleanup(workspace);
+        const auto workerProfile = createWorkerProfile(workspace);
         const auto requestPath = workspace / "request.fcg";
         const auto workerResultPath = workspace / "result.fcg";
         const auto heartbeatPath = workspace / "heartbeat";
@@ -547,6 +630,7 @@ private:
         process.setStandardErrorFile(toQStringPath(stderrPath),
                                      QIODeviceBase::Truncate);
         auto environment = QProcessEnvironment::systemEnvironment();
+        isolateWorkerProfile(environment, workerProfile);
         environment.insert(WorkerProtocolEnvironment, WorkerProtocolValue);
         environment.insert(RequestEnvironment, toQStringPath(requestPath));
         environment.insert(ResultEnvironment,

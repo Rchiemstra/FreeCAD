@@ -247,12 +247,26 @@ std::vector<std::pair<std::string, App::Property*>> namedProperties(
     return result;
 }
 
+bool isPartFeatureShapeRecomputeOutput(const App::DocumentObject& object,
+                                       const App::Property& property)
+{
+    const Base::Type partFeatureType = Base::Type::fromName("Part::Feature");
+    return !partFeatureType.isBad()
+        && object.getTypeId().isDerivedFrom(partFeatureType)
+        && object.getPropertyByName("Shape") == &property;
+}
+
 bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
                                const App::Property& property)
 {
+    // Part::Feature::execute() touches Shape even for the plain assignable
+    // feature, while legacy edit/touch behavior requires Shape to remain a
+    // normal (non-Prop_Output) property.  Keep this compatibility contract
+    // narrow: exact registered Part ancestry plus the built-in Shape member.
     return object.isOutputProperty(&property)
         || static_cast<bool>(
-            object.getExpression(App::ObjectIdentifier(property)).expression);
+            object.getExpression(App::ObjectIdentifier(property)).expression)
+        || isPartFeatureShapeRecomputeOutput(object, property);
 }
 
 ObjectManifest manifestFor(const App::DocumentObject& object)
@@ -595,6 +609,8 @@ public:
                 document, *target, *_failureDiagnostic);
             return;
         }
+        _applied = false;
+        _appliedOutputs.clear();
         for (const auto& output : _outputs) {
             auto* property = target->getPropertyByName(output.name.c_str());
             if (!property || property->getTypeId().getName() != output.type
@@ -608,13 +624,32 @@ public:
         }
         target->purgeError();
         target->purgeTouched();
+        _appliedOutputs.reserve(_outputs.size());
+        for (const auto& output : _outputs) {
+            auto* property = target->getPropertyByName(output.name.c_str());
+            if (!property) {
+                throw std::runtime_error(
+                    "generic recompute could not snapshot its applied output");
+            }
+            std::unique_ptr<App::Property> snapshot(
+                static_cast<App::Property*>(property->getTypeId().createInstance()));
+            if (!snapshot) {
+                throw std::runtime_error(
+                    "generic recompute could not create its applied-output snapshot");
+            }
+            // Keep a semantic property snapshot. Persistence archives include
+            // container timestamps and are not stable postcondition values.
+            snapshot->Paste(*property);
+            _appliedOutputs.push_back(std::move(snapshot));
+        }
+        _applied = true;
     }
 
     App::CollaborativePostconditionResult checkPostcondition(
         const App::Document& document) const override
     {
         try {
-            const auto* target = requireTarget(document);
+            auto* target = requireTarget(document);
             if (_failureDiagnostic) {
                 const bool failureStateApplied =
                     !target->isValid() && target->mustRecompute();
@@ -623,9 +658,14 @@ public:
                             ? std::string {}
                             : "generic recompute failure state was not applied"};
             }
-            for (const auto& output : _outputs) {
-                const auto* property = target->getPropertyByName(output.name.c_str());
-                if (!property || !sameSerializedProperty(*property, *output.value)) {
+            if (!_applied || _appliedOutputs.size() != _outputs.size()) {
+                return {false, "generic recompute output was not applied"};
+            }
+            for (std::size_t index = 0; index < _outputs.size(); ++index) {
+                const auto& output = _outputs[index];
+                auto* property = target->getPropertyByName(output.name.c_str());
+                if (!property || property->getTypeId().getName() != output.type
+                    || !sameSerializedProperty(*property, *_appliedOutputs[index])) {
                     return {false, "generic recompute output postcondition failed"};
                 }
             }
@@ -665,6 +705,8 @@ private:
     std::string _stableIdentity;
     std::vector<DecodedOutput> _outputs;
     std::optional<std::string> _failureDiagnostic;
+    mutable bool _applied {false};
+    mutable std::vector<std::unique_ptr<App::Property>> _appliedOutputs;
 };
 
 std::unique_ptr<const App::CollaborativeOperation> decodeResult(

@@ -141,6 +141,28 @@ TEST_F(PropertyTopoShapeTest, testPropertyPartShapeTopoDSShape)
     EXPECT_EQ(topoShapeOut.getElementMapSize(), 0);  // We passed in a TopoDS_Shape so lost the map
 }
 
+TEST_F(PropertyTopoShapeTest, testPropertyFilletEdgesSemanticEquality)
+{
+    PropertyFilletEdges property;
+    property.setValues({FilletElement(1, 0.25, 0.25), FilletElement(3, 0.5, 0.75)});
+
+    PropertyFilletEdges same;
+    same.setValues(property.getValues());
+    EXPECT_TRUE(property.isSame(property));
+    EXPECT_TRUE(property.isSame(same));
+
+    PropertyFilletEdges changedRadius;
+    changedRadius.setValues({FilletElement(1, 0.25, 0.5), FilletElement(3, 0.5, 0.75)});
+    EXPECT_FALSE(property.isSame(changedRadius));
+
+    PropertyFilletEdges changedEdge;
+    changedEdge.setValues({FilletElement(2, 0.25, 0.25), FilletElement(3, 0.5, 0.75)});
+    EXPECT_FALSE(property.isSame(changedEdge));
+
+    PropertyPartShape differentType;
+    EXPECT_FALSE(property.isSame(differentType));
+}
+
 TEST_F(PropertyTopoShapeTest, testPropertyPartShapeGetPyObject)
 {
     // Arrange

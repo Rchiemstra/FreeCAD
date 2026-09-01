@@ -244,6 +244,15 @@ unsigned int PropertyPartShape::getMemSize() const
     return _Shape.getMemSize();
 }
 
+bool PropertyPartShape::isSame(const App::Property& other) const
+{
+    if (&other == this) {
+        return true;
+    }
+    const auto* property = freecad_cast<const PropertyPartShape*>(&other);
+    return property && _Ver == property->_Ver && _Shape.isSame(property->_Shape);
+}
+
 void PropertyPartShape::getPaths(std::vector<App::ObjectIdentifier>& paths) const
 {
     paths.push_back(
@@ -1043,6 +1052,15 @@ void PropertyFilletEdges::Paste(const Property& from)
     aboutToSetValue();
     _lValueList = dynamic_cast<const PropertyFilletEdges&>(from)._lValueList;
     hasSetValue();
+}
+
+bool PropertyFilletEdges::isSame(const App::Property& other) const
+{
+    if (&other == this) {
+        return true;
+    }
+    const auto* property = freecad_cast<const PropertyFilletEdges*>(&other);
+    return property && _lValueList == property->_lValueList;
 }
 
 // -------------------------------------------------------------------------
