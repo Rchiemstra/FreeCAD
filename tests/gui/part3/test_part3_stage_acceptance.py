@@ -775,6 +775,25 @@ def _record_personal_view_fixture_aggregate(payload: dict[str, Any]) -> None:
             record_check(payload, name, True, {"fixture": True})
 
 
+def test_required_scenario_passes_are_retained_by_the_live_check_gate(
+    tmp_path: Path,
+) -> None:
+    from tests.gui.part3 import stress_coordinator as module
+
+    context = SimpleNamespace(
+        payload=empty_evidence(stage="A"),
+        evidence_path=tmp_path / "evidence.json",
+    )
+    for name in module.RECORDED_SCENARIO_CHECKS:
+        module._require(context, name, True, {"observed": name})
+    module._require(context, "low_level_cycle_check", True, {"observed": True})
+
+    checks = context.payload["checks"]
+    assert {entry["name"] for entry in checks} == set(module.RECORDED_SCENARIO_CHECKS)
+    assert all(entry["passed"] is True for entry in checks)
+    assert context.payload["failed_checks"] == []
+
+
 def test_dirty_personal_view_fixture_fails_stage_aggregate() -> None:
     """GRK-P3-122 RED: equality of two dirty observations is not clean-state proof."""
 
