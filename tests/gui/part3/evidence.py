@@ -1044,6 +1044,17 @@ def _stage_scenario_operations_are_exact(
     secondary_selector = cycle_selector(secondary, secondary_snapshot_selector)
     if primary_selector is None or secondary_selector is None:
         return False
+    def recorded_local(operation: object) -> bool:
+        if not isinstance(operation, dict):
+            return False
+        operation_id = operation.get("operation_id")
+        return (
+            isinstance(operation_id, str)
+            and bool(operation_id)
+            and operation_id in operation_ids
+            and local_actions_by_id.get(operation_id) == operation
+        )
+
     def rpc(
         operation: object, *, method: str, selector: dict[str, Any], params: dict[str, Any],
         result: object, allow_no_operation_id: bool = False,
@@ -1066,13 +1077,9 @@ def _stage_scenario_operations_are_exact(
         expected = {"document": document, "object": object_name, "property": property_name, "value": value, "stage_prepared": True}
         if not isinstance(operation, dict) or operation.get("action") != action or operation.get("parameters") != expected:
             return False
-        operation_id = operation.get("operation_id")
         observed = operation.get("observed")
         if (
-            not isinstance(operation_id, str)
-            or not operation_id
-            or operation_id not in operation_ids
-            or local_actions_by_id.get(operation_id) != operation
+            not recorded_local(operation)
             or not isinstance(observed, dict)
         ):
             return False
@@ -1164,12 +1171,14 @@ def _stage_scenario_operations_are_exact(
         return False
     for key, paused in (("pause", True), ("resume", False)):
         operation = pause_ops.get(key)
-        if operation != pause_resume.get(key) or not isinstance(operation, dict) or operation.get("action") != f"{key}_writes" or operation.get("parameters") != {} or operation.get("observed") != {"paused": paused}:
+        if (
+            operation != pause_resume.get(key)
+            or not recorded_local(operation)
+            or operation.get("action") != f"{key}_writes"
+            or operation.get("parameters") != {}
+            or operation.get("observed") != {"paused": paused}
+        ):
             return False
-        operation_id = operation.get("operation_id")
-        if not isinstance(operation_id, str) or not operation_id or operation_id in operation_ids:
-            return False
-        operation_ids.add(operation_id)
     refusal = pause_ops.get("refused_write")
     expected_refusal_params = {"doc_name": primary, "obj_name": "SecondBox", "properties": {"Properties": {"BetaValue": 7}}}
     if not isinstance(refusal, dict) or refusal.get("method") != "edit_object" or refusal.get("parameters") != expected_refusal_params or refusal.get("result") != pause_resume.get("refused"):

@@ -1005,6 +1005,8 @@ def _stage_evidence(
         same_operations["local_edit"],
         independent_operations["local_edit"],
         history["stage_operations"]["local_edit"],
+        pause["stage_operations"]["pause"],
+        pause["stage_operations"]["resume"],
     ]
     for index, operation in enumerate(scenario_local_operations, start=1):
         operation["out_of_cycle_index"] = index
@@ -4192,6 +4194,15 @@ def _corrupt_scenario_operation_binding(evidence: dict[str, Any], defect: str) -
         ]
         for index, action in enumerate(evidence["out_of_cycle_local_actions"]):
             action["out_of_cycle_index"] = index
+    elif defect == "unrecorded_pause":
+        operation_id = pause["pause"]["operation_id"]
+        evidence["out_of_cycle_local_actions"] = [
+            action
+            for action in evidence["out_of_cycle_local_actions"]
+            if action["operation_id"] != operation_id
+        ]
+        for index, action in enumerate(evidence["out_of_cycle_local_actions"]):
+            action["out_of_cycle_index"] = index
     elif defect == "duplicate_session":
         session = same["begin"]["result"]["session_id"]
         independent["begin"]["result"]["session_id"] = session
@@ -4477,7 +4488,8 @@ def test_packets_reject_malformed_personal_revision_vectors(
 @pytest.mark.parametrize("defect", [
     "begin_dependency", "same_commit", "history_request", "pause_refusal",
     "paused_read", "role_swap", "selector_substitution", "duplicate_operation_id",
-    "unrecorded_local", "duplicate_session", "unproven_replay", "synthesized_pause",
+    "unrecorded_local", "unrecorded_pause", "duplicate_session", "unproven_replay",
+    "synthesized_pause",
 ])
 def test_completed_evidence_rejects_unbound_scenario_operations(defect: str, stage: str) -> None:
     from tests.gui.part3.evidence import validate_completed_stage_evidence
@@ -4493,7 +4505,7 @@ def test_completed_evidence_rejects_unbound_scenario_operations(defect: str, sta
 @pytest.mark.parametrize("defect", [
     "begin_dependency", "same_commit", "history_request", "pause_refusal", "paused_read",
     "role_swap", "selector_substitution", "duplicate_operation_id", "duplicate_session",
-    "unrecorded_local", "unproven_replay", "synthesized_pause",
+    "unrecorded_local", "unrecorded_pause", "unproven_replay", "synthesized_pause",
 ])
 def test_packets_reject_unbound_scenario_operations(
     tmp_path: Path, platform: str, stage: str, defect: str
