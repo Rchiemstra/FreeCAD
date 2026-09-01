@@ -915,15 +915,27 @@ def _persist(context: StageContext) -> None:
     write_evidence(context.evidence_path, context.payload)
 
 
+RECORDED_SCENARIO_CHECKS = frozenset({
+    "head_bound_undo_reverts_the_local_transaction",
+    "redo_stack_records_the_reverted_transaction",
+    "head_bound_redo_restores_the_reverted_transaction",
+    "remote_write_refused_while_paused",
+    "reads_remain_available_while_paused",
+    "next_typed_mutation_succeeds_after_resume",
+})
+
+
 def _require(
     context: StageContext,
     name: str,
     passed: bool,
     detail: Any = None,
 ) -> None:
-    """Record and raise on a failed acceptance check; passing checks stay in cycles."""
+    """Raise on failure and retain named scenario passes required by the packet."""
 
     if passed:
+        if name in RECORDED_SCENARIO_CHECKS:
+            record_check(context.payload, name, True, detail)
         return
     record_check(context.payload, name, False, detail)
     _persist(context)
