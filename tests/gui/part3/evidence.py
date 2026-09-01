@@ -976,6 +976,19 @@ def _stage_scenario_operations_are_exact(
     history = payload.get("history")
     if not all(isinstance(value, dict) for value in (conflicts, pause_resume, history)) or not isinstance(cycles, list):
         return False
+    out_of_cycle_actions = payload.get("out_of_cycle_local_actions")
+    if not isinstance(out_of_cycle_actions, list) or not all(
+        isinstance(action, dict) for action in out_of_cycle_actions
+    ):
+        return False
+    local_actions_by_id = {
+        action.get("operation_id"): action
+        for action in out_of_cycle_actions
+        if isinstance(action.get("operation_id"), str)
+        and bool(action["operation_id"])
+    }
+    if len(local_actions_by_id) != len(out_of_cycle_actions):
+        return False
 
     # Personal-action snapshots come from LocalUserDriver observations before
     # and after the GUI operation.  They are independent of the typed RPC
@@ -1055,11 +1068,16 @@ def _stage_scenario_operations_are_exact(
             return False
         operation_id = operation.get("operation_id")
         observed = operation.get("observed")
-        if not isinstance(operation_id, str) or not operation_id or operation_id in operation_ids or not isinstance(observed, dict):
+        if (
+            not isinstance(operation_id, str)
+            or not operation_id
+            or operation_id not in operation_ids
+            or local_actions_by_id.get(operation_id) != operation
+            or not isinstance(observed, dict)
+        ):
             return False
         if any(observed.get(key) != expected[key] for key in ("document", "object", "property", "value")):
             return False
-        operation_ids.add(operation_id)
         return True
 
     def begin(operations: dict[str, Any], *, selector: dict[str, Any], keys: list[dict[str, str]]) -> str | None:
