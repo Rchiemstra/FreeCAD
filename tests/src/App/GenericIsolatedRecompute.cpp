@@ -211,6 +211,43 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
+       touchedNoRecomputeStorageUsesLightweightBookkeepingUnlessForced)
+{
+    auto* storage = _document->addObject<App::DocumentObject>("NoRecomputeStorage");
+    ASSERT_NE(storage, nullptr);
+    auto* value = dynamic_cast<App::PropertyInteger*>(storage->addDynamicProperty(
+        "App::PropertyInteger", "Value", "Data", "", App::Prop_NoRecompute));
+    ASSERT_NE(value, nullptr);
+    value->setValue(17);
+    ASSERT_TRUE(storage->isTouched());
+    ASSERT_EQ(storage->mustRecompute(), 0);
+
+    auto preparation = prepare("NoRecomputeStorage");
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
+    EXPECT_EQ(preparation.isolatedTask, nullptr);
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_NE(operation, nullptr);
+    EXPECT_FALSE(operation->checkPostcondition(*_document).satisfied);
+    operation->apply(*_document);
+    const auto postcondition = operation->checkPostcondition(*_document);
+    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    EXPECT_EQ(value->getValue(), 17);
+    EXPECT_FALSE(storage->isTouched());
+    EXPECT_EQ(storage->mustRecompute(), 0);
+
+    value->setValue(18);
+    App::CollaborativeOperationIntent forcedIntent {
+        std::string(App::GenericIsolatedRecomputeOperationType),
+        {{"feature", "NoRecomputeStorage"}, {"force_execution", "1"}}};
+    auto forced = App::CollaborativeOperationRegistry::instance().prepare(
+        *_document, forcedIntent);
+    EXPECT_EQ(forced.policy, App::PreparationPolicy::IsolatedProcess);
+    EXPECT_NE(forced.isolatedTask, nullptr);
+    EXPECT_FALSE(forced.detachedTask);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
        malformedStatusAndEmptyFailureDiagnosticAreRejectedByTrustedDecoders)
 {
     auto* feature = _document->addObject<App::FeatureTestColumn>("Column");

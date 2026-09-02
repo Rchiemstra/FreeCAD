@@ -709,6 +709,65 @@ private:
     mutable std::vector<std::unique_ptr<App::Property>> _appliedOutputs;
 };
 
+class GenericRecomputeBookkeepingOperation final: public App::CollaborativeOperation
+{
+public:
+    GenericRecomputeBookkeepingOperation(std::string target,
+                                         std::string stableIdentity)
+        : _target(std::move(target))
+        , _stableIdentity(std::move(stableIdentity))
+    {}
+
+    std::string_view typeId() const noexcept override
+    {
+        return App::GenericIsolatedRecomputeOperationType;
+    }
+
+    void apply(App::Document& document) const override
+    {
+        auto* target = requireTarget(document);
+        if (target->mustRecompute()) {
+            throw std::runtime_error(
+                "generic recompute bookkeeping target became executable before commit");
+        }
+        _applied = false;
+        target->purgeTouched();
+        _applied = true;
+    }
+
+    App::CollaborativePostconditionResult checkPostcondition(
+        const App::Document& document) const override
+    {
+        try {
+            const auto* target = requireTarget(document);
+            const bool satisfied = _applied && !target->isTouched()
+                && target->mustRecompute() == 0;
+            return {satisfied,
+                    satisfied
+                        ? std::string {}
+                        : "generic recompute bookkeeping did not clear the touch state"};
+        }
+        catch (const std::exception& error) {
+            return {false, error.what()};
+        }
+    }
+
+private:
+    App::DocumentObject* requireTarget(const App::Document& document) const
+    {
+        auto* target = document.getObject(_target.c_str());
+        if (!target
+            || document.collaborationObjectIdentity(*target) != _stableIdentity) {
+            throw std::runtime_error("generic recompute bookkeeping target identity is stale");
+        }
+        return target;
+    }
+
+    std::string _target;
+    std::string _stableIdentity;
+    mutable bool _applied {false};
+};
+
 std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const App::GeometryArchive& archive,
     const std::string& target,
@@ -870,20 +929,69 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     const App::CollaborativeOperationIntent& intent)
 {
     const auto legacyMode = intent.arguments.find("legacy_revision_semantics");
-    if ((intent.arguments.size() != 1 && intent.arguments.size() != 2)
+    const auto forceMode = intent.arguments.find("force_execution");
+    if (intent.arguments.empty() || intent.arguments.size() > 3
         || !intent.arguments.contains("feature")
-        || (intent.arguments.size() == 2 && legacyMode == intent.arguments.end())) {
+        || std::ranges::any_of(intent.arguments, [](const auto& argument) {
+               return argument.first != "feature"
+                   && argument.first != "legacy_revision_semantics"
+                   && argument.first != "force_execution";
+           })) {
         throw std::invalid_argument(
-            "generic recompute requires a feature and optional revision mode");
+            "generic recompute requires a feature and optional revision/force modes");
     }
     const bool preserveLegacyRevisionSemantics = legacyMode != intent.arguments.end();
     if (preserveLegacyRevisionSemantics && legacyMode->second != "1") {
         throw std::invalid_argument("generic recompute revision mode is invalid");
     }
+    const bool forceExecution = forceMode != intent.arguments.end();
+    if (forceExecution && forceMode->second != "1") {
+        throw std::invalid_argument("generic recompute force mode is invalid");
+    }
     const std::string targetName = intent.arguments.at("feature");
     auto* target = document.getObject(targetName.c_str());
     if (!target || !target->isAttachedToDocument() || target->getDocument() != &document) {
         throw std::invalid_argument("generic recompute target does not exist");
+    }
+
+    if (!forceExecution && target->isTouched() && target->mustRecompute() == 0) {
+        const std::string stableIdentity = document.collaborationObjectIdentity(*target);
+        std::vector<App::DocumentRevisionKey> reads {
+            App::DocumentRevisionKey::objectExistence(targetName),
+            App::DocumentRevisionKey::objectStructure(targetName),
+            App::DocumentRevisionKey::objectModel(targetName),
+            App::DocumentRevisionKey::unknownModelMutation()};
+        for (const auto& [propertyName, property] : namedProperties(*target)) {
+            static_cast<void>(property);
+            reads.push_back(
+                App::DocumentRevisionKey::objectProperty(targetName, propertyName));
+        }
+        std::sort(reads.begin(), reads.end());
+        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+
+        std::vector<App::DocumentRevisionKey> writes {
+            App::DocumentRevisionKey::objectModel(targetName)};
+        std::vector<App::DocumentRevisionPublicationRequest> effects {
+            {App::DocumentRevisionKey::objectModel(targetName), stableIdentity}};
+        if (preserveLegacyRevisionSemantics) {
+            writes.push_back(App::DocumentRevisionKey::unknownModelMutation());
+            effects.push_back(
+                {App::DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+        }
+        App::CollaborativeOperationPreparation::DetachedTask task =
+            [targetName, stableIdentity](const std::stop_token stopToken) {
+                if (stopToken.stop_requested()) {
+                    throw std::runtime_error(
+                        "generic recompute bookkeeping preparation was cancelled");
+                }
+                return std::make_unique<const GenericRecomputeBookkeepingOperation>(
+                    targetName, stableIdentity);
+            };
+        return {std::move(reads),
+                std::move(writes),
+                std::move(effects),
+                std::move(task),
+                App::PreparationPolicy::DetachedInProcess};
     }
 
     auto closure = collectClosure(document, *target);
@@ -1104,7 +1212,8 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     const std::vector<DocumentObject*>& features,
     const std::string_view provenance,
     const std::string_view coalescingPrefix,
-    const bool preserveLegacyRevisionSemantics)
+    const bool preserveLegacyRevisionSemantics,
+    const bool forceExecution)
 {
     std::map<std::string, DocumentObject*> byName;
     for (auto* object : features) {
@@ -1134,6 +1243,9 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         node.intent.arguments.emplace("feature", name);
         if (preserveLegacyRevisionSemantics) {
             node.intent.arguments.emplace("legacy_revision_semantics", "1");
+        }
+        if (forceExecution) {
+            node.intent.arguments.emplace("force_execution", "1");
         }
         node.provenance = std::string(provenance);
         for (auto* dependency : object->getOutList()) {
@@ -1173,7 +1285,8 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         selected,
         "App::Document::recomputeFeature isolated adapter",
         "generic-feature:",
-        preserveLegacyRevisionSemantics);
+        preserveLegacyRevisionSemantics,
+        true);
 }
 
 }  // namespace App::Internal

@@ -6463,7 +6463,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (!object || !object->isAttachedToDocument()
             || object->getDocument() != this
-            || (!force && object->mustRecompute() == 0)) {
+            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
             continue;
         }
         scheduled.insert(object);
@@ -6489,7 +6489,8 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         selected,
         "App::Document::recomputeAsync isolated compatibility facade",
         "generic-document:",
-        !collaborationDerivedRecomputeGranted());
+        !collaborationDerivedRecomputeGranted(),
+        force);
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request));
