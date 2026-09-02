@@ -2519,6 +2519,26 @@ def test_windows_aftermath_uses_one_fixed_deadline_for_large_inventory(
     assert aftermath["diagnostics"][-1]["diagnostic"] == "aftermath_query_deadline"
 
 
+def test_windows_pid_queries_embed_pid_in_the_powershell_program(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    calls: list[list[str]] = []
+    replies = iter(("[41001]", "[]"))
+
+    def capture(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, next(replies), "")
+
+    monkeypatch.setattr(runner.os, "name", "nt")
+    monkeypatch.setattr(runner.subprocess, "run", capture)
+    assert runner._windows_owned_pids(41001)["complete"] is True
+    assert runner._windows_existing_owned_pids([41001])["complete"] is True
+    assert all(command[-2] == "-Command" for command in calls)
+    assert all(command[-1] != "41001" and "[int]41001" in command[-1] for command in calls)
+
+
 @pytest.mark.parametrize("stage", ["a", "b"])
 @pytest.mark.parametrize("wrapper", ["orphan", "direct-wrapper"])
 def test_junit_rejects_stage_testcase_without_concrete_suite_ownership(
@@ -3283,8 +3303,9 @@ def test_linux_runner_rejects_missing_or_malformed_handoff(
         validate_packet(packet)
 
 
+@pytest.mark.parametrize(("stage", "timeout_seconds"), [("a", 3900), ("b", 11100)])
 def test_windows_runner_timeout_is_bounded_and_retained(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, timeout_seconds: int
 ) -> None:
     from tests.gui.part3 import stage_gate_runner as runner
 
@@ -3309,15 +3330,15 @@ def test_windows_runner_timeout_is_bounded_and_retained(
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: TimedProcess())
     monkeypatch.setattr(runner, "_terminate_owned_windows_tree", lambda _process: cleanup)
     result = runner.run_windows(
-        repo_root=REPO_ROOT, output_dir=tmp_path, stage="a", python_executable=Path(sys.executable)
+        repo_root=REPO_ROOT, output_dir=tmp_path, stage=stage, python_executable=Path(sys.executable)
     )
-    packet = json.loads((tmp_path / "stage-a-execution-packet.json").read_text(encoding="utf-8"))
+    packet = json.loads((tmp_path / f"stage-{stage}-execution-packet.json").read_text(encoding="utf-8"))
     assert result == 124
     assert packet["execution"]["classification"] == "timeout"
-    assert packet["execution"]["timeout_seconds"] == runner.WINDOWS_STAGE_TIMEOUT_SECONDS
+    assert packet["execution"]["timeout_seconds"] == timeout_seconds
     assert packet["execution"]["cleanup"] == cleanup
     assert packet["execution"]["aftermath"]["passed"] is True
-    assert (tmp_path / "stage-a-runner.log").is_file()
+    assert (tmp_path / f"stage-{stage}-runner.log").is_file()
 
 
 def test_windows_runner_timeout_retains_surviving_owned_descendant(
@@ -4735,8 +4756,9 @@ def test_windows_runner_collects_synthetic_handoff_end_to_end(
 
     output = tmp_path / "out"
 
-    def fake_run(command, *, cwd, env, log_path):
+    def fake_run(command, *, cwd, env, log_path, timeout_seconds):
         del command, cwd
+        assert timeout_seconds == runner.STAGE_EXECUTION_TIMEOUT_SECONDS["a"]
         evidence = tmp_path / "owned" / "evidence" / "evidence.json"
         _write(evidence, json.dumps(_stage_evidence("A")) + "\n")
         launcher = evidence.parents[1] / "launcher.log"
@@ -4768,8 +4790,9 @@ def test_windows_runner_retains_nonzero_stage_artifacts_before_returning_code(
     output = tmp_path / "out"
     validation_calls: list[dict[str, Any]] = []
 
-    def fake_run(command, *, cwd, env, log_path):
+    def fake_run(command, *, cwd, env, log_path, timeout_seconds):
         del command, cwd
+        assert timeout_seconds == runner.STAGE_EXECUTION_TIMEOUT_SECONDS["a"]
         evidence = tmp_path / "owned" / "evidence" / "evidence.json"
         launcher = evidence.parents[1] / "launcher.log"
         _write(evidence, '{"verdict":"FAILED"}\n')
@@ -4843,8 +4866,9 @@ def test_windows_runner_retains_failure_when_handoff_is_absent(
 
     output = tmp_path / "out"
 
-    def fake_run(command, *, cwd, env, log_path):
+    def fake_run(command, *, cwd, env, log_path, timeout_seconds):
         del command, cwd, env
+        assert timeout_seconds == runner.STAGE_EXECUTION_TIMEOUT_SECONDS["a"]
         _write(Path(log_path), "1 skipped\n")
         _write(
             output / "stage-a-junit.xml",
