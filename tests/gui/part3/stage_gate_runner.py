@@ -20,7 +20,7 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -1482,12 +1482,14 @@ def _retain_linux_fcstd_copies(
 
 
 def _retain_linux_binary_copies(
-    packet: dict[str, Any], *, output: Path, container_id: str
+    packet: dict[str, Any], *, output: Path
 ) -> None:
-    """Copy producer-addressed Linux binaries before Docker cleanup.
+    """Copy producer-addressed Linux binaries through the inspected bind mount.
 
     Linux evidence names binaries in the container namespace.  The retained
-    copy is the host-verifiable bridge after that namespace is gone.
+    copy is the host-verifiable bridge after that namespace is gone. Copying
+    from the bind source preserves nanosecond timestamps that ``docker cp``
+    truncates on Docker Desktop.
     """
 
     evidence_path = output / f"stage-{str(packet['stage']).lower()}-evidence.json"
@@ -1498,24 +1500,56 @@ def _retain_linux_binary_copies(
     # still required to carry fingerprints by that final fail-closed gate.
     if not isinstance(fingerprints, dict) or not fingerprints:
         return
+    build_root_value = packet.get("build_root")
+    _require(isinstance(build_root_value, str) and build_root_value, "Linux build root is absent")
+    build_root = Path(build_root_value).resolve()
+    producer_root = PurePosixPath(LINUX_BUILD_MOUNT)
     copies: dict[str, Any] = {}
     for name, fingerprint in fingerprints.items():
         _require(isinstance(name, str) and isinstance(fingerprint, dict), "Linux binary evidence is malformed")
         container_path = fingerprint.get("path")
         _require(
-            isinstance(container_path, str) and container_path.startswith("/workspace/build/"),
+            isinstance(container_path, str),
             "Linux binary evidence is not a producer container build path",
         )
-        target = output / f"stage-{str(packet['stage']).lower()}-binary-{name}"
-        copied = _docker_result(
-            ["docker", "cp", f"{container_id}:{container_path}", str(target)],
-            timeout=LINUX_DOCKER_CONTROL_TIMEOUT_SECONDS,
+        try:
+            relative = PurePosixPath(container_path).relative_to(producer_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Linux binary evidence is not a producer container build path"
+            ) from exc
+        _require(
+            bool(relative.parts) and ".." not in relative.parts,
+            "Linux binary evidence escapes the producer build root",
         )
         _require(
-            copied.get("timed_out") is False
-            and copied.get("return_code") == 0
-            and target.is_file(),
-            "Linux binary copy could not bind the producer container path",
+            name == relative.name
+            and name not in {".", ".."}
+            and "/" not in name
+            and "\\" not in name
+            and ":" not in name,
+            "Linux binary evidence name is not a safe producer basename",
+        )
+        source = build_root.joinpath(*relative.parts).resolve()
+        _require(
+            source.is_relative_to(build_root) and source.is_file(),
+            "Linux binary producer bind source is unavailable",
+        )
+        source_info = source.stat()
+        _require(
+            hashlib.sha256(source.read_bytes()).hexdigest() == fingerprint.get("sha256")
+            and source_info.st_size == fingerprint.get("size")
+            and source_info.st_mtime_ns == fingerprint.get("mtime_ns"),
+            "Linux binary producer bind source does not match its fingerprint",
+        )
+        target = output / f"stage-{str(packet['stage']).lower()}-binary-{name}"
+        shutil.copy2(source, target)
+        target_info = target.stat()
+        _require(
+            target.is_file()
+            and target_info.st_size == source_info.st_size
+            and target_info.st_mtime_ns == source_info.st_mtime_ns,
+            "Linux binary copy did not preserve the producer bind identity",
         )
         copies[name] = {
             "container_path": container_path,
@@ -2376,7 +2410,7 @@ def run_linux_docker(
                     packet, output=output
                 )
                 _retain_linux_binary_copies(
-                    packet, output=output, container_id=container_id
+                    packet, output=output
                 )
             else:
                 packet["artifacts"] = {

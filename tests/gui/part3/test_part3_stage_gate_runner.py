@@ -2382,6 +2382,74 @@ def test_linux_fcstd_collection_consumes_the_pre_exit_bridge(tmp_path: Path) -> 
         runner._retain_linux_fcstd_copies({"stage": "A"}, output=tmp_path)
 
 
+def test_linux_binary_collection_preserves_bind_source_nanoseconds(tmp_path: Path) -> None:
+    from tests.gui.part3.evidence import file_fingerprint
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    build_root = tmp_path / "build"
+    source = build_root / "debug" / "bin" / "FreeCAD"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"linux-freecad\n")
+    fingerprint = file_fingerprint(source)
+    fingerprint["path"] = "/workspace/build/debug/bin/FreeCAD"
+    evidence = {"environment": {"binary_fingerprint": {"FreeCAD": fingerprint}}}
+    (tmp_path / "stage-a-evidence.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    packet = {"stage": "A", "build_root": str(build_root)}
+
+    runner._retain_linux_binary_copies(packet, output=tmp_path)
+
+    retained = tmp_path / "stage-a-binary-FreeCAD"
+    assert retained.read_bytes() == source.read_bytes()
+    assert retained.stat().st_mtime_ns == source.stat().st_mtime_ns
+    assert packet["binary_copies"]["FreeCAD"]["container_path"] == fingerprint["path"]
+
+
+def test_linux_binary_collection_rejects_bind_path_escape(tmp_path: Path) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    evidence = {
+        "environment": {
+            "binary_fingerprint": {
+                "FreeCAD": {
+                    "path": "/workspace/build/../../escape",
+                    "sha256": "a" * 64,
+                    "size": 1,
+                    "mtime_ns": 1,
+                }
+            }
+        }
+    }
+    (tmp_path / "stage-a-evidence.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    packet = {"stage": "A", "build_root": str(tmp_path / "build")}
+    with pytest.raises(ValueError, match="escapes"):
+        runner._retain_linux_binary_copies(packet, output=tmp_path)
+
+
+def test_linux_binary_collection_rejects_output_name_escape(tmp_path: Path) -> None:
+    from tests.gui.part3.evidence import file_fingerprint
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    build_root = tmp_path / "build"
+    source = build_root / "debug" / "bin" / "FreeCAD"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"linux-freecad\n")
+    fingerprint = file_fingerprint(source)
+    fingerprint["path"] = "/workspace/build/debug/bin/FreeCAD"
+    evidence = {"environment": {"binary_fingerprint": {"../escaped": fingerprint}}}
+    (tmp_path / "stage-a-evidence.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="safe producer basename"):
+        runner._retain_linux_binary_copies(
+            {"stage": "A", "build_root": str(build_root)}, output=tmp_path
+        )
+
+
 @pytest.mark.parametrize("platform", ["windows", "linux-docker"])
 @pytest.mark.parametrize("stage", ["a", "b"])
 @pytest.mark.parametrize("defect", ["artifact_binding", "continuity"])
