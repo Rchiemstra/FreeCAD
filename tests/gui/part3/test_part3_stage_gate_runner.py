@@ -2341,6 +2341,47 @@ def test_packets_reject_missing_or_substituted_retained_fcstd(
         validate_packet(packet)
 
 
+def test_linux_stage_script_bridges_tmpfs_fcstd_before_container_exit() -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    script = runner._linux_stage_script("a")
+    mkdir = script.index('os.makedirs(retained_root, exist_ok=True)')
+    copy = script.index("shutil.copy2(source, retained_target)")
+    aftermath = script.index("freecad_leftovers=")
+    assert 0 <= mkdir < copy < aftermath
+    assert 'retained_root = "/out/retained-fcstd"' in script
+    assert 'hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]' in script
+
+
+def test_linux_fcstd_collection_consumes_the_pre_exit_bridge(tmp_path: Path) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    source_path = "/tmp/part3-stage/documents/Model.FCStd"
+    evidence = {
+        "artifacts": {
+            "documents": [
+                {"path": source_path, "size": 6, "sha256": "a" * 64}
+            ]
+        }
+    }
+    (tmp_path / "stage-a-evidence.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    retained = runner._retained_fcstd_target(tmp_path, 0, source_path)
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b"fcstd\n")
+
+    copies = runner._retain_linux_fcstd_copies({"stage": "A"}, output=tmp_path)
+    identity = os.path.normcase(os.path.normpath(source_path)).casefold()
+    assert set(copies) == {identity}
+    assert copies[identity]["source_path"] == source_path
+    assert copies[identity]["artifact"]["path"] == str(retained.resolve())
+
+    retained.unlink()
+    with pytest.raises(ValueError, match="FCStd bridge"):
+        runner._retain_linux_fcstd_copies({"stage": "A"}, output=tmp_path)
+
+
 @pytest.mark.parametrize("platform", ["windows", "linux-docker"])
 @pytest.mark.parametrize("stage", ["a", "b"])
 @pytest.mark.parametrize("defect", ["artifact_binding", "continuity"])

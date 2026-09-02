@@ -1454,9 +1454,9 @@ def _retain_host_fcstd_copies(evidence: Mapping[str, Any], output: Path) -> dict
 
 
 def _retain_linux_fcstd_copies(
-    packet: dict[str, Any], *, output: Path, container_id: str
+    packet: dict[str, Any], *, output: Path
 ) -> dict[str, Any]:
-    """Bridge producer FCStd paths out of the container before cleanup."""
+    """Bind FCStd files bridged from container tmpfs before process exit."""
 
     evidence_path = output / f"stage-{str(packet['stage']).lower()}-evidence.json"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -1468,16 +1468,9 @@ def _retain_linux_fcstd_copies(
     copies: dict[str, Any] = {}
     for index, source_path in enumerate(_fcstd_evidence_paths(evidence)):
         target = _retained_fcstd_target(output, index, source_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        copied = _docker_result(
-            ["docker", "cp", f"{container_id}:{source_path}", str(target)],
-            timeout=LINUX_DOCKER_CONTROL_TIMEOUT_SECONDS,
-        )
         _require(
-            copied.get("timed_out") is False
-            and copied.get("return_code") == 0
-            and target.is_file(),
-            "Linux FCStd copy could not bind the producer container path",
+            target.is_file(),
+            "Linux FCStd bridge did not retain the producer container path",
         )
         identity = os.path.normcase(os.path.normpath(source_path)).casefold()
         _require(identity not in copies, "FCStd source identity is duplicate")
@@ -1684,7 +1677,7 @@ python3 -m pytest {nodeid} -vv -p no:cacheprovider --color=no --junitxml=/out/st
 rc=$?
 handoff=${{PART3_STAGE_EVIDENCE_HANDOFF:-}}
 if ! python3 - "$handoff" "{stage.upper()}" /out/stage-{stage}-evidence.json /out/stage-{stage}-launcher.log <<'PY'
-import json, shutil, sys
+import hashlib, json, os, shutil, sys
 handoff, stage, evidence_target, launcher_target = sys.argv[1:]
 try:
     with open(handoff, encoding="utf-8") as stream:
@@ -1698,6 +1691,32 @@ try:
     assert isinstance(launcher, str) and launcher
     shutil.copy2(evidence, evidence_target)
     shutil.copy2(launcher, launcher_target)
+    with open(evidence, encoding="utf-8") as stream:
+        evidence_payload = json.load(stream)
+    artifacts = evidence_payload.get("artifacts")
+    documents = artifacts.get("documents") if isinstance(artifacts, dict) else None
+    assert isinstance(documents, list)
+    sources = []
+    seen = set()
+    for entry in documents:
+        source = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(source, str) or not source.lower().endswith(".fcstd"):
+            continue
+        identity = os.path.normcase(os.path.normpath(source)).casefold()
+        assert identity and identity not in seen
+        seen.add(identity)
+        sources.append(source)
+    assert sources
+    retained_root = "/out/retained-fcstd"
+    os.makedirs(retained_root, exist_ok=True)
+    for index, source in enumerate(sources):
+        source_name = os.path.basename(source)
+        assert source_name.lower().endswith(".fcstd")
+        token = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+        retained_target = os.path.join(
+            retained_root, "%03d-%s-%s" % (index, token, source_name)
+        )
+        shutil.copy2(source, retained_target)
 except (AssertionError, OSError, ValueError, TypeError, json.JSONDecodeError):
     raise SystemExit(1)
 PY
@@ -2354,7 +2373,7 @@ def run_linux_docker(
                     for name, path in artifact_paths.items()
                 }
                 packet["artifacts"]["fcstd"] = _retain_linux_fcstd_copies(
-                    packet, output=output, container_id=container_id
+                    packet, output=output
                 )
                 _retain_linux_binary_copies(
                     packet, output=output, container_id=container_id
