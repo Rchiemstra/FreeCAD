@@ -41,9 +41,8 @@ LINUX_BUILD_MOUNT = "/workspace/build"
 EVIDENCE_LINE = re.compile(r"^evidence:\s*(?P<path>.+)$", re.MULTILINE)
 HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 PROBE_REFUSAL_EXIT = 73
-WINDOWS_STAGE_TIMEOUT_SECONDS = 1800
+STAGE_EXECUTION_TIMEOUT_SECONDS = {"a": 3900, "b": 11100}
 LINUX_RELEASE_BARRIER_TIMEOUT_SECONDS = 120
-LINUX_DOCKER_WAIT_TIMEOUT_SECONDS = 1800
 LINUX_DOCKER_CONTROL_TIMEOUT_SECONDS = 30
 WINDOWS_TIMEOUT_CLEANUP_SECONDS = 30
 
@@ -1218,6 +1217,7 @@ def _run_and_log(
     cwd: Path,
     env: Mapping[str, str],
     log_path: Path,
+    timeout_seconds: int,
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8", newline="\n") as log:
@@ -1236,14 +1236,12 @@ def _run_and_log(
             creationflags=creationflags,
         )
         try:
-            return int(process.wait(timeout=WINDOWS_STAGE_TIMEOUT_SECONDS))
+            return int(process.wait(timeout=timeout_seconds))
         except subprocess.TimeoutExpired as exc:
             cleanup = _terminate_owned_windows_tree(process)
-            log.write(f"STAGE_TIMEOUT seconds={WINDOWS_STAGE_TIMEOUT_SECONDS}\n")
+            log.write(f"STAGE_TIMEOUT seconds={timeout_seconds}\n")
             log.write(json.dumps({"timeout_cleanup": cleanup}, sort_keys=True) + "\n")
-            raise StageTimeout(
-                "windows-pytest", WINDOWS_STAGE_TIMEOUT_SECONDS, cleanup
-            ) from exc
+            raise StageTimeout("windows-pytest", timeout_seconds, cleanup) from exc
 
 
 def _windows_owned_pids(root_pid: int, *, deadline: float | None = None) -> dict[str, Any]:
@@ -1252,7 +1250,7 @@ def _windows_owned_pids(root_pid: int, *, deadline: float | None = None) -> dict
     if os.name != "nt":
         return {"pids": [root_pid], "complete": True, "diagnostic": "non-windows"}
     script = (
-        "$pending=@([int]$args[0]);$seen=@();"
+        f"$pending=@([int]{int(root_pid)});$seen=@();"
         "while($pending.Count){$currentPid=$pending[0];$pending=@($pending|Select-Object -Skip 1);"
         "if($seen -contains $currentPid){continue};$seen+= $currentPid;"
         "$pending+=@(Get-CimInstance Win32_Process -Filter ('ParentProcessId='+$currentPid) -ErrorAction Stop|ForEach-Object ProcessId)};"
@@ -1266,7 +1264,7 @@ def _windows_owned_pids(root_pid: int, *, deadline: float | None = None) -> dict
         return {"pids": [root_pid], "complete": False, "diagnostic": "inventory_deadline"}
     try:
         completed = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(root_pid)],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
             check=False,
@@ -1321,11 +1319,15 @@ def _windows_existing_owned_pids(
             diagnostics.append({"pid": pid, "diagnostic": "aftermath_query_deadline"})
             continue
         try:
+            script = (
+                "@((Get-CimInstance Win32_Process -Filter "
+                f"('ProcessId='+[int]{int(pid)}) -ErrorAction Stop|"
+                "ForEach-Object ProcessId))|ConvertTo-Json -Compress"
+            )
             completed = subprocess.run(
                 [
                     "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                    "@((Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$args[0]) -ErrorAction Stop|ForEach-Object ProcessId))|ConvertTo-Json -Compress",
-                    str(pid),
+                    script,
                 ],
                 capture_output=True,
                 text=True,
@@ -1637,6 +1639,7 @@ def run_windows(
             cwd=repo_root,
             env=env,
             log_path=runner_log,
+            timeout_seconds=STAGE_EXECUTION_TIMEOUT_SECONDS[stage_key],
         )
     except StageTimeout as exc:
         packet["execution"] = {
@@ -2332,8 +2335,9 @@ def run_linux_docker(
         packet["docker"]["barrier"]["released_after_probes"] = True
         packet["docker"]["barrier"]["released_utc"] = utc_now_iso()
         _write_packet(packet_path, packet)
+        stage_timeout = STAGE_EXECUTION_TIMEOUT_SECONDS[stage_key]
         waited = _docker_result(
-            ["docker", "wait", container_id], timeout=LINUX_DOCKER_WAIT_TIMEOUT_SECONDS
+            ["docker", "wait", container_id], timeout=stage_timeout
         )
         if waited["timed_out"]:
             return_code = 124
@@ -2342,7 +2346,7 @@ def run_linux_docker(
                 "return_code": return_code,
                 "classification": "timeout",
                 "phase": "docker-wait",
-                "timeout_seconds": LINUX_DOCKER_WAIT_TIMEOUT_SECONDS,
+                "timeout_seconds": stage_timeout,
                 "finished_utc": utc_now_iso(),
             }
         elif _is_release_barrier_timeout(waited):
