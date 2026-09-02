@@ -412,17 +412,19 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         'constautolegacyMode=intent.arguments.find("legacy_revision_semantics")'
         in prepare
     )
-    assert "(intent.arguments.size()!=1&&intent.arguments.size()!=2)" in prepare
+    assert 'constautoforceMode=intent.arguments.find("force_execution")' in prepare
+    assert "intent.arguments.empty()||intent.arguments.size()>3" in prepare
     assert '!intent.arguments.contains("feature")' in prepare
-    assert (
-        "(intent.arguments.size()==2&&legacyMode==intent.arguments.end())"
-        in prepare
-    )
+    assert "std::ranges::any_of(intent.arguments" in prepare
+    assert 'argument.first!="legacy_revision_semantics"' in prepare
+    assert 'argument.first!="force_execution"' in prepare
     assert (
         "constboolpreserveLegacyRevisionSemantics="
         "legacyMode!=intent.arguments.end()" in prepare
     )
     assert 'preserveLegacyRevisionSemantics&&legacyMode->second!="1"' in prepare
+    assert "constboolforceExecution=forceMode!=intent.arguments.end()" in prepare
+    assert 'forceExecution&&forceMode->second!="1"' in prepare
     schema_rejection = prepare.find("throwstd::invalid_argument(")
     target_lookup = prepare.find('intent.arguments.at("feature")')
     assert 0 <= schema_rejection < target_lookup
@@ -521,9 +523,11 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     unit_delta = effects_decoder.find("effect.revisionDelta=1", unknown_only)
     assert 0 <= failure_status < failure_filter < model_only < unknown_only < unit_delta
 
-    failure_apply = _compact(
-        _body(source, "apply")
-    )
+    generic_operation = source.split("class GenericRecomputeOperation", 1)[1]
+    generic_operation = generic_operation.split(
+        "class GenericRecomputeBookkeepingOperation", 1
+    )[0]
+    failure_apply = _compact(_body(generic_operation, "apply"))
     assert (
         "if(_failureDiagnostic){"
         "App::Internal::GenericIsolatedRecomputeAccess::applyFailure("
@@ -617,6 +621,17 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
     fence = commit.find("_document.openCollaborationDeferredRecomputeFence()", deferred)
     apply = commit.find("operation.apply(_document)", fence)
     assert 0 <= deferred < fence < apply
+
+
+def test_no_recompute_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
+    generic = _compact(_read(GENERIC_SOURCE))
+    assert "!forceExecution&&target->isTouched()&&target->mustRecompute()==0" in generic
+    assert "PreparationPolicy::DetachedInProcess" in generic
+    operation = generic.split("classGenericRecomputeBookkeepingOperation", 1)[1]
+    operation = operation.split("std::unique_ptr<constApp::CollaborativeOperation>decodeResult", 1)[0]
+    assert "target->mustRecompute()" in operation
+    assert "target->purgeTouched()" in operation
+    assert "executeGenericRecompute" not in operation
 
 
 def test_recompute_capture_allows_only_touched_state_beyond_normal_capture() -> None:

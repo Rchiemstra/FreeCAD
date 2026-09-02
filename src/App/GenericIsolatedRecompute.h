@@ -37,7 +37,8 @@ AppExport void ensureGenericIsolatedRecomputeRegistered();
     const std::vector<DocumentObject*>& features,
     std::string_view provenance,
     std::string_view coalescingPrefix,
-    bool preserveLegacyRevisionSemantics = false);
+    bool preserveLegacyRevisionSemantics = false,
+    bool forceExecution = false);
 
 /** Narrow friend used only by the isolated worker implementation. */
 class GenericIsolatedRecomputeAccess;

@@ -12,6 +12,7 @@
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -293,13 +294,18 @@ TEST_F(RecomputeHandleTest,
     ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
     EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
         << snapshot.diagnostic;
-    EXPECT_EQ(snapshot.completedFeatures, 1U);
+    EXPECT_EQ(snapshot.completedFeatures, 2U);
     EXPECT_EQ(snapshot.failedFeatures, 0U);
-    EXPECT_EQ(snapshot.totalFeatures, 1U);
-    ASSERT_EQ(snapshot.features.size(), 1U);
-    EXPECT_EQ(snapshot.features.front().featureId, executable->getNameInDocument());
+    EXPECT_EQ(snapshot.totalFeatures, 2U);
+    ASSERT_EQ(snapshot.features.size(), 2U);
+    const auto storageResult = std::ranges::find(
+        snapshot.features,
+        std::string(storage->getNameInDocument()),
+        &App::DocumentRecomputeFeatureSnapshot::featureId);
+    ASSERT_NE(storageResult, snapshot.features.end());
+    EXPECT_EQ(storageResult->state, App::DocumentRecomputeFeatureState::Committed);
     EXPECT_EQ(value->getValue(), 7);
-    EXPECT_TRUE(storage->isTouched());
+    EXPECT_FALSE(storage->isTouched());
     EXPECT_EQ(storage->mustRecompute(), 0);
 }
 
