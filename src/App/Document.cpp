@@ -6481,7 +6481,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     for (auto* object : ordered) {
         if (!object || !object->isAttachedToDocument()
             || object->getDocument() != this
-            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
+            || (!force && object->mustRecompute() == 0)) {
             continue;
         }
         scheduled.insert(object);

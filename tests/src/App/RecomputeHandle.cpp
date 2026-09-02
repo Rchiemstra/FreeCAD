@@ -7,6 +7,7 @@
 #include <App/Document.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/FeatureTest.h>
+#include <App/PropertyStandard.h>
 #include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
@@ -268,6 +269,38 @@ TEST_F(RecomputeHandleTest,
     EXPECT_FALSE(second->mustRecompute());
     EXPECT_TRUE(first->isValid());
     EXPECT_TRUE(second->isValid());
+}
+
+TEST_F(RecomputeHandleTest,
+       fullDocumentFacadeDoesNotExecuteTouchedNoRecomputeStorageObject)
+{
+    auto* executable = _document->addObject<App::FeatureTest>("ExecutableFeature");
+    auto* storage = _document->addObject<App::DocumentObject>("NoRecomputeStorage");
+    ASSERT_NE(executable, nullptr);
+    ASSERT_NE(storage, nullptr);
+    auto* value = dynamic_cast<App::PropertyInteger*>(storage->addDynamicProperty(
+        "App::PropertyInteger", "Value", "Data", "", App::Prop_NoRecompute));
+    ASSERT_NE(value, nullptr);
+    value->setValue(7);
+    executable->touch();
+
+    ASSERT_TRUE(storage->isTouched());
+    ASSERT_EQ(storage->mustRecompute(), 0);
+    auto handle = _document->recomputeAsync();
+    ASSERT_NE(handle, nullptr);
+    const auto snapshot = handle->wait(30s);
+
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_EQ(snapshot.completedFeatures, 1U);
+    EXPECT_EQ(snapshot.failedFeatures, 0U);
+    EXPECT_EQ(snapshot.totalFeatures, 1U);
+    ASSERT_EQ(snapshot.features.size(), 1U);
+    EXPECT_EQ(snapshot.features.front().featureId, executable->getNameInDocument());
+    EXPECT_EQ(value->getValue(), 7);
+    EXPECT_TRUE(storage->isTouched());
+    EXPECT_EQ(storage->mustRecompute(), 0);
 }
 
 TEST_F(RecomputeHandleTest, standaloneSyncAndAsyncFacadesDoNotCreateUserUndoEntries)
