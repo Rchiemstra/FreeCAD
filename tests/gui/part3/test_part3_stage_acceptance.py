@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Stage A and Stage B acceptance gate for Part 3 WP10 (ADR §8, §9, §13).
+"""Stage A/B/C acceptance gates for Part 3 (ADR §8, §9, §13).
 
 The live tests here run the real coordinator CLI end to end. They own their
 FreeCAD session, so this module must stay outside the shared
 ``freecad_gui_session`` fixture. The offline tests prove the honesty rules that
-do not need a GUI: Stage C is not executable, a forced kill is never green, and
-the evidence recorders classify artifacts the way the save contract requires.
+do not need a GUI: a forced kill is never green, and the evidence recorders
+classify artifacts the way the save contract requires.
 
-Running this file does not start FreeCAD. The two live tests launch a real GUI
+Running this file does not start FreeCAD. The three live tests launch a real GUI
 session and bind MCP port 9875, so they run only when the operator opts in with
 ``PART3_STAGE_LIVE=1`` (GRK-P3-097). Without it they are NOT_RUN - which is
-never a pass, and leaves Stage A/B acceptance unproven. They remain the
+never a pass, and leaves staged acceptance unproven. They remain the
 acceptance proof and are unchanged in what they assert.
 """
 
@@ -78,7 +78,7 @@ MCP_RPC_PORT = 9875
 EVIDENCE_LINE = re.compile(r"^evidence:\s*(?P<path>.+)$", re.MULTILINE)
 HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 
-STAGE_TIMEOUTS = {"a": 3600.0, "b": 10800.0}
+STAGE_TIMEOUTS = {"a": 3600.0, "b": 10800.0, "c": 57600.0}
 
 
 def test_provision_waits_for_transient_readiness_before_each_first_save(
@@ -355,15 +355,15 @@ def _require_stage_preconditions() -> None:
     at the binary or the port.
 
     A skip here is NOT_RUN. It is never a pass, and it never turns into one:
-    the two live tests are untouched in what they assert and remain the
-    Stage A/B acceptance proof.
+    the three live tests are untouched in what they assert and remain the
+    staged acceptance proof.
     """
 
     if not live_stage_opt_in():
         pytest.skip(
             "NOT_RUN (never a pass): this test owns a real FreeCAD GUI session "
             f"and binds MCP port {MCP_RPC_PORT}. Set "
-            f"{LIVE_STAGE_OPT_IN_ENV}=1 to opt in. Until it is set, Stage A/B "
+            f"{LIVE_STAGE_OPT_IN_ENV}=1 to opt in. Until it is set, staged "
             "acceptance is unproven."
         )
     if default_freecad_exe(REPO_ROOT) is None:
@@ -1599,32 +1599,32 @@ def test_stage_b_runs_fifty_view_cycles_and_twenty_save_cycles() -> None:
     )
 
 
+def test_stage_c_runs_five_hundred_view_cycles_and_one_hundred_save_cycles() -> None:
+    """`--stage c` executes the final fresh-session gate and ends gracefully."""
+
+    _require_stage_preconditions()
+    completed, evidence = _run_stage_cli("c")
+    _assert_green_stage(
+        completed,
+        evidence,
+        "C",
+        STAGE_C.view_mutation_cycles,
+        STAGE_C.save_cycles,
+    )
+
+
 def test_stage_counts_are_the_adr_section_13_counts() -> None:
     assert (STAGE_A.view_mutation_cycles, STAGE_A.save_cycles) == (10, 5)
     assert (STAGE_B.view_mutation_cycles, STAGE_B.save_cycles) == (50, 20)
     assert (STAGE_C.view_mutation_cycles, STAGE_C.save_cycles) == (500, 100)
 
 
-def test_stage_c_is_defined_for_wp11_but_never_executable_here() -> None:
+def test_all_defined_stages_are_qualified_for_execution() -> None:
     assert resolve_stage("c") is STAGE_C
-    assert EXECUTABLE_STAGES == frozenset({"A", "B"})
-    with pytest.raises(ValueError, match="not executable in P3-WP10"):
-        resolve_executable_stage("c")
-    with pytest.raises(ValueError, match="not executable in P3-WP10"):
-        run_stage("c")
-    with pytest.raises(ValueError, match="not executable in P3-WP10"):
-        run_stage(STAGE_C)
-
-
-def test_stage_c_cli_refuses_without_printing_a_stage_result(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    exit_code = coordinator_main(["--stage", "c"])
-    captured = capsys.readouterr()
-    assert exit_code == 2
-    assert "PART3_RESULT" not in captured.out
-    assert "PART3_RESULT" not in captured.err
-    assert "not executable in P3-WP10" in captured.err
+    assert EXECUTABLE_STAGES == frozenset({"A", "B", "C"})
+    assert resolve_executable_stage("a") is STAGE_A
+    assert resolve_executable_stage("b") is STAGE_B
+    assert resolve_executable_stage("c") is STAGE_C
 
 
 def test_stage_flag_with_preflight_only_is_refused_without_a_stage_result(
@@ -1869,7 +1869,7 @@ def test_freshly_provisioned_evidence_claims_nothing_it_has_not_verified(
 # invariants can be proved without a GUI. It is deliberately incapable of
 # producing a green line: the stubbed cycle program always records a failed
 # check named stub_harness_is_not_a_stage_run, so nothing here can ever be
-# mistaken for a Stage A/B result.
+# mistaken for a stage result.
 # ---------------------------------------------------------------------------
 
 STUB_MARKER_CHECK = "stub_harness_is_not_a_stage_run"
@@ -2277,19 +2277,20 @@ KNOWN_LIVE_TESTS = frozenset(
     {
         "test_stage_a_runs_ten_view_cycles_and_five_save_cycles",
         "test_stage_b_runs_fifty_view_cycles_and_twenty_save_cycles",
+        "test_stage_c_runs_five_hundred_view_cycles_and_one_hundred_save_cycles",
     }
 )
 
 
-def test_both_live_tests_ask_for_the_opt_in_before_they_run_a_stage() -> None:
+def test_all_live_tests_ask_for_the_opt_in_before_they_run_a_stage() -> None:
     """The guard is only worth anything if EVERY live test goes through it.
 
-    Enumerating the two live tests by name could not see a third one added
+    Enumerating the known live tests by name could not see another one added
     later (GRK-P3-105), and the defect class this guards - a test in this file
     launching FreeCAD for someone who did not ask for it - has already
     happened once, to a reviewer forbidden from launching FreeCAD. Live tests
     are detected structurally now: any module-level test that calls a stage
-    entry point. The two known names stay asserted as a floor, so a detector
+    entry point. The known names stay asserted as a floor, so a detector
     that silently matched nothing would still fail here.
     """
 
@@ -2297,10 +2298,7 @@ def test_both_live_tests_ask_for_the_opt_in_before_they_run_a_stage() -> None:
     found, unguarded = _live_stage_tests(source, __file__)
     assert KNOWN_LIVE_TESTS <= found, sorted(KNOWN_LIVE_TESTS - found)
     assert unguarded == set(), sorted(unguarded)
-    # The Stage C exemption below is only sound while Stage C is structurally
-    # not executable here, so this assertion is part of the detector's floor.
-    assert EXECUTABLE_STAGES == frozenset({"A", "B"})
-    assert "test_stage_c_is_defined_for_wp11_but_never_executable_here" not in found
+    assert EXECUTABLE_STAGES == frozenset({"A", "B", "C"})
 
 
 def test_the_live_test_detector_rejects_an_unguarded_stage_test() -> None:
@@ -2327,7 +2325,7 @@ def test_the_live_test_detector_rejects_an_unguarded_stage_test() -> None:
         "    _require_stage_preconditions()\n"
         '    _run_stage_cli("b")\n'
         "\n"
-        "def test_stage_c_refusal_is_not_a_live_test():\n"
+        "def test_unguarded_stage_c():\n"
         "    run_stage(STAGE_C)\n"
         '    run_stage("c")\n'
         "\n"
@@ -2369,9 +2367,11 @@ def test_the_live_test_detector_rejects_an_unguarded_stage_test() -> None:
         "test_unguarded_live_stage",
         "test_unguarded_run_stage",
         "test_guard_is_not_first",
+        "test_unguarded_stage_c",
         "test_attr_run_stage",
         "test_attr_cli",
         "test_cli_main",
+        "test_cli_stage_c",
         "test_cli_preflight_alone",
         "test_cli_preflight_attr",
     }, sorted(found)
@@ -2379,9 +2379,11 @@ def test_the_live_test_detector_rejects_an_unguarded_stage_test() -> None:
         "test_unguarded_live_stage",
         "test_unguarded_run_stage",
         "test_guard_is_not_first",
+        "test_unguarded_stage_c",
         "test_attr_run_stage",
         "test_attr_cli",
         "test_cli_main",
+        "test_cli_stage_c",
         "test_cli_preflight_alone",
         "test_cli_preflight_attr",
     }, sorted(unguarded)
@@ -2390,7 +2392,8 @@ def test_the_live_test_detector_rejects_an_unguarded_stage_test() -> None:
     # really ARE refusal paths stay exempt, so no currently-passing offline
     # test acquires an opt-in guard it does not need.
     assert "test_cli_preflight" not in found, sorted(found)
-    assert "test_cli_stage_c" not in found, sorted(found)
+    assert "test_cli_stage_c" in found, sorted(found)
+    assert "test_cli_stage_c" in unguarded, sorted(unguarded)
 
 
 def _is_docstring(node: ast.stmt) -> bool:
@@ -2404,15 +2407,12 @@ def _is_docstring(node: ast.stmt) -> bool:
 # Calling any of these can provision an isolated profile and launch a real
 # FreeCAD GUI, so a test that calls one is a live test.
 LIVE_STAGE_ENTRYPOINTS = frozenset({"_run_stage_cli", "run_stage"})
-# ``main`` forwards ``--stage a|b`` straight to ``run_stage``, so the CLI
+# ``main`` forwards ``--stage a|b|c`` straight to ``run_stage``, so the CLI
 # entry point launches FreeCAD just as surely as the function does.
 LIVE_CLI_ENTRYPOINTS = frozenset({"main", "coordinator_main"})
-# ...except for Stage C, which ``resolve_executable_stage`` refuses before any
-# provisioning happens. Exempting it keeps the two refusal assertions in
-# ``test_stage_c_is_defined_for_wp11_but_never_executable_here`` runnable
-# without an opt-in; a skip there would be NOT_RUN, never a pass.
-NON_EXECUTABLE_STAGE_LITERALS = frozenset({"c"})
-NON_EXECUTABLE_STAGE_NAMES = frozenset({"STAGE_C"})
+# No defined stage is exempt: every A/B/C call can launch a real session.
+NON_EXECUTABLE_STAGE_LITERALS: frozenset[str] = frozenset()
+NON_EXECUTABLE_STAGE_NAMES: frozenset[str] = frozenset()
 # ...and except for ``--preflight-only`` WHEN THE SAME ARGV ALSO PASSES A
 # VALUE TO ``--stage``. That pairing is what ``main`` refuses before
 # provisioning (GRK-P3-077), and the refusal is nested inside
@@ -2468,7 +2468,7 @@ def _argv_passes_a_value_to_the_stage_flag(literals: list[str | None]) -> bool:
     """True when this argv hands ``--stage`` a value that argparse sees as set.
 
     Fails safe in the direction that matters: a non-literal value counts,
-    because it could name Stage A or B. An empty literal does not, because
+    because it could name Stage A, B, or C. An empty literal does not, because
     ``args.stage`` is then falsy and ``main`` skips the refusal branch
     entirely.
     """
@@ -2484,8 +2484,8 @@ def _argv_passes_a_value_to_the_stage_flag(literals: list[str | None]) -> bool:
 def _cli_call_is_a_refusal_path(node: ast.Call) -> bool:
     """True only when this CLI argv provably cannot reach provisioning.
 
-    Structural, like the Stage C exemption, and it fails safe the same way:
-    a computed argv is treated as live because it could name any stage.
+    Structural and fail-safe: a computed argv is treated as live because it
+    could name any stage.
     """
 
     literals = _argv_string_literals(node)

@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Launcher and isolation gates for StressCoordinator.
-
-Provisioning, isolation and typed-verb policy only. The Stage A/B execute path
-and its evidence live in ``test_part3_stage_acceptance.py``; Stage C belongs to
-P3-WP11 and is not executable from here.
-"""
+"""Launcher and isolation gates for the Stage A/B/C StressCoordinator."""
 
 from __future__ import annotations
 
@@ -51,12 +46,13 @@ def test_stage_definitions_match_adr_section_13() -> None:
     assert STAGE_C.view_mutation_cycles == 500 and STAGE_C.save_cycles == 100
 
 
-def test_only_stage_a_and_b_are_executable_here() -> None:
-    assert EXECUTABLE_STAGES == frozenset({STAGE_A.stage, STAGE_B.stage})
+def test_all_qualified_stages_are_executable_here() -> None:
+    assert EXECUTABLE_STAGES == frozenset(
+        {STAGE_A.stage, STAGE_B.stage, STAGE_C.stage}
+    )
     assert resolve_executable_stage("a") is STAGE_A
     assert resolve_executable_stage("b") is STAGE_B
-    with pytest.raises(ValueError, match="not executable in P3-WP10"):
-        resolve_executable_stage(STAGE_C.stage)
+    assert resolve_executable_stage("c") is STAGE_C
 
 
 def test_coordinator_uses_tracked_start_freecad_launcher(tmp_path: Path) -> None:

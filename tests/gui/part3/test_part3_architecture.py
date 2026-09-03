@@ -394,7 +394,7 @@ def test_shutdown_success_path_uses_graceful_sequence() -> None:
     assert "_force_kill_owned_process_tree" not in launcher_body
 
 
-STAGE_C_EXECUTION_TOKENS = frozenset({"resolve_stage"})
+UNBOUNDED_STAGE_RESOLUTION_TOKENS = frozenset({"resolve_stage"})
 
 PAUSE_FALLBACK_TOKENS = frozenset(
     {
@@ -415,8 +415,8 @@ def _module_function_source(path: Path, name: str) -> str:
     raise AssertionError(f"{path.name} does not define {name}")
 
 
-def test_stage_execute_path_resolves_only_executable_stages() -> None:
-    """Stage C stays defined for P3-WP11 but is unreachable from the execute path."""
+def test_stage_execute_path_uses_only_the_bounded_executable_resolver() -> None:
+    """Every live stage stays behind the explicit executable-stage allowlist."""
 
     path = PACKAGE_ROOT / "stress_coordinator.py"
     source = path.read_text(encoding="utf-8")
@@ -426,7 +426,7 @@ def test_stage_execute_path_resolves_only_executable_stages() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _ArchitectureVisitor._call_name(node)
-            if name in STAGE_C_EXECUTION_TOKENS:
+            if name in UNBOUNDED_STAGE_RESOLUTION_TOKENS:
                 called.append(f"stress_coordinator.py:{node.lineno} calls {name}")
     assert called == [], "; ".join(called)
 

@@ -25,11 +25,13 @@ STAGES: dict[str, StageDefinition] = {
     STAGE_C.stage: STAGE_C,
 }
 
-#: Stages the WP10 execute path may run. Stage C is defined for WP11 only and is
-#: never executed here; plan P3-WP11 owns it as a separate fresh-session gate.
-EXECUTABLE_STAGES: frozenset[str] = frozenset({STAGE_A.stage, STAGE_B.stage})
+#: Stages enabled by the completed acceptance program. Keeping this set
+#: explicit makes any future stage definition fail closed until it is qualified.
+EXECUTABLE_STAGES: frozenset[str] = frozenset(
+    {STAGE_A.stage, STAGE_B.stage, STAGE_C.stage}
+)
 
-#: Every ADR §13 coverage item a Stage A/B run must exercise at least once.
+#: Every ADR §13 coverage item a stage run must exercise at least once.
 COVERAGE_ITEMS: tuple[str, ...] = (
     "camera_rotation",
     "pan",
@@ -63,16 +65,14 @@ def resolve_stage(name: str) -> StageDefinition:
 
 
 def resolve_executable_stage(name: str) -> StageDefinition:
-    """Resolve a stage the WP10 execute path is allowed to run (A or B only)."""
+    """Resolve a stage enabled by the completed acceptance program."""
 
     definition = resolve_stage(name)
     if definition.stage not in EXECUTABLE_STAGES:
         executable = ", ".join(sorted(EXECUTABLE_STAGES))
         raise ValueError(
-            f"stage {definition.stage} is not executable in P3-WP10; "
-            f"executable stages are {executable}. Stage C "
-            f"({STAGE_C.view_mutation_cycles}/{STAGE_C.save_cycles}) is the separate "
-            "P3-WP11 fresh-session gate and must not run here."
+            f"stage {definition.stage} is defined but not executable; "
+            f"executable stages are {executable}"
         )
     return definition
 
