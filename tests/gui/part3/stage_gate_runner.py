@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Tracked Stage A/B launcher, execution provenance recorder and validator."""
+"""Tracked Stage A/B/C launcher, execution provenance recorder and validator."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ LINUX_BUILD_MOUNT = "/workspace/build"
 EVIDENCE_LINE = re.compile(r"^evidence:\s*(?P<path>.+)$", re.MULTILINE)
 HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 PROBE_REFUSAL_EXIT = 73
-STAGE_EXECUTION_TIMEOUT_SECONDS = {"a": 3900, "b": 11100}
+STAGE_EXECUTION_TIMEOUT_SECONDS = {"a": 3900, "b": 11100, "c": 57900}
 LINUX_RELEASE_BARRIER_TIMEOUT_SECONDS = 120
 LINUX_DOCKER_CONTROL_TIMEOUT_SECONDS = 30
 WINDOWS_TIMEOUT_CLEANUP_SECONDS = 30
@@ -74,6 +74,10 @@ STAGE_NODEIDS = {
     "b": (
         "tests/gui/part3/test_part3_stage_acceptance.py::"
         "test_stage_b_runs_fifty_view_cycles_and_twenty_save_cycles"
+    ),
+    "c": (
+        "tests/gui/part3/test_part3_stage_acceptance.py::"
+        "test_stage_c_runs_five_hundred_view_cycles_and_one_hundred_save_cycles"
     ),
 }
 
@@ -954,7 +958,11 @@ def validate_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
     """Acceptance validation: structure, execution success and artifacts must pass."""
 
     _require(packet.get("schema_version") == 1, "unsupported packet schema")
-    _require(packet.get("stage") in {"A", "B"}, "packet stage must be A or B")
+    qualified_stages = {stage.upper() for stage in STAGE_NODEIDS}
+    _require(
+        packet.get("stage") in qualified_stages,
+        "packet stage must be a qualified executable stage",
+    )
     _require(
         packet.get("prepared_before_execution") is True,
         "packet was not retained before execution",

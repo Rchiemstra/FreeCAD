@@ -1115,10 +1115,7 @@ def _artifacts(tmp_path: Path, stage: str) -> dict[str, Any]:
 
     evidence_payload = _stage_evidence(stage, documents_root=tmp_path / "source-documents")
     evidence = json.dumps(evidence_payload)
-    function_name = (
-        "test_stage_a_runs_ten_view_cycles_and_five_save_cycles"
-        if stage == "A" else "test_stage_b_runs_fifty_view_cycles_and_twenty_save_cycles"
-    )
+    function_name = runner.STAGE_NODEIDS[stage.lower()].split("::", 1)[1]
     junit = (
         '<testsuite tests="1" failures="0" errors="0" skipped="0">'
         '<testcase classname="tests.gui.part3.test_part3_stage_acceptance" '
@@ -1147,10 +1144,9 @@ def _artifacts(tmp_path: Path, stage: str) -> dict[str, Any]:
 
 
 def _junit(stage: str) -> str:
-    name = (
-        "test_stage_a_runs_ten_view_cycles_and_five_save_cycles"
-        if stage.upper() == "A" else "test_stage_b_runs_fifty_view_cycles_and_twenty_save_cycles"
-    )
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    name = runner.STAGE_NODEIDS[stage.lower()].split("::", 1)[1]
     return (
         '<testsuite tests="1" failures="0" errors="0" skipped="0">'
         '<testcase classname="tests.gui.part3.test_part3_stage_acceptance" '
@@ -1441,7 +1437,7 @@ def test_linux_stage_rejects_outer_command_targeting_other_script(
         runner.validate_packet(packet)
 
 
-@pytest.mark.parametrize("stage", ["a", "b"])
+@pytest.mark.parametrize("stage", ["a", "b", "c"])
 def test_exact_windows_constructor_commands_validate(
     tmp_path: Path, stage: str
 ) -> None:
@@ -1451,7 +1447,7 @@ def test_exact_windows_constructor_commands_validate(
     assert runner.validate_packet(packet)["platform"] == "windows"
 
 
-@pytest.mark.parametrize("stage", ["a", "b"])
+@pytest.mark.parametrize("stage", ["a", "b", "c"])
 def test_exact_linux_constructor_scripts_and_commands_validate(
     tmp_path: Path, stage: str
 ) -> None:

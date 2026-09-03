@@ -409,7 +409,7 @@ def _stamp_evidence_mode(evidence_path: Path, mode: str) -> None:
     """Mark which kind of run produced this envelope (GRK-P3-077).
 
     A preflight-only artifact carries ``stage: null`` and ``mode:
-    "preflight_only"`` so it can never be mistaken for a Stage A/B result.
+    "preflight_only"`` so it can never be mistaken for a stage result.
     """
 
     if not evidence_path.is_file():
@@ -887,7 +887,7 @@ def _remote_actor_record(*, child_token_absence_proved: bool) -> dict[str, Any]:
 
 
 class StageCheckFailed(RuntimeError):
-    """One Stage A/B acceptance check failed; the stage stops and reports FAILED."""
+    """One staged acceptance check failed; the stage stops and reports FAILED."""
 
 
 @dataclass
@@ -3012,8 +3012,11 @@ def _stage_source_files(repo_root: Path = REPO_ROOT) -> tuple[str, ...]:
 STAGE_SOURCE_FILES = _stage_source_files()
 BINARY_INDEPENDENT_PATHS = frozenset({
     *STAGE_SOURCE_FILES,
+    "doc/document-collaboration-completion-progress.md",
+    "tests/gui/part3/test_part3_architecture.py",
     "tests/gui/part3/test_part3_stage_gate_runner.py",
     "tests/gui/part3/test_part3_stage_acceptance.py",
+    "tests/gui/part3/test_part3_stress_coordinator_launcher.py",
 })
 
 PROVENANCE_HISTORY_DEPTH = 40
@@ -3282,11 +3285,7 @@ def run_stage(
     run_root: Path | None = None,
     freecad_exe: Path | None = None,
 ) -> int:
-    """Run one ADR §13 Stage A/B program; 0 pass, 1 stage failure, 2 fatal preflight.
-
-    Stage C is refused before anything is launched: it is the separate P3-WP11
-    fresh-session gate.
-    """
+    """Run one ADR §13 Stage A/B/C program; 0 pass, 1 failure, 2 fatal preflight."""
 
     definition = resolve_executable_stage(getattr(stage, "stage", stage))
     root = (repo_root or REPO_ROOT).resolve()
@@ -3559,7 +3558,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--stage",
-        help="Run Stage A or Stage B (ADR section 13). Stage C belongs to P3-WP11; refused.",
+        help="Run Stage A, Stage B, or Stage C (ADR section 13).",
     )
     parser.add_argument(
         "--preflight-only",
