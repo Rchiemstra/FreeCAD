@@ -1191,6 +1191,7 @@ def _windows_packet(tmp_path: Path, stage: str = "a") -> dict[str, Any]:
         "environment": {
             "PART3_STAGE_LIVE": "1",
             "FREECAD_MCP_SESSION_TTL_SECONDS": None,
+            "PYTHONFAULTHANDLER": "1",
             "PART3_STAGE_EVIDENCE_HANDOFF": str(tmp_path / "handoff.json"),
         },
         "ttl": _ttl(),
@@ -1301,6 +1302,7 @@ def _linux_packet(tmp_path: Path, stage: str = "b") -> dict[str, Any]:
         "environment": {
             "PART3_STAGE_LIVE": "1",
             "FREECAD_MCP_SESSION_TTL_SECONDS": None,
+            "PYTHONFAULTHANDLER": "1",
             "PART3_STAGE_EVIDENCE_HANDOFF": f"/out/stage-{stage}-handoff.json",
         },
         "ttl": _ttl(),
@@ -1455,6 +1457,38 @@ def test_exact_linux_constructor_scripts_and_commands_validate(
 
     packet = _linux_packet(tmp_path / stage, stage)
     assert runner.validate_packet(packet)["platform"] == "linux-docker"
+
+
+@pytest.mark.parametrize("platform", ["windows", "linux"])
+def test_stage_packets_require_fault_handler_provenance(
+    tmp_path: Path, platform: str
+) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    packet = (
+        _windows_packet(tmp_path / platform, "c")
+        if platform == "windows"
+        else _linux_packet(tmp_path / platform, "c")
+    )
+    del packet["environment"]["PYTHONFAULTHANDLER"]
+    with pytest.raises(ValueError, match="fault-handler"):
+        runner.validate_packet(packet)
+
+
+def test_linux_stage_script_must_really_enable_fault_handler(
+    tmp_path: Path,
+) -> None:
+    from tests.gui.part3 import stage_gate_runner as runner
+
+    packet = _linux_packet(tmp_path, "c")
+    script = Path(packet["artifacts"]["container_script"]["path"]).read_text(
+        encoding="utf-8"
+    )
+    _replace_container_script(
+        packet, script.replace("export PYTHONFAULTHANDLER=1\n", "")
+    )
+    with pytest.raises(ValueError, match="fault traces"):
+        runner.validate_packet(packet)
 
 
 @pytest.mark.parametrize("stage", ["a", "b"])

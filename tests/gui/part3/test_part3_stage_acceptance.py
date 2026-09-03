@@ -81,6 +81,46 @@ HANDOFF_ENV = "PART3_STAGE_EVIDENCE_HANDOFF"
 STAGE_TIMEOUTS = {"a": 3600.0, "b": 10800.0, "c": 57600.0}
 
 
+def test_evidence_writer_streams_large_payload_without_materializing_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = empty_evidence(stage="C")
+    payload["cycles"] = [
+        {"index": index, "detail": "x" * 4096} for index in range(1024)
+    ]
+
+    def forbidden_dumps(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("write_evidence must stream instead of calling json.dumps")
+
+    monkeypatch.setattr(json, "dumps", forbidden_dumps)
+    path = tmp_path / "evidence.json"
+    write_evidence(path, payload)
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert len(written["cycles"]) == 1024
+    assert written["cycles"][-1]["index"] == 1023
+
+
+def test_evidence_writer_preserves_last_checkpoint_on_publication_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "evidence.json"
+    original = empty_evidence(stage="C")
+    write_evidence(path, original)
+    original_bytes = path.read_bytes()
+
+    def fail_after_partial_write(_payload: Any, stream: Any, **_kwargs: Any) -> None:
+        stream.write('{"partial":')
+        stream.flush()
+        raise RuntimeError("injected streaming failure")
+
+    monkeypatch.setattr(json, "dump", fail_after_partial_write)
+    with pytest.raises(RuntimeError, match="injected streaming failure"):
+        write_evidence(path, empty_evidence(stage="C"))
+
+    assert path.read_bytes() == original_bytes
+    assert list(tmp_path.glob(".evidence.json.*.tmp")) == []
+
+
 def test_provision_waits_for_transient_readiness_before_each_first_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

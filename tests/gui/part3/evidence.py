@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -552,11 +553,23 @@ def write_evidence(path: Path, payload: dict[str, Any]) -> None:
             f"got {payload.get('schema_version')!r}"
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            # Stage C grows beyond 25 MiB. Building one equally large temporary
+            # string on every checkpoint caused allocator churn until CPython
+            # itself faulted late in the 500-cycle run. Stream the same complete
+            # JSON value and publish it atomically instead.
+            json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def finalize_evidence(payload: dict[str, Any], *, verdict: str) -> dict[str, Any]:

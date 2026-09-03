@@ -35,6 +35,7 @@ from tests.gui.part3.evidence import (  # noqa: E402
 
 LIVE_STAGE_ENV = "PART3_STAGE_LIVE"
 TTL_ENV = "FREECAD_MCP_SESSION_TTL_SECONDS"
+FAULT_HANDLER_ENV = "PYTHONFAULTHANDLER"
 IMAGE_ID_PREFIX = "sha256:"
 LINUX_REPO_MOUNT = "/repo"
 LINUX_BUILD_MOUNT = "/workspace/build"
@@ -844,6 +845,12 @@ def _validate_artifacts(
             "container script does not preserve the default-TTL environment",
         )
         _require(
+            "export PYTHONFAULTHANDLER=1" in script
+            and script.index("export PYTHONFAULTHANDLER=1")
+            < script.index("python3 -m pytest"),
+            "container script does not enable pre-execution Python fault traces",
+        )
+        _require(
             paths["release_barrier"].text() == "release\n",
             "release barrier artifact is malformed",
         )
@@ -973,8 +980,9 @@ def validate_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
     _require(
         isinstance(environment, dict)
         and environment.get(LIVE_STAGE_ENV) == "1"
-        and environment.get(TTL_ENV) is None,
-        "exact live-stage/default-TTL environment is absent",
+        and environment.get(TTL_ENV) is None
+        and environment.get(FAULT_HANDLER_ENV) == "1",
+        "exact live-stage/default-TTL/fault-handler environment is absent",
     )
 
     execution = packet.get("execution")
@@ -1618,6 +1626,7 @@ def run_windows(
     command = _windows_stage_command(python_executable, output, stage_key)
     env = dict(os.environ)
     env[LIVE_STAGE_ENV] = "1"
+    env[FAULT_HANDLER_ENV] = "1"
     env.pop(TTL_ENV, None)
     handoff_path = output / f"stage-{stage_key}-handoff.json"
     handoff_path.unlink(missing_ok=True)
@@ -1634,6 +1643,7 @@ def run_windows(
         "environment": {
             LIVE_STAGE_ENV: env[LIVE_STAGE_ENV],
             TTL_ENV: None,
+            FAULT_HANDLER_ENV: env[FAULT_HANDLER_ENV],
             HANDOFF_ENV: str(handoff_path),
         },
         "ttl": session_ttl_provenance(repo_root, environ=env),
@@ -1711,6 +1721,7 @@ export LD_LIBRARY_PATH=/workspace/build/debug/lib${{LD_LIBRARY_PATH:+:$LD_LIBRAR
 export PYTHONPATH=/repo/.pixi/envs/default/Lib/site-packages:/repo
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONFAULTHANDLER=1
 export PART3_STAGE_LIVE=1
 export FREECAD_EXE=/workspace/build/debug/bin/FreeCAD
 unset FREECAD_MCP_SESSION_TTL_SECONDS
@@ -2211,6 +2222,7 @@ def run_linux_docker(
         "environment": {
             LIVE_STAGE_ENV: "1",
             TTL_ENV: None,
+            FAULT_HANDLER_ENV: "1",
             HANDOFF_ENV: f"/out/stage-{stage_key}-handoff.json",
         },
         "ttl": session_ttl_provenance(repo_root, environ=ttl_env),
