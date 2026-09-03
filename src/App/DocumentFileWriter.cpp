@@ -4135,6 +4135,14 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
             // denied" after the document had already been serialized.
             if (_impl->request.mode != DocumentFileReplacementMode::NoReplace
                 && _impl->destinationSource && _impl->destinationSource->isReadOnly()) {
+                if (!_impl->request.allowReadOnlyDestination) {
+                    // The caller did not ask to override the attribute. Refuse
+                    // rather than replace a file the user marked read-only.
+                    return fail("DESTINATION_READ_ONLY",
+                                "The destination is marked read-only and this save did not "
+                                "request the read-only override: '"
+                                    + _impl->destinationUtf8 + "'");
+                }
                 if (!_impl->destinationSource->hasProvenAttributeAuthority()) {
                     return fail("DESTINATION_READ_ONLY",
                                 "The destination is marked read-only and this process does not "

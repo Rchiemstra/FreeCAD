@@ -110,6 +110,11 @@ struct DocumentFileReplacementRequest
     bool rejectDestinationLinks {false};
     bool createParentDirectories {true};
     bool preserveDisplacedFile {false};
+    // Opt-in. A replacement whose destination carries FILE_ATTRIBUTE_READONLY is
+    // refused unless the caller asks for the override, so an ordinary save cannot
+    // silently overwrite a file the user marked read-only. Document::forceSave is
+    // the explicit opt-in; see replaceOwnedFile's ignoreDestinationReadOnly.
+    bool allowReadOnlyDestination {false};
     int lockTimeoutMs {0};
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
     // Deterministic developer-test seams. This field and all corresponding

@@ -5202,6 +5202,18 @@ Internal::DocumentFileReplacementResult Document::saveToFileWithPolicy(
     };
     signalStartSave(*this, filename);
 
+    // An ordinary Save does not silently replace a read-only destination. Refuse
+    // before serializing anything, so the user gets the same early, typed error
+    // as upstream instead of a late failure at the namespace boundary. The
+    // writer's read-only override stays reachable through forceSave, which is
+    // the explicit opt-in for exactly this case.
+    if (intent != DocumentSaveIntent::Force) {
+        Base::FileInfo destinationInfo(filename);
+        if (destinationInfo.exists() && !destinationInfo.isWritable()) {
+            throw Base::FileWritePermissionException(destinationInfo);
+        }
+    }
+
     auto hGrp = GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Document");
     int compression = static_cast<int>(hGrp->GetInt("CompressionLevel", 7));
@@ -5216,6 +5228,8 @@ Internal::DocumentFileReplacementResult Document::saveToFileWithPolicy(
     request.expectedDestinationSha256 = expectedDestinationSha256;
     request.forbiddenAliasPath = forbiddenAliasPath;
     request.preserveDisplacedFile = true;
+    // Only an explicit forceSave may replace a read-only destination.
+    request.allowReadOnlyDestination = intent == DocumentSaveIntent::Force;
 
     Internal::DocumentFileWriter fileWriter(std::move(request));
 

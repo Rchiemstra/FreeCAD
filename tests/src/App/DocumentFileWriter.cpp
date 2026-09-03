@@ -2455,6 +2455,9 @@ TEST_F(DocumentFileWriterTest, ExistingBasicAttributesAndProtectedDaclSurviveRep
 
     App::Internal::DocumentFileReplacementRequest request;
     request.destination = pathToUtf8(destination);
+    // The destination carries FILE_ATTRIBUTE_READONLY, so this replacement needs
+    // the explicit override; an ordinary save is refused instead.
+    request.allowReadOnlyDestination = true;
     App::Internal::DocumentFileWriter writer(std::move(request));
     serialize(writer, "new bytes");
     const auto result = writer.commit();
@@ -2470,6 +2473,31 @@ TEST_F(DocumentFileWriterTest, ExistingBasicAttributesAndProtectedDaclSurviveRep
     const auto actualDacl = readWindowsDacl(destination);
     EXPECT_TRUE(actualDacl.protectedDacl);
     EXPECT_EQ(actualDacl.bytes, expectedDacl.bytes);
+}
+
+TEST_F(DocumentFileWriterTest, ReadOnlyDestinationIsRefusedWithoutTheOverride)
+{
+    const auto destination = path("document.FCStd");
+    writeFile(destination, "old bytes");
+    const DWORD initialAttributes = GetFileAttributesW(destination.c_str());
+    ASSERT_NE(initialAttributes, INVALID_FILE_ATTRIBUTES);
+    if (SetFileAttributesW(destination.c_str(), initialAttributes | FILE_ATTRIBUTE_READONLY)
+        == 0) {
+        GTEST_SKIP() << "The read-only attribute is unavailable: " << GetLastError();
+    }
+
+    App::Internal::DocumentFileReplacementRequest request;
+    request.destination = pathToUtf8(destination);
+    // Deliberately not requesting the override: this is an ordinary save.
+    App::Internal::DocumentFileWriter writer(std::move(request));
+    serialize(writer, "new bytes");
+    const auto result = writer.commit();
+
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_EQ(result.errorCode, "DESTINATION_READ_ONLY");
+    // The refusal leaves the user's file exactly as it was.
+    SetFileAttributesW(destination.c_str(), initialAttributes);
+    EXPECT_EQ(readFile(destination), "old bytes");
 }
 
 TEST_F(DocumentFileWriterTest, NewFileRetainsSameParentInheritedDacl)
