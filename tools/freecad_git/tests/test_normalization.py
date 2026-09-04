@@ -40,6 +40,14 @@ class TestNormalization:
         assert is_excluded_property("Shape", "Part::PropertyPartShape", frozenset())
         # Visibility is emitted as a dedicated object field, not duplicated here.
         assert is_excluded_property("Visibility", "App::PropertyBool", frozenset())
+        assert (
+            is_excluded_property(
+                "ExpressionEngine",
+                "App::PropertyExpressionEngine",
+                frozenset(),
+            )
+            is False
+        )
         assert is_excluded_property("Label", "App::PropertyString", frozenset()) is False
 
     def test_safe_external_path_relative(self):

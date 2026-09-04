@@ -180,7 +180,11 @@ def _parse_expression_engine(container: dict[str, Any]) -> dict[str, str]:
     expressions: dict[str, str] = {}
     for expr in _children(container.get("children", []), "Expression"):
         path = expr["attrs"].get("path", "")
-        text = expr.get("text", "") or expr["attrs"].get("value", "")
+        text = expr["attrs"].get("expression")
+        if text is None:
+            # Retain compatibility with older synthetic fixtures/exporters that
+            # represented the expression as element text or a value attribute.
+            text = expr.get("text", "") or expr["attrs"].get("value", "")
         if path:
             expressions[path] = normalize_expression(text)
     return expressions
@@ -538,7 +542,7 @@ def parse_object_properties(
             props[name] = value
             continue
 
-        if name in (
+        if obj_type.startswith("PartDesign::") and name in (
             "Length",
             "Length2",
             "Height",

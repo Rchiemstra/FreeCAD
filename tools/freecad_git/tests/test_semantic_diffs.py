@@ -102,6 +102,55 @@ class TestSemanticDiffs:
         assert "25" in text
         assert "Sketch" in text
 
+    def test_part_box_dimensions_and_expressions_remain_semantic_properties(
+        self, tmp_path
+    ):
+        document_xml = """<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4" ProgramVersion="0.21R" FileVersion="1" name="BoxExpressions">
+  <Properties Count="0"/>
+  <Objects Count="1">
+    <Object type="Part::Box" name="Box"/>
+  </Objects>
+  <ObjectData Count="1">
+    <Object name="Box">
+      <Properties Count="5">
+        <Property name="Label" type="App::PropertyString">
+          <String value="Box"/>
+        </Property>
+        <Property name="Length" type="App::PropertyLength">
+          <Float value="420"/>
+        </Property>
+        <Property name="Width" type="App::PropertyLength">
+          <Float value="410"/>
+        </Property>
+        <Property name="Height" type="App::PropertyLength">
+          <Float value="400"/>
+        </Property>
+        <Property name="ExpressionEngine" type="App::PropertyExpressionEngine">
+          <ExpressionEngine count="3">
+            <Expression path="Length" expression="&lt;&lt;Dims&gt;&gt;.length"/>
+            <Expression path="Width" expression="&lt;&lt;Dims&gt;&gt;.width"/>
+            <Expression path="Height" expression="&lt;&lt;Dims&gt;&gt;.height"/>
+          </ExpressionEngine>
+        </Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>
+"""
+        model_path = tmp_path / "box_expressions.FCStd"
+        write_fixture(model_path, document_xml)
+
+        box = export_to_dict(model_path)["objects"]["Box"]
+
+        assert sorted(box["properties"]) == ["Height", "Length", "Width"]
+        assert "partdesign" not in box
+        assert box["expressions"] == {
+            "Height": "<<Dims>>.height",
+            "Length": "<<Dims>>.length",
+            "Width": "<<Dims>>.width",
+        }
+
     def test_constraint_in_sketch(self, fixtures_dir):
         data = export_to_bytes(fixtures_dir / "partdesign.FCStd")
         text = data.decode("utf-8")
