@@ -319,7 +319,10 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeReques
         request.refreshRevisionFenceAfterEachCommit;
     for (auto& feature : request.features) {
         const std::string featureId = feature.featureId;
-        job->nodes.emplace(featureId, Job::Node {std::move(feature)});
+        job->nodes.emplace(featureId,
+                           Job::Node {.request = std::move(feature),
+                                      .executionId = std::nullopt,
+                                      .diagnostic = {}});
     }
     if (job->nodes.empty()) {
         job->state = DocumentRecomputeState::Completed;

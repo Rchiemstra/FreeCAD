@@ -791,7 +791,7 @@ public:
     openRegularNoFollow(const fs::path& path,
                         const std::shared_ptr<PinnedDirectory>& parent,
                         const bool requireRenameAuthority,
-                        const bool requireDurabilityAuthority = false)
+                        [[maybe_unused]] const bool requireDurabilityAuthority = false)
     {
 #ifdef FC_OS_WIN32
         DWORD access = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL;
@@ -2252,7 +2252,7 @@ bool replaceOwnedFile(NativeFile& temporary,
                       const DocumentFileReplacementMode mode,
                       std::error_code& error,
                       bool& sourceConsumed,
-                      const bool ignoreDestinationReadOnly)
+                      [[maybe_unused]] const bool ignoreDestinationReadOnly)
 {
     sourceConsumed = false;
 #ifdef FC_OS_WIN32
@@ -3417,7 +3417,7 @@ DocumentFileReplacementResult DocumentFileWriter::commit()
         bool installed = false;
         // Set when the replacement had to override a read-only destination, so
         // the post-replacement verification can insist the attribute survived.
-        bool destinationWasReadOnly = false;
+        [[maybe_unused]] bool destinationWasReadOnly = false;
         if (expectedDestinationSha256) {
             bool guardMoved = false;
             bool guardRestoreHookInvoked = false;

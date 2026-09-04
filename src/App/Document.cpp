@@ -2175,7 +2175,9 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
         }
         if (it->second != d->activeUndoTransaction) {
             while (!mUndoTransactions.empty() && mUndoTransactions.back() != it->second) {
-                undoCompatibilityTransactionImpl(0);
+                if (!undoCompatibilityTransactionImpl(0)) {
+                    return false;
+                }
             }
         }
     }
@@ -2236,7 +2238,9 @@ bool Document::redoCompatibilityTransactionImpl(const int id)
             return false;
         }
         while (!mRedoTransactions.empty() && mRedoTransactions.back() != it->second) {
-            redoCompatibilityTransactionImpl(0);
+            if (!redoCompatibilityTransactionImpl(0)) {
+                return false;
+            }
         }
     }
 
