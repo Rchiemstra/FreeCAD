@@ -14,6 +14,7 @@
 #include "private/CollaborativeOperationRegistryInternal.h"
 
 #include <Base/Exception.h>
+#include <Base/Tools.h>
 #include <Base/Type.h>
 #include <Base/Writer.h>
 
@@ -53,6 +54,21 @@ public:
             || !feature.isAttachedToDocument()) {
             throw Base::RuntimeError(
                 "generic recompute worker access requires an attached temporary document");
+        }
+        return document._recomputeFeature(&feature);
+    }
+
+    static int executeAuthoritative(Document& document, DocumentObject& feature)
+    {
+        if (document.testStatus(Document::TempDoc)
+            || !document.testStatus(Document::Recomputing)
+            || !document.isCollaborationOwnerThread()
+            || !document.hasPendingTransaction()
+            || !document.collaborationRevisionPublicationSuppressed()
+            || feature.getDocument() != &document
+            || !feature.isAttachedToDocument()) {
+            throw Base::RuntimeError(
+                "authoritative transient-schema recompute requires the coordinator commit boundary");
         }
         return document._recomputeFeature(&feature);
     }
@@ -256,6 +272,34 @@ bool isPartFeatureShapeRecomputeOutput(const App::DocumentObject& object,
         && object.getPropertyByName("Shape") == &property;
 }
 
+bool usesAuthoritativeTransientRecomputeSchema(const App::DocumentObject& object)
+{
+    // Spreadsheet cell values are derived Prop_NoPersist dynamic properties.
+    // They cannot cross the FCStd worker archive, so the isolated execution is
+    // used as a fail-closed preflight and the exact built-in Sheet type repeats
+    // its deterministic execute() inside the coordinator-owned transaction.
+    const Base::Type spreadsheetType = Base::Type::fromName("Spreadsheet::Sheet");
+    return !spreadsheetType.isBad() && object.getTypeId() == spreadsheetType;
+}
+
+bool isArchiveTransientDynamicProperty(const App::Property& property)
+{
+    return property.testStatus(App::Property::PropDynamic)
+        && property.testStatus(App::Property::PropNoPersist);
+}
+
+std::vector<std::pair<std::string, App::Property*>> persistentNamedProperties(
+    const App::DocumentObject& object)
+{
+    auto properties = namedProperties(object);
+    if (usesAuthoritativeTransientRecomputeSchema(object)) {
+        std::erase_if(properties, [](const auto& entry) {
+            return isArchiveTransientDynamicProperty(*entry.second);
+        });
+    }
+    return properties;
+}
+
 bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
                                const App::Property& property)
 {
@@ -263,9 +307,13 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
     // feature, while legacy edit/touch behavior requires Shape to remain a
     // normal (non-Prop_Output) property.  Keep this compatibility contract
     // narrow: exact registered Part ancestry plus the built-in Shape member.
+    const auto expressions = object.ExpressionEngine.getExpressions();
+    const bool expressionOutput = std::ranges::any_of(
+        expressions, [&property](const auto& expression) {
+            return expression.first.getProperty() == &property;
+        });
     return object.isOutputProperty(&property)
-        || static_cast<bool>(
-            object.getExpression(App::ObjectIdentifier(property)).expression)
+        || expressionOutput
         || isPartFeatureShapeRecomputeOutput(object, property);
 }
 
@@ -277,7 +325,7 @@ ObjectManifest manifestFor(const App::DocumentObject& object)
     ObjectManifest result;
     result.name = object.getNameInDocument();
     result.type = object.getTypeId().getName();
-    for (const auto& [name, property] : namedProperties(object)) {
+    for (const auto& [name, property] : persistentNamedProperties(object)) {
         result.properties.push_back(
             {name,
              std::string(property->getTypeId().getName()),
@@ -415,7 +463,7 @@ void validateDetachedSchema(
         if (found == actualByName.end() || found->second->getTypeId().getName() != object.type) {
             throw std::runtime_error("generic recompute changed an object name or type");
         }
-        const auto actualProperties = namedProperties(*found->second);
+        const auto actualProperties = persistentNamedProperties(*found->second);
         if (actualProperties.size() != object.properties.size()) {
             throw std::runtime_error("generic recompute changed a property set");
         }
@@ -582,10 +630,12 @@ class GenericRecomputeOperation final: public App::CollaborativeOperation
 public:
     GenericRecomputeOperation(std::string target,
                               std::string stableIdentity,
-                              std::vector<DecodedOutput> outputs)
+                              std::vector<DecodedOutput> outputs,
+                              const bool authoritativeTransientSchema)
         : _target(std::move(target))
         , _stableIdentity(std::move(stableIdentity))
         , _outputs(std::move(outputs))
+        , _authoritativeTransientSchema(authoritativeTransientSchema)
     {}
 
     GenericRecomputeOperation(std::string target,
@@ -611,6 +661,25 @@ public:
         }
         _applied = false;
         _appliedOutputs.clear();
+        if (_authoritativeTransientSchema) {
+            if (!usesAuthoritativeTransientRecomputeSchema(*target)) {
+                throw std::runtime_error(
+                    "generic recompute transient-schema target contract no longer matches");
+            }
+            Base::ObjectStatusLocker<App::Document::Status, App::Document> recomputing(
+                App::Document::Recomputing, &document);
+            const int result =
+                App::Internal::GenericIsolatedRecomputeAccess::executeAuthoritative(
+                    document, *target);
+            if (result != 0) {
+                const char* diagnostic = document.getErrorDescription(target);
+                throw std::runtime_error(
+                    diagnostic && *diagnostic
+                        ? std::string("authoritative transient-schema recompute failed: ")
+                            + diagnostic
+                        : "authoritative transient-schema recompute failed");
+            }
+        }
         for (const auto& output : _outputs) {
             auto* property = target->getPropertyByName(output.name.c_str());
             if (!property || property->getTypeId().getName() != output.type
@@ -704,6 +773,7 @@ private:
     std::string _target;
     std::string _stableIdentity;
     std::vector<DecodedOutput> _outputs;
+    bool _authoritativeTransientSchema {false};
     std::optional<std::string> _failureDiagnostic;
     mutable bool _applied {false};
     mutable std::vector<std::unique_ptr<App::Property>> _appliedOutputs;
@@ -772,7 +842,8 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const App::GeometryArchive& archive,
     const std::string& target,
     const std::string& stableIdentity,
-    const std::map<std::string, std::string>& expectedOutputs)
+    const std::map<std::string, std::string>& expectedOutputs,
+    const bool authoritativeTransientSchema)
 {
     const auto& section = requireSection(archive, "recompute.outputs", 1);
     BinaryReader reader(section.bytes);
@@ -813,7 +884,10 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     }
     reader.finish();
     return std::make_unique<const GenericRecomputeOperation>(
-        target, stableIdentity, std::move(outputs));
+        target,
+        stableIdentity,
+        std::move(outputs),
+        authoritativeTransientSchema);
 }
 
 std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffects(
@@ -1075,14 +1149,21 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
 
     auto publicationEffectsTemplate = effects;
     auto operationExpectedOutputs = expectedOutputs;
+    const bool authoritativeTransientSchema =
+        usesAuthoritativeTransientRecomputeSchema(*target);
     App::CollaborativeOperationPreparation::IsolatedTask isolated {
         std::move(request),
         std::move(input),
         [targetName,
          stableIdentity = document.collaborationObjectIdentity(*target),
-         expectedOutputs = std::move(operationExpectedOutputs)](
+         expectedOutputs = std::move(operationExpectedOutputs),
+         authoritativeTransientSchema](
             const App::GeometryArchive& output) {
-            return decodeResult(output, targetName, stableIdentity, expectedOutputs);
+            return decodeResult(output,
+                                targetName,
+                                stableIdentity,
+                                expectedOutputs,
+                                authoritativeTransientSchema);
         },
         preserveLegacyRevisionSemantics
             ? App::CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder(

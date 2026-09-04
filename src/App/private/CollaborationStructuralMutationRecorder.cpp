@@ -33,6 +33,21 @@ bool isNewStructuralObject(const DocumentP& state, const DocumentObject& object)
         });
 }
 
+bool propertyStatusMutationAffectsPersistence(const Property& property,
+                                              const unsigned long oldStatus,
+                                              const unsigned long newStatus)
+{
+    const auto changed = oldStatus ^ newStatus;
+    constexpr unsigned long serializedStatusMask =
+        (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+    return (changed & serializedStatusMask) != 0
+        && !property.testStatus(Property::PropNoPersist);
+}
+
 void deferOrEmitDynamicExtension(
     DocumentP& state,
     const ExtensionContainer& container,
@@ -91,10 +106,14 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
     const unsigned long oldStatus,
     const unsigned long newStatus)
 {
+    // Internal guards use runtime-only status bits such as User3 while
+    // maintaining group link caches. Those transitions do not change the
+    // persisted property schema and are safe inside an atomic commit.
+    if (!propertyStatusMutationAffectsPersistence(property, oldStatus, newStatus)) {
+        return;
+    }
     auto* container = property.getContainer();
     const auto* object = dynamic_cast<const DocumentObject*>(container);
-    static_cast<void>(oldStatus);
-    static_cast<void>(newStatus);
     const bool attachedStructuralObject = object && object->getDocument() == &document
         && document.containsObject(object);
     const bool newStructuralObject = attachedStructuralObject

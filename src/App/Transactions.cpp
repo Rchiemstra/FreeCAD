@@ -403,6 +403,14 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
 
             if (!data.property) {
                 // here means we are undoing/redoing and property add operation
+                auto* currentProp = pcObj->getDynamicPropertyByName(v.second.name.c_str());
+                if (!currentProp
+                    || (propagateErrors && currentProp->getID() != v.first)) {
+                    // A same-name property may already have been restored by
+                    // another entry. Do not mistake it for the property whose
+                    // addition this entry is undoing.
+                    continue;
+                }
                 if (!pcObj->removeDynamicProperty(v.second.name.c_str()) && propagateErrors) {
                     throw Base::RuntimeError("dynamic property removal failed");
                 }
@@ -429,6 +437,18 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                 // a new property, the property key inside redo stack will not
                 // match. So we search by name first.
                 prop = pcObj->getDynamicPropertyByName(data.name.c_str());
+                if (prop && propagateErrors && data.propertyType != prop->getTypeId()) {
+                    // A checked rollback must restore the recorded dynamic
+                    // property schema as well as its value. Spreadsheet
+                    // recompute can replace a transient cell property with a
+                    // same-name property of another type, which cannot accept
+                    // Paste() from the original property snapshot.
+                    if (!pcObj->removeDynamicProperty(data.name.c_str())) {
+                        throw Base::RuntimeError(
+                            "mismatched dynamic property removal failed");
+                    }
+                    prop = nullptr;
+                }
                 if (!prop) {
                     // Still not found, re-create the property
                     prop = pcObj->addDynamicProperty(data.propertyType.getName(),
