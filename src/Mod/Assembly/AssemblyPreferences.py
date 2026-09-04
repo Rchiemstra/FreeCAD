@@ -21,26 +21,37 @@
 #                                                                           *
 # **************************************************************************/
 
-import TestApp
+import FreeCAD
 
-from AssemblyTests.TestCore import TestCore
-from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
-from AssemblyTests.TestCommandCreateView import TestCommandCreateView
-from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
-from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
-from AssemblyTests.TestWebotsExport import TestWebotsExport
-from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
-from AssemblyTests.TestSimulationExport import TestSimulationExport
-from AssemblyTests.TestPreferencesImport import TestPreferencesImport
+if FreeCAD.GuiUp:
+    import FreeCADGui
 
-# Use the modules so that code checkers don't complain (flake8)
-True if TestCore else False
-True if TestCommandInsertLink else False
-True if TestCommandCreateView else False
-True if TestCrossBodyDatumStaleness else False
-True if TestOverlayIconsAndOrigin else False
-True if TestWebotsExport else False
-True if TestReviewNotes else False
-True if TestReviewNotesGui else False
-True if TestSimulationExport else False
-True if TestPreferencesImport else False
+translate = FreeCAD.Qt.translate
+
+
+def preferences():
+    return FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/Assembly")
+
+
+class PreferencesPage:
+    def __init__(self, parent=None):
+        if not FreeCAD.GuiUp:
+            raise RuntimeError("Assembly preferences page requires the FreeCAD GUI")
+
+        self.form = FreeCADGui.PySideUic.loadUi(":preferences/Assembly.ui")
+
+    def saveSettings(self):
+        pref = preferences()
+        pref.SetBool("LeaveEditWithEscape", self.form.checkBoxEnableEscape.isChecked())
+        pref.SetBool("LogSolverDebug", self.form.checkBoxSolverDebug.isChecked())
+        pref.SetInt("GroundFirstPart", self.form.groundFirstPart.currentIndex())
+
+    def loadSettings(self):
+        pref = preferences()
+        self.form.checkBoxEnableEscape.setChecked(pref.GetBool("LeaveEditWithEscape", True))
+        self.form.checkBoxSolverDebug.setChecked(pref.GetBool("LogSolverDebug", False))
+        self.form.groundFirstPart.clear()
+        self.form.groundFirstPart.addItem(translate("Assembly", "Ask"))
+        self.form.groundFirstPart.addItem(translate("Assembly", "Always"))
+        self.form.groundFirstPart.addItem(translate("Assembly", "Never"))
+        self.form.groundFirstPart.setCurrentIndex(pref.GetInt("GroundFirstPart", 0))

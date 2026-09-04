@@ -53,7 +53,7 @@ if App.GuiUp:
     from PySide.QtGui import QCursor, QIcon, QGuiApplication, QMessageBox
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 
 translate = App.Qt.translate
 

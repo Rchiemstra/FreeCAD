@@ -34,7 +34,7 @@ if App.GuiUp:
     from PySide.QtCore import QTimer
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 import JointObject
 
 translate = App.Qt.translate
