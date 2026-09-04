@@ -203,15 +203,45 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-lint.sh
 
-  # Public-image gate: avoid pulling the heavy private CI images before the
-  # image-builder workflow has populated an empty local registry.
-  - name: ci-images-ready
+  # Image gate. The local registry has a SHORT RETENTION POLICY, and
+  # build-images.yml deliberately does not run on pull_request -- so the images
+  # can simply be gone with nothing scheduled to republish them. This used to
+  # wait 60 minutes for tags that were never coming and then fail the pipeline.
+  #
+  # Now: check what is actually there, rebuild only what is missing, verify.
+  # When the images are present (the normal case) this costs one HTTP call and
+  # the two build steps are no-ops.
+  - name: ci-images-check
     image: alpine:3.20
     depends_on: []
     environment:
       FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
-      - sh ci/woodpecker/ci-images-ready.sh
+      - sh ci/woodpecker/ci-images-check.sh
+
+  # kaniko cannot build two images in one container, so deps and mcp get their
+  # own steps. Each exits immediately unless ci-images-check flagged it missing.
+  # The mcp image FROMs the deps image, hence the ordering.
+  - name: ci-images-build-deps
+    image: &freecad_kaniko_image gcr.io/kaniko-project/executor:debug
+    depends_on: [ci-images-check]
+    commands:
+      - sh ci/woodpecker/ci-images-build.sh deps
+
+  - name: ci-images-build-mcp
+    image: *freecad_kaniko_image
+    depends_on: [ci-images-build-deps]
+    commands:
+      - sh ci/woodpecker/ci-images-build.sh mcp
+
+  # Name kept so the rest of the pipeline's depends_on entries are unchanged.
+  - name: ci-images-ready
+    image: alpine:3.20
+    depends_on: [ci-images-build-mcp]
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
+    commands:
+      - sh ci/woodpecker/ci-images-verify.sh
 
   - name: freecad-configure-debug
     image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
