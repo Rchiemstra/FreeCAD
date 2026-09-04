@@ -44,7 +44,7 @@ include = [
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 
 [tool.black]
 line-length = 100
