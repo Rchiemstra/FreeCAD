@@ -6,9 +6,11 @@
 #include <App/CollaborativeOperation.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
+#include <App/Expression.h>
 #include <App/FeatureTest.h>
 #include <App/GenericIsolatedRecompute.h>
 #include <App/GeometryWorkerOperationRegistry.h>
+#include <App/ObjectIdentifier.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
 #include <App/Range.h>
@@ -17,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -161,6 +164,35 @@ TEST_F(GenericIsolatedRecomputeTest,
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
     feature->Value.setValue(feature->Value.getValue() + 1);
     EXPECT_FALSE(operation->checkPostcondition(*_document).satisfied);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       subpathExpressionMarksAndAppliesItsOwningProperty)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("PlacementExpression");
+    ASSERT_NE(feature, nullptr);
+    feature->Distance.setValue(23.5);
+    feature->setExpression(
+        App::ObjectIdentifier::parse(feature, "Placement.Base.x"),
+        std::shared_ptr<App::Expression>(App::Expression::parse(feature, "Distance")));
+    ASSERT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 0.0);
+
+    auto preparation = prepare("PlacementExpression");
+    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+
+    const auto output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+        std::string(App::GenericIsolatedRecomputeOperationType),
+        preparation.isolatedTask->inputArchive,
+        std::stop_token {});
+    auto operation = preparation.isolatedTask->decodeResult(output);
+    ASSERT_NE(operation, nullptr);
+
+    EXPECT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 0.0);
+    operation->apply(*_document);
+    EXPECT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 23.5);
+    const auto postcondition = operation->checkPostcondition(*_document);
+    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

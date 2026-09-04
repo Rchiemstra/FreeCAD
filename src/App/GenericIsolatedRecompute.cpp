@@ -272,6 +272,50 @@ bool isPartFeatureShapeRecomputeOutput(const App::DocumentObject& object,
         && object.getPropertyByName("Shape") == &property;
 }
 
+bool isSketchObjectExecuteRecomputeOutput(const App::DocumentObject& object,
+                                          const App::Property& property)
+{
+    // SketchObject::execute() solves into Geometry, rebuilds its transient
+    // external-geometry cache, and builds InternalShape before Shape.  These
+    // members predate Prop_Output, so preserve that exact built-in contract
+    // without linking FreeCADApp to Sketcher or admitting link-valued
+    // ExternalGeometry, user-owned Constraints, or derived Python types.
+    const Base::Type sketchObjectType = Base::Type::fromName("Sketcher::SketchObject");
+    if (sketchObjectType.isBad() || object.getTypeId() != sketchObjectType) {
+        return false;
+    }
+    return object.getPropertyByName("Geometry") == &property
+        || object.getPropertyByName("InternalShape") == &property
+        || object.getPropertyByName("ExternalGeo") == &property;
+}
+
+bool isPartDesignAddSubShapeRecomputeOutput(const App::DocumentObject& object,
+                                            const App::Property& property)
+{
+    // FeatureAddSub implementations build AddSubShape as their execute-owned
+    // additive/subtractive tool cache before producing Shape. Keep the
+    // compatibility contract to that exact nonstructural member and registered
+    // ancestry without introducing an App-to-PartDesign link.
+    const Base::Type addSubType = Base::Type::fromName("PartDesign::FeatureAddSub");
+    return !addSubType.isBad()
+        && object.getTypeId().isDerivedFrom(addSubType)
+        && object.getPropertyByName("AddSubShape") == &property;
+}
+
+bool isPartDesignDirectionRecomputeOutput(const App::DocumentObject& object,
+                                          const App::Property& property)
+{
+    // FeatureExtrude::computeDirection() always writes Direction, including
+    // custom-vector mode (where a zero vector falls back to the profile normal).
+    // Keep this exact built-in property in a stable manifest contract so an
+    // expression-driven UseCustomVector mode change cannot alter the schema
+    // while the detached recompute is running.
+    const Base::Type featureExtrudeType = Base::Type::fromName("PartDesign::FeatureExtrude");
+    return !featureExtrudeType.isBad()
+        && object.getTypeId().isDerivedFrom(featureExtrudeType)
+        && object.getPropertyByName("Direction") == &property;
+}
+
 bool usesAuthoritativeTransientRecomputeSchema(const App::DocumentObject& object)
 {
     // Spreadsheet cell values are derived Prop_NoPersist dynamic properties.
@@ -312,9 +356,23 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
         expressions, [&property](const auto& expression) {
             return expression.first.getProperty() == &property;
         });
-    return object.isOutputProperty(&property)
+    // Transient structural outputs such as PartDesign::Feature::_Body are
+    // reconstructed ownership hints, not worker publications.  Keep them in
+    // the manifest and baseline so an execute-time mutation still fails
+    // closed. Nonstructural transient outputs remain eligible because legacy
+    // execute() implementations legitimately update those runtime caches.
+    const bool transientStructuralOutput =
+        property.testStatus(App::Property::PropTransient)
+        && (property.isDerivedFrom<App::PropertyLinkBase>()
+            || property.isDerivedFrom<App::PropertyPythonObject>());
+    const bool compatibleOutput = object.isOutputProperty(&property)
+        && !transientStructuralOutput;
+    return compatibleOutput
         || expressionOutput
-        || isPartFeatureShapeRecomputeOutput(object, property);
+        || isPartFeatureShapeRecomputeOutput(object, property)
+        || isSketchObjectExecuteRecomputeOutput(object, property)
+        || isPartDesignAddSubShapeRecomputeOutput(object, property)
+        || isPartDesignDirectionRecomputeOutput(object, property);
 }
 
 ObjectManifest manifestFor(const App::DocumentObject& object)

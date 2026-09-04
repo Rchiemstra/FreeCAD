@@ -8,7 +8,9 @@
 #include <App/DocumentCommitCoordinator.h>
 #include <App/DocumentObserverPython.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/Expression.h>
 #include <App/FeatureTest.h>
+#include <App/ObjectIdentifier.h>
 #include <App/PropertyStandard.h>
 #include <Base/Interpreter.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
@@ -17,6 +19,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -213,6 +216,7 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
        createThenSetCellsReachCleanStableBoundaries)
 {
     Spreadsheet::Sheet* created = nullptr;
+    App::FeatureTest* dependent = nullptr;
     App::CollaborationCompatibilityMutation createMutation;
     createMutation.scope = App::CollaborationCompatibilityScope::Structural;
     const auto createResult =
@@ -220,19 +224,26 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
             std::move(createMutation), [&] {
                 created = freecad_cast<Spreadsheet::Sheet*>(
                     _document->addObject("Spreadsheet::Sheet", "CreatedSheet"));
+                dependent = _document->addObject<App::FeatureTest>("SheetDependent");
             });
     ASSERT_EQ(createResult.status, App::DocumentCommitStatus::Committed)
         << createResult.message;
     ASSERT_NE(created, nullptr);
+    ASSERT_NE(dependent, nullptr);
     EXPECT_FALSE(_document->mustExecute());
 
     App::CollaborationCompatibilityMutation cellsMutation;
     cellsMutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
     const auto cellsResult =
         _document->collaborationService().commitCompatibilityMutation(
-            std::move(cellsMutation), [created] {
+            std::move(cellsMutation), [created, dependent] {
                 created->setCell("A1", "=1+2");
                 created->setCell("B1", "120 mm");
+                created->setAlias(App::CellAddress("B1"), "span");
+                dependent->setExpression(
+                    App::ObjectIdentifier(dependent->QuantityLength),
+                    std::shared_ptr<App::Expression>(
+                        App::Expression::parse(dependent, "CreatedSheet.span")));
             });
     ASSERT_EQ(cellsResult.status, App::DocumentCommitStatus::Committed)
         << cellsResult.message;
@@ -241,8 +252,11 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     ASSERT_TRUE(numeric->is<App::PropertyInteger>());
     EXPECT_EQ(static_cast<App::PropertyInteger*>(numeric)->getValue(), 3);
     EXPECT_NE(created->getPropertyByName("B1"), nullptr);
+    EXPECT_NE(created->getPropertyByName("span"), nullptr);
+    EXPECT_DOUBLE_EQ(dependent->QuantityLength.getValue(), 120.0);
     EXPECT_FALSE(_document->mustExecute());
     EXPECT_TRUE(created->isValid());
+    EXPECT_TRUE(dependent->isValid());
 }
 
 TEST_F(SpreadsheetCollaborationCompatibilityTest,
