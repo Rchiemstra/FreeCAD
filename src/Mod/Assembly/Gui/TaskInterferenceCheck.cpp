@@ -2730,7 +2730,7 @@ void TaskInterferenceCheck::rebuildTable()
     const bool showExcluded = showExcludedCheck && showExcludedCheck->isChecked();
     const bool showClear = showClearFaceChecks && showClearFaceChecks->isChecked();
 
-    auto ruleKindText = [this](Assembly::InterferenceClearanceRuleKind kind) -> QString {
+    auto ruleKindText = [](Assembly::InterferenceClearanceRuleKind kind) -> QString {
         switch (kind) {
             case Assembly::InterferenceClearanceRuleKind::ExactPair:
                 return tr("Exact pair");

@@ -3158,6 +3158,8 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
                 view3D->viewAll();
                 break;
             }
+        }
+    }
 
     // Loading establishes the durable presentation baseline for this document
     // epoch.  Subsequent ViewProvider publications are dirty until a save
@@ -4318,7 +4320,9 @@ void Document::slotChangePropertyEditor(const App::Document& doc, const App::Pro
 {
     if (getDocument() == &doc) {
         FC_LOG(Prop.getFullName() << " editor changed");
-        getMainWindow()->setUserSchema(doc.UnitSystem.getValue());
+        if (auto* mainWindow = getMainWindow()) {
+            mainWindow->setUserSchema(doc.UnitSystem.getValue());
+        }
     }
 }
 

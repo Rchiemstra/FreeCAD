@@ -109,10 +109,13 @@ std::uint64_t currentProcessId() noexcept
 
 bool processIsAlive(const std::uint64_t processId) noexcept
 {
-    if (processId == 0 || processId > std::numeric_limits<unsigned long>::max()) {
+    if (processId == 0) {
         return false;
     }
 #ifdef Q_OS_WIN
+    if (processId > std::numeric_limits<unsigned long>::max()) {
+        return false;
+    }
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
                                  static_cast<DWORD>(processId));
     if (!process) {
@@ -123,6 +126,9 @@ bool processIsAlive(const std::uint64_t processId) noexcept
     CloseHandle(process);
     return alive;
 #else
+    if (processId > static_cast<std::uint64_t>(std::numeric_limits<pid_t>::max())) {
+        return false;
+    }
     return ::kill(static_cast<pid_t>(processId), 0) == 0 || errno == EPERM;
 #endif
 }

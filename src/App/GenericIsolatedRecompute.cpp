@@ -19,6 +19,9 @@
 #include <Base/Writer.h>
 
 #include <QCryptographicHash>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+# include <QByteArrayView>
+#endif
 
 #include <boost/scope_exit.hpp>
 
@@ -226,15 +229,22 @@ const App::GeometryArchiveSection& requireSection(
 std::string sectionDigest(const std::vector<App::GeometryArchiveSection>& sections)
 {
     QCryptographicHash hash(QCryptographicHash::Sha256);
+    const auto addData = [&hash](const char* data, const std::size_t size) {
+#if QT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+        hash.addData(data, static_cast<int>(size));
+#else
+        hash.addData(QByteArrayView(data, static_cast<qsizetype>(size)));
+#endif
+    };
     for (const auto& section : sections) {
         const std::uint64_t nameSize = section.name.size();
         const std::uint64_t byteSize = section.bytes.size();
-        hash.addData(reinterpret_cast<const char*>(&nameSize), sizeof(nameSize));
-        hash.addData(section.name.data(), static_cast<qsizetype>(section.name.size()));
-        hash.addData(reinterpret_cast<const char*>(&byteSize), sizeof(byteSize));
+        addData(reinterpret_cast<const char*>(&nameSize), sizeof(nameSize));
+        addData(section.name.data(), section.name.size());
+        addData(reinterpret_cast<const char*>(&byteSize), sizeof(byteSize));
         if (!section.bytes.empty()) {
-            hash.addData(reinterpret_cast<const char*>(section.bytes.data()),
-                         static_cast<qsizetype>(section.bytes.size()));
+            addData(reinterpret_cast<const char*>(section.bytes.data()),
+                    section.bytes.size());
         }
     }
     return hash.result().toHex().toStdString();
@@ -1035,7 +1045,8 @@ std::vector<App::DocumentObject*> collectClosure(
         }
         std::unique_ptr<App::DocumentObject> registeredType(
             static_cast<App::DocumentObject*>(object->getTypeId().createInstance()));
-        if (!registeredType || typeid(*registeredType) != typeid(*object)) {
+        const auto* registeredObject = registeredType.get();
+        if (!registeredObject || typeid(*registeredObject) != typeid(*object)) {
             throw std::invalid_argument(
                 "generic recompute object runtime type is not serializable: "
                 + std::string(object->getNameInDocument()));
@@ -1388,7 +1399,8 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         }
         node.provenance = std::string(provenance);
         for (auto* dependency : object->getOutList()) {
-            if (dependency && dependency->getNameInDocument()
+            if (dependency && dependency != object && dependency->getDocument() == &document
+                && dependency->getNameInDocument()
                 && byName.contains(dependency->getNameInDocument())) {
                 node.dependencies.emplace_back(dependency->getNameInDocument());
             }

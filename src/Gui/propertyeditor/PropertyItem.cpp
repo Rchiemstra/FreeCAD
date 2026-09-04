@@ -636,7 +636,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
                 }
                 runCompatibilityMutation(
                     guiDoc,
-                    {Gui::CollaborationCompatibilityMutationKind::UnknownModel, {}, {}},
+                    {Gui::CollaborationCompatibilityMutationKind::UnknownModel, {}, {}, {}},
                     command);
                 continue;
             }

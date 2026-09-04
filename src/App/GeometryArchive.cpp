@@ -3,6 +3,9 @@
 #include "GeometryArchive.h"
 
 #include <QCryptographicHash>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+# include <QByteArrayView>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -83,7 +86,12 @@ std::array<std::uint8_t, Sha256Bytes> sha256(const std::uint8_t* data,
     while (offset < size) {
         const auto chunk = static_cast<int>(std::min<std::size_t>(
             size - offset, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+#if QT_VERSION < QT_VERSION_CHECK(6, 3, 0)
         hash.addData(reinterpret_cast<const char*>(data + offset), chunk);
+#else
+        hash.addData(QByteArrayView(reinterpret_cast<const char*>(data + offset),
+                                    static_cast<qsizetype>(chunk)));
+#endif
         offset += static_cast<std::size_t>(chunk);
     }
     const QByteArray digest = hash.result();
