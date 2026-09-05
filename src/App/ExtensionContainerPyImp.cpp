@@ -24,7 +24,13 @@
 
 #include <sstream>
 
+#include <Base/Interpreter.h>
+
 #include "Application.h"
+#include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
+#include "DocumentObject.h"
+#include "MutationClassification.h"
 
 #include <App/ExtensionContainerPy.h>
 #include <App/ExtensionContainerPy.cpp>
@@ -211,11 +217,25 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     }
 
     if (proxy) {
-        PyErr_SetString(
-            PyExc_DeprecationWarning,
-            "Second argument is deprecated. It is ignored and will be removed in future versions. "
-            "The default Python feature proxy is used for extension method overrides.");
-        PyErr_Print();
+        if (!Base::warnDeprecatedPythonApi(
+                "Argument",
+                "App.ExtensionContainer.addExtension(proxy)",
+                Base::PythonApiDeprecation{
+                    .deprecatedIn = "26.3",
+                    .removedIn = "27.2",
+                    .details = "The second argument is ignored. The default Python feature proxy "
+                               "is used for extension method overrides.",
+                })) {
+            return nullptr;
+        }
+    }
+
+    auto* container = getExtensionContainerPtr();
+    auto* document = documentFromPropertyContainer(container);
+    enforceAtomicPresentationMutationTarget(document);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::ensureDynamicExtensionAllowed(
+            *document, *container);
     }
 
     // get the extension type asked for
@@ -236,8 +256,19 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
         throw Py::TypeError(str.str());
     }
 
-    GetApplication().signalBeforeAddingDynamicExtension(*getExtensionContainerPtr(), typeId);
-    ext->initExtension(getExtensionContainerPtr());
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitBeforeAddingDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalBeforeAddingDynamicExtension(*container, typeId);
+    }
+    ext->initExtension(container);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::recordContainer(
+            *document, *container);
+        document->publishCollaborationMutation(*container, true);
+    }
 
     // The PyTypeObject is shared by all instances of this type and therefore
     // we have to add new methods only once.
@@ -274,7 +305,13 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     Py_DECREF(obj);
 
     // throw the appropriate event
-    GetApplication().signalAddedDynamicExtension(*getExtensionContainerPtr(), typeId);
+    if (document) {
+        Internal::CollaborationStructuralMutationRecorder::emitAddedDynamicExtension(
+            *document, *container, typeId);
+    }
+    else {
+        GetApplication().signalAddedDynamicExtension(*container, typeId);
+    }
 
     Py_Return;
 }

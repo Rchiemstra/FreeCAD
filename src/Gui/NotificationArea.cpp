@@ -22,19 +22,24 @@
 
 
 #include <QAction>
-#include <QActionEvent>
 #include <QApplication>
+#include <QClipboard>
+#include <QDockWidget>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QHideEvent>
+#include <QKeySequence>
 #include <QMenu>
 #include <QMessageBox>
+#include <QShowEvent>
 #include <QStringList>
 #include <QTextDocument>
 #include <QThread>
 #include <QTimer>
 #include <QTreeWidget>
-#include <QWidgetAction>
+#include <algorithm>
+#include <functional>
 #include <memory>
 #include <mutex>
 
@@ -44,9 +49,11 @@
 
 #include "Application.h"
 #include "BitmapFactory.h"
+#include "DockWindowManager.h"
 #include "MDIView.h"
 #include "MainWindow.h"
 #include "NotificationBox.h"
+#include "NotificationClipboard.h"
 
 #include "NotificationArea.h"
 
@@ -59,6 +66,7 @@ namespace sp = std::placeholders;
 using std::lock_guard;
 
 class NotificationAreaObserver;
+class NotificationsWidget;
 
 namespace Gui
 {
@@ -123,9 +131,8 @@ struct NotificationAreaP
     // Access control
     std::mutex mutexNotification;
 
-    // Pointers to widgets (no ownership)
-    QMenu* menu = nullptr;
-    QWidgetAction* notificationaction = nullptr;
+    // Dockable notifications panel (authoritative notification collection)
+    NotificationsWidget* notificationsWidget = nullptr;
 
     /** @name Resources */
     //@{
@@ -455,9 +462,23 @@ public:
         }
     }
 
-    const QString& getNotifier()
+    const QString& getNotifier() const
     {
         return notifierName;
+    }
+
+    Base::LogStyle getType() const
+    {
+        return notificationType;
+    }
+
+    QString clipboardText() const
+    {
+        return formatNotificationClipboardLine(
+            notificationTypeToString(notificationType),
+            notifierName,
+            getMessage()
+        );
     }
 
 private:
@@ -471,7 +492,7 @@ private:
     int repetitions = 0;    // message appears n times in a row.
 };
 
-/** Drop menu Action containing the notifications widget.
+/** Dockable notifications panel owning the authoritative notification collection.
  *  It stores all the notification item information in the form
  * of NotificationItems (QTreeWidgetItem). This information is used
  * by the Widget and by the non-intrusive messages.
@@ -479,19 +500,97 @@ private:
  * of the memory resources, either directly for the intermediate fast cache
  * or indirectly via QT for the case of the QTreeWidgetItems.
  */
-class NotificationsAction: public QWidgetAction
+class NotificationsWidget: public QWidget
 {
 public:
-    NotificationsAction(QWidget* parent)
-        : QWidgetAction(parent)
-    {}
+    explicit NotificationsWidget(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+        // NOLINTBEGIN
+        auto* layout = new QHBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        setLayout(layout);
 
-    NotificationsAction(const NotificationsAction&) = delete;
-    NotificationsAction(NotificationsAction&&) = delete;
-    NotificationsAction& operator=(const NotificationsAction&) = delete;
-    NotificationsAction& operator=(NotificationsAction&&) = delete;
+        tableWidget = new QTreeWidget(this);
+        tableWidget->setColumnCount(3);
 
-    ~NotificationsAction() override
+        QStringList headers;
+        headers << QObject::tr("Type") << QObject::tr("Notifier") << QObject::tr("Message");
+        tableWidget->setHeaderLabels(headers);
+
+        layout->addWidget(tableWidget);
+
+        tableWidget->header()->setStretchLastSection(true);
+        tableWidget->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        tableWidget->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+        tableWidget->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+
+        tableWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        tableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
+        tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        tableWidget->setRootIsDecorated(false);
+        tableWidget->setUniformRowHeights(true);
+
+        copyAction = new QAction(QObject::tr("Copy"), this);
+        copyAction->setShortcut(QKeySequence::Copy);
+        copyAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        copyAction->setEnabled(false);
+        addAction(copyAction);
+        tableWidget->addAction(copyAction);
+
+        QObject::connect(copyAction, &QAction::triggered, this, [this]() { copySelected(); });
+
+        QObject::connect(tableWidget, &QTreeWidget::itemSelectionChanged, this, [this]() {
+            copyAction->setEnabled(!tableWidget->selectedItems().isEmpty());
+        });
+
+        // context menu on any item (row) of the widget
+        QObject::connect(tableWidget, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+            auto selectedItems = tableWidget->selectedItems();
+
+            QMenu menu;
+
+            QAction* copy = menu.addAction(QObject::tr("Copy"), this, [this]() { copySelected(); });
+            copy->setEnabled(!selectedItems.isEmpty());
+
+            menu.addSeparator();
+
+            QAction* del = menu.addAction(QObject::tr("Delete"), this, [&]() {
+                for (auto it : std::as_const(selectedItems)) {
+                    delete it;
+                }
+            });
+
+            del->setEnabled(!selectedItems.isEmpty());
+
+            menu.addSeparator();
+
+            QAction* delnotifications = menu.addAction(
+                QObject::tr("Delete User Notifications"),
+                this,
+                [this]() { deleteNotifications(); }
+            );
+
+            delnotifications->setEnabled(tableWidget->topLevelItemCount() > 0);
+
+            QAction* delall
+                = menu.addAction(QObject::tr("Delete All"), this, [this]() { deleteAll(); });
+
+            delall->setEnabled(tableWidget->topLevelItemCount() > 0);
+
+            menu.setDefaultAction(copy);
+
+            menu.exec(tableWidget->mapToGlobal(pos));
+        });
+        // NOLINTEND
+    }
+
+    NotificationsWidget(const NotificationsWidget&) = delete;
+    NotificationsWidget(NotificationsWidget&&) = delete;
+    NotificationsWidget& operator=(const NotificationsWidget&) = delete;
+    NotificationsWidget& operator=(NotificationsWidget&&) = delete;
+
+    ~NotificationsWidget() override
     {
         for (auto* item : std::as_const(pushedItems)) {
             if (item) {
@@ -500,7 +599,22 @@ public:
         }
     }
 
-public:
+    void setUnreadChangedCallback(std::function<void()> callback)
+    {
+        unreadChangedCallback = std::move(callback);
+    }
+
+    /// True when the panel is actually visible to the user (active dock tab)
+    bool isUserVisible() const
+    {
+        return isVisible();
+    }
+
+    void focusTable()
+    {
+        tableWidget->setFocus(Qt::OtherFocusReason);
+    }
+
     /// deletes only notifications (messages of type Notification)
     void deleteNotifications()
     {
@@ -520,6 +634,7 @@ public:
                 delete pushedItems.takeAt(i);  // NOLINT
             }
         }
+        notifyUnreadChanged();
     }
 
     /// deletes all notifications, errors and warnings
@@ -531,6 +646,7 @@ public:
         while (!pushedItems.isEmpty()) {
             delete pushedItems.takeFirst();
         }
+        notifyUnreadChanged();
     }
 
     /// returns the amount of unread notifications, errors and warnings
@@ -555,12 +671,20 @@ public:
     /// marks all notifications, errors and warnings as read
     void clearUnreadFlag()
     {
-        for (auto i = 0; i < tableWidget->topLevelItemCount();
-             i++) {  // all messages were read, so clear the unread flag
+        for (auto i = 0; i < tableWidget->topLevelItemCount(); i++) {
             // NOLINTNEXTLINE
             auto* item = static_cast<NotificationItem*>(tableWidget->topLevelItem(i));
             item->setRead();
         }
+        for (auto i = 0; i < pushedItems.count(); i++) {
+            // NOLINTNEXTLINE
+            auto* item = static_cast<NotificationItem*>(pushedItems.at(i));
+            item->setRead();
+        }
+        if (tableWidget) {
+            tableWidget->viewport()->update();
+        }
+        notifyUnreadChanged();
     }
 
     /// pushes all Notification Items to the Widget, so that they can be shown
@@ -616,6 +740,7 @@ public:
         else {
             delete tableWidget->topLevelItem(index - pushedItems.count());  // NOLINT
         }
+        notifyUnreadChanged();
     }
 
     /// deletes a given notification, errors or warnings by pointer
@@ -652,6 +777,9 @@ public:
         // NOLINTNEXTLINE
         auto item = static_cast<NotificationItem*>(getItem(0));
         item->addRepetition();
+        if (tableWidget) {
+            tableWidget->viewport()->update();
+        }
     }
 
     /// pushes a notification item to the front
@@ -662,77 +790,69 @@ public:
         return it;
     }
 
-    QSize size()
+    /// Ensure newly pushed or repeated items are visible and marked read when the panel is open
+    void syncIfVisible()
     {
-        return tableWidget->size();
+        if (!isUserVisible()) {
+            return;
+        }
+        synchroniseWidget();
+        clearUnreadFlag();
     }
 
 protected:
-    /// creates the Notifications Widget
-    QWidget* createWidget(QWidget* parent) override
+    void showEvent(QShowEvent* event) override
     {
-        // NOLINTBEGIN
-        QWidget* notificationsWidget = new QWidget(parent);
+        QWidget::showEvent(event);
+        if (!isVisible()) {
+            return;
+        }
+        synchroniseWidget();
+        clearUnreadFlag();
+        focusTable();
+    }
 
-        QHBoxLayout* layout = new QHBoxLayout(notificationsWidget);
-        notificationsWidget->setLayout(layout);
-
-        tableWidget = new QTreeWidget(parent);
-        tableWidget->setColumnCount(3);
-
-        QStringList headers;
-        headers << QObject::tr("Type") << QObject::tr("Notifier") << QObject::tr("Message");
-        tableWidget->setHeaderLabels(headers);
-
-        layout->addWidget(tableWidget);
-
-        tableWidget->setMaximumSize(1200, 600);
-        tableWidget->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
-        tableWidget->header()->setStretchLastSection(false);
-        tableWidget->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
-
-        tableWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
-        tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-
-
-        // context menu on any item (row) of the widget
-        QObject::connect(tableWidget, &QTreeWidget::customContextMenuRequested, [&](const QPoint& pos) {
-            auto selectedItems = tableWidget->selectedItems();
-
-            QMenu menu;
-
-            QAction* del = menu.addAction(tr("Delete"), this, [&]() {
-                for (auto it : std::as_const(selectedItems)) {
-                    delete it;
-                }
-            });
-
-            del->setEnabled(!selectedItems.isEmpty());
-
-            menu.addSeparator();
-
-            QAction* delnotifications = menu.addAction(
-                tr("Delete User Notifications"),
-                this,
-                &NotificationsAction::deleteNotifications
-            );
-
-            delnotifications->setEnabled(tableWidget->topLevelItemCount() > 0);
-
-            QAction* delall = menu.addAction(tr("Delete All"), this, &NotificationsAction::deleteAll);
-
-            delall->setEnabled(tableWidget->topLevelItemCount() > 0);
-
-            menu.setDefaultAction(del);
-
-            menu.exec(tableWidget->mapToGlobal(pos));
-        });
-        // NOLINTEND
-
-        return notificationsWidget;
+    void hideEvent(QHideEvent* event) override
+    {
+        // Preserve stored notifications; move them to the fast cache while hidden
+        if (tableWidget && tableWidget->topLevelItemCount() > 0) {
+            shiftToCache();
+        }
+        QWidget::hideEvent(event);
     }
 
 private:
+    void copySelected()
+    {
+        auto selectedItems = tableWidget->selectedItems();
+        if (selectedItems.isEmpty()) {
+            return;
+        }
+
+        // selectedItems() returns every column cell; keep one entry per row
+        QList<NotificationItem*> rows;
+        for (auto* treeItem : std::as_const(selectedItems)) {
+            // NOLINTNEXTLINE
+            auto* item = static_cast<NotificationItem*>(treeItem);
+            if (!rows.contains(item)) {
+                rows.append(item);
+            }
+        }
+
+        // Preserve visual top-to-bottom order
+        std::sort(rows.begin(), rows.end(), [this](NotificationItem* a, NotificationItem* b) {
+            return tableWidget->indexOfTopLevelItem(a) < tableWidget->indexOfTopLevelItem(b);
+        });
+
+        QStringList lines;
+        lines.reserve(rows.size());
+        for (auto* item : std::as_const(rows)) {
+            lines << item->clipboardText();
+        }
+
+        QApplication::clipboard()->setText(joinNotificationClipboardLines(lines));
+    }
+
     /// utility function to return the number of Notification Items meeting the functor/lambda
     /// criteria
     int getCurrently(std::function<bool(const NotificationItem*)> F) const
@@ -755,8 +875,17 @@ private:
         return instate;
     }
 
+    void notifyUnreadChanged()
+    {
+        if (unreadChangedCallback) {
+            unreadChangedCallback();
+        }
+    }
+
 private:
     QTreeWidget* tableWidget = nullptr;
+    QAction* copyAction = nullptr;
+    std::function<void()> unreadChangedCallback;
     // Intermediate storage
     // Note: QTreeWidget is helplessly slow to single insertions, QTreeWidget is actually only
     // necessary when showing the widget. A single QList insertion into a QTreeWidget is actually
@@ -899,87 +1028,29 @@ NotificationArea::NotificationArea(QWidget* parent)
     pImp->observer = std::make_unique<NotificationAreaObserver>(this);
     pImp->parameterObserver = std::make_unique<NotificationArea::ParameterObserver>(this);
 
-    pImp->menu = new QMenu(parent);  // NOLINT
-    setMenu(pImp->menu);
+    // Create the dockable notifications panel (single authoritative collection)
+    auto* notificationsWidget = new NotificationsWidget(getMainWindow());
+    notificationsWidget->setObjectName(QStringLiteral("Notifications"));
+    notificationsWidget->setWindowTitle(QDockWidget::tr("Notifications"));
+    pImp->notificationsWidget = notificationsWidget;
 
-    auto na = new NotificationsAction(pImp->menu);  // NOLINT
+    notificationsWidget->setUnreadChangedCallback([this]() { updateUnreadIndicator(); });
 
-    pImp->menu->addAction(na);
-
-    pImp->notificationaction = na;
-
-    // NOLINTBEGIN
-    //  Signals for synchronisation of storage before showing/hiding the widget
-    QObject::connect(pImp->menu, &QMenu::aboutToHide, [&]() {
-        lock_guard<std::mutex> g(pImp->mutexNotification);
-        static_cast<NotificationsAction*>(pImp->notificationaction)->clearUnreadFlag();
-        static_cast<NotificationsAction*>(pImp->notificationaction)->shiftToCache();
-    });
-
-    QObject::connect(pImp->menu, &QMenu::aboutToShow, [this]() {
-        // guard to avoid modifying the notification list and indices while creating the tooltip
-        lock_guard<std::mutex> g(pImp->mutexNotification);
-        setText(QString::number(0));  // no unread notifications
-        if (pImp->missedNotifications) {
-            setIcon(TrayIcon::Normal);
-            pImp->missedNotifications = false;
-        }
-        static_cast<NotificationsAction*>(pImp->notificationaction)->synchroniseWidget();
-
-
-        // There is a Qt bug in not respecting a QMenu size when size changes in aboutToShow.
-        //
-        // https://bugreports.qt.io/browse/QTBUG-54421
-        // https://forum.qt.io/topic/68765/how-to-update-geometry-on-qaction-visibility-change-in-qmenu-abouttoshow/3
-        //
-        // None of this works
-        // pImp->menu->updateGeometry();
-        // pImp->menu->adjustSize();
-        // pImp->menu->ensurePolished();
-        // this->updateGeometry();
-        // this->adjustSize();
-        // this->ensurePolished();
-
-        // This does correct the size
-        QSize size = static_cast<NotificationsAction*>(pImp->notificationaction)->size();
-        QResizeEvent re(size, size);
-        qApp->sendEvent(pImp->menu, &re);
-
-        // This corrects the position of the menu
-        QTimer::singleShot(0, [&] {
-            QWidget* statusbar = static_cast<QWidget*>(this->parent());
-            QPoint statusbar_top_right = statusbar->mapToGlobal(statusbar->rect().topRight());
-            QSize menusize = pImp->menu->size();
-            QWidget* w = this;
-            QPoint button_pos = w->mapToGlobal(w->rect().topLeft());
-            QPoint widget_pos;
-            if ((statusbar_top_right.x() - menusize.width()) > button_pos.x()) {
-                widget_pos = QPoint(button_pos.x(), statusbar_top_right.y() - menusize.height());
-            }
-            else {
-                widget_pos = QPoint(
-                    statusbar_top_right.x() - menusize.width(),
-                    statusbar_top_right.y() - menusize.height()
-                );
-            }
-            pImp->menu->move(widget_pos);
-        });
-    });
+    DockWindowManager::instance()->registerDockWindow("Std_NotificationView", notificationsWidget);
 
     // Connection to the finish restore signal to rearm Critical messages modal mode when action is
     // user initiated
     pImp->finishRestoreDocumentConnection = App::GetApplication().signalFinishRestoreDocument.connect(
         std::bind(&Gui::NotificationArea::slotRestoreFinished, this, sp::_1)
     );
-    // NOLINTEND
 
     // Initialisation of the timer to inhibit continuous updates of the notification system in case
     // clusters of messages arrive (so as to delay the actual notification until the whole cluster
     // has arrived)
     pImp->inhibitTimer.setSingleShot(true);
 
-    pImp->inhibitTimer.callOnTimeout([this, na]() {
-        setText(QString::number(na->getUnreadCount()));
+    pImp->inhibitTimer.callOnTimeout([this]() {
+        updateUnreadIndicator();
         showInNotificationArea();
     });
 
@@ -989,6 +1060,64 @@ NotificationArea::NotificationArea(QWidget* parent)
 NotificationArea::~NotificationArea()
 {
     pImp->finishRestoreDocumentConnection.disconnect();
+    cleanupNotificationsPanel();
+}
+
+void NotificationArea::cleanupNotificationsPanel()
+{
+    if (!pImp || !pImp->notificationsWidget) {
+        return;
+    }
+
+    auto* widget = pImp->notificationsWidget;
+    pImp->notificationsWidget = nullptr;
+
+    widget->setUnreadChangedCallback({});
+
+    auto* dwm = DockWindowManager::instance();
+    dwm->removeDockWindow(widget);
+    dwm->unregisterDockWindow("Std_NotificationView");
+    widget->deleteLater();
+}
+
+void NotificationArea::updateUnreadIndicator()
+{
+    if (!pImp || !pImp->notificationsWidget) {
+        setText(QString::number(0));
+        return;
+    }
+
+    auto* nw = pImp->notificationsWidget;
+    if (nw->isUserVisible()) {
+        setText(QString::number(0));
+        if (pImp->missedNotifications) {
+            setIcon(TrayIcon::Normal);
+            pImp->missedNotifications = false;
+        }
+        return;
+    }
+
+    setText(QString::number(nw->getUnreadCount()));
+}
+
+void NotificationArea::showNotificationsPanel()
+{
+    if (!pImp || !pImp->notificationsWidget) {
+        return;
+    }
+
+    auto* widget = pImp->notificationsWidget;
+    DockWindowManager::instance()->activate(widget);
+
+    // activate() shows/raises the dock; ensure the table is synced and focused even if the
+    // widget was already the active tab (no showEvent).
+    if (widget->isUserVisible()) {
+        lock_guard<std::mutex> g(pImp->mutexNotification);
+        widget->synchroniseWidget();
+        widget->clearUnreadFlag();
+    }
+    widget->focusTable();
+    updateUnreadIndicator();
 }
 
 void NotificationArea::mousePressEvent(QMouseEvent* e)
@@ -999,31 +1128,38 @@ void NotificationArea::mousePressEvent(QMouseEvent* e)
         QMenu menu;
 
         // NOLINTBEGIN
-        NotificationsAction* na = static_cast<NotificationsAction*>(pImp->notificationaction);
+        NotificationsWidget* nw = pImp->notificationsWidget;
 
         QAction* delnotifications = menu.addAction(tr("Delete User Notifications"), [&]() {
             // guard to avoid modifying the notification list and indices while creating the tooltip
             lock_guard<std::mutex> g(pImp->mutexNotification);
-            na->deleteNotifications();
-            setText(QString::number(na->getUnreadCount()));
+            nw->deleteNotifications();
+            updateUnreadIndicator();
         });
 
-        delnotifications->setEnabled(!na->isEmpty());
+        delnotifications->setEnabled(!nw->isEmpty());
 
         QAction* delall = menu.addAction(tr("Delete All"), [&]() {
             // guard to avoid modifying the notification list and indices while creating the tooltip
             lock_guard<std::mutex> g(pImp->mutexNotification);
-            na->deleteAll();
-            setText(QString::number(0));
+            nw->deleteAll();
+            updateUnreadIndicator();
         });
         // NOLINTEND
 
-        delall->setEnabled(!na->isEmpty());
+        delall->setEnabled(!nw->isEmpty());
 
         menu.setDefaultAction(delall);
 
         menu.exec(this->mapToGlobal(e->pos()));
+        return;
     }
+
+    if (e->button() == Qt::LeftButton && hitButton(e->pos())) {
+        showNotificationsPanel();
+        return;
+    }
+
     QPushButton::mousePressEvent(e);
 }
 
@@ -1051,38 +1187,37 @@ void NotificationArea::pushNotification(
     // guard to avoid modifying the notification list and indices while creating the tooltip
     lock_guard<std::mutex> g(pImp->mutexNotification);
 
-    // NOLINTNEXTLINE
-    NotificationsAction* na = static_cast<NotificationsAction*>(pImp->notificationaction);
-
-    // Limit the maximum number of messages stored in the widget (0 means no limit)
-    if (pImp->maxWidgetMessages != 0 && na->count() > pImp->maxWidgetMessages) {
-        na->deleteLastItem();
+    NotificationsWidget* nw = pImp->notificationsWidget;
+    if (!nw) {
+        return;
     }
 
-    auto repeated = na->isSameNotification(notifiername, message, level);
+    // Limit the maximum number of messages stored in the widget (0 means no limit)
+    if (pImp->maxWidgetMessages != 0 && nw->count() > pImp->maxWidgetMessages) {
+        nw->deleteLastItem();
+    }
+
+    auto repeated = nw->isSameNotification(notifiername, message, level);
 
     if (!repeated) {
         auto itemptr = std::make_unique<NotificationItem>(level, notifiername, message);
 
-        auto item = na->push_front(std::move(itemptr));
+        auto item = nw->push_front(std::move(itemptr));
 
         // If the non-intrusive notifications are disabled then stop here (messages added to the
         // widget only)
         if (pImp->notificationsDisabled) {
             item->setNotified();  // avoid mass of old notifications if feature is activated afterwards
-            // NOLINTBEGIN
-            setText(
-                QString::number(
-                    static_cast<NotificationsAction*>(pImp->notificationaction)->getUnreadCount()
-                )
-            );
+            nw->syncIfVisible();
+            updateUnreadIndicator();
             return;
-            // NOLINTEND
         }
     }
     else {
-        na->resetLastNotificationStatus();
+        nw->resetLastNotificationStatus();
     }
+
+    nw->syncIfVisible();
 
     // start or restart rate control (the timer is rearmed if not yet expired, expiration triggers
     // showing of the notification messages)
@@ -1142,8 +1277,10 @@ void NotificationArea::showInNotificationArea()
     // guard to avoid modifying the notification list and indices while creating the tooltip
     lock_guard<std::mutex> g(pImp->mutexNotification);
 
-    // NOLINTNEXTLINE
-    NotificationsAction* na = static_cast<NotificationsAction*>(pImp->notificationaction);
+    NotificationsWidget* nw = pImp->notificationsWidget;
+    if (!nw) {
+        return;
+    }
 
     if (!NotificationBox::isVisible()) {
         // The Notification Box may have been closed (by the user by popping it out or by left mouse
@@ -1151,9 +1288,9 @@ void NotificationArea::showInNotificationArea()
         // lapsed
         int i = 0;
         // NOLINTNEXTLINE
-        while (i < na->count() && static_cast<NotificationItem*>(na->getItem(i))->isNotifying()) {
+        while (i < nw->count() && static_cast<NotificationItem*>(nw->getItem(i))->isNotifying()) {
             // NOLINTNEXTLINE
-            NotificationItem* item = static_cast<NotificationItem*>(na->getItem(i));
+            NotificationItem* item = static_cast<NotificationItem*>(nw->getItem(i));
 
             if (item->isShown()) {
                 item->setNotified();
@@ -1164,7 +1301,7 @@ void NotificationArea::showInNotificationArea()
         }
     }
 
-    auto currentlyshown = na->getShownCount();
+    auto currentlyshown = nw->getShownCount();
 
     // If we cannot show more messages, we do no need to update the non-intrusive notification
     if (currentlyshown < pImp->maxOpenNotifications) {
@@ -1184,7 +1321,7 @@ void NotificationArea::showInNotificationArea()
             )
                   .arg(QObject::tr("Type"), QObject::tr("Notifier"), QObject::tr("Message"));
 
-        auto currentlynotifying = na->getCurrentlyNotifyingCount();
+        auto currentlynotifying = nw->getCurrentlyNotifyingCount();
 
         if (currentlynotifying > pImp->maxOpenNotifications) {
             msgw += QStringLiteral(
@@ -1206,11 +1343,11 @@ void NotificationArea::showInNotificationArea()
         int i = 0;
 
         // NOLINTNEXTLINE
-        while (i < na->count() && static_cast<NotificationItem*>(na->getItem(i))->isNotifying()) {
+        while (i < nw->count() && static_cast<NotificationItem*>(nw->getItem(i))->isNotifying()) {
 
             if (i < pImp->maxOpenNotifications) {  // show the first up to maxOpenNotifications
                 // NOLINTNEXTLINE
-                NotificationItem* item = static_cast<NotificationItem*>(na->getItem(i));
+                NotificationItem* item = static_cast<NotificationItem*>(nw->getItem(i));
 
                 QString iconstr;
                 if (item->isType(Base::LogStyle::Error)) {
@@ -1250,15 +1387,14 @@ void NotificationArea::showInNotificationArea()
 
                             // if the item exists and the number of repetitions has not changed in
                             // the meantime
-                            if (item && item->getRepetitions() == repetitions) {
+                            if (item && pImp->notificationsWidget
+                                && item->getRepetitions() == repetitions) {
                                 item->resetShown();
                                 item->setNotified();
 
                                 if (pImp->autoRemoveUserNotifications) {
                                     if (item->isType(Base::LogStyle::Notification)) {
-                                        // NOLINTNEXTLINE
-                                        static_cast<NotificationsAction*>(pImp->notificationaction)
-                                            ->deleteItem(item);
+                                        pImp->notificationsWidget->deleteItem(item);
                                     }
                                 }
                             }
@@ -1271,8 +1407,8 @@ void NotificationArea::showInNotificationArea()
             }
             else {  // We do not have more space and older notifications will be too old
                 // NOLINTBEGIN
-                static_cast<NotificationItem*>(na->getItem(i))->setNotified();
-                static_cast<NotificationItem*>(na->getItem(i))->resetShown();
+                static_cast<NotificationItem*>(nw->getItem(i))->setNotified();
+                static_cast<NotificationItem*>(nw->getItem(i))->resetShown();
                 // NOLINTEND
             }
 

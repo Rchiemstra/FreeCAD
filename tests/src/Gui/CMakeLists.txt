@@ -7,6 +7,13 @@ add_subdirectory(propertyeditor)
 add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
+        CollaborationCompatibilityAdapter.cpp
+        CollaborationAuthorityRemoval.cpp
+        CollaborationDomainIntegration.cpp
+        CollaborationResponsiveness.cpp
+        CollaborationViewIsolation.cpp
+        PersonalViewContext.cpp
+        SharedPresentationCoordinator.cpp
         DocumentRecovery.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp
@@ -16,12 +23,14 @@ add_executable(Gui_tests_run
         StyleParameters/YamlParameterSourceTest.cpp
         InputHintTest.cpp
         MainWindow.cpp
+        NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
         WindowLayout.cpp
         SelectionTest.cpp
 )
 
 # Qt tests
+setup_qt_test(ObjectSelection)
 setup_qt_test(QuantitySpinBox)
 
 target_link_libraries(Gui_tests_run PRIVATE
@@ -29,3 +38,5 @@ target_link_libraries(Gui_tests_run PRIVATE
     FreeCADApp
     FreeCADGui
 )
+
+target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

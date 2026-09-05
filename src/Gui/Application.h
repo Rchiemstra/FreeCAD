@@ -24,6 +24,7 @@
 #pragma once
 
 #include <QPixmap>
+#include <functional>
 #include <map>
 #include <string>
 
@@ -58,6 +59,9 @@ class ViewProviderDocumentObject;
 class GuiExport Application
 {
 public:
+    using SharedPresentationNotificationAudit =
+        std::function<bool(const Gui::ViewProvider&, const App::Property&)>;
+
     enum Status
     {
         UserInitiatedOpenDocument = 0
@@ -114,6 +118,25 @@ public:
     void updateActive();
     /// call update to all command actions
     void updateActions(bool delay = false);
+    /** Defer ViewProvider before/changed notifications across one atomic presentation commit. */
+    void beginSharedPresentationNotificationBarrier(
+        SharedPresentationNotificationAudit audit = {});
+    [[nodiscard]] bool sharedPresentationNotificationAuditViolated() const noexcept;
+    /** Mark the App side durable; later GUI changes are ordinary observer mutations. */
+    void markSharedPresentationAppDurable() noexcept;
+    /** True unless the current replay item is an ordinary post-durability mutation. */
+    [[nodiscard]] bool suppressCurrentSharedPresentationPublication() const noexcept;
+    /** Reject GUI-owned provider/property lifetime changes while records are queued/replayed. */
+    void ensureSharedPresentationStructureMutationAllowed() const;
+    /** Replay deferred notifications after publication, or discard them after rollback. */
+    void finishSharedPresentationNotificationBarrier(bool committed) noexcept;
+    /** Validate a provider property before any native transaction captures it. */
+    void preflightSharedPresentationPropertyMutation(
+        const Gui::ViewProvider&, const App::Property&);
+    void notifyBeforeChangeObject(const Gui::ViewProvider&, const App::Property&);
+    void notifyChangedObject(const Gui::ViewProvider&,
+                             const App::Property&,
+                             bool delayActions = false);
     //@}
 
     /** @name Signals of the Application */

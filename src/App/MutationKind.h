@@ -2,7 +2,6 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
 
 namespace App
 {
@@ -27,24 +26,6 @@ enum class MutationKind : std::uint32_t
     /** add/change/rename/remove of dynamic properties */
     StructuralProperty = 1u << 14,
 };
-
-using MutationKindMask = std::uint32_t;
-
-constexpr MutationKindMask mutationKindBit(MutationKind kind)
-{
-    return static_cast<MutationKindMask>(kind);
-}
-
-constexpr MutationKindMask MutationKindAll =
-    mutationKindBit(MutationKind::PropertyWrite) | mutationKindBit(MutationKind::AddObject)
-    | mutationKindBit(MutationKind::RemoveObject) | mutationKindBit(MutationKind::Recompute)
-    | mutationKindBit(MutationKind::Undo) | mutationKindBit(MutationKind::Redo)
-    | mutationKindBit(MutationKind::Save) | mutationKindBit(MutationKind::SaveAs)
-    | mutationKindBit(MutationKind::Close) | mutationKindBit(MutationKind::TransactionOpen)
-    | mutationKindBit(MutationKind::TransactionCommit)
-    | mutationKindBit(MutationKind::TransactionAbort)
-    | mutationKindBit(MutationKind::ImportExport) | mutationKindBit(MutationKind::BulkCopy)
-    | mutationKindBit(MutationKind::StructuralProperty);
 
 inline const char* mutationKindName(MutationKind kind)
 {
@@ -82,80 +63,5 @@ inline const char* mutationKindName(MutationKind kind)
     }
     return "Unknown";
 }
-
-enum class MutationOwner : std::uint8_t
-{
-    Unrestricted = 0,
-    McpOwned = 1,
-    UserOwned = 2,
-};
-
-enum class MutationOrigin : std::uint8_t
-{
-    Gui = 0,
-    Python = 1,
-    Mcp = 2,
-    Cpp = 3,
-    Internal = 4,
-};
-
-enum class MutationDecision : std::uint8_t
-{
-    Allow = 0,
-    DenyNoCapability = 1,
-    DenyWrongOwner = 2,
-    DenyStaleGeneration = 3,
-    DenyRecoveryMode = 4,
-    RequireTakeover = 5,
-    DenyStaleEpoch = 6,
-};
-
-inline const char* mutationDecisionName(MutationDecision decision)
-{
-    switch (decision) {
-        case MutationDecision::Allow:
-            return "ALLOW";
-        case MutationDecision::DenyNoCapability:
-            return "DENY_NO_CAPABILITY";
-        case MutationDecision::DenyWrongOwner:
-            return "DENY_WRONG_OWNER";
-        case MutationDecision::DenyStaleGeneration:
-            return "DENY_STALE_GENERATION";
-        case MutationDecision::DenyRecoveryMode:
-            return "DENY_RECOVERY_MODE";
-        case MutationDecision::RequireTakeover:
-            return "REQUIRE_TAKEOVER";
-        case MutationDecision::DenyStaleEpoch:
-            return "DENY_STALE_EPOCH";
-    }
-    return "UNKNOWN";
-}
-
-inline const char* mutationOwnerName(MutationOwner owner)
-{
-    switch (owner) {
-        case MutationOwner::Unrestricted:
-            return "unrestricted";
-        case MutationOwner::McpOwned:
-            return "mcp";
-        case MutationOwner::UserOwned:
-            return "user";
-    }
-    return "unknown";
-}
-
-struct MutationContext
-{
-    MutationKind kind {MutationKind::PropertyWrite};
-    MutationOrigin origin {MutationOrigin::Cpp};
-    std::uint64_t fencingGeneration {0};
-    std::uint64_t authorityEpoch {0};
-    std::uint64_t capabilityId {0};
-    std::string documentName;
-    std::string objectName;
-    std::string propertyName;
-    std::string transactionName;
-    bool multiDocument {false};
-};
 
 }  // namespace App

@@ -73,6 +73,8 @@ public:
     void fromString(const std::string&);
 
 private:
+    bool parseString(const std::string& repr, Py::Object& parsed) const;
+    void applyParsedString(const Py::Object& parsed);
     void saveObject(Base::Writer& writer) const;
     void restoreObject(Base::XMLReader& reader);
     std::string encodeValue(const std::string& str) const;

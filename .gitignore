@@ -52,12 +52,9 @@ ui_*.h
 /bin/
 /build-*/
 /build/
+/build_docker/
 /cmake-build*/
 /conda/environment.yml
-/doc/
-!/doc/
-/doc/*
-!/doc/freecad-git-sidecar-strategy.md
 /lib/
 /src/Tools/offlinedoc/*.txt
 /src/Tools/offlinedoc/localwiki/
@@ -81,3 +78,4 @@ tsupdate_stdout.log
 *.egg-info
 .pixi
 tmp/
+/debug_logs/

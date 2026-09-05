@@ -39,6 +39,7 @@
 #include "GeoFeatureGroupExtension.h"
 #include "GroupExtension.h"
 #include "MainThreadSignal.h"
+#include "MutationClassification.h"
 #include "Services.h"
 
 
@@ -47,6 +48,24 @@
 #include <App/DocumentObjectPy.cpp>
 
 using namespace App;
+
+namespace
+{
+
+void preflightObjectStatusMutation(DocumentObject& object, const char* statusName)
+{
+    static_cast<void>(statusName);
+    enforceAtomicPresentationMutationTarget(object.getDocument());
+}
+
+void publishObjectStatusMutation(DocumentObject& object)
+{
+    if (auto* document = object.getDocument()) {
+        document->publishCollaborationMutation(object, false);
+    }
+}
+
+}  // namespace
 
 // returns a string which represent the object e.g. when printed in python
 std::string DocumentObjectPy::representation() const
@@ -1062,7 +1081,14 @@ Py::Boolean DocumentObjectPy::getNoTouch() const
 
 void DocumentObjectPy::setNoTouch(Py::Boolean value)
 {
-    getDocumentObjectPtr()->setStatus(ObjectStatus::NoTouch, value.isTrue());
+    auto& object = *getDocumentObjectPtr();
+    const bool enabled = value.isTrue();
+    if (object.testStatus(ObjectStatus::NoTouch) == enabled) {
+        return;
+    }
+    preflightObjectStatusMutation(object, "NoTouch");
+    object.setStatus(ObjectStatus::NoTouch, enabled);
+    publishObjectStatusMutation(object);
 }
 
 PyObject* DocumentObjectPy::getPlacementOf(PyObject* args)
@@ -1092,4 +1118,24 @@ PyObject* DocumentObjectPy::getPlacementOf(PyObject* args)
         return new Base::PlacementPy(new Base::Placement(p));
     }
     PY_CATCH
+}
+
+PyObject* DocumentObjectPy::moveProperty(PyObject* args) const
+{
+    char* name {};
+    PyObject* targetObjObj {};
+    if (PyArg_ParseTuple(args, "sO", &name, &targetObjObj) == 0) {
+        return nullptr;
+    }
+
+    try {
+        DocumentObject* targetObj =
+            static_cast<DocumentObjectPy*>(targetObjObj)->getDocumentObjectPtr();
+        Property* prop = getDocumentObjectPtr()->getDynamicPropertyByName(name);
+        getDocumentObjectPtr()->moveDynamicProperty(prop, targetObj);
+        Py_Return;
+    }
+    catch (const Base::Exception& e) {
+        throw Py::RuntimeError(e.what());
+    }
 }

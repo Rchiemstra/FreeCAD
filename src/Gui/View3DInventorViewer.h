@@ -57,17 +57,21 @@
 #include "Namespace.h"
 #include "Selection/Selection.h"
 
+#include "CornerCrossLetters.h"
 #include "View3DInventorSelection.h"
 #include "Quarter/SoQTQuarterAdaptor.h"
 
 class QOpenGLFramebufferObject;
 class QOpenGLWidget;
 class QSurfaceFormat;
+class QTimer;
 
 class SoTranslation;
 class SoTransform;
 class SoText2;
 class SoAnnotation;
+class SoCamera;
+class SoNode;
 
 class SoSeparator;
 class SoShapeHints;
@@ -104,6 +108,7 @@ class NavigationStyle;
 class SoFCUnifiedSelection;
 class Document;
 class GLGraphicsItem;
+class RubberbandOverlay;
 class SoShapeScale;
 class ViewerEventFilter;
 
@@ -245,6 +250,17 @@ public:
     /** Render the scene into a new image using the requested capture policy. */
     QImage renderToImage(const RenderImageOptions& options);
 
+    /**
+     * Render the scene using render-local camera and overlay state.
+     *
+     * Neither override is attached to the live viewer after this call returns.
+     */
+    QImage renderToImage(
+        const RenderImageOptions& options,
+        SoCamera* cameraOverride,
+        SoNode* transientOverlayRoot = nullptr
+    );
+
     /** Capture the live viewport framebuffer as a raster-oriented image. */
     QImage grabFramebuffer();
 
@@ -256,6 +272,8 @@ public:
     std::list<GLGraphicsItem*> getGraphicsItems() const;
     std::list<GLGraphicsItem*> getGraphicsItemsOfType(const Base::Type&) const;
     void clearGraphicsItems();
+
+    RubberbandOverlay& rubberbandOverlay();
 
     /** @name Handling of view providers */
     //@{
@@ -510,9 +528,6 @@ public:
     void viewAll(float factor);
     void viewBoundBox(const SbBox3f& box);
 
-    /// Breaks out a VR window for a Rift
-    void viewVR();
-
     /**
      * Returns the bounding box of the scene graph.
      */
@@ -589,6 +604,7 @@ Q_SIGNALS:
 protected:
     static GLenum getInternalTextureFormat();
     void renderScene();
+    void renderRubberbandOverlay();
     void renderFramebuffer();
     void renderGLImage();
     void animatedViewAll(const SbBox3f& bbox, int steps, int ms);
@@ -634,7 +650,11 @@ private:
     void recoverFromRenderMemoryException();
     void renderDelayedAnnotations(SoGLRenderAction* glra);
     void renderGLActionScene(const QColor& backgroundColor, SoGLRenderAction* glra);
-    bool renderToFramebuffer(QOpenGLFramebufferObject*, bool includeViewerLighting = true);
+    bool renderToFramebuffer(
+        QOpenGLFramebufferObject*,
+        bool includeViewerLighting = true,
+        SoNode* transientOverlayRoot = nullptr
+    );
     void setCursorRepresentation(int mode);
     void aboutToDestroyGLContext();
     void createStandardCursors();
@@ -646,6 +666,7 @@ private:
     std::set<ViewProvider*> _ViewProviderSet;
     std::map<SoSeparator*, ViewProvider*> _ViewProviderMap;
     std::list<GLGraphicsItem*> graphicsItems;
+    std::unique_ptr<RubberbandOverlay> rubberbandOverlayRenderer;
     ViewProvider* editViewProvider;
     SoFCBackgroundGradient* pcBackGround;
     SoSeparator* backgroundroot;
@@ -696,9 +717,11 @@ private:
     // stuff needed to draw the fps counter
     bool fpsEnabled;
     QLabel* fpsCounter = nullptr;
+    QTimer* fpsUpdateTimer = nullptr;
     unsigned long previousAxisLetterColor = 0;
     bool vboEnabled;
     bool naviCubeEnabled;
+
     // Screen-only viewer decorations such as the navicube are rendered only
     // when the active render intent allows them.
     mutable std::vector<RenderIntent> renderIntentOverrideStack;
@@ -722,6 +745,13 @@ private:
     ViewerEventFilter* viewerEventFilter;
 
     PyObject* _viewerPy;
+
+    static unsigned char XPM_pixel_data[YPM_WIDTH * YPM_HEIGHT * YPM_BYTES_PER_PIXEL + 1];
+    static unsigned char YPM_pixel_data[YPM_WIDTH * YPM_HEIGHT * YPM_BYTES_PER_PIXEL + 1];
+    static unsigned char ZPM_pixel_data[ZPM_WIDTH * ZPM_HEIGHT * ZPM_BYTES_PER_PIXEL + 1];
+
+private Q_SLOTS:
+    void updateFPSLabel();
 
     // friends
     friend class NavigationStyle;

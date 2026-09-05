@@ -739,6 +739,8 @@ public:
                                 App::DocumentObject* newObj) const override;
 
 protected:
+    /** Clear link storage without notifying; callers must already be guarded or tearing down. */
+    void resetLinkNoNotify();
     App::DocumentObject* _pcLink {nullptr};
 };
 
@@ -1375,11 +1377,16 @@ public:
         return filePath.c_str();
     }
 
+    /** Break a live link; partial links preserve detached file/object identity. */
+    void breakLink(App::DocumentObject* obj, bool clear) override;
+
     virtual bool upgrade(Base::XMLReader& reader, const char* typeName);
 
     void setSyncSubObject(bool enable);
 
 protected:
+    void setSubValuesNoNotify(std::vector<std::string>&& SubList,
+                              std::vector<ShadowSub>&& ShadowSubList = {});
     void unlink();
     void detach();
 
@@ -1480,6 +1487,21 @@ public:
                   bool reset = false);
     void
     addValue(App::DocumentObject* obj, std::vector<std::string>&& SubList = {}, bool reset = false);
+
+    /** Always append a new entry (allows null). Unlike addValue, does not merge by object. */
+    void append(DocumentObject* obj);
+
+    /**
+     * Append two new list entries as one pair. If endpoint construction fails, only the newly
+     * appended suffix is erased. Notification failures retain the already-published new pair.
+     */
+    void appendPair(DocumentObject* first, DocumentObject* second);
+
+    /** Append a deep copy of an existing XLink entry (preserves detached file/object identity). */
+    void addLink(const PropertyXLinkSub& link);
+
+    /** Remove \a count entries starting at 0-based index \a start. */
+    void removeIndices(int start, int count);
 
     /**
      * @brief setValue: PropertyLinkSub-compatible overload

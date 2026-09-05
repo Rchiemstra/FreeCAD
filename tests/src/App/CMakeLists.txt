@@ -7,8 +7,21 @@ add_executable(App_tests_run
         BackupPolicy.cpp
         Branding.cpp
         ComplexGeoData.cpp
+        CollaborationRegistry.cpp
+        CollaborationCompatibilityMutation.cpp
+        CollaborativeSetPropertyIndependence.cpp
+        CollaborativeSetPropertyOperation.cpp
+        DocumentCollaborationConcurrency.cpp
+        DocumentCollaborationPython.cpp
+        DocumentCollaborationPythonCompatibility.cpp
+        DocumentCollaborationRecovery.cpp
+        DocumentCollaborationService.cpp
+        DocumentCommitCoordinator.cpp
         Document.cpp
+        DocumentCollaborationBoundary.cpp
         DocumentMutationAuthority.cpp
+        DocumentPropertyRevision.cpp
+        DocumentRevisionIndex.cpp
         DocumentObject.cpp
         DocumentObserver.cpp
         Expression.cpp
@@ -22,6 +35,8 @@ add_executable(App_tests_run
         MappedName.cpp
         Metadata.cpp
         ProjectFile.cpp
+        PreparedEdit.cpp
+        PreparedEditExecutor.cpp
         PropertyFile.cpp
         Property.h
         Property.cpp

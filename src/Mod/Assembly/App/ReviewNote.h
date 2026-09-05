@@ -57,6 +57,17 @@ public:
 
     App::PropertyXLinkSub Target;
     App::PropertyVector LocalAnchor;
+    /**
+     * Stable source-definition identity (document#object) captured when the note
+     * is created. Geometry notes use an object-only Target; this string and
+     * AnchorSubelement retain provenance without making FaceN a link dependency.
+     */
+    App::PropertyString AnchorSourceIdentity;
+    /** Informational picked subelement/path; never interpreted as a live link. */
+    App::PropertyString AnchorSubelement;
+    /** Optional unordered source pair when the note came from an interference result. */
+    App::PropertyString InterferenceSourceA;
+    App::PropertyString InterferenceSourceB;
     App::PropertyEnumeration JointSide;
     App::PropertyBool Resolved;
     /// Computed: true when Target is missing or invalid (drives icon refresh).

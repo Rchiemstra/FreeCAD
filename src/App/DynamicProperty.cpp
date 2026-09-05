@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <map>
+#include <memory>
 #include <vector>
 #include <string>
 
@@ -39,8 +40,10 @@
 
 #include "DynamicProperty.h"
 #include "Application.h"
-#include "DocumentMutationAuthority.h"
+#include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentObject.h"
+#include "MutationClassification.h"
 #include "Property.h"
 #include "PropertyContainer.h"
 
@@ -52,19 +55,51 @@ using namespace App;
 
 namespace
 {
-void enforceStructuralPropertyMutation(PropertyContainer& container, const char* propertyName)
+void enforceStructuralPropertyMutation(PropertyContainer& container, const char*)
 {
     if (Document* doc = documentFromPropertyContainer(&container)) {
-        const char* objectName = nullptr;
-        if (const auto* obj = dynamic_cast<const DocumentObject*>(&container)) {
-            objectName = obj->getNameInDocument();
-        }
-        enforceDocumentMutation(doc,
-                                MutationKind::StructuralProperty,
-                                MutationOrigin::Cpp,
-                                objectName,
-                                propertyName);
+        enforceAtomicPresentationMutationTarget(doc);
     }
+}
+
+void publishStructuralPropertyMutation(PropertyContainer& container)
+{
+    auto* document = documentFromPropertyContainer(&container);
+    if (!document) {
+        return;
+    }
+
+    MutationClassificationInput input {
+        CollaborationMutationSource::DynamicPropertySchema,
+        MutationKind::StructuralProperty,
+        CollaborationPropertyFamily::NotApplicable,
+        CollaborationContainerKind::Unknown,
+        {},
+        std::nullopt,
+        {},
+    };
+    if (const auto* object = dynamic_cast<const DocumentObject*>(&container)) {
+        // A removed object retained by undo still remembers its former
+        // Document.  Its detached schema is not part of the live document and
+        // must not publish a structural revision under a missing object name.
+        if (!object->isAttachedToDocument() || object->getDocument() != document
+            || !document->containsObject(object)) {
+            return;
+        }
+        input.containerKind = CollaborationContainerKind::DocumentObject;
+        input.objectName = object->getNameInDocument();
+        input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
+    }
+    else if (dynamic_cast<const Document*>(&container)) {
+        input.containerKind = CollaborationContainerKind::Document;
+    }
+    const auto effects = classifyMutation(input);
+    document->recordCollaborationAtomicPresentationEffects(effects);
+    Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
+    if (document->collaborationRevisionPublicationSuppressed(&container)) {
+        return;
+    }
+    static_cast<void>(document->collaborationRevisions().publish(effects));
 }
 }  // namespace
 
@@ -312,7 +347,13 @@ Property* DynamicProperty::addDynamicProperty(
     pcProperty->syncType(attr);
     pcProperty->StatusBits.set((size_t)Property::PropDynamic);
 
-    GetApplication().signalAppendDynamicProperty(*pcProperty);
+    publishStructuralPropertyMutation(pc);
+    if (auto* document = documentFromPropertyContainer(&pc)) {
+        document->emitCollaborationAppendDynamicProperty(*pcProperty);
+    }
+    else {
+        GetApplication().signalAppendDynamicProperty(*pcProperty);
+    }
 
     return pcProperty;
 }
@@ -340,6 +381,9 @@ bool DynamicProperty::addProperty(Property* prop)
                   prop->getType(),
                   false,
                   false);
+    if (auto* container = prop->getContainer()) {
+        publishStructuralPropertyMutation(*container);
+    }
     return true;
 }
 
@@ -348,7 +392,11 @@ bool DynamicProperty::removeProperty(const Property* prop)
     auto& index = impl->props.get<1>();
     auto it = index.find(const_cast<Property*>(prop));
     if (it != index.end()) {
+        auto* container = it->property->getContainer();
         index.erase(it);
+        if (container) {
+            publishStructuralPropertyMutation(*container);
+        }
         return true;
     }
     return false;
@@ -361,6 +409,11 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
     if (it != index.end()) {
         if (PropertyContainer* container = it->property->getContainer()) {
             enforceStructuralPropertyMutation(*container, name);
+            if (Document* document = documentFromPropertyContainer(container)) {
+                Internal::CollaborationStructuralMutationRecorder::
+                    ensureDynamicPropertyRemovalAllowed(
+                        *document, *container, it->property);
+            }
         }
         if (it->property->testStatus(Property::LockDynamic)) {
             throw Base::RuntimeError("property is locked");
@@ -369,14 +422,75 @@ bool DynamicProperty::removeDynamicProperty(const char* name)
             throw Base::RuntimeError("property is not dynamic");
         }
         Property* prop = it->property;
-        GetApplication().signalRemoveDynamicProperty(*prop);
+        PropertyContainer* container = prop->getContainer();
+        Document* document = documentFromPropertyContainer(container);
+        bool notificationDeferred = document
+            && Internal::CollaborationStructuralMutationRecorder::
+                dynamicPropertyNotificationDeferralRequired(*document);
+        std::shared_ptr<std::string> retainedName;
+        std::shared_ptr<bool> retainedPropertyArmed;
+        std::shared_ptr<Property> retainedProperty;
+        const char* indexedName = prop->myName;
+        if (notificationDeferred) {
+            retainedName = std::make_shared<std::string>(prop->getName());
+            retainedPropertyArmed = std::make_shared<bool>(false);
+            retainedProperty = std::shared_ptr<Property>(
+                prop,
+                [retainedPropertyArmed](Property* removed) {
+                    if (*retainedPropertyArmed) {
+                        removed->myName = nullptr;
+                        // Deferred ownership outlives every removal observer,
+                        // so PropertyCleaner recursion protection is no longer
+                        // needed. Direct destruction is allocation-free and
+                        // keeps post-commit barrier finalization noexcept.
+                        removed->setContainer(nullptr);
+                        delete removed;
+                    }
+                });
+            prop->myName = retainedName->c_str();
+            try {
+                const bool deferred = Internal::CollaborationStructuralMutationRecorder::
+                    emitRemoveDynamicProperty(
+                        *document,
+                        *container,
+                        *prop,
+                        retainedProperty,
+                        retainedName);
+                if (!deferred) {
+                    notificationDeferred = false;
+                    prop->myName = indexedName;
+                    retainedProperty.reset();
+                    retainedName.reset();
+                }
+                else {
+                    prop->myName = retainedName->c_str();
+                    *retainedPropertyArmed = true;
+                }
+            }
+            catch (...) {
+                prop->myName = indexedName;
+                throw;
+            }
+        }
+        else {
+            GetApplication().signalRemoveDynamicProperty(*prop);
+        }
 
         // Handle possible recursive calls of removeDynamicProperty
+        bool removed = false;
         if (prop->myName) {
-            Property::destroy(prop);
+            if (!notificationDeferred) {
+                Property::destroy(prop);
+            }
             index.erase(it);
-            // memory of myName has been freed
-            prop->myName = nullptr;
+            if (!notificationDeferred) {
+                // memory of myName has been freed
+                prop->myName = nullptr;
+            }
+            removed = true;
+        }
+        if (removed && container) {
+            publishStructuralPropertyMutation(*container);
         }
         return true;
     }
@@ -476,12 +590,19 @@ bool DynamicProperty::changeDynamicProperty(const Property* prop,
     }
     if (PropertyContainer* container = it->property->getContainer()) {
         enforceStructuralPropertyMutation(*container, prop ? prop->getName() : nullptr);
+        if (Document* document = documentFromPropertyContainer(container)) {
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *container);
+        }
     }
     if (group) {
         it->group = group;
     }
     if (doc) {
         it->doc = doc;
+    }
+    if (PropertyContainer* container = it->property->getContainer()) {
+        publishStructuralPropertyMutation(*container);
     }
     return true;
 }
@@ -498,6 +619,10 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
 
     if (PropertyContainer* container = prop->getContainer()) {
         enforceStructuralPropertyMutation(*container, newName);
+        if (Document* document = documentFromPropertyContainer(container)) {
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertySchemaMutationAllowed(*document, *container);
+        }
     }
 
     if (propIt->property->testStatus(Property::LockDynamic)) {
@@ -530,7 +655,14 @@ bool DynamicProperty::renameDynamicProperty(Property* prop,
         d.property->myName = d.name.c_str();
     });
 
-    GetApplication().signalRenameDynamicProperty(*prop, oldName.c_str());
+    publishStructuralPropertyMutation(*container);
+    if (Document* document = documentFromPropertyContainer(container)) {
+        Internal::CollaborationStructuralMutationRecorder::emitRenameDynamicProperty(
+            *document, *container, *prop, std::move(oldName));
+    }
+    else {
+        GetApplication().signalRenameDynamicProperty(*prop, oldName.c_str());
+    }
 
     return true;
 }

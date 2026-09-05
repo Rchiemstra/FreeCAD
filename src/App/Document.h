@@ -27,6 +27,7 @@
 #include <CXX/Objects.hxx>
 #include <Base/Observer.h>
 #include <Base/Persistence.h>
+#include <Base/Tools.h>
 #include <Base/Type.h>
 #include <Base/Handle.h>
 #include <Base/Bitmask.h>
@@ -38,16 +39,32 @@
 #include "ExportInfo.h"
 #include "TransactionDefs.h"
 
+#include <array>
+#include <functional>
 #include <map>
 #include <vector>
 #include <utility>
 #include <list>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace Base
 {
+class XMLReader;
 class Writer;
+}
+
+namespace Gui
+{
+class Document;
+class MergeDocuments;
+}
+
+namespace Spreadsheet
+{
+class Sheet;
 }
 
 namespace App
@@ -62,6 +79,13 @@ enum class AddObjectOption
     ActivateObject = 16
 };
 using AddObjectOptions = Base::Flags<AddObjectOption>;
+
+enum class DocumentSaveAsStatus
+{
+    Saved,
+    DestinationExists,
+    SaveFailed,
+};
 
 enum class RemoveObjectOption
 {
@@ -86,8 +110,36 @@ class Document;
 class DocumentPy;
 class Application;
 class Transaction;
+class DocumentCommitCoordinator;
+class DocumentCollaborationService;
 class StringHasher;
+class DocumentRevisionIndex;
+struct CollaborationAtomicPresentationWrite;
+struct DocumentRevisionPublicationRequest;
+struct DocumentIdentity;
+struct RecoverySnapshotSaveOptions;
+namespace Internal
+{
+class DocumentCollaborationConcurrencyTestAccess;
+class DocumentStructuralCompatibilityTestAccess;
+class CollaborationStructuralMutationRecorder;
+class AppExport CollaborationImportReplay
+{
+public:
+    virtual ~CollaborationImportReplay() = default;
+    [[nodiscard]] virtual Base::XMLReader& reader() noexcept = 0;
+    virtual void restoreImportedModelFiles() = 0;
+    virtual void restoreImportedFiles(
+        const std::vector<DocumentObject*>& objects) = 0;
+};
+}
 using StringHasherRef = Base::Reference<StringHasher>;
+
+struct CollaborationRollbackResult
+{
+    bool restored {true};
+    std::array<char, 1024> diagnostic {};
+};
 
 /**
  * @brief A class that represents a FreeCAD document.
@@ -302,6 +354,15 @@ public:
     bool saveAs(const char* file);
 
     /**
+     * @brief Save the document to a specified file under a native overwrite policy.
+     *
+     * Existing destinations other than the document's current file are rejected
+     * when @p overwrite is false.  The policy check and persistence decision stay
+     * inside App so adapter code never becomes filesystem authority.
+     */
+    DocumentSaveAsStatus saveAsWithPolicy(const char* file, bool overwrite);
+
+    /**
      * @brief Save a copy of the document to a specified file.
      *
      * @param[in] file: The file name to save the copy to.
@@ -441,6 +502,35 @@ public:
 
     /// Get the document name.
     const char* getName() const;
+
+    /** Runtime identity and monotonic semantic revisions for collaboration. */
+    DocumentIdentity collaborationIdentity() const;
+    DocumentRevisionIndex& collaborationRevisions();
+    const DocumentRevisionIndex& collaborationRevisions() const;
+    DocumentCollaborationService& collaborationService();
+    bool collaborationRevisionPublicationSuppressed() const;
+    bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
+    bool collaborationRevisionPublicationSuppressed(const Property* property) const;
+    void beginCollaborationAtomicPresentationAudit(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites);
+    void recordCollaborationAtomicPresentationEffects(
+        const std::vector<DocumentRevisionPublicationRequest>& effects,
+        const Property* property = nullptr) noexcept;
+    [[nodiscard]] bool collaborationAtomicPresentationAuditViolated() const noexcept;
+    void endCollaborationAtomicPresentationAudit() noexcept;
+    std::string collaborationObjectIdentity(const DocumentObject& object) const;
+    void publishCollaborationMutation(const PropertyContainer& container, bool structural);
+    bool collaborationPreparationSupported() const;
+
+    Property* addDynamicProperty(std::string_view type,
+                                 const char* name = nullptr,
+                                 const char* group = nullptr,
+                                 const char* doc = nullptr,
+                                 short attr = 0,
+                                 bool ro = false,
+                                 bool hidden = false) override;
+    bool renameDynamicProperty(Property* property, const char* name) override;
+    bool removeDynamicProperty(const char* name) override;
 
     /// Get program version the project file was created with.
     const char* getProgramVersion() const;
@@ -1041,8 +1131,8 @@ public:
      *
      * @warning This function is only for internal use.
      */
-
     void addOrRemovePropertyOfObject(TransactionalObject* obj, const Property* prop, bool add);
+
     /**
      * @brief Register that a property of an object has been renamed in a transaction.
      *
@@ -1053,6 +1143,17 @@ public:
      * @warning This function is only for internal use.
      */
     void renamePropertyOfObject(TransactionalObject* obj, const Property* prop, const char* newName);
+
+    /**
+     * @brief Register in a transaction that a property move has been arranged.
+     *
+     * @param[in] obj The object whose property is moved.
+     * @param[in] toBeMovedProp The property that is moved.
+     * @param[in] target The object to which the property is moved.
+     * @param[in] newProp The new property in the target object.
+     */
+    void arrangeMovePropertyOfObject(TransactionalObject* obj, const Property* toBeMovedProp,
+                                     TransactionalObject* target, Property* newProp);
     /// @}
 
     /** @name Dependency items.
@@ -1283,11 +1384,25 @@ public:
     std::string makeUniqueLabel(std::string_view modelLabel);
 
     friend class Application;
+    friend AppExport bool writeRecoverySnapshotToTransientDir(
+        const Document& document,
+        const RecoverySnapshotSaveOptions& options);
     // because of transaction handling
     friend class TransactionalObject;
     friend class DocumentObject;
+    friend class DynamicProperty;
+    friend class Property;
     friend class Transaction;
     friend class TransactionDocumentObject;
+    friend class MergeDocuments;
+    friend class DocumentCommitCoordinator;
+    friend class DocumentCollaborationService;
+    friend class Gui::Document;
+    friend class Gui::MergeDocuments;
+    friend class Internal::DocumentCollaborationConcurrencyTestAccess;
+    friend class Internal::DocumentStructuralCompatibilityTestAccess;
+    friend class Internal::CollaborationStructuralMutationRecorder;
+    friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
 
@@ -1456,8 +1571,138 @@ protected:
     void _abortTransaction();
 
 private:
+    enum class CollaborationStructuralMutationKind
+    {
+        Restricted,
+        Object,
+        DynamicPropertyOnNewObject
+    };
+
+    class AppExport CollaborationStructuralMutationGrant final
+    {
+    public:
+        explicit CollaborationStructuralMutationGrant(Document& document);
+        ~CollaborationStructuralMutationGrant();
+
+        CollaborationStructuralMutationGrant(
+            const CollaborationStructuralMutationGrant&) = delete;
+        CollaborationStructuralMutationGrant& operator=(
+            const CollaborationStructuralMutationGrant&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class AppExport CollaborationImportDeferralScope final
+    {
+    public:
+        CollaborationImportDeferralScope(
+            Document& document,
+            std::shared_ptr<Internal::CollaborationImportReplay> replay);
+        ~CollaborationImportDeferralScope();
+
+        CollaborationImportDeferralScope(
+            const CollaborationImportDeferralScope&) = delete;
+        CollaborationImportDeferralScope& operator=(
+            const CollaborationImportDeferralScope&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class InternalTransactionLockScope final
+    {
+    public:
+        explicit InternalTransactionLockScope(Document& document);
+        ~InternalTransactionLockScope();
+
+        InternalTransactionLockScope(const InternalTransactionLockScope&) = delete;
+        InternalTransactionLockScope& operator=(const InternalTransactionLockScope&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class AppExport CollaborationSpreadsheetRecomputeSchemaScope final
+    {
+    public:
+        CollaborationSpreadsheetRecomputeSchemaScope(
+            Document* document,
+            DocumentObject& object);
+        ~CollaborationSpreadsheetRecomputeSchemaScope();
+
+        CollaborationSpreadsheetRecomputeSchemaScope(
+            const CollaborationSpreadsheetRecomputeSchemaScope&) = delete;
+        CollaborationSpreadsheetRecomputeSchemaScope& operator=(
+            const CollaborationSpreadsheetRecomputeSchemaScope&) = delete;
+
+    private:
+        Document* _document {nullptr};
+    };
+
+    std::recursive_mutex& collaborationCommitMutex() noexcept;
+    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
+    [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
+    [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
+    [[nodiscard]] bool collaborationLifecycleMutationBlocked() const noexcept;
+    void beginCollaborationStableReadCapture();
+    void finishCollaborationStableReadCapture() noexcept;
+    [[nodiscard]] bool collaborationCommitPoisoned() const noexcept;
+    [[nodiscard]] const char* collaborationCommitPoisonDiagnostic() const noexcept;
+    void poisonCollaborationCommit(const char* diagnostic) noexcept;
+    void ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind kind =
+            CollaborationStructuralMutationKind::Restricted,
+        const char* mutation = nullptr) const;
+    void ensureCollaborationDynamicPropertyMutationAllowed(
+        const DocumentObject& object,
+        short propertyType) const;
+    void ensureCollaborationDynamicPropertyRemovalAllowed(
+        const DocumentObject& object,
+        const Property* property) const;
+    void recordCollaborationObservedStructuralEffects(
+        const std::vector<DocumentRevisionPublicationRequest>& effects);
+    void recordCollaborationObservedStructuralMutation(
+        const PropertyContainer& container);
+    [[nodiscard]] CollaborationStructuralMutationGrant
+    openCollaborationStructuralMutationGrant();
+    [[nodiscard]] bool collaborationStructuralImportDeferralRequired() const noexcept;
+    [[nodiscard]] bool collaborationImportBoundaryActive() const noexcept;
+    [[nodiscard]] CollaborationImportDeferralScope
+    openCollaborationImportDeferralScope(
+        std::shared_ptr<Internal::CollaborationImportReplay> replay);
+    [[nodiscard]] std::vector<DocumentRevisionPublicationRequest>
+    takeCollaborationObservedStructuralEffects();
+    void ensureCollaborationTransactionControlAllowed() const;
+    void lockTransactionInternal();
+    void unlockTransactionInternal();
+    int openCollaborationCommitTransaction(std::string name);
+    bool commitCollaborationCommitTransaction();
+    void setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept;
+    void beginCollaborationCommitNotificationBarrier();
+    void prepareCollaborationCommitFinalization();
+    void finishCollaborationCommitNotificationBarrier(bool committed) noexcept;
+    void emitCollaborationObjectBeforeChange(DocumentObject& object, const Property& property);
+    void emitCollaborationObjectEarlyChanged(DocumentObject& object, const Property& property);
+    void emitCollaborationObjectChanged(DocumentObject& object, const Property& property);
+    void emitCollaborationPropertyChanged(Property& property);
+    void emitCollaborationTouchedObject(DocumentObject& object);
+    void emitCollaborationRelabelObject(DocumentObject& object);
+    void emitCollaborationNewObject(DocumentObject& object);
+    void emitCollaborationDeletedObject(DocumentObject& object);
+    void emitCollaborationTransactionAppendObject(DocumentObject& object,
+                                                  Transaction* transaction);
+    void emitCollaborationTransactionRemoveObject(DocumentObject& object,
+                                                  Transaction* transaction);
+    void emitCollaborationActivatedObject(DocumentObject& object);
+    void emitCollaborationAppendDynamicProperty(Property& property);
+    void emitCollaborationChangePropertyEditor(const Property& property);
+    [[nodiscard]] bool discardCollaborationTransientObjectNotifications(
+        DocumentObject& object);
+    CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);
+    [[nodiscard]] Base::ScopeGuard setDefiningTransaction();
 
 private:
     // # Data Member of the document

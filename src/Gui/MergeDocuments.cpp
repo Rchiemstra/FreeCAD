@@ -22,6 +22,7 @@
 
 
 #include <stack>
+#include <sstream>
 
 
 #include <zipios++/zipinputstream.h>
@@ -105,19 +106,83 @@ unsigned int MergeDocuments::getMemSize() const
 
 std::vector<App::DocumentObject*> MergeDocuments::importObjects(std::istream& input)
 {
+    if (appdoc->collaborationStructuralImportDeferralRequired()) {
+        auto owner = std::make_shared<MergeDocuments>(appdoc);
+        owner->connectImport.disconnect();
+        return owner->importObjectsDeferred(input, owner);
+    }
+    if (appdoc->collaborationImportBoundaryActive()) {
+        throw Base::RuntimeError(
+            "bulk import requires structural compatibility scope");
+    }
     this->nameMap.clear();
-    this->stream = new zipios::ZipInputStream(input);
+    this->stream = std::make_unique<zipios::ZipInputStream>(input);
     XMLMergeReader reader(this->nameMap, "<memory>", *stream);
     std::vector<App::DocumentObject*> objs = appdoc->importObjects(reader);
 
-    delete this->stream;
-    this->stream = nullptr;
+    this->stream.reset();
 
     return objs;
 }
 
+std::vector<App::DocumentObject*> MergeDocuments::importObjectsDeferred(
+    std::istream& input,
+    const std::shared_ptr<MergeDocuments>& owner)
+{
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    deferredArchive = contents.str();
+    deferredInput = std::make_unique<std::istringstream>(deferredArchive);
+    stream = std::make_unique<zipios::ZipInputStream>(*deferredInput);
+    nameMap.clear();
+    deferredReader = std::make_shared<XMLMergeReader>(nameMap, "<memory>", *stream);
+
+    auto scope = appdoc->openCollaborationImportDeferralScope(owner);
+    objects = appdoc->importObjects(*deferredReader);
+    return objects;
+}
+
+Base::XMLReader& MergeDocuments::reader() noexcept
+{
+    return *deferredReader;
+}
+
+void MergeDocuments::restoreImportedModelFiles()
+{
+    precommitFileCount = deferredReader->FileList.size();
+    deferredReader->readFiles(*stream);
+}
+
+void MergeDocuments::restoreImportedFiles(
+    const std::vector<App::DocumentObject*>& importedObjects)
+{
+    std::istringstream input(deferredArchive);
+    zipios::ZipInputStream replayStream(input);
+    XMLMergeReader replayReader(nameMap, "<memory>", replayStream);
+    replayReader.DocumentSchema = deferredReader->DocumentSchema;
+    replayReader.FileVersion = deferredReader->FileVersion;
+    replayReader.readElement("Document");
+    replayReader.readEndElement("Document");
+    for (std::size_t index = precommitFileCount;
+         index < deferredReader->FileList.size();
+         ++index) {
+        replayReader.FileList.push_back(deferredReader->FileList[index]);
+    }
+    objects = importedObjects;
+    for (auto* object : objects) {
+        if (auto* viewProvider = document->getViewProvider(object)) {
+            viewProvider->hide();
+        }
+    }
+    Restore(replayReader);
+    replayReader.readFiles(replayStream);
+}
+
 void MergeDocuments::importObject(const std::vector<App::DocumentObject*>& o, Base::XMLReader& r)
 {
+    if (!stream) {
+        return;
+    }
     objects = o;
     for (auto it : objects) {
         Gui::ViewProvider* vp = document->getViewProvider(it);

@@ -90,6 +90,7 @@
 #include "LinkViewPy.h"
 #include "MainWindow.h"
 #include "Macro.h"
+#include "FreeCADGuiModulePy.h"
 #include "PreferencePackManager.h"
 #include "PythonConsolePy.h"
 #include "MainWindowPy.h"
@@ -99,6 +100,7 @@
 #include "SoFCDB.h"
 #include "Selection.h"
 #include "SelectionFilterPy.h"
+#include "SelectionModulePy.h"
 #include "SoQtOffscreenRendererPy.h"
 #include "SpaceMouseParameter.h"
 #include "SplitView3DInventor.h"
@@ -227,6 +229,14 @@ public:
 // Pimpl class
 struct ApplicationP
 {
+    struct DeferredPresentationNotification
+    {
+        const Gui::ViewProvider* viewProvider {nullptr};
+        const App::Property* property {nullptr};
+        bool beforeChange {false};
+        bool delayActions {false};
+    };
+
     explicit ApplicationP(bool GUIenabled)
     {
         // create the macro manager
@@ -266,10 +276,18 @@ struct ApplicationP
     /// Handles all commands
     CommandManager commandManager;
     ViewProviderMap viewproviderMap;
+    bool sharedPresentationNotificationBarrier {false};
+    bool sharedPresentationNotificationAuditViolated {false};
+    bool sharedPresentationAppDurable {false};
+    bool sharedPresentationNotificationReplay {false};
+    bool sharedPresentationStructureMutationBlocked {false};
+    bool suppressCurrentSharedPresentationPublication {true};
+    Application::SharedPresentationNotificationAudit sharedPresentationNotificationAudit;
+    std::vector<DeferredPresentationNotification> deferredPresentationNotifications;
     std::bitset<32> StatusBits;
 };
 
-static PyObject* FreeCADGui_subgraphFromObject(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sSubgraphFromObject(PyObject* /*self*/, PyObject* args)
 {
     PyObject* o;
     if (!PyArg_ParseTuple(args, "O!", &(App::DocumentObjectPy::Type), &o)) {
@@ -333,7 +351,7 @@ static PyObject* FreeCADGui_subgraphFromObject(PyObject* /*self*/, PyObject* arg
     return Py_None;
 }
 
-static PyObject* FreeCADGui_exportSubgraph(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sExportSubgraph(PyObject* /*self*/, PyObject* args)
 {
     const char* format = "VRML";
     PyObject* proxy;
@@ -375,34 +393,13 @@ static PyObject* FreeCADGui_exportSubgraph(PyObject* /*self*/, PyObject* args)
     }
 }
 
-static PyObject* FreeCADGui_getSoDBVersion(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sGetSoDBVersion(PyObject* /*self*/, PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
     return PyUnicode_FromString(SoDB::getVersion());
 }
-
-struct PyMethodDef FreeCADGui_methods[] = {
-    {"subgraphFromObject",
-     FreeCADGui_subgraphFromObject,
-     METH_VARARGS,
-     "subgraphFromObject(object) -> Node\n\n"
-     "Return the Inventor subgraph to an object"},
-    {"exportSubgraph",
-     FreeCADGui_exportSubgraph,
-     METH_VARARGS,
-     "exportSubgraph(Node, File or Buffer, [Format='VRML']) -> None\n\n"
-     "Exports the sub-graph in the requested format"
-     "The format string can be VRML or IV"},
-    {"getSoDBVersion",
-     FreeCADGui_getSoDBVersion,
-     METH_VARARGS,
-     "getSoDBVersion() -> String\n\n"
-     "Return a text string containing the name\n"
-     "of the Coin library and version information"},
-    {nullptr, nullptr, 0, nullptr} /* sentinel */
-};
 
 class MainThreadInvoker final: public QObject
 {
@@ -582,17 +579,6 @@ Application::Application(bool GUIenabled)
         // setting up Python binding
         Base::PyGILStateLocker lock;
 
-        PyDoc_STRVAR(
-            FreeCADGui_doc,
-            "The functions in the FreeCADGui module allow working with GUI documents,\n"
-            "view providers, views, workbenches and much more.\n\n"
-            "The FreeCADGui instance provides a list of references of GUI documents which\n"
-            "can be addressed by a string. These documents contain the view providers for\n"
-            "objects in the associated App document. An App and GUI document can be\n"
-            "accessed with the same name.\n\n"
-            "The FreeCADGui module also provides a set of functions to work with so called\n"
-            "workbenches.");
-
         // if this returns a valid pointer then the 'FreeCADGui' Python module was loaded,
         // otherwise the executable was launched
         PyObject* modules = PyImport_GetModuleDict();
@@ -600,9 +586,9 @@ Application::Application(bool GUIenabled)
         if (!module) {
             static struct PyModuleDef FreeCADGuiModuleDef = {PyModuleDef_HEAD_INIT,
                                                              "FreeCADGui",
-                                                             FreeCADGui_doc,
+                                                             Gui::FreeCADGuiModulePy::moduleDocumentation(),
                                                              -1,
-                                                             ApplicationPy::Methods,
+                                                             Gui::FreeCADGuiModulePy::Methods,
                                                              nullptr,
                                                              nullptr,
                                                              nullptr,
@@ -611,9 +597,10 @@ Application::Application(bool GUIenabled)
 
             PyDict_SetItemString(modules, "FreeCADGui", module);
         }
-        else {
-            // extend the method list
-            PyModule_AddFunctions(module, ApplicationPy::Methods);
+        else if (Gui::FreeCADGuiModulePy::addModuleMethods(module) != 0) {
+            // FreeCADCmd can import a bootstrap-only FreeCADGui module before the GUI app exists;
+            // upgrade it to the full GUI surface now.
+            throw Py::Exception();
         }
         Py::Module(module).setAttr(std::string("ActiveDocument"), Py::None());
         Py::Module(module).setAttr(std::string("HasQtBug_129596"),
@@ -647,14 +634,15 @@ Application::Application(bool GUIenabled)
         // insert Selection module
         static struct PyModuleDef SelectionModuleDef = {PyModuleDef_HEAD_INIT,
                                                         "Selection",
-                                                        "Selection module",
+                                                        Gui::SelectionModulePy::moduleDocumentation(),
                                                         -1,
-                                                        SelectionSingleton::Methods,
+                                                        nullptr,
                                                         nullptr,
                                                         nullptr,
                                                         nullptr,
                                                         nullptr};
         PyObject* pSelectionModule = PyModule_Create(&SelectionModuleDef);
+        Gui::SelectionModulePy::addModuleMethods(pSelectionModule);
         Py_INCREF(pSelectionModule);
         PyModule_AddObject(module, "Selection", pSelectionModule);
 
@@ -705,19 +693,6 @@ Application::Application(bool GUIenabled)
 
     Base::PyGILStateLocker lock;
     PyObject* module = PyImport_AddModule("FreeCADGui");
-    PyMethodDef* meth = FreeCADGui_methods;
-    PyObject* dict = PyModule_GetDict(module);
-    for (; meth->ml_name; meth++) {
-        PyObject* descr;
-        descr = PyCFunction_NewEx(meth, nullptr, nullptr);
-        if (!descr) {
-            break;
-        }
-        if (PyDict_SetItemString(dict, meth->ml_name, descr) != 0) {
-            break;
-        }
-        Py_DECREF(descr);
-    }
 
     SoQtOffscreenRendererPy::init_type();
     Base::Interpreter().addType(SoQtOffscreenRendererPy::type_object(),
@@ -847,7 +822,10 @@ void Application::open(const char* FileName, const char* Module)
                         "User parameter:BaseApp/Preferences/View"
                     );
                     if (hGrp->GetBool("AutoFitToView", true)) {
-                        Command::doCommand(Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+                        Command::doCommand(
+                            Command::Gui,
+                            "Gui.getMainWindow().getActiveWindow().sendMessage(\"ViewFit\")"
+                        );
                     }
                 }
             }
@@ -1386,8 +1364,199 @@ void Application::slotDeletedObject(const ViewProvider& vp)
 
 void Application::slotChangedObject(const ViewProvider& vp, const App::Property& prop)
 {
-    this->signalChangedObject(vp, prop);
-    updateActions(true);
+    notifyChangedObject(vp, prop, true);
+}
+
+void Application::beginSharedPresentationNotificationBarrier(
+    SharedPresentationNotificationAudit audit)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        throw Base::RuntimeError("nested shared-presentation notification barrier");
+    }
+    d->deferredPresentationNotifications.clear();
+    d->deferredPresentationNotifications.reserve(64);
+    d->sharedPresentationNotificationAudit = std::move(audit);
+    d->sharedPresentationNotificationAuditViolated = false;
+    d->sharedPresentationAppDurable = false;
+    d->sharedPresentationStructureMutationBlocked = true;
+    d->sharedPresentationNotificationBarrier = true;
+}
+
+bool Application::sharedPresentationNotificationAuditViolated() const noexcept
+{
+    return d->sharedPresentationNotificationBarrier
+        && d->sharedPresentationNotificationAuditViolated;
+}
+
+void Application::markSharedPresentationAppDurable() noexcept
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        d->sharedPresentationAppDurable = true;
+    }
+}
+
+bool Application::suppressCurrentSharedPresentationPublication() const noexcept
+{
+    return !d->sharedPresentationNotificationReplay
+        || d->suppressCurrentSharedPresentationPublication;
+}
+
+void Application::ensureSharedPresentationStructureMutationAllowed() const
+{
+    if (d->sharedPresentationStructureMutationBlocked) {
+        throw Base::RuntimeError(
+            "GUI provider and dynamic-property structure changes are unavailable across a shared-presentation boundary");
+    }
+}
+
+void Application::finishSharedPresentationNotificationBarrier(bool committed) noexcept
+{
+    if (!d->sharedPresentationNotificationBarrier) {
+        return;
+    }
+    d->sharedPresentationNotificationBarrier = false;
+    d->sharedPresentationNotificationAudit = {};
+    d->sharedPresentationNotificationAuditViolated = false;
+    d->sharedPresentationAppDurable = false;
+    auto notifications = std::move(d->deferredPresentationNotifications);
+    d->deferredPresentationNotifications.clear();
+    if (!committed) {
+        d->sharedPresentationStructureMutationBlocked = false;
+        return;
+    }
+
+    d->sharedPresentationNotificationReplay = true;
+    const auto finishReplay = qScopeGuard([this]() {
+        d->sharedPresentationNotificationReplay = false;
+        d->suppressCurrentSharedPresentationPublication = true;
+        d->sharedPresentationStructureMutationBlocked = false;
+    });
+    for (const auto& notification : notifications) {
+        if (!notification.viewProvider || !notification.property) {
+            continue;
+        }
+        d->suppressCurrentSharedPresentationPublication = true;
+        try {
+            if (notification.beforeChange) {
+                signalBeforeChangeObject(*notification.viewProvider, *notification.property);
+            }
+            else {
+                signalChangedObject(*notification.viewProvider, *notification.property);
+                updateActions(notification.delayActions);
+            }
+        }
+        catch (const Base::Exception& exception) {
+            FC_ERR("Deferred shared-presentation GUI observer failed: " << exception.what());
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Deferred shared-presentation GUI observer failed: " << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Deferred shared-presentation GUI observer failed with an unknown exception");
+        }
+    }
+}
+
+void Application::preflightSharedPresentationPropertyMutation(
+    const ViewProvider& viewProvider,
+    const App::Property& property)
+{
+    if (!d->sharedPresentationNotificationBarrier
+        || d->sharedPresentationAppDurable) {
+        return;
+    }
+    try {
+        if (d->sharedPresentationNotificationAudit
+            && !d->sharedPresentationNotificationAudit(viewProvider, property)) {
+            d->sharedPresentationNotificationAuditViolated = true;
+            throw Base::RuntimeError(
+                "atomic presentation callback attempted an undeclared GUI property mutation");
+        }
+    }
+    catch (const Base::Exception&) {
+        d->sharedPresentationNotificationAuditViolated = true;
+        throw;
+    }
+    catch (...) {
+        d->sharedPresentationNotificationAuditViolated = true;
+        throw Base::RuntimeError(
+            "atomic presentation GUI property audit failed before mutation");
+    }
+}
+
+void Application::notifyBeforeChangeObject(const ViewProvider& vp, const App::Property& prop)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        if (!d->sharedPresentationAppDurable) {
+            preflightSharedPresentationPropertyMutation(vp, prop);
+            d->deferredPresentationNotifications.push_back({&vp, &prop, true, false});
+            return;
+        }
+        const bool priorReplay = d->sharedPresentationNotificationReplay;
+        const bool priorSuppression = d->suppressCurrentSharedPresentationPublication;
+        d->sharedPresentationNotificationReplay = true;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, priorReplay, priorSuppression]() {
+            d->sharedPresentationNotificationReplay = priorReplay;
+            d->suppressCurrentSharedPresentationPublication = priorSuppression;
+        });
+        signalBeforeChangeObject(vp, prop);
+        return;
+    }
+    if (d->sharedPresentationNotificationReplay) {
+        const bool prior = d->suppressCurrentSharedPresentationPublication;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, prior]() {
+            d->suppressCurrentSharedPresentationPublication = prior;
+        });
+        signalBeforeChangeObject(vp, prop);
+        return;
+    }
+    signalBeforeChangeObject(vp, prop);
+}
+
+void Application::notifyChangedObject(const ViewProvider& vp,
+                                      const App::Property& prop,
+                                      bool delayActions)
+{
+    if (d->sharedPresentationNotificationBarrier) {
+        if (d->sharedPresentationAppDurable) {
+            const bool priorReplay = d->sharedPresentationNotificationReplay;
+            const bool priorSuppression = d->suppressCurrentSharedPresentationPublication;
+            d->sharedPresentationNotificationReplay = true;
+            d->suppressCurrentSharedPresentationPublication = false;
+            const auto restore = qScopeGuard([this, priorReplay, priorSuppression]() {
+                d->sharedPresentationNotificationReplay = priorReplay;
+                d->suppressCurrentSharedPresentationPublication = priorSuppression;
+            });
+            signalChangedObject(vp, prop);
+            updateActions(delayActions);
+            return;
+        }
+        try {
+            if (d->sharedPresentationNotificationAudit
+                && !d->sharedPresentationNotificationAudit(vp, prop)) {
+                d->sharedPresentationNotificationAuditViolated = true;
+            }
+        }
+        catch (...) {
+            d->sharedPresentationNotificationAuditViolated = true;
+        }
+        d->deferredPresentationNotifications.push_back({&vp, &prop, false, delayActions});
+        return;
+    }
+    if (d->sharedPresentationNotificationReplay) {
+        const bool prior = d->suppressCurrentSharedPresentationPublication;
+        d->suppressCurrentSharedPresentationPublication = false;
+        const auto restore = qScopeGuard([this, prior]() {
+            d->suppressCurrentSharedPresentationPublication = prior;
+        });
+        signalChangedObject(vp, prop);
+        updateActions(delayActions);
+        return;
+    }
+    signalChangedObject(vp, prop);
+    updateActions(delayActions);
 }
 
 void Application::slotRelabelObject(const ViewProvider& vp)

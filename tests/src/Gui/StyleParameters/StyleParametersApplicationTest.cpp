@@ -40,7 +40,9 @@ protected:
     static void SetUpTestSuite()
     {
         tests::initApplication();
-        app = new Application(true);
+        // Gui::Application is process-wide. Reuse it when an earlier fixture has already
+        // initialized the real GUI; this suite must also remain runnable on its own.
+        app = Application::Instance ? Application::Instance : new Application(true);
     }
 
     void SetUp() override

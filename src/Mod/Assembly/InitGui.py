@@ -96,11 +96,14 @@ class AssemblyWorkbench(Workbench):
         cmdListMenuOnly = [
             "Assembly_LinkSelectLinked",
             "Assembly_ExportASMT",
+            "Assembly_CheckInterference",
+            "Assembly_CheckSelectedComponents",
             "Assembly_SelectJointsOfComponent",
         ]
 
         cmdListJoints = [
             "Assembly_ToggleGrounded",
+            "Assembly_CreateJointRigidGroup",
             "Separator",
             "Assembly_CreateJointFixed",
             "Assembly_CreateJointRevolute",
@@ -281,7 +284,7 @@ class AssemblyWorkbench(Workbench):
                 return UtilsAssembly.assembly_has_at_least_n_parts(2)
 
         class AssemblyToolsWatcher(AssemblyBaseWatcher):
-            """Shows Joint, View, and BOM tools when there are enough parts."""
+            """Shows View and BOM tools when there are enough parts."""
 
             def __init__(self):
                 super().__init__()
@@ -295,6 +298,37 @@ class AssemblyWorkbench(Workbench):
                 if not super().shouldShow():
                     return False
                 return UtilsAssembly.assembly_has_at_least_n_parts(1)
+
+        class AssemblyInterferenceWatcher:
+            """Shows interference tools for an active assembly or selected App::Part."""
+
+            def __init__(self):
+                self.commands = [
+                    "Assembly_CheckInterference",
+                    "Assembly_CheckSelectedComponents",
+                ]
+                self.title = translate("Assembly", "Interference")
+
+            def shouldShow(self):
+                doc = FreeCAD.ActiveDocument
+                if doc is None:
+                    return False
+                assembly = UtilsAssembly.activeAssembly()
+                if assembly is not None and assembly.Document == doc:
+                    return UtilsAssembly.assembly_has_at_least_n_parts(1)
+                try:
+                    import FreeCADGui
+
+                    for obj in FreeCADGui.Selection.getSelection():
+                        if obj is None:
+                            continue
+                        if obj.isDerivedFrom("App::Part") and not obj.isDerivedFrom(
+                            "Part::BodyBase"
+                        ):
+                            return True
+                except Exception:
+                    pass
+                return False
 
         class AssemblySimulationWatcher(AssemblyBaseWatcher):
             """Shows 'Create Simulation' when specific motional joints exist."""
@@ -337,6 +371,7 @@ class AssemblyWorkbench(Workbench):
             AssemblyGroundWatcher(),
             AssemblyJointsWatcher(),
             AssemblyToolsWatcher(),
+            AssemblyInterferenceWatcher(),
             AssemblySimulationWatcher(),
             AssemblyReviewNoteWatcher(),
         ]

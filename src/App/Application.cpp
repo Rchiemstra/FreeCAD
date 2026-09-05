@@ -74,10 +74,12 @@
 
 #include <App/MaterialPy.h>
 #include <App/MetadataPy.h>
-// FreeCAD Base header
+// FreeCAD Base headers
 #include <Base/AxisPy.h>
 #include <Base/BaseClass.h>
 #include <Base/BoundBoxPy.h>
+#include <Base/CrashReporter/Manager.h>
+#include <Base/CrashReporter/Writer.h>
 #include <Base/ConsoleObserver.h>
 #include <Base/ServiceProvider.h>
 #include <Base/CoordinateSystemPy.h>
@@ -94,6 +96,7 @@
 #include <Base/PrecisionPy.h>
 #include <Base/ProgressIndicatorPy.h>
 #include <Base/RotationPy.h>
+#include <Base/ConsoleModulePy.h>
 #include <Base/UniqueNameManager.h>
 #include <Base/TimeInfo.h>
 #include <Base/SystemHandler.h>
@@ -103,6 +106,7 @@
 #include <Base/TypePy.h>
 #include <Base/UnitPy.h>
 #include <Base/UnitsApi.h>
+#include <Base/UnitsModulePy.h>
 #include <Base/VectorPy.h>
 
 #include "Annotation.h"
@@ -111,19 +115,25 @@
 #include "ApplicationDirectoriesPy.h"
 #include "ApplicationPy.h"
 #include "CleanupProcess.h"
+#include "CollaborationRegistry.h"
+#include "FreeCADModulePy.h"
 #include "ComplexGeoData.h"
 #include "ConsoleQtBridge.h"
 #include "TranslationQtBridge.h"
 #include "Services.h"
+#include "Document.h"
+#include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
 #include "DocumentObjectGroup.h"
 #include "DocumentObjectGroupPy.h"
 #include "DocumentObserver.h"
 #include "DocumentPy.h"
 #include "DocumentSettingsPy.h"
-#include "DocumentMutationAuthority.h"
+#include "DocumentCollaborationService.h"
+#include "MutationClassification.h"
 #include "ExpressionParser.h"
 #include "FeatureTest.h"
+#include "RecoverySnapshot.h"
 #include "FeaturePython.h"
 #include "GeoFeature.h"
 #include "GeoFeatureGroupExtension.h"
@@ -150,6 +160,7 @@
 #include "PropertyFile.h"
 #include "PropertyLinks.h"
 #include "PropertyPythonObject.h"
+#include "PreparedEditExecutor.h"
 #include "StringHasherPy.h"
 #include "StringIDPy.h"
 #include "TextDocument.h"
@@ -255,16 +266,28 @@ void reportRecomputeException(const Base::Exception& exception)
     exception.reportException();
 }
 
-RecomputeResult processRecomputeRequest(RecomputeRequest& request)
+RecomputeResult processRecomputeRequestUnserialized(RecomputeRequest& request)
 {
     RecomputeResult result;
 
     try {
-        if (Document* document = request.resolveDocument()) {
+        Document* document = request.resolveDocument();
+        if (!request.documentName.empty() && !document) {
+            throw Base::RuntimeError(
+                "recompute target document instance is no longer live");
+        }
+        if (document) {
             document->recompute({}, request.force, nullptr, request.options);
         }
 
-        if (DocumentObject* documentObject = request.resolveDocumentObject()) {
+        DocumentObject* documentObject = request.documentObjectName.empty() || !document
+            ? nullptr
+            : document->getObject(request.documentObjectName.c_str());
+        if (!request.documentObjectName.empty() && !documentObject) {
+            throw Base::RuntimeError(
+                "recompute target object is no longer live");
+        }
+        if (documentObject) {
             documentObject->recomputeFeature(request.recursive);
         }
     }
@@ -276,6 +299,17 @@ RecomputeResult processRecomputeRequest(RecomputeRequest& request)
     catch (Base::Exception& exception) {
         reportRecomputeException(exception);
         result.exception = std::make_unique<Base::Exception>(std::move(exception));
+        result.failure = RecomputeFailure::Exception;
+        result.success = false;
+    }
+    catch (const std::exception& exception) {
+        result.exception = std::make_unique<Base::RuntimeError>(exception.what());
+        result.failure = RecomputeFailure::Exception;
+        result.success = false;
+    }
+    catch (...) {
+        result.exception =
+            std::make_unique<Base::RuntimeError>("unknown recompute failure");
         result.failure = RecomputeFailure::Exception;
         result.success = false;
     }
@@ -301,6 +335,9 @@ RecomputeRequest RecomputeRequest::fromDocument(const Document& document, bool f
 {
     RecomputeRequest request;
     request.documentName = document.getName();
+    const auto identity = document.collaborationIdentity();
+    request.documentInstanceId = identity.instanceId;
+    request.documentLifecycleEpoch = identity.lifecycleEpoch;
     request.force = force;
     request.options = options;
     return request;
@@ -312,6 +349,9 @@ RecomputeRequest RecomputeRequest::fromDocumentObject(const DocumentObject& docu
 
     if (const Document* document = documentObject.getDocument()) {
         request.documentName = document->getName();
+        const auto identity = document->collaborationIdentity();
+        request.documentInstanceId = identity.instanceId;
+        request.documentLifecycleEpoch = identity.lifecycleEpoch;
     }
 
     request.documentObjectName = documentObject.getNameInDocument();
@@ -325,7 +365,16 @@ Document* RecomputeRequest::resolveDocument() const
         return nullptr;
     }
 
-    return GetApplication().getDocument(documentName.c_str());
+    Document* document = GetApplication().getDocument(documentName.c_str());
+    if (!document || documentInstanceId == 0 || documentLifecycleEpoch == 0) {
+        return nullptr;
+    }
+    const auto identity = document->collaborationIdentity();
+    return identity.state == DocumentLifecycleState::Live
+            && identity.instanceId == documentInstanceId
+            && identity.lifecycleEpoch == documentLifecycleEpoch
+        ? document
+        : nullptr;
 }
 
 DocumentObject* RecomputeRequest::resolveDocumentObject() const
@@ -346,23 +395,6 @@ DocumentObject* RecomputeRequest::resolveDocumentObject() const
 // Construction and destruction
 
 // clang-format off
-PyDoc_STRVAR(FreeCAD_doc,
-     "The functions in the FreeCAD module allow working with documents.\n"
-     "The FreeCAD instance provides a list of references of documents which\n"
-     "can be addressed by a string. Hence the document name must be unique.\n"
-     "\n"
-     "The document has the read-only attribute FileName which points to the\n"
-     "file the document should be stored to.\n"
-    );
-
-PyDoc_STRVAR(Console_doc,
-    "FreeCAD Console module.\n\n"
-    "The Console module contains functions to manage log entries, messages,\n"
-    "warnings and errors.\n"
-    "There are also functions to get/set the status of the observers used as\n"
-    "logging interfaces."
-    );
-
 PyDoc_STRVAR(Base_doc,
     "The Base module contains the classes for the geometric basics\n"
     "like vector, matrix, bounding box, placement, rotation, axis, ...\n"
@@ -382,19 +414,18 @@ init_freecad_base_module(void)
     return PyModule_Create(&BaseModuleDef);
 }
 
-// Set in inside Application
-static PyMethodDef* ApplicationMethods = nullptr;
-
 PyMODINIT_FUNC
 init_freecad_module(void)
 {
     static struct PyModuleDef FreeCADModuleDef = {
         PyModuleDef_HEAD_INIT,
-        "FreeCAD", FreeCAD_doc, -1,
-        ApplicationMethods,
+        "FreeCAD", App::FreeCADModulePy::moduleDocumentation(), -1,
+        nullptr,
         nullptr, nullptr, nullptr, nullptr
     };
-    return PyModule_Create(&FreeCADModuleDef);
+    PyObject* module = PyModule_Create(&FreeCADModuleDef);
+    App::FreeCADModulePy::addModuleMethods(module);
+    return module;
 }
 
 PyMODINIT_FUNC
@@ -412,10 +443,12 @@ init_image_module()
 
 Application::Application(std::map<std::string,std::string> &mConfig)
   : _mConfig(mConfig)
+  , _collaborationRegistry(std::make_unique<CollaborationRegistry>())
 {
     mpcPramManager["System parameter"] = _pcSysParamMngr;
     mpcPramManager["User parameter"] = _pcUserParamMngr;
 
+    _preparedEditExecutor = std::make_unique<PreparedEditExecutor>();
     _stopRecomputeThread = false;
     _recomputeThread = std::thread(&Application::recomputeWorker, this);
 
@@ -431,6 +464,8 @@ Application::~Application()
     if (_recomputeThread.joinable()) {
         _recomputeThread.join();
     }
+
+    _preparedEditExecutor.reset();
 }
 
 void Application::setupPythonTypes()
@@ -439,7 +474,6 @@ void Application::setupPythonTypes()
     Base::PyGILStateLocker lock;
     PyObject* modules = PyImport_GetModuleDict();
 
-    ApplicationMethods = ApplicationPy::Methods;
     PyObject* pAppModule = PyImport_ImportModule ("FreeCAD");
     if (!pAppModule) {
         PyErr_Clear();
@@ -451,11 +485,12 @@ void Application::setupPythonTypes()
     // clang-format off
     static struct PyModuleDef ConsoleModuleDef = {
         PyModuleDef_HEAD_INIT,
-        "__FreeCADConsole__", Console_doc, -1,
-        Base::ConsoleSingleton::Methods,
+        "__FreeCADConsole__", Base::ConsoleModulePy::moduleDocumentation(), -1,
+        nullptr,
         nullptr, nullptr, nullptr, nullptr
     };
     PyObject* pConsoleModule = PyModule_Create(&ConsoleModuleDef);
+    Base::ConsoleModulePy::addModuleMethods(pConsoleModule);
 
     // fake Image module
     PyObject* imageModule = init_image_module();
@@ -542,11 +577,12 @@ void Application::setupPythonTypes()
     //insert Units module
     static struct PyModuleDef UnitsModuleDef = {
         PyModuleDef_HEAD_INIT,
-        "Units", "The Unit API", -1,
-        Base::UnitsApi::Methods,
+        "Units", Base::UnitsModulePy::moduleDocumentation(), -1,
+        nullptr,
         nullptr, nullptr, nullptr, nullptr
     };
     PyObject* pUnitsModule = PyModule_Create(&UnitsModuleDef);
+    Base::UnitsModulePy::addModuleMethods(pUnitsModule);
     Base::InterpreterSingleton::addType(&Base::QuantityPy  ::Type,pUnitsModule,"Quantity");
     // make sure to set the 'nb_true_divide' slot
     Base::InterpreterSingleton::addType(&Base::UnitPy      ::Type,pUnitsModule,"Unit");
@@ -612,6 +648,16 @@ Document* Application::newDocument(const char * proposedName, const char * propo
         }
     }
 
+    // A successful close leaves a recompute-admission tombstone until the
+    // document name is intentionally reused. Clear it before constructing the
+    // new instance; no callback targeting the destroyed instance can then run
+    // during the close/destructor boundary.
+    {
+        std::lock_guard recomputeState(_recomputeMutex);
+        _recomputeDocumentsClosing.erase(name);
+        _recomputeDocumentsSealed.erase(name);
+    }
+
     // Determine the document's Label
     std::string label;
     if (!Base::Tools::isNullOrEmpty(proposedLabel)) {
@@ -639,6 +685,10 @@ Document* Application::newDocument(const char * proposedName, const char * propo
 
     // add the document to the internal list
     DocMap[name] = doc;
+    const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
+    doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
+                                                       collaborationIdentity.lifecycleEpoch);
+    doc->setCollaborationRevisionPublicationSuppressed(false);
 
     //NOLINTBEGIN
     // clang-format off
@@ -689,14 +739,162 @@ bool Application::closeDocument(const char* name)
 {
     const std::string documentName(name);
 
-    cancelRecomputeRequestsForDocument(documentName);
+    // Serialize close admission by stable document name before consulting the
+    // unprotected document map. This gate also makes recompute admission fail
+    // before it can resolve a live pointer for a document being closed.
+    {
+        std::lock_guard recomputeState(_recomputeMutex);
+        if (!_recomputeDocumentsClosing.insert(documentName).second) {
+            return false;
+        }
+    }
+    if (const auto hook = _postRecomputeClosingAdmissionTestHook.load(
+            std::memory_order_acquire)) {
+        hook();
+    }
+    bool recomputeCloseGateActive = true;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (recomputeCloseGateActive) {
+            std::lock_guard recomputeState(_recomputeMutex);
+            _recomputeDocumentsClosing.erase(documentName);
+            _recomputeDocumentsSealed.erase(documentName);
+            _recomputeStateChanged.notify_all();
+        }
+    };
 
-    const auto pos = DocMap.find( name );
-    if (pos == DocMap.end()) // no such document
+    auto pos = DocMap.find(name);
+    if (pos == DocMap.end()) {  // no such document
         return false;
+    }
+    auto* collaborationService = &pos->second->collaborationService();
+    const auto collaborationLifetimeGate =
+        collaborationServiceLifetimeGate(*collaborationService);
+    if (!collaborationLifetimeGate) {
+        throw Base::RuntimeError(
+            "Document collaboration lifetime gate is missing during close");
+    }
+    const auto callerOwnsCollaborationAccess = [&] {
+        std::lock_guard lock(collaborationLifetimeGate->mutex);
+        return collaborationLifetimeGate->accessOwners.contains(
+            std::this_thread::get_id());
+    };
+    bool collaborationAccessGateSealed = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (collaborationAccessGateSealed) {
+            std::lock_guard lock(collaborationLifetimeGate->mutex);
+            collaborationLifetimeGate->sealed = false;
+            collaborationLifetimeGate->changed.notify_all();
+        }
+    };
 
-    enforceDocumentMutation(pos->second, MutationKind::Close);
-    DocumentMutationAuthority::instance().forgetDocument(*pos->second);
+    // A close requested recursively from a collaboration service call cannot
+    // drain its own lifetime admission. Reject before sealing either gate.
+    if (callerOwnsCollaborationAccess()) {
+        return false;
+    }
+
+    // A GUI owner thread cannot pump its dispatcher while waiting in close.
+    // Atomically reject close if any service call is active, otherwise seal
+    // before proceeding. Headless/non-owner close uses the two-phase
+    // Closing-then-seal path below so already-begun calls can observe Closing.
+    if (MainThreadSignalConfig::hasHooks()
+        && MainThreadSignalConfig::isMainThread()) {
+        std::lock_guard lock(collaborationLifetimeGate->mutex);
+        if (collaborationLifetimeGate->activeAccesses != 0) {
+            return false;
+        }
+        collaborationLifetimeGate->sealed = true;
+        collaborationAccessGateSealed = true;
+    }
+
+    // Rejected callbacks that entered after Closing was announced above are
+    // activity-counted. Seal further callback admission and remove queued
+    // work atomically, so the worker cannot acquire new document-dependent
+    // activity after this check.
+    bool recomputeActivityAtSeal = false;
+    {
+        std::lock_guard recomputeState(_recomputeMutex);
+        _recomputeDocumentsSealed.insert(documentName);
+        std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
+            return requestTargetsDocument(request, documentName);
+        });
+        recomputeActivityAtSeal =
+            _recomputeDocumentActivityCounts.contains(documentName);
+    }
+
+    // An active service call may own the document serialization mutex while
+    // running observers; an active recompute may be waiting for that mutex.
+    // A close must not wait between them. If recompute is already active,
+    // atomically pre-seal an idle service gate or reject this close attempt.
+    if (recomputeActivityAtSeal && !collaborationAccessGateSealed) {
+        std::lock_guard lock(collaborationLifetimeGate->mutex);
+        if (collaborationLifetimeGate->activeAccesses != 0) {
+            return false;
+        }
+        collaborationLifetimeGate->sealed = true;
+        collaborationAccessGateSealed = true;
+    }
+
+    if (!cancelRecomputeRequestsForDocument(documentName)) {
+        return false;
+    }
+
+    pos = DocMap.find(name);
+    if (pos == DocMap.end()) {  // it may have been closed while we waited
+        return false;
+    }
+
+    // Serialize final lifecycle admission with commit and capture admission.
+    // The identity is marked closing before this lock is released, so no new
+    // collaboration operation can enter after this point.
+    std::unique_lock serialized(pos->second->collaborationCommitMutex(),
+                                std::try_to_lock);
+    if (!serialized.owns_lock()) {
+        return false;
+    }
+    if (callerOwnsCollaborationAccess()) {
+        return false;
+    }
+
+    enforceAtomicPresentationMutationTarget(pos->second);
+    pos->second->setCollaborationRevisionPublicationSuppressed(true);
+    const auto closingIdentity = _collaborationRegistry->markClosing(*pos->second);
+    if (!closingIdentity) {
+        throw Base::RuntimeError("Document collaboration identity is missing during close");
+    }
+    pos->second->collaborationRevisions().bindDocumentIdentity(
+        closingIdentity->instanceId,
+        closingIdentity->lifecycleEpoch
+    );
+    if (const auto hook = _postMarkCollaborationClosingTestHook.load(
+            std::memory_order_acquire)) {
+        hook();
+    }
+    if (!collaborationAccessGateSealed) {
+        std::lock_guard lock(collaborationLifetimeGate->mutex);
+        if (collaborationLifetimeGate->accessOwners.contains(
+                std::this_thread::get_id())) {
+            throw Base::RuntimeError(
+                "Document close attempted to drain its own collaboration access");
+        }
+        collaborationLifetimeGate->sealed = true;
+        collaborationAccessGateSealed = true;
+    }
+    serialized.unlock();
+
+    // Do not hold the document serialization mutex, recompute mutex, GUI lock,
+    // GIL, or any global lock while admitted service calls observe Closing and
+    // unwind. The sealed gate prevents a zero-count/new-admission race.
+    {
+        std::unique_lock lock(collaborationLifetimeGate->mutex);
+        collaborationLifetimeGate->changed.wait(lock, [&] {
+            return collaborationLifetimeGate->activeAccesses == 0;
+        });
+    }
+    if (const auto hook = _postCollaborationAccessDrainTestHook.load(
+            std::memory_order_acquire)) {
+        hook();
+    }
 
     Base::ConsoleRefreshDisabler disabler;
 
@@ -708,24 +906,125 @@ bool Application::closeDocument(const char* name)
     if (_pActiveDoc == pos->second) {
         setActiveDocument(static_cast<Document*>(nullptr));
     }
-    const std::unique_ptr<Document> delDoc (pos->second);
+    std::unique_ptr<Document> delDoc(pos->second);
     DocMap.erase( pos );
     DocFileMap.erase(Base::FileInfo(delDoc->FileName.getValue()).filePath());
+    const auto closedIdentity = _collaborationRegistry->closeDocument(*delDoc);
+    if (!closedIdentity) {
+        throw Base::RuntimeError("Document collaboration identity disappeared during close");
+    }
+    delDoc->collaborationRevisions().bindDocumentIdentity(
+        closedIdentity->instanceId,
+        closedIdentity->lifecycleEpoch
+    );
 
     _objCount = -1;
 
     // Trigger observers after removing the document from the internal map.
     signalDeletedDocument();
 
+    // Keep both admission seals active until Document and its collaboration
+    // service have actually been destroyed.
+    delDoc.reset();
+    unregisterCollaborationServiceLifetime(collaborationService);
+    collaborationAccessGateSealed = false;
+    // Keep a name-keyed tombstone after destruction. newDocument() removes it
+    // only when a new instance intentionally reuses this name.
+    recomputeCloseGateActive = false;
+    _recomputeStateChanged.notify_all();
+
     return true;
+}
+
+const CollaborationRegistry& Application::collaborationRegistry() const
+{
+    return *_collaborationRegistry;
+}
+
+DocumentIdentity Application::advanceDocumentCollaborationEpoch(
+    Document& document,
+    const RecoverySnapshotSaveOptions& recoveryOptions,
+    std::string reason)
+{
+    auto lifecycleAccess = document.collaborationService().pinDocumentAccess();
+    if (!lifecycleAccess) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery cannot start while close is sealed");
+    }
+    if (!document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires the document owner thread");
+    }
+
+    const auto found = DocMap.find(document.getName());
+    if (found == DocMap.end() || found->second != &document) {
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires a live registered document");
+    }
+
+    std::vector<PreparedEditExecutionId> executionIds;
+    DocumentIdentity advancedIdentity;
+    bool lifecyclePinned = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (lifecyclePinned) {
+            document.finishCollaborationStableReadCapture();
+        }
+    };
+    {
+        std::lock_guard serialized(document.collaborationCommitMutex());
+        const auto identity = _collaborationRegistry->identity(document);
+        if (!identity || identity->state != DocumentLifecycleState::Live) {
+            throw Base::RuntimeError(
+                "administrative collaboration recovery targets a non-live document");
+        }
+        if (document.collaborationNotificationsReplaying()
+            || document.collaborationStableReadBlocked()
+            || document.collaborationLifecycleMutationBlocked()) {
+            throw Base::RuntimeError(
+                "administrative collaboration recovery requires a stable document boundary");
+        }
+
+        if (!writeRecoverySnapshotToTransientDir(document, recoveryOptions)) {
+            throw Base::RuntimeError("failed to preserve administrative recovery snapshot");
+        }
+
+        // Reserve the only potentially-throwing lifecycle resource before
+        // cancelling sessions. This prevents epoch exhaustion from leaving an
+        // old live epoch with partially cancelled work.
+        const auto reservedEpoch = _collaborationRegistry->reserveLifecycleEpoch();
+        executionIds = document.collaborationService().cancelAllForLifecycle(
+            std::move(reason));
+        const auto advanced = _collaborationRegistry->advanceEpoch(document, reservedEpoch);
+        if (!advanced) {
+            throw Base::RuntimeError(
+                "document collaboration epoch could not be advanced");
+        }
+        advancedIdentity = *advanced;
+        document.collaborationRevisions().bindDocumentIdentity(
+            advancedIdentity.instanceId,
+            advancedIdentity.lifecycleEpoch);
+
+        // Keep close/teardown excluded after releasing the serialization mutex
+        // until executor jobs no longer retain results for the old epoch.
+        document.beginCollaborationStableReadCapture();
+        lifecyclePinned = true;
+    }
+
+    // Never acquire the executor queue while the document serialization
+    // boundary is held. Old detached results are already stale by epoch.
+    document.collaborationService().abandonLifecyclePreparations(executionIds);
+    return advancedIdentity;
 }
 
 void Application::closeAllDocuments()
 {
     Base::FlagToggler<bool> flag(_isClosingAll);
     std::map<std::string,Document*>::iterator pos;
-    while((pos = DocMap.begin()) != DocMap.end())
-        closeDocument(pos->first.c_str());
+    while ((pos = DocMap.begin()) != DocMap.end()) {
+        if (!closeDocument(pos->first.c_str())) {
+            break;
+        }
+    }
 }
 
 Document* Application::getDocument(const char *Name) const
@@ -836,7 +1135,7 @@ bool Application::isFineGrainedRecomputeEnabled()
     static const ParameterGrp::handle hGrp = GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/General"
     );
-    bool enableFineGrainedRecompute = hGrp->GetBool("FineGrainedRecompute");
+    bool enableFineGrainedRecompute = hGrp->GetBool("FineGrainedRecompute", true);
     return enableFineGrainedRecompute;
 }
 
@@ -850,55 +1149,242 @@ bool Application::canRecomputeRequestOnWorker(const RecomputeRequest& req) const
     return !document || documentCanRecomputeOnWorker(*document);
 }
 
+PreparedEditExecutor& Application::preparedEditExecutor() noexcept
+{
+    return *_preparedEditExecutor;
+}
+
+void Application::registerCollaborationServiceLifetime(
+    DocumentCollaborationService& service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    const auto [position, inserted] = _collaborationServiceLifetimeGates.emplace(
+        &service, std::make_shared<Internal::CollaborationServiceLifetimeGate>());
+    static_cast<void>(position);
+    if (!inserted) {
+        throw Base::RuntimeError("duplicate collaboration service lifetime registration");
+    }
+}
+
+std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
+Application::collaborationServiceLifetimeGate(
+    const DocumentCollaborationService& service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    const auto found = _collaborationServiceLifetimeGates.find(&service);
+    return found == _collaborationServiceLifetimeGates.end()
+        ? nullptr
+        : found->second;
+}
+
+void Application::unregisterCollaborationServiceLifetime(
+    const DocumentCollaborationService* service)
+{
+    std::lock_guard lock(_collaborationServiceLifetimeMutex);
+    _collaborationServiceLifetimeGates.erase(service);
+}
+
+RecomputeResult Application::processRecomputeRequestSerialized(RecomputeRequest& request)
+{
+    if (Document* document = request.resolveDocument()) {
+        // The recompute queue mutex is never held here. Stable capture and
+        // commit use the same document mutex, so live recompute cannot overlap
+        // either boundary and no executor/recompute lock cycle is introduced.
+        std::lock_guard serialized(document->collaborationCommitMutex());
+        return processRecomputeRequestUnserialized(request);
+    }
+    return processRecomputeRequestUnserialized(request);
+}
+
 void Application::queueRecomputeRequest(RecomputeRequest req)
 {
-    if (!canRecomputeRequestOnWorker(req)) {
+    const std::string documentName = req.documentName;
+    const std::thread::id activityOwner = std::this_thread::get_id();
+    const auto rejectClosingRequest = [&req] {
         RecomputeResult result;
-
-        // Requests that are not worker-safe stay on the caller thread unless a
-        // GUI main-thread hop is required. In App-only/headless mode there are
-        // no GUI hooks, so processing inline preserves the "stay off the
-        // worker" guarantee without inventing a synthetic main thread.
-        if (App::MainThreadSignalConfig::hasHooks()
-            && !App::MainThreadSignalConfig::isMainThread()) {
-            App::MainThreadSignalConfig::invoke(
-                [&req, &result]() { result = processRecomputeRequest(req); },
-                /*blocking=*/true
-            );
-        }
-        else {
-            result = processRecomputeRequest(req);
-        }
-
+        result.success = false;
+        result.failure = RecomputeFailure::Exception;
+        result.exception =
+            std::make_unique<Base::RuntimeError>("document is closing");
         if (req.callback) {
             req.callback(req, result);
         }
+    };
+    const auto finishActivity = [this, &documentName, &activityOwner] {
+        if (documentName.empty()) {
+            return;
+        }
+        std::lock_guard lock(_recomputeMutex);
+        const auto found = _recomputeDocumentActivityCounts.find(documentName);
+        if (found != _recomputeDocumentActivityCounts.end()) {
+            if (--found->second == 0) {
+                _recomputeDocumentActivityCounts.erase(found);
+            }
+        }
+        const auto documentOwners =
+            _recomputeDocumentActivityOwners.find(documentName);
+        if (documentOwners != _recomputeDocumentActivityOwners.end()) {
+            const auto owner = documentOwners->second.find(activityOwner);
+            if (owner != documentOwners->second.end()
+                && --owner->second == 0) {
+                documentOwners->second.erase(owner);
+            }
+            if (documentOwners->second.empty()) {
+                _recomputeDocumentActivityOwners.erase(documentOwners);
+            }
+        }
+        _recomputeStateChanged.notify_all();
+    };
+
+    bool activityRegistered = false;
+    bool rejectedAtAdmission = false;
+    bool sealedAtAdmission = false;
+    if (!documentName.empty()) {
+        std::lock_guard lock(_recomputeMutex);
+        if (_recomputeDocumentsSealed.contains(documentName)) {
+            sealedAtAdmission = true;
+        }
+        else {
+            ++_recomputeDocumentActivityCounts[documentName];
+            ++_recomputeDocumentActivityOwners[documentName][activityOwner];
+            activityRegistered = true;
+            rejectedAtAdmission =
+                _recomputeDocumentsClosing.contains(documentName);
+        }
+    }
+    if (sealedAtAdmission) {
+        return;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (activityRegistered) {
+            finishActivity();
+        }
+    };
+    if (rejectedAtAdmission) {
+        rejectClosingRequest();
         return;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(_recomputeMutex);
-        _recomputeRequests.push_back(std::move(req));
+    const bool workerSafe = canRecomputeRequestOnWorker(req);
+
+    if (workerSafe) {
+        bool rejected = false;
+        {
+            std::lock_guard lock(_recomputeMutex);
+            if (!documentName.empty()
+                && _recomputeDocumentsClosing.contains(documentName)) {
+                rejected = true;
+            }
+            else {
+                _recomputeRequests.push_back(std::move(req));
+            }
+            // A queued request transfers its admission activity to the worker.
+            // A rejected request keeps this activity until its callback returns.
+            if (!rejected && activityRegistered) {
+                const auto found =
+                    _recomputeDocumentActivityCounts.find(documentName);
+                if (found != _recomputeDocumentActivityCounts.end()
+                    && --found->second == 0) {
+                    _recomputeDocumentActivityCounts.erase(found);
+                }
+                const auto documentOwners =
+                    _recomputeDocumentActivityOwners.find(documentName);
+                if (documentOwners != _recomputeDocumentActivityOwners.end()) {
+                    const auto owner =
+                        documentOwners->second.find(activityOwner);
+                    if (owner != documentOwners->second.end()
+                        && --owner->second == 0) {
+                        documentOwners->second.erase(owner);
+                    }
+                    if (documentOwners->second.empty()) {
+                        _recomputeDocumentActivityOwners.erase(documentOwners);
+                    }
+                }
+                activityRegistered = false;
+                _recomputeStateChanged.notify_all();
+            }
+        }
+        if (rejected) {
+            rejectClosingRequest();
+        }
+        else {
+            notifyRecomputeWorker();
+        }
+        return;
     }
-    notifyRecomputeWorker();
+
+    RecomputeResult result;
+
+    // Requests that are not worker-safe stay on the caller thread unless a
+    // GUI main-thread hop is required. In App-only/headless mode there are no
+    // GUI hooks, so processing inline preserves the "stay off the worker"
+    // guarantee without inventing a synthetic main thread.
+    if (App::MainThreadSignalConfig::hasHooks()
+        && !App::MainThreadSignalConfig::isMainThread()) {
+        bool rejected = false;
+        {
+            std::lock_guard lock(_recomputeMutex);
+            if (!documentName.empty()
+                && _recomputeDocumentsClosing.contains(documentName)) {
+                rejected = true;
+            }
+        }
+        if (rejected) {
+            rejectClosingRequest();
+            return;
+        }
+        App::MainThreadSignalConfig::invoke(
+            [this, &req, &result]() {
+                result = processRecomputeRequestSerialized(req);
+            },
+            /*blocking=*/true
+        );
+    }
+    else {
+        result = processRecomputeRequestSerialized(req);
+    }
+
+    if (req.callback) {
+        req.callback(req, result);
+    }
 }
 
-void Application::cancelRecomputeRequestsForDocument(const std::string& documentName)
+bool Application::cancelRecomputeRequestsForDocument(const std::string& documentName)
 {
     if (documentName.empty()) {
-        return;
+        return true;
     }
 
     std::unique_lock<std::mutex> lock(_recomputeMutex);
-    _recomputeStateChanged.wait(lock, [this, &documentName] {
-        return !_recomputeDocumentsInProgress.contains(documentName);
-    });
-
-    // Cancellation runs on document-close boundaries, so a linear scan keeps
-    // the queue simple without affecting the steady-state worker path.
+    // Close seals admission before calling this helper. Remove queued work
+    // before waiting so the worker cannot turn it into document activity.
     std::erase_if(_recomputeRequests, [&documentName](const RecomputeRequest& request) {
         return requestTargetsDocument(request, documentName);
     });
+    const std::thread::id caller = std::this_thread::get_id();
+    const auto callerOwnsActivity = [this, &documentName, &caller] {
+        const auto documentOwners =
+            _recomputeDocumentActivityOwners.find(documentName);
+        return documentOwners != _recomputeDocumentActivityOwners.end()
+            && documentOwners->second.contains(caller);
+    };
+    const auto ownerThreadCannotWait = [this, &documentName] {
+        return MainThreadSignalConfig::hasHooks()
+            && MainThreadSignalConfig::isMainThread()
+            && _recomputeDocumentActivityCounts.contains(documentName);
+    };
+    _recomputeStateChanged.wait(lock, [this,
+                                       &documentName,
+                                       &callerOwnsActivity,
+                                       &ownerThreadCannotWait] {
+        return !_recomputeDocumentActivityCounts.contains(documentName)
+            || callerOwnsActivity() || ownerThreadCannotWait();
+    });
+    if (callerOwnsActivity() || ownerThreadCannotWait()) {
+        return false;
+    }
+
+    return true;
 }
 
 struct DocTiming {
@@ -1339,9 +1825,28 @@ void Application::setActiveDocument(const char* Name)
 
 static int _TransSignalCount;
 static bool _TransSignalled;
+static thread_local unsigned collaborationTransactionSignalSuppressionDepth;
+
+void Application::beginCollaborationTransactionSignalSuppression()
+{
+    ++collaborationTransactionSignalSuppressionDepth;
+}
+
+void Application::endCollaborationTransactionSignalSuppression()
+{
+    if (collaborationTransactionSignalSuppressionDepth == 0) {
+        throw Base::RuntimeError("collaboration transaction signal suppression underflow");
+    }
+    --collaborationTransactionSignalSuppressionDepth;
+}
+
 Application::TransactionSignaller::TransactionSignaller(bool abort, bool signal)
     :abort(abort)
 {
+    if (collaborationTransactionSignalSuppressionDepth != 0) {
+        suppressed = true;
+        return;
+    }
     ++_TransSignalCount;
     if(signal && !_TransSignalled) {
         _TransSignalled = true;
@@ -1350,6 +1855,9 @@ Application::TransactionSignaller::TransactionSignaller(bool abort, bool signal)
 }
 
 Application::TransactionSignaller::~TransactionSignaller() {
+    if (suppressed) {
+        return;
+    }
     if(--_TransSignalCount == 0 && _TransSignalled) {
         _TransSignalled = false;
         try {
@@ -2139,6 +2647,11 @@ void Application::init(int argc, char ** argv)
         initTypes();
 
         initConfig(argc,argv);
+
+        // Set up our crash reporting AFTER the call to initConfig, but BEFORE we start doing
+        // things that might crash...
+        initCrashReporter();
+
         initApplication();
         initExceptions();
     }
@@ -2449,8 +2962,8 @@ void parseProgramOptions(int ac, char ** av, const std::string& exe, boost::prog
     ("log-file", boost::program_options::value<std::string>(), "Unlike --write-log this allows logging to an arbitrary file")
     ("user-cfg,u", boost::program_options::value<std::string>(),"User config file to load/save user settings")
     ("system-cfg,s", boost::program_options::value<std::string>(),"System config file to load/save system settings")
-    ("run-test,t", boost::program_options::value<std::string>()->implicit_value(""),"Run a given test case (use 0 (zero) to run all tests). If no argument is provided then return list of all available tests.")
-    ("run-open,r", boost::program_options::value<std::string>()->implicit_value(""),"Run a given test case (use 0 (zero) to run all tests). If no argument is provided then return list of all available tests.  Keeps UI open after test(s) complete.")
+    ("run-test,t", boost::program_options::value<std::vector<std::string>>()->composing()->implicit_value(std::vector<std::string>{""}, ""),"Run one or more test cases (repeat -t for multiple). Use 0 (zero) to run all tests. If no argument is provided then return list of all available tests.")
+    ("run-open,r", boost::program_options::value<std::vector<std::string>>()->composing()->implicit_value(std::vector<std::string>{""}, ""),"Run one or more test cases (repeat -r for multiple). Use 0 (zero) to run all tests. If no argument is provided then return list of all available tests.  Keeps UI open after test(s) complete.")
     ("module-path,M", boost::program_options::value< std::vector<std::string> >()->composing(),"Additional module paths")
     ("macro-path,E", boost::program_options::value< std::vector<std::string> >()->composing(),"Additional macro paths")
     ("python-path,P", boost::program_options::value< std::vector<std::string> >()->composing(),"Additional python paths")
@@ -2677,15 +3190,32 @@ void processProgramOptions(const boost::program_options::variables_map& vm, std:
     }
 
     if (vm.contains("run-test") || vm.contains("run-open")) {
-        std::string testCase = vm.contains("run-open") ? vm["run-open"].as<std::string>() : vm["run-test"].as<std::string>();
+        std::vector<std::string> testCases;
+        bool runAll = false;
+        bool printAll = false;
+        for (const char* key : {"run-open", "run-test"}) {
+            if (vm.contains(key)) {
+                auto v = vm[key].as<std::vector<std::string>>();
+                for (const auto& s : v) {
+                    if (s == "0") {
+                        runAll = true;
+                    }
+                    else if (s.empty()) {
+                        printAll = true;
+                    }
+                }
+                testCases.insert(testCases.end(), v.begin(), v.end());
+            }
+        }
 
-        if ( "0" == testCase) {
-            testCase = "TestApp.All";
+        if (printAll) {
+            testCases = {"TestApp.PrintAll"};
         }
-        else if (testCase.empty()) {
-            testCase = "TestApp.PrintAll";
+        else if (runAll) {
+            testCases = {"TestApp.All"};
         }
-        mConfig["TestCase"] = std::move(testCase);
+
+        mConfig["TestCase"] = boost::join(testCases, ",");
         mConfig["RunMode"] = "Internal";
         mConfig["ScriptFileName"] = "FreeCADTest";
         mConfig["ExitTests"] = vm.contains("run-open") ? "no" : "yes";
@@ -2822,7 +3352,6 @@ void Application::initConfig(int argc, char ** argv)
 
         auto moduleName = "FreeCAD";
         PyImport_AddModule(moduleName);
-        ApplicationMethods = ApplicationPy::Methods;
         PyObject *pyModule = init_freecad_module();
         PyDict_SetItemString(sysModules, moduleName, pyModule);
         Py_DECREF(pyModule);
@@ -2993,6 +3522,23 @@ void Application::SaveEnv(const char* s)
 {
     if (auto c = getenvUTF8(s)) {
         mConfig[s] = c.value();
+    }
+}
+
+void Application::initCrashReporter()
+{
+    // Make sure anything that escapes doesn't abort startup: this is non-fatal
+    try {
+        const std::string crashReportsDirectory {getUserAppDataDir() + "CrashReports"};
+        Base::CrashReporter::Writer::prewarm();
+        Base::CrashReporter::Writer::install(crashReportsDirectory);
+        Base::CrashReporter::Manager::scan(crashReportsDirectory);
+    } catch (Base::Exception &e) {
+        Base::Console().warning("Crash reporting failed during startup:\n%s\n", e.getMessage());
+    } catch (std::exception &e) {
+        Base::Console().warning("Crash reporting failed during startup:\n%s\n", e.what());
+    } catch (...) {
+        Base::Console().warning("Crash reporting failed during startup\n");
     }
 }
 
@@ -3218,23 +3764,72 @@ void Application::recomputeWorker()
         while (!_recomputeRequests.empty()) {
             RecomputeRequest request = takeNextRecomputeRequest(_recomputeRequests);
             if (!request.documentName.empty()) {
-                _recomputeDocumentsInProgress.insert(request.documentName);
+                ++_recomputeDocumentActivityCounts[request.documentName];
+                ++_recomputeDocumentActivityOwners[request.documentName]
+                                                  [std::this_thread::get_id()];
+                _recomputeStateChanged.notify_all();
             }
 
             // Unlock while processing to allow other threads to add new requests.
             lock.unlock();
+            bool activityRegistered = !request.documentName.empty();
+            const auto finishWorkerActivity = [&] {
+                lock.lock();
+                const auto found =
+                    _recomputeDocumentActivityCounts.find(request.documentName);
+                if (found != _recomputeDocumentActivityCounts.end()
+                    && --found->second == 0) {
+                    _recomputeDocumentActivityCounts.erase(found);
+                }
+                const auto documentOwners =
+                    _recomputeDocumentActivityOwners.find(request.documentName);
+                if (documentOwners != _recomputeDocumentActivityOwners.end()) {
+                    const auto owner = documentOwners->second.find(
+                        std::this_thread::get_id());
+                    if (owner != documentOwners->second.end()
+                        && --owner->second == 0) {
+                        documentOwners->second.erase(owner);
+                    }
+                    if (documentOwners->second.empty()) {
+                        _recomputeDocumentActivityOwners.erase(documentOwners);
+                    }
+                }
+                _recomputeStateChanged.notify_all();
+                lock.unlock();
+            };
+            BOOST_SCOPE_EXIT_ALL(&) {
+                if (activityRegistered) {
+                    finishWorkerActivity();
+                }
+            };
 
-            RecomputeResult result = processRecomputeRequest(request);
+            RecomputeResult result = processRecomputeRequestSerialized(request);
 
+            // Keep the document activity registered through arbitrary callback
+            // code. A recursive close from the callback observes ownership and
+            // rejects instead of self-waiting; an external close drains this
+            // activity before the document becomes deletable.
             if (request.callback) {
-                request.callback(request, result);
+                try {
+                    request.callback(request, result);
+                }
+                catch (const std::exception& exception) {
+                    Base::Console().error(
+                        "Unhandled asynchronous recompute callback exception: %s\n",
+                        exception.what());
+                }
+                catch (...) {
+                    Base::Console().error(
+                        "Unhandled unknown asynchronous recompute callback exception\n");
+                }
+            }
+
+            if (activityRegistered) {
+                finishWorkerActivity();
+                activityRegistered = false;
             }
 
             lock.lock();
-            if (!request.documentName.empty()) {
-                _recomputeDocumentsInProgress.erase(request.documentName);
-                _recomputeStateChanged.notify_all();
-            }
         }
     }
 }

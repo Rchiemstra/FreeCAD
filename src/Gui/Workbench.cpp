@@ -761,9 +761,6 @@ MenuItem* StdWorkbench::setupMenuBar() const
           << "Std_AxisCross"
           << "Std_ToggleClipPlane"
           << "Std_TextureMapping"
-#ifdef BUILD_VR
-          << "Std_ViewVR"
-#endif
           << "Separator" << visu << "Std_ToggleNavigation"
           << "Std_RandomColor"
           << "Std_ToggleTransparency"
@@ -935,6 +932,11 @@ DockWindowItems* StdWorkbench::setupDockWindows() const
     root->addDockWidget("Std_TaskView", Qt::RightDockWidgetArea, Gui::DockWindowOption::VisibleTabbed);
     root->addDockWidget("Std_ReportView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
     root->addDockWidget("Std_PythonView", Qt::BottomDockWidgetArea, Gui::DockWindowOption::HiddenTabbed);
+    root->addDockWidget(
+        "Std_NotificationView",
+        Qt::BottomDockWidgetArea,
+        Gui::DockWindowOption::HiddenTabbed
+    );
 
     // Dagview through parameter.
     ParameterGrp::handle group = App::GetApplication()

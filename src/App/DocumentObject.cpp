@@ -40,12 +40,14 @@
 #include "Application.h"
 #include "ElementNamingUtils.h"
 #include "Document.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
 #include "DocumentObjectExtension.h"
 #include "DocumentObjectGroup.h"
 #include "GeoFeatureGroupExtension.h"
 #include "Link.h"
+#include "MutationClassification.h"
 #include "ObjectIdentifier.h"
 #include "PropertyExpressionEngine.h"
 #include "PropertyLinks.h"
@@ -215,18 +217,50 @@ void DocumentObject::setTouched(const char* name)
 
 void DocumentObject::touch(bool noRecompute)
 {
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
     }
     StatusBits.set(ObjectStatus::Touch);
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
+void DocumentObject::purgeTouched()
+{
+    const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
+    if (publish) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
+    StatusBits.reset(ObjectStatus::Touch);
+    StatusBits.reset(ObjectStatus::Enforce);
+    std::vector<Property*> properties;
+    getPropertyList(properties);
+    for (auto* property : properties) {
+        property->StatusBits.reset(Property::Touched);
+    }
+    touchedProps.clear();
+    if (publish) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
+}
 void DocumentObject::freeze()
 {
+    if (isFreezed()) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
     StatusBits.set(ObjectStatus::Freeze);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // store read-only property names
     this->readOnlyProperties.clear();
@@ -236,19 +270,25 @@ void DocumentObject::freeze()
         if (pair.second->isReadOnly()){
             this->readOnlyProperties.push_back(pair.first);
         } else {
-            pair.second->setReadOnly(true);
+            // Freeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, true);
         }
     }
 
     // use the signalTouchedObject to refresh the Gui
     if (_pDoc) {
-        _pDoc->signalTouchedObject(*this);
+        _pDoc->emitCollaborationTouchedObject(*this);
     }
 }
 
 void DocumentObject::unfreeze(bool noRecompute)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    const bool wasFrozen = isFreezed();
     StatusBits.reset(ObjectStatus::Freeze);
+    if (wasFrozen && _pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 
     // reset read-only property status
     std::vector<std::pair<const char*, Property*>> list;
@@ -256,11 +296,30 @@ void DocumentObject::unfreeze(bool noRecompute)
 
     for (auto pair: list){
         if (! std::count(readOnlyProperties.begin(), readOnlyProperties.end(), pair.first)){
-            pair.second->setReadOnly(false);
+            // Unfreeze bookkeeping must not publish per-property structural revisions.
+            pair.second->StatusBits.set(Property::ReadOnly, false);
         }
     }
 
-    touch(noRecompute);
+    if (!noRecompute) {
+        StatusBits.set(ObjectStatus::Enforce);
+    }
+    StatusBits.set(ObjectStatus::Touch);
+    if (_pDoc) {
+        _pDoc->emitCollaborationTouchedObject(*this);
+    }
+}
+
+void DocumentObject::purgeError()
+{
+    if (!isError()) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    StatusBits.reset(ObjectStatus::Error);
+    if (_pDoc) {
+        _pDoc->publishCollaborationMutation(*this, false);
+    }
 }
 
 bool DocumentObject::isTouched() const
@@ -824,12 +883,18 @@ void DocumentObject::setDocument(App::Document* doc)
 
 bool DocumentObject::removeDynamicProperty(const char* name)
 {
+    Property* prop = getDynamicPropertyByName(name);
+    if (!prop) {
+        return false;
+    }
+    if (_pDoc) {
+        _pDoc->ensureCollaborationDynamicPropertyRemovalAllowed(*this, prop);
+    }
     if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
         return false;
     }
 
-    Property* prop = getDynamicPropertyByName(name);
-    if (!prop || prop->testStatus(App::Property::LockDynamic)) {
+    if (prop->testStatus(App::Property::LockDynamic)) {
         return false;
     }
 
@@ -857,6 +922,10 @@ bool DocumentObject::removeDynamicProperty(const char* name)
 
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
 {
+    if (_pDoc) {
+        Internal::CollaborationStructuralMutationRecorder::
+            ensurePropertySchemaMutationAllowed(*_pDoc, *this);
+    }
     std::string oldName = prop->getName();
 
     auto expressions = ExpressionEngine.getExpressions();
@@ -888,6 +957,137 @@ bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
     return renamed;
 }
 
+void DocumentObject::moveExpressionTargetingProp(Property* prop,
+                                                 Property* newProp,
+                                                 DocumentObject* targetObj)
+{
+    ObjectIdentifier propId = ObjectIdentifier(*prop);
+    ObjectIdentifier newPropId = ObjectIdentifier(*newProp);
+
+    boost::any pathValue = ExpressionEngine.getPathValue(propId);
+    if (pathValue.empty()) {
+        return;
+    }
+
+    auto info = boost::any_cast<PropertyExpressionEngine::ExpressionInfo>(pathValue);
+    std::shared_ptr<Expression> expression = info.expression;
+
+    setExpression(propId, std::shared_ptr<Expression>());
+    targetObj->setExpression(newPropId, expression);
+
+    // force identifiers in the expression to use the document name
+    std::map<ObjectIdentifier, ObjectIdentifier> paths;
+    std::map<ObjectIdentifier, bool> ids = expression->getIdentifiers();
+    for (const auto& [id, _] : ids) {
+        ObjectIdentifier newOne = ObjectIdentifier(id);
+        newOne.setDocumentObjectName(this, true);
+        paths.emplace(id, newOne);
+    }
+    targetObj->ExpressionEngine.renameObjectIdentifiers(paths);
+}
+
+void DocumentObject::arrangeMoveProperty(Property* toBeMovedProp,
+                                         Property* newProp,
+                                         DocumentObject* targetObj)
+{
+    // register the move in the document for transactions
+    auto* objOfToBeMovedProp = freecad_cast<DocumentObject*>(toBeMovedProp->getContainer());
+    if (_pDoc) {
+        _pDoc->arrangeMovePropertyOfObject(this, toBeMovedProp, targetObj, newProp);
+    }
+    if  (targetObj->getDocument() != objOfToBeMovedProp->getDocument()) {
+        // register the move in the target document as well
+        targetObj->_pDoc->arrangeMovePropertyOfObject(targetObj, toBeMovedProp, targetObj, newProp);
+    }
+
+    // Phase 2: Move an expression that targets the current property
+    moveExpressionTargetingProp(toBeMovedProp, newProp, targetObj);
+
+    // do not record the following changes since we are defining a transaction
+    auto guard = targetObj->_pDoc->setDefiningTransaction();
+
+    // Phase 3: Paste the property
+    newProp->Paste(*toBeMovedProp);
+
+    // Phase 4: Rewrite expressions that reference the property to be moved
+    GetApplication().signalMoveDynamicProperty(*toBeMovedProp, *targetObj);
+
+    // The guard goes out of scope which enables recording changes in the
+    // transaction again.
+}
+
+Property* DocumentObject::moveDynamicProperty(Property* prop,
+                                              DocumentObject* targetObj)
+{
+    if (prop == nullptr) {
+        FC_THROWM(Base::RuntimeError, "The property does not exist");
+    }
+
+    const char* propertyName = prop->getName();
+
+    if (targetObj == nullptr) {
+        FC_THROWM(Base::RuntimeError, "The target container does not exist");
+    }
+
+    if (targetObj == this) {
+        FC_THROWM(Base::RuntimeError,
+                  "Cannot move property " << propertyName << " to its own container");
+    }
+
+    if (targetObj->getPropertyByName(propertyName) != nullptr) {
+        FC_THROWM(Base::NameError,
+                  "Property " << targetObj->getFullName() << '.' << propertyName << " already exists");
+    }
+
+    if (!prop->testStatus(App::Property::PropDynamic)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Property " << propertyName << " is not dynamic");
+    }
+
+    if (prop->testStatus(App::Property::LockDynamic)) {
+        FC_THROWM(Base::RuntimeError,
+                 "Property " << propertyName << " is locked");
+    }
+
+    if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Object " << getFullName() << " is being destroyed");;
+    }
+
+    if (prop->isDerivedFrom<PropertyLinkBase>()) {
+        clearOutListCache();
+    }
+
+    // Phase 1: Add a new property to the target object
+    Property* newProp =
+        targetObj->dynamicProps.addDynamicProperty(*targetObj,
+                                                   prop->getTypeId().getName(),
+                                                   propertyName,
+                                                   prop->getGroup(),
+                                                   prop->getDocumentation(),
+                                                   prop->getType(),
+                                                   prop->isReadOnly(),
+                                                   prop->testStatus(Property::Hidden));
+
+    if (newProp == nullptr) {
+        FC_THROWM(Base::RuntimeError,
+                  "Failed to move property " << propertyName << " to container "
+                                             << targetObj->getFullName());
+    }
+
+    // Phases 2, 3, and 4
+    arrangeMoveProperty(prop, newProp, targetObj);
+
+    // Phase 5 remove the property from the source object
+    if (!dynamicProps.removeDynamicProperty(propertyName)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Failed to remove property " << propertyName << " from container "
+                                                << prop->getContainer()->getFullName());
+    }
+
+    return newProp;
+}
+
 App::Property* DocumentObject::addDynamicProperty(
     std::string_view type,
     const char* name,
@@ -898,6 +1098,9 @@ App::Property* DocumentObject::addDynamicProperty(
     bool hidden
 )
 {
+    if (_pDoc) {
+        _pDoc->ensureCollaborationDynamicPropertyMutationAllowed(*this, attr);
+    }
     auto prop = TransactionalObject::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
     if (prop && _pDoc) {
         _pDoc->addOrRemovePropertyOfObject(this, prop, true);
@@ -920,7 +1123,12 @@ void DocumentObject::onBeforeChange(const Property* prop)
         onBeforeChangeProperty(_pDoc, prop);
     }
 
-    signalBeforeChange(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectBeforeChange(*this, *prop);
+    }
+    else {
+        signalBeforeChange(*this, *prop);
+    }
 }
 
 std::vector<std::pair<Property*, std::unique_ptr<Property>>>
@@ -1009,7 +1217,12 @@ void DocumentObject::onEarlyChange(const Property* prop)
         }
     }
 
-    signalEarlyChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectEarlyChanged(*this, *prop);
+    }
+    else {
+        signalEarlyChanged(*this, *prop);
+    }
 }
 
 /// get called by the container when a Property was changed
@@ -1044,7 +1257,8 @@ void DocumentObject::onChanged(const Property* prop)
     //     _pDoc->onChangedProperty(this,prop);
 
     if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
-        _pDoc->signalRelabelObject(*this);
+        _pDoc->emitCollaborationRelabelObject(*this);
+        oldLabel = Label.getStrValue();
     }
 
     bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
@@ -1092,7 +1306,12 @@ void DocumentObject::onChanged(const Property* prop)
         _pDoc->onChangedProperty(this, prop);
     }
 
-    signalChanged(*this, *prop);
+    if (_pDoc) {
+        _pDoc->emitCollaborationObjectChanged(*this, *prop);
+    }
+    else {
+        signalChanged(*this, *prop);
+    }
 }
 
 void DocumentObject::clearOutListCache() const
@@ -1755,7 +1974,7 @@ void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long
 {
     (void)oldStatus;
     if (!Document::isAnyRestoring() && isAttachedToDocument() && getDocument()) {
-        getDocument()->signalChangePropertyEditor(*getDocument(), prop);
+        getDocument()->emitCollaborationChangePropertyEditor(prop);
     }
 }
 

@@ -132,6 +132,7 @@
 #include "Command.h"
 #include "Document.h"
 #include "GLPainter.h"
+#include "RubberbandOverlay.h"
 #include "Inventor/SoAxisCrossKit.h"
 #include "Inventor/SoFCBackgroundGradient.h"
 #include "Inventor/SoFCBoundingBox.h"
@@ -155,7 +156,6 @@
 #include "SoTouchEvents.h"
 #include "SpaceballEvent.h"
 #include "SpaceMouseParameter.h"
-#include "View3DInventorRiftViewer.h"
 #include "View3DViewerPy.h"
 #include "ViewParams.h"
 #include "ViewProvider.h"
@@ -1158,6 +1158,8 @@ void View3DInventorViewer::init()
     this->decorationroot->addChild(decorationBaseColor);
     this->decorationroot->addChild(naviCubeAnnotation);
 
+    rubberbandOverlayRenderer = std::unique_ptr<RubberbandOverlay>(new RubberbandOverlay);
+
     auto threePointLightingSeparator = new SoTransformSeparator;
     threePointLightingSeparator->addChild(lightRotation);
     threePointLightingSeparator->addChild(this->fillLight);
@@ -1341,6 +1343,8 @@ void View3DInventorViewer::init()
 
 View3DInventorViewer::~View3DInventorViewer()
 {
+    rubberbandOverlayRenderer.reset();
+
     // to prevent following OpenGL error message: "Texture is not valid in the current context.
     // Texture has not been destroyed"
     aboutToDestroyGLContext();
@@ -2042,11 +2046,64 @@ void View3DInventorViewer::setEnabledFPSCounter(bool on)
             fpsCounter = new QLabel(this);
             fpsCounter->setAttribute(Qt::WA_TransparentForMouseEvents);
         }
+        if (!fpsUpdateTimer) {
+            fpsUpdateTimer = new QTimer(this);
+            fpsUpdateTimer->setInterval(250);  // 4 Hz
+            connect(fpsUpdateTimer, &QTimer::timeout, this, &View3DInventorViewer::updateFPSLabel);
+        }
         fpsCounter->show();
+        fpsUpdateTimer->start();
     }
-    else if (fpsCounter) {
-        fpsCounter->hide();
+    else {
+        if (fpsUpdateTimer) {
+            fpsUpdateTimer->stop();
+        }
+        if (fpsCounter) {
+            fpsCounter->hide();
+        }
     }
+}
+
+void View3DInventorViewer::updateFPSLabel()
+{
+    if (!fpsEnabled || !fpsCounter) {
+        return;
+    }
+
+    fpsCounter->setText(
+        QString::fromStdString(
+            fmt::format("{:.1f} ms / {:.1f} fps", framesPerSecond[0], framesPerSecond[1])
+        )
+    );
+
+    // update color from user preference (only when it changes)
+    ParameterGrp::handle hGrpView = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/View"
+    );
+
+    unsigned long axisLetterColor = hGrpView->GetUnsigned("AxisLetterColor", 4294902015);  // default
+                                                                                           // yellow
+
+    if (axisLetterColor != previousAxisLetterColor) {
+        previousAxisLetterColor = axisLetterColor;
+        Base::Color c(static_cast<uint32_t>(axisLetterColor));
+        fpsCounter->setStyleSheet(
+            QString::fromLatin1("color: rgb(%1,%2,%3); background: transparent;")
+                .arg(int(c.r * 255))
+                .arg(int(c.g * 255))
+                .arg(int(c.b * 255))
+        );
+    }
+
+    // size must be current before we use width()/height() for positioning
+    fpsCounter->adjustSize();
+
+    // position, bottom left, accounting for left-side overlay widgets
+    ParameterGrp::handle hGrpOverlayL = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/MainWindow/DockWindows/OverlayLeft"
+    );
+    int xOffset = hGrpOverlayL->GetASCII("Widgets", "").empty() ? 10 : fpsCounter->width() + 20;
+    fpsCounter->move(xOffset, height() - fpsCounter->height() - 5);
 }
 
 
@@ -2858,6 +2915,11 @@ void View3DInventorViewer::clearGraphicsItems()
     this->graphicsItems.clear();
 }
 
+RubberbandOverlay& View3DInventorViewer::rubberbandOverlay()
+{
+    return *rubberbandOverlayRenderer;
+}
+
 int View3DInventorViewer::getNumSamples()
 {
     Gui::AntiAliasing msaa = Multisample::readMSAAFromSettings();
@@ -2979,16 +3041,123 @@ View3DInventorViewer::RenderType View3DInventorViewer::getRenderType() const
 QImage View3DInventorViewer::grabFramebuffer()
 {
     auto gl = static_cast<QOpenGLWidget*>(this->viewport());  // NOLINT
-    gl->makeCurrent();
 
-    // QOpenGLWidget resolves multisampling and renders the live widget as
-    // necessary before reading its framebuffer.
+    // QOpenGLWidget::grabFramebuffer() invokes paintGL() before reading the
+    // backing FBO. Quarter's paintGL() schedules a deferred redraw instead of
+    // painting immediately, so NoPartialUpdate can discard the composed color
+    // buffer before it is read. Preserve the existing frame for this capture
+    // only and restore the viewer's normal update behavior afterwards.
+    const auto updateBehavior = gl->updateBehavior();
+    gl->setUpdateBehavior(QOpenGLWidget::PartialUpdate);
+    auto restoreUpdateBehavior = qScopeGuard([gl, updateBehavior]() {
+        gl->setUpdateBehavior(updateBehavior);
+    });
+
+    // Qt resolves multisampling and manages the OpenGL context internally.
     return gl->grabFramebuffer().convertToFormat(QImage::Format_RGB32);
 }
 
 QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
 {
-    const SbViewportRegion vp = this->getSoRenderManager()->getViewportRegion();
+    return renderToImage(options, nullptr);
+}
+
+QImage View3DInventorViewer::renderToImage(
+    const RenderImageOptions& options,
+    SoCamera* cameraOverride,
+    SoNode* transientOverlayRoot
+)
+{
+    auto* renderManager = this->getSoRenderManager();
+    SoCamera* previousManagerCamera = nullptr;
+    SoCamera* previousSceneCamera = nullptr;
+    SoGroup* cameraParent = nullptr;
+    int cameraChildIndex = -1;
+    SoField* previousLightRotationSource = nullptr;
+    bool previousLightRotationConnectionEnabled = false;
+    bool hadPreviousLightRotationSource = false;
+
+    if (cameraOverride) {
+        if (!renderManager) {
+            Base::Console().warning("renderToImage failed because no render manager is available\n");
+            return {};
+        }
+
+        previousManagerCamera = renderManager->getCamera();
+        if (!previousManagerCamera) {
+            Base::Console().warning("renderToImage failed because no camera is available\n");
+            return {};
+        }
+
+        SoNode* superscene = renderManager->getSceneGraph();
+        if (!superscene) {
+            Base::Console().warning("renderToImage failed because no render superscene is available\n");
+            return {};
+        }
+
+        SoSearchAction cameraSearch;
+        cameraSearch.setInterest(SoSearchAction::FIRST);
+        cameraSearch.setNode(previousManagerCamera);
+        cameraSearch.apply(superscene);
+        const SoPath* cameraPath = cameraSearch.getPath();
+        if (!cameraPath || cameraPath->getLength() < 2) {
+            Base::Console().warning(
+                "renderToImage failed because the render superscene has no replaceable camera\n"
+            );
+            return {};
+        }
+
+        previousSceneCamera = static_cast<SoCamera*>(cameraPath->getTail());
+        SoNode* cameraParentNode = cameraPath->getNodeFromTail(1);
+        if (!cameraParentNode->isOfType(SoGroup::getClassTypeId())) {
+            Base::Console().warning(
+                "renderToImage failed because the render camera parent is not a group\n"
+            );
+            return {};
+        }
+        cameraParent = static_cast<SoGroup*>(cameraParentNode);
+        cameraChildIndex = cameraParent->findChild(previousSceneCamera);
+        if (cameraChildIndex < 0) {
+            Base::Console().warning(
+                "renderToImage failed because the render camera has no superscene parent\n"
+            );
+            return {};
+        }
+
+        // The parent replacement may release the superscene's last references.
+        // Retain both old pointers until every piece of viewer state is restored.
+        previousManagerCamera->ref();
+        previousSceneCamera->ref();
+        previousLightRotationConnectionEnabled = lightRotation->rotation.isConnectionEnabled();
+        hadPreviousLightRotationSource =
+            lightRotation->rotation.getConnectedField(previousLightRotationSource);
+    }
+
+    auto restoreRenderOverrides = qScopeGuard([&]() {
+        if (!cameraOverride) {
+            return;
+        }
+
+        lightRotation->rotation.disconnect();
+        if (hadPreviousLightRotationSource) {
+            lightRotation->rotation.connectFrom(previousLightRotationSource);
+        }
+        lightRotation->rotation.enableConnection(previousLightRotationConnectionEnabled);
+
+        renderManager->setCamera(previousManagerCamera);
+        cameraParent->replaceChild(cameraChildIndex, previousSceneCamera);
+        previousSceneCamera->unref();
+        previousManagerCamera->unref();
+    });
+
+    if (cameraOverride) {
+        cameraParent->replaceChild(cameraChildIndex, cameraOverride);
+        renderManager->setCamera(cameraOverride);
+        lightRotation->rotation.connectFrom(&cameraOverride->orientation);
+        lightRotation->rotation.enableConnection(true);
+    }
+
+    const SbViewportRegion vp = renderManager->getViewportRegion();
     const SbVec2s size = vp.getViewportSizePixels();
     const int width = options.width > 0 ? options.width : size[0];
     const int height = options.height > 0 ? options.height : size[1];
@@ -3057,7 +3226,7 @@ QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
         setGradientBackground(Background::NoGradient);
     }
 
-    if (!renderToFramebuffer(&fbo, options.includeViewerLighting)) {
+    if (!renderToFramebuffer(&fbo, options.includeViewerLighting, transientOverlayRoot)) {
         return {};
     }
     img = fbo.toImage();
@@ -3094,7 +3263,11 @@ QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
     return img;
 }
 
-bool View3DInventorViewer::renderToFramebuffer(QOpenGLFramebufferObject* fbo, bool includeViewerLighting)
+bool View3DInventorViewer::renderToFramebuffer(
+    QOpenGLFramebufferObject* fbo,
+    bool includeViewerLighting,
+    SoNode* transientOverlayRoot
+)
 {
     static_cast<QOpenGLWidget*>(this->viewport())->makeCurrent();  // NOLINT
     if (!fbo->bind()) {
@@ -3139,6 +3312,9 @@ bool View3DInventorViewer::renderToFramebuffer(QOpenGLFramebufferObject* fbo, bo
         gl.apply(scene == this->viewerSceneRoot ? this->selectionRoot : scene);
     }
     renderDelayedAnnotations(&gl);
+    if (transientOverlayRoot) {
+        gl.apply(transientOverlayRoot);
+    }
     gl.apply(this->foregroundroot);
     if (shouldRenderDecorations(currentRenderIntent())) {
         gl.apply(this->decorationroot);
@@ -3368,37 +3544,7 @@ void View3DInventorViewer::renderScene()
         }
     }
 
-    if (fpsEnabled && fpsCounter) {
-        std::stringstream stream;
-        stream.precision(1);
-        stream.setf(std::ios::fixed | std::ios::showpoint);
-        stream << framesPerSecond[0] << " ms / " << framesPerSecond[1] << " fps";
-
-        ParameterGrp::handle hGrpView = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/View"
-        );
-        unsigned long axisLetterColor = hGrpView->GetUnsigned("AxisLetterColor", 4294902015);
-        if (axisLetterColor != previousAxisLetterColor) {
-            previousAxisLetterColor = axisLetterColor;
-            Base::Color c(static_cast<uint32_t>(axisLetterColor));
-            fpsCounter->setStyleSheet(
-                QString::fromLatin1("color: rgb(%1,%2,%3); background: transparent;")
-                    .arg(int(c.r * 255))
-                    .arg(int(c.g * 255))
-                    .arg(int(c.b * 255))
-            );
-        }
-
-        fpsCounter->setText(QString::fromStdString(stream.str()));
-        fpsCounter->adjustSize();
-
-        ParameterGrp::handle hGrpOverlayL = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/MainWindow/DockWindows/OverlayLeft"
-        );
-        int xOffset = hGrpOverlayL->GetASCII("Widgets", "").empty() ? 10 : fpsCounter->width() + 20;
-        fpsCounter->move(xOffset, height() - fpsCounter->height() - 5);
-    }
-
+    renderRubberbandOverlay();
     // Workaround for inconsistent QT behavior related to handling custom OpenGL widgets that
     // leave non opaque alpha values in final output.
     // On wayland that can cause window to become transparent or blurry trail effect in the
@@ -3424,6 +3570,23 @@ void View3DInventorViewer::renderScene()
 
     glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
     glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+}
+
+void View3DInventorViewer::renderRubberbandOverlay()
+{
+    if (currentRenderIntent() != RenderIntent::LiveInteractive || !rubberbandOverlayRenderer) {
+        return;
+    }
+
+    auto* manager = getSoRenderManager();
+    auto* action = manager ? manager->getGLRenderAction() : nullptr;
+    if (!action) {
+        return;
+    }
+
+    ZoneScopedN("Rubberband overlay");
+    rubberbandOverlayRenderer->prepareGeometry(manager->getViewportRegion(), devicePixelRatio());
+    action->apply(rubberbandOverlayRenderer->sceneRoot());
 }
 
 void View3DInventorViewer::setSeekMode(bool on)
@@ -4433,26 +4596,6 @@ void View3DInventorViewer::animatedViewAll(const SbBox3f& box, int steps, int ms
         timer.start(Base::clamp<int>(ms, 0, 5000));  // NOLINT
         loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
-}
-
-#if BUILD_VR
-extern View3DInventorRiftViewer* oculusStart(void);
-extern bool oculusUp(void);
-extern void oculusStop(void);
-void oculusSetTestScene(View3DInventorRiftViewer* window);
-#endif
-
-void View3DInventorViewer::viewVR()
-{
-#if BUILD_VR
-    if (oculusUp()) {
-        oculusStop();
-    }
-    else {
-        View3DInventorRiftViewer* riftWin = oculusStart();
-        riftWin->setSceneGraph(pcViewProviderRoot);
-    }
-#endif
 }
 
 void View3DInventorViewer::boxZoom(const SbBox2s& box)

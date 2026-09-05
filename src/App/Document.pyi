@@ -6,7 +6,7 @@ from Base.Metadata import constmethod
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
-from typing import TYPE_CHECKING, Final, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload
 
 if TYPE_CHECKING:
     from Part import Feature as _PartFeature
@@ -99,6 +99,10 @@ class Document(PropertyContainer):
         """
         Save the document under a new name to disk.
         """
+        ...
+
+    def saveAsWithPolicy(self, path: str, overwrite: bool = False, /) -> dict[str, object]:
+        """Save As using FreeCAD's native destination overwrite policy."""
         ...
 
     def saveCopy(self, path: str, /) -> None:
@@ -206,6 +210,95 @@ class Document(PropertyContainer):
         """
         Commit an Undo/Redo transaction
         """
+        ...
+
+    def beginEditSession(self, actor_id: str, /) -> dict[str, object]:
+        """Start an advisory collaboration edit session."""
+        ...
+
+    def snapshotForEdit(
+        self,
+        session_id: str,
+        revision_keys: Sequence[dict[str, str]],
+        /,
+    ) -> dict[str, object]:
+        """Capture pointer-free semantic revisions for an active edit session."""
+        ...
+
+    def prepareEdit(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        provenance: str = "python",
+        /,
+    ) -> object:
+        """Prepare a registered native operation and return an opaque immutable handle."""
+        ...
+
+    def prepareEditAsync(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        provenance: str = "python",
+        /,
+    ) -> int:
+        """Submit detached preparation and return its opaque numeric execution ID."""
+        ...
+
+    def preparedEditStatus(self, execution_id: int, /) -> dict[str, object] | None:
+        """Return copied status for a pending detached preparation, or None when unknown."""
+        ...
+
+    def cancelPreparedEdit(self, execution_id: int, /) -> bool:
+        """Request cooperative cancellation of a detached preparation."""
+        ...
+
+    def takePreparedEdit(
+        self,
+        session_id: str,
+        execution_id: int,
+        /,
+    ) -> dict[str, object] | None:
+        """Take a terminal result, optionally containing an opaque prepared-edit handle."""
+        ...
+
+    def commitEdit(
+        self,
+        session_id: str,
+        prepared_edit: object,
+        /,
+    ) -> dict[str, object]:
+        """Commit a prepared edit and return a structured terminal result."""
+        ...
+
+    def commitCompatibilityMutation(
+        self,
+        callback: Callable[[], object],
+        /,
+        *,
+        structural: bool = False,
+    ) -> dict[str, object]:
+        """Commit one synchronous compatibility mutation.
+
+        Object creation and removal require the explicit ``structural=True`` scope.
+        """
+        ...
+
+    def cancelEdit(
+        self,
+        session_id: str,
+        reason: str = "cancelled by caller",
+        /,
+    ) -> bool:
+        """Advisorially cancel an edit session."""
+        ...
+
+    def editSessionStatus(self, session_id: str, /) -> dict[str, object] | None:
+        """Return advisory session metadata, or None when the ID is unknown."""
         ...
 
     @overload
@@ -523,59 +616,5 @@ class Document(PropertyContainer):
 
         Returns the currently booked transaction id, which is the id of the current transaction OR the id
         the next transaction will stick to if no change has occurred yet
-        """
-        ...
-
-    def setMutationOwner(
-        self,
-        mode: str,
-        generation: int = 0,
-        provider_id: str = "",
-        /,
-    ) -> None:
-        """
-        setMutationOwner(mode, generation=0, provider_id="") -> None
-
-        Activate lease-gated mutation authority for this document.
-        mode: 'unrestricted' | 'mcp' | 'user'
-        """
-        ...
-
-    def clearMutationOwner(self) -> None:
-        """
-        clearMutationOwner() -> None
-
-        Remove mutation ownership and restore unrestricted FreeCAD behaviour.
-        """
-        ...
-
-    def openMutationCapability(
-        self,
-        kinds: object = None,
-        generation: int = 0,
-        /,
-    ) -> object:
-        """
-        openMutationCapability(kinds=None, generation=0) -> capsule
-
-        Issue a short-lived in-process mutation capability. Keep the returned
-        object alive for the duration of the mutation (context manager / finally).
-        kinds may be None (all), an int bitmask, or a sequence of kind names.
-        """
-        ...
-
-    def bumpMutationGeneration(self) -> int:
-        """
-        bumpMutationGeneration() -> int
-
-        User takeover: bump fencing generation, revoke MCP capabilities, switch to user ownership.
-        """
-        ...
-
-    def mutationAuthorityStatus(self) -> dict:
-        """
-        mutationAuthorityStatus() -> dict
-
-        Return owner mode, fencing generation, provider id, and restricted flag.
         """
         ...

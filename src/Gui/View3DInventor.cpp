@@ -150,7 +150,9 @@ View3DInventor::View3DInventor(
     stopSpinTimer = new QTimer(this);
     connect(stopSpinTimer, &QTimer::timeout, this, &View3DInventor::stopAnimating);
 
-    setWindowIcon(Gui::BitmapFactory().pixmap("Document"));
+    setWindowIcon(
+        Gui::BitmapFactory().iconFromTheme("Document", QIcon(Gui::BitmapFactory().pixmap("Document")))
+    );
 }
 
 View3DInventor::~View3DInventor()
@@ -377,11 +379,6 @@ bool View3DInventor::onMsg(const char* pMsg)
         _viewer->viewHome();
         return true;
     }
-    else if (strcmp("ViewVR", pMsg) == 0) {
-        // call the VR portion of the viewer
-        _viewer->viewVR();
-        return true;
-    }
     else if (strcmp("ViewSelection", pMsg) == 0) {
         _viewer->viewSelection(ViewParams::instance()->getViewSelectionExtend());
         return true;
@@ -458,10 +455,6 @@ bool View3DInventor::onMsg(const char* pMsg)
         getGuiDocument()->saveCopy();
         return true;
     }
-    else if (strcmp("AlignToSelection", pMsg) == 0) {
-        _viewer->alignToSelection();
-        return true;
-    }
     else if (strcmp("ZoomIn", pMsg) == 0) {
         _viewer->navigationStyle()->zoomIn();
         return true;
@@ -521,13 +514,6 @@ bool View3DInventor::onHasMsg(const char* pMsg) const
     else if (strcmp("ViewHome", pMsg) == 0) {
         return true;
     }
-    else if (strcmp("ViewVR", pMsg) == 0) {
-#ifdef BUILD_VR
-        return true;
-#else
-        return false;
-#endif
-    }
     else if (strcmp("ViewSelection", pMsg) == 0) {
         return true;
     }
@@ -565,9 +551,6 @@ bool View3DInventor::onHasMsg(const char* pMsg) const
         return true;
     }
     else if (strncmp("Dump", pMsg, 4) == 0) {
-        return true;
-    }
-    else if (strcmp("AlignToSelection", pMsg) == 0) {
         return true;
     }
     else if (strcmp("ZoomIn", pMsg) == 0) {
@@ -902,3 +885,4 @@ void View3DInventor::customEvent(QEvent* e)
 
 
 #include "moc_View3DInventor.cpp"
+#include <QIcon>

@@ -125,6 +125,38 @@ class TestRubberbandSelection(unittest.TestCase):
                 self._drag_select(self._selection_rect(self.left_box))
                 self.assertEqual(self._selected_names(), {self.left_box.Name})
 
+    def test_drag_frame_preserves_view_outside_rubberband(self):
+        self._ensure_selection_objects()
+        FreeCADGui.Selection.clearSelection()
+        self.view.setNavigationType("Gui::CADNavigationStyle")
+        self._refresh_view()
+
+        rect = self._selection_rect(self.left_box)
+        start = rect.topLeft()
+        center = rect.center()
+        end = rect.bottomRight()
+
+        self._send_mouse_event(MOUSE_MOVE, start, NO_BUTTON, NO_BUTTON, NO_MODIFIER)
+        self._process_events(20)
+        baseline = self.viewer.grabFramebuffer()
+
+        self._send_mouse_event(MOUSE_PRESS, start, LEFT_BUTTON, LEFT_BUTTON, NO_MODIFIER)
+        try:
+            self._process_events(10)
+            self._send_mouse_event(MOUSE_MOVE, center, NO_BUTTON, LEFT_BUTTON, NO_MODIFIER)
+            self._process_events(10)
+            self._send_mouse_event(MOUSE_MOVE, end, NO_BUTTON, LEFT_BUTTON, NO_MODIFIER)
+            self._process_events(20)
+            during = self.viewer.grabFramebuffer()
+        finally:
+            self._send_mouse_event(MOUSE_RELEASE, end, LEFT_BUTTON, NO_BUTTON, NO_MODIFIER)
+            self._process_events()
+
+        self.assertFalse(baseline.isNull())
+        self.assertFalse(during.isNull())
+        self._assert_only_rubberband_region_changed(baseline, during, rect)
+        self.assertEqual(self._selected_names(), {self.left_box.Name})
+
     def test_ctrl_drag_adds_in_supported_styles(self):
         self._ensure_selection_objects()
         for label, style in self.ADDITIVE_DRAG_STYLES:
@@ -423,6 +455,53 @@ class TestRubberbandSelection(unittest.TestCase):
 
     def _selection_rect(self, obj):
         return self._object_rect(obj, pad=18)
+
+    def _assert_only_rubberband_region_changed(self, baseline, during, rect):
+        self.assertEqual(baseline.size(), during.size())
+
+        scale_x = baseline.width() / self.viewport.width()
+        scale_y = baseline.height() / self.viewport.height()
+        margin = 4
+        left = round(rect.left() * scale_x) - margin
+        right = round(rect.right() * scale_x) + margin
+        top = round(rect.top() * scale_y) - margin
+        bottom = round(rect.bottom() * scale_y) + margin
+
+        inside_count = 0
+        inside_changed = 0
+        outside_count = 0
+        outside_changed = 0
+        for y in range(4, baseline.height(), 8):
+            for x in range(4, baseline.width(), 8):
+                before = baseline.pixelColor(x, y)
+                after = during.pixelColor(x, y)
+                changed = (
+                    max(
+                        abs(before.red() - after.red()),
+                        abs(before.green() - after.green()),
+                        abs(before.blue() - after.blue()),
+                    )
+                    > 8
+                )
+                if left <= x <= right and top <= y <= bottom:
+                    inside_count += 1
+                    inside_changed += changed
+                else:
+                    outside_count += 1
+                    outside_changed += changed
+
+        self.assertGreater(inside_count, 0)
+        self.assertGreater(outside_count, 0)
+        self.assertGreaterEqual(
+            inside_changed / inside_count,
+            0.10,
+            "Rubberband overlay was not visible in the captured live frame",
+        )
+        self.assertLessEqual(
+            outside_changed / outside_count,
+            0.01,
+            "Rectangle selection corrupted pixels outside the rubberband",
+        )
 
     def _annotation_label_bounds(self):
         self._process_events()

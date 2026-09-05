@@ -87,6 +87,7 @@ generate_from_py(SurfaceOfExtrusion)
 generate_from_py(SurfaceOfRevolution)
 generate_from_py(PartFeature)
 generate_from_py(AttachExtension)
+generate_from_py(PreviewExtension)
 generate_from_py(Part2DObject)
 generate_from_py(AttachEngine)
 generate_from_py(TopoShape)
@@ -166,6 +167,8 @@ generate_from_py(ShapeFix/ShapeFix_SplitTool)
 generate_from_py(ShapeUpgrade/UnifySameDomain)
 
 SET(Features_SRCS
+    CollaborativeBooleanOperation.cpp
+    CollaborativeBooleanOperation.h
     FeaturePartBoolean.cpp
     FeaturePartBoolean.h
     FeaturePartBox.cpp
@@ -222,6 +225,8 @@ SET(Features_SRCS
     PartFeatures.h
     PartFeature.cpp
     PartFeature.h
+    InterferenceDetection.cpp
+    InterferenceDetection.h
     PartFeatureReference.cpp
     PartFeatureReference.h
     Part2DObject.cpp
@@ -358,6 +363,8 @@ SET(Python_SRCS
     PartFeaturePyImp.cpp
     AttachExtension.pyi
     AttachExtensionPyImp.cpp
+    PreviewExtension.pyi
+    PreviewExtensionPyImp.cpp
     Part2DObject.pyi
     Part2DObjectPyImp.cpp
     AttachEngine.pyi
@@ -548,6 +555,8 @@ SET(Part_SRCS
     BRepMesh.h
     BRepOffsetAPI_MakeOffsetFix.cpp
     BRepOffsetAPI_MakeOffsetFix.h
+    ShapeAnalysis_FreeBoundsFix.cpp
+    ShapeAnalysis_FreeBoundsFix.h
     BSplineCurveBiArcs.cpp
     BSplineCurveBiArcs.h
     CrossSection.cpp

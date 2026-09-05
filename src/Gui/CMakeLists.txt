@@ -48,10 +48,6 @@ if(FREECAD_USE_3DCONNEXION_NAVLIB AND (MSVC OR APPLE))
     list(APPEND 3DCONNEXION_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/src/3rdParty/3Dconnexion/inc)
 endif(FREECAD_USE_3DCONNEXION_NAVLIB AND (MSVC OR APPLE))
 
-if (BUILD_VR)
-    add_definitions(-DBUILD_VR )
-endif(BUILD_VR)
-
 if (BUILD_ADDONMGR)
     add_definitions(-DBUILD_ADDONMGR )
 endif(BUILD_ADDONMGR)
@@ -339,6 +335,18 @@ generate_from_py(AxisOrigin)
 generate_from_py(Command)
 generate_from_py(EditableDatumLabel)
 generate_from_py(Navigation/NavigationStyle)
+generate_module_from_py(
+    FreeCADGui
+    FreeCADGui_MODULE_GENERATED_SRCS
+)
+generate_module_from_py(
+    FreeCADGui.Selection
+    Selection_MODULE_GENERATED_SRCS
+)
+generate_module_from_py(
+    FreeCADGui.PySideUic
+    PySideUic_MODULE_GENERATED_SRCS
+)
 
 generate_embed_from_py(FreeCADGuiInit GuiInitScript.h)
 generate_embed_from_py(FreeCADGuiTest GuiTestScript.h)
@@ -351,6 +359,8 @@ SET(FreeCADGui_Pyi_SRCS
     ViewProviderExtension.pyi
     PythonWorkbench.pyi
     Workbench.pyi
+    FreeCADGui.module.pyi
+    FreeCADGui.Selection.module.pyi
     Selection/SelectionObject.pyi
     Document.pyi
     LinkView.pyi
@@ -489,6 +499,7 @@ SET(Dialog_CPP_SRCS
     Dialogs/DlgAbout.cpp
     Dialogs/DlgActivateWindowImp.cpp
     Dialogs/DlgCreateNewPreferencePackImp.cpp
+    Dialogs/DlgDocumentObject.cpp
     Dialogs/DlgUnitsCalculatorImp.cpp
     Dialogs/DlgInputDialogImp.cpp
     Dialogs/DlgMacroExecuteImp.cpp
@@ -523,7 +534,6 @@ SET(Dialog_CPP_SRCS
     TaskElementColors.cpp
     Dialogs/DlgObjectSelection.cpp
     Dialogs/DlgAddProperty.cpp
-    Dialogs/DlgMutationTakeover.cpp
     VectorListEditor.cpp
 )
 
@@ -533,6 +543,7 @@ SET(Dialog_HPP_SRCS
     Dialogs/DlgAbout.h
     Dialogs/DlgActivateWindowImp.h
     Dialogs/DlgCreateNewPreferencePackImp.h
+    Dialogs/DlgDocumentObject.h
     Dialogs/DlgUnitsCalculatorImp.h
     Dialogs/DlgInputDialogImp.h
     Dialogs/DlgMacroExecuteImp.h
@@ -568,7 +579,6 @@ SET(Dialog_HPP_SRCS
     TaskElementColors.h
     Dialogs/DlgObjectSelection.h
     Dialogs/DlgAddProperty.h
-    Dialogs/DlgMutationTakeover.h
     VectorListEditor.h
 )
 
@@ -583,6 +593,7 @@ SET(Dialog_SRCS
     Dialogs/DlgAuthorization.ui
     Dialogs/DlgInputDialog.ui
     Dialogs/DlgAddProperty.ui
+    Dialogs/DlgDocumentObject.ui
     Dialogs/DlgLocationAngle.ui
     Dialogs/DlgLocationPos.ui
     Dialogs/DlgMacroExecute.ui
@@ -594,7 +605,6 @@ SET(Dialog_SRCS
     Dialogs/DlgPreferencePackManagement.ui
     Dialogs/DlgProjectInformation.ui
     Dialogs/DlgProjectUtility.ui
-    Dialogs/DlgPropertyLink.ui
     Dialogs/DlgRevertToBackupConfig.ui
     Dialogs/DlgCheckableMessageBox.ui
     Dialogs/DlgTreeWidget.ui
@@ -887,6 +897,7 @@ SET(View3D_CPP_SRCS
     Flag.cpp
     GLBuffer.cpp
     GLPainter.cpp
+    RubberbandOverlay.cpp
     Multisample.cpp
     MouseSelection.cpp
     SplitView3DInventor.cpp
@@ -894,9 +905,7 @@ SET(View3D_CPP_SRCS
     View3DInventor.cpp
     View3DInventorSelection.cpp
     View3DInventorViewer.cpp
-    View3DInventorRiftViewer.cpp
     View3DSettings.cpp
-    CoinRiftWidget.cpp
     View3DPy.cpp
     View3DViewerPy.cpp
     NaviCube.cpp
@@ -906,6 +915,7 @@ SET(View3D_SRCS
     Camera.h
     Flag.h
     GLBuffer.h
+    RubberbandOverlay.h
     GLPainter.h
     Multisample.h
     MouseSelection.h
@@ -916,9 +926,7 @@ SET(View3D_SRCS
     View3DInventorViewer.h
     View3DInventorViewerInternal.h
     View3DPy.h
-    View3DInventorRiftViewer.h
     View3DSettings.h
-    CoinRiftWidget.h
     View3DViewerPy.h
     NaviCube.h
 )
@@ -1189,6 +1197,7 @@ SET(Widget_HPP_SRCS
     MainWindowPy.h
     NotificationBox.h
     NotificationArea.h
+    NotificationClipboard.h
     PrefWidgets.h
     InputField.h
     ProgressBar.h
@@ -1299,6 +1308,7 @@ SOURCE_GROUP("Workbench" FILES ${Workbench_SRCS})
 SET(Selection_SRCS
     Selection/BoxSelection.cpp
     Selection/BoxSelection.h
+    ${Selection_MODULE_GENERATED_SRCS}
     Selection/SelectionObjectPyImp.cpp
     Selection/SelectionObject.h
     Selection/SelectionObject.cpp
@@ -1317,10 +1327,15 @@ SOURCE_GROUP("Selection" FILES ${Selection_SRCS})
 
 # The FreeCADGui sources
 SET(FreeCADGui_CPP_SRCS
+    ${FreeCADGui_MODULE_GENERATED_SRCS}
+    ${PySideUic_MODULE_GENERATED_SRCS}
     Application.cpp
     ApplicationPy.cpp
     AutoSaver.cpp
     BitmapFactory.cpp
+    CollaborationCompatibilityAdapter.cpp
+    PersonalViewContext.cpp
+    SharedPresentationCoordinator.cpp
     Document.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1365,6 +1380,9 @@ SET(FreeCADGui_SRCS
     Application.h
     AutoSaver.h
     BitmapFactory.h
+    CollaborationCompatibilityAdapter.h
+    PersonalViewContext.h
+    SharedPresentationCoordinator.h
     Document.h
     DocumentModel.h
     DocumentObserver.h

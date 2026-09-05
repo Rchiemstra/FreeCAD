@@ -67,6 +67,7 @@ target_include_directories(
     ${CMAKE_BINARY_DIR}/src
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_include_directories(
@@ -116,6 +117,10 @@ generate_from_py(ComplexGeoData)
 generate_from_py(PropertyContainer)
 generate_from_py(Material)
 generate_from_py(MeasureManager)
+generate_module_from_py(
+    FreeCAD
+    FreeCAD_MODULE_GENERATED_SRCS
+)
 
 generate_embed_from_py(FreeCADInit InitScript.h)
 generate_embed_from_py(FreeCADTest TestScript.h)
@@ -142,6 +147,7 @@ SET(FreeCADApp_Pyi_SRCS
     ComplexGeoData.pyi
     Material.pyi
     MeasureManager.pyi
+    FreeCAD.module.pyi
     StringHasher.pyi
     StringID.pyi
 )
@@ -151,9 +157,17 @@ SOURCE_GROUP("Pyi" FILES ${FreeCADApp_Pyi_SRCS})
 SET(Document_CPP_SRCS
     Annotation.cpp
     BackupPolicy.cpp
+    CollaborationRegistry.cpp
+    private/CollaborationStructuralMutationRecorder.cpp
+    CollaborativeOperation.cpp
+    CollaborativeOperationRegistry.cpp
+    CollaborativeSetPropertyOperation.cpp
     Document.cpp
-    DocumentMutationAuthority.cpp
-    MutationCapability.cpp
+    DocumentCollaborationService.cpp
+    DocumentCommitCoordinator.cpp
+    DocumentRevisionIndex.cpp
+    EditSession.cpp
+    MutationClassification.cpp
     RecoverySnapshot.cpp
     DocumentObject.cpp
     DepEdgePyImp.cpp
@@ -195,6 +209,8 @@ SET(Document_CPP_SRCS
     InventorObject.cpp
     Placement.cpp
     ProjectFile.cpp
+    PreparedEdit.cpp
+    PreparedEditExecutor.cpp
     Datums.cpp
     Range.cpp
     Transactions.cpp
@@ -212,9 +228,17 @@ SET(Document_CPP_SRCS
 SET(Document_HPP_SRCS
     Annotation.h
     BackupPolicy.h
+    CollaborationRegistry.h
+    private/CollaborationStructuralMutationRecorder.h
+    CollaborativeOperation.h
+    CollaborativeOperationRegistry.h
+    CollaborativeSetPropertyOperation.h
     Document.h
-    DocumentMutationAuthority.h
-    MutationCapability.h
+    DocumentCollaborationService.h
+    DocumentCommitCoordinator.h
+    DocumentRevisionIndex.h
+    EditSession.h
+    MutationClassification.h
     MutationKind.h
     RecoverySnapshot.h
     DepEdge.h
@@ -248,6 +272,8 @@ SET(Document_HPP_SRCS
     InventorObject.h
     Placement.h
     ProjectFile.h
+    PreparedEdit.h
+    PreparedEditExecutor.h
     Datums.h
     Range.h
     Transactions.h
@@ -307,6 +333,7 @@ SET(FreeCADApp_CPP_SRCS
     ApplicationDirectories.cpp
     ApplicationDirectoriesPyImp.cpp
     ApplicationPy.cpp
+    ${FreeCAD_MODULE_GENERATED_SRCS}
     AutoTransaction.cpp
     Branding.cpp
     ByteArray.cpp

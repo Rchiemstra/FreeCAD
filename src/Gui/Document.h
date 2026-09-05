@@ -24,11 +24,16 @@
 
 #include <list>
 #include <map>
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <fastsignals/signal.h>
 #include <QString>
 
 #include <Base/Persistence.h>
+#include <Gui/CollaborationCompatibilityAdapter.h>
+#include <Gui/PersonalViewContext.h>
+#include <Gui/SharedPresentationCoordinator.h>
 #include <Gui/TreeItemMode.h>
 
 class SoNode;
@@ -66,6 +71,15 @@ enum class CreateViewMode
     Clone
 };
 
+/** Bounded, value-only options for native personal-context raster capture. */
+struct GuiExport PersonalViewImageOptions
+{
+    int width {-1};
+    int height {-1};
+    int samples {-1};
+    std::string background {"Current"};
+};
+
 /** The Gui Document
  *  This is the document on GUI level. Its main responsibility is keeping
  *  track off open windows for a document and warning on unsaved closes.
@@ -87,6 +101,7 @@ protected:
     void slotNewObject(const App::DocumentObject&);
     void slotDeletedObject(const App::DocumentObject&);
     void slotChangedObject(const App::DocumentObject&, const App::Property&);
+    void slotChangedViewObject(const Gui::ViewProvider&, const App::Property&);
     void slotRelabelObject(const App::DocumentObject&);
     void slotTransactionAppend(const App::DocumentObject&, App::Transaction*);
     void slotTransactionRemove(const App::DocumentObject&, App::Transaction*);
@@ -200,6 +215,43 @@ public:
 
     /// Getter for the App Document
     App::Document* getDocument() const;
+
+    /** Execute one short legacy GUI mutation through the integration-owned boundary. */
+    [[nodiscard]] CollaborationCompatibilityMutationOutcome
+    executeCompatibilityMutation(
+        CollaborationCompatibilityMutationDeclaration declaration,
+        CollaborationCompatibilityMutationCallback callback);
+
+    /** Pointer-free revision provider for deliberately shared ViewProvider state. */
+    [[nodiscard]] SharedPresentationRevisionIndex& sharedPresentationRevisions();
+    [[nodiscard]] const SharedPresentationRevisionIndex& sharedPresentationRevisions() const;
+    /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
+    void publishSharedPresentationSchemaMutation(
+        const Gui::ViewProvider& viewProvider,
+        std::string_view propertyName,
+        std::string_view secondPropertyName = {}) noexcept;
+
+    /**
+     * Execute an explicit reversible App/Gui presentation mutation under the
+     * App document serialization boundary. Integration callbacks are consumed
+     * synchronously and are never retained.
+     */
+    [[nodiscard]] SharedPresentationCommitResult commitSharedPresentation(
+        SharedPresentationCommitRequest request,
+        SharedPresentationCommitCallbacks callbacks);
+
+    /** Actor contexts are transient and never affect document dirty/revision state. */
+    void storePersonalViewContext(std::string actorId, PersonalViewContext context);
+    [[nodiscard]] std::optional<PersonalViewContext>
+    personalViewContext(const std::string& actorId) const;
+    [[nodiscard]] bool removePersonalViewContext(const std::string& actorId);
+    [[nodiscard]] PersonalViewRenderStatus applyPersonalViewContext(
+        const std::string& actorId,
+        const PersonalViewRendererCallbacks& renderer) const;
+    /** Render one stored actor context to PNG without caller-owned renderer callbacks. */
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> renderPersonalViewContext(
+        const std::string& actorId,
+        const PersonalViewImageOptions& options = {}) const;
 
     /// Notify the document when it becomes
     /// the active document/stops being the active document
@@ -365,6 +417,7 @@ private:
     bool askIfSavingFailed(const QString&);
     /// Warn if saving a document from an older FreeCAD version (returns false if user cancels)
     bool warnIfOlderVersion();
+    void syncSharedPresentationIdentity() const;
 
     struct DocumentP* d;
     static int _iDocCount;

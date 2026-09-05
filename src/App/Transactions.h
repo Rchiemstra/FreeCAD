@@ -85,6 +85,15 @@ public:
      */
     void apply(Document& Doc, bool forward);
 
+    /**
+     * Apply this transaction and propagate every restore failure.
+     *
+     * Ordinary undo/redo retains the historical logging behavior of apply().
+     * Collaboration rollback uses this checked path because a silently partial
+     * restore cannot satisfy atomic commit semantics.
+     */
+    void applyChecked(Document& Doc, bool forward);
+
     /// The UTF-8 name of the transaction
     std::string Name;
 
@@ -122,6 +131,21 @@ public:
     void renameProperty(TransactionalObject* Obj, const Property* pcProp, const char* oldName);
 
     /**
+     * @brief Arrange moving a property.
+     *
+     * @param[in] Obj The object from which the property is moved.
+     * @param[in] pcProp The property that is moved.
+     * @param[in] target The object to which the property is moved.
+     * @param[in] newProp The new property that represents the moved property.
+     */
+    void arrangeMoveProperty(
+        TransactionalObject* Obj,
+        const Property* pcProp,
+        TransactionalObject* target,
+        Property* newProp
+    );
+
+    /**
      * @brief Record adding or removing a property from an object.
      *
      * @param[in] Obj The object to add or remove the property from.
@@ -153,6 +177,8 @@ public:
     void addObjectChange(const TransactionalObject* Obj, const Property* Prop);
 
 private:
+    void applyImpl(Document& doc, bool forward, bool propagateErrors);
+
     void changeProperty(TransactionalObject* Obj,
                         std::function<void(TransactionObject* to)> changeFunc);
 
@@ -209,6 +235,9 @@ public:
      */
     virtual void applyChn(Document& doc, TransactionalObject* obj, bool forward);
 
+    /** Checked counterpart used only by Transaction::applyChecked(). */
+    void applyChnChecked(Document& doc, TransactionalObject* obj, bool forward);
+
     /**
      * @brief Set the property of the object that is affected by the transaction.
      *
@@ -223,6 +252,15 @@ public:
      * @param[in] oldName The old name of the property.
      */
     void renameProperty(const Property* pcProp, const char* oldName);
+
+    /**
+     * @brief Arrange moving a property.
+     *
+     * @param[in] pcProp The property that is moved.
+     * @param[in] target The object to which the property is moved.
+     * @param[in] newProp The property that represents the moved property.
+     */
+    void arrangeMoveProperty(const Property* pcProp, TransactionalObject* target, Property* newProp);
 
     /**
      * @brief Add or remove a property from the object.
@@ -254,6 +292,10 @@ protected:
         const Property* propertyOrig = nullptr;
         // for property renaming
         std::string nameOrig;
+        // for property moving
+        Property* propertyTarget = nullptr;
+        TransactionalObject* target = nullptr;
+        PropertyContainer* source = nullptr;
     };
 
     /// A map to maintain the properties of the object.
@@ -261,6 +303,9 @@ protected:
 
     /// The name of the object in the document.
     std::string _NameInDocument;
+
+private:
+    void applyChnImpl(TransactionalObject* obj, bool propagateErrors);
 };
 
 /**

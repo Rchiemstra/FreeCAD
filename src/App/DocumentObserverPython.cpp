@@ -486,6 +486,13 @@ void DocumentObserverPython::slotRemoveDynamicProperty(const App::Property& Prop
         // If a property is touched but not part of a document object then its name is null.
         // In this case the slot function must not be called.
         const char* prop_name = container->getPropertyName(&Prop);
+        // Collaboration replay retains a removed property through the stable
+        // boundary, but it is intentionally no longer present in the
+        // container's dynamic-property index.  Its owned old name remains the
+        // canonical removal name for observer delivery.
+        if (!prop_name) {
+            prop_name = Prop.getName();
+        }
         if (prop_name) {
             args.setItem(1, Py::String(prop_name));
             Base::pyCall(pyRemoveDynamicProperty.ptr(), args.ptr());
