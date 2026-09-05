@@ -312,6 +312,19 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-unit-tests.sh
 
+  # Real-CLI check for the Git sidecar adapter: freecad-mcp-unit-tests.sh only
+  # exercises it against a mocked subprocess, which cannot catch a broken or
+  # uninstalled freecad-git CLI (export_sidecar_after_save() fails silently --
+  # see the script for the full story). Installs the real freecad-git package
+  # (a sibling tool, not a freecad-mcp dependency) and runs the one test
+  # (@pytest.mark.integration) that shells out to it for real. Same cheap
+  # python:3.12 image as the unit-tests job; no FreeCAD build required.
+  - name: freecad-mcp-sidecar-integration
+    image: python:3.12
+    depends_on: [freecad-mcp-lint]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-sidecar-integration.sh
+
   # Cross-track: needs THIS branch's build/debug FreeCAD AND the MCP package
   # installed into the image's site-packages. freecad-ci-mcp:24.04 has NO built
   # FreeCAD, so FreeCADCmd is invoked by ABSOLUTE path from the workspace build
