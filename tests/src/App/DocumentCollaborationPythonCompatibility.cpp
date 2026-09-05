@@ -4027,8 +4027,16 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     auto* activeLast = _document->addObject<App::FeatureTest>("ActiveLast");
     ASSERT_NE(sibling, nullptr);
     ASSERT_NE(activeLast, nullptr);
+    _document->recompute();
+    ASSERT_FALSE(_document->mustExecute());
     ASSERT_EQ(_document->getActiveObject(), activeLast);
     const auto objectsBefore = _document->getObjects();
+    std::vector<unsigned long> objectStatusBefore;
+    objectStatusBefore.reserve(objectsBefore.size());
+    for (const auto* object : objectsBefore) {
+        objectStatusBefore.push_back(object->getStatus());
+    }
+    const auto pendingRecomputeBefore = _document->mustExecute();
     const auto targetIdentity = _document->collaborationObjectIdentity(*_target);
     PyObjectRef document(_document->getPyObject());
     CallbackProbe probe;
@@ -4055,6 +4063,11 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_EQ(_document->getObject("Transient"), nullptr);
     EXPECT_EQ(_document->getObject("Target"), _target);
     EXPECT_EQ(_document->getObjects(), objectsBefore);
+    ASSERT_EQ(_document->getObjects().size(), objectStatusBefore.size());
+    for (std::size_t index = 0; index < objectsBefore.size(); ++index) {
+        EXPECT_EQ(objectsBefore[index]->getStatus(), objectStatusBefore[index]);
+    }
+    EXPECT_EQ(_document->mustExecute(), pendingRecomputeBefore);
     EXPECT_EQ(_document->getActiveObject(), activeLast);
     EXPECT_EQ(_document->collaborationObjectIdentity(*_target), targetIdentity);
     EXPECT_EQ(created, 0);
