@@ -68,6 +68,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestOverlayIconsAndOrigin.py
     AssemblyTests/TestWebotsExport.py
     AssemblyTests/TestReviewNotes.py
+    AssemblyTests/TestReviewNotesIssues.py
     AssemblyTests/TestSimulationExport.py
     AssemblyTests/TestPreferencesImport.py
     AssemblyTests/mocks/__init__.py

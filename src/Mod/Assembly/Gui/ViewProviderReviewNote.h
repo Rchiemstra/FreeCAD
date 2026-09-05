@@ -21,11 +21,16 @@
 #include <Mod/Assembly/AssemblyGlobal.h>
 
 #include <App/PropertyGeo.h>
+#include <App/PropertyStandard.h>
+#include <App/PropertyUnits.h>
 #include <Base/Placement.h>
 #include <Base/Vector3D.h>
 #include <Gui/ViewProviderAnnotation.h>
 #include <fastsignals/signal.h>
 
+#include <QObject>
+#include <QPointer>
+#include <QPoint>
 #include <QRect>
 #include <string>
 #include <vector>
@@ -52,6 +57,33 @@ public:
     App::PropertyVector LeaderEnd;
     /// Billboard half-extents (x=halfW, y=halfH) used for leader attachment, relative to TextPosition.
     App::PropertyVector LeaderHalfExtent;
+    /// Fixed box width in mm (0 = auto-size to text). Overrides the auto billboard half-width.
+    App::PropertyLength BoxWidth;
+    /// Fixed box height in mm (0 = auto-size to text). Overrides the auto billboard half-height.
+    App::PropertyLength BoxHeight;
+    /// Show or hide the leader from the target to the note box.
+    App::PropertyBool ShowLeader;
+    /// Leader color, independent from the note background.
+    App::PropertyColor LeaderColor;
+    /// Leader thickness in screen pixels.
+    App::PropertyFloatConstraint LeaderWidth;
+    /// Leader stroke pattern (solid, dashed, dotted, or dash-dot).
+    App::PropertyEnumeration LeaderLineStyle;
+    /// Text-box border color.
+    App::PropertyColor FrameColor;
+    /// Text-box border thickness in raster pixels.
+    App::PropertyFloatConstraint FrameWidth;
+    /// Text-box border stroke pattern.
+    App::PropertyEnumeration FrameLineStyle;
+    /// Test-visible: pixel width of the last rasterized box image (capped at MaxBoxRasterPx).
+    App::PropertyInteger RasterWidth;
+    /// Test-visible: pixel height of the last rasterized box image (capped at MaxBoxRasterPx).
+    App::PropertyInteger RasterHeight;
+    /// Test-visible: number of times drawImage has rasterized the box (incremented per raster;
+    /// used to verify resize-triggered re-raster).
+    App::PropertyInteger DrawImageCount;
+    /// Test-visible first @link hit rectangle as x,y,width,height raster pixels.
+    App::PropertyString FirstLinkHitRect;
 
     QIcon getIcon() const override;
     bool doubleClicked() override;
@@ -64,6 +96,9 @@ public:
 
     /// Half-extents of the label box in annotation-local billboard units.
     void labelHalfExtents(double& halfW, double& halfH) const;
+
+    /// True when the user set a fixed box width/height (mm) from the View panel.
+    bool hasFixedSize() const;
 
     /// Map a perimeter parameter in [0,1] to a UV offset from the text/image center.
     static Base::Vector3d perimeterOffset(double port, double halfW, double halfH);
@@ -83,9 +118,16 @@ protected:
     Base::Vector3d worldToAnnotationPoint(const Base::Vector3d& world) const override;
     void drawImage(const std::vector<std::string>& lines) override;
     bool acceptLabelDragStart(SoDragger* drag, DragState& state) override;
+    void onLabelClicked(const DragState& state) override;
     void setLeaderCoords(const Base::Vector3d& textPosition) override;
 
 private:
+    /// P2: Qt event filter that watches the 3D-view GL widget for QEvent::Resize and
+    /// re-schedules a visual frame so a fixed-mm box re-rasterizes at the new zoom.
+    /// Nested so it can reach the private scheduleVisualFrame().
+    class ResizeObserver;
+    friend class ResizeObserver;
+
     struct RefHit
     {
         QRect pixelRect;
@@ -108,7 +150,8 @@ private:
     void scheduleVisualFrame();
     void flushScheduledVisualFrame();
     bool hitTestReference(SoDragger* drag, RefHit& out) const;
-    void selectReference(const RefHit& hit) const;
+    void selectReference(const RefHit& hit, const QPoint& pressPosition) const;
+    void updateLeaderAppearance();
     void onLabelDragFinished(const DragState& state) override;
 
     BillboardFrame currentBillboardFrame(const Base::Vector3d& textPosition) const;
@@ -119,6 +162,10 @@ private:
     bool screenWorldPerPixel(const Base::Vector3d& textWorld, double& worldPerPixel) const;
     void ensureCameraSensor();
     void detachCameraSensor();
+    /// P2: viewport resize changes worldPerPixel (Coin has no viewport-region sensor),
+    /// so a fixed-mm box must re-rasterize. Installs a Qt event filter on the viewer GL widget.
+    void ensureViewportResizeObserver();
+    void detachViewportResizeObserver();
     void detachFrameSensor();
 
     static void cameraSensorCallback(void* data, SoSensor* sensor);
@@ -128,6 +175,11 @@ private:
     std::vector<RefHit> refHits;
     SoNodeSensor* cameraSensor = nullptr;
     SoCamera* attachedCamera = nullptr;
+    /// P2: Qt event filter on the viewer GL widget (viewport-resize -> re-raster).
+    ResizeObserver* resizeObserver = nullptr;
+    /// P2: held via QPointer so it auto-clears if Qt destroys the GL widget before
+    /// the view provider (avoids a dangling pointer in detachViewportResizeObserver).
+    QPointer<QWidget> attachedGlWidget;
     /// Coalesced visual refresh. SoOneShotSensor (not SoIdleSensor) so Quarter's
     /// processDelayQueue(false) still runs it. Priority is redrawPri-1 (lower
     /// numeric = earlier); redraw OneShot is typically 10000.
@@ -143,7 +195,30 @@ private:
     bool applyingVisualFrame = false;
     bool visualFrameScheduled = false;
     bool visualFrameDirty = false;
+    /// P3: re-entrancy guard while clamping negative BoxWidth/BoxHeight to 0.
+    bool updatingBoxSize = false;
     fastsignals::scoped_connection syncLeaderConnection;
+
+    static const char* LeaderLineStyleEnums[];
+    static const char* FrameLineStyleEnums[];
+};
+
+/// P2: Qt event filter on the 3D-view GL widget. Viewport resize changes
+/// worldPerPixel but not the Coin camera node, so without this the fixed-mm box
+/// stays stale until the next camera change. On QEvent::Resize it re-schedules a
+/// visual frame (which re-rasterizes when hasFixedSize()).
+class AssemblyGuiExport ViewProviderReviewNote::ResizeObserver: public QObject
+{
+    Q_OBJECT
+public:
+    explicit ResizeObserver(ViewProviderReviewNote* owner)
+        : QObject(nullptr)
+        , vp(owner)
+    {}
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    ViewProviderReviewNote* vp;
 };
 
 }  // namespace AssemblyGui
