@@ -31,6 +31,10 @@ from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
 from AssemblyTests.TestWebotsExport import TestWebotsExport
 from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
 from AssemblyTests.TestSimulationExport import TestSimulationExport
+from AssemblyTests.TestReviewNotesIssues import (
+    TestReviewNotesIssues,
+    TestReviewNotesGuiIssues,
+)
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
@@ -42,3 +46,5 @@ True if TestWebotsExport else False
 True if TestReviewNotes else False
 True if TestReviewNotesGui else False
 True if TestSimulationExport else False
+True if TestReviewNotesIssues else False
+True if TestReviewNotesGuiIssues else False

@@ -198,7 +198,7 @@ class TestReviewNotes(unittest.TestCase):
         self.assertIsNotNone(note)
         self.assertEqual(note.TypeId, "Assembly::ReviewNote")
         self.assertEqual(list(note.LabelText), ["First line", "Second line"])
-        self.assertEqual(note.Label, "First line")
+        self.assertEqual(note.Label, "review_note_1")
         self.assertEqual(note.Target[0], self.box)
         self.assertEqual(list(note.Target[1]), [])
         self.assertEqual(note.AnchorSubelement, "Face6")
@@ -1813,17 +1813,17 @@ class TestReviewNotes(unittest.TestCase):
         self.doc.recompute()
 
     def test_whitespace_label_and_fallback_offset(self):
-        operation = "Whitespace LabelText clears Label; fallback offset is 20 mm"
+        operation = "Whitespace LabelText keeps review_note_N label; fallback offset is 20 mm"
         _msg("  Test '{}'".format(operation))
 
         data = CommandReviewNote.normalize_review_note_target(self.assembly, self.box, "")
         note = CommandReviewNote.create_review_note(
             self.assembly, data, ["Keep"], open_transaction=False
         )
-        self.assertEqual(note.Label, "Keep", operation)
+        self.assertEqual(note.Label, "review_note_1", operation)
         note.LabelText = ["   ", "\t", ""]
-        # first non-whitespace line is empty → Label cleared.
-        self.assertEqual(note.Label, "", "{} whitespace LabelText".format(operation))
+        # whitespace-only LabelText must NOT blank the review_note_N label.
+        self.assertEqual(note.Label, "review_note_1", "{} whitespace LabelText".format(operation))
 
         offset = CommandReviewNote._fallback_text_offset()
         self.assertAlmostEqual(offset.Length, 20.0, places=5, msg=operation)
