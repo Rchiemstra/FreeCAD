@@ -7,6 +7,7 @@
 #include "Document.h"
 #include "DocumentObject.h"
 #include "GeometryWorkerOperationRegistry.h"
+#include "Link.h"
 #include "MergeDocuments.h"
 #include "ObjectIdentifier.h"
 #include "PropertyLinks.h"
@@ -312,6 +313,19 @@ bool isPartDesignAddSubShapeRecomputeOutput(const App::DocumentObject& object,
         && object.getPropertyByName("AddSubShape") == &property;
 }
 
+bool isPartDesignSuppressedShapeRecomputeOutput(const App::DocumentObject& object,
+                                                 const App::Property& property)
+{
+    // PartDesign::Feature::recompute() unconditionally clears this cache for
+    // active features and rebuilds it for suppressed ones before delegating
+    // to execute(). It is therefore an execute-owned geometry output even
+    // though the legacy property predates Prop_Output.
+    const Base::Type featureType = Base::Type::fromName("PartDesign::Feature");
+    return !featureType.isBad()
+        && object.getTypeId().isDerivedFrom(featureType)
+        && object.getPropertyByName("SuppressedShape") == &property;
+}
+
 bool isPartDesignDirectionRecomputeOutput(const App::DocumentObject& object,
                                           const App::Property& property)
 {
@@ -324,6 +338,98 @@ bool isPartDesignDirectionRecomputeOutput(const App::DocumentObject& object,
     return !featureExtrudeType.isBad()
         && object.getTypeId().isDerivedFrom(featureExtrudeType)
         && object.getPropertyByName("Direction") == &property;
+}
+
+bool isPartDesignProfilePlacementRecomputeOutput(const App::DocumentObject& object,
+                                                  const App::Property& property)
+{
+    // ProfileBased feature execution calls positionByPrevious() and derives
+    // the feature Placement from its base feature, support, or sketch. This is
+    // an established execute-owned output even though Placement predates
+    // Prop_Output. Restrict the compatibility declaration to that ancestry and
+    // exact built-in member.
+    const Base::Type profileBasedType = Base::Type::fromName("PartDesign::ProfileBased");
+    return !profileBasedType.isBad()
+        && object.getTypeId().isDerivedFrom(profileBasedType)
+        && object.getPropertyByName("Placement") == &property;
+}
+
+bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
+{
+    // A plain native App::Link to a non-Python object has no model execute
+    // work when its virtual mustExecute() is false. Its native extension would
+    // only touch the transient view notification property; disabled
+    // copy-on-change has no setup work. This exact contract lets a newly set
+    // persistent cross-document link clear its Enforce/Touch bookkeeping
+    // without attempting to serialize the external document into the worker.
+    // Derived links, arrays, copy-on-change links, unresolved links, and links
+    // that can invoke a Python proxy remain fail-closed.
+    const Base::Type linkType = Base::Type::fromName("App::Link");
+    if (linkType.isBad() || object.getTypeId() != linkType
+        || object.mustExecute() != 0) {
+        return false;
+    }
+    const auto* link = dynamic_cast<const App::Link*>(&object);
+    if (!link || link->ElementCount.getValue() != 0
+        || link->getLinkCopyOnChangeValue()
+            != App::LinkBaseExtension::CopyOnChangeDisabled
+        || link->getLinkCopyOnChangeSourceValue()
+        || link->getLinkCopyOnChangeGroupValue()
+        || std::ranges::any_of(namedProperties(object), [](const auto& entry) {
+               return entry.second->testStatus(App::Property::PropDynamic);
+           })) {
+        return false;
+    }
+    auto* linked = link->getTrueLinkedObject(true);
+    if (!linked || linked->getDocument() == object.getDocument()) {
+        return false;
+    }
+    return !freecad_cast<App::PropertyPythonObject*>(
+        linked->getPropertyByName("Proxy"));
+}
+
+bool isNullProxyExternalLinkHolderBookkeepingTarget(
+    const App::DocumentObject& object)
+{
+    // An exact App::FeaturePython with no Proxy cannot run Python execute
+    // code: FeaturePythonT::execute() falls through to the base
+    // DocumentObject no-op. Restrict this compatibility case further to the
+    // worker-snapshot pattern it serves: no extensions, and a non-empty
+    // dependency set made solely of the safe plain external App::Links above.
+    // Any derived Python feature, live Proxy, extension, or other dependency
+    // remains isolated and fail-closed.
+    const Base::Type featurePythonType = Base::Type::fromName("App::FeaturePython");
+    if (featurePythonType.isBad() || object.getTypeId() != featurePythonType
+        || object.hasExtensions()
+        || !object.ExpressionEngine.getExpressions().empty()) {
+        return false;
+    }
+    const auto* proxy = freecad_cast<App::PropertyPythonObject*>(
+        object.getPropertyByName("Proxy"));
+    if (!proxy || !proxy->getValue().isNone()) {
+        return false;
+    }
+    if (std::ranges::any_of(namedProperties(object), [proxy](
+            const std::pair<std::string, App::Property*>& entry) {
+            return entry.second != proxy
+                && entry.second->isDerivedFrom<App::PropertyPythonObject>();
+        })) {
+        return false;
+    }
+    const auto dependencies = object.getOutList();
+    return !dependencies.empty()
+        && std::ranges::all_of(dependencies, [&object](const auto* dependency) {
+               return dependency
+                   && dependency->getDocument() == object.getDocument()
+                   && isSafePlainAppLinkBookkeepingTarget(*dependency);
+           });
+}
+
+bool isBookkeepingOnlyTarget(const App::DocumentObject& object)
+{
+    return object.mustRecompute() == 0
+        || isSafePlainAppLinkBookkeepingTarget(object)
+        || isNullProxyExternalLinkHolderBookkeepingTarget(object);
 }
 
 bool usesAuthoritativeTransientRecomputeSchema(const App::DocumentObject& object)
@@ -382,7 +488,9 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
         || isPartFeatureShapeRecomputeOutput(object, property)
         || isSketchObjectExecuteRecomputeOutput(object, property)
         || isPartDesignAddSubShapeRecomputeOutput(object, property)
-        || isPartDesignDirectionRecomputeOutput(object, property);
+        || isPartDesignSuppressedShapeRecomputeOutput(object, property)
+        || isPartDesignDirectionRecomputeOutput(object, property)
+        || isPartDesignProfilePlacementRecomputeOutput(object, property);
 }
 
 ObjectManifest manifestFor(const App::DocumentObject& object)
@@ -548,8 +656,46 @@ void validateDetachedSchema(
     }
 }
 
+struct PropertySnapshot
+{
+    std::unique_ptr<App::Property> value;
+    std::string serialized;
+};
+
 using PropertySnapshots =
-    std::map<std::string, std::map<std::string, std::unique_ptr<App::Property>>>;
+    std::map<std::string, std::map<std::string, PropertySnapshot>>;
+
+std::string dumpProperty(App::Property& property)
+{
+    std::ostringstream stream(std::ios::out | std::ios::binary);
+    property.dumpToStream(stream, 1);
+    return stream.str();
+}
+
+bool requiresDetachedValueSnapshot(const App::Property& property)
+{
+    // PropertyPartShape::Paste() is intentionally a cheap value copy and can
+    // share mutable TopoShape internals. A baseline made with Paste() can then
+    // change together with Shape during execute(), hiding the geometry output.
+    // Use the persistence round-trip already trusted for worker outputs to
+    // obtain an independent value without linking FreeCADApp to Part.
+    const Base::Type partShapeType = Base::Type::fromName("Part::PropertyPartShape");
+    return !partShapeType.isBad()
+        && property.getTypeId().isDerivedFrom(partShapeType);
+}
+
+std::unique_ptr<App::Property> detachedValueSnapshot(App::Property& property)
+{
+    std::unique_ptr<App::Property> copy(
+        static_cast<App::Property*>(property.getTypeId().createInstance()));
+    if (!copy) {
+        throw std::runtime_error("generic recompute property cannot be copied");
+    }
+    const auto bytes = dumpProperty(property);
+    std::istringstream stream(bytes, std::ios::in | std::ios::binary);
+    copy->restoreFromStream(stream);
+    return copy;
+}
 
 PropertySnapshots capturePropertySnapshots(
     const App::Document& document,
@@ -563,27 +709,27 @@ PropertySnapshots capturePropertySnapshots(
         }
         auto& properties = result[objectManifest.name];
         for (const auto& [name, property] : namedProperties(*object)) {
-            // Some legacy Copy() implementations return a base property (for
-            // example PropertyAngle inherits PropertyFloat::Copy).  Construct
-            // the registered concrete type before pasting so later semantic
-            // equality compares like with like.
             std::unique_ptr<App::Property> copy(
                 static_cast<App::Property*>(property->getTypeId().createInstance()));
             if (!copy) {
                 throw std::runtime_error("generic recompute property cannot be copied: " + name);
             }
-            copy->Paste(*property);
-            properties.emplace(name, std::move(copy));
+            if (requiresDetachedValueSnapshot(*property)) {
+                copy = detachedValueSnapshot(*property);
+            }
+            else {
+                // Some legacy Copy() implementations return a base property
+                // (for example PropertyAngle inherits PropertyFloat::Copy),
+                // so paste into the registered concrete type.
+                copy->Paste(*property);
+            }
+            Base::StringWriter writer;
+            property->Save(writer);
+            properties.emplace(
+                name, PropertySnapshot {std::move(copy), writer.getString()});
         }
     }
     return result;
-}
-
-std::string dumpProperty(App::Property& property)
-{
-    std::ostringstream stream(std::ios::out | std::ios::binary);
-    property.dumpToStream(stream, 1);
-    return stream.str();
 }
 
 bool sameSerializedProperty(const App::Property& left, const App::Property& right)
@@ -608,6 +754,29 @@ bool sameSerializedProperty(const App::Property& left, const App::Property& righ
     left.Save(leftWriter);
     right.Save(rightWriter);
     return leftWriter.getString() == rightWriter.getString();
+}
+
+bool sameCapturedProperty(const App::Property& current,
+                          const PropertySnapshot& baseline)
+{
+    if (current.getTypeId() != baseline.value->getTypeId()) {
+        return false;
+    }
+    if (requiresDetachedValueSnapshot(current)) {
+        auto normalized = detachedValueSnapshot(const_cast<App::Property&>(current));
+        return normalized->isSame(*baseline.value);
+    }
+    if (current.isSame(*baseline.value)) {
+        return true;
+    }
+
+    // Paste() does not necessarily preserve property configuration flags.
+    // Compare the fallback serialization with the exact pre-execute property,
+    // not with its value-only snapshot, so configured link properties retain
+    // their original flags for fail-closed side-effect detection.
+    Base::StringWriter currentWriter;
+    current.Save(currentWriter);
+    return currentWriter.getString() == baseline.serialized;
 }
 
 std::vector<std::uint8_t> encodeOutputs(
@@ -638,8 +807,8 @@ std::vector<std::uint8_t> encodeOutputs(
                 "generic recompute refuses structural or Python output property: "
                 + propertyManifest.name);
         }
-        if (!sameSerializedProperty(
-                *property, *targetBaseline.at(propertyManifest.name))) {
+        if (!sameCapturedProperty(
+                *property, targetBaseline.at(propertyManifest.name))) {
             changed.push_back(
                 {propertyManifest.name, propertyManifest.type, dumpProperty(*property)});
         }
@@ -729,13 +898,22 @@ public:
         }
         _applied = false;
         _appliedOutputs.clear();
+        // These values were produced by DocumentObject::execute() in the
+        // detached document. Apply them under the same document and object
+        // recomputing statuses as an in-process recompute. In particular,
+        // Part::Feature::onChanged() otherwise treats a pasted Shape as a user
+        // edit and derives Placement from the shape's top-level transform,
+        // which can silently reset a deactivated sketch's independently
+        // assigned Placement.
+        Base::ObjectStatusLocker<App::Document::Status, App::Document> recomputing(
+            App::Document::Recomputing, &document);
+        Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> executing(
+            App::Recompute, target);
         if (_authoritativeTransientSchema) {
             if (!usesAuthoritativeTransientRecomputeSchema(*target)) {
                 throw std::runtime_error(
                     "generic recompute transient-schema target contract no longer matches");
             }
-            Base::ObjectStatusLocker<App::Document::Status, App::Document> recomputing(
-                App::Document::Recomputing, &document);
             const int result =
                 App::Internal::GenericIsolatedRecomputeAccess::executeAuthoritative(
                     document, *target);
@@ -864,7 +1042,7 @@ public:
     void apply(App::Document& document) const override
     {
         auto* target = requireTarget(document);
-        if (target->mustRecompute()) {
+        if (!isBookkeepingOnlyTarget(*target)) {
             throw std::runtime_error(
                 "generic recompute bookkeeping target became executable before commit");
         }
@@ -1097,7 +1275,8 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         throw std::invalid_argument("generic recompute target does not exist");
     }
 
-    if (!forceExecution && target->isTouched() && target->mustRecompute() == 0) {
+    if (!forceExecution && target->isTouched()
+        && isBookkeepingOnlyTarget(*target)) {
         const std::string stableIdentity = document.collaborationObjectIdentity(*target);
         std::vector<App::DocumentRevisionKey> reads {
             App::DocumentRevisionKey::objectExistence(targetName),
@@ -1321,12 +1500,15 @@ App::GeometryArchive executeGenericRecompute(
         const auto* object = detached->getObject(objectManifest.name.c_str());
         for (const auto& propertyManifest : objectManifest.properties) {
             const auto* property = object->getPropertyByName(propertyManifest.name.c_str());
-            const bool allowedOutput = objectManifest.name == targetName
-                && propertyManifest.output;
-            if (!allowedOutput
-                && !sameSerializedProperty(
+            // Target execution may refresh an execute-owned cache on a closure
+            // dependency (for example Pad reads a Sketch and rebuilds its
+            // InternalShape). These exact declared outputs are harmless in the
+            // disposable worker and are not published unless they belong to
+            // the target. All non-output dependency state remains immutable.
+            if (!propertyManifest.output
+                && !sameCapturedProperty(
                     *property,
-                    *baseline.at(objectManifest.name).at(propertyManifest.name))) {
+                    baseline.at(objectManifest.name).at(propertyManifest.name))) {
                 throw std::runtime_error(
                     "generic recompute produced an undeclared property side effect: "
                     + objectManifest.name + "." + propertyManifest.name);

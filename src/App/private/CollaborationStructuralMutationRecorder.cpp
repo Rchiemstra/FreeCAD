@@ -4,10 +4,14 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 
 #include "App/Application.h"
 #include "App/DocumentObject.h"
 #include "App/ExtensionContainer.h"
+#include "App/PropertyGeo.h"
+#include "App/PropertyLinks.h"
+#include "App/PropertyStandard.h"
 #include "App/Transactions.h"
 #include "DocumentP.h"
 
@@ -46,6 +50,59 @@ bool propertyStatusMutationAffectsPersistence(const Property& property,
         | (1UL << Property::UserEdit);
     return (changed & serializedStatusMask) != 0
         && !property.testStatus(Property::PropNoPersist);
+}
+
+bool isLiveSketchAttachmentStatusMutation(const DocumentObject& object,
+                                          const Property& property,
+                                          const unsigned long oldStatus,
+                                          const unsigned long newStatus)
+{
+    const Base::Type sketchType = Base::Type::fromName("Sketcher::SketchObject");
+    if (sketchType.isBad() || object.getTypeId() != sketchType) {
+        return false;
+    }
+
+    const auto* rawSupport = object.getPropertyByName("AttachmentSupport");
+    const auto* support = freecad_cast<const PropertyLinkSubList*>(rawSupport);
+    const auto* rawMapMode = object.getPropertyByName("MapMode");
+    const auto* mapMode = freecad_cast<const PropertyEnumeration*>(rawMapMode);
+    if (!support || rawSupport->getTypeId() != PropertyLinkSubList::getClassTypeId()
+        || !mapMode || rawMapMode->getTypeId() != PropertyEnumeration::getClassTypeId()
+        || mapMode->getValue() == 0) {
+        return false;
+    }
+    const bool hasLiveSupport = std::ranges::any_of(
+        support->getValues(), [](const DocumentObject* linked) {
+            return linked && linked->getDocument() && linked->isAttachedToDocument();
+        });
+    if (!hasLiveSupport) {
+        return false;
+    }
+
+    // AttachExtension owns exactly these presentation flags while a sketch is
+    // actively supported: updateSinglePropertyStatus() exposes its attachment
+    // controls and makes the inherited Placement read-only. Keep arbitrary
+    // status changes, deactivated sketches, and unsupported sketches outside
+    // this compatibility contract.
+    const auto changed = oldStatus ^ newStatus;
+    const char* propertyName = property.getName();
+    if (!propertyName) {
+        return false;
+    }
+    const std::string_view name(propertyName);
+    if (changed == (1UL << Property::Hidden)) {
+        const bool exactProperty =
+            (name == "MapPathParameter"
+             && property.getTypeId() == PropertyFloat::getClassTypeId())
+            || (name == "MapReversed"
+                && property.getTypeId() == PropertyBool::getClassTypeId())
+            || (name == "AttachmentOffset"
+                && property.getTypeId() == PropertyPlacement::getClassTypeId());
+        return exactProperty && object.getPropertyByName(propertyName) == &property;
+    }
+    return changed == (1UL << Property::ReadOnly) && name == "Placement"
+        && property.getTypeId() == PropertyPlacement::getClassTypeId()
+        && object.getPropertyByName(propertyName) == &property;
 }
 
 void deferOrEmitDynamicExtension(
@@ -118,9 +175,23 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
         && document.containsObject(object);
     const bool newStructuralObject = attachedStructuralObject
         && isNewStructuralObject(*document.d, *object);
-    const auto kind = newStructuralObject
-        ? Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
-        : Document::CollaborationStructuralMutationKind::Restricted;
+    // unsetupObject() may adjust persistent property flags while an object is
+    // being removed (for example PartDesign attachment/placement flags). The
+    // object already carries Document's internal Remove status, so these
+    // changes cannot survive the removal boundary and are covered by its
+    // structural transaction snapshot. Do not grant the same authority to a
+    // surviving existing object.
+    const bool removalOwnedStatus = attachedStructuralObject
+        && object->testStatus(ObjectStatus::Remove);
+    const bool liveSketchAttachmentStatus = attachedStructuralObject
+        && isLiveSketchAttachmentStatusMutation(*object, property, oldStatus, newStatus);
+    auto kind = Document::CollaborationStructuralMutationKind::Restricted;
+    if (newStructuralObject) {
+        kind = Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
+    }
+    else if (removalOwnedStatus || liveSketchAttachmentStatus) {
+        kind = Document::CollaborationStructuralMutationKind::Object;
+    }
     std::string mutation = "propertyStatus on ";
     if (object) {
         const char* objectName = object->getNameInDocument();

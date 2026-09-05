@@ -7,6 +7,7 @@
 #include <App/Document.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/FeatureTest.h>
+#include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
@@ -26,6 +27,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -185,6 +187,10 @@ protected:
             std::error_code ignored;
             std::filesystem::remove(_savePath, ignored);
         }
+        if (!_dependencyPath.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(_dependencyPath, ignored);
+        }
     }
 
     std::unique_ptr<App::RecomputeHandle> blockingHandle()
@@ -207,6 +213,7 @@ protected:
     App::Document* _document {nullptr};
     std::shared_ptr<BlockingRecomputeState> _blocking;
     std::filesystem::path _savePath;
+    std::filesystem::path _dependencyPath;
 };
 
 std::string readFileBytes(const std::filesystem::path& path)
@@ -413,6 +420,7 @@ TEST_F(RecomputeHandleTest, canonicalSaveRefusesActiveRecomputeWithoutReplacingT
     const auto pendingSave = _document->saveWithOutcome();
     EXPECT_EQ(pendingSave.disposition, App::DocumentSaveDisposition::Failed);
     EXPECT_EQ(pendingSave.errorCode, "RECOMPUTE_PENDING");
+    EXPECT_NE(pendingSave.message.find(_documentName), std::string::npos);
     EXPECT_FALSE(pendingSave.fileWritten);
     EXPECT_FALSE(pendingSave.lastCanonicalSaveFailed);
     EXPECT_EQ(readFileBytes(_savePath), canonicalBytes);
@@ -430,6 +438,125 @@ TEST_F(RecomputeHandleTest, canonicalSaveRefusesActiveRecomputeWithoutReplacingT
     const auto unchanged = _document->saveWithOutcome();
     EXPECT_EQ(unchanged.disposition, App::DocumentSaveDisposition::Unchanged);
     EXPECT_FALSE(unchanged.fileWritten);
+}
+
+TEST_F(RecomputeHandleTest, terminalCancelledRecomputeDoesNotBrickCanonicalSave)
+{
+    auto handle = blockingHandle();
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+    ASSERT_TRUE(handle->cancel("terminal cancellation before save"));
+    const auto cancelled = handle->wait(3s);
+    ASSERT_EQ(cancelled.state, App::DocumentRecomputeState::Cancelled)
+        << cancelled.diagnostic;
+    ASSERT_TRUE(_document->recomputeCoordinator().hasUnresolvedWork());
+    ASSERT_FALSE(_document->mustExecute());
+    ASSERT_TRUE(_document->getMutationReadiness().ready);
+
+    _savePath = std::filesystem::temp_directory_path()
+        / (_documentName + "-after-cancel.FCStd");
+    const auto outcome = _document->saveAsWithOutcome(_savePath.string().c_str());
+
+    EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written)
+        << outcome.message;
+    EXPECT_TRUE(outcome.fileWritten);
+    EXPECT_TRUE(std::filesystem::exists(_savePath));
+}
+
+TEST_F(RecomputeHandleTest, ordinaryTouchedDocumentWithoutCoordinatorWorkCanBeSaved)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("UnsavedFeature");
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+    ASSERT_TRUE(_document->mustExecute());
+    ASSERT_FALSE(_document->recomputeCoordinator().hasUnresolvedWork());
+
+    _savePath = std::filesystem::temp_directory_path()
+        / (_documentName + "-ordinary-touched.FCStd");
+    const auto outcome = _document->saveAsWithOutcome(_savePath.string().c_str());
+
+    EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written)
+        << outcome.message;
+    EXPECT_TRUE(outcome.fileWritten);
+    EXPECT_TRUE(std::filesystem::exists(_savePath));
+}
+
+TEST_F(RecomputeHandleTest, activeRecomputeInUnrelatedDocumentDoesNotBlockTargetSave)
+{
+    auto handle = blockingHandle();
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+
+    const std::string targetName =
+        App::GetApplication().getUniqueDocumentName("independentSaveTarget");
+    auto* target = App::GetApplication().newDocument(targetName.c_str(),
+                                                      "Independent save target");
+    ASSERT_NE(target, nullptr);
+    _savePath = std::filesystem::temp_directory_path()
+        / (targetName + "-while-unrelated-recompute.FCStd");
+
+    const auto outcome = target->saveAsWithOutcome(_savePath.string().c_str());
+    const bool closed = App::GetApplication().closeDocument(targetName.c_str());
+
+    EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written)
+        << outcome.message;
+    EXPECT_TRUE(outcome.fileWritten);
+    EXPECT_TRUE(std::filesystem::exists(_savePath));
+    EXPECT_TRUE(closed);
+
+    ASSERT_TRUE(handle->cancel("unrelated save regression complete"));
+    EXPECT_EQ(handle->wait(3s).state, App::DocumentRecomputeState::Cancelled);
+}
+
+TEST_F(RecomputeHandleTest,
+       activeRecomputeInPersistentExternalDependencyBlocksTargetSave)
+{
+    auto* source = _document->addObject<App::FeatureTest>("ExternalSource");
+    ASSERT_NE(source, nullptr);
+    _dependencyPath = std::filesystem::temp_directory_path()
+        / (_documentName + "-external-source.FCStd");
+    ASSERT_NO_THROW({
+        const auto sourceSave =
+            _document->saveAsWithOutcome(_dependencyPath.string().c_str());
+        ASSERT_EQ(sourceSave.disposition, App::DocumentSaveDisposition::Written)
+            << sourceSave.message;
+    });
+
+    const std::string targetName =
+        App::GetApplication().getUniqueDocumentName("dependentSaveTarget");
+    auto* target = App::GetApplication().newDocument(targetName.c_str(),
+                                                      "Dependent save target");
+    ASSERT_NE(target, nullptr);
+    auto* consumer = target->addObject<App::FeatureTest>("Consumer");
+    ASSERT_NE(consumer, nullptr);
+    auto* externalLink = dynamic_cast<App::PropertyXLink*>(
+        consumer->addDynamicProperty("App::PropertyXLink", "ExternalSource"));
+    ASSERT_NE(externalLink, nullptr);
+    _savePath = std::filesystem::temp_directory_path()
+        / (targetName + "-while-dependency-recomputes.FCStd");
+    const auto targetSave = target->saveAsWithOutcome(_savePath.string().c_str());
+    ASSERT_EQ(targetSave.disposition, App::DocumentSaveDisposition::Written)
+        << targetSave.message;
+    const auto canonicalBytes = readFileBytes(_savePath);
+    ASSERT_FALSE(canonicalBytes.empty());
+    ASSERT_NO_THROW(externalLink->setValue(source));
+    std::vector<App::Document*> dependencies;
+    ASSERT_NO_THROW(dependencies = target->getDependentDocuments(false));
+    ASSERT_NE(std::ranges::find(dependencies, _document), dependencies.end());
+
+    auto handle = blockingHandle();
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+
+    const auto outcome = target->saveWithOutcome();
+
+    EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Failed);
+    EXPECT_EQ(outcome.errorCode, "RECOMPUTE_PENDING");
+    EXPECT_NE(outcome.message.find(targetName), std::string::npos);
+    EXPECT_NE(outcome.message.find(_documentName), std::string::npos);
+    EXPECT_FALSE(outcome.fileWritten);
+    EXPECT_EQ(readFileBytes(_savePath), canonicalBytes);
+
+    ASSERT_TRUE(handle->cancel("dependent save regression complete"));
+    EXPECT_EQ(handle->wait(3s).state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_TRUE(App::GetApplication().closeDocument(targetName.c_str()));
 }
 
 TEST_F(RecomputeHandleTest, documentCloseLeavesAStablePointerFreeTerminalSnapshot)

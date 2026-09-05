@@ -66,6 +66,27 @@ public:
     bool rejected {false};
 };
 
+class StatusChangingOnUnsetupFeature final: public App::FeatureTest
+{
+public:
+    void unsetupObject() override
+    {
+        attempted = true;
+        try {
+            String.setStatus(App::Property::ReadOnly, true);
+            admitted = true;
+        }
+        catch (const Base::Exception&) {
+            rejected = true;
+        }
+        App::FeatureTest::unsetupObject();
+    }
+
+    bool attempted {false};
+    bool admitted {false};
+    bool rejected {false};
+};
+
 class StructureAddingOnExecuteFeature final: public App::FeatureTest
 {
 public:
@@ -3563,6 +3584,38 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_EQ(target->getPropertyByName("UnsetupCompatibilityProperty"), nullptr);
     EXPECT_EQ(appendedDynamicProperty, 0);
     EXPECT_EQ(_document->getObject("Target"), nullptr);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       removingObjectOwnStatusCleanupUsesRemovalAuthority)
+{
+    Base::PyGILStateLocker gil;
+    _document->removeObject("Target");
+    _target = nullptr;
+    auto* target = new StatusChangingOnUnsetupFeature;
+    _document->addObject(target, "Target");
+    _document->recompute();
+
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe probe;
+    probe.nativeDocument = _document;
+    probe.target = target;
+    probe.removeTarget = true;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_NE(callback.get(), nullptr);
+
+    PyObjectRef result(callStructuralCompatibilityMutation(document.get(), callback.get()));
+
+    if (!result.get()) {
+        PyErr_Print();
+        FAIL() << "structural delete with status-changing unsetup failed";
+        return;
+    }
+    EXPECT_TRUE(target->attempted);
+    EXPECT_TRUE(target->admitted);
+    EXPECT_FALSE(target->rejected);
+    EXPECT_EQ(_document->getObject("Target"), nullptr);
+    _target = nullptr;
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

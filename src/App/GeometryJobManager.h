@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace App
@@ -29,6 +30,15 @@ struct GeometryProcessBackendOptions;
 }
 
 using GeometryJobId = std::uint64_t;
+
+/** Transient admission failure used by schedulers to apply backpressure. */
+class AppExport GeometryJobQueueFull: public std::runtime_error
+{
+public:
+    GeometryJobQueueFull()
+        : std::runtime_error("geometry job queue is full")
+    {}
+};
 
 enum class GeometryJobState
 {

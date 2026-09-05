@@ -8,6 +8,7 @@
 #include <App/DocumentObject.h>
 #include <App/MutationClassification.h>
 #include <Base/Exception.h>
+#include <src/App/InitApplication.h>
 
 #include <atomic>
 #include <string>
@@ -22,6 +23,11 @@ namespace
 class CollaborationAuthorityRemovalTest: public ::testing::Test
 {
 protected:
+    static void SetUpTestSuite()
+    {
+        tests::initApplication();
+    }
+
     void SetUp() override
     {
         static unsigned int sequence = 0;
@@ -71,11 +77,34 @@ TEST_F(CollaborationAuthorityRemovalTest, atomicPresentationStillRejectsCrossDoc
 
     beginAtomicPresentationMutationTarget(document());
     EXPECT_NO_THROW(enforceAtomicPresentationMutationTarget(document()));
-    EXPECT_THROW(enforceAtomicPresentationMutationTarget(*other), Base::RuntimeError);
+    try {
+        enforceAtomicPresentationMutationTarget(*other);
+        FAIL() << "cross-document mutation unexpectedly admitted";
+    }
+    catch (const Base::RuntimeError& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find(document().getName()), std::string::npos);
+        EXPECT_NE(message.find(other->getName()), std::string::npos);
+    }
     endAtomicPresentationMutationTarget(document());
 
     EXPECT_NO_THROW(other->addObject("App::FeatureTest", "AfterAudit"));
     GetApplication().closeDocument(otherName.c_str());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, preparedLifecycleErrorNamesTargetAndRecoveryTool)
+{
+    beginAtomicPresentationMutationTarget(document());
+    try {
+        enforceCollaborationLifecycleMutationAllowed();
+        FAIL() << "document lifecycle mutation unexpectedly admitted";
+    }
+    catch (const Base::RuntimeError& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find(document().getName()), std::string::npos);
+        EXPECT_NE(message.find("create_document"), std::string::npos);
+    }
+    endAtomicPresentationMutationTarget(document());
 }
 
 TEST_F(CollaborationAuthorityRemovalTest, atomicPresentationGuardAcceptsNullMutationFunnels)

@@ -10,6 +10,7 @@
 #include <App/FeatureTest.h>
 #include <App/GenericIsolatedRecompute.h>
 #include <App/GeometryWorkerOperationRegistry.h>
+#include <App/Link.h>
 #include <App/ObjectIdentifier.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
@@ -280,6 +281,82 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
+       plainExternalAppLinkUsesNarrowEnforceOnlyBookkeeping)
+{
+    auto* other = createOtherDocument();
+    ASSERT_NE(other, nullptr);
+    auto* source = other->addObject<App::FeatureTest>("Source");
+    ASSERT_NE(source, nullptr);
+    source->purgeTouched();
+    _document->FileName.setValue(
+        App::Application::getTempFileName("generic-link-owner.FCStd"));
+    other->FileName.setValue(
+        App::Application::getTempFileName("generic-link-source.FCStd"));
+
+    auto* link = _document->addObject<App::Link>("ExternalLink");
+    ASSERT_NE(link, nullptr);
+    link->LinkedObject.setValue(source);
+    ASSERT_TRUE(link->isTouched());
+    ASSERT_EQ(link->mustExecute(), 0);
+    ASSERT_TRUE(link->mustRecompute());
+
+    auto preparation = prepare("ExternalLink");
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
+    EXPECT_EQ(preparation.isolatedTask, nullptr);
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_NE(operation, nullptr);
+    operation->apply(*_document);
+    const auto postcondition = operation->checkPostcondition(*_document);
+    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    EXPECT_EQ(link->LinkedObject.getValue(), source);
+    EXPECT_FALSE(link->isTouched());
+    EXPECT_FALSE(link->mustRecompute());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       nullProxyFeaturePythonHoldingOnlySafeExternalLinkUsesBookkeeping)
+{
+    auto* other = createOtherDocument();
+    ASSERT_NE(other, nullptr);
+    auto* source = other->addObject<App::FeatureTest>("Source");
+    ASSERT_NE(source, nullptr);
+    source->purgeTouched();
+    _document->FileName.setValue(
+        App::Application::getTempFileName("generic-holder-owner.FCStd"));
+    other->FileName.setValue(
+        App::Application::getTempFileName("generic-holder-source.FCStd"));
+
+    auto* link = _document->addObject<App::Link>("ExternalLink");
+    ASSERT_NE(link, nullptr);
+    link->LinkedObject.setValue(source);
+    auto linkPreparation = prepare("ExternalLink");
+    ASSERT_TRUE(linkPreparation.detachedTask);
+    auto linkOperation = linkPreparation.detachedTask(std::stop_token {});
+    ASSERT_NE(linkOperation, nullptr);
+    linkOperation->apply(*_document);
+
+    auto* holder = _document->addObject("App::FeaturePython", "Holder");
+    ASSERT_NE(holder, nullptr);
+    auto* support = dynamic_cast<App::PropertyLink*>(holder->addDynamicProperty(
+        "App::PropertyLink", "Support", "Data"));
+    ASSERT_NE(support, nullptr);
+    support->setValue(link);
+    ASSERT_TRUE(holder->mustExecute());
+
+    auto preparation = prepare("Holder");
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_NE(operation, nullptr);
+    operation->apply(*_document);
+    const auto postcondition = operation->checkPostcondition(*_document);
+    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    EXPECT_EQ(support->getValue(), link);
+    EXPECT_FALSE(holder->mustRecompute());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
        malformedStatusAndEmptyFailureDiagnosticAreRejectedByTrustedDecoders)
 {
     auto* feature = _document->addObject<App::FeatureTestColumn>("Column");
@@ -356,6 +433,38 @@ TEST_F(GenericIsolatedRecomputeTest,
     EXPECT_EQ(feature->String.getStrValue(), stringBefore);
     const auto postcondition = operation->checkPostcondition(*_document);
     EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       configuredPartialLinkBaselineIsNotAnExecuteSideEffect)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("PartialLinkBaseline");
+    ASSERT_NE(feature, nullptr);
+    auto* links = dynamic_cast<App::PropertyXLinkSubList*>(
+        feature->addDynamicProperty("App::PropertyXLinkSubList",
+                                    "ConfiguredLinks",
+                                    "Test",
+                                    "Configured non-output link property",
+                                    App::Prop_NoRecompute));
+    ASSERT_NE(links, nullptr);
+    links->setAllowPartial(true);
+
+    auto preparation = prepare("PartialLinkBaseline");
+    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+
+    App::GeometryArchive output;
+    EXPECT_NO_THROW(
+        output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+            std::string(App::GenericIsolatedRecomputeOperationType),
+            preparation.isolatedTask->inputArchive,
+            std::stop_token {}));
+    auto operation = preparation.isolatedTask->decodeResult(output);
+    ASSERT_NE(operation, nullptr);
+    operation->apply(*_document);
+    EXPECT_EQ(links->getSize(), 0);
+    EXPECT_TRUE(feature->isValid());
+    EXPECT_FALSE(feature->mustRecompute());
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

@@ -170,7 +170,7 @@ public:
                     }
                     if (found->second.state != GeometryJobState::Queued
                         && queue.size() >= queueCapacityValue) {
-                        throw std::runtime_error("geometry job queue is full");
+                        throw GeometryJobQueueFull();
                     }
                     supersede(found->second);
                 }
@@ -178,7 +178,7 @@ public:
         }
 
         if (queue.size() >= queueCapacityValue) {
-            throw std::runtime_error("geometry job queue is full");
+            throw GeometryJobQueueFull();
         }
         const GeometryJobId id = allocateId();
         Job job;

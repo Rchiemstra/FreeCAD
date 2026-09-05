@@ -184,7 +184,7 @@ TEST(GeometryJobManagerTest, boundsQueueAndActiveDispatch)
 
     const auto second = manager.submit(request("second"));
     EXPECT_EQ(manager.queuedCount(), 1U);
-    EXPECT_THROW(static_cast<void>(manager.submit(request("third"))), std::runtime_error);
+    EXPECT_THROW(static_cast<void>(manager.submit(request("third"))), GeometryJobQueueFull);
     EXPECT_FALSE(Internal::GeometryJobManagerTestAccess::takeNext(manager).has_value());
 
     ASSERT_TRUE(Internal::GeometryJobManagerTestAccess::finish(manager, completed(first)));

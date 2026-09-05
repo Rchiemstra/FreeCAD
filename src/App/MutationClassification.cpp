@@ -244,7 +244,9 @@ void App::enforceAtomicPresentationMutationTarget(const Document& document)
     }
     if (admission.target != &document) {
         throw Base::RuntimeError(
-            "cross-document mutation is unavailable during an atomic presentation callback");
+            "cross-document mutation of document '" + std::string(document.getName())
+            + "' is unavailable while the atomic presentation callback targets document '"
+            + std::string(admission.target->getName()) + "'");
     }
 }
 
@@ -304,7 +306,10 @@ void App::enforceCollaborationLifecycleMutationAllowed()
             ->noteCollaborationReadOnlyMutationAttempt();
     }
     throw Base::RuntimeError(
-        "document lifecycle changes are unavailable during a prepared commit");
+        "document lifecycle changes are unavailable during the prepared commit for document '"
+        + std::string(admission.target->getName())
+        + "'; create or close documents before starting the commit (MCP callers should use "
+          "create_document)");
 }
 
 void App::enforceCollaborationRevisionMutationAllowed()

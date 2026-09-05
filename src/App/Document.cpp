@@ -4840,10 +4840,28 @@ DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent inten
         return finish();
     };
 
-    if (recomputeCoordinator().hasUnresolvedWork()) {
-        return fail("RECOMPUTE_PENDING",
-                    "Canonical save refused while document recompute is pending",
-                    false);
+    // A canonical FCStd can persist PropertyXLink references into other live
+    // documents. Refuse the save while any document in that exact persistent
+    // dependency closure still has active or unresolved executable recompute
+    // work; unrelated open documents are deliberately outside this guard.
+    for (auto* dependency : getDependentDocuments(false)) {
+        if (!dependency) {
+            continue;
+        }
+        const bool activeRecompute =
+            dependency->recomputeCoordinator().hasPendingWork();
+        const bool unresolvedRecompute =
+            dependency->recomputeCoordinator().hasUnresolvedWork()
+            && dependency->mustExecute();
+        if (activeRecompute || unresolvedRecompute) {
+            return fail(
+                "RECOMPUTE_PENDING",
+                "Canonical save of document '" + std::string(getName())
+                    + "' refused while dependency document '"
+                    + std::string(dependency->getName())
+                    + "' has pending recompute work",
+                false);
+        }
     }
 
     try {

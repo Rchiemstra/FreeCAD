@@ -174,4 +174,24 @@ TEST_F(GeoFeatureGroupTest, testIsLinkValidCrossFailure)
     EXPECT_FALSE(valid);
 }
 
+TEST_F(GeoFeatureGroupTest, sketchGlobalPlacementIncludesBodyAndLocalPlacement)
+{
+    auto* body = _doc->addObject<PartDesign::Body>("Body");
+    auto* sketch = _doc->addObject<Sketcher::SketchObject>("Sketch");
+    const auto added = body->addObject(sketch);
+    ASSERT_EQ(added.size(), 1U);
+    ASSERT_EQ(added.front(), sketch);
+
+    const Base::Placement bodyPlacement(
+        Base::Vector3d(44.0, 0.0, 363.0), Base::Rotation());
+    const Base::Placement sketchPlacement(
+        Base::Vector3d(44.0, 0.0, 0.0),
+        Base::Rotation(Base::Vector3d(1.0, 1.0, 1.0), Base::toRadians(120.0)));
+    body->Placement.setValue(bodyPlacement);
+    sketch->Placement.setValue(sketchPlacement);
+
+    const auto expected = bodyPlacement * sketchPlacement;
+    EXPECT_TRUE(sketch->globalPlacement().isSame(expected, 1e-12));
+}
+
 // NOLINTEND(readability-magic-numbers,cppcoreguidelines-avoid-magic-numbers)

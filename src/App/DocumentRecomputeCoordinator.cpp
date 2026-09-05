@@ -3,6 +3,7 @@
 #include "DocumentRecomputeCoordinator.h"
 
 #include "DocumentCollaborationService.h"
+#include "GeometryJobManager.h"
 
 #include <Base/Exception.h>
 
@@ -428,6 +429,24 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             else {
                 node.executionId = executionId;
             }
+        }
+        catch (const GeometryJobQueueFull&) {
+            // This is capacity backpressure, not a feature failure. Leave the
+            // node waiting so the next owner-thread poll retries after queued
+            // preparations have completed and released slots.
+            std::lock_guard stateLock(_stateMutex);
+            const auto foundJob = _jobs.find(id);
+            if (foundJob != _jobs.end()) {
+                auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.state = foundJob->second->cancelRequested
+                    ? DocumentRecomputeFeatureState::Cancelled
+                    : DocumentRecomputeFeatureState::Waiting;
+                if (foundJob->second->cancelRequested) {
+                    node.diagnostic =
+                        "recompute cancelled while awaiting preparation capacity";
+                }
+            }
+            return;
         }
         catch (const Base::Exception& error) {
             std::lock_guard stateLock(_stateMutex);
