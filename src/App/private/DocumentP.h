@@ -30,6 +30,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <list>
 #include <mutex>
@@ -50,6 +51,7 @@
 #include <App/DocumentObject.h>
 #include <App/DocumentObserver.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/MainThreadSignal.h>
 #include <App/StringHasher.h>
 #include <App/ExportInfo.h>
 #include <Base/UniqueNameManager.h>
@@ -73,13 +75,18 @@ using Path = std::vector<size_t>;
 namespace App
 {
 using HasherMap = boost::bimap<StringHasherRef, int>;
+class Document;
 class Transaction;
 class DocumentCollaborationService;
+class DocumentRecomputeCoordinator;
+enum class DocumentSaveIntent;
+struct DocumentSaveOutcome;
 
 enum class CollaborationDeferredNotificationKind
 {
     DocumentBeforeChange,
     DocumentChanged,
+    FileChangeStateChanged,
     ObjectBeforeChange,
     ObjectEarlyChanged,
     ObjectChanged,
@@ -140,6 +147,31 @@ struct CollaborationDeferredNotification
 // Pimpl class
 struct DocumentP
 {
+    struct FileChangeTokenState
+    {
+        struct Channel
+        {
+            std::uint64_t transactional {0};
+            std::uint64_t sticky {0};
+        };
+        Channel model;
+        Channel appearance;
+        Channel compatibility;
+    };
+
+    struct TransactionalFileChangeTokenState
+    {
+        std::uint64_t model {0};
+        std::uint64_t appearance {0};
+        std::uint64_t compatibility {0};
+    };
+
+    struct TransactionFileChangeState
+    {
+        TransactionalFileChangeTokenState before;
+        TransactionalFileChangeTokenState after;
+    };
+
     // Array to preserve the creation order of created objects
     std::vector<DocumentObject*> objectArray;
     std::unordered_set<App::DocumentObject*> touchedObjs;
@@ -149,9 +181,33 @@ struct DocumentP
     std::unordered_map<long, DocumentObject*> objectIdMap;
     std::unordered_map<std::string, bool> partialLoadObjects;
     std::vector<DocumentObjectT> pendingRemove;
+    std::atomic_bool pendingRemovalProcessing {false};
     long lastObjectId {};
     DocumentObject* activeObject {nullptr};
     Transaction* activeUndoTransaction {nullptr};
+    FileChangeTokenState fileChangeTokens;
+    FileChangeTokenState canonicalSaveTokens;
+    // The canonical savepoint belongs to both a content revision and a path.
+    // FileName is intentionally transient and can be changed by legacy callers;
+    // a different path must therefore never reuse the old clean savepoint.
+    std::string canonicalSavePath;
+    std::optional<TransactionFileChangeState> activeTransactionFileChanges;
+    std::unordered_map<int, TransactionFileChangeState> transactionFileChanges;
+    std::uint64_t nextFileChangeToken {1};
+    ResilientMainThreadSignal<void(const Document&)> signalFileChangeStateChanged;
+    ResilientMainThreadSignal<void(const Document&, const DocumentSaveOutcome&)>
+        signalSaveOutcome;
+    std::vector<DocumentSaveIntent> activeSaveIntents;
+    bool suppressFileChangeTracking {true};
+    // Save As temporarily stages document identity before serialization.  A
+    // failed write must restore that identity without allowing public document
+    // property observers to interrupt the physical Uid/TransientDir repair.
+    bool suppressSaveBookkeepingNotifications {false};
+    // Suppression is restricted to the exact identity/metadata properties
+    // currently owned by save staging.  Save observers may still mutate and
+    // publish arbitrary document properties while this set is populated.
+    std::unordered_set<const Property*> saveBookkeepingPropertySuppression;
+    bool lastCanonicalSaveFailed {false};
     // pointer to the python class
     Py::Object DocumentPythonObject;
     int iTransactionMode {0};
@@ -164,15 +220,21 @@ struct DocumentP
     bool collaborationCommitNotificationBarrier {false};
     bool collaborationTransactionControlGranted {false};
     bool collaborationCompatibilityStructuralMutationGranted {false};
+    bool collaborationDerivedRecomputeGranted {false};
+    bool collaborationDeferredRecomputeBlocked {false};
+    bool collaborationRecomputeStableNotificationDeferred {false};
     bool collaborationImportDeferralActive {false};
-    bool collaborationRollbackStabilizing {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
     bool collaborationAtomicPresentationAuditActive {false};
-    bool collaborationAtomicPresentationAuditViolated {false};
+    std::atomic_bool collaborationAtomicPresentationAuditViolated {false};
+    bool collaborationAtomicPresentationAuditReadOnly {false};
+    bool collaborationAtomicPresentationAuditPreparedOwner {false};
     std::vector<CollaborationAtomicPresentationWrite>
         collaborationAtomicPresentationAllowedWrites;
     std::atomic<unsigned int> collaborationLifecycleMutationBlockDepth {0};
+    std::atomic<unsigned int> collaborationStableNotificationDepth {0};
+    std::atomic<unsigned int> collaborationRecomputeTeardownDepth {0};
     std::recursive_mutex collaborationCommitMutex;
     std::thread::id collaborationOwnerThread {std::this_thread::get_id()};
     std::array<char, 1024> collaborationCommitPoisonDiagnostic {};
@@ -188,13 +250,28 @@ struct DocumentP
     mutable HasherMap hashers;
     std::multimap<const App::DocumentObject*, std::unique_ptr<App::DocumentObjectExecReturn>>
         _RecomputeLog;
+    std::multimap<const App::DocumentObject*, std::unique_ptr<App::DocumentObjectExecReturn>>
+        collaborationBoundaryRecomputeLog;
     ExportInfo exportInfo;
     DocumentRevisionIndex collaborationRevisions;
     std::unique_ptr<DocumentCollaborationService> collaborationService;
+    std::unique_ptr<DocumentRecomputeCoordinator> recomputeCoordinator;
     std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
     std::unordered_map<const DocumentObject*, std::uint64_t>
         collaborationBoundaryObjectIdentities;
+    struct CollaborationBoundaryObjectSchedulerState
+    {
+        DocumentObject* object {nullptr};
+        unsigned long status {0};
+        bool touched {false};
+        unsigned long expressionStatus {0};
+        std::unordered_set<std::string> touchedProperties;
+    };
+    std::vector<CollaborationBoundaryObjectSchedulerState>
+        collaborationBoundaryObjectSchedulerStates;
+    std::unordered_set<DocumentObject*> collaborationBoundaryTouchedObjects;
     std::vector<DocumentObject*> collaborationBoundaryObjectOrder;
+    std::vector<DocumentObjectT> collaborationBoundaryPendingRemove;
     DocumentObject* collaborationBoundaryActiveObject {nullptr};
     std::unordered_set<const DocumentObject*> collaborationInitializationSuppression;
     std::unordered_set<const DocumentObject*> collaborationNewObjectStructuralSetup;

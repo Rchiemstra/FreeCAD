@@ -1,6 +1,6 @@
 [project]
 name = "freecad-git"
-version = "0.2.1"
+version = "0.2.2"
 description = "Deterministic Git sidecar generator for FreeCAD .FCStd documents"
 readme = "README.md"
 license = { text = "LGPL-2.1-or-later" }

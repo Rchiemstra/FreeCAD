@@ -37,7 +37,7 @@ if App.GuiUp:
     from PySide.QtWidgets import QPushButton, QMenu
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 
 __title__ = "Assembly Command Create Exploded View"
 __author__ = "Ondsel"

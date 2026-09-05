@@ -325,6 +325,19 @@ TEST_F(ExpressionParserTest, canParseProperties)
     this_obj()->addDynamicProperty("App::PropertyQuantity", "Bar");
     EXPECT_THAT(parseExpr("Sketch.Bar"), IsQuantity(Base::Quantity()))
         << "PropertyQuantity on object";
+
+    this_obj()->addDynamicProperty("App::PropertyFloat", "W");
+    this_obj()->addDynamicProperty("App::PropertyFloat", "H");
+    EXPECT_THAT(parseExpr("Sketch.W"), IsDouble(0))
+        << "property name that is also the watt unit";
+    EXPECT_THAT(parseExpr("Sketch.H"), IsDouble(0))
+        << "property name that is also the henry unit";
+
+    auto* labelled = this_doc()->addObject("App::FeaturePython", "Dimensions");
+    labelled->Label.setValue("Dims");
+    labelled->addDynamicProperty("App::PropertyFloat", "Alias");
+    EXPECT_THAT(parseExpr("<<Dims>>.Alias"), IsDouble(0))
+        << "GUI-style object-label reference";
 }
 
 }  // namespace App::ExpressionParser::Test

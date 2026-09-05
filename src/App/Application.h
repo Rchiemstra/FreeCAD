@@ -38,10 +38,7 @@
 #include <string>
 #include <optional>
 
-#include <functional>
-#include <thread>
 #include <mutex>
-#include <condition_variable>
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
@@ -50,6 +47,7 @@
 
 #include <Base/Observer.h>
 #include <Base/Parameter.h>
+#include "MainThreadSignal.h"
 #include "TransactionDefs.h"
 
 // forward declarations
@@ -69,6 +67,7 @@ class Document;
 class DocumentObject;
 class DocumentCollaborationService;
 class PreparedEditExecutor;
+class GeometryJobManager;
 class CollaborationRegistry;
 class ApplicationDirectories;
 class ApplicationObserver;
@@ -80,7 +79,6 @@ struct RecoverySnapshotSaveOptions;
 
 namespace Internal
 {
-class AsyncRecomputeTestAccess;
 class DocumentCollaborationServiceTestAccess;
 struct CollaborationServiceLifetimeGate;
 }
@@ -108,52 +106,6 @@ enum class MessageOption {
 struct DocumentInitFlags {
     bool createView {true}; ///< Whether to hide the document in the tree view.
     bool temporary {false}; ///< Whether the document should be a temporary one.
-};
-
-/**
- * @brief Failure category for async recompute processing.
- */
-enum class RecomputeFailure
-{
-    None,
-    DependencyCycle,
-    Exception
-};
-
-/// Result returned by processing a recompute request.
-struct AppExport RecomputeResult
-{
-    bool success {true};
-    RecomputeFailure failure {RecomputeFailure::None};
-    std::unique_ptr<Base::Exception> exception;
-};
-
-/// Stable, queueable work item for document or object recompute.
-struct AppExport RecomputeRequest
-{
-    static RecomputeRequest fromDocument(const Document& document, bool force = false, int options = 0);
-    static RecomputeRequest fromDocumentObject(
-        const DocumentObject& documentObject,
-        bool recursive = false
-    );
-
-    Document* resolveDocument() const;
-    DocumentObject* resolveDocumentObject() const;
-
-    // Stable identifiers are queued instead of raw pointers so worker-side
-    // resolution cannot dereference destroyed documents or objects. The
-    // internal document name is assigned once at creation time and does not
-    // change afterwards. Instance/epoch binding prevents delayed work from
-    // resolving a replacement document that later reuses the same name.
-    std::string documentName;
-    std::string documentObjectName;
-    std::uint64_t documentInstanceId {0};
-    std::uint64_t documentLifecycleEpoch {0};
-    bool force {false};
-    int options {0};
-    bool recursive {false};
-    // Callback to be invoked when recompute is complete.
-    std::function<void(RecomputeRequest&, RecomputeResult&)> callback {};
 };
 
 /**
@@ -217,6 +169,10 @@ public:
 
     /** Return the process-local registry for live collaboration identities. */
     const CollaborationRegistry& collaborationRegistry() const;
+
+    /** App-owned lifecycle manager for detached isolated geometry work. */
+    GeometryJobManager& geometryJobManager() noexcept;
+    const GeometryJobManager& geometryJobManager() const noexcept;
 
     /**
      * Preserve a stable native recovery point, cancel collaboration work, and
@@ -379,9 +335,11 @@ public:
      * active document already has a transaction setup it will either commit the
      * current transaction or rename it, depending on the tmpName flag of the 
      * currently setup transaction. No new transaction is created by this call. Any subsequent
-     * changes in any current opening document will auto create a transaction
-     * with the given name and ID. If more than one document is changed, the
-     * transactions will share the same ID, and will be undo/redo together.
+     * changes in an open document will auto create a transaction with the
+     * given name and ID. A transaction may be booked by more than one document
+     * for compatibility, but commit is rejected before any participant closes
+     * unless a typed cross-document atomic adapter owns the operation. Abort
+     * remains available to roll back every booked participant.
      *
      * @param[in] name The new transaction name
      * @param[in] persist By default, if the calling code is inside any invocation
@@ -412,7 +370,8 @@ public:
      * if 1) any new transaction is created with a different ID, or 2) any
      * transaction with the current active transaction ID is either committed or
      * aborted
-     * returns true if it succeeded in closing the transaction
+     * Returns true if it succeeded in closing the transaction. A commit that
+     * spans multiple documents returns false without closing any participant.
      */
     bool closeActiveTransaction(TransactionCloseMode mode = TransactionCloseMode::Commit, int id=0);
 
@@ -421,13 +380,7 @@ public:
     bool abortTransaction(int tid);
     //@}
 
-    // Returns if document and object recomputes should be done async.
-    bool isAsyncRecomputeEnabled();
     bool isFineGrainedRecomputeEnabled();
-    bool canRecomputeRequestOnWorker(const RecomputeRequest& req) const;
-
-    // Adds a recompute request to the processing queue.
-    void queueRecomputeRequest(RecomputeRequest req);
 
     // NOLINTBEGIN
     // clang-format off
@@ -440,9 +393,9 @@ public:
     /// Signal on a newly created document.
     fastsignals::signal<void (const Document&, bool)> signalNewDocument;
     /// Signal on a document getting deleted.
-    fastsignals::signal<void (const Document&)> signalDeleteDocument;
+    App::ResilientSignal<void (const Document&)> signalDeleteDocument;
     /// Signal that a document has been deleted.
-    fastsignals::signal<void ()> signalDeletedDocument;
+    App::ResilientSignal<void ()> signalDeletedDocument;
     /// Signal on relabeling the document (the user provided name).
     fastsignals::signal<void (const Document&)> signalRelabelDocument;
     /// Signal on renaming the document (internal name).
@@ -515,6 +468,11 @@ public:
     fastsignals::signal<void (const App::Document&)> signalBeforeRecomputeDocument;
     /// Signal on a recomputed document.
     fastsignals::signal<void (const App::Document&)> signalRecomputed;
+    /// Signal after a document has fully unwound recompute/transaction state.
+    ///
+    /// This accessor intentionally keeps the signal storage out of Application's
+    /// exported object layout.
+    App::ResilientMainThreadSignal<void(const App::Document&)>& signalBecameStableDocument();
     /// Signal on a recomputed document object.
     fastsignals::signal<void (const App::DocumentObject&)> signalObjectRecomputed;
     /// Signal on an opened transaction.
@@ -963,6 +921,8 @@ protected:
     void slotRecomputedObject(const App::DocumentObject& obj);
     /// A slot for when a document has been recomputed.
     void slotRecomputed(const App::Document& doc);
+    /// A slot for when a document has fully unwound recompute/transaction state.
+    void slotBecameStableDocument(const App::Document& doc);
     /// A slot for before a document is recomputed.
     void slotBeforeRecompute(const App::Document& doc);
     /// A slot for when a transaction is opened in a document.
@@ -1074,6 +1034,7 @@ private:
     std::map<std::string,std::string> &_mConfig;
     std::unique_ptr<CollaborationRegistry> _collaborationRegistry;
     std::unique_ptr<PreparedEditExecutor> _preparedEditExecutor;
+    std::unique_ptr<GeometryJobManager> _geometryJobManager;
     std::mutex _collaborationServiceLifetimeMutex;
     std::unordered_map<const DocumentCollaborationService*,
                        std::shared_ptr<Internal::CollaborationServiceLifetimeGate>>
@@ -1088,31 +1049,6 @@ private:
     // missing object
     std::map<std::string,std::set<std::string> > _docReloadAttempts;
 
-    // Worker thread for processing pending recompute requests
-    std::thread _recomputeThread;
-    // Protects the queued/in-progress recompute state below
-    std::mutex _recomputeMutex;
-    std::deque<RecomputeRequest> _recomputeRequests;
-    std::map<std::string, std::size_t> _recomputeDocumentActivityCounts;
-    std::map<std::string, std::map<std::thread::id, std::size_t>>
-        _recomputeDocumentActivityOwners;
-    std::set<std::string> _recomputeDocumentsClosing;
-    std::set<std::string> _recomputeDocumentsSealed;
-    std::condition_variable _recomputeRequestAvailable;
-    std::condition_variable _recomputeStateChanged;
-    // Separate from the mutex-protected queue state so shutdown can request a
-    // worker stop and wake waiters without first taking _recomputeMutex.
-    std::atomic<bool> _stopRecomputeThread{false};
-
-    // Worker thread function that processes _recomputeRequests
-    void recomputeWorker();
-    RecomputeResult processRecomputeRequestSerialized(RecomputeRequest& request);
-    // Helper to notify the worker thread when new requests are available
-    void notifyRecomputeWorker();
-    // Drop queued requests for a document and wait for any active recompute of
-    // that document to finish before closing it
-    [[nodiscard]] bool cancelRecomputeRequestsForDocument(
-        const std::string& documentName);
     void registerCollaborationServiceLifetime(DocumentCollaborationService& service);
     [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
     collaborationServiceLifetimeGate(const DocumentCollaborationService& service);
@@ -1128,11 +1064,9 @@ private:
     friend class AutoTransaction;
     friend class Document;
     friend class DocumentCollaborationService;
-    friend class Internal::AsyncRecomputeTestAccess;
     friend class Internal::DocumentCollaborationServiceTestAccess;
 
     using CloseTestHook = void (*)();
-    inline static std::atomic<CloseTestHook> _postRecomputeClosingAdmissionTestHook {nullptr};
     inline static std::atomic<CloseTestHook> _postMarkCollaborationClosingTestHook {nullptr};
     inline static std::atomic<CloseTestHook> _postCollaborationAccessDrainTestHook {nullptr};
 

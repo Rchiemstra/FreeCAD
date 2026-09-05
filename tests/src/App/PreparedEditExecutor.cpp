@@ -37,9 +37,10 @@ class PreparedEditExecutorTestAccess
 public:
     static PreparedEditExecutionId
     submit(PreparedEditExecutor& executor,
-           CollaborativeOperationPreparation::DetachedTask task)
+           CollaborativeOperationPreparation::DetachedTask task,
+           PreparationPolicy policy = PreparationPolicy::DetachedInProcess)
     {
-        return executor.submit(std::move(task));
+        return executor.submit(std::move(task), policy);
     }
 
     static bool abandon(PreparedEditExecutor& executor, PreparedEditExecutionId id)
@@ -346,7 +347,8 @@ DetachedTask releaseControlledTask(const std::shared_ptr<WorkControl>& control)
 
 PreparedEditExecutionId submit(PreparedEditExecutor& executor, DetachedTask task)
 {
-    return Internal::PreparedEditExecutorTestAccess::submit(executor, std::move(task));
+    return Internal::PreparedEditExecutorTestAccess::submit(
+        executor, std::move(task), PreparationPolicy::DetachedInProcess);
 }
 
 bool abandon(PreparedEditExecutor& executor, PreparedEditExecutionId id)
@@ -367,6 +369,27 @@ TEST(PreparedEditExecutorTest, exposesBoundedPoolConfiguration)
     EXPECT_EQ(configuredExecutor.workerCount(), 1U);
     EXPECT_EQ(configuredExecutor.queueCapacity(), 7U);
     EXPECT_THROW(PreparedEditExecutor(1, 0), std::invalid_argument);
+}
+
+TEST(PreparedEditExecutorTest, rejectsInlineAndIsolatedProcessPolicies)
+{
+    PreparedEditExecutor executor(1, 1);
+    EXPECT_THROW(
+        Internal::PreparedEditExecutorTestAccess::submit(
+            executor,
+            [](std::stop_token) {
+                return makeOperation();
+            },
+            PreparationPolicy::Inline),
+        std::invalid_argument);
+    EXPECT_THROW(
+        Internal::PreparedEditExecutorTestAccess::submit(
+            executor,
+            [](std::stop_token) {
+                return makeOperation();
+            },
+            PreparationPolicy::IsolatedProcess),
+        std::invalid_argument);
 }
 
 TEST(PreparedEditExecutorTest, rejectsEmptyTasksAndBoundsWaitingQueue)

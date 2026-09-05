@@ -34,6 +34,7 @@ set(Assembly_Scripts
     CommandReviewNote.py
     TestAssemblyWorkbench.py
     JointObject.py
+    AssemblyPreferences.py
     Preferences.py
     AssemblyImport.py
     WebotsExport.py
@@ -69,6 +70,7 @@ SET(AssemblyTests_SRCS
     AssemblyTests/TestReviewNotes.py
     AssemblyTests/TestReviewNotesIssues.py
     AssemblyTests/TestSimulationExport.py
+    AssemblyTests/TestPreferencesImport.py
     AssemblyTests/mocks/__init__.py
     AssemblyTests/mocks/MockGui.py
 )

@@ -8,6 +8,7 @@
 #include "App/CollaborativeOperationRegistry.h"
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
+#include "App/DocumentCommitCoordinator.h"
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
@@ -33,6 +34,16 @@ using namespace App;
 
 namespace App::Internal
 {
+
+class DocumentCommitCoordinatorTestAccess
+{
+public:
+    static void setPostReservationHook(void (*hook)())
+    {
+        DocumentCommitCoordinator::_postReservationTestHook.store(
+            hook, std::memory_order_release);
+    }
+};
 
 class DocumentCollaborationServiceTestAccess
 {
@@ -169,7 +180,7 @@ private:
     {
         document.beginCollaborationCommitNotificationBarrier();
         document.setCollaborationRevisionPublicationSuppressed(suppressRevisions);
-        if (document.openCollaborationCommitTransaction("structural grant test") == 0) {
+        if (document.openCollaborationCommitTransaction("structural grant test", true) == 0) {
             throw std::runtime_error("test failed to open collaboration transaction");
         }
     }
@@ -217,6 +228,9 @@ public:
 
     void apply(Document& document) const override
     {
+        if (_mode == "empty-publication") {
+            return;
+        }
         auto* object = document.getObject(_objectName.c_str());
         if (!object || document.collaborationObjectIdentity(*object) != _objectIdentity) {
             throw std::runtime_error("test target became stale");
@@ -321,7 +335,8 @@ public:
         if (_mode == "postcondition-failure") {
             return {false, "injected postcondition failure"};
         }
-        if (_mode == "structural-add" || _mode == "structural-remove"
+        if (_mode == "empty-publication"
+            || _mode == "structural-add" || _mode == "structural-remove"
             || _mode == "schema-add"
             || _mode == "document-schema-add"
             || _mode == "clear-document"
@@ -459,6 +474,17 @@ void ensureTestAdapterRegistered()
                 }
                 const std::string stableIdentity =
                     document.collaborationObjectIdentity(*object);
+                if (mode == "empty-publication") {
+                    return CollaborativeOperationPreparation {
+                        {},
+                        {},
+                        {},
+                        std::make_unique<const TestSetLabelOperation>(
+                            objectName,
+                            stableIdentity,
+                            value,
+                            mode)};
+                }
                 const auto existence = DocumentRevisionKey::objectExistence(objectName);
                 const auto model = DocumentRevisionKey::objectModel(objectName);
                 const auto structure = DocumentRevisionKey::objectStructure(objectName);
@@ -635,6 +661,7 @@ protected:
 
     void TearDown() override
     {
+        Internal::DocumentCommitCoordinatorTestAccess::setPostReservationHook(nullptr);
         App::GetApplication().closeDocument(_documentName.c_str());
     }
 
@@ -1045,6 +1072,7 @@ TEST_F(DocumentCollaborationServiceTest, pythonFacadeReturnsOpaquePreparedHandle
 TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundary)
 {
     auto prepared = prepare("set-label", "After");
+    const auto undosBefore = _document->getAvailableUndos();
     const auto modelKey = DocumentRevisionKey::objectModel("Target");
     const auto before = _document->collaborationRevisions().current(modelKey);
     bool observerRan = false;
@@ -1060,6 +1088,65 @@ TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundar
     EXPECT_TRUE(observerRan);
     EXPECT_EQ(_target->Label.getStrValue(), "After");
     EXPECT_EQ(_document->collaborationRevisions().current(modelKey), before + 1);
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore + 1)
+        << "the coordinator mutation and its derived recompute share one user undo entry";
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       emptyCoordinatorPublicationCommitsWithoutAdvancingRevisionJournal)
+{
+    const auto identity = _document->collaborationIdentity();
+    DocumentRevisionCursor cursor {identity.instanceId, identity.lifecycleEpoch, 0};
+    const auto sequenceBefore =
+        _document->collaborationRevisions().pollPublications(cursor, 0).latestSequence;
+    const auto undosBefore = _document->getAvailableUndos();
+    auto prepared = prepare("empty-publication", "unused", "empty-publication");
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_TRUE(result.publishedRevisions.empty());
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_document->collaborationRevisions()
+                  .pollPublications(cursor, 0)
+                  .latestSequence,
+              sequenceBefore);
+    EXPECT_EQ(_document->getAvailableUndos(), undosBefore + 1);
+    EXPECT_TRUE(_document->getMutationReadiness().ready);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       postReservationFailureReleasesRevisionLockBeforeStableObserver)
+{
+    auto prepared = prepare("post-reservation-failure", "After");
+    const auto modelKey = DocumentRevisionKey::objectModel("Target");
+    const auto revisionBefore =
+        _document->collaborationRevisions().current(modelKey);
+    int stableCalls = 0;
+    auto stableConnection = _document->signalBecameStable.connect(
+        [&](const Document&) {
+            ++stableCalls;
+            EXPECT_EQ(_document->collaborationRevisions().current(modelKey),
+                      revisionBefore);
+            EXPECT_EQ(_target->Label.getStrValue(), "Before");
+            EXPECT_TRUE(_document->getMutationReadiness().ready);
+        });
+    Internal::DocumentCommitCoordinatorTestAccess::setPostReservationHook(+[] {
+        throw std::runtime_error("injected post-reservation failure");
+    });
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+    Internal::DocumentCommitCoordinatorTestAccess::setPostReservationHook(nullptr);
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::PublicationFailed);
+    EXPECT_NE(result.message.find("injected post-reservation failure"),
+              std::string::npos);
+    EXPECT_EQ(stableCalls, 1);
+    EXPECT_EQ(_document->collaborationRevisions().current(modelKey), revisionBefore);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_FALSE(_document->hasPendingTransaction());
 }
 
 TEST_F(DocumentCollaborationServiceTest, observerFailureCannotSplitCommitAndPublication)
@@ -1153,12 +1240,25 @@ TEST_F(DocumentCollaborationServiceTest, stableReadAdmissionRequiresCleanNativeS
     EXPECT_THROW(static_cast<void>(_document->collaborationService().snapshotForEdit(
                      _session.sessionId(), {DocumentRevisionKey::objectModel("Target")})),
                  Base::RuntimeError);
-    EXPECT_THROW(static_cast<void>(_document->collaborationService().prepareEdit(
-                     _session.sessionId(),
-                     "dirty-preparation",
-                     intent("Must Not Prepare"),
-                     "native-test")),
-                 Base::RuntimeError);
+    const auto modelKey = DocumentRevisionKey::objectModel("Target");
+    const auto modelRevisionBefore =
+        _document->collaborationRevisions().current(modelKey);
+    auto dirtyPrepared = _document->collaborationService().prepareEdit(
+        _session.sessionId(),
+        "dirty-preparation",
+        intent("Must Not Apply"),
+        "native-test");
+    const auto dirtyResult = _document->collaborationService().commitEdit(
+        _session.sessionId(), dirtyPrepared);
+    EXPECT_EQ(dirtyResult.status, DocumentCommitStatus::Busy) << dirtyResult.message;
+    EXPECT_NE(dirtyResult.message.find(
+                  "pending recompute work outside the prepared operation"),
+              std::string::npos)
+        << dirtyResult.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(_document->collaborationRevisions().current(modelKey),
+              modelRevisionBefore);
+    EXPECT_TRUE(dirtyResult.publishedRevisions.empty());
 
     _document->recompute();
     ASSERT_NE(_document->openTransaction("ordinary native transaction"), 0);

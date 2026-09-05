@@ -1074,6 +1074,14 @@ void NotificationArea::cleanupNotificationsPanel()
 
     widget->setUnreadChangedCallback({});
 
+    // MainWindow clears its singleton in the derived destructor body before
+    // QObject tears down its status-bar children.  If that teardown is what
+    // destroyed this NotificationArea, the dock is already owned by the dying
+    // MainWindow and must be left to Qt's parent-child destruction.
+    if (!getMainWindow()) {
+        return;
+    }
+
     auto* dwm = DockWindowManager::instance();
     dwm->removeDockWindow(widget);
     dwm->unregisterDockWindow("Std_NotificationView");

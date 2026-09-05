@@ -169,6 +169,8 @@ generate_from_py(ShapeUpgrade/UnifySameDomain)
 SET(Features_SRCS
     CollaborativeBooleanOperation.cpp
     CollaborativeBooleanOperation.h
+    CollaborativeSweepFilletOperations.cpp
+    CollaborativeSweepFilletOperations.h
     FeaturePartBoolean.cpp
     FeaturePartBoolean.h
     FeaturePartBox.cpp

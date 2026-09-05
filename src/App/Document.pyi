@@ -6,6 +6,7 @@ from Base.Metadata import constmethod
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
+from RecomputeHandle import RecomputeHandle
 from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload
 
 if TYPE_CHECKING:
@@ -95,6 +96,14 @@ class Document(PropertyContainer):
         """
         ...
 
+    def saveWithOutcome(self) -> dict[str, object]:
+        """Save canonically and report whether bytes were written or unchanged."""
+        ...
+
+    def forceSave(self) -> dict[str, object]:
+        """Rewrite the canonical file even when no persistent changes are pending."""
+        ...
+
     def saveAs(self, path: str, /) -> None:
         """
         Save the document under a new name to disk.
@@ -105,10 +114,36 @@ class Document(PropertyContainer):
         """Save As using FreeCAD's native destination overwrite policy."""
         ...
 
+    def saveAsWithOutcome(
+        self,
+        path: str,
+        overwrite: bool = False,
+        expected_destination_sha256: str = "",
+        /,
+    ) -> dict[str, object]:
+        """Save As using native no-clobber/CAS policy and return a structured outcome."""
+        ...
+
     def saveCopy(self, path: str, /) -> None:
         """
         Save a copy of the document under a new name to disk.
         """
+        ...
+
+    def saveCopyWithOutcome(self, path: str, /) -> dict[str, object]:
+        """Always write a copy without clearing canonical pending changes."""
+        ...
+
+    def hasPendingFileChanges(self) -> bool:
+        """Return whether canonical persistent content differs from its savepoint."""
+        ...
+
+    def getFileChangeState(self) -> dict[str, object]:
+        """Return authoritative file state, categories, path, and save-failure overlay."""
+        ...
+
+    def getMutationReadiness(self) -> dict[str, object]:
+        """Return readiness, stable-event capability, pending_removal, and transient blockers."""
         ...
 
     def canWriteRecoverySnapshot(self) -> bool:
@@ -216,6 +251,18 @@ class Document(PropertyContainer):
         """Start an advisory collaboration edit session."""
         ...
 
+    def collaborationIdentity(self, /) -> dict[str, object]:
+        """Read the live document instance id, lifecycle epoch, and lifecycle state."""
+        ...
+
+    def captureSemanticRevisions(
+        self,
+        revision_keys: Sequence[dict[str, str]],
+        /,
+    ) -> dict[str, object]:
+        """Capture semantic revisions without minting an edit session."""
+        ...
+
     def snapshotForEdit(
         self,
         session_id: str,
@@ -235,6 +282,19 @@ class Document(PropertyContainer):
         /,
     ) -> object:
         """Prepare a registered native operation and return an opaque immutable handle."""
+        ...
+
+    def prepareEditWithExpectedRevisions(
+        self,
+        session_id: str,
+        operation_id: str,
+        operation_type: str,
+        arguments: dict[str, str],
+        expected_revisions: Sequence[dict[str, object]],
+        provenance: str = "python",
+        /,
+    ) -> object:
+        """Prepare using begin-time expected revisions for fenced semantic keys."""
         ...
 
     def prepareEditAsync(
@@ -281,10 +341,16 @@ class Document(PropertyContainer):
         /,
         *,
         structural: bool = False,
+        recompute: bool = True,
+        postcondition: Callable[[], object] | None = None,
+        object_name: str | None = None,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
 
         Object creation and removal require the explicit ``structural=True`` scope.
+        ``object_name`` selects Gui-parity ObjectModel publication for that object.
+        ``recompute=False`` preserves pending recompute work for recovery mutations.
+        The optional postcondition runs once before publication; a false result rolls back.
         """
         ...
 
@@ -520,6 +586,21 @@ class Document(PropertyContainer):
     ) -> int:
         """
         Recompute the document and returns the amount of recomputed features.
+        """
+        ...
+
+    def recomputeAsync(
+        self,
+        objs: Sequence[DocumentObject] = None,
+        force: bool = False,
+        check_cycle: bool = False,
+        /,
+    ) -> RecomputeHandle:
+        """
+        Submit the same isolated recompute used by recompute() and return immediately.
+
+        Poll status(), progress(), or done() on the returned handle to advance
+        dependency-ready work, or call wait() for a responsive compatibility wait.
         """
         ...
 

@@ -88,6 +88,7 @@ public:
     QIcon getIcon() const override;
     bool doubleClicked() override;
     void attach(App::DocumentObject* obj) override;
+    void finishRestoring() override;
     void updateData(const App::Property* prop) override;
 
     /// Leader end relative to BasePosition (nearest border point toward the anchor).

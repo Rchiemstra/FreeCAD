@@ -517,6 +517,12 @@ public:
         /// Action alters only the Gui
         Gui
     };
+    /// Selects how the typed Python command bridge parses the supplied command.
+    enum class PythonCommandMode
+    {
+        File,
+        Eval
+    };
     /// Blocks all command objects
     static void blockCommand(bool);
     /// Print to Python console the current Python calling source file and line number
@@ -575,6 +581,15 @@ public:
      * @sa _doCommand()
      */
     static void _runCommand(const char* file, int line, DoCmd_Type eType, const QByteArray& sCmd);
+
+    /** Execute a Python command through the common GUI command bridge.
+     *
+     * Console presentation, macro recording, and command-log suppression
+     * remain caller-owned so this bridge has one responsibility: execute File
+     * or Eval input in the main Python namespace. The returned object is a new
+     * Python reference, or nullptr with the Python error set.
+     */
+    static PyObject* runPythonCommand(const char* sCmd, PythonCommandMode mode);
 
     /// import an external (or own) module only once
     static void addModule(DoCmd_Type eType, const char* sModuleName);

@@ -10,11 +10,22 @@
 #include <thread>
 
 #include <QApplication>
+#include <QAbstractButton>
+#include <QCheckBox>
+#include <QDialog>
+#include <QDir>
+#include <QDockWidget>
+#include <QFile>
+#include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLWidget>
+#include <QPushButton>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include <Inventor/SoRenderManager.h>
 
@@ -72,6 +83,69 @@ void initializeDomainGui()
     }
 }
 
+class FailedSaveDialogProbe
+{
+public:
+    void inspectNextDialog()
+    {
+        QTimer::singleShot(0, &timerContext, [this] { inspectActiveDialog(); });
+    }
+
+    int saveErrorDialogCount {0};
+    bool inspectedCloseSafetyDialog {false};
+
+private:
+    void inspectActiveDialog()
+    {
+        auto* active = QApplication::activeModalWidget();
+        auto* dialog = qobject_cast<QMessageBox*>(active);
+        if (!dialog) {
+            ADD_FAILURE() << "expected a modal failed-save dialog";
+            if (auto* unexpected = qobject_cast<QDialog*>(active)) {
+                unexpected->reject();
+            }
+            else if (active) {
+                active->close();
+            }
+            return;
+        }
+
+        auto* discard = dialog->button(QMessageBox::Discard);
+        auto* cancel = dialog->button(QMessageBox::Cancel);
+        if (discard && cancel) {
+            EXPECT_EQ(dialog->defaultButton(), cancel);
+            EXPECT_EQ(dialog->escapeButton(), cancel);
+            EXPECT_EQ(discard->text(), QStringLiteral("Close Without Saving"));
+            inspectedCloseSafetyDialog = true;
+            cancel->click();
+            return;
+        }
+
+        // Gui::Document::save() can report the underlying save error as either
+        // an OK-only critical dialog or a Yes/No "save elsewhere" question.
+        // Dismiss either form before inspecting the close-safety dialog that
+        // follows.  Arm the next inspection first so an unexpected dialog can
+        // never be left blocking the GUI test after a nonfatal assertion.
+        ++saveErrorDialogCount;
+        inspectNextDialog();
+        if (auto* no = dialog->button(QMessageBox::No)) {
+            no->click();
+        }
+        else if (auto* ok = dialog->button(QMessageBox::Ok)) {
+            ok->click();
+        }
+        else if (cancel) {
+            cancel->click();
+        }
+        else {
+            ADD_FAILURE() << "failed-save dialog had no safe dismissal button";
+            dialog->reject();
+        }
+    }
+
+    QObject timerContext;
+};
+
 class CollaborationDomainIntegrationTest: public ::testing::Test
 {
 protected:
@@ -91,6 +165,10 @@ protected:
         object = document->addObject("App::FeatureTest", "Target");
         ASSERT_NE(object, nullptr);
         document->recompute();
+        ASSERT_TRUE(baselineDirectory.isValid());
+        const auto baselinePath = baselineDirectory.filePath(
+            QString::fromStdString(documentName) + QStringLiteral(".FCStd"));
+        ASSERT_TRUE(document->saveAs(baselinePath.toUtf8().constData()));
         guiDocument = Gui::Application::Instance->getDocument(document);
         ASSERT_NE(guiDocument, nullptr);
         guiDocument->setModified(false);
@@ -108,9 +186,832 @@ protected:
     App::DocumentObject* object {nullptr};
     Gui::Document* guiDocument {nullptr};
     std::string documentName;
+    QTemporaryDir baselineDirectory;
 };
 
 }  // namespace
+
+TEST_F(CollaborationDomainIntegrationTest,
+       documentChangesUiTracksStateHistoryTitlesAndClosePrompt)
+{
+    auto* mainWindow = Gui::MainWindow::getInstance();
+    ASSERT_NE(mainWindow, nullptr);
+    Gui::Application::Instance->setActiveDocument(guiDocument);
+    QApplication::processEvents();
+
+    auto* dock = mainWindow->findChild<QDockWidget*>(QStringLiteral("Document Changes"));
+    auto* status = mainWindow->findChild<QLabel*>(QStringLiteral("documentFileState"));
+    auto* state = mainWindow->findChild<QLabel*>(QStringLiteral("documentFileStateValue"));
+    auto* path = mainWindow->findChild<QLabel*>(QStringLiteral("documentCanonicalPath"));
+    auto* categories =
+        mainWindow->findChild<QLabel*>(QStringLiteral("documentPendingCategories"));
+    auto* readiness =
+        mainWindow->findChild<QLabel*>(QStringLiteral("documentMutationReadiness"));
+    auto* history =
+        mainWindow->findChild<QListWidget*>(QStringLiteral("documentChangeHistory"));
+    auto* clearHistory =
+        mainWindow->findChild<QPushButton*>(QStringLiteral("clearDocumentChangeHistory"));
+    auto* pause = mainWindow->findChild<QCheckBox*>(QStringLiteral("pauseAgentWrites"));
+    ASSERT_NE(dock, nullptr);
+    ASSERT_NE(status, nullptr);
+    ASSERT_NE(state, nullptr);
+    ASSERT_NE(path, nullptr);
+    ASSERT_NE(categories, nullptr);
+    ASSERT_NE(readiness, nullptr);
+    ASSERT_NE(history, nullptr);
+    ASSERT_NE(clearHistory, nullptr);
+    ASSERT_NE(pause, nullptr);
+
+    EXPECT_EQ(state->text(), QStringLiteral("Saved"));
+    EXPECT_EQ(categories->text(), QStringLiteral("None"));
+    EXPECT_EQ(readiness->text(), QStringLiteral("Ready"));
+    EXPECT_EQ(path->text(), QString::fromStdString(document->FileName.getStrValue()));
+    EXPECT_TRUE(status->text().contains(QStringLiteral("Saved")));
+    EXPECT_FALSE(pause->isVisible());
+
+    auto* view = dynamic_cast<Gui::View3DInventor*>(
+        guiDocument->createView(Gui::View3DInventor::getClassTypeId()));
+    ASSERT_NE(view, nullptr);
+    guiDocument->setActiveWindow(view);
+    object->Label.setValue("Changed target");
+    QApplication::processEvents();
+
+    EXPECT_EQ(state->text(), QStringLiteral("Unsaved"));
+    EXPECT_TRUE(categories->text().contains(QStringLiteral("Model")));
+    EXPECT_TRUE(status->text().contains(QStringLiteral("Unsaved")));
+    EXPECT_TRUE(view->windowTitle().contains(QStringLiteral("Unsaved")));
+    EXPECT_EQ(view->toolTip(), QString::fromStdString(document->FileName.getStrValue()));
+    EXPECT_GT(history->count(), 0);
+    EXPECT_LE(history->count(), 100);
+
+    bool inspectedPrompt = false;
+    QTimer::singleShot(0, [&] {
+        auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        ASSERT_NE(box, nullptr);
+        EXPECT_TRUE(box->informativeText().contains(QStringLiteral("Model")));
+        EXPECT_TRUE(box->informativeText().contains(
+            QString::fromStdString(document->FileName.getStrValue())));
+        ASSERT_NE(box->button(QMessageBox::Save), nullptr);
+        ASSERT_NE(box->button(QMessageBox::Discard), nullptr);
+        ASSERT_NE(box->button(QMessageBox::Cancel), nullptr);
+        EXPECT_EQ(box->button(QMessageBox::Save)->text(), QStringLiteral("Save Changes"));
+        EXPECT_EQ(box->button(QMessageBox::Discard)->text(),
+                  QStringLiteral("Close Without Saving"));
+        inspectedPrompt = true;
+        box->button(QMessageBox::Cancel)->click();
+    });
+    EXPECT_EQ(mainWindow->confirmSave(document), Gui::MainWindow::ConfirmSaveResult::Cancel);
+    EXPECT_TRUE(inspectedPrompt);
+
+    clearHistory->click();
+    EXPECT_EQ(history->count(), 0);
+
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    provider->Visibility.setValue(!provider->Visibility.getValue());
+    QApplication::processEvents();
+    EXPECT_EQ(categories->text(), QStringLiteral("Appearance"));
+    EXPECT_FALSE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Model));
+    EXPECT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+
+    const auto blockedParent = baselineDirectory.filePath(QStringLiteral("not-a-directory"));
+    QFile blocker(blockedParent);
+    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+    ASSERT_EQ(blocker.write("block"), 5);
+    blocker.close();
+    const auto failedPath = QDir(blockedParent).filePath(QStringLiteral("cannot-save.FCStd"));
+    const auto failed = document->saveAsWithOutcome(failedPath.toUtf8().constData());
+    EXPECT_EQ(failed.disposition, App::DocumentSaveDisposition::Failed);
+    QApplication::processEvents();
+    EXPECT_EQ(state->text(), QStringLiteral("Save failed"));
+    EXPECT_TRUE(status->text().contains(QStringLiteral("Save failed")));
+    EXPECT_FALSE(dock->isHidden());
+}
+
+TEST_F(CollaborationDomainIntegrationTest, documentChangesRetainsBackgroundSaveHistory)
+{
+    auto* mainWindow = Gui::MainWindow::getInstance();
+    ASSERT_NE(mainWindow, nullptr);
+    auto* history =
+        mainWindow->findChild<QListWidget*>(QStringLiteral("documentChangeHistory"));
+    ASSERT_NE(history, nullptr);
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto backgroundName =
+        App::GetApplication().getUniqueDocumentName("backgroundChangeHistory");
+    auto* background = App::GetApplication().newDocument(
+        backgroundName.c_str(), "background change history", flags);
+    ASSERT_NE(background, nullptr);
+    const auto cleanup = qScopeGuard([&] {
+        if (App::GetApplication().getDocument(backgroundName.c_str())) {
+            App::GetApplication().closeDocument(backgroundName.c_str());
+            QApplication::processEvents();
+        }
+    });
+    auto* backgroundGui = Gui::Application::Instance->getDocument(background);
+    ASSERT_NE(backgroundGui, nullptr);
+    Gui::Application::Instance->setActiveDocument(guiDocument);
+    QApplication::processEvents();
+    const int activeHistoryCount = history->count();
+
+    ASSERT_NE(background->addObject("App::FeatureTest", "BackgroundTarget"), nullptr);
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto path = temporary.filePath("background.FCStd").toUtf8();
+    ASSERT_EQ(background->saveAsWithOutcome(path.constData()).disposition,
+              App::DocumentSaveDisposition::Written);
+    QApplication::processEvents();
+    EXPECT_EQ(history->count(), activeHistoryCount)
+        << "the panel still renders only the active document";
+
+    Gui::Application::Instance->setActiveDocument(backgroundGui);
+    QApplication::processEvents();
+    EXPECT_GT(history->count(), 0);
+    EXPECT_TRUE(history->item(history->count() - 1)->text().contains(QStringLiteral("Written")));
+
+    Gui::Application::Instance->setActiveDocument(guiDocument);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       durableSaveAsOutcomeRepairsIdentityRefreshAfterLegacyGuiRelabelThrows)
+{
+    auto* view = dynamic_cast<Gui::View3DInventor*>(
+        guiDocument->createView(Gui::View3DInventor::getClassTypeId()));
+    ASSERT_NE(view, nullptr);
+    guiDocument->setActiveWindow(view);
+    const auto attemptedPath =
+        baselineDirectory.filePath(QStringLiteral("resilient-identity.FCStd"));
+    int throwingRelabelCalls = 0;
+    auto throwingRelabelConnection =
+        Gui::Application::Instance->signalRelabelDocument.connect(
+            [&](const Gui::Document& changed) {
+                if (&changed == guiDocument) {
+                    ++throwingRelabelCalls;
+                    throw Base::RuntimeError("legacy GUI relabel observer failure");
+                }
+            });
+
+    const auto outcome = document->saveAsWithOutcome(
+        attemptedPath.toUtf8().constData(), true);
+    throwingRelabelConnection.disconnect();
+    QApplication::processEvents();
+
+    EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written);
+    EXPECT_TRUE(outcome.durabilityVerified);
+    EXPECT_EQ(throwingRelabelCalls, 1);
+    EXPECT_EQ(document->FileName.getStrValue(), attemptedPath.toStdString());
+    EXPECT_STREQ(document->Label.getValue(), "resilient-identity");
+    EXPECT_TRUE(view->windowTitle().contains(QStringLiteral("resilient-identity")));
+    EXPECT_EQ(view->toolTip(), attemptedPath);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       failedSingleDocumentSaveDefaultsToKeepingUnsavedChanges)
+{
+    auto* mainWindow = Gui::MainWindow::getInstance();
+    ASSERT_NE(mainWindow, nullptr);
+    Gui::Application::Instance->setActiveDocument(guiDocument);
+
+    const auto blockedParent = baselineDirectory.filePath(QStringLiteral("blocked-save-parent"));
+    QFile blocker(blockedParent);
+    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+    ASSERT_EQ(blocker.write("block"), 5);
+    blocker.close();
+    const auto failedPath = QDir(blockedParent).filePath(QStringLiteral("cannot-save.FCStd"));
+    document->FileName.setValue(failedPath.toUtf8().constData());
+    object->Label.setValue("unsaved close protection");
+
+    FailedSaveDialogProbe failureDialogs;
+    QObject initialDialogTimerContext;
+    QTimer::singleShot(0, &initialDialogTimerContext, [&] {
+        auto* initial = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!initial) {
+            ADD_FAILURE() << "expected the initial save confirmation dialog";
+            return;
+        }
+        auto* save = initial->button(QMessageBox::Save);
+        if (!save) {
+            ADD_FAILURE() << "initial close confirmation had no Save button";
+            initial->reject();
+            return;
+        }
+        failureDialogs.inspectNextDialog();
+        save->click();
+    });
+
+    EXPECT_FALSE(guiDocument->canClose(true, false));
+    EXPECT_EQ(failureDialogs.saveErrorDialogCount, 1);
+    EXPECT_TRUE(failureDialogs.inspectedCloseSafetyDialog);
+    EXPECT_TRUE(document->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       failedMultiDocumentSaveDefaultsToKeepingUnsavedChanges)
+{
+    auto* mainWindow = Gui::MainWindow::getInstance();
+    ASSERT_NE(mainWindow, nullptr);
+    Gui::Application::Instance->setActiveDocument(guiDocument);
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto secondName = App::GetApplication().getUniqueDocumentName("closeFailureSecond");
+    auto* second = App::GetApplication().newDocument(
+        secondName.c_str(), "close failure second", flags);
+    ASSERT_NE(second, nullptr);
+    const auto cleanup = qScopeGuard([&] {
+        if (App::GetApplication().getDocument(secondName.c_str())) {
+            App::GetApplication().closeDocument(secondName.c_str());
+            QApplication::processEvents();
+        }
+    });
+    auto* secondObject = second->addObject("App::FeatureTest", "SecondTarget");
+    ASSERT_NE(secondObject, nullptr);
+    second->recompute();
+    const auto secondBaseline =
+        baselineDirectory.filePath(QStringLiteral("close-failure-second-baseline.FCStd"));
+    ASSERT_TRUE(second->saveAs(secondBaseline.toUtf8().constData()));
+
+    const auto blockedParent = baselineDirectory.filePath(QStringLiteral("blocked-save-all"));
+    QFile blocker(blockedParent);
+    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+    ASSERT_EQ(blocker.write("block"), 5);
+    blocker.close();
+    document->FileName.setValue(
+        QDir(blockedParent).filePath(QStringLiteral("first.FCStd")).toUtf8().constData());
+    second->FileName.setValue(
+        QDir(blockedParent).filePath(QStringLiteral("second.FCStd")).toUtf8().constData());
+    object->Label.setValue("first unsaved close protection");
+    secondObject->Label.setValue("second unsaved close protection");
+
+    auto confirmAllGroup = App::GetApplication()
+                               .GetUserParameter()
+                               .GetGroup("BaseApp")
+                               ->GetGroup("Preferences")
+                               ->GetGroup("General");
+    const auto confirmAllValues = confirmAllGroup->GetBoolMap();
+    const bool hadConfirmAll = std::ranges::any_of(
+        confirmAllValues,
+        [](const auto& entry) { return entry.first == "ConfirmAll"; });
+    const bool previousConfirmAll = confirmAllGroup->GetBool("ConfirmAll", false);
+    const auto restoreConfirmAll = qScopeGuard([confirmAllGroup, hadConfirmAll, previousConfirmAll] {
+        if (hadConfirmAll) {
+            confirmAllGroup->SetBool("ConfirmAll", previousConfirmAll);
+        }
+        else {
+            confirmAllGroup->RemoveBool("ConfirmAll");
+        }
+    });
+    confirmAllGroup->SetBool("ConfirmAll", false);
+
+    FailedSaveDialogProbe failureDialogs;
+    QObject initialDialogTimerContext;
+    QTimer::singleShot(0, &initialDialogTimerContext, [&] {
+        auto* initial = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (!initial) {
+            ADD_FAILURE() << "expected the initial save-all confirmation dialog";
+            return;
+        }
+        auto* save = initial->button(QMessageBox::Save);
+        if (!save) {
+            ADD_FAILURE() << "initial close-all confirmation had no Save button";
+            initial->reject();
+            return;
+        }
+        auto* confirmAll = initial->findChild<QCheckBox*>();
+        if (!confirmAll) {
+            ADD_FAILURE() << "initial close-all confirmation had no Apply to all checkbox";
+            initial->reject();
+            return;
+        }
+        confirmAll->setChecked(true);
+        failureDialogs.inspectNextDialog();
+        save->click();
+    });
+
+    EXPECT_FALSE(mainWindow->closeAllDocuments(false));
+    EXPECT_EQ(failureDialogs.saveErrorDialogCount, 2);
+    EXPECT_TRUE(failureDialogs.inspectedCloseSafetyDialog);
+    EXPECT_TRUE(document->hasPendingFileChanges());
+    EXPECT_TRUE(second->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest, touchOnlyActivityDoesNotDirtyCanonicalFileState)
+{
+    ASSERT_FALSE(document->hasPendingFileChanges());
+    ASSERT_FALSE(guiDocument->isModified());
+
+    int fileStateNotifications = 0;
+    auto connection = document->signalFileChangeStateChanged().connect(
+        [&](const App::Document&) { ++fileStateNotifications; });
+    object->touch();
+    QApplication::processEvents();
+    connection.disconnect();
+
+    EXPECT_EQ(fileStateNotifications, 0);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+    EXPECT_FALSE(guiDocument->isModified());
+    EXPECT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Unchanged);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       transientViewProviderDynamicSchemaTracksAppearanceButNoPersistStaysClean)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+
+    auto* property = provider->addDynamicProperty(
+        "App::PropertyString", "TransientViewSchema", "Group", "Documentation",
+        App::Prop_Transient);
+    ASSERT_NE(property, nullptr);
+    EXPECT_FALSE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Model));
+    ASSERT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+
+    ASSERT_TRUE(provider->renameDynamicProperty(property, "RenamedTransientViewSchema"));
+    ASSERT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+
+    ASSERT_TRUE(provider->changeDynamicProperty(
+        property, "Changed group", "Changed documentation"));
+    ASSERT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+
+    ASSERT_TRUE(provider->changeDynamicProperty(
+        property, "Changed group", "Changed documentation"));
+    EXPECT_FALSE(document->hasPendingFileChanges());
+    ASSERT_TRUE(provider->changeDynamicProperty(property, nullptr, nullptr));
+    EXPECT_FALSE(document->hasPendingFileChanges());
+
+    document->openTransaction("view dynamic metadata is not undo payload");
+    ASSERT_TRUE(provider->changeDynamicProperty(
+        property, "Aborted group", "Aborted documentation"));
+    document->abortTransaction();
+    EXPECT_STREQ(provider->getPropertyGroup(property), "Aborted group");
+    EXPECT_STREQ(provider->getPropertyDocumentation(property), "Aborted documentation");
+    EXPECT_FALSE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Model));
+    EXPECT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    EXPECT_TRUE(document->hasPendingFileChanges());
+
+    ASSERT_TRUE(provider->removeDynamicProperty("RenamedTransientViewSchema"));
+    ASSERT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+
+    auto* noPersist = provider->addDynamicProperty(
+        "App::PropertyString", "NoPersistViewSchema", "Group", "Documentation",
+        App::Prop_NoPersist);
+    ASSERT_NE(noPersist, nullptr);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+    ASSERT_TRUE(provider->renameDynamicProperty(noPersist, "RenamedNoPersistViewSchema"));
+    ASSERT_TRUE(provider->changeDynamicProperty(
+        noPersist, "Changed group", "Changed documentation"));
+    ASSERT_TRUE(provider->removeDynamicProperty("RenamedNoPersistViewSchema"));
+    EXPECT_FALSE(document->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       staticTransientViewPropertyStatusTracksAppearance)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+
+    // ShowInTree is a static ViewProvider property. After it acquires the
+    // transient status, its serialized Hidden transition must still dirty the
+    // presentation archive; this is the case the old transient filter lost.
+    provider->ShowInTree.setStatus(App::Property::Transient, true);
+    ASSERT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
+              revisionBefore + 1);
+    ASSERT_EQ(document->saveWithOutcome().disposition,
+              App::DocumentSaveDisposition::Written);
+
+    provider->ShowInTree.setStatus(App::Property::Hidden, true);
+    EXPECT_FALSE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Model));
+    EXPECT_TRUE(
+        document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
+              revisionBefore + 2);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       declaredViewPropertyStatusCommitPublishesExactlyOnce)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const auto identity = document->collaborationIdentity();
+    const App::DocumentRevisionIdentityBinding binding {
+        identity.instanceId, identity.lifecycleEpoch};
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+    const bool hiddenBefore = provider->ShowInTree.testStatus(App::Property::Hidden);
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = binding;
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({key});
+    request.presentationWrites = {key};
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        provider->ShowInTree.setStatus(App::Property::Hidden, !hiddenBefore);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [&] {
+        return Gui::SharedPresentationStepResult {
+            provider->ShowInTree.testStatus(App::Property::Hidden) != hiddenBefore,
+            {}};
+    };
+    callbacks.rollbackGuiMutation = [&] {
+        provider->ShowInTree.setStatus(App::Property::Hidden, hiddenBefore);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    const auto result =
+        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+
+    ASSERT_TRUE(result.committed()) << result.diagnostic;
+    EXPECT_NE(provider->ShowInTree.testStatus(App::Property::Hidden), hiddenBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
+              revisionBefore + 1);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       declaredBulkViewPropertyStatusCommitPublishesExactlyOnce)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+
+    // Make ShowInTree the only property changed by the bulk operation. This
+    // keeps the declared write set exact while still exercising the direct
+    // PropertyContainer::setPropertyStatus() storage path.
+    std::vector<App::Property*> properties;
+    provider->getPropertyList(properties);
+    ASSERT_FALSE(properties.empty());
+    for (auto* property : properties) {
+        ASSERT_NE(property, nullptr);
+        property->setStatus(App::Property::Hidden,
+                            property != &provider->ShowInTree);
+    }
+    ASSERT_FALSE(provider->ShowInTree.testStatus(App::Property::Hidden));
+    const auto baselineSave = document->saveWithOutcome();
+    ASSERT_TRUE(baselineSave.succeeded()) << baselineSave.message;
+    ASSERT_FALSE(document->hasPendingFileChanges());
+
+    const auto identity = document->collaborationIdentity();
+    const App::DocumentRevisionIdentityBinding binding {
+        identity.instanceId, identity.lifecycleEpoch};
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = binding;
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({key});
+    request.presentationWrites = {key};
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        provider->setPropertyStatus(
+            static_cast<unsigned char>(App::Property::Hidden), true);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [&] {
+        return Gui::SharedPresentationStepResult {
+            provider->ShowInTree.testStatus(App::Property::Hidden), {}};
+    };
+    callbacks.rollbackGuiMutation = [&] {
+        provider->ShowInTree.setStatus(App::Property::Hidden, false);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    const auto result =
+        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+
+    ASSERT_TRUE(result.committed()) << result.diagnostic;
+    EXPECT_TRUE(provider->ShowInTree.testStatus(App::Property::Hidden));
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
+              revisionBefore + 1);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       failedViewPropertyStatusApplyRestoresExactBitsFileStateAndRevision)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const auto identity = document->collaborationIdentity();
+    const App::DocumentRevisionIdentityBinding binding {
+        identity.instanceId, identity.lifecycleEpoch};
+    const Gui::SharedPresentationRevisionKey key {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto revisionBefore = guiDocument->sharedPresentationRevisions().current(key);
+    const auto statusBefore = provider->ShowInTree.getStatus();
+    const auto fileChangesBefore = document->getPendingFileChanges().toUnderlyingType();
+    const auto targetStatus = statusBefore
+        ^ (1UL << App::Property::Hidden)
+        ^ (1UL << App::Property::ReadOnly);
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = binding;
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({key});
+    request.presentationWrites = {key};
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        provider->ShowInTree.setStatusValue(targetStatus);
+        return Gui::SharedPresentationStepResult {false, "forced status apply failure"};
+    };
+    callbacks.checkPostcondition = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    // Deliberately omit status restoration here. The integration-owned ledger
+    // must restore it even when a legacy callback reports successful rollback.
+    callbacks.rollbackGuiMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    const auto result =
+        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+
+    EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
+        << result.diagnostic;
+    EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+    EXPECT_EQ(document->getPendingFileChanges().toUnderlyingType(), fileChangesBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key), revisionBefore);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       undeclaredViewPropertyStatusIsRejectedBeforeBitsChange)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const auto identity = document->collaborationIdentity();
+    const App::DocumentRevisionIdentityBinding binding {
+        identity.instanceId, identity.lifecycleEpoch};
+    const Gui::SharedPresentationRevisionKey declaredKey {
+        document->collaborationObjectIdentity(*object), "Visibility"};
+    const Gui::SharedPresentationRevisionKey undeclaredKey {
+        document->collaborationObjectIdentity(*object), "ShowInTree"};
+    const auto statusBefore = provider->ShowInTree.getStatus();
+    const auto revisionBefore =
+        guiDocument->sharedPresentationRevisions().current(undeclaredKey);
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = binding;
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({declaredKey});
+    request.presentationWrites = {declaredKey};
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        provider->ShowInTree.setStatus(
+            App::Property::Hidden,
+            !provider->ShowInTree.testStatus(App::Property::Hidden));
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackGuiMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    const auto result =
+        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+
+    EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
+        << result.diagnostic;
+    EXPECT_NE(result.diagnostic.find("undeclared"), std::string::npos);
+    EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(undeclaredKey),
+              revisionBefore);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       undeclaredBulkViewPropertyStatusPreflightsBeforeAnyBitsChange)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+
+    std::vector<App::Property*> properties;
+    provider->getPropertyList(properties);
+    std::vector<App::Property*> orderedPersistentProperties;
+    for (auto* property : properties) {
+        ASSERT_NE(property, nullptr);
+        const char* name = property->getName();
+        if (name && *name != '\0'
+            && !property->testStatus(App::Property::PropNoPersist)
+            && std::ranges::find(orderedPersistentProperties, property)
+                == orderedPersistentProperties.end()) {
+            orderedPersistentProperties.push_back(property);
+        }
+        property->setStatus(App::Property::Hidden, true);
+    }
+    ASSERT_GE(orderedPersistentProperties.size(), 2U);
+    auto* admittedProperty = orderedPersistentProperties[0];
+    auto* rejectedProperty = orderedPersistentProperties[1];
+    admittedProperty->setStatus(App::Property::Hidden, false);
+    rejectedProperty->setStatus(App::Property::Hidden, false);
+    ASSERT_FALSE(admittedProperty->testStatus(App::Property::Hidden));
+    ASSERT_FALSE(rejectedProperty->testStatus(App::Property::Hidden));
+    const auto baselineSave = document->saveWithOutcome();
+    ASSERT_TRUE(baselineSave.succeeded()) << baselineSave.message;
+    ASSERT_FALSE(document->hasPendingFileChanges());
+
+    const auto identity = document->collaborationIdentity();
+    const App::DocumentRevisionIdentityBinding binding {
+        identity.instanceId, identity.lifecycleEpoch};
+    const std::string stableIdentity = document->collaborationObjectIdentity(*object);
+    const Gui::SharedPresentationRevisionKey admittedKey {
+        stableIdentity, admittedProperty->getName()};
+    const Gui::SharedPresentationRevisionKey rejectedKey {
+        stableIdentity, rejectedProperty->getName()};
+    const auto admittedRevisionBefore =
+        guiDocument->sharedPresentationRevisions().current(admittedKey);
+    const auto rejectedRevisionBefore =
+        guiDocument->sharedPresentationRevisions().current(rejectedKey);
+
+    Gui::SharedPresentationCommitRequest request;
+    request.document = binding;
+    request.expectedPresentationRevisions =
+        guiDocument->sharedPresentationRevisions().capture({admittedKey});
+    request.presentationWrites = {admittedKey};
+    Gui::SharedPresentationCommitCallbacks callbacks;
+    callbacks.applyAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.applyGuiMutation = [&] {
+        provider->setPropertyStatus(
+            static_cast<unsigned char>(App::Property::Hidden), true);
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.checkPostcondition = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackGuiMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+    callbacks.rollbackAppMutation = [] {
+        return Gui::SharedPresentationStepResult {true, {}};
+    };
+
+    const auto result =
+        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+
+    EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
+        << result.diagnostic;
+    EXPECT_NE(result.diagnostic.find("undeclared"), std::string::npos);
+    EXPECT_FALSE(admittedProperty->testStatus(App::Property::Hidden));
+    EXPECT_FALSE(rejectedProperty->testStatus(App::Property::Hidden));
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(admittedKey),
+              admittedRevisionBefore);
+    EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(rejectedKey),
+              rejectedRevisionBefore);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       readOnlyAndForeignViewPropertyStatusAdmissionRejectBeforeBitsChange)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const auto statusBefore = provider->ShowInTree.getStatus();
+
+    document->beginCollaborationReadOnlyPostconditionAudit();
+    auto endReadOnly = qScopeGuard(
+        [&] { document->endCollaborationAtomicPresentationAudit(); });
+    EXPECT_THROW(
+        provider->ShowInTree.setStatus(
+            App::Property::Hidden,
+            !provider->ShowInTree.testStatus(App::Property::Hidden)),
+        Base::RuntimeError);
+    EXPECT_EQ(provider->ShowInTree.getStatus(), statusBefore);
+    document->endCollaborationAtomicPresentationAudit();
+    endReadOnly.dismiss();
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const std::string foreignName =
+        App::GetApplication().getUniqueDocumentName("foreignStatusAdmission");
+    auto* foreignDocument = App::GetApplication().newDocument(
+        foreignName.c_str(), "foreign status admission", flags);
+    ASSERT_NE(foreignDocument, nullptr);
+    const auto closeForeign = qScopeGuard([&] {
+        if (App::GetApplication().getDocument(foreignName.c_str())) {
+            App::GetApplication().closeDocument(foreignName.c_str());
+        }
+    });
+    auto* foreignObject = foreignDocument->addObject("App::FeatureTest", "Foreign");
+    ASSERT_NE(foreignObject, nullptr);
+    auto* foreignGuiDocument = Gui::Application::Instance->getDocument(foreignDocument);
+    ASSERT_NE(foreignGuiDocument, nullptr);
+    auto* foreignProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        foreignGuiDocument->getViewProvider(foreignObject));
+    ASSERT_NE(foreignProvider, nullptr);
+    const auto foreignStatusBefore = foreignProvider->ShowInTree.getStatus();
+
+    document->beginCollaborationAtomicPresentationAudit({});
+    const auto endAtomic = qScopeGuard(
+        [&] { document->endCollaborationAtomicPresentationAudit(); });
+    EXPECT_THROW(
+        foreignProvider->ShowInTree.setStatus(
+            App::Property::Hidden,
+            !foreignProvider->ShowInTree.testStatus(App::Property::Hidden)),
+        Base::RuntimeError);
+    EXPECT_EQ(foreignProvider->ShowInTree.getStatus(), foreignStatusBefore);
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       newObjectViewMetadataAndStatusDirtinessAbortWithOwningTransaction)
+{
+    ASSERT_FALSE(document->hasPendingFileChanges());
+    document->openTransaction("new ViewProvider presentation schema");
+    auto* added = document->addObject("App::FeatureTest", "TransactionOwnedViewObject");
+    ASSERT_NE(added, nullptr);
+    auto* addedProvider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(added));
+    ASSERT_NE(addedProvider, nullptr);
+    auto* dynamic = addedProvider->addDynamicProperty(
+        "App::PropertyString", "TransactionOwnedMetadata", "Initial", "Initial");
+    ASSERT_NE(dynamic, nullptr);
+    ASSERT_TRUE(addedProvider->changeDynamicProperty(dynamic, "Changed", "Changed"));
+    addedProvider->ShowInTree.setStatus(
+        App::Property::Hidden,
+        !addedProvider->ShowInTree.testStatus(App::Property::Hidden));
+    ASSERT_TRUE(document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Appearance));
+
+    document->abortTransaction();
+
+    EXPECT_EQ(document->getObject("TransactionOwnedViewObject"), nullptr);
+    EXPECT_FALSE(document->hasPendingFileChanges());
+}
+
+TEST_F(CollaborationDomainIntegrationTest,
+       existingObjectViewPropertyStatusRemainsStickyAcrossOrdinaryAbort)
+{
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    const bool hiddenBefore = provider->ShowInTree.testStatus(App::Property::Hidden);
+
+    document->openTransaction("existing ViewProvider status");
+    provider->ShowInTree.setStatus(App::Property::Hidden, !hiddenBefore);
+    document->abortTransaction();
+
+    EXPECT_NE(provider->ShowInTree.testStatus(App::Property::Hidden), hiddenBefore);
+    EXPECT_TRUE(document->getPendingFileChanges().testFlag(
+        App::DocumentFileChange::Appearance));
+}
 
 TEST_F(CollaborationDomainIntegrationTest,
        explicitPresentationCommitUsesAppBoundaryPublishesOnlyPresentation)
@@ -1022,6 +1923,52 @@ TEST_F(CollaborationDomainIntegrationTest, successfulSaveAdvancesPresentationPer
     ASSERT_TRUE(temporary.isValid());
     const auto path = temporary.filePath("presentation-marker.FCStd").toUtf8();
     ASSERT_TRUE(document->saveAs(path.constData()));
+
+    const auto afterSave = guiDocument->sharedPresentationRevisions().persistenceState();
+    EXPECT_FALSE(afterSave.poisoned);
+    EXPECT_FALSE(afterSave.hasUnpersistedChanges);
+    EXPECT_EQ(afterSave.persistedPublicationSequence,
+              beforeSave.currentPublicationSequence);
+}
+
+TEST(CollaborationDomainIntegrationStandalone,
+     throwingLegacyFinishObserverCannotStarveGuiSaveOutcomeBookkeeping)
+{
+    initializeDomainGui();
+    auto throwingObserver = App::GetApplication().signalFinishSaveDocument.connect(
+        [](const App::Document&, const std::string&) {
+            throw std::runtime_error("injected legacy finish observer failure");
+        });
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto documentName =
+        App::GetApplication().getUniqueDocumentName("resilientGuiSaveOutcome");
+    auto* document = App::GetApplication().newDocument(documentName.c_str(), nullptr, flags);
+    ASSERT_NE(document, nullptr);
+    const auto cleanup = qScopeGuard([&] {
+        throwingObserver.disconnect();
+        if (App::GetApplication().getDocument(documentName.c_str())) {
+            App::GetApplication().closeDocument(documentName.c_str());
+            QApplication::processEvents();
+        }
+    });
+    auto* object = document->addObject("App::FeatureTest", "Target");
+    ASSERT_NE(object, nullptr);
+    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+    ASSERT_NE(guiDocument, nullptr);
+    auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
+        guiDocument->getViewProvider(object));
+    ASSERT_NE(provider, nullptr);
+    provider->Visibility.setValue(!provider->Visibility.getValue());
+    const auto beforeSave = guiDocument->sharedPresentationRevisions().persistenceState();
+    ASSERT_TRUE(beforeSave.hasUnpersistedChanges);
+
+    QTemporaryDir temporary;
+    ASSERT_TRUE(temporary.isValid());
+    const auto path = temporary.filePath("resilient-gui-outcome.FCStd").toUtf8();
+    const auto outcome = document->saveAsWithOutcome(path.constData());
+    ASSERT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written);
 
     const auto afterSave = guiDocument->sharedPresentationRevisions().persistenceState();
     EXPECT_FALSE(afterSave.poisoned);

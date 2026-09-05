@@ -432,10 +432,7 @@ public:
      * @param[in] pos The status bit to set.
      * @param[in] on The value to set the status bit to.
      */
-    void setStatus(ObjectStatus pos, bool on)
-    {
-        StatusBits.set(size_t(pos), on);
-    }
+    void setStatus(ObjectStatus pos, bool on);
 
     /// Check whether the document object is exporting.
     int isExporting() const;
@@ -1146,6 +1143,9 @@ public:
 
     bool removeDynamicProperty(const char* prop) override;
 
+    bool changeDynamicProperty(const Property* prop,
+                               const char* group,
+                               const char* doc) override;
     bool renameDynamicProperty(Property *prop, const char *name) override;
 
     /**

@@ -37,16 +37,21 @@
 #include <list>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <initializer_list>
 #include <limits>
 #include <optional>
+#include <ranges>
+#include <thread>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/bimap.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/topological_sort.hpp>
+#include <boost/scope_exit.hpp>
 
 #include <boost/regex.hpp>
 #include <random>
@@ -55,6 +60,8 @@
 
 #include <QCryptographicHash>
 #include <QCoreApplication>
+#include <QEventLoop>
+#include <QString>
 
 #include <FCConfig.h>
 
@@ -75,20 +82,25 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentRecomputeCoordinator.h"
+#include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
 #include "Application.h"
 #include "AutoTransaction.h"
 #include "BackupPolicy.h"
 #include "CollaborationRegistry.h"
+#include "DocumentFileWriter.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentRevisionIndex.h"
 #include "ExpressionParser.h"
+#include "GenericIsolatedRecompute.h"
 #include "GeoFeature.h"
 #include "License.h"
 #include "Link.h"
 #include "MergeDocuments.h"
 #include "MutationClassification.h"
 #include "PropertyPythonObject.h"
+#include "RecomputeHandle.h"
 #include "StringHasher.h"
 #include "Transactions.h"
 
@@ -119,16 +131,433 @@ namespace fs = std::filesystem;
 namespace
 {
 
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::atomic<App::Internal::DocumentPostDurableSaveCheckpointHook>
+    postDurableSaveCheckpointHook {nullptr};
+
+void invokePostDurableSaveCheckpoint(
+    const App::Internal::DocumentPostDurableSaveCheckpoint checkpoint)
+{
+    if (const auto hook = postDurableSaveCheckpointHook.load(std::memory_order_acquire)) {
+        hook(checkpoint);
+    }
+}
+#endif
+
 bool transactionStateBlocksRecoveryWrite(const DocumentP& documentPrivate)
 {
     return documentPrivate.bookedTransaction != NullTransaction
         || documentPrivate.activeUndoTransaction != nullptr || documentPrivate.committing;
 }
 
+enum class FilePathIdentity
+{
+    Distinct,
+    Same,
+    Indeterminate,
+};
+
+fs::path filePathFromUtf8(const std::string_view path)
+{
+#ifdef FC_OS_WIN32
+    return fs::path(QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size()))
+                        .toStdWString());
+#else
+    return fs::path(path);
+#endif
+}
+
+bool platformPathsEqual(const fs::path& left, const fs::path& right)
+{
+#ifdef FC_OS_WIN32
+    return QString::compare(QString::fromStdWString(left.native()),
+                            QString::fromStdWString(right.native()),
+                            Qt::CaseInsensitive)
+        == 0;
+#else
+    return left == right;
+#endif
+}
+
+FilePathIdentity compareFilePathIdentityNoThrow(const std::string_view leftText,
+                                                const std::string_view rightText) noexcept
+{
+    if (leftText.empty() || rightText.empty()) {
+        return FilePathIdentity::Distinct;
+    }
+    if (leftText == rightText) {
+        return FilePathIdentity::Same;
+    }
+
+    try {
+        std::error_code leftError;
+        std::error_code rightError;
+        auto left = fs::absolute(filePathFromUtf8(leftText), leftError);
+        auto right = fs::absolute(filePathFromUtf8(rightText), rightError);
+        if (leftError || rightError) {
+            return FilePathIdentity::Indeterminate;
+        }
+        left = left.lexically_normal();
+        right = right.lexically_normal();
+        if (platformPathsEqual(left, right)) {
+            return FilePathIdentity::Same;
+        }
+
+        std::error_code equivalentError;
+        if (fs::equivalent(left, right, equivalentError)) {
+            // Covers hard links and existing symbolic-link aliases.
+            return FilePathIdentity::Same;
+        }
+
+        leftError.clear();
+        rightError.clear();
+        auto canonicalLeft = fs::weakly_canonical(left, leftError);
+        auto canonicalRight = fs::weakly_canonical(right, rightError);
+        if (leftError || rightError) {
+            // Fail closed if filesystem identity cannot be established.  A
+            // copy must never risk replacing the canonical document.
+            return FilePathIdentity::Indeterminate;
+        }
+        return platformPathsEqual(canonicalLeft.lexically_normal(),
+                                  canonicalRight.lexically_normal())
+            ? FilePathIdentity::Same
+            : FilePathIdentity::Distinct;
+    }
+    catch (...) {
+        return FilePathIdentity::Indeterminate;
+    }
+}
+
+bool sameFileChanges(const DocumentFileChanges left, const DocumentFileChanges right)
+{
+    return left.toUnderlyingType() == right.toUnderlyingType();
+}
+
+bool isSerializedPropertyStatusDelta(const Property& property, const unsigned long oldStatus)
+{
+    const auto changed = oldStatus ^ property.getStatus();
+    constexpr unsigned long serializedStatusMask =
+        (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+    return (changed & serializedStatusMask) != 0;
+}
+
+bool propertyStatusChangeAffectsPersistence(const Property& property,
+                                            const unsigned long oldStatus)
+{
+    if (!isSerializedPropertyStatusDelta(property, oldStatus)
+        || property.testStatus(Property::PropNoPersist)) {
+        return false;
+    }
+    // The archive serializes these status bits independently of whether a
+    // property's value is transient.  A static Prop_Transient property can,
+    // for example, still persist a Hidden or ReadOnly status transition.
+    return true;
+}
+
+DocumentP::TransactionalFileChangeTokenState transactionalTokens(
+    const DocumentP::FileChangeTokenState& tokens)
+{
+    return {tokens.model.transactional, tokens.appearance.transactional,
+            tokens.compatibility.transactional};
+}
+
+std::array<std::uint64_t, 6> allFileChangeTokens(const DocumentP::FileChangeTokenState& tokens)
+{
+    return {tokens.model.transactional, tokens.model.sticky,
+            tokens.appearance.transactional, tokens.appearance.sticky,
+            tokens.compatibility.transactional, tokens.compatibility.sticky};
+}
+
+DocumentP::FileChangeTokenState fileChangeTokensFromArray(
+    const std::array<std::uint64_t, 6>& tokens)
+{
+    return {{tokens[0], tokens[1]}, {tokens[2], tokens[3]}, {tokens[4], tokens[5]}};
+}
+
+void emitSaveOutcomeSafely(Document& document, const DocumentSaveOutcome& outcome) noexcept
+{
+    // Persistence is already decided when this notification is emitted. A UI,
+    // script, or addon observer must not turn Written/Unchanged into an
+    // exception or prevent a structured failure from reaching its caller.
+    try {
+        document.signalSaveOutcome()(document, outcome);
+    }
+    catch (const Base::Exception& exception) {
+        FC_ERR("Save-outcome observer failed: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("Save-outcome observer failed: " << exception.what());
+    }
+    catch (...) {
+        FC_ERR("Save-outcome observer failed with an unknown exception");
+    }
+}
+
+void emitFileChangeStateSafely(Document& document) noexcept
+{
+    try {
+        document.signalFileChangeStateChanged()(document);
+    }
+    catch (const Base::Exception& exception) {
+        FC_ERR("File-change-state observer failed: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("File-change-state observer failed: " << exception.what());
+    }
+    catch (...) {
+        FC_ERR("File-change-state observer failed with an unknown exception");
+    }
+}
+
+void appendPostDurableSaveWarningNoThrow(std::vector<std::string>& warnings,
+                                         const char* phase,
+                                         const char* detail) noexcept
+{
+    try {
+        std::string warning("Post-save ");
+        warning += phase;
+        warning += " failed after durable replacement";
+        if (detail && *detail) {
+            warning += ": ";
+            warning += detail;
+        }
+        warnings.push_back(std::move(warning));
+    }
+    catch (...) {
+        // A diagnostic allocation failure cannot revoke the durable write.
+    }
+
+    try {
+        FC_ERR("Post-save " << phase << " failed after durable replacement: "
+                            << (detail ? detail : "unknown exception"));
+    }
+    catch (...) {
+        // Logging is best-effort after the persistence boundary.
+    }
+}
+
+template<class Callable>
+void runPostDurableSaveMaintenance(std::vector<std::string>& warnings,
+                                   const char* phase,
+                                   Callable&& callable) noexcept
+{
+    try {
+        std::forward<Callable>(callable)();
+    }
+    catch (const Base::Exception& exception) {
+        appendPostDurableSaveWarningNoThrow(warnings, phase, exception.what());
+    }
+    catch (const std::exception& exception) {
+        appendPostDurableSaveWarningNoThrow(warnings, phase, exception.what());
+    }
+    catch (...) {
+        appendPostDurableSaveWarningNoThrow(warnings, phase, "unknown exception");
+    }
+}
+
+class ScopedSaveBookkeepingProperties
+{
+public:
+    ScopedSaveBookkeepingProperties(
+        bool& saveStageActive,
+        std::unordered_set<const Property*>& notificationSuppression,
+        std::unordered_set<const Property*>& revisionSuppression,
+        const std::initializer_list<const Property*> properties)
+        : active(saveStageActive, false)
+        , notifications(notificationSuppression)
+        , revisions(revisionSuppression)
+    {
+        entries.reserve(properties.size());
+        try {
+            for (const auto* property : properties) {
+                const bool notificationInserted = notifications.insert(property).second;
+                bool revisionInserted = false;
+                try {
+                    revisionInserted = revisions.insert(property).second;
+                }
+                catch (...) {
+                    if (notificationInserted) {
+                        notifications.erase(property);
+                    }
+                    throw;
+                }
+                entries.push_back({property, notificationInserted, revisionInserted});
+            }
+        }
+        catch (...) {
+            release();
+            throw;
+        }
+    }
+
+    ScopedSaveBookkeepingProperties(const ScopedSaveBookkeepingProperties&) = delete;
+    ScopedSaveBookkeepingProperties& operator=(const ScopedSaveBookkeepingProperties&) = delete;
+
+    ~ScopedSaveBookkeepingProperties()
+    {
+        release();
+    }
+
+private:
+    struct Entry
+    {
+        const Property* property;
+        bool notificationInserted;
+        bool revisionInserted;
+    };
+
+    void release() noexcept
+    {
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->revisionInserted) {
+                revisions.erase(it->property);
+            }
+            if (it->notificationInserted) {
+                notifications.erase(it->property);
+            }
+        }
+        entries.clear();
+    }
+
+    Base::FlagToggler<> active;
+    std::unordered_set<const Property*>& notifications;
+    std::unordered_set<const Property*>& revisions;
+    std::vector<Entry> entries;
+};
+
+bool saveBookkeepingPropertySuppressed(const DocumentP& documentPrivate,
+                                       const Property* property)
+{
+    return documentPrivate.suppressSaveBookkeepingNotifications && property
+        && documentPrivate.saveBookkeepingPropertySuppression.contains(property);
+}
+
+void publishSaveBookkeepingPropertySignalSafely(Property& property,
+                                                const char* name) noexcept
+{
+    try {
+        property.signalChanged(property);
+    }
+    catch (const Base::Exception& exception) {
+        FC_ERR("Save " << name << " property observer failed: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("Save " << name << " property observer failed: " << exception.what());
+    }
+    catch (...) {
+        FC_ERR("Save " << name << " property observer failed with an unknown exception");
+    }
+}
+
+void publishSaveBookkeepingPropertySafely(Document& document,
+                                          Property& property,
+                                          const char* name,
+                                          const bool relabelDocument = false,
+                                          const bool publishPropertySignal = true) noexcept
+{
+    try {
+        document.signalChanged(document, property);
+    }
+    catch (const Base::Exception& exception) {
+        FC_ERR("Save " << name << " document observer failed: " << exception.what());
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("Save " << name << " document observer failed: " << exception.what());
+    }
+    catch (...) {
+        FC_ERR("Save " << name << " document observer failed with an unknown exception");
+    }
+
+    if (relabelDocument) {
+        try {
+            GetApplication().signalRelabelDocument(document);
+        }
+        catch (const Base::Exception& exception) {
+            FC_ERR("Save global relabel observer failed: " << exception.what());
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Save global relabel observer failed: " << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Save global relabel observer failed with an unknown exception");
+        }
+    }
+
+    if (publishPropertySignal) {
+        publishSaveBookkeepingPropertySignalSafely(property, name);
+    }
+}
+
+void publishSaveAsIdentityAdoptionSafely(Document& document,
+                                         const bool labelChanged,
+                                         const bool uidChanged,
+                                         const bool transientDirectoryChanged,
+                                         const bool tipNameChanged,
+                                         const bool modifiedDateChanged,
+                                         const bool modifiedByChanged) noexcept
+{
+    publishSaveBookkeepingPropertySafely(document, document.FileName, "FileName");
+    if (labelChanged) {
+        publishSaveBookkeepingPropertySafely(document, document.Label, "Label", true);
+    }
+
+    // Uid.touch() runs the container's onChanged path but does not emit the
+    // property's signalChanged channel when the UUID bytes stay unchanged.
+    publishSaveBookkeepingPropertySafely(document, document.Uid, "Uid", false, false);
+    if (transientDirectoryChanged) {
+        publishSaveBookkeepingPropertySafely(
+            document, document.TransientDir, "TransientDir");
+    }
+    if (uidChanged) {
+        publishSaveBookkeepingPropertySignalSafely(document.Uid, "Uid");
+    }
+    if (tipNameChanged) {
+        publishSaveBookkeepingPropertySafely(document, document.TipName, "TipName");
+    }
+    if (modifiedDateChanged) {
+        publishSaveBookkeepingPropertySafely(
+            document, document.LastModifiedDate, "LastModifiedDate");
+    }
+    if (modifiedByChanged) {
+        publishSaveBookkeepingPropertySafely(
+            document, document.LastModifiedBy, "LastModifiedBy");
+    }
+}
+
+void publishCanonicalSaveMetadataSafely(Document& document,
+                                        const bool tipNameChanged,
+                                        const bool modifiedDateChanged,
+                                        const bool modifiedByChanged) noexcept
+{
+    if (tipNameChanged) {
+        publishSaveBookkeepingPropertySafely(document, document.TipName, "TipName");
+    }
+    if (modifiedDateChanged) {
+        publishSaveBookkeepingPropertySafely(
+            document, document.LastModifiedDate, "LastModifiedDate");
+    }
+    if (modifiedByChanged) {
+        publishSaveBookkeepingPropertySafely(
+            document, document.LastModifiedBy, "LastModifiedBy");
+    }
+}
+
 }  // namespace
 
 namespace App
 {
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void Internal::setDocumentPostDurableSaveCheckpointHookForTesting(
+    const DocumentPostDurableSaveCheckpointHook hook) noexcept
+{
+    postDurableSaveCheckpointHook.store(hook, std::memory_order_release);
+}
+#endif
 
 static bool globalIsRestoring;
 static bool globalIsRelabeling;
@@ -202,6 +631,16 @@ DocumentCollaborationService& Document::collaborationService()
     return *d->collaborationService;
 }
 
+DocumentRecomputeCoordinator& Document::recomputeCoordinator()
+{
+    return *d->recomputeCoordinator;
+}
+
+const DocumentRecomputeCoordinator& Document::recomputeCoordinator() const
+{
+    return *d->recomputeCoordinator;
+}
+
 bool Document::collaborationRevisionPublicationSuppressed() const
 {
     return d->suppressCollaborationRevisionPublication;
@@ -229,6 +668,26 @@ bool Document::collaborationRevisionPublicationSuppressed(const Property* proper
 void Document::beginCollaborationAtomicPresentationAudit(
     std::vector<CollaborationAtomicPresentationWrite> allowedWrites)
 {
+    beginCollaborationAtomicPresentationAuditImpl(
+        std::move(allowedWrites), false, false);
+}
+
+void Document::beginCollaborationPreparedAtomicPresentationAudit(
+    std::vector<CollaborationAtomicPresentationWrite> allowedWrites)
+{
+    beginCollaborationAtomicPresentationAuditImpl(
+        std::move(allowedWrites), false, true);
+}
+
+void Document::beginCollaborationAtomicPresentationAuditImpl(
+    std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+    bool readOnly,
+    bool preparedOwner)
+{
+    if (!isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "atomic presentation mutation audit requires the document owner thread");
+    }
     if (d->collaborationAtomicPresentationAuditActive) {
         throw Base::RuntimeError("atomic presentation mutation audit is already active");
     }
@@ -236,16 +695,60 @@ void Document::beginCollaborationAtomicPresentationAudit(
     allowedWrites.erase(std::unique(allowedWrites.begin(), allowedWrites.end()),
                         allowedWrites.end());
     d->collaborationAtomicPresentationAllowedWrites = std::move(allowedWrites);
-    d->collaborationAtomicPresentationAuditViolated = false;
+    d->collaborationAtomicPresentationAuditViolated.store(false,
+                                                          std::memory_order_release);
+    d->collaborationAtomicPresentationAuditReadOnly = readOnly;
+    d->collaborationAtomicPresentationAuditPreparedOwner = preparedOwner;
     d->collaborationAtomicPresentationAuditActive = true;
     try {
-        beginAtomicPresentationMutationTarget(*this);
+        if (preparedOwner) {
+            CollaborationPreparedMutationTargetAccess::begin(*this, readOnly);
+        }
+        else if (readOnly) {
+            beginCollaborationReadOnlyMutationTarget(*this);
+        }
+        else {
+            beginAtomicPresentationMutationTarget(*this);
+        }
     }
     catch (...) {
         d->collaborationAtomicPresentationAuditActive = false;
+        d->collaborationAtomicPresentationAuditReadOnly = false;
+        d->collaborationAtomicPresentationAuditPreparedOwner = false;
         d->collaborationAtomicPresentationAllowedWrites.clear();
         throw;
     }
+}
+
+ResilientMainThreadSignal<void(const Document&)>&
+Document::signalFileChangeStateChanged()
+{
+    return d->signalFileChangeStateChanged;
+}
+
+ResilientMainThreadSignal<void(const Document&, const DocumentSaveOutcome&)>&
+Document::signalSaveOutcome()
+{
+    return d->signalSaveOutcome;
+}
+
+void Document::beginCollaborationReadOnlyPostconditionAudit()
+{
+    beginCollaborationAtomicPresentationAuditImpl({}, true, false);
+}
+
+void Document::beginCollaborationPreparedReadOnlyPostconditionAudit()
+{
+    beginCollaborationAtomicPresentationAuditImpl({}, true, true);
+}
+
+void Document::noteCollaborationReadOnlyMutationAttempt() noexcept
+{
+    // The process-wide admission has already established a read-only phase.
+    // A rejected joined worker can arrive here, so do not inspect the
+    // owner-thread-only audit flags and publish the violation atomically.
+    d->collaborationAtomicPresentationAuditViolated.store(true,
+                                                          std::memory_order_release);
 }
 
 void Document::recordCollaborationAtomicPresentationEffects(
@@ -313,14 +816,56 @@ void Document::recordCollaborationObservedStructuralMutation(
 bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
 {
     return d->collaborationAtomicPresentationAuditActive
-        && d->collaborationAtomicPresentationAuditViolated;
+        && d->collaborationAtomicPresentationAuditViolated.load(
+            std::memory_order_acquire);
 }
 
 void Document::endCollaborationAtomicPresentationAudit() noexcept
 {
-    endAtomicPresentationMutationTarget(*this);
+    if (!isCollaborationOwnerThread()) {
+        noteCollaborationReadOnlyMutationAttempt();
+        return;
+    }
+    if (d->collaborationAtomicPresentationAuditActive
+        && d->collaborationAtomicPresentationAuditPreparedOwner) {
+        // The ABI-preserved public end function does not own a prepared
+        // coordinator/service audit. A hostile callback therefore cannot
+        // release either its read-only fence or process target.
+        if (d->collaborationAtomicPresentationAuditReadOnly) {
+            noteCollaborationReadOnlyMutationAttempt();
+        }
+        return;
+    }
+    endCollaborationAtomicPresentationAuditImpl(false);
+}
+
+void Document::endCollaborationPreparedAtomicPresentationAudit() noexcept
+{
+    endCollaborationAtomicPresentationAuditImpl(true);
+}
+
+void Document::endCollaborationAtomicPresentationAuditImpl(
+    bool preparedOwner) noexcept
+{
+    if (!d->collaborationAtomicPresentationAuditActive
+        || d->collaborationAtomicPresentationAuditPreparedOwner != preparedOwner) {
+        return;
+    }
+    if (preparedOwner) {
+        CollaborationPreparedMutationTargetAccess::end(
+            *this, d->collaborationAtomicPresentationAuditReadOnly);
+    }
+    else if (d->collaborationAtomicPresentationAuditReadOnly) {
+        endCollaborationReadOnlyMutationTarget(*this);
+    }
+    else {
+        endAtomicPresentationMutationTarget(*this);
+    }
     d->collaborationAtomicPresentationAuditActive = false;
-    d->collaborationAtomicPresentationAuditViolated = false;
+    d->collaborationAtomicPresentationAuditViolated.store(false,
+                                                          std::memory_order_release);
+    d->collaborationAtomicPresentationAuditReadOnly = false;
+    d->collaborationAtomicPresentationAuditPreparedOwner = false;
     d->collaborationAtomicPresentationAllowedWrites.clear();
 }
 
@@ -331,6 +876,18 @@ std::string Document::collaborationObjectIdentity(const DocumentObject& object) 
         throw Base::RuntimeError("Document object has no collaboration identity");
     }
     return std::to_string(found->second);
+}
+
+bool Document::collaborationTransactionOwnsNewObject(
+    const DocumentObject& object) const noexcept
+{
+    try {
+        return Internal::CollaborationStructuralMutationRecorder::
+            isTransactionOwnedNewObject(*this, object);
+    }
+    catch (...) {
+        return false;
+    }
 }
 
 void Document::publishCollaborationMutation(const PropertyContainer& container, bool structural)
@@ -381,7 +938,22 @@ bool Document::collaborationStableReadBlocked() const noexcept
     return d->collaborationCommitNotificationBarrier
         || d->collaborationReplayingNotifications || hasPendingTransaction()
         || transacting() || getBookedTransactionID() != 0 || isTransactionLocked()
-        || mustExecute();
+        || mustExecute()
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        || !d->pendingRemove.empty();
+}
+
+bool Document::collaborationRecomputeCaptureBlocked() const noexcept
+{
+    const bool foreignMutationBoundary = d->collaborationCommitNotificationBarrier
+        || hasPendingTransaction() || transacting() || getBookedTransactionID() != 0
+        || isTransactionLocked();
+    return (foreignMutationBoundary && !d->collaborationDerivedRecomputeGranted)
+        || d->collaborationReplayingNotifications
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        || !d->pendingRemove.empty();
 }
 
 bool Document::collaborationLifecycleMutationBlocked() const noexcept
@@ -440,9 +1012,9 @@ void Document::ensureCollaborationStructuralMutationAllowed(
         throw Base::RuntimeError(
             "object and dynamic-property structure changes are unavailable during an atomic presentation audit");
     }
-    const bool grantableKind = kind == CollaborationStructuralMutationKind::Object
+    const bool applyGrantableKind = kind == CollaborationStructuralMutationKind::Object
         || kind == CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
-    const bool compatibilityGrant = grantableKind
+    const bool applyGrant = applyGrantableKind
         && d->collaborationCompatibilityStructuralMutationGranted
         && isCollaborationOwnerThread()
         && d->collaborationCommitNotificationBarrier
@@ -454,7 +1026,7 @@ void Document::ensureCollaborationStructuralMutationAllowed(
         && !d->collaborationReplayingNotifications;
     if ((d->collaborationCommitNotificationBarrier
          || collaborationLifecycleMutationBlocked())
-        && !compatibilityGrant) {
+        && !applyGrant) {
         const char* kindName = "Unknown";
         switch (kind) {
             case CollaborationStructuralMutationKind::Restricted:
@@ -561,7 +1133,7 @@ Document::CollaborationSpreadsheetRecomputeSchemaScope::
         || state.collaborationCommitPoisoned
         || object.getDocument() != document
         || !document->containsObject(&object)
-        || (!authoritativeCommitRecompute && !state.collaborationRollbackStabilizing)) {
+        || !authoritativeCommitRecompute) {
         throw Base::RuntimeError(
             "spreadsheet transient schema requires the authoritative collaboration recompute");
     }
@@ -632,10 +1204,134 @@ Document::CollaborationStructuralMutationGrant::~CollaborationStructuralMutation
     _document.d->collaborationCompatibilityStructuralMutationGranted = false;
 }
 
+bool Document::collaborationStableNotificationActive() const noexcept
+{
+    return d->collaborationStableNotificationDepth.load(std::memory_order_acquire) != 0;
+}
+
+bool Document::collaborationPendingRemovalProcessing() const noexcept
+{
+    return d->pendingRemovalProcessing.load(std::memory_order_acquire);
+}
+
+void Document::emitCollaborationBecameStable() const
+{
+    const auto previous =
+        d->collaborationStableNotificationDepth.fetch_add(1, std::memory_order_acq_rel);
+    if (previous == std::numeric_limits<unsigned int>::max()) {
+        d->collaborationStableNotificationDepth.fetch_sub(1, std::memory_order_release);
+        throw Base::RuntimeError("collaboration stable notification depth overflow");
+    }
+    try {
+        signalBecameStable(*this);
+    }
+    catch (...) {
+        d->collaborationStableNotificationDepth.fetch_sub(1, std::memory_order_release);
+        throw;
+    }
+    d->collaborationStableNotificationDepth.fetch_sub(1, std::memory_order_release);
+}
+
 Document::CollaborationStructuralMutationGrant
 Document::openCollaborationStructuralMutationGrant()
 {
     return CollaborationStructuralMutationGrant(*this);
+}
+
+Document::CollaborationDeferredRecomputeFence::CollaborationDeferredRecomputeFence(
+    Document& document)
+    : _document(document)
+{
+    auto& state = *document.d;
+    if (!document.isCollaborationOwnerThread()
+        || !state.collaborationCommitNotificationBarrier
+        || !state.activeUndoTransaction
+        || !state.suppressCollaborationRevisionPublication) {
+        throw Base::RuntimeError(
+            "deferred recompute fence requires the coordinator commit boundary");
+    }
+    if (state.collaborationDeferredRecomputeBlocked) {
+        throw Base::RuntimeError("deferred recompute fence is not reentrant");
+    }
+    state.collaborationDeferredRecomputeBlocked = true;
+}
+
+Document::CollaborationDeferredRecomputeFence::~CollaborationDeferredRecomputeFence()
+{
+    _document.d->collaborationDeferredRecomputeBlocked = false;
+}
+
+Document::CollaborationDeferredRecomputeFence
+Document::openCollaborationDeferredRecomputeFence()
+{
+    return CollaborationDeferredRecomputeFence(*this);
+}
+
+Document::CollaborationDerivedRecomputeGrant::CollaborationDerivedRecomputeGrant(
+    Document& document)
+    : _document(document)
+{
+    auto& state = *document.d;
+    if (!document.isCollaborationOwnerThread()
+        || !state.collaborationCommitNotificationBarrier
+        || !state.activeUndoTransaction
+        || !state.suppressCollaborationRevisionPublication) {
+        throw Base::RuntimeError(
+            "derived recompute requires the coordinator commit boundary");
+    }
+    if (state.collaborationDerivedRecomputeGranted) {
+        throw Base::RuntimeError("derived recompute grant is not reentrant");
+    }
+    if (state.collaborationAtomicPresentationAuditActive
+        || state.collaborationCommitPoisoned
+        || state.collaborationReplayingNotifications || state.rollback) {
+        throw Base::RuntimeError(
+            "derived recompute is unavailable in the current coordinator state");
+    }
+    state.collaborationDerivedRecomputeGranted = true;
+}
+
+Document::CollaborationDerivedRecomputeGrant::~CollaborationDerivedRecomputeGrant()
+{
+    _document.d->collaborationDerivedRecomputeGranted = false;
+}
+
+Document::CollaborationDerivedRecomputeGrant
+Document::openCollaborationDerivedRecomputeGrant()
+{
+    return CollaborationDerivedRecomputeGrant(*this);
+}
+
+bool Document::collaborationDerivedRecomputeGranted() const noexcept
+{
+    return d->collaborationDerivedRecomputeGranted;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral::
+    CollaborationRecomputeStableNotificationDeferral(Document& document)
+    : _document(document)
+{
+    if (!document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "recompute stable-notification deferral requires the document owner thread");
+    }
+    if (document.d->collaborationRecomputeStableNotificationDeferred) {
+        throw Base::RuntimeError(
+            "recompute stable-notification deferral is not reentrant");
+    }
+    document.d->collaborationRecomputeStableNotificationDeferred = true;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral::
+    ~CollaborationRecomputeStableNotificationDeferral()
+{
+    _document.d->collaborationRecomputeStableNotificationDeferred = false;
+}
+
+Document::CollaborationRecomputeStableNotificationDeferral
+Document::openCollaborationRecomputeStableNotificationDeferral()
+{
+    return CollaborationRecomputeStableNotificationDeferral(*this);
 }
 
 bool Document::collaborationStructuralImportDeferralRequired() const noexcept
@@ -704,6 +1400,10 @@ void Document::ensureCollaborationTransactionControlAllowed() const
 {
     if (d->collaborationCommitNotificationBarrier
         && !d->collaborationTransactionControlGranted) {
+        if (d->collaborationAtomicPresentationAuditActive
+            && d->collaborationAtomicPresentationAuditReadOnly) {
+            d->collaborationAtomicPresentationAuditViolated = true;
+        }
         throw Base::RuntimeError(
             "transaction, undo, and redo control is unavailable during a prepared commit");
     }
@@ -713,22 +1413,41 @@ void Document::ensureCollaborationTransactionControlAllowed() const
     }
 }
 
-int Document::openCollaborationCommitTransaction(std::string name)
+int Document::openCollaborationCommitTransaction(
+    std::string name,
+    const bool retainUndoHistory)
 {
     if (!d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _openTransaction(std::move(name));
+    return _openTransaction(std::move(name), 0, !retainUndoHistory);
 }
 
-bool Document::commitCollaborationCommitTransaction()
+bool Document::commitCollaborationCommitTransaction(const bool retainUndoHistory)
 {
     if (!d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _commitTransaction(false);
+    return _commitTransaction(false, retainUndoHistory);
+}
+
+void Document::applyCollaborationRecomputeFailure(
+    DocumentObject& object,
+    const std::string_view diagnostic)
+{
+    if (!isCollaborationOwnerThread() || !d->collaborationCommitNotificationBarrier
+        || !d->activeUndoTransaction || !d->suppressCollaborationRevisionPublication
+        || object.getDocument() != this || !containsObject(&object)) {
+        throw Base::RuntimeError(
+            "detached recompute failure requires the coordinator commit boundary");
+    }
+    d->addRecomputeLog(
+        diagnostic.empty() ? "detached feature recompute failed"
+                           : std::string(diagnostic),
+        &object);
+    object.touch();
 }
 
 void Document::beginCollaborationCommitNotificationBarrier()
@@ -742,8 +1461,27 @@ void Document::beginCollaborationCommitNotificationBarrier()
     // the exact stable boundary state so rollback can restore identity, order,
     // and activation without allocating in the noexcept recovery path.
     auto boundaryObjectOrder = d->objectArray;
+    auto boundaryPendingRemove = d->pendingRemove;
     auto boundaryObjectIdentities = d->collaborationObjectIdentities;
+    std::vector<DocumentP::CollaborationBoundaryObjectSchedulerState>
+        boundaryObjectSchedulerStates;
+    boundaryObjectSchedulerStates.reserve(boundaryObjectOrder.size());
+    for (auto* object : boundaryObjectOrder) {
+        boundaryObjectSchedulerStates.push_back(
+            {object,
+             object->getStatus(),
+             object->isTouched(),
+             object->ExpressionEngine.getStatus(),
+             object->touchedProps});
+    }
     auto* boundaryActiveObject = d->activeObject;
+    auto boundaryTouchedObjects = d->touchedObjs;
+    decltype(d->collaborationBoundaryRecomputeLog) boundaryRecomputeLog;
+    for (const auto& [object, error] : d->_RecomputeLog) {
+        boundaryRecomputeLog.emplace(
+            object,
+            std::make_unique<DocumentObjectExecReturn>(error->Why, error->Which));
+    }
 
     d->collaborationDeferredNotifications.clear();
     d->collaborationDeferredNotifications.reserve(64);
@@ -752,12 +1490,16 @@ void Document::beginCollaborationCommitNotificationBarrier()
     d->collaborationImportNewObjects.clear();
     d->collaborationActiveImportReplay.reset();
     d->collaborationImportDeferralActive = false;
-    d->collaborationRollbackStabilizing = false;
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationPreparedUndoSlot.push_back(nullptr);
     d->collaborationBoundaryObjectOrder = std::move(boundaryObjectOrder);
+    d->collaborationBoundaryPendingRemove = std::move(boundaryPendingRemove);
     d->collaborationBoundaryObjectIdentities = std::move(boundaryObjectIdentities);
+    d->collaborationBoundaryObjectSchedulerStates =
+        std::move(boundaryObjectSchedulerStates);
+    d->collaborationBoundaryTouchedObjects = std::move(boundaryTouchedObjects);
+    d->collaborationBoundaryRecomputeLog = std::move(boundaryRecomputeLog);
     d->collaborationBoundaryActiveObject = boundaryActiveObject;
     GetApplication().beginCollaborationTransactionSignalSuppression();
     d->collaborationCommitNotificationBarrier = true;
@@ -778,6 +1520,8 @@ void Document::prepareCollaborationCommitFinalization()
 
 void Document::finishCollaborationCommitNotificationBarrier(bool committed) noexcept
 {
+    const bool deferStableNotification =
+        d->collaborationRecomputeStableNotificationDeferred;
     if (!d->collaborationCommitNotificationBarrier) {
         return;
     }
@@ -790,12 +1534,17 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     d->collaborationPreparedUndoSlot.clear();
     d->collaborationTransactionControlGranted = false;
     d->collaborationCompatibilityStructuralMutationGranted = false;
+    d->collaborationDerivedRecomputeGranted = false;
+    d->collaborationDeferredRecomputeBlocked = false;
     d->collaborationImportDeferralActive = false;
-    d->collaborationRollbackStabilizing = false;
     d->collaborationSpreadsheetRecomputeSchemaObject = nullptr;
     d->collaborationCommitNotificationBarrier = false;
     d->collaborationBoundaryObjectOrder.clear();
+    d->collaborationBoundaryPendingRemove.clear();
     d->collaborationBoundaryObjectIdentities.clear();
+    d->collaborationBoundaryObjectSchedulerStates.clear();
+    d->collaborationBoundaryTouchedObjects.clear();
+    d->collaborationBoundaryRecomputeLog.clear();
     d->collaborationBoundaryActiveObject = nullptr;
     try {
         GetApplication().endCollaborationTransactionSignalSuppression();
@@ -808,8 +1557,29 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         FC_ERR("Failed to end collaboration transaction signal suppression");
     }
 
+    const auto emitBecameStable = [this, deferStableNotification]() noexcept {
+        if (deferStableNotification) {
+            return;
+        }
+        if (d->pendingRemovalProcessing.load(std::memory_order_acquire)
+            || !d->pendingRemove.empty()) {
+            return;
+        }
+        try {
+            emitCollaborationBecameStable();
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Deferred collaboration stable notification failed: "
+                   << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Deferred collaboration stable notification failed with unknown exception");
+        }
+    };
+
     if (!committed) {
         d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
+        emitBecameStable();
         return;
     }
 
@@ -833,6 +1603,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                 break;
             case CollaborationDeferredNotificationKind::DocumentChanged:
                 signalChanged(*this, *notification.property);
+                break;
+            case CollaborationDeferredNotificationKind::FileChangeStateChanged:
+                signalFileChangeStateChanged()(*this);
                 break;
             case CollaborationDeferredNotificationKind::ObjectBeforeChange:
                 signalBeforeChangeObject(*notification.object, *notification.property);
@@ -866,9 +1639,14 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                 signalRecomputed(*this, notification.objects);
                 break;
             case CollaborationDeferredNotificationKind::OpenTransaction:
-                signalOpenTransaction(*this, notification.text);
+                if (!deferStableNotification) {
+                    signalOpenTransaction(*this, notification.text);
+                }
                 break;
             case CollaborationDeferredNotificationKind::CommitTransaction:
+                if (deferStableNotification) {
+                    break;
+                }
                 if (!globalBeforeCloseEmitted) {
                     globalBeforeCloseEmitted = true;
                     GetApplication().signalBeforeCloseTransaction(false);
@@ -879,7 +1657,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
                 signalAbortTransaction(*this);
                 break;
             case CollaborationDeferredNotificationKind::BecameStable:
-                signalBecameStable(*this);
+                // Coalesce every intermediate recompute/transaction stable
+                // marker.  The authoritative notification is emitted once,
+                // after replay and all collaboration boundary state unwind.
                 break;
             case CollaborationDeferredNotificationKind::NewObject:
                 signalNewObject(*notification.object);
@@ -1045,11 +1825,13 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     }
     d->collaborationReplayingNotifications = false;
     if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+        discardTransactionFileState(mUndoTransactions.front()->getID());
         mUndoMap.erase(mUndoTransactions.front()->getID());
         delete mUndoTransactions.front();
         mUndoTransactions.pop_front();
     }
     d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
+    emitBecameStable();
 }
 
 void Document::emitCollaborationObjectBeforeChange(DocumentObject& object,
@@ -1084,6 +1866,9 @@ void Document::emitCollaborationObjectChanged(DocumentObject& object, const Prop
 
 void Document::emitCollaborationPropertyChanged(Property& property)
 {
+    if (saveBookkeepingPropertySuppressed(*d, &property)) {
+        return;
+    }
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::PropertyChanged,
@@ -1118,6 +1903,7 @@ void Document::emitCollaborationRelabelObject(DocumentObject& object)
 
 void Document::emitCollaborationNewObject(DocumentObject& object)
 {
+    markFileChange(DocumentFileChange::Model);
     if (d->collaborationCommitNotificationBarrier) {
         const auto firstObjectNotification = std::ranges::find_if(
             d->collaborationDeferredNotifications,
@@ -1135,6 +1921,7 @@ void Document::emitCollaborationNewObject(DocumentObject& object)
 
 void Document::emitCollaborationDeletedObject(DocumentObject& object)
 {
+    markFileChange(DocumentFileChange::Model);
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::DeletedObject, &object};
@@ -1266,6 +2053,12 @@ bool Document::collaborationPreparationSupported() const
     });
 }
 
+bool Document::dynamicPropertySchemaAffectsPersistence(const Property* property) noexcept
+{
+    return property && property->testStatus(Property::PropDynamic)
+        && !property->testStatus(Property::PropNoPersist);
+}
+
 Property* Document::addDynamicProperty(std::string_view type,
                                        const char* name,
                                        const char* group,
@@ -1277,7 +2070,38 @@ Property* Document::addDynamicProperty(std::string_view type,
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Restricted,
         "Document::addDynamicProperty");
-    return PropertyContainer::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
+    auto* property = PropertyContainer::addDynamicProperty(type, name, group, doc, attr, ro, hidden);
+    if (dynamicPropertySchemaAffectsPersistence(property)) {
+        // Document properties are not TransactionalObject payloads, so an
+        // unrelated open object transaction cannot own or roll back this
+        // schema change.
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    return property;
+}
+
+bool Document::changeDynamicProperty(const Property* property,
+                                     const char* group,
+                                     const char* doc)
+{
+    ensureCollaborationStructuralMutationAllowed(
+        CollaborationStructuralMutationKind::Restricted,
+        "Document::changeDynamicProperty");
+    const std::string oldGroup = property && getPropertyGroup(property)
+        ? getPropertyGroup(property)
+        : "";
+    const std::string oldDocumentation = property && getPropertyDocumentation(property)
+        ? getPropertyDocumentation(property)
+        : "";
+    const bool changed = PropertyContainer::changeDynamicProperty(property, group, doc);
+    const bool metadataChanged = property
+        && (oldGroup != (getPropertyGroup(property) ? getPropertyGroup(property) : "")
+            || oldDocumentation
+                != (getPropertyDocumentation(property) ? getPropertyDocumentation(property) : ""));
+    if (changed && metadataChanged && dynamicPropertySchemaAffectsPersistence(property)) {
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    return changed;
 }
 
 bool Document::renameDynamicProperty(Property* property, const char* name)
@@ -1285,7 +2109,11 @@ bool Document::renameDynamicProperty(Property* property, const char* name)
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Restricted,
         "Document::renameDynamicProperty");
-    return PropertyContainer::renameDynamicProperty(property, name);
+    const bool renamed = PropertyContainer::renameDynamicProperty(property, name);
+    if (renamed && dynamicPropertySchemaAffectsPersistence(property)) {
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    return renamed;
 }
 
 bool Document::removeDynamicProperty(const char* name)
@@ -1293,11 +2121,21 @@ bool Document::removeDynamicProperty(const char* name)
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Restricted,
         "Document::removeDynamicProperty");
-    return PropertyContainer::removeDynamicProperty(name);
+    auto* property = getDynamicPropertyByName(name);
+    const bool track = dynamicPropertySchemaAffectsPersistence(property);
+    const bool removed = PropertyContainer::removeDynamicProperty(name);
+    if (removed && track) {
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    return removed;
 }
 
 void Document::setStatus(const Status pos, const bool on) // NOLINT
 {
+    if (d->StatusBits.test(static_cast<size_t>(pos)) == on) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(*this);
     d->StatusBits.set(static_cast<size_t>(pos), on);
 }
 
@@ -1322,6 +2160,11 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    return collaborationService().undoCompatibilityTransaction(id);
+}
+
+bool Document::undoCompatibilityTransactionImpl(const int id)
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -1332,7 +2175,9 @@ bool Document::undo(const int id)
         }
         if (it->second != d->activeUndoTransaction) {
             while (!mUndoTransactions.empty() && mUndoTransactions.back() != it->second) {
-                undo(0);
+                if (!undoCompatibilityTransactionImpl(0)) {
+                    return false;
+                }
             }
         }
     }
@@ -1370,13 +2215,19 @@ bool Document::undo(const int id)
         }
     }
 
+    restoreTransactionFileState(mRedoTransactions.back()->getID(), false);
     signalUndo(*this);  // now signal the undo
-    signalBecameStable(*this);
+    emitCollaborationBecameStable();
 
     return true;
 }
 
 bool Document::redo(const int id)
+{
+    return collaborationService().redoCompatibilityTransaction(id);
+}
+
+bool Document::redoCompatibilityTransactionImpl(const int id)
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
@@ -1387,7 +2238,9 @@ bool Document::redo(const int id)
             return false;
         }
         while (!mRedoTransactions.empty() && mRedoTransactions.back() != it->second) {
-            redo(0);
+            if (!redoCompatibilityTransactionImpl(0)) {
+                return false;
+            }
         }
     }
 
@@ -1423,8 +2276,9 @@ bool Document::redo(const int id)
         }
     }
 
+    restoreTransactionFileState(mUndoTransactions.back()->getID(), true);
     signalRedo(*this);
-    signalBecameStable(*this);
+    emitCollaborationBecameStable();
     return true;
 }
 
@@ -1448,7 +2302,9 @@ void Document::changePropertyOfObject(TransactionalObject* obj,
             if (d->bookedTransaction == NullTransaction) {
                 d->bookedTransaction = GetApplication().getGlobalTransaction();
             } else {
-                _openTransaction(GetApplication().getTransactionName(d->bookedTransaction), d->bookedTransaction);
+                static_cast<void>(collaborationService().openMutationTransaction(
+                    GetApplication().getTransactionName(d->bookedTransaction),
+                    d->bookedTransaction));
             }
         }
     }
@@ -1463,6 +2319,10 @@ void Document::renamePropertyOfObject(TransactionalObject* obj,
     changePropertyOfObject(obj, prop, [this, obj, prop, oldName]() {
         d->activeUndoTransaction->renameProperty(obj, prop, oldName);
     });
+    if (dynamicPropertySchemaAffectsPersistence(prop)) {
+        markFileChange(obj->isDerivedFrom<DocumentObject>() ? DocumentFileChange::Model
+                                                            : DocumentFileChange::Appearance);
+    }
 }
 
 void Document::arrangeMovePropertyOfObject(TransactionalObject* obj,
@@ -1481,6 +2341,10 @@ void Document::addOrRemovePropertyOfObject(TransactionalObject* obj,
     changePropertyOfObject(obj, prop, [this, obj, prop, add]() {
         d->activeUndoTransaction->addOrRemoveProperty(obj, prop, add);
     });
+    if (dynamicPropertySchemaAffectsPersistence(prop)) {
+        markFileChange(obj->isDerivedFrom<DocumentObject>() ? DocumentFileChange::Model
+                                                            : DocumentFileChange::Appearance);
+    }
 }
 
 bool Document::isPerformingTransaction() const
@@ -1515,6 +2379,11 @@ std::vector<std::string> Document::getAvailableRedoNames() const
 
 int Document::openTransaction(TransactionName name, int tid) // NOLINT
 {
+    return collaborationService().openCompatibilityTransaction(std::move(name), tid);
+}
+
+int Document::openCompatibilityTransactionImpl(TransactionName name, int tid)
+{
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -1543,7 +2412,10 @@ int Document::openTransaction(std::string name, int tid)
     return openTransaction(TransactionName {.name = name, .temporary = false}, tid);
 }
 
-int Document::_openTransaction(std::string name, int id)
+int Document::_openTransaction(
+    std::string name,
+    int id,
+    const bool preserveRedoHistory)
 {
     ensureCollaborationTransactionControlAllowed();
     if (isTransactionLocked() && id != d->bookedTransaction) {
@@ -1573,12 +2445,15 @@ int Document::_openTransaction(std::string name, int id)
     if (d->activeUndoTransaction) {
         _commitTransaction(true);
     }
-    _clearRedos();
+    if (!preserveRedoHistory) {
+        _clearRedos();
+    }
 
     // When id == 0, this creates a new id
     // for instance, when there is no global transaction
     // from the application to stick to
     d->activeUndoTransaction = new Transaction(id);
+    d->activeTransactionFileChanges.reset();
     if (name.empty()) {
         name = "<empty>";
     }
@@ -1601,7 +2476,9 @@ int Document::_openTransaction(std::string name, int id)
     if (transactionInitiator && transactionInitiator != this && !transactionInitiator->hasPendingTransaction()) {
         std::string aname = std::format("-> {}", d->activeUndoTransaction->Name);
         FC_LOG("auto transaction " << getName() << " -> " << transactionInitiator->getName());
-        transactionInitiator->_openTransaction(aname, id);
+        static_cast<void>(transactionInitiator->collaborationService().openMutationTransaction(
+            std::move(aname),
+            id));
     }
     return id;
 }
@@ -1620,6 +2497,11 @@ void Document::renameTransaction(const std::string& name, const int id) const
     }
 }
 int Document::setActiveTransaction(TransactionName name, int tid)
+{
+    return collaborationService().setActiveCompatibilityTransaction(std::move(name), tid);
+}
+
+int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int tid)
 {
     ensureCollaborationTransactionControlAllowed();
     // Probably a group transaction situation
@@ -1731,7 +2613,8 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
                 }
             }
             if (!ignore) {
-                _openTransaction(name, d->bookedTransaction);
+                static_cast<void>(
+                    collaborationService().openMutationTransaction(name, d->bookedTransaction));
             }
             return;
         }
@@ -1744,7 +2627,7 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
     std::list<Transaction*>::iterator it;
     for (it = mUndoTransactions.begin(); it != mUndoTransactions.end(); ++it) {
         if ((*it)->hasObject(pcDelObj)) {
-            _openTransaction("Delete");
+            static_cast<void>(collaborationService().openMutationTransaction("Delete", 0));
             break;
         }
     }
@@ -1760,12 +2643,18 @@ void Document::_clearRedos()
 
     mRedoMap.clear();
     while (!mRedoTransactions.empty()) {
+        discardTransactionFileState(mRedoTransactions.back()->getID());
         delete mRedoTransactions.back();
         mRedoTransactions.pop_back();
     }
 }
 
 void Document::commitTransaction() // NOLINT
+{
+    collaborationService().commitCompatibilityTransaction();
+}
+
+void Document::commitCompatibilityTransactionImpl()
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
@@ -1785,12 +2674,12 @@ void Document::commitTransaction() // NOLINT
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
         d->bookedTransaction = 0; // Reset booked transaction even if it was not used
         if (wasRecoveryWriteBlocked) {
-            signalBecameStable(*this);
+            emitCollaborationBecameStable();
         }
     }
 }
 
-bool Document::_commitTransaction(const bool notify)
+bool Document::_commitTransaction(const bool notify, const bool retainUndoHistory)
 {
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction()) {
@@ -1812,7 +2701,18 @@ bool Document::_commitTransaction(const bool notify)
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
-            if (d->collaborationCommitNotificationBarrier) {
+            if (retainUndoHistory && d->activeTransactionFileChanges) {
+                d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
+            }
+            d->activeTransactionFileChanges.reset();
+
+            if (!retainUndoHistory) {
+                mUndoMap.erase(id);
+                discardTransactionFileState(id);
+                delete d->activeUndoTransaction;
+                d->activeUndoTransaction = nullptr;
+            }
+            else if (d->collaborationCommitNotificationBarrier) {
                 if (d->collaborationPreparedUndoSlot.empty()) {
                     throw Base::RuntimeError(
                         "collaboration commit finalization was not prepared");
@@ -1821,15 +2721,17 @@ bool Document::_commitTransaction(const bool notify)
                 mUndoTransactions.splice(mUndoTransactions.end(),
                                          d->collaborationPreparedUndoSlot,
                                          d->collaborationPreparedUndoSlot.begin());
+                d->activeUndoTransaction = nullptr;
             }
             else {
                 mUndoTransactions.push_back(d->activeUndoTransaction);
+                d->activeUndoTransaction = nullptr;
             }
-            d->activeUndoTransaction = nullptr;
 
             // check the stack for the limits
-            if (!d->collaborationCommitNotificationBarrier
+            if (retainUndoHistory && !d->collaborationCommitNotificationBarrier
                 && mUndoTransactions.size() > d->UndoMaxStackSize) {
+                discardTransactionFileState(mUndoTransactions.front()->getID());
                 mUndoMap.erase(mUndoTransactions.front()->getID());
                 delete mUndoTransactions.front();
                 mUndoTransactions.pop_front();
@@ -1855,13 +2757,18 @@ bool Document::_commitTransaction(const bool notify)
                 {CollaborationDeferredNotificationKind::BecameStable});
         }
         else {
-            signalBecameStable(*this);
+            emitCollaborationBecameStable();
         }
     }
     return true;
 }
 
 void Document::abortTransaction() const
+{
+    const_cast<Document*>(this)->collaborationService().abortCompatibilityTransaction();
+}
+
+void Document::abortCompatibilityTransactionImpl() const
 {
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
@@ -1878,7 +2785,7 @@ void Document::abortTransaction() const
         const bool wasRecoveryWriteBlocked = transactionStateBlocksRecoveryWrite(*d);
         d->bookedTransaction = 0; // Reset booked transaction even if it was not used
         if (wasRecoveryWriteBlocked) {
-            signalBecameStable(*this);
+            emitCollaborationBecameStable();
         }
     }
 }
@@ -1896,6 +2803,10 @@ void Document::_abortTransaction()
     bool aborted = false;
     if (d->activeUndoTransaction) {
         {
+            const auto previousState = getFileChangeState();
+            const auto previousChanges = getPendingFileChanges();
+            const bool previousFailure = d->lastCanonicalSaveFailed;
+            const auto transactionFileChanges = d->activeTransactionFileChanges;
             Base::FlagToggler<bool> flag(d->rollback);
             Application::TransactionSignaller signaller(true, true);
 
@@ -1903,9 +2814,20 @@ void Document::_abortTransaction()
             d->activeUndoTransaction->apply(*this, false);
 
             // destroy the undo
-            mUndoMap.erase(d->activeUndoTransaction->getID());
+            const int transactionId = d->activeUndoTransaction->getID();
+            mUndoMap.erase(transactionId);
+            discardTransactionFileState(transactionId);
             delete d->activeUndoTransaction;
             d->activeUndoTransaction = nullptr;
+            if (transactionFileChanges) {
+                d->fileChangeTokens.model.transactional = transactionFileChanges->before.model;
+                d->fileChangeTokens.appearance.transactional =
+                    transactionFileChanges->before.appearance;
+                d->fileChangeTokens.compatibility.transactional =
+                    transactionFileChanges->before.compatibility;
+            }
+            d->activeTransactionFileChanges.reset();
+            emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure);
             if (d->collaborationCommitNotificationBarrier) {
                 d->collaborationDeferredNotifications.push_back(
                     {CollaborationDeferredNotificationKind::AbortTransaction});
@@ -1922,13 +2844,20 @@ void Document::_abortTransaction()
                 {CollaborationDeferredNotificationKind::BecameStable});
         }
         else {
-            signalBecameStable(*this);
+            emitCollaborationBecameStable();
         }
     }
 }
 
 CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcept
 {
+    static_assert(noexcept(std::declval<std::unordered_set<std::string>&>().swap(
+        std::declval<std::unordered_set<std::string>&>())));
+    static_assert(noexcept(std::declval<std::unordered_set<DocumentObject*>&>().swap(
+        std::declval<std::unordered_set<DocumentObject*>&>())));
+    static_assert(noexcept(std::declval<std::vector<DocumentObjectT>&>().swap(
+        std::declval<std::vector<DocumentObjectT>&>())));
+
     CollaborationRollbackResult result;
     std::size_t diagnosticSize = 0;
     const auto appendDiagnostic = [&](const char* stage, const char* detail = nullptr) noexcept {
@@ -1955,7 +2884,13 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
     }
 
     Transaction* transaction = d->activeUndoTransaction;
+    const auto previousFileState = getFileChangeState();
+    const auto previousFileChanges = getPendingFileChanges();
+    const bool previousSaveFailure = d->lastCanonicalSaveFailed;
+    const auto transactionFileChanges = d->activeTransactionFileChanges;
+    const int transactionId = transaction->getID();
     bool transactionRestoreSucceeded = true;
+    bool boundaryStateRestored = false;
     {
         Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted,
                                                   false);
@@ -1998,13 +2933,16 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
             d->collaborationObjectIdentities.swap(
                 d->collaborationBoundaryObjectIdentities);
             d->activeObject = d->collaborationBoundaryActiveObject;
+            boundaryStateRestored = true;
         }
     }
 
-    mUndoMap.erase(transaction->getID());
+    mUndoMap.erase(transactionId);
+    discardTransactionFileState(transactionId);
     delete transaction;
     d->activeUndoTransaction = nullptr;
     d->bookedTransaction = 0;
+    d->activeTransactionFileChanges.reset();
 
     try {
         if (d->collaborationCommitNotificationBarrier) {
@@ -2022,31 +2960,47 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
         appendDiagnostic("abort notification failed with an unknown exception");
     }
 
-    bool recomputeHasError = false;
-    try {
-        Base::FlagToggler<bool> rollbackStabilizing(
-            d->collaborationRollbackStabilizing);
-        static_cast<void>(recompute({}, true, &recomputeHasError));
-    }
-    catch (const Base::Exception& exception) {
-        appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
-    }
-    catch (const std::exception& exception) {
-        appendDiagnostic("rollback stabilization recompute failed: ", exception.what());
-    }
-    catch (...) {
-        appendDiagnostic("rollback stabilization recompute failed with an unknown exception");
-    }
-    if (recomputeHasError) {
-        appendDiagnostic("rollback stabilization recompute reported an object error");
-    }
-
-    for (const auto* object : d->objectArray) {
-        if (object->isTouched() || object->isError()) {
-            appendDiagnostic("rollback left object unstable: ", object->getNameInDocument());
-            break;
+    if (boundaryStateRestored) {
+        // Swap the fully preallocated boundary snapshot back, then restore
+        // the exact scheduler/status provenance for both eager and deferred
+        // rollback. This covers NoTouch and pre-existing object errors without
+        // allocating in the noexcept recovery path.
+        d->_RecomputeLog.swap(d->collaborationBoundaryRecomputeLog);
+        d->pendingRemove.swap(d->collaborationBoundaryPendingRemove);
+        d->touchedObjs.swap(d->collaborationBoundaryTouchedObjects);
+        for (auto& state : d->collaborationBoundaryObjectSchedulerStates) {
+            if (!state.object) {
+                continue;
+            }
+            state.object->StatusBits = std::bitset<32>(state.status);
+            state.object->touchedProps.swap(state.touchedProperties);
+            state.object->ExpressionEngine.StatusBits =
+                std::bitset<32>(state.expressionStatus);
+            const bool errorBefore =
+                (state.status & (1UL << ObjectStatus::Error)) != 0;
+            if (state.object->getStatus() != state.status
+                || state.object->ExpressionEngine.isTouched()
+                    != ((state.expressionStatus
+                         & (1UL << Property::Touched)) != 0)
+                || state.object->ExpressionEngine.getStatus()
+                    != state.expressionStatus
+                || state.object->isTouched() != state.touched
+                || state.object->isError() != errorBefore) {
+                appendDiagnostic("scheduler state could not be restored for object: ",
+                                 state.object->getNameInDocument());
+            }
         }
     }
+
+    if (transactionFileChanges && result.restored) {
+        d->fileChangeTokens.model.transactional = transactionFileChanges->before.model;
+        d->fileChangeTokens.appearance.transactional =
+            transactionFileChanges->before.appearance;
+        d->fileChangeTokens.compatibility.transactional =
+            transactionFileChanges->before.compatibility;
+    }
+    emitFileChangeStateIfChanged(
+        previousFileState, previousFileChanges, previousSaveFailure);
 
     return result;
 }
@@ -2129,10 +3083,16 @@ void Document::clearDocument() // NOLINT
         static_cast<void>(d->collaborationRevisions.publish(clearPublication));
     }
     d->collaborationObjectIdentities.clear();
+    markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
 }
 
 
 void Document::clearUndos()
+{
+    collaborationService().clearCompatibilityTransactionHistory();
+}
+
+void Document::clearCompatibilityTransactionHistoryImpl()
 {
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
@@ -2153,6 +3113,7 @@ void Document::clearUndos()
     // is deleted we must make sure not access an object once it's destroyed. Thus, we
     // go from front to back and not the other way round.
     while (!mUndoTransactions.empty()) {
+        discardTransactionFileState(mUndoTransactions.front()->getID());
         delete mUndoTransactions.front();
         mUndoTransactions.pop_front();
     }
@@ -2162,6 +3123,17 @@ void Document::clearUndos()
     // }
 
     _clearRedos();
+    d->transactionFileChanges.clear();
+}
+
+bool Document::commitApplicationTransactionThroughCoordinator()
+{
+    return collaborationService().commitApplicationTransaction();
+}
+
+void Document::abortApplicationTransactionThroughCoordinator()
+{
+    collaborationService().abortApplicationTransaction();
 }
 
 int Document::getAvailableUndos(const int id) const
@@ -2235,6 +3207,9 @@ void Document::onBeforeChange(const Property* prop)
     if (prop == &Label) {
         oldLabel = Label.getValue();
     }
+    if (saveBookkeepingPropertySuppressed(*d, prop)) {
+        return;
+    }
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::DocumentBeforeChange,
@@ -2248,18 +3223,39 @@ void Document::onBeforeChange(const Property* prop)
 
 void Document::onChanged(const Property* prop)
 {
-    if (d->collaborationCommitNotificationBarrier) {
+    const bool suppressBookkeepingProperty =
+        saveBookkeepingPropertySuppressed(*d, prop);
+    if (shouldTrackFileChange(prop)) {
+        // App::Document itself is not a TransactionalObject. Its persistent
+        // properties therefore stay dirty independently of any object
+        // transaction that happens to be open.
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    else if (prop == &FileName && !suppressBookkeepingProperty
+             && !d->suppressFileChangeTracking && !d->rollback
+             && !d->undoing && !testStatus(Document::Restoring)
+             && !testStatus(Document::Importing)) {
+        // FileName is transient, but it selects the canonical save target.
+        // Publish the path-bound state transition without minting a content
+        // token, so restoring the prior canonical path can become clean again.
+        emitFileChangeStateIfChanged(getFileChangeState(),
+                                     getPendingFileChanges(),
+                                     d->lastCanonicalSaveFailed,
+                                     true);
+    }
+
+    if (!suppressBookkeepingProperty && d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::DocumentChanged,
              nullptr,
              const_cast<Property*>(prop)});
     }
-    else {
+    else if (!suppressBookkeepingProperty) {
         signalChanged(*this, *prop);
     }
 
     // the Name property is a label for display purposes
-    if (prop == &Label) {
+    if (prop == &Label && !suppressBookkeepingProperty) {
         Base::FlagToggler<> flag(globalIsRelabeling);
         GetApplication().signalRelabelDocument(*this);
     }
@@ -2344,6 +3340,11 @@ void Document::onBeforeChangeProperty(const TransactionalObject* Who, const Prop
 
 void Document::onChangedProperty(const DocumentObject* Who, const Property* What)
 {
+    if (shouldTrackFileChange(What)) {
+        markFileChange(What == &Who->Visibility ? DocumentFileChange::Appearance
+                                               : DocumentFileChange::Model);
+    }
+
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::ObjectChanged,
@@ -2368,6 +3369,7 @@ Document::Document(const char* documentName)
     : d(new DocumentP), myName(documentName)
 {
     d->collaborationService.reset(new DocumentCollaborationService(*this));
+    d->recomputeCoordinator.reset(new DocumentRecomputeCoordinator(*d->collaborationService));
     // Remark: In a constructor we should never increment a Python object as we cannot be sure
     // if the Python interpreter gets a reference of it. E.g. if we increment but Python don't
     // get a reference then the object wouldn't get deleted in the destructor.
@@ -2423,6 +3425,9 @@ Document::Document(const char* documentName)
     Base::Uuid id;
     ADD_PROPERTY_TYPE(Id, (""), 0, Prop_None, "ID of the document");
     ADD_PROPERTY_TYPE(Uid, (id), 0, Prop_ReadOnly, "UUID of the document");
+    // A newly created document has no durable baseline. Constructor defaults
+    // are its root state; structural/model edits advance tokens from here.
+    d->canonicalSaveTokens = d->fileChangeTokens;
 
     // license stuff
     auto paramGrp {GetApplication().GetParameterGroupByPath(
@@ -2469,6 +3474,29 @@ Document::Document(const char* documentName)
                       PropertyType(Prop_Hidden | Prop_ReadOnly),
                       "Link of the tip object of the document");
     Uid.touch();
+    d->suppressFileChangeTracking = false;
+}
+
+void Document::onPropertyStatusChanged(const Property& property, const unsigned long oldStatus)
+{
+    if (!d->suppressFileChangeTracking && !d->rollback && !d->undoing
+        && !testStatus(Document::Restoring) && !testStatus(Document::Importing)
+        && propertyStatusChangeAffectsPersistence(property, oldStatus)) {
+        markFileChange(DocumentFileChange::Model, DocumentFileChangeOwnership::Sticky);
+    }
+    PropertyContainer::onPropertyStatusChanged(property, oldStatus);
+}
+
+Document::FileChangeTrackingScope::FileChangeTrackingScope(Document& owner)
+    : document(owner)
+    , previous(owner.d->suppressFileChangeTracking)
+{
+    document.d->suppressFileChangeTracking = true;
+}
+
+Document::FileChangeTrackingScope::~FileChangeTrackingScope()
+{
+    document.d->suppressFileChangeTracking = previous;
 }
 
 Document::~Document()
@@ -2797,6 +3825,30 @@ void Document::exportObjects(const std::vector<DocumentObject*>& obj, std::ostre
     // write additional files
     writer.writeFiles();
     d->hashers.clear();
+}
+
+void Document::exportObjectsForIsolatedRecompute(
+    const std::vector<DocumentObject*>& objects,
+    std::ostream& out)
+{
+    DocumentExporting exporting(objects);
+    d->hashers.clear();
+    BOOST_SCOPE_EXIT_ALL(&) {
+        d->hashers.clear();
+    };
+
+    Base::ZipWriter writer(out);
+    writer.putNextEntry("Document.xml");
+    writer.Stream() << "<?xml version='1.0' encoding='utf-8'?>\n"
+                    << R"(<Document SchemaVersion="4" ProgramVersion=")"
+                    << Application::Config()["BuildVersionMajor"] << "."
+                    << Application::Config()["BuildVersionMinor"] << "R"
+                    << Application::Config()["BuildRevision"] << R"(" FileVersion="1">)"
+                    << '\n'
+                    << "<Properties Count=\"0\">\n</Properties>\n";
+    writeObjects(objects, writer);
+    writer.Stream() << "</Document>\n";
+    writer.writeFiles();
 }
 
 constexpr auto fcAttrDependencies {"Dependencies"};
@@ -3298,6 +4350,9 @@ unsigned int Document::getMemSize() const
 
 static std::string checkFileName(const char* file)
 {
+    if (!file) {
+        throw Base::ValueError("A file path is required");
+    }
     std::string fn(file);
 
     // Append extension if missing. This option is added for security reason, so
@@ -3331,52 +4386,383 @@ static std::string checkFileName(const char* file)
     return fn;
 }
 
+void Document::ensureCollaborationSaveAllowed() const
+{
+    // This guard deliberately runs before any save outcome construction,
+    // failure-overlay update, identity staging, notification, or filesystem
+    // access. A prepared transaction is rollbackable in memory; a durable
+    // write of its provisional state is not.
+    enforceAtomicPresentationMutationTarget(*this);
+    if (d->collaborationCommitNotificationBarrier) {
+        throw Base::RuntimeError(
+            "document saving is unavailable during a prepared commit");
+    }
+}
+
 bool Document::saveAs(const char* _file)
 {
-    return saveAsWithPolicy(_file, true) == DocumentSaveAsStatus::Saved;
+    ensureCollaborationSaveAllowed();
+    const std::string file = checkFileName(_file);
+    return saveWithOutcomeImpl(
+               DocumentSaveIntent::SaveAs, file, true, true, false)
+        .succeeded();
 }
 
 DocumentSaveAsStatus Document::saveAsWithPolicy(const char* _file, const bool overwrite)
 {
-    enforceAtomicPresentationMutationTarget(*this);
-
-    const std::string file = checkFileName(_file);
-    const Base::FileInfo fi(file.c_str());
-    if (!overwrite && this->FileName.getStrValue() != file && fi.exists()) {
-        return DocumentSaveAsStatus::DestinationExists;
+    ensureCollaborationSaveAllowed();
+    const auto outcome = saveAsWithOutcome(_file, overwrite);
+    if (outcome.succeeded()) {
+        return DocumentSaveAsStatus::Saved;
     }
-    if (this->FileName.getStrValue() != file) {
-        Base::FlagToggler<> suppressRevisions(
-            d->suppressCollaborationRevisionPublication,
-            false
-        );
-        this->FileName.setValue(file);
-        this->Label.setValue(fi.fileNamePure());
-        this->Uid.touch();  // this forces a rename of the transient directory
-    }
-
-    return save() ? DocumentSaveAsStatus::Saved : DocumentSaveAsStatus::SaveFailed;
+    return outcome.errorCode == "DESTINATION_EXISTS"
+        ? DocumentSaveAsStatus::DestinationExists
+        : DocumentSaveAsStatus::SaveFailed;
 }
 
 bool Document::saveCopy(const char* file) const
 {
-    enforceAtomicPresentationMutationTarget(*this);
-
-    const std::string checked = checkFileName(file);
-    return this->FileName.getStrValue() != checked ? saveToFile(checked.c_str()) : false;
+    ensureCollaborationSaveAllowed();
+    return const_cast<Document*>(this)
+        ->saveCopyWithOutcomeImpl(checkFileName(file), false)
+        .succeeded();
 }
 
+DocumentSaveOutcome Document::saveWithOutcome()
+{
+    ensureCollaborationSaveAllowed();
+    try {
+        return saveWithOutcomeImpl(
+            DocumentSaveIntent::Canonical, FileName.getStrValue(), false, false, true);
+    }
+    catch (const std::exception& exception) {
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::Canonical;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = outcome.canonicalPath;
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = exception.what();
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    }
+}
+
+DocumentSaveOutcome Document::forceSave()
+{
+    ensureCollaborationSaveAllowed();
+    try {
+        return saveWithOutcomeImpl(
+            DocumentSaveIntent::Force, FileName.getStrValue(), true, false, true);
+    }
+    catch (const std::exception& exception) {
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::Force;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = outcome.canonicalPath;
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = exception.what();
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    }
+}
+
+DocumentSaveOutcome Document::saveAsWithOutcome(const char* file, const bool overwrite)
+{
+    return saveAsWithOutcome(file, overwrite, {});
+}
+
+DocumentSaveOutcome Document::saveAsWithOutcome(
+    const char* file,
+    const bool overwrite,
+    const std::string& expectedDestinationSha256)
+{
+    ensureCollaborationSaveAllowed();
+    std::string checked;
+    const auto preflightFailure = [this, file](const char* message) {
+        const auto previousState = getFileChangeState();
+        const auto previousChanges = getPendingFileChanges();
+        const bool previousFailure = d->lastCanonicalSaveFailed;
+        d->lastCanonicalSaveFailed = true;
+        emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure);
+
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::SaveAs;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = file ? file : "";
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = message ? message : "Save As preflight failed";
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    };
+    try {
+        enforceAtomicPresentationMutationTarget(*this);
+        checked = checkFileName(file);
+    }
+    catch (const Base::Exception& exception) {
+        return preflightFailure(exception.what());
+    }
+    catch (const std::exception& exception) {
+        return preflightFailure(exception.what());
+    }
+    catch (...) {
+        return preflightFailure("Save As preflight failed with an unknown exception");
+    }
+
+    // Saving the already adopted canonical path is not a no-clobber conflict.
+    // Every other overwrite=false request remains authoritative at the final
+    // filesystem namespace primitive, after serialization has completed.
+    const bool replaceExisting = overwrite || FileName.getStrValue() == checked;
+    return saveWithOutcomeImpl(
+        DocumentSaveIntent::SaveAs,
+        checked,
+        true,
+        true,
+        true,
+        replaceExisting,
+        expectedDestinationSha256);
+}
+
+DocumentSaveOutcome Document::saveCopyWithOutcome(const char* file)
+{
+    ensureCollaborationSaveAllowed();
+    try {
+        enforceAtomicPresentationMutationTarget(*this);
+        return saveCopyWithOutcomeImpl(checkFileName(file), true);
+    }
+    catch (const Base::Exception& exception) {
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::Copy;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = file ? file : "";
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = exception.what();
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    }
+    catch (const std::exception& exception) {
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::Copy;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = file ? file : "";
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = exception.what();
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    }
+    catch (...) {
+        DocumentSaveOutcome outcome;
+        outcome.intent = DocumentSaveIntent::Copy;
+        outcome.canonicalPath = FileName.getStrValue();
+        outcome.targetPath = file ? file : "";
+        outcome.errorCode = "SAVE_PREFLIGHT_FAILED";
+        outcome.message = "Save Copy preflight failed with an unknown exception";
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return outcome;
+    }
+}
+
+DocumentSaveOutcome Document::saveCopyWithOutcomeImpl(const std::string& path,
+                                                      const bool captureErrors)
+{
+    ensureCollaborationSaveAllowed();
+    DocumentSaveOutcome outcome;
+    outcome.intent = DocumentSaveIntent::Copy;
+    outcome.canonicalPath = FileName.getStrValue();
+    outcome.targetPath = path;
+    std::string replacementFailureCode = "FILE_WRITE_FAILED";
+    std::string replacementFailureMessage = "The document copy could not be written";
+    std::string committedMessage = "Saved copy to '" + path
+        + "'; the original file was not changed.";
+
+    const auto finish = [&]() {
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return std::move(outcome);
+    };
+
+    if (path.empty()) {
+        outcome.errorCode = "MISSING_COPY_PATH";
+        outcome.message = "A destination path is required to save a copy";
+        return finish();
+    }
+    const auto targetIdentity = compareFilePathIdentityNoThrow(FileName.getStrValue(), path);
+    if (targetIdentity == FilePathIdentity::Same) {
+        outcome.errorCode = "COPY_TARGET_IS_CANONICAL";
+        outcome.message = "Save Copy cannot overwrite the canonical document";
+        return finish();
+    }
+    if (targetIdentity == FilePathIdentity::Indeterminate) {
+        outcome.errorCode = "COPY_TARGET_VALIDATION_FAILED";
+        outcome.message =
+            "Save Copy could not verify that the destination is separate from the canonical document";
+        return finish();
+    }
+
+    Internal::DocumentFileReplacementResult replacement;
+    try {
+        replacement = saveToFileWithPolicy(path.c_str(),
+                                           nullptr,
+                                           DocumentSaveIntent::Copy,
+                                           true,
+                                           {},
+                                           FileName.getStrValue());
+    }
+    catch (const Base::Exception& exception) {
+        if (!captureErrors) {
+            outcome.errorCode = "FILE_WRITE_FAILED";
+            outcome.message = exception.what();
+            static_cast<void>(finish());
+            throw;
+        }
+        outcome.errorCode = "FILE_WRITE_FAILED";
+        outcome.message = exception.what();
+        return finish();
+    }
+    catch (const std::exception& exception) {
+        if (!captureErrors) {
+            outcome.errorCode = "FILE_WRITE_FAILED";
+            outcome.message = exception.what();
+            static_cast<void>(finish());
+            throw;
+        }
+        outcome.errorCode = "FILE_WRITE_FAILED";
+        outcome.message = exception.what();
+        return finish();
+    }
+    catch (...) {
+        constexpr auto message = "The document copy failed with an unknown exception";
+        if (!captureErrors) {
+            outcome.errorCode = "FILE_WRITE_FAILED";
+            outcome.message = message;
+            static_cast<void>(finish());
+            throw;
+        }
+        outcome.errorCode = "FILE_WRITE_FAILED";
+        outcome.message = message;
+        return finish();
+    }
+
+    outcome.fileWritten = replacement.fileWritten;
+    outcome.durabilityVerified = replacement.durabilityVerified;
+    outcome.warnings = std::move(replacement.warnings);
+    if (!replacement.succeeded()) {
+        if (replacement.fileWritten) {
+            runPostDurableSaveMaintenance(
+                outcome.warnings, "failed replacement outcome promotion", [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                    invokePostDurableSaveCheckpoint(
+                        Internal::DocumentPostDurableSaveCheckpoint::
+                            BeforeFailedReplacementOutcomePromotion);
+#endif
+                });
+        }
+        if (replacement.errorCode.empty()) {
+            outcome.errorCode.swap(replacementFailureCode);
+        }
+        else {
+            outcome.errorCode.swap(replacement.errorCode);
+        }
+        if (replacement.message.empty()) {
+            outcome.message.swap(replacementFailureMessage);
+        }
+        else {
+            outcome.message.swap(replacement.message);
+        }
+        if (!captureErrors) {
+            auto failure = finish();
+            throw Base::FileException(failure.message.c_str(), Base::FileInfo(path.c_str()));
+        }
+        return finish();
+    }
+
+    outcome.disposition = DocumentSaveDisposition::CopyWritten;
+    outcome.message.swap(committedMessage);
+    return finish();
+}
 bool Document::canWriteRecoverySnapshot() const
 {
     return !testStatus(Document::PartialDoc) && !testStatus(Document::TempDoc)
         && !testStatus(Document::Recomputing) && !transactionStateBlocksRecoveryWrite(*d)
-        && !isPerformingTransaction() && !mustExecute();
+        && !isPerformingTransaction() && !mustExecute()
+        && d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) == 0
+        && !d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        && d->pendingRemove.empty();
 }
 
+DocumentMutationReadiness Document::getMutationReadiness() const
+{
+    DocumentMutationReadiness readiness;
+    readiness.pendingTransaction = hasPendingTransaction();
+    readiness.bookedTransaction = d->bookedTransaction;
+    readiness.transactionLocked = isTransactionLocked();
+    readiness.recomputing = testStatus(Document::Recomputing)
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0;
+    readiness.mustExecute = mustExecute();
+    readiness.pendingRemoval =
+        d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        || !d->pendingRemove.empty();
+    readiness.commitBarrier = d->collaborationCommitNotificationBarrier;
+    readiness.notificationReplay = d->collaborationReplayingNotifications;
+    readiness.poisoned = d->collaborationCommitPoisoned;
+    readiness.quarantined = readiness.poisoned;
+    readiness.ready = !readiness.pendingTransaction && readiness.bookedTransaction == 0
+        && !readiness.transactionLocked && !readiness.recomputing && !readiness.commitBarrier
+        && !readiness.notificationReplay && !readiness.poisoned && !readiness.mustExecute
+        && !readiness.pendingRemoval;
+
+    if (readiness.poisoned) {
+        readiness.diagnostic = d->collaborationCommitPoisonDiagnostic.data();
+    }
+    else if (readiness.commitBarrier) {
+        readiness.diagnostic = "A native commit is being prepared";
+    }
+    else if (readiness.notificationReplay) {
+        readiness.diagnostic = "Committed notifications are being replayed";
+    }
+    else if (readiness.pendingTransaction || readiness.bookedTransaction != 0) {
+        readiness.diagnostic = "A document transaction is active";
+    }
+    else if (readiness.transactionLocked) {
+        readiness.diagnostic = "Document transactions are locked";
+    }
+    else if (readiness.recomputing) {
+        readiness.diagnostic = "The document is recomputing";
+    }
+    else if (readiness.mustExecute) {
+        readiness.diagnostic = "The document has pending recompute work";
+    }
+    else if (readiness.pendingRemoval) {
+        readiness.diagnostic = "The document has pending object removal work";
+    }
+    else {
+        readiness.diagnostic = "Ready for mutation";
+    }
+    return readiness;
+}
 // Save the document under the name it has been opened
 bool Document::save()
 {
-    enforceAtomicPresentationMutationTarget(*this);
+    ensureCollaborationSaveAllowed();
 
     if (testStatus(Document::PartialDoc)) {
         FC_ERR("Partial loaded document '" << Label.getValue() << "' cannot be saved");
@@ -3386,116 +4772,494 @@ bool Document::save()
         return true;
     }
 
-    if (*(FileName.getValue()) != '\0') {
-        {
-            Base::FlagToggler<> suppressRevisions(
-                d->suppressCollaborationRevisionPublication,
-                false
-            );
-            // Save the name of the tip object in order to handle in Restore()
-            if (Tip.getValue()) {
-                TipName.setValue(Tip.getValue()->getNameInDocument());
-            }
+    if (*(FileName.getValue()) == '\0') {
+        return false;
+    }
+    return saveWithOutcomeImpl(
+               DocumentSaveIntent::Canonical,
+               FileName.getStrValue(),
+               false,
+               false,
+               false)
+        .succeeded();
+}
 
-            const std::string LastModifiedDateString = Base::Tools::currentDateTimeString();
-            LastModifiedDate.setValue(LastModifiedDateString.c_str());
-            // set author if needed
-            const bool saveAuthor =
-                GetApplication()
-                    .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                    ->GetBool("prefSetAuthorOnSave", false);
-            if (saveAuthor) {
-                const std::string Author =
-                    GetApplication()
-                        .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                        ->GetASCII("prefAuthor", "");
-                LastModifiedBy.setValue(Author.c_str());
-            }
-        }
-
-        bool result = saveToFile(FileName.getValue());
-        if (result) {
-            d->programVersion = Application::Config()["BuildVersionMajor"] + "."
-                + Application::Config()["BuildVersionMinor"] + "R"
-                + Application::Config()["BuildRevision"];
-        }
-        return result;
+void Document::prepareCanonicalSaveMetadata()
+{
+    if (Tip.getValue()) {
+        TipName.setValue(Tip.getValue()->getNameInDocument());
     }
 
-    return false;
+    LastModifiedDate.setValue(Base::Tools::currentDateTimeString().c_str());
+    const bool saveAuthor =
+        GetApplication()
+            .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+            ->GetBool("prefSetAuthorOnSave", false);
+    if (saveAuthor) {
+        LastModifiedBy.setValue(
+            GetApplication()
+                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                ->GetASCII("prefAuthor", "")
+                .c_str());
+    }
+}
+
+DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent intent,
+                                                  const std::string& path,
+                                                  const bool forceWrite,
+                                                  const bool adoptIdentity,
+                                                  const bool captureErrors,
+                                                  const bool overwriteDestination,
+                                                  std::string expectedDestinationSha256)
+{
+    ensureCollaborationSaveAllowed();
+    DocumentSaveOutcome outcome;
+    outcome.intent = intent;
+    outcome.canonicalPath = FileName.getStrValue();
+    outcome.targetPath = path;
+    std::string replacementFailureCode = "FILE_WRITE_FAILED";
+    std::string replacementFailureMessage = "The canonical file could not be written";
+
+    const auto finish = [&]() {
+        outcome.resultingState = getFileChangeState();
+        outcome.pendingChanges = getPendingFileChanges();
+        outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+        emitSaveOutcomeSafely(*this, outcome);
+        return std::move(outcome);
+    };
+    const auto fail = [&](std::string code, std::string message, const bool canonicalFailure) {
+        const auto previousState = getFileChangeState();
+        const auto previousChanges = getPendingFileChanges();
+        const bool previousFailure = d->lastCanonicalSaveFailed;
+        outcome.errorCode = std::move(code);
+        outcome.message = std::move(message);
+        if (canonicalFailure) {
+            d->lastCanonicalSaveFailed = true;
+            emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure);
+        }
+        return finish();
+    };
+
+    // A canonical FCStd can persist PropertyXLink references into other live
+    // documents. Refuse the save while any document in that exact persistent
+    // dependency closure still has active or unresolved executable recompute
+    // work; unrelated open documents are deliberately outside this guard.
+    for (auto* dependency : getDependentDocuments(false)) {
+        if (!dependency) {
+            continue;
+        }
+        const bool activeRecompute =
+            dependency->recomputeCoordinator().hasPendingWork();
+        const bool unresolvedRecompute =
+            dependency->recomputeCoordinator().hasUnresolvedWork()
+            && dependency->mustExecute();
+        if (activeRecompute || unresolvedRecompute) {
+            return fail(
+                "RECOMPUTE_PENDING",
+                "Canonical save of document '" + std::string(getName())
+                    + "' refused while dependency document '"
+                    + std::string(dependency->getName())
+                    + "' has pending recompute work",
+                false);
+        }
+    }
+
+    try {
+        enforceAtomicPresentationMutationTarget(*this);
+    }
+    catch (const Base::Exception& exception) {
+        if (!captureErrors) {
+            static_cast<void>(fail("SAVE_PREFLIGHT_FAILED", exception.what(), true));
+            throw;
+        }
+        return fail("SAVE_PREFLIGHT_FAILED", exception.what(), true);
+    }
+    catch (const std::exception& exception) {
+        if (!captureErrors) {
+            static_cast<void>(fail("SAVE_PREFLIGHT_FAILED", exception.what(), true));
+            throw;
+        }
+        return fail("SAVE_PREFLIGHT_FAILED", exception.what(), true);
+    }
+    catch (...) {
+        constexpr auto message = "Save preflight failed with an unknown exception";
+        if (!captureErrors) {
+            static_cast<void>(fail("SAVE_PREFLIGHT_FAILED", message, true));
+            throw;
+        }
+        return fail("SAVE_PREFLIGHT_FAILED", message, true);
+    }
+
+    if (testStatus(Document::PartialDoc)) {
+        return fail("PARTIAL_DOCUMENT",
+                    "A partially loaded document cannot be saved canonically",
+                    true);
+    }
+    if (path.empty()) {
+        return fail("MISSING_CANONICAL_PATH",
+                    "The document has no canonical file path",
+                    true);
+    }
+    if (hasPendingTransaction() || transacting() || testStatus(Document::Recomputing)) {
+        return fail("DOCUMENT_NOT_STABLE_FOR_SAVE",
+                    "The document is not at a stable save boundary",
+                    true);
+    }
+    if (!expectedDestinationSha256.empty() && !overwriteDestination) {
+        return fail("EXPECTED_DESTINATION_REQUIRES_OVERWRITE",
+                    "An expected destination SHA-256 requires overwrite=true",
+                    true);
+    }
+
+    const Base::FileInfo currentFile(path.c_str());
+    if (!forceWrite && path == d->canonicalSavePath && !bool(getPendingFileChanges())
+        && currentFile.exists()) {
+        const auto previousState = getFileChangeState();
+        const auto previousChanges = getPendingFileChanges();
+        const bool previousFailure = d->lastCanonicalSaveFailed;
+        d->lastCanonicalSaveFailed = false;
+        emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure);
+        outcome.disposition = DocumentSaveDisposition::Unchanged;
+        outcome.message = "No document changes to save. '" + path + "' was not written.";
+        return finish();
+    }
+
+    const std::string oldFileName = FileName.getStrValue();
+    const std::string oldLabel = Label.getStrValue();
+    const std::string oldTipName = TipName.getStrValue();
+    const std::string oldModifiedDate = LastModifiedDate.getStrValue();
+    const std::string oldModifiedBy = LastModifiedBy.getStrValue();
+    const Base::Uuid oldUid = Uid.getValue();
+    const std::string oldTransientDir = TransientDir.getStrValue();
+    const bool identityChanged = adoptIdentity && oldFileName != path;
+    const std::string adoptedLabel = identityChanged
+        ? Base::FileInfo(path.c_str()).fileNamePure()
+        : oldLabel;
+    const bool adoptedLabelChanged = identityChanged && oldLabel != adoptedLabel;
+    std::optional<Base::FlagToggler<>> stagedNotificationSuppression;
+    if (identityChanged) {
+        // No provisional identity or save metadata may escape before the
+        // retained-handle replacement has reached a verified durable result.
+        stagedNotificationSuppression.emplace(
+            d->suppressSaveBookkeepingNotifications, false);
+    }
+
+    const auto restoreBookkeeping = [&](std::string& diagnostic) noexcept {
+        bool restored = true;
+        const auto appendDiagnostic = [&](const char* text) noexcept {
+            try {
+                diagnostic += text;
+            }
+            catch (...) {
+                // Identity verification remains authoritative even if an
+                // allocation prevents a detailed diagnostic.
+            }
+        };
+        const auto attempt = [&](const char* name, auto&& setter) {
+            try {
+                setter();
+            }
+            catch (const Base::Exception& exception) {
+                restored = false;
+                appendDiagnostic(name);
+                appendDiagnostic(": ");
+                appendDiagnostic(exception.what());
+                appendDiagnostic("; ");
+            }
+            catch (const std::exception& exception) {
+                restored = false;
+                appendDiagnostic(name);
+                appendDiagnostic(": ");
+                appendDiagnostic(exception.what());
+                appendDiagnostic("; ");
+            }
+            catch (...) {
+                restored = false;
+                appendDiagnostic(name);
+                appendDiagnostic(": unknown exception; ");
+            }
+        };
+
+        try {
+            ScopedSaveBookkeepingProperties suppressBookkeeping(
+                d->suppressSaveBookkeepingNotifications,
+                d->saveBookkeepingPropertySuppression,
+                d->collaborationPropertyPublicationSuppression,
+                {&FileName,
+                 &Label,
+                 &Uid,
+                 &TransientDir,
+                 &TipName,
+                 &LastModifiedDate,
+                 &LastModifiedBy});
+
+            // Restore identity before save metadata.  In particular Uid::onChanged
+            // derives the transient-directory move from the restored FileName.
+            if (identityChanged) {
+                attempt("FileName", [&] { FileName.setValue(oldFileName); });
+                attempt("Label", [&] { Label.setValue(oldLabel); });
+                // onBeforeChange() records the staged label while the
+                // notification-suppressed rollback sets the property back.
+                // Restore that legacy relabel bookkeeping as well.
+                attempt("Label change bookkeeping", [&] { this->oldLabel = oldLabel; });
+                attempt("Uid", [&] { Uid.setValue(oldUid); });
+                // Staging calls Uid.touch(), so the UUID normally never
+                // changes. Touch it again after FileName restoration to run
+                // Document::onChanged and move the staged transient directory
+                // back to its original identity binding.
+                attempt("Uid transient-directory repair", [&] { Uid.touch(); });
+                // Reapply the property binding as a separate best-effort
+                // repair so every setter is attempted even when an earlier
+                // repair fails.
+                attempt("TransientDir", [&] { TransientDir.setValue(oldTransientDir); });
+            }
+            attempt("TipName", [&] { TipName.setValue(oldTipName); });
+            attempt("LastModifiedDate", [&] { LastModifiedDate.setValue(oldModifiedDate); });
+            attempt("LastModifiedBy", [&] { LastModifiedBy.setValue(oldModifiedBy); });
+
+            const bool identityVerified = !identityChanged
+                || (FileName.getStrValue() == oldFileName && Label.getStrValue() == oldLabel
+                    && Uid.getValue() == oldUid && TransientDir.getStrValue() == oldTransientDir
+                    && (oldTransientDir.empty()
+                        || Base::FileInfo(oldTransientDir.c_str()).exists()));
+            const bool metadataVerified = TipName.getStrValue() == oldTipName
+                && LastModifiedDate.getStrValue() == oldModifiedDate
+                && LastModifiedBy.getStrValue() == oldModifiedBy;
+            if (!identityVerified) {
+                restored = false;
+                appendDiagnostic("identity verification failed; ");
+            }
+            if (!metadataVerified) {
+                restored = false;
+                appendDiagnostic("save metadata verification failed; ");
+            }
+            outcome.canonicalPath = FileName.getStrValue();
+        }
+        catch (...) {
+            restored = false;
+            appendDiagnostic("unexpected identity rollback failure; ");
+        }
+        return restored;
+    };
+
+    const auto failAfterBookkeepingRestore = [&](std::string code, std::string message) {
+        std::string restoreDiagnostic;
+        if (!restoreBookkeeping(restoreDiagnostic)) {
+            stagedNotificationSuppression.reset();
+            return fail("SAVE_IDENTITY_ROLLBACK_FAILED",
+                        "Save failed (" + message
+                            + ") and document identity rollback could not be verified: "
+                            + restoreDiagnostic,
+                        true);
+        }
+        stagedNotificationSuppression.reset();
+        return fail(std::move(code), std::move(message), true);
+    };
+
+    std::array<std::uint64_t, 6> serializedTokens = allFileChangeTokens(d->fileChangeTokens);
+    Internal::DocumentFileReplacementResult replacement;
+    std::string committedCanonicalPath;
+    std::string committedProgramVersion;
+    std::string committedMessage;
+    bool tipNameChanged = false;
+    bool modifiedDateChanged = false;
+    bool modifiedByChanged = false;
+    try {
+        // Allocate every success-path string before the retained-handle commit.
+        // Once that commit reports durable success, only noexcept moves/swaps
+        // are permitted to establish the canonical result.
+        committedCanonicalPath = path;
+        committedProgramVersion = Application::Config()["BuildVersionMajor"] + "."
+            + Application::Config()["BuildVersionMinor"] + "R"
+            + Application::Config()["BuildRevision"];
+        committedMessage = "Saved document changes to '" + path + "'.";
+        if (identityChanged) {
+            ScopedSaveBookkeepingProperties suppressIdentity(
+                d->suppressSaveBookkeepingNotifications,
+                d->saveBookkeepingPropertySuppression,
+                d->collaborationPropertyPublicationSuppression,
+                {&FileName, &Label, &Uid, &TransientDir});
+            FileName.setValue(path);
+            Label.setValue(adoptedLabel);
+            Uid.touch();
+            outcome.canonicalPath = path;
+        }
+        {
+            ScopedSaveBookkeepingProperties suppressMetadata(
+                d->suppressSaveBookkeepingNotifications,
+                d->saveBookkeepingPropertySuppression,
+                d->collaborationPropertyPublicationSuppression,
+                {&TipName, &LastModifiedDate, &LastModifiedBy});
+            prepareCanonicalSaveMetadata();
+        }
+        serializedTokens = allFileChangeTokens(d->fileChangeTokens);
+        replacement = saveToFileWithPolicy(path.c_str(),
+                                           &serializedTokens,
+                                           intent,
+                                           overwriteDestination,
+                                           expectedDestinationSha256,
+                                           {});
+    }
+    catch (const Base::Exception& exception) {
+        if (!captureErrors) {
+            auto failure = failAfterBookkeepingRestore(
+                "FILE_WRITE_FAILED", exception.what());
+            static_cast<void>(failure);
+            throw;
+        }
+        return failAfterBookkeepingRestore("FILE_WRITE_FAILED", exception.what());
+    }
+    catch (const std::exception& exception) {
+        if (!captureErrors) {
+            auto failure = failAfterBookkeepingRestore(
+                "FILE_WRITE_FAILED", exception.what());
+            static_cast<void>(failure);
+            throw;
+        }
+        return failAfterBookkeepingRestore("FILE_WRITE_FAILED", exception.what());
+    }
+    catch (...) {
+        constexpr auto message = "The canonical write failed with an unknown exception";
+        if (!captureErrors) {
+            auto failure = failAfterBookkeepingRestore("FILE_WRITE_FAILED", message);
+            static_cast<void>(failure);
+            throw;
+        }
+        return failAfterBookkeepingRestore("FILE_WRITE_FAILED", message);
+    }
+
+    outcome.fileWritten = replacement.fileWritten;
+    outcome.durabilityVerified = replacement.durabilityVerified;
+    outcome.warnings = std::move(replacement.warnings);
+    if (!replacement.succeeded()) {
+        if (replacement.fileWritten) {
+            runPostDurableSaveMaintenance(
+                outcome.warnings, "failed replacement outcome promotion", [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                    invokePostDurableSaveCheckpoint(
+                        Internal::DocumentPostDurableSaveCheckpoint::
+                            BeforeFailedReplacementOutcomePromotion);
+#endif
+                });
+        }
+        if (replacement.errorCode.empty()) {
+            outcome.errorCode.swap(replacementFailureCode);
+        }
+        else {
+            outcome.errorCode.swap(replacement.errorCode);
+        }
+        if (replacement.message.empty()) {
+            outcome.message.swap(replacementFailureMessage);
+        }
+        else {
+            outcome.message.swap(replacement.message);
+        }
+        if (!captureErrors) {
+            auto failure = failAfterBookkeepingRestore(
+                std::move(outcome.errorCode), std::move(outcome.message));
+            throw Base::FileException(failure.message.c_str(), Base::FileInfo(path.c_str()));
+        }
+        return failAfterBookkeepingRestore(
+            std::move(outcome.errorCode), std::move(outcome.message));
+    }
+
+    outcome.disposition = DocumentSaveDisposition::Written;
+    outcome.message.swap(committedMessage);
+    runPostDurableSaveMaintenance(outcome.warnings, "program-version update", [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        invokePostDurableSaveCheckpoint(
+            Internal::DocumentPostDurableSaveCheckpoint::BeforeProgramVersionUpdate);
+#endif
+        d->programVersion.swap(committedProgramVersion);
+    });
+    establishCanonicalSavepoint(
+        serializedTokens, true, std::move(committedCanonicalPath));
+    tipNameChanged = TipName.getStrValue() != oldTipName;
+    modifiedDateChanged = LastModifiedDate.getStrValue() != oldModifiedDate;
+    modifiedByChanged = LastModifiedBy.getStrValue() != oldModifiedBy;
+    if (identityChanged) {
+        const bool uidChanged = Uid.getValue() != oldUid;
+        const bool transientDirectoryChanged =
+            TransientDir.getStrValue() != oldTransientDir;
+        stagedNotificationSuppression.reset();
+        publishSaveAsIdentityAdoptionSafely(*this,
+                                            adoptedLabelChanged,
+                                            uidChanged,
+                                            transientDirectoryChanged,
+                                            tipNameChanged,
+                                            modifiedDateChanged,
+                                            modifiedByChanged);
+    }
+    else {
+        publishCanonicalSaveMetadataSafely(
+            *this, tipNameChanged, modifiedDateChanged, modifiedByChanged);
+    }
+    return finish();
 }
 
 bool Document::saveToFile(const char* filename) const
 {
+    ensureCollaborationSaveAllowed();
+    return saveToFileWithPolicy(filename,
+                                nullptr,
+                                DocumentSaveIntent::Canonical,
+                                true,
+                                {},
+                                {})
+        .succeeded();
+}
+
+Internal::DocumentFileReplacementResult Document::saveToFileWithPolicy(
+    const char* filename,
+    std::array<std::uint64_t, 6>* serializedFileTokens,
+    const DocumentSaveIntent intent,
+    const bool overwriteDestination,
+    const std::string& expectedDestinationSha256,
+    const std::string& forbiddenAliasPath) const
+{
+    ensureCollaborationSaveAllowed();
+    d->activeSaveIntents.push_back(intent);
+    BOOST_SCOPE_EXIT_ALL(&) {
+        d->activeSaveIntents.pop_back();
+    };
     signalStartSave(*this, filename);
+
+    // An ordinary Save does not silently replace a read-only destination. Refuse
+    // before serializing anything, so the user gets the same early, typed error
+    // as upstream instead of a late failure at the namespace boundary. The
+    // writer's read-only override stays reachable through forceSave, which is
+    // the explicit opt-in for exactly this case.
+    if (intent != DocumentSaveIntent::Force) {
+        Base::FileInfo destinationInfo(filename);
+        if (destinationInfo.exists() && !destinationInfo.isWritable()) {
+            throw Base::FileWritePermissionException(destinationInfo);
+        }
+    }
 
     auto hGrp = GetApplication().GetParameterGroupByPath(
         "User parameter:BaseApp/Preferences/Document");
     int compression = static_cast<int>(hGrp->GetInt("CompressionLevel", 7));
     compression = Base::clamp<int>(compression, Z_NO_COMPRESSION, Z_BEST_COMPRESSION);
 
-    bool policy = GetApplication()
-                      .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                      ->GetBool("BackupPolicy", true);
+    Internal::DocumentFileReplacementRequest request;
+    request.destination = filename;
+    request.mode = !expectedDestinationSha256.empty()
+        ? Internal::DocumentFileReplacementMode::CompareAndSwapSha256
+        : (overwriteDestination ? Internal::DocumentFileReplacementMode::Replace
+                                : Internal::DocumentFileReplacementMode::NoReplace);
+    request.expectedDestinationSha256 = expectedDestinationSha256;
+    request.forbiddenAliasPath = forbiddenAliasPath;
+    request.preserveDisplacedFile = true;
+    // Only an explicit forceSave may replace a read-only destination.
+    request.allowReadOnlyDestination = intent == DocumentSaveIntent::Force;
 
-    auto canonical_path = [](const char* filename) {
-        try {
-#ifdef FC_OS_WIN32
-            QString utf8Name = QString::fromUtf8(filename);
-            auto realpath = fs::weakly_canonical(fs::absolute(fs::path(utf8Name.toStdWString())));
-            std::string nativePath = QString::fromStdWString(realpath.native()).toStdString();
-#else
-            auto realpath = fs::weakly_canonical(fs::absolute(fs::path(filename)));
-            std::string nativePath = realpath.native();
-#endif
-            // In case some folders in the path do not exist
-            auto parentPath = realpath.parent_path();
-            fs::create_directories(parentPath);
+    Internal::DocumentFileWriter fileWriter(std::move(request));
 
-            return nativePath;
-        }
-        catch (const std::exception&) {
-#ifdef FC_OS_WIN32
-            QString utf8Name = QString::fromUtf8(filename);
-            auto parentPath = fs::absolute(fs::path(utf8Name.toStdWString())).parent_path();
-#else
-            auto parentPath = fs::absolute(fs::path(filename)).parent_path();
-#endif
-            fs::create_directories(parentPath);
-
-            return std::string(filename);
-        }
-    };
-
-    // realpath is canonical filename i.e. without symlink
-    std::string nativePath = canonical_path(filename);
-
-    // check if file is writeable, then block the save if it is not.
-    Base::FileInfo originalFileInfo(nativePath);
-    if (originalFileInfo.exists() && !originalFileInfo.isWritable()) {
-        throw Base::FileWritePermissionException(originalFileInfo);
-    }
-
-    // make a tmp. file where to save the project data first and then rename to
-    // the actual file name. This may be useful if overwriting an existing file
-    // fails so that the data of the work up to now isn't lost.
-    std::string uuid = Base::Uuid::createUuid();
-    std::string fn = nativePath;
-    if (policy) {
-        fn += ".";
-        fn += uuid;
-    }
-
-
-    // open extra scope to close ZipWriter properly
+    // ZipWriter must finish while the retained native serialization handle is
+    // still in serialization mode. DocumentFileWriter seals and verifies that
+    // exact handle before performing the namespace operation.
     {
-        Base::FileInfo tmp(fn);
-        Base::ofstream file(tmp, std::ios::out | std::ios::binary);
-
-        Base::ZipWriter writer(file);
-        if (!file.is_open()) {
-            throw Base::FileException("Failed to open file", tmp);
-        }
+        Base::ZipWriter writer(fileWriter.serializationStream());
 
         writer.setComment("FreeCAD Document");
         writer.setLevel(compression);
@@ -3510,6 +5274,9 @@ bool Document::saveToFile(const char* filename) const
                         << " FreeCAD Document, see https://www.freecad.org for more information..."
                         << '\n'
                         << "-->" << '\n';
+        if (serializedFileTokens) {
+            *serializedFileTokens = allFileChangeTokens(d->fileChangeTokens);
+        }
         Document::Save(writer);
 
         // Special handling for Gui document.
@@ -3522,48 +5289,120 @@ bool Document::saveToFile(const char* filename) const
             std::stringstream message;
             message << "Failed to write all data to file ";
             message << writer.getErrors().front();
-            throw Base::FileException(message.str().c_str(), tmp);
+            throw Base::FileException(
+                message.str().c_str(), Base::FileInfo(fileWriter.temporaryPath().c_str()));
         }
 
         GetApplication().signalSaveDocument(*this);
     }
 
-    if (policy) {
-        // if saving the project data succeeded rename to the actual file name
-        int count_bak = static_cast<int>(GetApplication()
-                            .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                            ->GetInt("CountBackupFiles", 1));
-        bool backup = GetApplication()
-                          .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                          ->GetBool("CreateBackupFiles", true);
-        if (!backup) {
-            count_bak = -1;
+    auto replacement = fileWriter.commit();
+    if (!replacement.succeeded()) {
+        if (replacement.displacedFileLease) {
+            // Transfer cleanup ownership before any diagnostic allocation. A
+            // failed-but-written result must keep both its truthful flags and
+            // its exact previous bytes even if warning construction exhausts
+            // memory after the namespace operation.
+            const bool retained = replacement.retainDisplacedFileForRecovery();
+            runPostDurableSaveMaintenance(
+                replacement.warnings, "failed replacement recovery retention", [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+                    invokePostDurableSaveCheckpoint(
+                        Internal::DocumentPostDurableSaveCheckpoint::
+                            BeforeFailedReplacementRecoveryWarning);
+#endif
+                    if (retained) {
+                        replacement.warnings.push_back(
+                            "The previous file was retained as recovery evidence at '"
+                            + replacement.displacedFile + "'.");
+                    }
+                    else {
+                        replacement.warnings.push_back(
+                            "The previous-file recovery snapshot could not be retained after "
+                            "the replacement failure.");
+                    }
+                });
         }
-        bool useFCBakExtension =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("UseFCBakExtension", true);
-        std::string saveBackupDateFormat =
-            GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetASCII("SaveBackupDateFormat", "%Y%m%d-%H%M%S");
-
-        BackupPolicy backupPolicy;
-        if (useFCBakExtension) {
-            backupPolicy.setPolicy(BackupPolicy::TimeStamp);
-            backupPolicy.useBackupExtension(useFCBakExtension);
-            backupPolicy.setDateFormat(saveBackupDateFormat);
-        }
-        else {
-            backupPolicy.setPolicy(BackupPolicy::Standard);
-        }
-        backupPolicy.setNumberOfFiles(count_bak);
-        backupPolicy.apply(fn, nativePath);
+        return replacement;
     }
 
-    signalFinishSave(*this, filename);
+    bool displacedFileConsumed = false;
+    if (replacement.displacedFileLease) {
+        runPostDurableSaveMaintenance(replacement.warnings, "backup maintenance", [&] {
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+            invokePostDurableSaveCheckpoint(
+                Internal::DocumentPostDurableSaveCheckpoint::BeforeBackupMaintenance);
+#endif
+            // The historical BackupPolicy preference now controls only
+            // retention; serialization and replacement are always atomic.
+            const bool policyEnabled = hGrp->GetBool("BackupPolicy", true);
+            int count_bak = static_cast<int>(GetApplication()
+                                .GetParameterGroupByPath(
+                                    "User parameter:BaseApp/Preferences/Document")
+                                ->GetInt("CountBackupFiles", 1));
+            const bool backup = GetApplication()
+                                    .GetParameterGroupByPath(
+                                        "User parameter:BaseApp/Preferences/Document")
+                                    ->GetBool("CreateBackupFiles", true);
+            if (!policyEnabled || !backup) {
+                count_bak = -1;
+            }
+            const bool useFCBakExtension =
+                GetApplication()
+                    .GetParameterGroupByPath(
+                        "User parameter:BaseApp/Preferences/Document")
+                    ->GetBool("UseFCBakExtension", true);
+            const std::string saveBackupDateFormat =
+                GetApplication()
+                    .GetParameterGroupByPath(
+                        "User parameter:BaseApp/Preferences/Document")
+                    ->GetASCII("SaveBackupDateFormat", "%Y%m%d-%H%M%S");
 
-    return true;
+            BackupPolicy backupPolicy;
+            if (useFCBakExtension) {
+                backupPolicy.setPolicy(BackupPolicy::TimeStamp);
+                backupPolicy.useBackupExtension(useFCBakExtension);
+                backupPolicy.setDateFormat(saveBackupDateFormat);
+            }
+            else {
+                backupPolicy.setPolicy(BackupPolicy::Standard);
+            }
+            backupPolicy.setNumberOfFiles(count_bak);
+            const auto backupResult = backupPolicy.applyAfterReplacement(
+                replacement.displacedFile,
+                replacement.destination,
+                replacement.displacedFileLease);
+            replacement.warnings.insert(replacement.warnings.end(),
+                                        backupResult.warnings.begin(),
+                                        backupResult.warnings.end());
+            displacedFileConsumed = backupResult.displacedFileConsumed;
+        });
+
+        if (!displacedFileConsumed) {
+            runPostDurableSaveMaintenance(
+                replacement.warnings, "backup recovery retention", [&] {
+                    const std::string& recoveryPath = replacement.displacedFile;
+                    if (replacement.retainDisplacedFileForRecovery()) {
+                        replacement.warnings.push_back(
+                            "The previous file was retained as recovery evidence at '"
+                            + recoveryPath + "'.");
+                    }
+                    else {
+                        replacement.warnings.push_back(
+                            "Backup maintenance did not consume the previous-file snapshot, and "
+                            "its recovery name could not be retained.");
+                    }
+                });
+        }
+    }
+
+    // Replacement has completed. Finish observers are presentation work and
+    // cannot turn an already durable file into a failed save outcome.
+    runPostDurableSaveMaintenance(replacement.warnings, "observer notification", [&] {
+        signalFinishSave(*this, filename);
+    });
+
+    return replacement;
 }
 
 void Document::registerLabel(std::string_view newLabel)
@@ -3594,6 +5433,267 @@ std::string Document::makeUniqueLabel(std::string_view modelLabel)
     return d->objectLabelManager.makeUniqueName(modelLabel, 3);
 }
 
+DocumentFileChanges Document::getPendingFileChanges() const
+{
+    DocumentFileChanges changes;
+    if (FileName.getStrValue() != d->canonicalSavePath) {
+        changes |= DocumentFileChange::Model;
+    }
+    if (d->fileChangeTokens.model.transactional != d->canonicalSaveTokens.model.transactional
+        || d->fileChangeTokens.model.sticky != d->canonicalSaveTokens.model.sticky) {
+        changes |= DocumentFileChange::Model;
+    }
+    if (d->fileChangeTokens.compatibility.transactional
+            != d->canonicalSaveTokens.compatibility.transactional
+        || d->fileChangeTokens.compatibility.sticky
+            != d->canonicalSaveTokens.compatibility.sticky) {
+        changes |= DocumentFileChange::Model;
+    }
+    if (d->fileChangeTokens.appearance.transactional
+            != d->canonicalSaveTokens.appearance.transactional
+        || d->fileChangeTokens.appearance.sticky
+            != d->canonicalSaveTokens.appearance.sticky) {
+        changes |= DocumentFileChange::Appearance;
+    }
+    return changes;
+}
+
+DocumentFileState Document::getFileChangeState() const
+{
+    if (FileName.getStrValue().empty()) {
+        return DocumentFileState::NotSaved;
+    }
+    return getPendingFileChanges() ? DocumentFileState::Modified : DocumentFileState::Clean;
+}
+
+bool Document::hasPendingFileChanges() const
+{
+    return bool(getPendingFileChanges());
+}
+
+bool Document::lastCanonicalSaveFailed() const
+{
+    return d->lastCanonicalSaveFailed;
+}
+
+DocumentSaveIntent Document::getActiveSaveIntent() const noexcept
+{
+    return d->activeSaveIntents.empty() ? DocumentSaveIntent::Canonical
+                                        : d->activeSaveIntents.back();
+}
+
+bool Document::shouldTrackFileChange(const Property* property) const
+{
+    if (!property || saveBookkeepingPropertySuppressed(*d, property)
+        || d->suppressFileChangeTracking || d->rollback || d->undoing
+        || testStatus(Document::Restoring) || testStatus(Document::Importing)) {
+        return false;
+    }
+    return !property->testStatus(Property::NoModify)
+        && !property->testStatus(Property::Transient)
+        && !property->testStatus(Property::PropTransient)
+        && !property->testStatus(Property::PropNoPersist);
+}
+
+void Document::emitFileChangeStateIfChanged(const DocumentFileState previousState,
+                                            const DocumentFileChanges previousChanges,
+                                            const bool previousFailure,
+                                            const bool persistentMutation) noexcept
+{
+    try {
+        if (persistentMutation || previousState != getFileChangeState()
+            || !sameFileChanges(previousChanges, getPendingFileChanges())
+            || previousFailure != d->lastCanonicalSaveFailed) {
+            if (d->collaborationCommitNotificationBarrier) {
+                const bool alreadyDeferred = std::ranges::any_of(
+                    d->collaborationDeferredNotifications,
+                    [](const CollaborationDeferredNotification& notification) {
+                        return notification.kind
+                            == CollaborationDeferredNotificationKind::FileChangeStateChanged;
+                    });
+                if (!alreadyDeferred) {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::FileChangeStateChanged});
+                }
+            }
+            else {
+                emitFileChangeStateSafely(*this);
+            }
+        }
+    }
+    catch (const std::exception& exception) {
+        try {
+            FC_ERR("File-change-state notification maintenance failed: " << exception.what());
+        }
+        catch (...) {
+        }
+    }
+    catch (...) {
+        try {
+            FC_ERR("File-change-state notification maintenance failed with an unknown exception");
+        }
+        catch (...) {
+        }
+    }
+}
+
+void Document::markFileChange(const DocumentFileChange category,
+                              const DocumentFileChangeOwnership ownership)
+{
+    enforceAtomicPresentationMutationTarget(*this);
+    if (category == DocumentFileChange::None || d->suppressFileChangeTracking || d->rollback
+        || d->undoing || testStatus(Document::Restoring) || testStatus(Document::Importing)) {
+        return;
+    }
+
+    const auto previousState = getFileChangeState();
+    const auto previousChanges = getPendingFileChanges();
+    const bool previousFailure = d->lastCanonicalSaveFailed;
+
+    const bool transactional = ownership == DocumentFileChangeOwnership::AutoTransaction
+        && d->activeUndoTransaction;
+    if (transactional && !d->activeTransactionFileChanges) {
+        d->activeTransactionFileChanges = DocumentP::TransactionFileChangeState {
+            transactionalTokens(d->fileChangeTokens), transactionalTokens(d->fileChangeTokens)};
+    }
+
+    auto& channel = category == DocumentFileChange::Appearance
+        ? d->fileChangeTokens.appearance
+        : d->fileChangeTokens.model;
+    auto& token = transactional ? channel.transactional : channel.sticky;
+    token = d->nextFileChangeToken++;
+
+    if (transactional) {
+        d->activeTransactionFileChanges->after = transactionalTokens(d->fileChangeTokens);
+    }
+    emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure, true);
+}
+
+void Document::setCompatibilityFileModified(const bool modified,
+                                            const DocumentFileChangeOwnership ownership)
+{
+    enforceAtomicPresentationMutationTarget(*this);
+    const auto previousState = getFileChangeState();
+    const auto previousChanges = getPendingFileChanges();
+    const bool previousFailure = d->lastCanonicalSaveFailed;
+    if (modified) {
+        if (d->suppressFileChangeTracking || d->rollback || d->undoing
+            || testStatus(Document::Restoring) || testStatus(Document::Importing)) {
+            return;
+        }
+        const bool transactional = ownership == DocumentFileChangeOwnership::AutoTransaction
+            && d->activeUndoTransaction;
+        if (transactional && !d->activeTransactionFileChanges) {
+            d->activeTransactionFileChanges = DocumentP::TransactionFileChangeState {
+                transactionalTokens(d->fileChangeTokens), transactionalTokens(d->fileChangeTokens)};
+        }
+        auto& token = transactional ? d->fileChangeTokens.compatibility.transactional
+                                    : d->fileChangeTokens.compatibility.sticky;
+        token = d->nextFileChangeToken++;
+        if (transactional) {
+            d->activeTransactionFileChanges->after = transactionalTokens(d->fileChangeTokens);
+        }
+    }
+    else {
+        const bool transactional = ownership == DocumentFileChangeOwnership::AutoTransaction
+            && d->activeUndoTransaction;
+        if (transactional && !d->activeTransactionFileChanges) {
+            d->activeTransactionFileChanges = DocumentP::TransactionFileChangeState {
+                transactionalTokens(d->fileChangeTokens), transactionalTokens(d->fileChangeTokens)};
+        }
+        auto& token = transactional ? d->fileChangeTokens.compatibility.transactional
+                                    : d->fileChangeTokens.compatibility.sticky;
+        token = transactional ? d->canonicalSaveTokens.compatibility.transactional
+                              : d->canonicalSaveTokens.compatibility.sticky;
+        if (transactional) {
+            d->activeTransactionFileChanges->after = transactionalTokens(d->fileChangeTokens);
+        }
+    }
+    emitFileChangeStateIfChanged(
+        previousState, previousChanges, previousFailure, modified);
+}
+
+void Document::reportRecoverySaveOutcome(const std::string& path,
+                                         const bool written,
+                                         const std::string& message)
+{
+    // Outcome-only recovery reporting is also a save intent.  Keep the
+    // prepared-commit boundary side-effect free before constructing state or
+    // notifying observers, matching every physical save entry point.
+    ensureCollaborationSaveAllowed();
+    DocumentSaveOutcome outcome;
+    outcome.intent = DocumentSaveIntent::Recovery;
+    outcome.canonicalPath = FileName.getStrValue();
+    outcome.targetPath = path;
+    outcome.disposition = written ? DocumentSaveDisposition::CopyWritten
+                                  : DocumentSaveDisposition::Failed;
+    outcome.fileWritten = written;
+    outcome.resultingState = getFileChangeState();
+    outcome.pendingChanges = getPendingFileChanges();
+    outcome.lastCanonicalSaveFailed = d->lastCanonicalSaveFailed;
+    outcome.errorCode = written ? std::string {} : "RECOVERY_WRITE_FAILED";
+    outcome.message = !message.empty()
+        ? message
+        : written ? "Recovery copy updated; the original file was not changed."
+                  : "Recovery copy failed; the original file was not changed.";
+    emitSaveOutcomeSafely(*this, outcome);
+}
+
+void Document::restoreTransactionFileState(const int transactionId, const bool after)
+{
+    const auto found = d->transactionFileChanges.find(transactionId);
+    if (found == d->transactionFileChanges.end()) {
+        return;
+    }
+    const auto previousState = getFileChangeState();
+    const auto previousChanges = getPendingFileChanges();
+    const bool previousFailure = d->lastCanonicalSaveFailed;
+    const auto restoreToken = [after](std::uint64_t& current,
+                                      const std::uint64_t before,
+                                      const std::uint64_t afterToken) {
+        if (before == afterToken) {
+            return;
+        }
+        const auto expected = after ? before : afterToken;
+        if (current == expected) {
+            current = after ? afterToken : before;
+        }
+        // A later non-transactional edit in the same category is intentionally
+        // sticky.  Undo/redo must never erase that evidence or report a false
+        // canonical match merely because an older transaction moved.
+    };
+    restoreToken(d->fileChangeTokens.model.transactional,
+                 found->second.before.model,
+                 found->second.after.model);
+    restoreToken(d->fileChangeTokens.appearance.transactional,
+                 found->second.before.appearance,
+                 found->second.after.appearance);
+    restoreToken(d->fileChangeTokens.compatibility.transactional,
+                 found->second.before.compatibility,
+                 found->second.after.compatibility);
+    emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure, true);
+}
+
+void Document::discardTransactionFileState(const int transactionId)
+{
+    d->transactionFileChanges.erase(transactionId);
+}
+
+void Document::establishCanonicalSavepoint(const std::array<std::uint64_t, 6> tokens,
+                                            const bool clearFailure,
+                                            std::string canonicalPath) noexcept
+{
+    const auto previousState = getFileChangeState();
+    const auto previousChanges = getPendingFileChanges();
+    const bool previousFailure = d->lastCanonicalSaveFailed;
+    d->canonicalSaveTokens = fileChangeTokensFromArray(tokens);
+    d->canonicalSavePath.swap(canonicalPath);
+    if (clearFailure) {
+        d->lastCanonicalSaveFailed = false;
+    }
+    emitFileChangeStateIfChanged(previousState, previousChanges, previousFailure);
+}
+
 bool Document::isAnyRestoring()
 {
     return globalIsRestoring;
@@ -3605,6 +5705,11 @@ void Document::restore(const char* filename,
                        const std::vector<std::string>& objNames)
 {
     enforceAtomicPresentationMutationTarget(*this);
+    const bool previousFileChangeSuppression = d->suppressFileChangeTracking;
+    d->suppressFileChangeTracking = true;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        d->suppressFileChangeTracking = previousFileChangeSuppression;
+    };
     clearUndos();
     d->activeObject = nullptr;
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
@@ -3695,7 +5800,12 @@ void Document::restore(const char* filename,
     }
 
     if (!delaySignal) {
+        // afterRestore establishes the canonical baseline and may deliberately
+        // mark migrated link stamps dirty, so it must run with the caller's
+        // tracking policy rather than the restore bookkeeping suppression.
+        d->suppressFileChangeTracking = previousFileChangeSuppression;
         afterRestore(true);
+        d->suppressFileChangeTracking = true;
     }
 }
 
@@ -3707,8 +5817,24 @@ bool Document::afterRestore(const bool checkPartial)
         GetApplication().signalPendingReloadDocument(*this);
         return false;
     }
+    const std::string restoredCanonicalPath = FileName.getStrValue();
     GetApplication().signalFinishRestoreDocument(*this);
     setStatus(Document::Restoring, false);
+    establishCanonicalSavepoint(
+        allFileChangeTokens(d->fileChangeTokens), true, restoredCanonicalPath);
+    if (FileName.getStrValue() != restoredCanonicalPath) {
+        // A finish-restore observer may deliberately redirect FileName.  The
+        // restored archive remains the canonical baseline, so publish the
+        // resulting path mismatch even though the observer ran while the
+        // Restoring guard suppressed ordinary mutation tracking.
+        emitFileChangeStateIfChanged(getFileChangeState(),
+                                     getPendingFileChanges(),
+                                     d->lastCanonicalSaveFailed,
+                                     true);
+    }
+    if (testStatus(Document::LinkStampChanged)) {
+        markFileChange(DocumentFileChange::Model);
+    }
     return true;
 }
 
@@ -4325,69 +6451,50 @@ void Document::renameObjectIdentifiers(
     }
 }
 
-int Document::recompute(const std::vector<DocumentObject*>& objs,
-                        bool force,
-                        bool* hasError,
-                        int options)
+std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
+    const std::vector<DocumentObject*>& objs,
+    const bool force,
+    const int options)
 {
-    ZoneScoped;
-
     enforceAtomicPresentationMutationTarget(*this);
 
-    // Compatibility callbacks frequently retain historical, eager recompute
-    // calls.  Running them here would execute arbitrary object code while the
-    // narrowly scoped structural grant is live.  The commit coordinator always
-    // performs the authoritative recompute after the callback and after the
-    // grant has closed, so treat this request as deferred.
-    if (d->collaborationCompatibilityStructuralMutationGranted) {
-        if (hasError) {
-            *hasError = false;
-        }
-        return 0;
+    const auto submitEmpty = [this] {
+        DocumentRecomputeRequest request;
+        request.coalescingKey = "empty-document-recompute";
+        const auto id = recomputeCoordinator().submit(std::move(request));
+        return std::make_unique<RecomputeHandle>(*this, id);
+    };
+
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->collaborationCompatibilityStructuralMutationGranted
+        || d->collaborationDeferredRecomputeBlocked || d->undoing || d->rollback) {
+        return submitEmpty();
     }
-
-    // Recompute can execute Python-backed features. Keep the GIL for the full
-    // recompute so async recompute still serializes Python execution the same
-    // way the main-thread path does, preserving compatibility with existing
-    // Python-backed objects and addons. Main-thread signal hops such as
-    // signalBeforeRecompute() temporarily release it when they need to run
-    // Python on the GUI thread to avoid deadlocks.
-    Base::PyGILStateLocker locker;
-
-    if (d->undoing || d->rollback) {
-        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
-            FC_WARN("Ignore document recompute on undo/redo");
-        }
-        return 0;
-    }
-
-    int objectCount = 0;
     if (testStatus(Document::PartialDoc)) {
         if (mustExecute()) {
             FC_WARN("Please reload partial document '" << Label.getValue()
                                                        << "' for recomputation.");
         }
-        return 0;
+        return submitEmpty();
     }
     if (testStatus(Document::Recomputing)) {
-        // this is clearly a bug in the calling instance
         FC_ERR("Recursive calling of recompute for document " << getName());
-        return 0;
+        return submitEmpty();
     }
-    // The 'SkipRecompute' flag can be (tmp.) set to avoid too many
-    // time expensive recomputes
     if (!force && testStatus(Document::SkipRecompute)) {
         signalSkipRecompute(*this, objs);
-        return 0;
+        return submitEmpty();
     }
 
-    // delete recompute log
+    static thread_local std::set<const Document*> activeSubmissions;
+    if (!activeSubmissions.insert(this).second) {
+        throw Base::RuntimeError("reentrant document recompute submission is not supported");
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        activeSubmissions.erase(this);
+    };
+
     d->clearRecomputeLog();
-
-    Base::TimeTracker tracker("Document::recompute");
-    std::optional<Base::ObjectStatusLocker<Document::Status, Document>> recomputingStatus;
-    recomputingStatus.emplace(Document::Recomputing, this);
-
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
             {CollaborationDeferredNotificationKind::BeforeRecompute});
@@ -4396,199 +6503,269 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
         signalBeforeRecompute(*this);
     }
 
-    bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
-
-    //////////////////////////////////////////////////////////////////////////
-    // FIXME Comment by Realthunder:
-    // the topologicalSrot() below cannot handle partial recompute, haven't got
-    // time to figure out the code yet, simply use back boost::topological_sort
-    // for now, that is, rely on getDependencyList() to do the sorting. The
-    // downside is, it didn't take advantage of the ready built InList, nor will
-    // it report for cyclic dependency.
-    //////////////////////////////////////////////////////////////////////////
-
-    /*   // get the sorted vector of all dependent objects and go though it from the end
-       auto depObjs = getDependencyList(objs.empty()?d->objectArray:objs);
-       vector<DocumentObject*> topoSortedObjects = topologicalSort(depObjs);
-       if (topoSortedObjects.size() != depObjs.size()){
-           cerr << "Document::recompute(): cyclic dependency detected" << '\n';
-           topoSortedObjects = d->partialTopologicalSort(depObjs);
-       }
-       std::reverse(topoSortedObjects.begin(),topoSortedObjects.end());
-   */
-
-    // alt:
-    auto topoSortedObjects =
-        getDependencyList(objs.empty() ? d->objectArray : objs, DepSort | options);
-
-    for (auto obj : topoSortedObjects) {
-        obj->setStatus(ObjectStatus::PendingRecompute, true);
-    }
-
-    ParameterGrp::handle hGrp =
-        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
-    bool canAbort = hGrp->GetBool("CanAbortRecompute", true);
-
-    tracker.checkpoint("pre-recompute & topo sort");
-
-    try {
-        std::set<DocumentObject*> filter;
-        size_t idx = 0;
-        // maximum two passes to allow some form of dependency inversion
-        for (int passes = 0; passes < 2 && idx < topoSortedObjects.size(); ++passes) {
-            std::unique_ptr<Base::SequencerLauncher> seq;
-            if (canAbort) {
-                seq = std::make_unique<Base::SequencerLauncher>("Recompute...",
-                                                                topoSortedObjects.size());
-            }
-            FC_LOG("Recompute pass " << passes);
-            for (; idx < topoSortedObjects.size(); ++idx) {
-                auto obj = topoSortedObjects[idx];
-                if (!obj->isAttachedToDocument() || filter.find(obj) != filter.end()) {
-                    continue;
-                }
-                // ask the object if it should be recomputed
-                bool doRecompute = false;
-                if (obj->mustRecompute()) {
-                    doRecompute = true;
-                    ++objectCount;
-                    int res = _recomputeFeature(obj);
-                    publishCollaborationMutation(*obj, false);
-                    if (res != 0) {
-                        if (hasError) {
-                            *hasError = true;
-                        }
-                        if (res < 0) {
-                            passes = 2;
-                            break;
-                        }
-                        // if something happened filter all object in its
-                        // inListRecursive from the queue then proceed
-                        obj->getInListEx(filter, true);
-                        filter.insert(obj);
-                        continue;
-                    }
-                }
-                if (obj->isTouched() || doRecompute) {
-                    if (d->collaborationCommitNotificationBarrier) {
-                        d->collaborationDeferredNotifications.push_back(
-                            {CollaborationDeferredNotificationKind::RecomputedObject, obj});
-                    }
-                    else {
-                        signalRecomputedObject(*obj);
-                    }
-                    if (fineGrained) {
-                        // set all dependent objects touched based on properties
-                        std::vector<DepEdge> inList = obj->getInListProp();
-                        for (auto& [objFrom, propFrom, objTo, propTo] : inList) {
-                            if (obj->touchedProps.contains(propTo) || propTo.empty()) {
-                                objFrom->enforceRecompute(propFrom);
-                            }
-                        }
-                        obj->purgeTouched();
-                    }
-                    else {
-                        obj->purgeTouched();
-                        // set all dependent objects touched to force recompute
-                        for (auto inObjIt : obj->getInList()) {
-                            inObjIt->enforceRecompute();
-                        }
-                    }
-                }
-                if (seq) {
-                    seq->next(true);
-                }
-            }
-            // check if all objects are recomputed but still thouched
-            for (size_t i = 0; i < topoSortedObjects.size(); ++i) {
-                auto obj = topoSortedObjects[i];
-                obj->setStatus(ObjectStatus::Recompute2, false);
-                if (!filter.contains(obj) && obj->isTouched()) {
-                    if (passes > 0) {
-                        FC_ERR(obj->getFullName() << " still touched after recompute");
-                    }
-                    else {
-                        FC_LOG(obj->getFullName() << " still touched after recompute");
-                        if (idx >= topoSortedObjects.size()) {
-                            // let's start the next pass on the first touched object
-                            idx = i;
-                        }
-                        obj->setStatus(ObjectStatus::Recompute2, true);
-                    }
-                }
-            }
-        }
-    }
-    catch (Base::Exception& e) {
-        e.reportException();
-    }
-
-    tracker.checkpoint("Recompute");
-
-    for (auto obj : topoSortedObjects) {
-        if (!obj->isAttachedToDocument()) {
+    const auto ordered = getDependencyList(
+        objs.empty() ? d->objectArray : objs,
+        DepSort | options);
+    // Legacy recompute decides whether each downstream object must execute
+    // only after its upstream dependencies have committed.  A detached plan
+    // must therefore include the in-document downstream closure of every
+    // object that is dirty at capture time; otherwise a dependency that is
+    // clean now can be touched by an upstream result after the immutable plan
+    // has already omitted it.
+    std::unordered_set<DocumentObject*> scheduled;
+    scheduled.reserve(ordered.size());
+    for (auto* object : ordered) {
+        if (!object || !object->isAttachedToDocument()
+            || object->getDocument() != this
+            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
             continue;
         }
-        obj->setStatus(ObjectStatus::PendingRecompute, false);
-        obj->setStatus(ObjectStatus::Recompute2, false);
+        scheduled.insert(object);
+        for (auto* dependent : object->getInListRecursive()) {
+            if (dependent && dependent->isAttachedToDocument()
+                && dependent->getDocument() == this) {
+                scheduled.insert(dependent);
+            }
+        }
+    }
+    std::vector<DocumentObject*> selected;
+    selected.reserve(ordered.size());
+    for (auto* object : ordered) {
+        if (object && object->isAttachedToDocument() && object->getDocument() == this
+            && scheduled.contains(object)) {
+            selected.push_back(object);
+        }
     }
 
-    // Keep the document marked as Recomputing while signalRecomputed() runs.
-    // Those observers may execute Python or GUI code; clearing the status
-    // first would let re-entrant code see the document as stable before
-    // recompute teardown has finished. signalBecameStable() is the first
-    // point where observers may treat the document as stable again.
+    Internal::ensureGenericIsolatedRecomputeRegistered();
+    auto request = Internal::makeGenericIsolatedRecomputeRequest(
+        *this,
+        selected,
+        "App::Document::recomputeAsync isolated compatibility facade",
+        "generic-document:",
+        !collaborationDerivedRecomputeGranted(),
+        force);
+    request.coalescingKey += force ? "force;" : "normal;";
+    request.coalescingKey += "options=" + std::to_string(options) + ";";
+    const auto id = recomputeCoordinator().submit(std::move(request));
+    return std::make_unique<RecomputeHandle>(*this, id);
+}
 
+void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot)
+{
+    std::vector<DocumentObject*> recomputed;
+    recomputed.reserve(snapshot.features.size());
+    for (const auto& node : snapshot.features) {
+        auto* object = getObject(node.featureId.c_str());
+        if (!object) {
+            continue;
+        }
+        recomputed.push_back(object);
+        if (node.state == DocumentRecomputeFeatureState::Committed) {
+            if (d->collaborationCommitNotificationBarrier) {
+                d->collaborationDeferredNotifications.push_back(
+                    {CollaborationDeferredNotificationKind::RecomputedObject, object});
+            }
+            else {
+                signalRecomputedObject(*object);
+            }
+            continue;
+        }
+        const std::string diagnostic = node.diagnostic.empty()
+            ? "isolated document recompute did not commit"
+            : node.diagnostic;
+        d->addRecomputeLog(diagnostic.c_str(), object);
+    }
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::Recomputed};
-        notification.objects = topoSortedObjects;
+        notification.objects = recomputed;
         d->collaborationDeferredNotifications.push_back(std::move(notification));
     }
     else {
-        signalRecomputed(*this, topoSortedObjects);
+        signalRecomputed(*this, recomputed);
     }
-    recomputingStatus.reset();
+    finalizeCollaborationRecomputeTeardown();
+}
+
+void Document::finalizeEmptyDetachedRecompute()
+{
     if (d->collaborationCommitNotificationBarrier) {
         d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::BecameStable});
+            {CollaborationDeferredNotificationKind::BeforeRecompute});
     }
     else {
-        signalBecameStable(*this);
+        signalBeforeRecompute(*this);
     }
 
-    tracker.checkpoint("Recompute total");
+    DocumentRecomputeSnapshot snapshot;
+    snapshot.state = DocumentRecomputeState::Completed;
+    snapshot.progress = 1.0;
+    finalizeDetachedRecompute(snapshot);
+}
 
-    if (!d->_RecomputeLog.empty()) {
-        if (!testStatus(Status::IgnoreErrorOnRecompute)) {
-            for (auto it : topoSortedObjects) {
-                if (it->isError()) {
-                    const char* text = getErrorDescription(it);
-                    if (text) {
-                        Base::Console().error("%s: %s\n", it->Label.getValue(), text);
+void Document::finalizeCollaborationRecomputeTeardown()
+{
+    // A deletion observer can request a nested recompute while the outer pass
+    // is draining pending removals.  The outer pass owns that teardown and is
+    // the only pass allowed to publish the subsequent stable notifications.
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
+        return;
+    }
+
+    const auto teardownDocuments = GetApplication().getDocuments();
+    std::size_t protectedDocumentCount = 0;
+    try {
+        for (auto* teardownDocument : teardownDocuments) {
+            const auto previous =
+                teardownDocument->d->collaborationStableNotificationDepth.fetch_add(
+                    1, std::memory_order_acq_rel);
+            if (previous == std::numeric_limits<unsigned int>::max()) {
+                teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
+                    1, std::memory_order_release);
+                throw Base::RuntimeError(
+                    "recompute teardown lifecycle depth overflow");
+            }
+            ++protectedDocumentCount;
+        }
+    }
+    catch (...) {
+        for (std::size_t index = 0; index < protectedDocumentCount; ++index) {
+            teardownDocuments[index]->d->collaborationStableNotificationDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+        throw;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        for (auto* teardownDocument : teardownDocuments) {
+            teardownDocument->d->collaborationStableNotificationDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+    };
+
+    std::size_t readinessProtectedDocumentCount = 0;
+    try {
+        for (auto* teardownDocument : teardownDocuments) {
+            const auto previous =
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_add(
+                    1, std::memory_order_acq_rel);
+            if (previous == std::numeric_limits<unsigned int>::max()) {
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                    1, std::memory_order_release);
+                throw Base::RuntimeError(
+                    "recompute teardown readiness depth overflow");
+            }
+            ++readinessProtectedDocumentCount;
+        }
+    }
+    catch (...) {
+        for (std::size_t index = 0;
+             index < readinessProtectedDocumentCount;
+             ++index) {
+            teardownDocuments[index]->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                1, std::memory_order_release);
+        }
+        throw;
+    }
+    bool teardownReadinessActive = true;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (teardownReadinessActive) {
+            for (auto* teardownDocument : teardownDocuments) {
+                teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+                    1, std::memory_order_release);
+            }
+        }
+    };
+
+    std::vector<Document*> drainedPendingRemovalDocuments;
+    for (auto* document : teardownDocuments) {
+        decltype(document->d->pendingRemove) objects;
+        objects.swap(document->d->pendingRemove);
+        if (!objects.empty()) {
+            const bool previousProcessing =
+                document->d->pendingRemovalProcessing.exchange(
+                    true, std::memory_order_acq_rel);
+            BOOST_SCOPE_EXIT_ALL(&) {
+                document->d->pendingRemovalProcessing.store(
+                    previousProcessing, std::memory_order_release);
+            };
+            for (auto& object : objects) {
+                auto* const pendingObject = object.getObject();
+                const auto retainIfStillPending = [&] {
+                    if (pendingObject && object.getObject() == pendingObject
+                        && std::ranges::find(document->d->pendingRemove, object)
+                            == document->d->pendingRemove.end()) {
+                        document->d->pendingRemove.push_back(object);
                     }
+                };
+                try {
+                    if (pendingObject) {
+                        pendingObject->getDocument()->removeObject(
+                            pendingObject->getNameInDocument());
+                    }
+                    retainIfStillPending();
+                }
+                catch (Base::Exception& error) {
+                    error.reportException();
+                    FC_ERR("error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName());
+                    retainIfStillPending();
+                }
+                catch (const std::exception& error) {
+                    FC_ERR("error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName()
+                           << ": " << error.what());
+                    retainIfStillPending();
+                }
+                catch (...) {
+                    FC_ERR("unknown error when removing object "
+                           << object.getDocumentName() << '#' << object.getObjectName());
+                    retainIfStillPending();
                 }
             }
+        }
+        if (!objects.empty() && document->d->pendingRemove.empty()) {
+            drainedPendingRemovalDocuments.push_back(document);
         }
     }
 
-    for (auto doc : GetApplication().getDocuments()) {
-        decltype(doc->d->pendingRemove) objects;
-        objects.swap(doc->d->pendingRemove);
-        for (auto& o : objects) {
-            try {
-                if (auto obj = o.getObject()) {
-                    obj->getDocument()->removeObject(obj->getNameInDocument());
-                }
-            }
-            catch (Base::Exception& e) {
-                e.reportException();
-                FC_ERR("error when removing object " << o.getDocumentName() << '#'
-                                                     << o.getObjectName());
-            }
+    for (auto* teardownDocument : teardownDocuments) {
+        teardownDocument->d->collaborationRecomputeTeardownDepth.fetch_sub(
+            1, std::memory_order_release);
+    }
+    teardownReadinessActive = false;
+
+    if (d->pendingRemove.empty()
+        && std::ranges::find(drainedPendingRemovalDocuments, this)
+            == drainedPendingRemovalDocuments.end()) {
+        drainedPendingRemovalDocuments.push_back(this);
+    }
+    for (auto* stableDocument : drainedPendingRemovalDocuments) {
+        if (stableDocument->d->collaborationCommitNotificationBarrier) {
+            stableDocument->d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::BecameStable});
+        }
+        else if (stableDocument->getMutationReadiness().ready) {
+            stableDocument->emitCollaborationBecameStable();
         }
     }
-    return objectCount;
+}
+
+int Document::recompute(const std::vector<DocumentObject*>& objs,
+                        const bool force,
+                        bool* hasError,
+                        const int options)
+{
+    auto handle = recomputeAsync(objs, force, options);
+    auto snapshot = handle->wait(std::chrono::minutes(6));
+    if (!snapshot.terminal()) {
+        static_cast<void>(handle->cancel("document recompute compatibility wait timed out"));
+        snapshot = handle->wait(std::chrono::seconds(30));
+    }
+    if (hasError) {
+        *hasError = snapshot.state != DocumentRecomputeState::Completed;
+    }
+    return static_cast<int>(snapshot.completedFeatures + snapshot.failedFeatures);
 }
 
 /*!
@@ -4838,33 +7015,93 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 
     // Match Document::recompute(): the coordinator owns the only recompute
     // that may execute object code for a structural compatibility commit.
-    if (d->collaborationCompatibilityStructuralMutationGranted) {
+    if (d->collaborationCompatibilityStructuralMutationGranted
+        || d->collaborationDeferredRecomputeBlocked) {
         return true;
     }
 
-    // delete recompute log
-    d->clearRecomputeLog(feature);
-
     // verify that the feature is (active) part of the document
-    if (!feature->isAttachedToDocument()) {
+    if (!feature || !feature->isAttachedToDocument() || feature->getDocument() != this) {
         return false;
     }
 
-    if (recursive) {
-        bool hasError = false;
-        recompute({feature}, true, &hasError);
-        return !hasError;
+    static thread_local std::set<const Document*> activeCompatibilityWaits;
+    if (!activeCompatibilityWaits.insert(this).second) {
+        d->addRecomputeLog("reentrant isolated feature recompute is not supported", feature);
+        return false;
     }
-    _recomputeFeature(feature);
-    publishCollaborationMutation(*feature, false);
-    if (d->collaborationCommitNotificationBarrier) {
-        d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::RecomputedObject, feature});
+    BOOST_SCOPE_EXIT_ALL(&) {
+        activeCompatibilityWaits.erase(this);
+    };
+
+    try {
+        Internal::ensureGenericIsolatedRecomputeRegistered();
+        auto request = Internal::makeGenericIsolatedRecomputeRequest(*this, *feature, recursive);
+        for (const auto& node : request.features) {
+            if (auto* object = getObject(node.featureId.c_str())) {
+                d->clearRecomputeLog(object);
+            }
+        }
+
+        auto& coordinator = recomputeCoordinator();
+        const auto recomputeId = coordinator.submit(std::move(request));
+        const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(6);
+        std::optional<DocumentRecomputeSnapshot> snapshot;
+        while ((snapshot = coordinator.status(recomputeId)) && !snapshot->terminal()) {
+            static_cast<void>(coordinator.poll(recomputeId));
+            if (QCoreApplication::instance()) {
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+            }
+            if (std::chrono::steady_clock::now() >= waitDeadline) {
+                static_cast<void>(coordinator.cancel(
+                    recomputeId, "isolated feature recompute compatibility wait timed out"));
+                static_cast<void>(coordinator.poll(recomputeId));
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        snapshot = coordinator.status(recomputeId);
+        if (!snapshot) {
+            d->addRecomputeLog("isolated feature recompute result is unavailable", feature);
+            return false;
+        }
+
+        bool succeeded = snapshot->state == DocumentRecomputeState::Completed;
+        for (const auto& node : snapshot->features) {
+            auto* object = getObject(node.featureId.c_str());
+            if (!object) {
+                succeeded = false;
+                continue;
+            }
+            if (node.state == DocumentRecomputeFeatureState::Committed) {
+                if (d->collaborationCommitNotificationBarrier) {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::RecomputedObject, object});
+                }
+                else {
+                    signalRecomputedObject(*object);
+                }
+            }
+            else {
+                const std::string diagnostic = node.diagnostic.empty()
+                    ? "isolated feature recompute did not commit"
+                    : node.diagnostic;
+                d->addRecomputeLog(diagnostic.c_str(), object);
+                succeeded = false;
+            }
+        }
+        return succeeded;
     }
-    else {
-        signalRecomputedObject(*feature);
+    catch (const Base::Exception& error) {
+        d->addRecomputeLog(error.what(), feature);
     }
-    return feature->isValid();
+    catch (const std::exception& error) {
+        d->addRecomputeLog(error.what(), feature);
+    }
+    catch (...) {
+        d->addRecomputeLog("isolated feature recompute failed with an unknown exception", feature);
+    }
+    return false;
 }
 
 DocumentObject* Document::addObject(

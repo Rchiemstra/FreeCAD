@@ -37,6 +37,16 @@ public:
     [[nodiscard]] virtual CollaborativePostconditionResult
     checkPostcondition(const Document& document) const = 0;
 
+    /** Detached recompute adapters may commit an authoritative failure state. */
+    [[nodiscard]] virtual bool recomputeOutcomeSucceeded() const noexcept
+    {
+        return true;
+    }
+    [[nodiscard]] virtual std::string_view recomputeOutcomeDiagnostic() const noexcept
+    {
+        return {};
+    }
+
 protected:
     CollaborativeOperation() = default;
     CollaborativeOperation(const CollaborativeOperation&) = delete;

@@ -23,10 +23,12 @@
 
 """Tests for Assembly review notes: eligibility, normalization, tracking, persistence."""
 
+import hashlib
 import os
 import math
 import tempfile
 import unittest
+import zipfile
 
 import FreeCAD as App
 import Part
@@ -3688,6 +3690,92 @@ class TestReviewNotesGui(unittest.TestCase):
                 root.removeChild(cb_node)
             except Exception:
                 pass
+
+    def test_gui_camera_caches_do_not_dirty_or_rewrite_document(self):
+        operation = "Camera-only Review Note caches remain nonpersistent"
+        _msg("  Test '{}'".format(operation))
+        import FreeCADGui as Gui
+        from pivy import coin
+
+        data = CommandReviewNote.normalize_review_note_target(
+            self.assembly, self.box, "Face6", picked_point=App.Vector(5, 10, 30)
+        )
+        note = CommandReviewNote.create_review_note(
+            self.assembly,
+            data,
+            ["Camera cache"],
+            text_offset=App.Vector(55, 35, 0),
+            open_transaction=False,
+        )
+        self.doc.recompute()
+        Gui.updateGui()
+        view_object = note.ViewObject
+        for property_name in ("LeaderEnd", "LeaderHalfExtent"):
+            statuses = set(view_object.getPropertyStatus(property_name))
+            self.assertIn("Transient", statuses, operation)
+            self.assertIn("NoModify", statuses, operation)
+
+        with tempfile.TemporaryDirectory(prefix="fc_review_note_clean_") as directory:
+            path = os.path.join(directory, "review-note.FCStd")
+            saved = self.doc.saveAsWithOutcome(path, True)
+            self.assertEqual(saved["save_disposition"], "written", operation)
+            self.assertFalse(self.doc.hasPendingFileChanges(), operation)
+            with zipfile.ZipFile(path, "r") as archive:
+                gui_xml = archive.read("GuiDocument.xml")
+            self.assertNotIn(b"LeaderEnd", gui_xml, operation)
+            self.assertNotIn(b"LeaderHalfExtent", gui_xml, operation)
+
+            def digest():
+                with open(path, "rb") as stream:
+                    return hashlib.sha256(stream.read()).hexdigest()
+
+            digest_before = digest()
+            mtime_before = os.stat(path).st_mtime_ns
+            end_before = App.Vector(view_object.LeaderEnd)
+            half_before = App.Vector(view_object.LeaderHalfExtent)
+            camera = Gui.ActiveDocument.ActiveView.getCameraNode()
+            old_orientation = camera.orientation.getValue()
+            projection_field = (
+                camera.height if hasattr(camera, "height") else camera.heightAngle
+            )
+            old_projection = float(projection_field.getValue())
+            try:
+                camera.orientation.setValue(
+                    old_orientation * coin.SbRotation(coin.SbVec3f(0.3, 0.8, 0.2), 0.7)
+                )
+                projection_field.setValue(old_projection * 0.6)
+                coin.SoDB.getSensorManager().processDelayQueue(0)
+                Gui.updateGui()
+
+                end_after = App.Vector(view_object.LeaderEnd)
+                half_after = App.Vector(view_object.LeaderHalfExtent)
+                self.assertFalse(
+                    end_after.isEqual(end_before, 1e-6)
+                    and half_after.isEqual(half_before, 1e-6),
+                    operation,
+                )
+                state = self.doc.getFileChangeState()
+                self.assertEqual(state["state"], "clean", operation)
+                self.assertEqual(state["pending_changes"], [], operation)
+
+                unchanged = self.doc.saveWithOutcome()
+                self.assertEqual(unchanged["save_disposition"], "unchanged", operation)
+                self.assertFalse(unchanged["file_written"], operation)
+                self.assertEqual(digest(), digest_before, operation)
+                self.assertEqual(os.stat(path).st_mtime_ns, mtime_before, operation)
+            finally:
+                camera.orientation.setValue(old_orientation)
+                projection_field.setValue(old_projection)
+                coin.SoDB.getSensorManager().processDelayQueue(0)
+                Gui.updateGui()
+
+            note.LabelText = ["Persistent edit"]
+            self.assertTrue(self.doc.hasPendingFileChanges(), operation)
+            written = self.doc.saveWithOutcome()
+            self.assertEqual(written["save_disposition"], "written", operation)
+            self.assertTrue(written["file_written"], operation)
+            self.assertFalse(self.doc.hasPendingFileChanges(), operation)
+            self.assertNotEqual(digest(), digest_before, operation)
 
     def test_gui_sync_exception_does_not_break_app_onchange(self):
         """Finding B: GUI sync exceptions must not abort App TextPosition onChanged."""
