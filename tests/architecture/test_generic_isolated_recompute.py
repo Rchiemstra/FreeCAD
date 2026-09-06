@@ -228,15 +228,17 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
             matches.append(f"{path.relative_to(REPO_ROOT).as_posix()}:{line}")
     owners = [entry.rsplit(":", 1)[0] for entry in matches]
     assert owners.count(DOCUMENT_SOURCE) == 1, matches
-    assert owners.count(GENERIC_SOURCE) == 1, matches
-    assert len(matches) == 2, (
+    assert owners.count(GENERIC_SOURCE) == 2, matches
+    assert len(matches) == 3, (
         "_recomputeFeature has an unclassified live caller: " + ", ".join(matches)
     )
 
     document = _read(DOCUMENT_SOURCE)
     full = _compact(_body(document, "Document::recompute"))
     facade = _compact(_body(document, "Document::recomputeFeature"))
-    friend = _compact(_body(_read(GENERIC_SOURCE), "execute"))
+    generic_source = _read(GENERIC_SOURCE)
+    friend = _compact(_body(generic_source, "execute"))
+    authoritative_friend = _compact(_body(generic_source, "executeAuthoritative"))
     assert "recomputeAsync(objs,force,options)" in full
     assert "_recomputeFeature(" not in full
     assert "_recomputeFeature(" not in facade
@@ -248,6 +250,30 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     attached = friend.find("!feature.isAttachedToDocument()", ownership)
     private_call = friend.find("returndocument._recomputeFeature(&feature);", attached)
     assert 0 <= temp_document < ownership < attached < private_call
+
+    ordinary_document = authoritative_friend.find("document.testStatus(Document::TempDoc)")
+    recomputing = authoritative_friend.find(
+        "!document.testStatus(Document::Recomputing)", ordinary_document
+    )
+    owner_thread = authoritative_friend.find(
+        "!document.isCollaborationOwnerThread()", recomputing
+    )
+    transaction = authoritative_friend.find("!document.hasPendingTransaction()", owner_thread)
+    publication = authoritative_friend.find(
+        "!document.collaborationRevisionPublicationSuppressed()", transaction
+    )
+    authoritative_call = authoritative_friend.find(
+        "returndocument._recomputeFeature(&feature);", publication
+    )
+    assert (
+        0
+        <= ordinary_document
+        < recomputing
+        < owner_thread
+        < transaction
+        < publication
+        < authoritative_call
+    )
 
     legacy_matches: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*"):
@@ -623,9 +649,16 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
     assert 0 <= deferred < fence < apply
 
 
-def test_no_recompute_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
-    generic = _compact(_read(GENERIC_SOURCE))
-    assert "!forceExecution&&target->isTouched()&&target->mustRecompute()==0" in generic
+def test_safe_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
+    source = _read(GENERIC_SOURCE)
+    generic = _compact(source)
+    assert (
+        "!forceExecution&&target->isTouched()&&isBookkeepingOnlyTarget(*target)"
+        in generic
+    )
+    bookkeeping = _compact(_body(source, "isBookkeepingOnlyTarget"))
+    assert "object.mustRecompute()==0" in bookkeeping
+    assert "isSafePlainAppLinkBookkeepingTarget(object)" in bookkeeping
     assert "PreparationPolicy::DetachedInProcess" in generic
     operation = generic.split("classGenericRecomputeBookkeepingOperation", 1)[1]
     operation = operation.split("std::unique_ptr<constApp::CollaborativeOperation>decodeResult", 1)[0]

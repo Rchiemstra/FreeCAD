@@ -6,6 +6,7 @@
 #include "GenericIsolatedRecompute.h"
 #include "GeometryWorkerOperationRegistry.h"
 
+#include <Base/Exception.h>
 #include <Base/Interpreter.h>
 
 #include <QCryptographicHash>
@@ -368,6 +369,10 @@ int App::Internal::runGeometryWorkerMain() noexcept
     catch (const std::bad_alloc&) {
         std::cerr << "geometry worker out of memory\n";
         return 86;
+    }
+    catch (const Base::Exception& exception) {
+        std::cerr << "geometry worker failed: " << exception.what() << '\n';
+        return 15;
     }
     catch (const std::exception& exception) {
         std::cerr << "geometry worker failed: " << exception.what() << '\n';

@@ -360,8 +360,8 @@ bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
     // work when its virtual mustExecute() is false. Its native extension would
     // only touch the transient view notification property; disabled
     // copy-on-change has no setup work. This exact contract lets a newly set
-    // persistent cross-document link clear its Enforce/Touch bookkeeping
-    // without attempting to serialize the external document into the worker.
+    // persistent link clear its Enforce/Touch bookkeeping without attempting
+    // to execute or serialize its dependency graph in the worker.
     // Derived links, arrays, copy-on-change links, unresolved links, and links
     // that can invoke a Python proxy remain fail-closed.
     const Base::Type linkType = Base::Type::fromName("App::Link");
@@ -381,7 +381,7 @@ bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
         return false;
     }
     auto* linked = link->getTrueLinkedObject(true);
-    if (!linked || linked->getDocument() == object.getDocument()) {
+    if (!linked) {
         return false;
     }
     return !freecad_cast<App::PropertyPythonObject*>(
@@ -709,22 +709,28 @@ PropertySnapshots capturePropertySnapshots(
         }
         auto& properties = result[objectManifest.name];
         for (const auto& [name, property] : namedProperties(*object)) {
-            std::unique_ptr<App::Property> copy(
-                static_cast<App::Property*>(property->getTypeId().createInstance()));
-            if (!copy) {
-                throw std::runtime_error("generic recompute property cannot be copied: " + name);
-            }
-            if (requiresDetachedValueSnapshot(*property)) {
-                copy = detachedValueSnapshot(*property);
-            }
-            else {
-                // Some legacy Copy() implementations return a base property
-                // (for example PropertyAngle inherits PropertyFloat::Copy),
-                // so paste into the registered concrete type.
-                copy->Paste(*property);
-            }
             Base::StringWriter writer;
             property->Save(writer);
+            std::unique_ptr<App::Property> copy;
+            if (!property->isDerivedFrom<App::PropertyLinkBase>()) {
+                copy.reset(static_cast<App::Property*>(
+                    property->getTypeId().createInstance()));
+                if (!copy) {
+                    throw std::runtime_error(
+                        "generic recompute property cannot be copied: " + name);
+                }
+                if (requiresDetachedValueSnapshot(*property)) {
+                    copy = detachedValueSnapshot(*property);
+                }
+                else {
+                    // Some legacy Copy() implementations return a base property
+                    // (for example PropertyAngle inherits PropertyFloat::Copy),
+                    // so paste into the registered concrete type. Link properties
+                    // require an attached owning container and are compared from
+                    // their same-document persistence representation instead.
+                    copy->Paste(*property);
+                }
+            }
             properties.emplace(
                 name, PropertySnapshot {std::move(copy), writer.getString()});
         }
@@ -759,6 +765,11 @@ bool sameSerializedProperty(const App::Property& left, const App::Property& righ
 bool sameCapturedProperty(const App::Property& current,
                           const PropertySnapshot& baseline)
 {
+    if (!baseline.value) {
+        Base::StringWriter currentWriter;
+        current.Save(currentWriter);
+        return currentWriter.getString() == baseline.serialized;
+    }
     if (current.getTypeId() != baseline.value->getTypeId()) {
         return false;
     }

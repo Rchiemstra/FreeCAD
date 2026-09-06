@@ -315,6 +315,31 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
+       plainSameDocumentAppLinkUsesNarrowEnforceOnlyBookkeeping)
+{
+    auto* source = _document->addObject<App::FeatureTest>("Source");
+    ASSERT_NE(source, nullptr);
+    source->purgeTouched();
+
+    auto* link = _document->addObject<App::Link>("LocalLink");
+    ASSERT_NE(link, nullptr);
+    link->LinkedObject.setValue(source);
+    ASSERT_TRUE(link->isTouched());
+    ASSERT_EQ(link->mustExecute(), 0);
+    ASSERT_TRUE(link->mustRecompute());
+
+    const int recomputed = _document->recompute({link});
+    EXPECT_EQ(recomputed, 1)
+        << (_document->getErrorDescription(link)
+                ? _document->getErrorDescription(link)
+                : "no recompute diagnostic");
+    EXPECT_EQ(link->LinkedObject.getValue(), source);
+    EXPECT_FALSE(link->isTouched());
+    EXPECT_FALSE(link->mustRecompute());
+    EXPECT_TRUE(link->isValid());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
        nullProxyFeaturePythonHoldingOnlySafeExternalLinkUsesBookkeeping)
 {
     auto* other = createOtherDocument();
@@ -465,6 +490,38 @@ TEST_F(GenericIsolatedRecomputeTest,
     EXPECT_EQ(links->getSize(), 0);
     EXPECT_TRUE(feature->isValid());
     EXPECT_FALSE(feature->mustRecompute());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       workerSnapshotComparesSameDocumentLinkPropertiesWithoutDetachedOwners)
+{
+    auto* source = _document->addObject<App::FeatureTest>("Source");
+    auto* link = _document->addObject<App::Link>("LocalLink");
+    auto* target = _document->addObject<App::FeatureTest>("Target");
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(link, nullptr);
+    ASSERT_NE(target, nullptr);
+    source->purgeTouched();
+    link->LinkedObject.setValue(source);
+    link->purgeTouched();
+    target->Source1.setValue(link);
+
+    auto preparation = prepare("Target");
+    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+    ASSERT_NE(preparation.isolatedTask, nullptr);
+
+    App::GeometryArchive output;
+    EXPECT_NO_THROW(
+        output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+            std::string(App::GenericIsolatedRecomputeOperationType),
+            preparation.isolatedTask->inputArchive,
+            std::stop_token {}));
+    auto operation = preparation.isolatedTask->decodeResult(output);
+    ASSERT_NE(operation, nullptr);
+    operation->apply(*_document);
+    EXPECT_EQ(link->LinkedObject.getValue(), source);
+    EXPECT_TRUE(target->isValid());
+    EXPECT_FALSE(target->mustRecompute());
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
