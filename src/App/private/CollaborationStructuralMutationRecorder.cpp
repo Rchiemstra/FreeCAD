@@ -105,6 +105,52 @@ bool isLiveSketchAttachmentStatusMutation(const DocumentObject& object,
         && object.getPropertyByName(propertyName) == &property;
 }
 
+bool isGroundedJointPlacementLockMutation(const DocumentObject& object,
+                                          const Property& property,
+                                          const unsigned long oldStatus,
+                                          const unsigned long newStatus)
+{
+    // Assembly's GroundedJoint pins the grounded object by flipping the
+    // ReadOnly bit on its Placement -- and LinkPlacement when the grounded
+    // object is a link -- from the joint's own onChanged, onDocumentRestored
+    // and onDelete. The mutation therefore lands on a different, already
+    // existing object than the one the commit created, so the new-object grant
+    // never covers it and grounding a part inside an agent commit is refused.
+    //
+    // A grounded joint is an App::FeaturePython whose behaviour lives in a
+    // Python proxy, so unlike the sketch case above there is no C++ type to
+    // key on. Key on the exact structural signature instead: a live object in
+    // this object's in-list holding an App::PropertyLinkGlobal named
+    // ObjectToGround that points back here. Nothing else in FreeCAD uses that
+    // property name, and the property is added locked by the joint itself.
+    const auto changed = oldStatus ^ newStatus;
+    if (changed != (1UL << Property::ReadOnly)) {
+        return false;
+    }
+    const char* propertyName = property.getName();
+    if (!propertyName) {
+        return false;
+    }
+    const std::string_view name(propertyName);
+    if ((name != "Placement" && name != "LinkPlacement")
+        || property.getTypeId() != PropertyPlacement::getClassTypeId()
+        || object.getPropertyByName(propertyName) != &property) {
+        return false;
+    }
+    return std::ranges::any_of(
+        object.getInList(), [&object](const DocumentObject* joint) {
+            if (!joint || !joint->isAttachedToDocument()
+                || joint->getDocument() != object.getDocument()) {
+                return false;
+            }
+            const auto* rawGround = joint->getPropertyByName("ObjectToGround");
+            const auto* ground = freecad_cast<const PropertyLinkGlobal*>(rawGround);
+            return ground
+                && rawGround->getTypeId() == PropertyLinkGlobal::getClassTypeId()
+                && ground->getValue() == &object;
+        });
+}
+
 void deferOrEmitDynamicExtension(
     DocumentP& state,
     const ExtensionContainer& container,
@@ -185,11 +231,14 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
         && object->testStatus(ObjectStatus::Remove);
     const bool liveSketchAttachmentStatus = attachedStructuralObject
         && isLiveSketchAttachmentStatusMutation(*object, property, oldStatus, newStatus);
+    const bool groundedJointPlacementLock = attachedStructuralObject
+        && isGroundedJointPlacementLockMutation(*object, property, oldStatus, newStatus);
     auto kind = Document::CollaborationStructuralMutationKind::Restricted;
     if (newStructuralObject) {
         kind = Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
     }
-    else if (removalOwnedStatus || liveSketchAttachmentStatus) {
+    else if (removalOwnedStatus || liveSketchAttachmentStatus
+             || groundedJointPlacementLock) {
         kind = Document::CollaborationStructuralMutationKind::Object;
     }
     std::string mutation = "propertyStatus on ";

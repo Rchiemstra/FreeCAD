@@ -444,8 +444,41 @@ bool isNullProxyExternalLinkHolderBookkeepingTarget(
            });
 }
 
+bool owesUnconditionalExecuteWork(const App::DocumentObject& object)
+{
+    // mustExecute() answers "must my dependents re-run because I changed", not
+    // "is my own execute() a no-op". The in-process recompute never conflated
+    // the two: it executes every touched object regardless. So a class whose
+    // execute() does unconditional work is invisible to the mustRecompute()
+    // shortcut below, and short-circuiting it purges the touch and silently
+    // drops the work the caller asked for. Every such class found so far is
+    // listed here; the shortcut stays unsound for any that is not, which is
+    // why it is a deny-list on proven offenders rather than a heuristic.
+    //
+    // AttachExtension::extensionExecute() re-derives the extended object's
+    // Placement on every execution -- its isTouched_Mapping() is hardcoded
+    // true precisely because the attachment inputs sit behind links whose
+    // changes never touch AttachmentSupport itself.
+    const Base::Type attachExtensionType = Base::Type::fromName("Part::AttachExtension");
+    if (!attachExtensionType.isBad() && object.hasExtension(attachExtensionType)) {
+        return true;
+    }
+
+    // AssemblyObject::execute() runs the joint solver whenever the
+    // SolveOnRecompute preference is set, which is the default. It declares no
+    // mustExecute() of its own, so a touched assembly reports 0 and would
+    // never solve. It also opts out of worker execution, so today it reaches
+    // the in-process branch above before this one; keep the entry so the
+    // shortcut cannot silently reclaim it if that opt-out is ever lifted.
+    const Base::Type assemblyType = Base::Type::fromName("Assembly::AssemblyObject");
+    return !assemblyType.isBad() && object.getTypeId().isDerivedFrom(assemblyType);
+}
+
 bool isBookkeepingOnlyTarget(const App::DocumentObject& object)
 {
+    if (owesUnconditionalExecuteWork(object)) {
+        return false;
+    }
     return object.mustRecompute() == 0
         || isSafePlainAppLinkBookkeepingTarget(object)
         || isNullProxyExternalLinkHolderBookkeepingTarget(object);
@@ -1172,6 +1205,103 @@ private:
     mutable bool _applied {false};
 };
 
+class GenericRecomputeInProcessOperation final: public App::CollaborativeOperation
+{
+public:
+    GenericRecomputeInProcessOperation(std::string target, std::string stableIdentity)
+        : _target(std::move(target))
+        , _stableIdentity(std::move(stableIdentity))
+    {}
+
+    std::string_view typeId() const noexcept override
+    {
+        return App::GenericIsolatedRecomputeOperationType;
+    }
+
+    void apply(App::Document& document) const override
+    {
+        auto* target = requireTarget(document);
+        if (target->canRecomputeOnWorker()) {
+            throw std::runtime_error(
+                "generic recompute in-process target opted into isolated execution before commit");
+        }
+        _applied = false;
+        // Same statuses the isolated result application uses, so onChanged()
+        // observers cannot mistake an execute-owned write for a user edit.
+        Base::ObjectStatusLocker<App::Document::Status, App::Document> recomputing(
+            App::Document::Recomputing, &document);
+        Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> executing(
+            App::Recompute, target);
+        const int result =
+            App::Internal::GenericIsolatedRecomputeAccess::executeAuthoritative(
+                document, *target);
+        _failed = result != 0;
+        if (_failed) {
+            // A scripted execute() that raises is an ordinary modelling error,
+            // not a broken commit: record it the way the isolated path records
+            // a worker failure and leave the rest of the plan intact.
+            const char* diagnostic = document.getErrorDescription(target);
+            App::Internal::GenericIsolatedRecomputeAccess::applyFailure(
+                document,
+                *target,
+                diagnostic && *diagnostic ? diagnostic
+                                          : "in-process feature recompute failed");
+        }
+        else {
+            // _recomputeFeature() only clears the error; settling the object is
+            // the caller's job here exactly as it is for an applied isolated
+            // result. Without this the feature stays touched forever, so it
+            // re-executes on every later recompute and the document never
+            // reports itself settled.
+            target->purgeError();
+            target->purgeTouched();
+        }
+        _applied = true;
+    }
+
+    App::CollaborativePostconditionResult checkPostcondition(
+        const App::Document& document) const override
+    {
+        try {
+            const auto* target = requireTarget(document);
+            if (!_applied) {
+                return {false, "in-process feature recompute did not run"};
+            }
+            if (_failed) {
+                // The failure path deliberately leaves the feature dirty so the
+                // next recompute retries it, matching the isolated path.
+                return {target->isTouched(),
+                        target->isTouched()
+                            ? std::string {}
+                            : "in-process recompute failure state was not applied"};
+            }
+            return {!target->isTouched(),
+                    target->isTouched()
+                        ? "in-process feature recompute did not clear the touch state"
+                        : std::string {}};
+        }
+        catch (const std::exception& error) {
+            return {false, error.what()};
+        }
+    }
+
+private:
+    App::DocumentObject* requireTarget(const App::Document& document) const
+    {
+        auto* target = document.getObject(_target.c_str());
+        if (!target
+            || document.collaborationObjectIdentity(*target) != _stableIdentity) {
+            throw std::runtime_error("generic recompute in-process target identity is stale");
+        }
+        return target;
+    }
+
+    std::string _target;
+    std::string _stableIdentity;
+    mutable bool _applied {false};
+    mutable bool _failed {false};
+};
+
 std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const App::GeometryArchive& archive,
     const std::string& target,
@@ -1361,6 +1491,77 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     auto* target = document.getObject(targetName.c_str());
     if (!target || !target->isAttachedToDocument() || target->getDocument() != &document) {
         throw std::invalid_argument("generic recompute target does not exist");
+    }
+
+    // The two exact-type predicates below are proven-inert contracts -- an
+    // App::FeaturePython with a null Proxy literally cannot run Python execute
+    // code -- so they keep their cheap bookkeeping path even though the type
+    // never opts into worker execution. Only the general mustRecompute()
+    // shortcut, which proves nothing about execute(), is deferred until after
+    // the opt-out branch.
+    const bool provenInertBookkeepingContract =
+        isSafePlainAppLinkBookkeepingTarget(*target)
+        || isNullProxyExternalLinkHolderBookkeepingTarget(*target);
+
+    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract) {
+        // The object has not opted into worker execution, so its execute()
+        // cannot be reproduced in the detached process at all: for every
+        // ordinary Python scripted feature the behaviour lives in a proxy the
+        // archive cannot carry, and FeaturePython only opts in when that proxy
+        // implements supportsAsyncRecompute(). Routing it to the worker makes
+        // collectClosure() refuse the job and the coordinator record a failed
+        // node, which leaves the feature permanently touched and invalid --
+        // Draft, Arch, FEM, Assembly's joints and every user macro included.
+        // Run execute() on the owner thread inside the coordinator's commit
+        // boundary instead, which is what the in-process recompute did.
+        //
+        // This is checked before the bookkeeping short-circuit: a scripted
+        // feature's mustExecute() reports nothing about the work its proxy
+        // owes, so purging the touch instead of executing would drop it.
+        const std::string stableIdentity = document.collaborationObjectIdentity(*target);
+        std::vector<App::DocumentRevisionKey> reads {
+            App::DocumentRevisionKey::documentStructure(),
+            App::DocumentRevisionKey::objectExistence(targetName),
+            App::DocumentRevisionKey::objectStructure(targetName),
+            App::DocumentRevisionKey::objectModel(targetName),
+            App::DocumentRevisionKey::unknownModelMutation()};
+        std::vector<App::DocumentRevisionKey> writes {
+            App::DocumentRevisionKey::objectModel(targetName)};
+        std::vector<App::DocumentRevisionPublicationRequest> effects {
+            {App::DocumentRevisionKey::objectModel(targetName), stableIdentity}};
+        // A scripted execute() is opaque, so declare every one of the target's
+        // properties as both read and written rather than guessing an output
+        // set the way the manifest does for a worker job.
+        for (const auto& [propertyName, property] : namedProperties(*target)) {
+            static_cast<void>(property);
+            auto key = App::DocumentRevisionKey::objectProperty(targetName, propertyName);
+            reads.push_back(key);
+            writes.push_back(key);
+            effects.push_back({std::move(key), stableIdentity});
+        }
+        std::sort(reads.begin(), reads.end());
+        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+        std::sort(writes.begin(), writes.end());
+        writes.erase(std::unique(writes.begin(), writes.end()), writes.end());
+        if (preserveLegacyRevisionSemantics) {
+            writes.push_back(App::DocumentRevisionKey::unknownModelMutation());
+            effects.push_back(
+                {App::DocumentRevisionKey::unknownModelMutation(), std::nullopt});
+        }
+        App::CollaborativeOperationPreparation::DetachedTask task =
+            [targetName, stableIdentity](const std::stop_token stopToken) {
+                if (stopToken.stop_requested()) {
+                    throw std::runtime_error(
+                        "generic recompute in-process preparation was cancelled");
+                }
+                return std::make_unique<const GenericRecomputeInProcessOperation>(
+                    targetName, stableIdentity);
+            };
+        return {std::move(reads),
+                std::move(writes),
+                std::move(effects),
+                std::move(task),
+                App::PreparationPolicy::DetachedInProcess};
     }
 
     if (!forceExecution && target->isTouched()

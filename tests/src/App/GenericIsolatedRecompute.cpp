@@ -616,7 +616,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       crossDocumentClosureAndUnoptedPythonFeatureAreRejected)
+       crossDocumentClosureIsRejectedAndUnoptedPythonFeatureRunsInProcess)
 {
     auto* target = _document->addObject<App::FeatureTestColumn>("CrossDocument");
     ASSERT_NE(target, nullptr);
@@ -646,10 +646,23 @@ TEST_F(GenericIsolatedRecomputeTest,
 
     EXPECT_THROW(static_cast<void>(prepare("CrossDocument")), std::invalid_argument);
 
+    // A scripted feature's execute() lives in a Python proxy that the worker
+    // archive cannot carry, so it never opts into isolated execution. Refusing
+    // the request leaves it permanently touched and invalid, so it is prepared
+    // as an owner-thread execution inside the coordinator commit boundary
+    // instead of being rejected.
     auto* python = _document->addObject("App::FeaturePython", "PythonFeature");
     ASSERT_NE(python, nullptr);
     EXPECT_FALSE(python->canRecomputeOnWorker());
-    EXPECT_THROW(static_cast<void>(prepare("PythonFeature")), std::invalid_argument);
+    auto preparation = prepare("PythonFeature");
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
+    EXPECT_EQ(preparation.isolatedTask, nullptr);
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_NE(operation, nullptr);
+    // The execution itself stays gated on the commit boundary: applying it
+    // outside an owner-thread prepared commit is refused, not run.
+    EXPECT_THROW(operation->apply(*_document), Base::Exception);
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

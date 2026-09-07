@@ -29,6 +29,7 @@ APP_TEST_CMAKE = "tests/src/App/CMakeLists.txt"
 NATIVE_TEST = "tests/src/App/GenericIsolatedRecompute.cpp"
 EXTRUDE_SOURCE = "src/Mod/PartDesign/App/FeatureExtrude.cpp"
 REVOLVED_SOURCE = "src/Mod/PartDesign/App/FeatureRevolved.cpp"
+ATTACH_SOURCE = "src/Mod/Part/App/AttachExtension.cpp"
 
 
 def _read(path: str | Path) -> str:
@@ -647,6 +648,148 @@ def test_attachment_derived_placement_is_a_declared_recompute_output() -> None:
     # Keyed on the extension alone: a live MapMode read would let an expression
     # change the manifest schema mid-recompute.
     assert "MapMode" not in predicate
+
+
+def test_state_transfer_import_does_not_pre_derive_the_attached_placement() -> None:
+    """The worker snapshots its comparison baseline right after the import.
+
+    Opening a document re-derives the attached placement in
+    onExtendedDocumentRestored() so a stored value cannot drift from its
+    supports.  A same-version state transfer is not an open: re-deriving there
+    puts the pending recompute's own output into the pre-execute baseline, the
+    placement execute() computes then compares equal to it, and the caller is
+    told nothing changed and keeps its stale value.  Freeze the ordering that
+    makes this matter and the guard that answers it.
+    """
+    execute = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
+    imported = execute.split("importer.importObjects(archiveStream));", 1)
+    assert len(imported) == 2, "worker no longer imports the caller archive"
+    # The baseline is taken from the imported document, so any restore hook that
+    # writes a declared output lands in it.
+    assert "capturePropertySnapshots(*detached,manifests)" in imported[1]
+
+    restored = _compact(_body(_read(ATTACH_SOURCE), "AttachExtension::onExtendedDocumentRestored"))
+    guard = "if(document&&document->testStatus(App::Document::CurrentSchemaTransfer)){return;}"
+    assert guard in restored
+    # The guard has to return before the placement is re-derived, not after it.
+    assert restored.split(guard, 1)[1].startswith("boolbAttached=positionBySupport();")
+
+    # Same status bit the worker import scopes, read at the one site that needs
+    # it: DocumentObject.h is included across the tree, so this deliberately
+    # does not add a member there for a single caller.
+    document_header = _compact(_suppress_cpp(_read(DOCUMENT_HEADER)))
+    assert "CurrentSchemaTransfer=15" in document_header
+
+
+def test_unconditional_executors_are_never_bookkeeping_only_recompute_targets() -> None:
+    """mustExecute() does not answer whether execute() is a no-op.
+
+    It answers whether dependents must re-run.  The in-process recompute never
+    conflated the two -- it executes every touched object -- so a class whose
+    execute() does unconditional work is invisible to the mustRecompute()
+    shortcut, and short-circuiting it purges the touch and drops the work.
+    Two are proven: an attached feature re-derives its Placement on every
+    execution, and AssemblyObject::execute() runs the joint solver.
+    """
+    generic = _read(GENERIC_SOURCE)
+    bookkeeping = _compact(_body(generic, "isBookkeepingOnlyTarget"))
+    assert bookkeeping.startswith("if(owesUnconditionalExecuteWork(object)){returnfalse;}")
+    assert "object.mustRecompute()==0" in bookkeeping
+
+    literal = _compact(_body(generic, "owesUnconditionalExecuteWork", raw=True))
+    assert 'Base::Type::fromName("Part::AttachExtension")' in literal
+    assert 'Base::Type::fromName("Assembly::AssemblyObject")' in literal
+    predicate = _compact(_body(generic, "owesUnconditionalExecuteWork"))
+    assert "object.hasExtension(attachExtensionType)" in predicate
+    assert "object.getTypeId().isDerivedFrom(assemblyType)" in predicate
+
+    # The premises: the extension really does re-derive on every execution, and
+    # the assembly really does solve from execute() without declaring it.
+    mapping = _compact(_body(_read("src/Mod/Part/App/AttachExtension.h"), "isTouched_Mapping"))
+    assert mapping == "returntrue;"
+    assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
+    assert "solve(false);" in _compact(_body(assembly, "AssemblyObject::execute"))
+    assert "AssemblyObject::mustExecute" not in assembly
+
+
+def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
+    """solve() writes its whole product onto objects other than the target.
+
+    ensureIdentityPlacements() normalises member link groups and
+    setNewPlacements() moves every jointed part.  The worker publishes only the
+    recomputed target's own declared outputs, so a solve that runs detached
+    converges and is then discarded, leaving the parts where they were.  The
+    assembly therefore has to opt out of worker execution.
+    """
+    header = _compact(_suppress_cpp(_read("src/Mod/Assembly/App/AssemblyObject.h")))
+    assert "boolcanRecomputeOnWorker()constoverride{returnfalse;}" in header
+
+    # The premise: solve() really does write through to other objects.
+    assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
+    solve = _compact(_body(assembly, "AssemblyObject::solve"))
+    assert "ensureIdentityPlacements();" in solve
+    assert "setNewPlacements();" in solve
+    identity = _compact(_body(assembly, "AssemblyObject::ensureIdentityPlacements"))
+    assert "pPlc->setValue(Base::Placement());" in identity
+
+    # And the worker really does publish only the target's own outputs.
+    generic = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
+    assert "encodeOutputs(targetName,*target,*targetManifest,baseline)" in generic
+
+
+def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
+    """A scripted feature's execute() lives in a Python proxy.
+
+    The archive cannot carry it, so FeaturePython only opts into worker
+    execution when its proxy implements supportsAsyncRecompute().  Routing the
+    rest to the worker makes collectClosure() refuse the job and the
+    coordinator record a failed node, which leaves Draft, Arch, FEM, Assembly's
+    joints and every user macro permanently touched and invalid.  They are
+    prepared as owner-thread executions inside the commit boundary instead.
+    """
+    generic = _read(GENERIC_SOURCE)
+    prepare = _compact(_body(generic, "prepareGenericRecompute"))
+    opt_out = "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract){"
+    assert opt_out in prepare
+    # The opt-out branch has to come before the general bookkeeping
+    # short-circuit: a scripted feature's mustExecute() reports nothing about
+    # what its proxy owes, so purging the touch would drop it.
+    assert prepare.index(opt_out) < prepare.index("isBookkeepingOnlyTarget(*target)")
+    assert "GenericRecomputeInProcessOperation" in prepare
+
+    # It defers only to the two exact-type, proven-inert contracts: an
+    # App::FeaturePython with a null Proxy cannot run Python execute code at
+    # all, so it keeps its cheap bookkeeping path. The general
+    # mustRecompute() shortcut, which proves nothing about execute(), does not
+    # get that privilege.
+    assert (
+        "constboolprovenInertBookkeepingContract=isSafePlainAppLinkBookkeepingTarget(*target)"
+        "||isNullProxyExternalLinkHolderBookkeepingTarget(*target);" in prepare
+    )
+    null_proxy = _compact(_body(generic, "isNullProxyExternalLinkHolderBookkeepingTarget"))
+    assert "!proxy->getValue().isNone()" in null_proxy
+
+    # The execution stays behind the authoritative guard, which requires the
+    # owner thread, a pending transaction and suppressed publication.
+    assert "GenericIsolatedRecomputeAccess::executeAuthoritative" in _compact(generic)
+    authoritative = _compact(_body(generic, "executeAuthoritative"))
+    assert "document.isCollaborationOwnerThread()" in authoritative
+    assert "document.hasPendingTransaction()" in authoritative
+    assert "document.collaborationRevisionPublicationSuppressed()" in authoritative
+
+    # _recomputeFeature() only clears the error, so the operation has to settle
+    # the object itself. Without this the feature stays touched forever: it
+    # re-executes on every later recompute and the document never reports
+    # itself settled.
+    in_process = _compact(
+        _suppress_cpp(
+            generic[generic.index("class GenericRecomputeInProcessOperation") :]
+        ).split("std::unique_ptr<const App::CollaborativeOperation> decodeResult")[0]
+    )
+    assert "target->purgeError();target->purgeTouched();" in in_process
+    # The failure path deliberately leaves it dirty so the next pass retries.
+    assert "applyFailure(" in in_process
+    assert 'return{target->isTouched(),' in in_process
 
 
 def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
