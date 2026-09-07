@@ -27,6 +27,8 @@ COMMIT_SOURCE = "src/App/DocumentCommitCoordinator.cpp"
 APP_CMAKE = "src/App/CMakeLists.txt"
 APP_TEST_CMAKE = "tests/src/App/CMakeLists.txt"
 NATIVE_TEST = "tests/src/App/GenericIsolatedRecompute.cpp"
+EXTRUDE_SOURCE = "src/Mod/PartDesign/App/FeatureExtrude.cpp"
+REVOLVED_SOURCE = "src/Mod/PartDesign/App/FeatureRevolved.cpp"
 
 
 def _read(path: str | Path) -> str:
@@ -587,6 +589,64 @@ def test_worker_boundary_has_no_parent_authority_and_featurepython_is_explicit_o
     python_opt_in = _compact(_body(_read(PYTHON_FEATURE_HEADER), "canRecomputeOnWorker"))
     assert "!FeatureT::canRecomputeOnWorker()" in python_opt_in
     assert "imp->supportsAsyncRecompute()==FeaturePythonImp::Accepted" in python_opt_in
+
+
+def test_worker_import_is_a_state_transfer_that_skips_schema_migrations() -> None:
+    """The worker archive is written by this build from already-migrated state.
+
+    Re-running a deprecated-property migration against it does not upgrade a
+    stale file, it overwrites a live value: FeatureExtrude re-derives SideType
+    from the residual Midplane flag and the worker then executes different
+    semantics than the caller asked for.  Freeze both halves of the contract --
+    the import scope that declares the transfer, and the migration sites that
+    honour it.
+    """
+    execute = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
+    assert "App::Document::CurrentSchemaTransfer,detached" in execute
+    # The locker has to cover the import itself, not merely exist in the function.
+    transfer = execute.split("App::Document::CurrentSchemaTransfer,detached", 1)[1]
+    assert transfer.startswith(");static_cast<void>(importer.importObjects(archiveStream));")
+
+    document_header = _compact(_suppress_cpp(_read(DOCUMENT_HEADER)))
+    assert "CurrentSchemaTransfer=15" in document_header
+
+    predicate = _compact(_body(_read(OBJECT_SOURCE), "DocumentObject::isRestoringDeprecatedSchema"))
+    assert "doc->testStatus(Document::CurrentSchemaTransfer)" in predicate
+
+    for source, qualified in (
+        (EXTRUDE_SOURCE, "FeatureExtrude::onDocumentRestored"),
+        (REVOLVED_SOURCE, "Revolved::onDocumentRestored"),
+    ):
+        migration = _compact(_body(_read(source), qualified))
+        assert migration.startswith("if(!isRestoringDeprecatedSchema()){"), qualified
+        # The guard must return before the migration, not merely branch around it.
+        assert "ProfileBased::onDocumentRestored();return;}" in migration, qualified
+
+
+def test_attachment_derived_placement_is_a_declared_recompute_output() -> None:
+    """AttachExtension::extensionExecute() writes the extended object's Placement.
+
+    Placement predates Prop_Output, so without an explicit declaration an
+    attached feature publishes nothing and the caller keeps its identity
+    placement.  The declaration is keyed on the registered extension rather
+    than the live MapMode so the manifest schema stays stable for the whole
+    detached recompute.
+    """
+    generic = _read(GENERIC_SOURCE)
+    declared = _compact(_body(generic, "isDeclaredRecomputeOutput"))
+    assert "isAttachExtensionPlacementRecomputeOutput(object,property)" in declared
+
+    # String literals are blanked by the comment/literal scanner, so the type
+    # and property names have to be read from the raw body.
+    literal = _compact(_body(generic, "isAttachExtensionPlacementRecomputeOutput", raw=True))
+    assert 'Base::Type::fromName("Part::AttachExtension")' in literal
+    assert 'object.getPropertyByName("Placement")==&property' in literal
+
+    predicate = _compact(_body(generic, "isAttachExtensionPlacementRecomputeOutput"))
+    assert "object.hasExtension(attachExtensionType)" in predicate
+    # Keyed on the extension alone: a live MapMode read would let an expression
+    # change the manifest schema mid-recompute.
+    assert "MapMode" not in predicate
 
 
 def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:

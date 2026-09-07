@@ -354,6 +354,25 @@ bool isPartDesignProfilePlacementRecomputeOutput(const App::DocumentObject& obje
         && object.getPropertyByName("Placement") == &property;
 }
 
+bool isAttachExtensionPlacementRecomputeOutput(const App::DocumentObject& object,
+                                               const App::Property& property)
+{
+    // AttachExtension::extensionExecute() runs positionBySupport(), which
+    // derives the extended object's Placement from the attachment engine and
+    // writes it back. Placement predates Prop_Output, so without this
+    // declaration an attached feature publishes nothing and the caller keeps
+    // the identity placement it started with.
+    //
+    // Keyed on the registered extension alone, deliberately not on the current
+    // MapMode: MapMode is a mutable value and the manifest schema has to stay
+    // stable for the whole detached recompute. A deactivated attachment simply
+    // leaves Placement unchanged, which publishes nothing either way.
+    const Base::Type attachExtensionType = Base::Type::fromName("Part::AttachExtension");
+    return !attachExtensionType.isBad()
+        && object.hasExtension(attachExtensionType)
+        && object.getPropertyByName("Placement") == &property;
+}
+
 bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
 {
     // A plain native App::Link to a non-Python object has no model execute
@@ -490,7 +509,8 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
         || isPartDesignAddSubShapeRecomputeOutput(object, property)
         || isPartDesignSuppressedShapeRecomputeOutput(object, property)
         || isPartDesignDirectionRecomputeOutput(object, property)
-        || isPartDesignProfilePlacementRecomputeOutput(object, property);
+        || isPartDesignProfilePlacementRecomputeOutput(object, property)
+        || isAttachExtensionPlacementRecomputeOutput(object, property);
 }
 
 ObjectManifest manifestFor(const App::DocumentObject& object)
@@ -660,6 +680,10 @@ struct PropertySnapshot
 {
     std::unique_ptr<App::Property> value;
     std::string serialized;
+    // Only populated for doc-file-backed properties, where the plain
+    // serialization cannot represent the value.
+    std::string archived;
+    bool payloadInDocFile {false};
 };
 
 using PropertySnapshots =
@@ -670,6 +694,38 @@ std::string dumpProperty(App::Property& property)
     std::ostringstream stream(std::ios::out | std::ios::binary);
     property.dumpToStream(stream, 1);
     return stream.str();
+}
+
+// Base::StringWriter::writeFiles() is a no-op, so a property that stores its
+// payload through SaveDocFile -- PropertyMeshKernel, Points::PropertyPointKernel,
+// PropertyFileIncluded and friends -- serializes to nothing but a constant file
+// reference such as <Mesh file="MeshKernel.bms"/>. That string is identical for
+// an empty mesh and a finished one, so a serialized comparison silently reports
+// "unchanged", the worker publishes no geometry, and the caller keeps whatever
+// it started with. Detect the case from the writer's own file requests: a class
+// derived from StringWriter can see the requests Save() registered.
+class DocFilePayloadProbe final: public Base::StringWriter
+{
+public:
+    bool registeredDocFiles() const
+    {
+        return !FileList.empty();
+    }
+};
+
+bool serializesPayloadToDocFile(const App::Property& property)
+{
+    DocFilePayloadProbe probe;
+    property.Save(probe);
+    return probe.registeredDocFiles();
+}
+
+// The full persistence archive round-trips through ZipWriter and therefore does
+// carry SaveDocFile payloads. It is deterministic for equal content, so it is a
+// sound equality basis where the plain XML is blind.
+std::string valueArchive(const App::Property& property)
+{
+    return dumpProperty(const_cast<App::Property&>(property));
 }
 
 bool requiresDetachedValueSnapshot(const App::Property& property)
@@ -711,6 +767,8 @@ PropertySnapshots capturePropertySnapshots(
         for (const auto& [name, property] : namedProperties(*object)) {
             Base::StringWriter writer;
             property->Save(writer);
+            const bool payloadInDocFile = !requiresDetachedValueSnapshot(*property)
+                && serializesPayloadToDocFile(*property);
             std::unique_ptr<App::Property> copy;
             if (!property->isDerivedFrom<App::PropertyLinkBase>()) {
                 copy.reset(static_cast<App::Property*>(
@@ -732,7 +790,11 @@ PropertySnapshots capturePropertySnapshots(
                 }
             }
             properties.emplace(
-                name, PropertySnapshot {std::move(copy), writer.getString()});
+                name,
+                PropertySnapshot {std::move(copy),
+                                  writer.getString(),
+                                  payloadInDocFile ? valueArchive(*property) : std::string {},
+                                  payloadInDocFile});
         }
     }
     return result;
@@ -750,6 +812,12 @@ bool sameSerializedProperty(const App::Property& left, const App::Property& righ
     // as an undeclared recompute side effect.
     if (left.isSame(right)) {
         return true;
+    }
+
+    // A doc-file-backed payload is invisible to the XML, so compare the
+    // archives that carry it rather than two identical file references.
+    if (serializesPayloadToDocFile(left) || serializesPayloadToDocFile(right)) {
+        return valueArchive(left) == valueArchive(right);
     }
 
     // Property's base implementation also compares allocation-sensitive
@@ -774,8 +842,17 @@ bool sameCapturedProperty(const App::Property& current,
         return false;
     }
     if (requiresDetachedValueSnapshot(current)) {
+        // Part shapes are doc-file backed as well, but they keep their
+        // established normalized comparison: raw archive bytes would report
+        // legitimate serialization normalization as a value change.
         auto normalized = detachedValueSnapshot(const_cast<App::Property&>(current));
         return normalized->isSame(*baseline.value);
+    }
+    if (baseline.payloadInDocFile) {
+        // The XML carries only a file reference, so neither the serialized
+        // fallback below nor isSame()'s memory-size heuristic can tell an empty
+        // payload from a computed one. Compare the archives that hold it.
+        return valueArchive(current) == baseline.archived;
     }
     if (current.isSame(*baseline.value)) {
         return true;
@@ -1470,7 +1547,17 @@ App::GeometryArchive executeGenericRecompute(
         documentSection.bytes.size());
     std::istringstream archiveStream(archiveBytes, std::ios::in | std::ios::binary);
     App::MergeDocuments importer(detached);
-    static_cast<void>(importer.importObjects(archiveStream));
+    {
+        // The archive was written by this exact program version out of an
+        // already-restored document, so every deprecated-property migration
+        // has already been applied to it.  Letting onDocumentRestored() run
+        // them again would rewrite live values (for example FeatureExtrude
+        // would re-derive SideType from the residual Midplane flag) and the
+        // worker would then execute different semantics than the caller.
+        Base::ObjectStatusLocker<App::Document::Status, App::Document> schemaTransfer(
+            App::Document::CurrentSchemaTransfer, detached);
+        static_cast<void>(importer.importObjects(archiveStream));
+    }
     validateDetachedSchema(*detached, manifests);
     auto baseline = capturePropertySnapshots(*detached, manifests);
 

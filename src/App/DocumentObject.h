@@ -376,6 +376,17 @@ public:
         return StatusBits.test(ObjectStatus::Restore);
     }
 
+    /** Check whether a restore in progress may carry pre-migration content.
+     *
+     * Deprecated-property migrations in onDocumentRestored() must be guarded
+     * by this predicate.  It is false when the owning document is being
+     * populated by a same-version state transfer (the isolated recompute
+     * worker's import), where the content was written by this exact program
+     * version from already-migrated state, so re-running a migration would
+     * overwrite live values instead of upgrading stale ones.
+     */
+    bool isRestoringDeprecatedSchema() const;
+
     /// Check whether this document object is being removed.
     bool isRemoving() const
     {

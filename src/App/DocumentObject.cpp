@@ -1646,6 +1646,12 @@ void DocumentObject::renameObjectIdentifiers(
     ExpressionEngine.renameObjectIdentifiers(paths);
 }
 
+bool DocumentObject::isRestoringDeprecatedSchema() const
+{
+    const auto* doc = getDocument();
+    return !doc || !doc->testStatus(Document::CurrentSchemaTransfer);
+}
+
 void DocumentObject::onDocumentRestored()
 {
     // call all extensions

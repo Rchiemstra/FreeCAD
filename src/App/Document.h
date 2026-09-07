@@ -300,7 +300,18 @@ public:
         /// Whether a recompute is necessary on restore for migration purposes.
         RecomputeOnRestore = 13,
         /// Whether the local coordinate system of older versions should be migrated.
-        MigrateLCS = 14
+        MigrateLCS = 14,
+        /** Whether the content being restored is a same-version state transfer.
+         *
+         * Set while a document is populated from an archive that this exact
+         * program version wrote out of an already-restored in-memory document,
+         * as the isolated recompute worker does.  Such content is by
+         * construction current, so deprecated-property migrations must not run
+         * against it: they are file-format upgrades, and re-applying one to
+         * already-migrated state rewrites live values.  Guard every such
+         * migration with DocumentObject::isRestoringDeprecatedSchema().
+         */
+        CurrentSchemaTransfer = 15
     };
 
     /** Suppress authoritative file-change tracking for temporary render/cache work. */
