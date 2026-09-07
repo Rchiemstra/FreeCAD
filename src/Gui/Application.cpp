@@ -1335,10 +1335,12 @@ void Application::slotActiveDocument(const App::Document& Doc)
                 Py::Object active(d->activeDocument->getPyObject(), true);
                 Py::Module("FreeCADGui").setAttr(std::string("ActiveDocument"), active);
 
-                auto view = getMainWindow()->activeWindow();
-                if (!view || view->getAppDocument() != &Doc) {
-                    Gui::MDIView* view = d->activeDocument->getActiveView();
-                    getMainWindow()->setActiveWindow(view);
+                if (auto* mainWindow = getMainWindow()) {
+                    auto view = mainWindow->activeWindow();
+                    if (!view || view->getAppDocument() != &Doc) {
+                        Gui::MDIView* activeView = d->activeDocument->getActiveView();
+                        mainWindow->setActiveWindow(activeView);
+                    }
                 }
             }
             else {
@@ -1357,7 +1359,9 @@ void Application::slotActiveDocument(const App::Document& Doc)
         if (!hGrp->GetBool("IgnoreProjectSchema")) {
             int userSchema = Doc.UnitSystem.getValue();
             Base::UnitsApi::setSchema(userSchema);
-            getMainWindow()->setUserSchema(userSchema);
+            if (auto* mainWindow = getMainWindow()) {
+                mainWindow->setUserSchema(userSchema);
+            }
             Application::Instance->onUpdate();
         }
         else {  // set up Unit system default
@@ -2195,7 +2199,9 @@ void Application::updateActive()
 
 void Application::updateActions(bool delay)
 {
-    getMainWindow()->updateActions(delay);
+    if (auto* mainWindow = getMainWindow()) {
+        mainWindow->updateActions(delay);
+    }
 }
 
 void Application::tryClose(QCloseEvent* e)
