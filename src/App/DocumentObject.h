@@ -1312,17 +1312,19 @@ public:
     }
 
     /**
-     * @brief Whether this object's recompute path is safe to run on the worker thread.
+     * @brief Whether isolated recompute can transfer this object's complete result.
      *
      * This is used by async recompute scheduling. Objects that can touch GUI or
      * other thread-affine state during recompute must return false. Returning
-     * true means the recompute path is limited to worker-safe App/model work
-     * and does not depend on GUI, Qt event-loop state, or other thread-affine
-     * APIs.
+     * true means both that the recompute path is worker-safe and that every
+     * execute-owned state change needed by later recomputes is represented by
+     * the declared property result transferred back by the isolated facade.
+     * Types with hidden caches, status changes, or mutations of other objects
+     * must remain false until they provide a complete typed result protocol.
      */
     virtual bool canRecomputeOnWorker() const
     {
-        return true;
+        return false;
     }
 
     /**

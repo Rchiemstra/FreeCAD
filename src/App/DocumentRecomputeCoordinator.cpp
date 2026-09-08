@@ -3,6 +3,9 @@
 #include "DocumentRecomputeCoordinator.h"
 
 #include "DocumentCollaborationService.h"
+#include "Document.h"
+#include "DocumentObject.h"
+#include "GenericIsolatedRecompute.h"
 #include "GeometryJobManager.h"
 
 #include <Base/Exception.h>
@@ -103,6 +106,57 @@ std::string canonicalizeAndSign(App::DocumentRecomputeRequest& request)
         requireBoundedField(feature.operationId, "operation id", bytes);
         requireBoundedField(feature.intent.operationType, "operation type", bytes);
         requireBoundedField(feature.provenance, "provenance", bytes);
+        if (!feature.stableObjectIdentity.empty()) {
+            requireBoundedField(
+                feature.stableObjectIdentity, "stable object identity", bytes);
+        }
+        if (feature.stableObjectIdentity.empty()
+            != !feature.presentationObjectModelRevision.has_value()) {
+            throw std::invalid_argument(
+                "recompute live-object identity and presentation revision must be paired");
+        }
+        std::ranges::sort(
+            feature.presentationRevisionFence,
+            {},
+            &DocumentRevisionObservation::key);
+        if (std::ranges::adjacent_find(
+                feature.presentationRevisionFence,
+                {},
+                &DocumentRevisionObservation::key)
+            != feature.presentationRevisionFence.end()) {
+            throw std::invalid_argument(
+                "recompute presentation fence contains a duplicate key");
+        }
+        for (const auto& observation : feature.presentationRevisionFence) {
+            if (!observation.key.valid()) {
+                throw std::invalid_argument(
+                    "recompute presentation fence contains an invalid key");
+            }
+            if (observation.key.subject.size() > MaxFieldBytes
+                || observation.key.propertyName.size() > MaxFieldBytes
+                || bytes > MaxPlanBytes - observation.key.subject.size()
+                || bytes + observation.key.subject.size()
+                    > MaxPlanBytes - observation.key.propertyName.size()) {
+                throw std::invalid_argument(
+                    "recompute presentation fence exceeds the plan limit");
+            }
+            bytes += observation.key.subject.size()
+                + observation.key.propertyName.size();
+        }
+        if (feature.intent.operationType
+            == App::GenericIsolatedRecomputeOperationType) {
+            const auto target = feature.intent.arguments.find("feature");
+            const auto identity =
+                feature.intent.arguments.find("stable_object_identity");
+            if (feature.stableObjectIdentity.empty()
+                || target == feature.intent.arguments.end()
+                || identity == feature.intent.arguments.end()
+                || target->second != feature.featureId
+                || identity->second != feature.stableObjectIdentity) {
+                throw std::invalid_argument(
+                    "generic recompute presentation selector must match its operation target and stable identity");
+            }
+        }
         if (feature.intent.arguments.size() > MaxArgumentsPerFeature) {
             throw std::invalid_argument("recompute feature contains too many arguments");
         }
@@ -176,16 +230,42 @@ std::string canonicalizeAndSign(App::DocumentRecomputeRequest& request)
     signature.reserve(bytes + request.features.size() * 32);
     appendField(signature, request.coalescingKey);
     signature.push_back(request.refreshRevisionFenceAfterEachCommit ? '1' : '0');
+    signature.push_back(request.publishTerminalPresentation ? '1' : '0');
     signature.push_back('\n');
     for (const auto& feature : request.features) {
         appendField(signature, feature.featureId);
         appendField(signature, feature.operationId);
         appendField(signature, feature.intent.operationType);
         appendField(signature, feature.provenance);
+        appendField(signature, feature.stableObjectIdentity);
+        signature.push_back(
+            feature.presentationObjectModelRevision.has_value() ? '1' : '0');
+        if (feature.presentationObjectModelRevision) {
+            appendField(
+                signature, std::to_string(*feature.presentationObjectModelRevision));
+        }
+        signature.push_back('F');
+        appendField(
+            signature,
+            std::to_string(feature.presentationRevisionFence.size()));
+        for (const auto& observation : feature.presentationRevisionFence) {
+            appendField(
+                signature,
+                std::to_string(static_cast<int>(observation.key.kind)));
+            appendField(signature, observation.key.subject);
+            appendField(signature, observation.key.propertyName);
+            appendField(signature, std::to_string(observation.revision));
+        }
+        signature.push_back(
+            feature.presentationRevisionFenceComplete ? '1' : '0');
+        signature.push_back('D');
+        appendField(signature, std::to_string(feature.dependencies.size()));
         for (const auto& dependency : feature.dependencies) {
             appendField(signature, dependency);
         }
-        signature.push_back('|');
+        signature.push_back('A');
+        appendField(
+            signature, std::to_string(feature.intent.arguments.size()));
         for (const auto& [key, value] : feature.intent.arguments) {
             appendField(signature, key);
             appendField(signature, value);
@@ -202,13 +282,25 @@ namespace App
 
 struct DocumentRecomputeCoordinator::Job
 {
+    enum class PresentationFinalizationState
+    {
+        Unclaimed,
+        InProgress,
+        Finalized
+    };
+
     struct Node
     {
         DocumentRecomputeFeatureRequest request;
         DocumentRecomputeFeatureState state {DocumentRecomputeFeatureState::Waiting};
         std::optional<PreparedEditExecutionId> executionId;
         std::string diagnostic;
-        bool executed {true};
+        bool executed {false};
+        std::optional<std::uint64_t> presentationObjectModelRevision;
+        std::vector<DocumentRevisionObservation> presentationRevisionFence;
+        bool presentationRevisionFenceComplete {false};
+        bool outcomeApplied {false};
+        bool targetPublicationConfirmed {false};
     };
 
     DocumentRecomputeId id {0};
@@ -218,9 +310,12 @@ struct DocumentRecomputeCoordinator::Job
     std::string sessionId;
     std::map<std::string, Node> nodes;
     bool refreshRevisionFenceAfterEachCommit {false};
+    bool publishTerminalPresentation {true};
+    bool activationPending {false};
     bool cancelRequested {false};
     bool sessionFinalized {false};
-    bool presentationFinalized {false};
+    PresentationFinalizationState presentationFinalization {
+        PresentationFinalizationState::Unclaimed};
     std::string diagnostic;
 };
 
@@ -228,6 +323,43 @@ DocumentRecomputeCoordinator::DocumentRecomputeCoordinator(
     DocumentCollaborationService& service)
     : _service(service)
 {}
+
+DocumentRecomputeCoordinator::SubmissionReservation::SubmissionReservation(
+    DocumentRecomputeCoordinator& coordinator,
+    std::unique_lock<std::recursive_mutex> operationLock,
+    const DocumentRecomputeId id,
+    const bool created) noexcept
+    : _coordinator(&coordinator)
+    , _operationLock(std::move(operationLock))
+    , _id(id)
+    , _created(created)
+{}
+
+DocumentRecomputeCoordinator::SubmissionReservation::SubmissionReservation(
+    SubmissionReservation&& other) noexcept
+    : _coordinator(std::exchange(other._coordinator, nullptr))
+    , _operationLock(std::move(other._operationLock))
+    , _id(std::exchange(other._id, 0))
+    , _created(std::exchange(other._created, false))
+{}
+
+DocumentRecomputeCoordinator::SubmissionReservation::~SubmissionReservation()
+{
+    if (_coordinator) {
+        _coordinator->_operationActive = false;
+    }
+}
+
+DocumentRecomputeId
+DocumentRecomputeCoordinator::SubmissionReservation::id() const noexcept
+{
+    return _id;
+}
+
+bool DocumentRecomputeCoordinator::SubmissionReservation::created() const noexcept
+{
+    return _created;
+}
 
 DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
 {
@@ -272,70 +404,272 @@ DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
 
 DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeRequest request)
 {
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
+    auto reservation = admitSubmission(std::move(request));
+    const auto id = reservation.id();
+    if (reservation.created()) {
+        activateSubmission(std::move(reservation));
+    }
+    return id;
+}
+
+DocumentRecomputeCoordinator::SubmissionReservation
+DocumentRecomputeCoordinator::admitSubmission(DocumentRecomputeRequest request)
+{
+    std::unique_lock operationLock(_operationMutex);
+    if (_operationActive) {
+        throw std::runtime_error(
+            "reentrant document recompute mutation is not supported");
+    }
+    _operationActive = true;
+    try {
+        const std::string signature = canonicalizeAndSign(request);
+
+        {
+            std::lock_guard stateLock(_stateMutex);
+            if (!request.coalescingKey.empty()) {
+                for (const auto& [id, job] : _jobs) {
+                    if (job->coalescingKey != request.coalescingKey
+                        || jobTerminal(job->state)) {
+                        continue;
+                    }
+                    if (job->signature != signature) {
+                        throw std::invalid_argument(
+                            "active recompute coalescing key names a different plan");
+                    }
+                    return SubmissionReservation(
+                        *this, std::move(operationLock), id, false);
+                }
+            }
+
+            while (_jobs.size() >= MaxRetainedJobs) {
+                const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
+                    return jobTerminal(entry.second->state);
+                });
+                if (terminal == _jobs.end()) {
+                    throw std::runtime_error(
+                        "too many active document recompute plans");
+                }
+                const auto evictedId = terminal->first;
+                _jobs.erase(terminal);
+                std::erase_if(
+                    _unresolvedSyntheticFeatures,
+                    [evictedId](const auto& entry) {
+                        return entry.first.first == evictedId;
+                    });
+            }
+        }
+
+        if (_nextId == 0
+            || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+            throw std::overflow_error("document recompute id space exhausted");
+        }
+        const auto id = _nextId++;
+
+        auto job = std::make_unique<Job>();
+        job->id = id;
+        job->coalescingKey = std::move(request.coalescingKey);
+        job->signature = signature;
+        job->activationPending = true;
+        job->refreshRevisionFenceAfterEachCommit =
+            request.refreshRevisionFenceAfterEachCommit;
+        job->publishTerminalPresentation =
+            request.publishTerminalPresentation;
+        for (auto& feature : request.features) {
+            const std::string featureId = feature.featureId;
+            const auto presentationObjectRevision =
+                feature.presentationObjectModelRevision;
+            auto presentationRevisionFence =
+                feature.presentationRevisionFence;
+            const bool presentationRevisionFenceComplete =
+                feature.presentationRevisionFenceComplete;
+            job->nodes.emplace(
+                featureId,
+                Job::Node {
+                    .request = std::move(feature),
+                    .executionId = std::nullopt,
+                    .diagnostic = {},
+                    .presentationObjectModelRevision = presentationObjectRevision,
+                    .presentationRevisionFence =
+                        std::move(presentationRevisionFence),
+                    .presentationRevisionFenceComplete =
+                        presentationRevisionFenceComplete});
+        }
+        {
+            std::lock_guard stateLock(_stateMutex);
+            _jobs.emplace(id, std::move(job));
+        }
+
+        return SubmissionReservation(
+            *this, std::move(operationLock), id, true);
+    }
+    catch (...) {
+        _operationActive = false;
+        throw;
+    }
+}
+
+void DocumentRecomputeCoordinator::replaceSubmission(
+    SubmissionReservation& reservation,
+    DocumentRecomputeRequest request)
+{
+    if (reservation._coordinator != this || !reservation._created) {
+        throw std::logic_error("invalid document recompute submission reservation");
+    }
     const std::string signature = canonicalizeAndSign(request);
-
-    {
-        std::lock_guard stateLock(_stateMutex);
-        if (!request.coalescingKey.empty()) {
-            for (const auto& [id, job] : _jobs) {
-                if (job->coalescingKey != request.coalescingKey || jobTerminal(job->state)) {
-                    continue;
-                }
-                if (job->signature != signature) {
-                    throw std::invalid_argument(
-                        "active recompute coalescing key names a different plan");
-                }
-                return id;
-            }
-        }
-
-        while (_jobs.size() >= MaxRetainedJobs) {
-            const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
-                return jobTerminal(entry.second->state);
-            });
-            if (terminal == _jobs.end()) {
-                throw std::runtime_error("too many active document recompute plans");
-            }
-            _jobs.erase(terminal);
-        }
+    std::lock_guard stateLock(_stateMutex);
+    auto& job = *_jobs.at(reservation._id);
+    if (!job.activationPending || jobTerminal(job.state)) {
+        throw std::logic_error(
+            "document recompute submission reservation is no longer replaceable");
+    }
+    if (job.coalescingKey != request.coalescingKey) {
+        throw std::invalid_argument(
+            "deferred recompute capture changed its coalescing identity");
     }
 
-    if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
-        throw std::overflow_error("document recompute id space exhausted");
-    }
-    const auto id = _nextId++;
-
-    std::string sessionId;
-    if (!request.features.empty()) {
-        sessionId = _service.beginEditSession("document-recompute").sessionId();
-    }
-
-    auto job = std::make_unique<Job>();
-    job->id = id;
-    job->coalescingKey = std::move(request.coalescingKey);
-    job->signature = signature;
-    job->sessionId = std::move(sessionId);
-    job->refreshRevisionFenceAfterEachCommit =
-        request.refreshRevisionFenceAfterEachCommit;
+    std::map<std::string, Job::Node> nodes;
     for (auto& feature : request.features) {
         const std::string featureId = feature.featureId;
-        job->nodes.emplace(featureId,
-                           Job::Node {.request = std::move(feature),
-                                      .executionId = std::nullopt,
-                                      .diagnostic = {}});
+        const auto presentationObjectRevision =
+            feature.presentationObjectModelRevision;
+        auto presentationRevisionFence =
+            feature.presentationRevisionFence;
+        const bool presentationRevisionFenceComplete =
+            feature.presentationRevisionFenceComplete;
+        nodes.emplace(
+            featureId,
+            Job::Node {
+                .request = std::move(feature),
+                .executionId = std::nullopt,
+                .diagnostic = {},
+                .presentationObjectModelRevision = presentationObjectRevision,
+                .presentationRevisionFence =
+                    std::move(presentationRevisionFence),
+                .presentationRevisionFenceComplete =
+                    presentationRevisionFenceComplete});
     }
-    if (job->nodes.empty()) {
-        job->state = DocumentRecomputeState::Completed;
+    job.signature = signature;
+    job.refreshRevisionFenceAfterEachCommit =
+        request.refreshRevisionFenceAfterEachCommit;
+    job.publishTerminalPresentation = request.publishTerminalPresentation;
+    job.nodes = std::move(nodes);
+    job.state = DocumentRecomputeState::Running;
+}
+
+void DocumentRecomputeCoordinator::failSubmission(
+    SubmissionReservation& reservation,
+    std::string diagnostic) noexcept
+{
+    try {
+        if (reservation._coordinator != this || !reservation._created) {
+            return;
+        }
+        bool finalizeNodes = false;
+        {
+            std::lock_guard stateLock(_stateMutex);
+            const auto found = _jobs.find(reservation._id);
+            if (found == _jobs.end() || jobTerminal(found->second->state)) {
+                return;
+            }
+            auto& job = *found->second;
+            job.activationPending = false;
+            job.diagnostic = std::move(diagnostic);
+            if (job.nodes.empty()) {
+                job.state = DocumentRecomputeState::PartialFailure;
+            }
+            else {
+                for (auto& [featureId, node] : job.nodes) {
+                    static_cast<void>(featureId);
+                    node.state = DocumentRecomputeFeatureState::Failed;
+                    node.diagnostic = job.diagnostic;
+                }
+                finalizeNodes = true;
+            }
+        }
+        if (finalizeNodes) {
+            finalizeIfTerminal(reservation._id);
+        }
     }
+    catch (...) {
+    }
+}
+
+void DocumentRecomputeCoordinator::activateSubmission(
+    SubmissionReservation reservation)
+{
+    if (reservation._coordinator != this || !reservation._created) {
+        return;
+    }
+    const auto id = reservation._id;
+
+    bool needsSession = false;
     {
         std::lock_guard stateLock(_stateMutex);
-        _jobs.emplace(id, std::move(job));
+        const auto found = _jobs.find(id);
+        if (found == _jobs.end() || jobTerminal(found->second->state)
+            || !found->second->activationPending) {
+            return;
+        }
+        needsSession = !found->second->nodes.empty();
     }
 
+    std::string sessionId;
+    try {
+        if (needsSession) {
+            sessionId =
+                _service.beginEditSession("document-recompute").sessionId();
+        }
+    }
+    catch (const std::exception& error) {
+        std::lock_guard stateLock(_stateMutex);
+        auto& job = *_jobs.at(id);
+        job.activationPending = false;
+        job.diagnostic =
+            std::string("recompute activation failed: ") + error.what();
+        for (auto& [featureId, node] : job.nodes) {
+            static_cast<void>(featureId);
+            if (!featureTerminal(node.state)) {
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = job.diagnostic;
+            }
+        }
+    }
+    catch (...) {
+        std::lock_guard stateLock(_stateMutex);
+        auto& job = *_jobs.at(id);
+        job.activationPending = false;
+        job.diagnostic =
+            "recompute activation failed with unknown exception";
+        for (auto& [featureId, node] : job.nodes) {
+            static_cast<void>(featureId);
+            if (!featureTerminal(node.state)) {
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.diagnostic = job.diagnostic;
+            }
+        }
+    }
+
+    {
+        std::lock_guard stateLock(_stateMutex);
+        auto& job = *_jobs.at(id);
+        if (!job.activationPending) {
+            // A session-admission failure converted every node to a terminal
+            // failure so the asynchronous caller still receives a handle.
+        }
+        else {
+            job.sessionId = std::move(sessionId);
+            job.activationPending = false;
+        }
+    }
+    finalizeIfTerminal(id);
+    {
+        std::lock_guard stateLock(_stateMutex);
+        const auto found = _jobs.find(id);
+        if (found == _jobs.end() || jobTerminal(found->second->state)) {
+            return;
+        }
+    }
     scheduleReady(id);
-    return id;
 }
 
 void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
@@ -410,11 +744,28 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             continue;
         }
 
+        auto presentationObjectRevision =
+            request->presentationObjectModelRevision;
+        auto presentationRevisionFence =
+            request->presentationRevisionFence;
+        bool presentationRevisionFenceComplete =
+            request->presentationRevisionFenceComplete;
         try {
-            const auto executionId = _service.prepareEditAsync(sessionId,
-                                                               request->operationId,
-                                                               request->intent,
-                                                               request->provenance);
+            const auto executionId = request->stableObjectIdentity.empty()
+                ? _service.prepareEditAsync(sessionId,
+                                            request->operationId,
+                                            request->intent,
+                                            request->provenance)
+                : _service.prepareRecomputeEditAsync(
+                      sessionId,
+                      request->operationId,
+                      request->intent,
+                      request->provenance,
+                      request->featureId,
+                      request->stableObjectIdentity,
+                      presentationObjectRevision,
+                      presentationRevisionFence,
+                      presentationRevisionFenceComplete);
             std::lock_guard stateLock(_stateMutex);
             const auto foundJob = _jobs.find(id);
             if (foundJob == _jobs.end()) {
@@ -422,6 +773,10 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                 return;
             }
             auto& node = foundJob->second->nodes.at(selectedFeature);
+            node.presentationObjectModelRevision = presentationObjectRevision;
+            node.presentationRevisionFence = presentationRevisionFence;
+            node.presentationRevisionFenceComplete =
+                presentationRevisionFenceComplete;
             if (foundJob->second->cancelRequested) {
                 node.state = DocumentRecomputeFeatureState::Cancelling;
                 node.executionId = executionId;
@@ -439,6 +794,10 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.presentationObjectModelRevision = presentationObjectRevision;
+                node.presentationRevisionFence = presentationRevisionFence;
+                node.presentationRevisionFenceComplete =
+                    presentationRevisionFenceComplete;
                 node.state = foundJob->second->cancelRequested
                     ? DocumentRecomputeFeatureState::Cancelled
                     : DocumentRecomputeFeatureState::Waiting;
@@ -454,6 +813,10 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.presentationObjectModelRevision = presentationObjectRevision;
+                node.presentationRevisionFence = presentationRevisionFence;
+                node.presentationRevisionFenceComplete =
+                    presentationRevisionFenceComplete;
                 node.state = DocumentRecomputeFeatureState::Failed;
                 node.diagnostic = std::string("detached preparation submission failed: ")
                     + error.what();
@@ -467,6 +830,10 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.presentationObjectModelRevision = presentationObjectRevision;
+                node.presentationRevisionFence = presentationRevisionFence;
+                node.presentationRevisionFenceComplete =
+                    presentationRevisionFenceComplete;
                 node.state = DocumentRecomputeFeatureState::Failed;
                 node.diagnostic = std::string("detached preparation submission failed: ")
                     + error.what();
@@ -480,6 +847,10 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
                 auto& node = foundJob->second->nodes.at(selectedFeature);
+                node.presentationObjectModelRevision = presentationObjectRevision;
+                node.presentationRevisionFence = presentationRevisionFence;
+                node.presentationRevisionFenceComplete =
+                    presentationRevisionFenceComplete;
                 node.state = DocumentRecomputeFeatureState::Failed;
                 node.diagnostic = "detached preparation submission failed with unknown exception";
                 if (foundJob->second->diagnostic.empty()) {
@@ -682,10 +1053,9 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             commit.status = DocumentCommitStatus::ApplyFailed;
             commit.message = "recompute commit failed with unknown exception";
         }
-        // Read the recompute outcome only once the commit has run. An isolated
-        // result already knows how the detached execute() went before it is
-        // applied, but an owner-thread operation *is* the execute(): asking it
-        // beforehand would report every raising feature as a success.
+        // Read the operation's outcome only after commit. Some trusted result
+        // operations finalize their failure state while applying, so querying
+        // them earlier could misclassify a cleanly applied failure as success.
         const bool recomputeSucceeded =
             terminal->preparedEdit->operation().recomputeOutcomeSucceeded();
         const bool recomputeExecuted =
@@ -698,11 +1068,25 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             auto& node = job.nodes.at(featureId);
             node.diagnostic = commit.message;
             node.executed = recomputeExecuted;
+            node.outcomeApplied = commit.status == DocumentCommitStatus::Committed;
             switch (commit.status) {
                 case DocumentCommitStatus::Committed:
                     node.state = recomputeSucceeded
                         ? DocumentRecomputeFeatureState::Committed
                         : DocumentRecomputeFeatureState::Failed;
+                    if (!node.request.stableObjectIdentity.empty()) {
+                        const auto modelKey =
+                            DocumentRevisionKey::objectModel(featureId);
+                        const auto publishedModel = std::ranges::find(
+                            commit.publishedRevisions,
+                            modelKey,
+                            &DocumentRevisionObservation::key);
+                        if (publishedModel != commit.publishedRevisions.end()) {
+                            node.presentationObjectModelRevision =
+                                publishedModel->revision;
+                            node.targetPublicationConfirmed = true;
+                        }
+                    }
                     if (!recomputeSucceeded) {
                         node.diagnostic = recomputeDiagnostic.empty()
                             ? "detached feature recompute failed"
@@ -807,10 +1191,23 @@ void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId 
         }
         for (const auto& [featureId, node] : job.nodes) {
             if (node.state == DocumentRecomputeFeatureState::Committed) {
-                _unresolvedFeatures.erase(featureId);
+                _unresolvedSyntheticFeatures.erase({id, featureId});
+            }
+            else if (node.request.stableObjectIdentity.empty()) {
+                _unresolvedSyntheticFeatures.insert_or_assign(
+                    std::pair {id, featureId}, true);
             }
             else {
-                _unresolvedFeatures.insert(featureId);
+                const auto unresolvedKey = std::pair {
+                    featureId, node.request.stableObjectIdentity};
+                const auto found = _unresolvedLiveFeatures.find(unresolvedKey);
+                const bool replace = found == _unresolvedLiveFeatures.end()
+                    || found->second.generation <= id;
+                if (replace) {
+                    _unresolvedLiveFeatures.insert_or_assign(
+                        unresolvedKey,
+                        UnresolvedLiveFeature {id});
+                }
             }
         }
         if (!job.sessionFinalized && !job.sessionId.empty()) {
@@ -840,11 +1237,21 @@ std::optional<DocumentRecomputeSnapshot> DocumentRecomputeCoordinator::statusLoc
     snapshot.state = job.state;
     snapshot.totalFeatures = job.nodes.size();
     snapshot.diagnostic = job.diagnostic;
+    snapshot.publishTerminalPresentation = job.publishTerminalPresentation;
     snapshot.features.reserve(job.nodes.size());
     std::size_t terminalCount = 0;
     for (const auto& [featureId, node] : job.nodes) {
         snapshot.features.push_back(
-            {featureId, node.state, node.diagnostic, node.executed});
+            {featureId,
+             node.state,
+             node.diagnostic,
+             node.executed,
+             node.request.stableObjectIdentity,
+             node.presentationObjectModelRevision,
+             node.presentationRevisionFence,
+             node.presentationRevisionFenceComplete,
+             node.outcomeApplied,
+             node.targetPublicationConfirmed});
         if (node.state == DocumentRecomputeFeatureState::Committed) {
             ++snapshot.completedFeatures;
         }
@@ -879,10 +1286,85 @@ bool DocumentRecomputeCoordinator::hasPendingWork() const
 bool DocumentRecomputeCoordinator::hasUnresolvedWork() const
 {
     std::lock_guard stateLock(_stateMutex);
-    return !_unresolvedFeatures.empty()
+    return !_unresolvedSyntheticFeatures.empty()
+        || !_unresolvedLiveFeatures.empty()
         || std::ranges::any_of(_jobs, [](const auto& entry) {
                return !jobTerminal(entry.second->state);
            });
+}
+
+bool DocumentRecomputeCoordinator::hasUnresolvedExecutableWork() const
+{
+    std::vector<std::pair<std::string, std::string>> unresolved;
+    {
+        std::lock_guard stateLock(_stateMutex);
+        unresolved.reserve(_unresolvedLiveFeatures.size());
+        for (const auto& [key, feature] : _unresolvedLiveFeatures) {
+            static_cast<void>(feature);
+            unresolved.push_back(key);
+        }
+    }
+    if (unresolved.empty()) {
+        return false;
+    }
+
+    auto lifecyclePin = _service.pinDocumentAccess();
+    if (!lifecyclePin) {
+        return true;
+    }
+    auto& document = _service.document();
+    if (!document.isCollaborationOwnerThread()) {
+        return true;
+    }
+    std::lock_guard<std::recursive_mutex> serialized(
+        document.collaborationCommitMutex());
+    if (document.collaborationIdentity().state != DocumentLifecycleState::Live) {
+        return true;
+    }
+    return std::ranges::any_of(unresolved, [&](const auto& key) {
+        const auto& [featureId, stableObjectIdentity] = key;
+        if (stableObjectIdentity.empty()) {
+            return false;
+        }
+        auto* object = document.getObject(featureId.c_str());
+        if (!object) {
+            return false;
+        }
+        if (!stableObjectIdentity.empty()
+            && document.collaborationObjectIdentity(*object)
+                != stableObjectIdentity) {
+            return false;
+        }
+        return object->mustRecompute() != 0;
+    });
+}
+
+void DocumentRecomputeCoordinator::forgetUnresolvedFeature(
+    const DocumentRecomputeId id,
+    const std::string& featureId,
+    const std::string& stableObjectIdentity)
+{
+    std::lock_guard stateLock(_stateMutex);
+    if (stableObjectIdentity.empty()) {
+        _unresolvedSyntheticFeatures.erase({id, featureId});
+        return;
+    }
+    const auto found = _unresolvedLiveFeatures.find(
+        {featureId, stableObjectIdentity});
+    if (found == _unresolvedLiveFeatures.end()) {
+        return;
+    }
+    if (found->second.generation <= id) {
+        _unresolvedLiveFeatures.erase(found);
+    }
+}
+
+void DocumentRecomputeCoordinator::forgetAllUnresolvedFeature(
+    const std::string& featureId,
+    const std::string& stableObjectIdentity)
+{
+    std::lock_guard stateLock(_stateMutex);
+    _unresolvedLiveFeatures.erase({featureId, stableObjectIdentity});
 }
 
 bool DocumentRecomputeCoordinator::claimPresentationFinalization(
@@ -891,11 +1373,33 @@ bool DocumentRecomputeCoordinator::claimPresentationFinalization(
     std::lock_guard stateLock(_stateMutex);
     const auto found = _jobs.find(id);
     if (found == _jobs.end() || !jobTerminal(found->second->state)
-        || found->second->presentationFinalized) {
+        || found->second->presentationFinalization
+            != Job::PresentationFinalizationState::Unclaimed) {
         return false;
     }
-    found->second->presentationFinalized = true;
+    found->second->presentationFinalization =
+        Job::PresentationFinalizationState::InProgress;
     return true;
+}
+
+void DocumentRecomputeCoordinator::finishPresentationFinalization(
+    const DocumentRecomputeId id,
+    const bool completed) noexcept
+{
+    try {
+        std::lock_guard stateLock(_stateMutex);
+        const auto found = _jobs.find(id);
+        if (found == _jobs.end()
+            || found->second->presentationFinalization
+                != Job::PresentationFinalizationState::InProgress) {
+            return;
+        }
+        found->second->presentationFinalization = completed
+            ? Job::PresentationFinalizationState::Finalized
+            : Job::PresentationFinalizationState::Unclaimed;
+    }
+    catch (...) {
+    }
 }
 
 }  // namespace App

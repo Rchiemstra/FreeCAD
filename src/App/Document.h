@@ -1128,7 +1128,7 @@ public:
                   bool* hasError = nullptr,
                   int options = 0);
 
-    /** Submit the same detached recompute used by recompute() and return immediately. */
+    /** Submit an explicitly detached recompute and return immediately. */
     [[nodiscard]] std::unique_ptr<RecomputeHandle> recomputeAsync(
         const std::vector<DocumentObject*>& objs = {},
         bool force = false,
@@ -1631,6 +1631,7 @@ public:
     friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class DocumentRecomputeCoordinator;
     friend class RecomputeHandle;
     friend class Gui::Document;
     friend class Gui::MergeDocuments;
@@ -2047,6 +2048,9 @@ private:
     void finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot);
     void finalizeEmptyDetachedRecompute();
     void finalizeCollaborationRecomputeTeardown();
+    void finalizeCollaborationRecomputeTeardownWithStatusRelease(
+        const std::function<void()>& releaseRecomputing,
+        const std::vector<Document*>& readinessTransitionDocuments = {});
     CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);

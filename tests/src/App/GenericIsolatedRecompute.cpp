@@ -19,6 +19,7 @@
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -64,6 +65,12 @@ protected:
         App::CollaborativeOperationIntent intent {
             std::string(App::GenericIsolatedRecomputeOperationType),
             {{"feature", featureName}}};
+        auto* feature = _document->getObject(featureName.c_str());
+        if (feature) {
+            intent.arguments.emplace(
+                "stable_object_identity",
+                _document->collaborationObjectIdentity(*feature));
+        }
         if (preserveLegacyRevisionSemantics) {
             intent.arguments.emplace("legacy_revision_semantics", "1");
         }
@@ -272,7 +279,10 @@ TEST_F(GenericIsolatedRecomputeTest,
     value->setValue(18);
     App::CollaborativeOperationIntent forcedIntent {
         std::string(App::GenericIsolatedRecomputeOperationType),
-        {{"feature", "NoRecomputeStorage"}, {"force_execution", "1"}}};
+        {{"feature", "NoRecomputeStorage"},
+         {"stable_object_identity",
+          _document->collaborationObjectIdentity(*storage)},
+         {"force_execution", "1"}}};
     auto forced = App::CollaborativeOperationRegistry::instance().prepare(
         *_document, forcedIntent);
     EXPECT_EQ(forced.policy, App::PreparationPolicy::IsolatedProcess);
@@ -525,7 +535,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       documentFeatureFacadeUsesTheProductionFreeCADCmdBackend)
+       documentFeatureFacadeUsesTheSynchronousCompatibilityKernel)
 {
     auto* feature = _document->addObject<App::FeatureTestColumn>("ProcessColumn");
     ASSERT_NE(feature, nullptr);
@@ -538,8 +548,55 @@ TEST_F(GenericIsolatedRecomputeTest,
                 ? _document->getErrorDescription(feature)
                 : "no recompute diagnostic");
     EXPECT_EQ(feature->Value.getValue(), App::decodeColumn("D"));
+    // The legacy single-feature facade executes immediately but does not
+    // settle the touched bit; a document-wide recompute owns that lifecycle.
+    EXPECT_TRUE(feature->mustRecompute());
+    EXPECT_TRUE(feature->isValid());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       documentFeatureFacadeExecutesWorkerUnsafeFeatureInProcess)
+{
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    auto* feature =
+        _document->addObject<App::FeatureTestAsyncBlocker>("SyncWorkerUnsafeFeature");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_FALSE(feature->canRecomputeOnWorker());
+
+    const bool recomputed = feature->recomputeFeature(false);
+
+    EXPECT_TRUE(recomputed)
+        << (_document->getErrorDescription(feature)
+                ? _document->getErrorDescription(feature)
+                : "no recompute diagnostic");
+    EXPECT_TRUE(
+        App::FeatureTestAsyncBlocker::waitUntilStarted(std::chrono::milliseconds(0)));
+    EXPECT_TRUE(feature->mustRecompute());
+    EXPECT_TRUE(feature->isValid());
+    App::FeatureTestAsyncBlocker::resetBlocker();
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       documentWideFacadeExecutesWorkerUnsafeFeatureInProcess)
+{
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+    auto* feature =
+        _document->addObject<App::FeatureTestAsyncBlocker>("SyncDocumentWorkerUnsafeFeature");
+    ASSERT_NE(feature, nullptr);
+    ASSERT_FALSE(feature->canRecomputeOnWorker());
+
+    bool hasError = true;
+    const int recomputed = _document->recompute({}, false, &hasError);
+
+    EXPECT_EQ(recomputed, 1);
+    EXPECT_FALSE(hasError);
+    EXPECT_TRUE(
+        App::FeatureTestAsyncBlocker::waitUntilStarted(std::chrono::milliseconds(0)));
     EXPECT_FALSE(feature->mustRecompute());
     EXPECT_TRUE(feature->isValid());
+    App::FeatureTestAsyncBlocker::resetBlocker();
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -568,6 +625,12 @@ TEST_F(GenericIsolatedRecomputeTest,
         EXPECT_EQ(feature.intent.operationType,
                   App::GenericIsolatedRecomputeOperationType);
         EXPECT_EQ(feature.intent.arguments.at("feature"), feature.featureId);
+        auto* object = _document->getObject(feature.featureId.c_str());
+        ASSERT_NE(object, nullptr);
+        EXPECT_EQ(feature.stableObjectIdentity,
+                  _document->collaborationObjectIdentity(*object));
+        EXPECT_EQ(feature.intent.arguments.at("stable_object_identity"),
+                  feature.stableObjectIdentity);
     }
 }
 
@@ -596,6 +659,20 @@ TEST_F(GenericIsolatedRecomputeTest,
             {std::string(App::GenericIsolatedRecomputeOperationType),
              {{"feature", "Column"}, {"unexpected", "value"}}})),
         std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(registry.prepare(
+            *_document,
+            {std::string(App::GenericIsolatedRecomputeOperationType),
+             {{"feature", "Column"}, {"owner_thread_execution", "1"}}})),
+        std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(App::Internal::makeGenericIsolatedRecomputeRequest(
+            *_document,
+            *feature,
+            false,
+            true,
+            /*ownerThreadExecution=*/true)),
+        std::invalid_argument);
 
     auto preparation = prepare("Column");
     ASSERT_NE(preparation.isolatedTask, nullptr);
@@ -616,7 +693,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       crossDocumentClosureIsRejectedAndUnoptedPythonFeatureRunsInProcess)
+       crossDocumentClosureAndUnoptedAsyncPythonFeatureAreRejected)
 {
     auto* target = _document->addObject<App::FeatureTestColumn>("CrossDocument");
     ASSERT_NE(target, nullptr);
@@ -647,22 +724,30 @@ TEST_F(GenericIsolatedRecomputeTest,
     EXPECT_THROW(static_cast<void>(prepare("CrossDocument")), std::invalid_argument);
 
     // A scripted feature's execute() lives in a Python proxy that the worker
-    // archive cannot carry, so it never opts into isolated execution. Refusing
-    // the request leaves it permanently touched and invalid, so it is prepared
-    // as an owner-thread execution inside the coordinator commit boundary
-    // instead of being rejected.
+    // archive cannot carry, so an ordinary detached request must fail closed.
     auto* python = _document->addObject("App::FeaturePython", "PythonFeature");
     ASSERT_NE(python, nullptr);
     EXPECT_FALSE(python->canRecomputeOnWorker());
-    auto preparation = prepare("PythonFeature");
-    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
-    EXPECT_EQ(preparation.isolatedTask, nullptr);
-    ASSERT_TRUE(preparation.detachedTask);
-    auto operation = preparation.detachedTask(std::stop_token {});
-    ASSERT_NE(operation, nullptr);
-    // The execution itself stays gated on the commit boundary: applying it
-    // outside an owner-thread prepared commit is refused, not run.
-    EXPECT_THROW(operation->apply(*_document), Base::Exception);
+    EXPECT_THROW(static_cast<void>(prepare("PythonFeature")), std::invalid_argument);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       workerUnsafeTouchedBookkeepingCandidateIsRejectedWithoutExecuting)
+{
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    auto* feature =
+        _document->addObject<App::FeatureTestAsyncBlocker>("UnsafeBookkeepingCandidate");
+    ASSERT_NE(feature, nullptr);
+    feature->purgeTouched();
+    feature->touch(/*noRecompute=*/true);
+    ASSERT_TRUE(feature->isTouched());
+    ASSERT_EQ(feature->mustRecompute(), 0);
+
+    EXPECT_THROW(
+        static_cast<void>(prepare("UnsafeBookkeepingCandidate")),
+        std::invalid_argument);
+    EXPECT_FALSE(
+        App::FeatureTestAsyncBlocker::waitUntilStarted(std::chrono::milliseconds(0)));
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

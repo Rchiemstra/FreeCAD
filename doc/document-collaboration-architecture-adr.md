@@ -53,8 +53,10 @@ are not model intent and do not participate in model conflict detection.
    Callers declare typed intent; they do not acquire transaction authority.
 2. `DocumentCommitCoordinator` (DCC) is the only owner that may open, commit,
    abort, or roll back a live model transaction for supported ingress. Public
-   compatibility methods delegate to DCS/DCC instead of exposing a second
-   transaction owner.
+   transaction/history and supported mutation compatibility methods delegate to
+   DCS/DCC instead of exposing a second transaction owner. The documented
+   synchronous recompute kernel may join an already-open caller transaction but
+   does not create a competing transaction boundary.
 3. A DCC commit revalidates the document instance, lifecycle epoch, declared
    semantic read/write/publication sets, and expected revisions immediately
    before changing live state. A stale result never commits.
@@ -65,14 +67,16 @@ are not model intent and do not participate in model conflict detection.
    output, and constructs `PreparedEdit`. Workers never choose authoritative
    semantic dependencies or publish live revisions.
 6. `PreparedEditExecutor` is restricted to trusted lightweight/value work.
-   Heavy or untrusted OCC work uses `GeometryJobManager` and defaults to an
-   isolated `FreeCADCmd` process. There is no hidden synchronous heavy fallback
-   on the GUI thread.
-7. Full-document recompute is scheduled by one per-document
-   `DocumentRecomputeCoordinator`. It captures immutable dependency-ordered
-   work, schedules downstream work only after upstream commit, rejects stale
-   output, and commits derived results through DCC without creating new user
-   undo entries.
+   Heavy or untrusted detached OCC work uses `GeometryJobManager` and defaults
+   to an isolated `FreeCADCmd` process. An explicitly isolated request has no
+   hidden synchronous heavy fallback. The established synchronous recompute API
+   and GUI Refresh command are the visible owner-thread compatibility exception.
+7. Explicit asynchronous and coordinator-derived isolated recompute are
+   scheduled by one per-document `DocumentRecomputeCoordinator`. It captures
+   immutable dependency-ordered work, schedules downstream work only after
+   upstream commit, rejects stale output, and commits derived results through
+   DCC without creating new user undo entries. The synchronous compatibility
+   kernel is the documented owner-thread exception.
 8. A failed recompute feature remains touched/error and receives no partial
    result. Successfully committed upstream features may remain committed.
 9. Save while unresolved recompute exists returns structured
@@ -120,17 +124,22 @@ The target public surface is deliberately small:
   pointer-free `RecomputeHandle`.
 - Python exposes `Document.recomputeAsync(...)` with status, progress,
   cancellation, and completion access.
-- Existing synchronous `Document.recompute()` delegates to the same
-  coordinator. Headless mode blocks on the handle; GUI mode uses a responsive
-  compatibility wait. Neither path starts a second recompute implementation.
-- Existing transaction/history/recompute public APIs remain source-compatible
-  where required, but their supported mutation behavior delegates through
-  DCS/DCC. Low-level transaction primitives and coordinator grants are private.
+- Existing synchronous `Document.recompute()` and `recomputeFeature()` use
+  the owner-thread compatibility kernel. This preserves native transaction
+  grouping and the scheduler/observer contracts relied on by existing features.
+  `Document.recomputeAsync()` is the explicit detached coordinator surface;
+  coordinator-derived recompute also remains isolated and folds its validated
+  results into the existing outer DCC transaction.
+- Existing transaction/history APIs and detached recompute remain
+  source-compatible where required, with supported mutation behavior delegated
+  through DCS/DCC. Low-level transaction primitives and coordinator grants are
+  private.
 
-Compatibility does not mean silent acceptance. Unsupported unsafe features,
-unresolved cross-document dependencies, unserializable proxies, undeclared
-structural effects, or GUI access from an isolated recompute fail explicitly
-and remain touched.
+Compatibility does not weaken the detached boundary. Unsupported unsafe
+features, unresolved cross-document dependencies, unserializable proxies,
+undeclared structural effects, or GUI access from an explicitly asynchronous
+recompute fail explicitly and remain touched; they are never silently rerouted
+to execute later on the GUI thread.
 
 ## Worker protocol
 

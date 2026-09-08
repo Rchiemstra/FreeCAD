@@ -19,6 +19,7 @@
 #include "App/PropertyLinks.h"
 #include "App/PropertyStandard.h"
 #include "App/RecoverySnapshot.h"
+#include "App/RecomputeHandle.h"
 #include "App/Transactions.h"
 #include <src/App/InitApplication.h>
 
@@ -27,6 +28,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1685,6 +1687,44 @@ private:
     std::condition_variable _changed;
     std::deque<std::shared_ptr<Task>> _tasks;
     bool _aborting {false};
+};
+
+class AlreadyMainThreadDispatcherProbe
+{
+public:
+    AlreadyMainThreadDispatcherProbe()
+    {
+        Active = this;
+        App::MainThreadSignalConfig::setHooks(&isMainThread, &invoke);
+    }
+
+    ~AlreadyMainThreadDispatcherProbe()
+    {
+        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        Active = nullptr;
+    }
+
+    [[nodiscard]] int invocations() const noexcept
+    {
+        return _invocations;
+    }
+
+private:
+    static bool isMainThread()
+    {
+        return true;
+    }
+
+    static void invoke(std::function<void()>&& callback, bool)
+    {
+        if (Active) {
+            ++Active->_invocations;
+        }
+        callback();
+    }
+
+    static inline AlreadyMainThreadDispatcherProbe* Active {nullptr};
+    int _invocations {0};
 };
 
 class DocumentCollaborationPythonCompatibilityTest: public ::testing::Test
@@ -4378,6 +4418,168 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_EQ(probe.calls, 1);
     EXPECT_EQ(probe.nestedCalls, 0);
     EXPECT_EQ(probe.nestedStatus, "Busy");
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       offOwnerWholeDocumentRecomputeDispatchesAndPinsTheDocumentOwner)
+{
+    BlockingDocumentDispatcher dispatcher;
+    _target->touch();
+
+    std::thread::id beforeRecomputeThread;
+    bool recursiveCloseResult = true;
+    auto beforeConnection = _document->signalBeforeRecompute.connect(
+        [&](const App::Document&) {
+            beforeRecomputeThread = std::this_thread::get_id();
+            recursiveCloseResult =
+                App::GetApplication().closeDocument(_documentName.c_str());
+        });
+
+    int recomputed = -1;
+    bool hasError = true;
+    std::thread worker([&] {
+        recomputed = _document->recompute({}, false, &hasError);
+    });
+
+    const bool queued = dispatcher.waitUntilQueued();
+    const bool dispatched = queued && dispatcher.runOne();
+    if (!dispatched) {
+        dispatcher.abortPending();
+    }
+    worker.join();
+
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(dispatched);
+    EXPECT_EQ(recomputed, 1);
+    EXPECT_FALSE(hasError);
+    EXPECT_EQ(beforeRecomputeThread, std::this_thread::get_id());
+    EXPECT_FALSE(recursiveCloseResult);
+    EXPECT_EQ(App::GetApplication().getDocument(_documentName.c_str()), _document);
+    EXPECT_FALSE(_target->mustRecompute());
+    EXPECT_TRUE(_target->isValid());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       offOwnerWholeDocumentAsyncRecomputeCapturesAndSignalsOnTheOwner)
+{
+    BlockingDocumentDispatcher dispatcher;
+    _target->touch();
+
+    std::thread::id beforeRecomputeThread;
+    bool recursiveCloseResult = true;
+    auto beforeConnection = _document->signalBeforeRecompute.connect(
+        [&](const App::Document&) {
+            beforeRecomputeThread = std::this_thread::get_id();
+            recursiveCloseResult =
+                App::GetApplication().closeDocument(_documentName.c_str());
+        });
+
+    std::unique_ptr<App::RecomputeHandle> handle;
+    std::exception_ptr failure;
+    std::thread worker([&] {
+        try {
+            handle = _document->recomputeAsync();
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+    });
+
+    const bool queued = dispatcher.waitUntilQueued();
+    const bool dispatched = queued && dispatcher.runOne();
+    if (!dispatched) {
+        dispatcher.abortPending();
+    }
+    worker.join();
+
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(dispatched);
+    ASSERT_FALSE(failure);
+    ASSERT_NE(handle, nullptr);
+    EXPECT_EQ(beforeRecomputeThread, std::this_thread::get_id());
+    EXPECT_FALSE(recursiveCloseResult);
+    EXPECT_EQ(App::GetApplication().getDocument(_documentName.c_str()), _document);
+
+    // Drain the job while the fixture document is still live. Cancellation is
+    // sufficient here; the owner-dispatch/capture boundary is the assertion.
+    static_cast<void>(handle->cancel("off-owner async dispatch test complete"));
+    const auto terminal = handle->wait(30s);
+    EXPECT_TRUE(terminal.terminal()) << terminal.diagnostic;
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       offOwnerRecomputeHandleCancellationDispatchesAsOneOwnerOperation)
+{
+    BlockingDocumentDispatcher dispatcher;
+    _target->touch();
+    auto handle = _document->recomputeAsync({_target});
+    ASSERT_NE(handle, nullptr);
+
+    std::thread::id aggregateThread;
+    auto aggregateConnection = _document->signalRecomputed.connect(
+        [&](const App::Document&, const std::vector<App::DocumentObject*>&) {
+            aggregateThread = std::this_thread::get_id();
+        });
+
+    bool cancellationAccepted = false;
+    std::exception_ptr cancellationFailure;
+    std::thread worker([&] {
+        try {
+            cancellationAccepted = handle->cancel("off-owner cancellation");
+        }
+        catch (...) {
+            cancellationFailure = std::current_exception();
+        }
+    });
+
+    const bool queued = dispatcher.waitUntilQueued();
+    const bool dispatched = queued && dispatcher.runOne();
+    if (!dispatched) {
+        dispatcher.abortPending();
+    }
+    worker.join();
+
+    ASSERT_TRUE(queued);
+    ASSERT_TRUE(dispatched);
+    EXPECT_FALSE(cancellationFailure);
+    EXPECT_TRUE(cancellationAccepted);
+
+    const auto terminal = handle->wait(30s);
+    EXPECT_TRUE(terminal.terminal()) << terminal.diagnostic;
+    EXPECT_EQ(terminal.state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(aggregateThread, std::this_thread::get_id());
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       offOwnerRecomputeRefusesAThreadAlreadyReportedAsMain)
+{
+    AlreadyMainThreadDispatcherProbe dispatcher;
+    _target->touch();
+    const int executeCountBefore = _target->ExecCount.getValue();
+
+    int recomputed = -1;
+    bool hasError = false;
+    bool featureRecomputed = true;
+    bool asyncRequestRejected = false;
+    std::thread worker([&] {
+        recomputed = _document->recompute({}, false, &hasError);
+        featureRecomputed = _document->recomputeFeature(_target, false);
+        try {
+            static_cast<void>(_document->recomputeAsync());
+        }
+        catch (const Base::Exception&) {
+            asyncRequestRejected = true;
+        }
+    });
+    worker.join();
+
+    EXPECT_EQ(recomputed, 0);
+    EXPECT_TRUE(hasError);
+    EXPECT_FALSE(featureRecomputed);
+    EXPECT_TRUE(asyncRequestRejected);
+    EXPECT_EQ(dispatcher.invocations(), 0);
+    EXPECT_EQ(_target->ExecCount.getValue(), executeCountBefore);
+    EXPECT_TRUE(_target->mustRecompute());
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

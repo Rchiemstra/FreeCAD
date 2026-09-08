@@ -224,6 +224,7 @@ struct DocumentP
     bool collaborationDeferredRecomputeBlocked {false};
     bool collaborationRecomputeStableNotificationDeferred {false};
     bool collaborationImportDeferralActive {false};
+    bool collaborationAggregateRecomputeNotificationActive {false};
     bool collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
     bool collaborationAtomicPresentationAuditActive {false};
@@ -303,9 +304,10 @@ struct DocumentP
             delete returnCode;
             return;
         }
-        _RecomputeLog.emplace(returnCode->Which,
-                              std::unique_ptr<DocumentObjectExecReturn>(returnCode));
-        returnCode->Which->setStatus(ObjectStatus::Error, true);
+        auto* const object = returnCode->Which;
+        _RecomputeLog.insert_or_assign(
+            object, std::unique_ptr<DocumentObjectExecReturn>(returnCode));
+        object->setStatus(ObjectStatus::Error, true);
     }
 
     void clearRecomputeLog(const App::DocumentObject* obj = nullptr)

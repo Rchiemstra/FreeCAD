@@ -178,6 +178,15 @@
 
 ## Workflow ledger
 
+The CC-WP12/CC-WP13 rows below are historical completion records. A
+2026-09-08 performance-and-compatibility correction supersedes their claim that
+synchronous and GUI recompute use the detached coordinator: direct
+`Document::recompute()`, `recomputeFeature()`, and Refresh now use the native
+owner-thread kernel, while explicit async and coordinator-derived recompute stay
+isolated. This restores caller-transaction, FeaturePython, scheduler-status, and
+interactive performance contracts without reviving a fallback for isolated
+requests.
+
 Allowed states are `Not started`, `Sol review`, `Terra fix`, `Luna test`, `Sol re-review`, `Ready to commit`, `Pushed/Done`, and `Blocked`.
 
 | WP | Deliverable | State | Initial Sol | Terra | Luna Docker | Native/live gates | Final Sol | Commit | Push | Evidence / next action |

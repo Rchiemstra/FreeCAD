@@ -30,7 +30,6 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QTextStream>
-#include <QTimer>
 #include <QTreeWidgetItem>
 
 #include <boost/regex.hpp>
@@ -41,7 +40,6 @@
 #include <App/DocumentObject.h>
 #include <App/Expression.h>
 #include <App/GeoFeature.h>
-#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
@@ -1832,35 +1830,15 @@ bool shouldProceedAfterDependencyCycle()
         == QMessageBox::Yes;
 }
 
-void scheduleDocumentRecomputePoll(std::shared_ptr<App::RecomputeHandle> handle)
-{
-    QTimer::singleShot(5, qApp, [handle = std::move(handle)] {
-        const auto snapshot = handle->status();
-        if (!snapshot.terminal()) {
-            scheduleDocumentRecomputePoll(handle);
-            return;
-        }
-        if (snapshot.state != App::DocumentRecomputeState::Completed) {
-            FC_ERR("Detached document recompute "
-                   << App::documentRecomputeStateName(snapshot.state) << ": "
-                   << (snapshot.diagnostic.empty()
-                           ? "no diagnostic was provided"
-                           : snapshot.diagnostic));
-        }
-    });
-}
-
-void submitDocumentRecompute(App::Document& document, const int options)
+void recomputeDocumentSynchronously(App::Document& document, const int options)
 {
     try {
-        auto handle = document.recomputeAsync({}, true, options);
-        scheduleDocumentRecomputePoll(
-            std::shared_ptr<App::RecomputeHandle>(std::move(handle)));
+        static_cast<void>(document.recompute({}, true, nullptr, options));
     }
     catch (Base::BadGraphError&) {
         if ((options & App::Document::DepNoCycle) != 0
             && shouldProceedAfterDependencyCycle()) {
-            submitDocumentRecompute(document, 0);
+            recomputeDocumentSynchronously(document, 0);
         }
     }
     catch (Base::Exception& exception) {
@@ -1876,10 +1854,17 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
         return;
     }
 
-    App::AutoTransaction trans((eType & NoTransaction) ? 0 : openActiveDocumentCommand("Recompute"));
     auto doc = getActiveGuiDocument()->getDocument();
+    if (eType & NoTransaction) {
+        recomputeDocumentSynchronously(*doc, App::Document::DepNoCycle);
+        return;
+    }
 
-    submitDocumentRecompute(*doc, App::Document::DepNoCycle);
+    // TransactionOnRecompute only changes undo grouping. Both command paths
+    // use the fast owner-thread compatibility kernel; detached process work is
+    // reserved for callers that explicitly choose recomputeAsync().
+    App::AutoTransaction transaction(openActiveDocumentCommand("Recompute"));
+    recomputeDocumentSynchronously(*doc, App::Document::DepNoCycle);
 }
 
 bool StdCmdRefresh::isActive()

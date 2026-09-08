@@ -3,12 +3,18 @@
 #include "RecomputeHandle.h"
 
 #include "Document.h"
-#include "DocumentObserver.h"
+#include "DocumentCollaborationService.h"
+#include "MainThreadSignal.h"
+
+#include <Base/Exception.h>
+#include <Base/Interpreter.h>
 
 #include <QCoreApplication>
 #include <QEventLoop>
 
 #include <algorithm>
+#include <exception>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -16,6 +22,57 @@ using namespace std::chrono_literals;
 
 namespace App
 {
+
+namespace
+{
+
+template<typename Result, typename OwnerPredicate, typename Callable>
+Result invokeForDocumentOwner(OwnerPredicate&& isDocumentOwnerThread,
+                              Callable&& callable)
+{
+    if (isDocumentOwnerThread()) {
+        return std::forward<Callable>(callable)();
+    }
+    if (!MainThreadSignalConfig::hasHooks()
+        || MainThreadSignalConfig::isMainThread()) {
+        throw Base::RuntimeError(
+            "recompute handle access requires its document owner-thread dispatcher");
+    }
+
+    std::optional<Result> result;
+    std::exception_ptr failure;
+    {
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
+        MainThreadSignalConfig::invoke(
+            [&] {
+                if (!isDocumentOwnerThread()) {
+                    failure = std::make_exception_ptr(Base::RuntimeError(
+                        "recompute handle dispatcher does not own the document"));
+                    return;
+                }
+                try {
+                    result.emplace(std::forward<Callable>(callable)());
+                }
+                catch (...) {
+                    failure = std::current_exception();
+                }
+            },
+            true);
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!result) {
+        throw Base::RuntimeError(
+            "recompute handle dispatcher did not execute the request");
+    }
+    return std::move(*result);
+}
+
+}  // namespace
 
 const char* documentRecomputeStateName(const DocumentRecomputeState state) noexcept
 {
@@ -61,7 +118,8 @@ const char* documentRecomputeFeatureStateName(
 }
 
 RecomputeHandle::RecomputeHandle(Document& document, const DocumentRecomputeId id)
-    : _document(std::make_unique<DocumentWeakPtrT>(&document))
+    : _document(&document)
+    , _lifetimeGate(document.collaborationService().lifetimeGate())
     , _id(id)
 {}
 
@@ -70,11 +128,6 @@ RecomputeHandle::~RecomputeHandle() = default;
 DocumentRecomputeId RecomputeHandle::id() const noexcept
 {
     return _id;
-}
-
-Document* RecomputeHandle::document() const noexcept
-{
-    return _document ? **_document : nullptr;
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::closedDocumentSnapshot() const
@@ -90,20 +143,26 @@ void RecomputeHandle::finalizeIfTerminal(
     Document& document,
     const DocumentRecomputeSnapshot& snapshot)
 {
-    if (snapshot.terminal()
-        && document.recomputeCoordinator().claimPresentationFinalization(_id)) {
+    if (snapshot.terminal()) {
         document.finalizeDetachedRecompute(snapshot);
     }
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::status()
 {
-    auto* owner = document();
-    if (!owner) {
+    DocumentCollaborationService::LifecyclePin lifecyclePin(_lifetimeGate);
+    if (!lifecyclePin) {
         return closedDocumentSnapshot();
     }
-    static_cast<void>(owner->recomputeCoordinator().poll(_id));
-    auto snapshot = owner->recomputeCoordinator().status(_id);
+    return invokeForDocumentOwner<DocumentRecomputeSnapshot>(
+        [this] { return _document->isCollaborationOwnerThread(); },
+        [this] { return statusWithPinnedDocument(*_document); });
+}
+
+DocumentRecomputeSnapshot RecomputeHandle::statusWithPinnedDocument(Document& document)
+{
+    static_cast<void>(document.recomputeCoordinator().poll(_id));
+    auto snapshot = document.recomputeCoordinator().status(_id);
     if (!snapshot) {
         DocumentRecomputeSnapshot unavailable;
         unavailable.id = _id;
@@ -111,7 +170,7 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         unavailable.diagnostic = "recompute result is unavailable";
         return unavailable;
     }
-    finalizeIfTerminal(*owner, *snapshot);
+    finalizeIfTerminal(document, *snapshot);
     return *snapshot;
 }
 
@@ -122,13 +181,18 @@ bool RecomputeHandle::poll()
 
 bool RecomputeHandle::cancel(std::string reason)
 {
-    auto* owner = document();
-    if (!owner) {
+    DocumentCollaborationService::LifecyclePin lifecyclePin(_lifetimeGate);
+    if (!lifecyclePin) {
         return false;
     }
-    const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
-    static_cast<void>(status());
-    return accepted;
+    return invokeForDocumentOwner<bool>(
+        [this] { return _document->isCollaborationOwnerThread(); },
+        [this, reason = std::move(reason)]() mutable {
+            const bool accepted =
+                _document->recomputeCoordinator().cancel(_id, std::move(reason));
+            static_cast<void>(statusWithPinnedDocument(*_document));
+            return accepted;
+        });
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds timeout)

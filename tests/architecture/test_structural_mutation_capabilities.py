@@ -71,11 +71,11 @@ def test_execute_owned_status_is_keyed_on_the_executing_object_and_its_own_prope
     """A feature's execute() may republish which of its own inputs apply.
 
     PartDesign's extrude features flip ReadOnly on AlongSketchNormal as the pad
-    type changes.  The coordinator runs execute() on the owner thread inside
-    the commit boundary, so that write is recorded here rather than discarded
-    in a detached worker.  The grant is keyed on the object the coordinator is
-    currently executing touching a property it owns itself -- it must not let
-    an execute() restatus some *other* object.
+    type changes. The native synchronous compatibility kernel executes that
+    feature on the document owner thread; isolated recompute instead validates
+    and decodes declared worker output. This grant is keyed on the object the
+    native kernel is currently executing touching a property it owns itself --
+    it must not let an execute() restatus some *other* object.
     """
     recorder = _compact(_read(RECORDER_SOURCE))
     assert (

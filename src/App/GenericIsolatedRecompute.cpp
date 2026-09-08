@@ -467,9 +467,9 @@ bool owesUnconditionalExecuteWork(const App::DocumentObject& object)
     // AssemblyObject::execute() runs the joint solver whenever the
     // SolveOnRecompute preference is set, which is the default. It declares no
     // mustExecute() of its own, so a touched assembly reports 0 and would
-    // never solve. It also opts out of worker execution, so today it reaches
-    // the in-process branch above before this one; keep the entry so the
-    // shortcut cannot silently reclaim it if that opt-out is ever lifted.
+    // never solve. It also opts out of worker execution, so the isolation
+    // check rejects it before this shortcut; keep the entry so the shortcut
+    // cannot silently reclaim it if that opt-out is ever lifted.
     const Base::Type assemblyType = Base::Type::fromName("Assembly::AssemblyObject");
     return !assemblyType.isBad() && object.getTypeId().isDerivedFrom(assemblyType);
 }
@@ -1212,131 +1212,6 @@ private:
     mutable bool _counted {true};
 };
 
-class GenericRecomputeInProcessOperation final: public App::CollaborativeOperation
-{
-public:
-    GenericRecomputeInProcessOperation(std::string target,
-                                       std::string stableIdentity,
-                                       const bool ownerThreadRequested)
-        : _target(std::move(target))
-        , _stableIdentity(std::move(stableIdentity))
-        , _ownerThreadRequested(ownerThreadRequested)
-    {}
-
-    std::string_view typeId() const noexcept override
-    {
-        return App::GenericIsolatedRecomputeOperationType;
-    }
-
-    void apply(App::Document& document) const override
-    {
-        auto* target = requireTarget(document);
-        // A target that never opts into worker execution must still be here at
-        // commit time -- that is the contract this operation was prepared
-        // under. When the caller asked for the owner thread the venue was its
-        // choice rather than the target's, so opting in is expected and the
-        // check does not apply.
-        if (!_ownerThreadRequested && target->canRecomputeOnWorker()) {
-            throw std::runtime_error(
-                "generic recompute in-process target opted into isolated execution before commit");
-        }
-        _applied = false;
-        // Same statuses the isolated result application uses, so onChanged()
-        // observers cannot mistake an execute-owned write for a user edit.
-        Base::ObjectStatusLocker<App::Document::Status, App::Document> recomputing(
-            App::Document::Recomputing, &document);
-        Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> executing(
-            App::Recompute, target);
-        const int result =
-            App::Internal::GenericIsolatedRecomputeAccess::executeAuthoritative(
-                document, *target);
-        _failed = result != 0;
-        if (_failed) {
-            // A scripted execute() that raises is an ordinary modelling error,
-            // not a broken commit: record it the way the isolated path records
-            // a worker failure and leave the rest of the plan intact.
-            const char* diagnostic = document.getErrorDescription(target);
-            _failureDiagnostic = diagnostic && *diagnostic
-                ? std::string(diagnostic)
-                : std::string("in-process feature recompute failed");
-            App::Internal::GenericIsolatedRecomputeAccess::applyFailure(
-                document,
-                *target,
-                *_failureDiagnostic);
-        }
-        else {
-            // _recomputeFeature() only clears the error; settling the object is
-            // the caller's job here exactly as it is for an applied isolated
-            // result. Without this the feature stays touched forever, so it
-            // re-executes on every later recompute and the document never
-            // reports itself settled.
-            target->purgeError();
-            document.settleRecomputedFeature(*target);
-        }
-        _applied = true;
-    }
-
-    App::CollaborativePostconditionResult checkPostcondition(
-        const App::Document& document) const override
-    {
-        try {
-            const auto* target = requireTarget(document);
-            if (!_applied) {
-                return {false, "in-process feature recompute did not run"};
-            }
-            if (_failed) {
-                // The failure path deliberately leaves the feature dirty so the
-                // next recompute retries it, matching the isolated path.
-                return {target->isTouched(),
-                        target->isTouched()
-                            ? std::string {}
-                            : "in-process recompute failure state was not applied"};
-            }
-            return {!target->isTouched(),
-                    target->isTouched()
-                        ? "in-process feature recompute did not clear the touch state"
-                        : std::string {}};
-        }
-        catch (const std::exception& error) {
-            return {false, error.what()};
-        }
-    }
-
-    // The coordinator classifies a node by asking the operation how the
-    // recompute itself went -- a commit that applied a *failure* cleanly is
-    // still a failed recompute. The isolated result operation reports this;
-    // without the same answer here the owner-thread venue would report every
-    // raising execute() as a success.
-    bool recomputeOutcomeSucceeded() const noexcept override
-    {
-        return !_failureDiagnostic.has_value();
-    }
-
-    std::string_view recomputeOutcomeDiagnostic() const noexcept override
-    {
-        return _failureDiagnostic ? std::string_view(*_failureDiagnostic)
-                                  : std::string_view {};
-    }
-
-private:
-    App::DocumentObject* requireTarget(const App::Document& document) const
-    {
-        auto* target = document.getObject(_target.c_str());
-        if (!target
-            || document.collaborationObjectIdentity(*target) != _stableIdentity) {
-            throw std::runtime_error("generic recompute in-process target identity is stale");
-        }
-        return target;
-    }
-
-    std::string _target;
-    std::string _stableIdentity;
-    bool _ownerThreadRequested {false};
-    mutable bool _applied {false};
-    mutable bool _failed {false};
-    mutable std::optional<std::string> _failureDiagnostic;
-};
-
 std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const App::GeometryArchive& archive,
     const std::string& target,
@@ -1498,23 +1373,72 @@ std::vector<App::DocumentObject*> collectClosure(
     return closure;
 }
 
+std::optional<std::vector<App::DocumentRevisionObservation>>
+capturePresentationRevisionFence(
+    const App::Document& document,
+    App::DocumentObject& target)
+{
+    std::vector<App::DocumentObject*> pending {&target};
+    std::unordered_set<App::DocumentObject*> seen;
+    std::vector<App::DocumentRevisionKey> keys {
+        App::DocumentRevisionKey::documentStructure()};
+    std::size_t propertyCount = 0;
+    while (!pending.empty()) {
+        auto* object = pending.back();
+        pending.pop_back();
+        if (!seen.insert(object).second) {
+            continue;
+        }
+        if (!object || object->getDocument() != &document
+            || !object->isAttachedToDocument() || !object->getNameInDocument()
+            || seen.size() > MaxObjects) {
+            return std::nullopt;
+        }
+        const std::string name = object->getNameInDocument();
+        keys.push_back(App::DocumentRevisionKey::objectExistence(name));
+        keys.push_back(App::DocumentRevisionKey::objectStructure(name));
+        keys.push_back(App::DocumentRevisionKey::objectModel(name));
+        const auto properties = namedProperties(*object);
+        if (properties.size() > MaxProperties - propertyCount) {
+            return std::nullopt;
+        }
+        propertyCount += properties.size();
+        for (const auto& [propertyName, property] : properties) {
+            static_cast<void>(property);
+            keys.push_back(
+                App::DocumentRevisionKey::objectProperty(name, propertyName));
+        }
+        for (auto* dependency : object->getOutList()) {
+            if (!dependency || dependency->getDocument() != &document
+                || !dependency->isAttachedToDocument()) {
+                return std::nullopt;
+            }
+            pending.push_back(dependency);
+        }
+    }
+    std::ranges::sort(keys);
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return document.collaborationRevisions().capture(keys);
+}
+
 App::CollaborativeOperationPreparation prepareGenericRecompute(
     const App::Document& document,
     const App::CollaborativeOperationIntent& intent)
 {
     const auto legacyMode = intent.arguments.find("legacy_revision_semantics");
     const auto forceMode = intent.arguments.find("force_execution");
-    const auto ownerThreadMode = intent.arguments.find("owner_thread_execution");
+    const auto identityArgument = intent.arguments.find("stable_object_identity");
     if (intent.arguments.empty() || intent.arguments.size() > 4
         || !intent.arguments.contains("feature")
+        || identityArgument == intent.arguments.end()
         || std::ranges::any_of(intent.arguments, [](const auto& argument) {
                return argument.first != "feature"
                    && argument.first != "legacy_revision_semantics"
                    && argument.first != "force_execution"
-                   && argument.first != "owner_thread_execution";
+                   && argument.first != "stable_object_identity";
            })) {
         throw std::invalid_argument(
-            "generic recompute requires a feature and optional revision/force/venue modes");
+            "generic recompute requires a feature identity and optional revision/force modes");
     }
     const bool preserveLegacyRevisionSemantics = legacyMode != intent.arguments.end();
     if (preserveLegacyRevisionSemantics && legacyMode->second != "1") {
@@ -1524,20 +1448,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     if (forceExecution && forceMode->second != "1") {
         throw std::invalid_argument("generic recompute force mode is invalid");
     }
-    // Spawning a worker process costs ~2s of interpreter and library startup,
-    // which is three orders of magnitude more than executing an ordinary
-    // feature. The compatibility facades behind Document::recompute() and
-    // Document::recomputeFeature() are every recompute FreeCAD has ever done,
-    // so they ask for the owner thread and pay that cost only where a caller
-    // genuinely wants the detached process.
-    const bool ownerThreadExecution = ownerThreadMode != intent.arguments.end();
-    if (ownerThreadExecution && ownerThreadMode->second != "1") {
-        throw std::invalid_argument("generic recompute execution venue is invalid");
-    }
     const std::string targetName = intent.arguments.at("feature");
     auto* target = document.getObject(targetName.c_str());
     if (!target || !target->isAttachedToDocument() || target->getDocument() != &document) {
         throw std::invalid_argument("generic recompute target does not exist");
+    }
+    if (identityArgument->second.empty()
+        || document.collaborationObjectIdentity(*target)
+            != identityArgument->second) {
+        throw std::invalid_argument(
+            "generic recompute target stable identity is stale");
     }
 
     // The two exact-type predicates below are proven-inert contracts -- an
@@ -1550,96 +1470,10 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         isSafePlainAppLinkBookkeepingTarget(*target)
         || isNullProxyExternalLinkHolderBookkeepingTarget(*target);
 
-    // Preparing the target to execute on the owner thread inside the
-    // coordinator's commit boundary. Two callers want it: an object that never
-    // opts into worker execution (below), and a caller that asked for the
-    // owner thread because a detached process is not worth ~2s of startup.
-    const auto prepareOwnerThreadExecution = [&document, &targetName, target,
-                                              preserveLegacyRevisionSemantics,
-                                              ownerThreadExecution]() {
-        // The object has not opted into worker execution, so its execute()
-        // cannot be reproduced in the detached process at all: for every
-        // ordinary Python scripted feature the behaviour lives in a proxy the
-        // archive cannot carry, and FeaturePython only opts in when that proxy
-        // implements supportsAsyncRecompute(). Routing it to the worker makes
-        // collectClosure() refuse the job and the coordinator record a failed
-        // node, which leaves the feature permanently touched and invalid --
-        // Draft, Arch, FEM, Assembly's joints and every user macro included.
-        // Run execute() on the owner thread inside the coordinator's commit
-        // boundary instead, which is what the in-process recompute did.
-        //
-        // This is checked before the bookkeeping short-circuit: a scripted
-        // feature's mustExecute() reports nothing about the work its proxy
-        // owes, so purging the touch instead of executing would drop it.
-        const std::string stableIdentity = document.collaborationObjectIdentity(*target);
-        std::vector<App::DocumentRevisionKey> reads {
-            App::DocumentRevisionKey::documentStructure(),
-            App::DocumentRevisionKey::objectExistence(targetName),
-            App::DocumentRevisionKey::objectStructure(targetName),
-            App::DocumentRevisionKey::objectModel(targetName),
-            App::DocumentRevisionKey::unknownModelMutation()};
-        std::vector<App::DocumentRevisionKey> writes {
-            App::DocumentRevisionKey::objectModel(targetName)};
-        std::vector<App::DocumentRevisionPublicationRequest> effects {
-            {App::DocumentRevisionKey::objectModel(targetName), stableIdentity}};
-        // A target that opts into worker execution has a declarable output
-        // set -- the same predicate the worker manifest uses -- so declare
-        // exactly that. Publishing every property instead would announce
-        // dozens of revisions the recompute never wrote, and the venue a
-        // caller picked must not change what a recompute is seen to touch.
-        //
-        // A target that opts out is an ordinary scripted feature whose
-        // execute() lives in a proxy: nothing here can tell what it writes, so
-        // every property stays declared.
-        const bool outputsAreDeclarable = target->canRecomputeOnWorker();
-        for (const auto& [propertyName, property] : namedProperties(*target)) {
-            auto key = App::DocumentRevisionKey::objectProperty(targetName, propertyName);
-            reads.push_back(key);
-            if (outputsAreDeclarable) {
-                // A declared effect publishes whether or not the recompute
-                // wrote anything, because the effect set is frozen at
-                // preparation. The isolated venue can afford per-property
-                // effects only because it decodes the worker's result first
-                // and refines them down before committing; a failed detached
-                // recompute therefore publishes just the object's model key.
-                // Nothing here knows the outcome yet, so announcing a property
-                // would publish a revision for a value a raising execute()
-                // never produced. Take the object's model key as the whole
-                // declaration and let it stand for whatever execute() wrote.
-                continue;
-            }
-            writes.push_back(key);
-            effects.push_back({std::move(key), stableIdentity});
-        }
-        static_cast<void>(outputsAreDeclarable);
-        std::sort(reads.begin(), reads.end());
-        reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
-        std::sort(writes.begin(), writes.end());
-        writes.erase(std::unique(writes.begin(), writes.end()), writes.end());
-        if (preserveLegacyRevisionSemantics) {
-            writes.push_back(App::DocumentRevisionKey::unknownModelMutation());
-            effects.push_back(
-                {App::DocumentRevisionKey::unknownModelMutation(), std::nullopt});
-        }
-        App::CollaborativeOperationPreparation::DetachedTask task =
-            [targetName, stableIdentity, ownerThreadExecution](
-                const std::stop_token stopToken) {
-                if (stopToken.stop_requested()) {
-                    throw std::runtime_error(
-                        "generic recompute in-process preparation was cancelled");
-                }
-                return std::make_unique<const GenericRecomputeInProcessOperation>(
-                    targetName, stableIdentity, ownerThreadExecution);
-            };
-        return App::CollaborativeOperationPreparation {std::move(reads),
-                                                       std::move(writes),
-                                                       std::move(effects),
-                                                       std::move(task),
-                                                       App::PreparationPolicy::DetachedInProcess};
-    };
-
     if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract) {
-        return prepareOwnerThreadExecution();
+        throw std::invalid_argument(
+            "generic recompute object has not opted into isolated execution: "
+            + targetName);
     }
 
     if (!forceExecution && target->isTouched()
@@ -1681,12 +1515,6 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                 std::move(effects),
                 std::move(task),
                 App::PreparationPolicy::DetachedInProcess};
-    }
-
-    if (ownerThreadExecution) {
-        // Same decision tree as the detached venue -- the opt-out and
-        // bookkeeping branches above already ran -- only the venue differs.
-        return prepareOwnerThreadExecution();
     }
 
     auto closure = collectClosure(document, *target);
@@ -1922,6 +1750,14 @@ void ensureGenericIsolatedRecomputeRegistered()
     });
 }
 
+std::optional<std::vector<DocumentRevisionObservation>>
+captureGenericIsolatedRecomputePresentationFence(
+    const Document& document,
+    DocumentObject& feature)
+{
+    return capturePresentationRevisionFence(document, feature);
+}
+
 namespace
 {
 
@@ -1966,8 +1802,7 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     const std::string_view provenance,
     const std::string_view coalescingPrefix,
     const bool preserveLegacyRevisionSemantics,
-    const bool forceExecution,
-    const bool ownerThreadExecution)
+    const bool forceExecution)
 {
     std::map<std::string, DocumentObject*> byName;
     for (auto* object : features) {
@@ -1992,17 +1827,25 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     for (const auto& [name, object] : byName) {
         DocumentRecomputeFeatureRequest node;
         node.featureId = name;
+        node.stableObjectIdentity = document.collaborationObjectIdentity(*object);
+        node.presentationObjectModelRevision =
+            document.collaborationRevisions().current(
+                DocumentRevisionKey::objectModel(name));
+        if (auto presentationFence =
+                capturePresentationRevisionFence(document, *object)) {
+            node.presentationRevisionFence = std::move(*presentationFence);
+            node.presentationRevisionFenceComplete = true;
+        }
         node.operationId = "generic-recompute:" + name;
         node.intent.operationType = std::string(GenericIsolatedRecomputeOperationType);
         node.intent.arguments.emplace("feature", name);
+        node.intent.arguments.emplace(
+            "stable_object_identity", node.stableObjectIdentity);
         if (preserveLegacyRevisionSemantics) {
             node.intent.arguments.emplace("legacy_revision_semantics", "1");
         }
         if (forceExecution) {
             node.intent.arguments.emplace("force_execution", "1");
-        }
-        if (ownerThreadExecution) {
-            node.intent.arguments.emplace("owner_thread_execution", "1");
         }
         node.provenance = std::string(provenance);
         for (auto* dependency : planDependencies(*object)) {
@@ -2073,8 +1916,7 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     Document& document,
     DocumentObject& feature,
     const bool recursive,
-    const bool preserveLegacyRevisionSemantics,
-    const bool ownerThreadExecution)
+    const bool preserveLegacyRevisionSemantics)
 {
     if (!feature.isAttachedToDocument() || feature.getDocument() != &document
         || !feature.getNameInDocument()) {
@@ -2092,8 +1934,44 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         "App::Document::recomputeFeature isolated adapter",
         "generic-feature:",
         preserveLegacyRevisionSemantics,
-        true,
-        ownerThreadExecution);
+        true);
+}
+
+DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
+    Document& document,
+    DocumentObject& feature,
+    const bool recursive,
+    const bool preserveLegacyRevisionSemantics,
+    const bool ownerThreadExecution)
+{
+    if (ownerThreadExecution) {
+        throw std::invalid_argument(
+            "generic recompute no longer accepts a caller-selected live execution venue");
+    }
+    return makeGenericIsolatedRecomputeRequest(
+        document, feature, recursive, preserveLegacyRevisionSemantics);
+}
+
+DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
+    Document& document,
+    const std::vector<DocumentObject*>& features,
+    const std::string_view provenance,
+    const std::string_view coalescingPrefix,
+    const bool preserveLegacyRevisionSemantics,
+    const bool forceExecution,
+    const bool ownerThreadExecution)
+{
+    if (ownerThreadExecution) {
+        throw std::invalid_argument(
+            "generic recompute no longer accepts a caller-selected live execution venue");
+    }
+    return makeGenericIsolatedRecomputeRequest(
+        document,
+        features,
+        provenance,
+        coalescingPrefix,
+        preserveLegacyRevisionSemantics,
+        forceExecution);
 }
 
 }  // namespace App::Internal

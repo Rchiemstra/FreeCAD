@@ -13,14 +13,17 @@
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
 #include "App/PropertyLinks.h"
+#include "App/RecomputeHandle.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
 #include <src/App/InitApplication.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
 #include <deque>
+#include <exception>
 #include <future>
 #include <stdexcept>
 #include <stop_token>
@@ -205,6 +208,23 @@ constexpr std::string_view DetachedTestOperationType = "App.Test.DetachedSetLabe
 
 std::mutex InstrumentationMutex;
 std::vector<std::thread::id> ApplyThreads;
+
+class ClosingRaceRecomputeProbe final: public FeatureTest
+{
+public:
+    explicit ClosingRaceRecomputeProbe(std::atomic<int>& executions)
+        : _executions(executions)
+    {}
+
+    DocumentObjectExecReturn* execute() override
+    {
+        _executions.fetch_add(1, std::memory_order_relaxed);
+        return DocumentObject::StdReturn;
+    }
+
+private:
+    std::atomic<int>& _executions;
+};
 
 class TestSetLabelOperation final: public CollaborativeOperation
 {
@@ -570,6 +590,7 @@ public:
 
     ~BlockingTestDispatcher()
     {
+        abortPending();
         MainThreadSignalConfig::setHooks(nullptr, nullptr);
         Active = nullptr;
     }
@@ -600,6 +621,47 @@ public:
         _changed.wait(lock, [&] { return !_tasks.empty(); });
     }
 
+    bool runOneFor(const std::chrono::milliseconds timeout)
+    {
+        std::shared_ptr<Task> task;
+        {
+            std::unique_lock lock(_mutex);
+            if (!_changed.wait_for(lock, timeout, [&] {
+                    return !_tasks.empty() || _aborting;
+                })
+                || _tasks.empty()) {
+                return false;
+            }
+            task = std::move(_tasks.front());
+            _tasks.pop_front();
+        }
+        task->callback();
+        {
+            std::lock_guard lock(task->mutex);
+            task->done = true;
+        }
+        task->changed.notify_all();
+        return true;
+    }
+
+    void abortPending()
+    {
+        std::deque<std::shared_ptr<Task>> tasks;
+        {
+            std::lock_guard lock(_mutex);
+            _aborting = true;
+            tasks.swap(_tasks);
+        }
+        _changed.notify_all();
+        for (const auto& task : tasks) {
+            {
+                std::lock_guard lock(task->mutex);
+                task->done = true;
+            }
+            task->changed.notify_all();
+        }
+    }
+
 private:
     struct Task
     {
@@ -624,6 +686,9 @@ private:
         task->callback = std::move(callback);
         {
             std::lock_guard lock(Active->_mutex);
+            if (Active->_aborting) {
+                return;
+            }
             Active->_tasks.push_back(task);
         }
         Active->_changed.notify_one();
@@ -638,6 +703,7 @@ private:
     std::mutex _mutex;
     std::condition_variable _changed;
     std::deque<std::shared_ptr<Task>> _tasks;
+    bool _aborting {false};
 };
 
 class DocumentCollaborationServiceTest: public ::testing::Test
@@ -721,6 +787,133 @@ TEST_F(DocumentCollaborationServiceTest, dirtyLiveDocumentKeepsStatusAndCancella
                     .has_value());
     EXPECT_TRUE(_document->collaborationService().cancelEdit(
         _session.sessionId(), "dirty document cancellation"));
+}
+
+TEST_F(DocumentCollaborationServiceTest, recomputeAdmittedBeforeClosingRejectsWithoutExecuting)
+{
+    std::atomic<int> executions {0};
+    auto probeOwner = std::make_unique<ClosingRaceRecomputeProbe>(executions);
+    auto* probe = probeOwner.get();
+    _document->addObject(probe, "ClosingRaceRecomputeProbe");
+    static_cast<void>(probeOwner.release());
+    probe->touch();
+
+    HookBarrier admitted;
+    bool admissionObserved = false;
+    bool closed = false;
+    std::exception_ptr closeFailure;
+    std::thread closeThread([&] {
+        try {
+            admissionObserved = admitted.waitUntilEntered();
+            if (admissionObserved) {
+                closed = App::GetApplication().closeDocument(_documentName.c_str());
+            }
+        }
+        catch (...) {
+            closeFailure = std::current_exception();
+        }
+        // Also release on timeout, rejection, or exception so the owner call
+        // cannot remain blocked on a failed test path.
+        admitted.release();
+    });
+
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive);
+
+    int recomputed = -1;
+    bool hasError = false;
+    std::exception_ptr recomputeFailure;
+    try {
+        recomputed = _document->recompute({probe}, false, &hasError);
+    }
+    catch (...) {
+        recomputeFailure = std::current_exception();
+    }
+
+    admitted.release();
+    closeThread.join();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+    if (closed) {
+        _document = nullptr;
+        _target = nullptr;
+    }
+
+    EXPECT_TRUE(admissionObserved);
+    EXPECT_FALSE(closeFailure);
+    EXPECT_FALSE(recomputeFailure);
+    EXPECT_TRUE(closed);
+    EXPECT_EQ(recomputed, 0);
+    EXPECT_TRUE(hasError);
+    EXPECT_EQ(executions.load(std::memory_order_relaxed), 0);
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       recomputeHandleAccessPinsBeforeDereferencingAcrossClose)
+{
+    BlockingTestDispatcher dispatcher;
+    const auto id = _document->recomputeCoordinator().submit({});
+    auto handle = std::make_unique<App::RecomputeHandle>(*_document, id);
+    HookBarrier admitted;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
+        &HookBarrier::releaseActive);
+
+    std::optional<App::DocumentRecomputeSnapshot> observed;
+    std::exception_ptr statusFailure;
+    bool closed = false;
+    std::exception_ptr closeFailure;
+    std::thread closeThread([&] {
+        try {
+            if (admitted.waitUntilEntered()) {
+                closed = App::GetApplication().closeDocument(_documentName.c_str());
+            }
+        }
+        catch (...) {
+            closeFailure = std::current_exception();
+        }
+        admitted.release();
+    });
+    std::thread statusThread([&] {
+        try {
+            observed = handle->status();
+        }
+        catch (...) {
+            statusFailure = std::current_exception();
+        }
+    });
+
+    const bool admissionObserved = admitted.waitUntilEntered();
+    const bool dispatched = admissionObserved
+        && dispatcher.runOneFor(std::chrono::seconds(2));
+    if (!dispatched) {
+        dispatcher.abortPending();
+    }
+    admitted.release();
+    statusThread.join();
+    closeThread.join();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
+    Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+    if (closed) {
+        _document = nullptr;
+        _target = nullptr;
+    }
+
+    ASSERT_TRUE(admissionObserved);
+    ASSERT_TRUE(dispatched);
+    EXPECT_FALSE(statusFailure);
+    EXPECT_FALSE(closeFailure);
+    ASSERT_TRUE(observed.has_value());
+    EXPECT_TRUE(observed->terminal());
+    EXPECT_TRUE(closed);
+
+    const auto afterClose = handle->status();
+    EXPECT_EQ(afterClose.state, App::DocumentRecomputeState::Cancelled);
+    EXPECT_EQ(afterClose.diagnostic, "recompute document is no longer live");
+    EXPECT_FALSE(handle->cancel("already closed"));
 }
 
 TEST_F(DocumentCollaborationServiceTest, rejectsUnregisteredIntentBeforePreparation)

@@ -181,7 +181,7 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
-    def testRefreshRejectsUnoptedFeaturePythonWithoutLiveExecution(self):
+    def testRefreshRunsUnoptedFeaturePythonOnOwnerThread(self):
         class RefreshProxy:
             def __init__(self):
                 self.executed_thread_id = None
@@ -200,22 +200,15 @@ class TestGuiDocument(unittest.TestCase):
         obj.Proxy = proxy
         obj.touch()
 
-        start = time.monotonic()
+        owner_thread_id = threading.get_ident()
         FreeCADGui.runCommand("Std_Refresh", 0)
-        elapsed = time.monotonic() - start
 
-        deadline = time.monotonic() + 2.0
-        while "Invalid" not in obj.State and time.monotonic() < deadline:
-            FreeCADGui.updateGui()
-            time.sleep(0.005)
-
-        self.assertLess(elapsed, 0.033)
-        self.assertEqual(proxy.execute_count, 0)
-        self.assertIsNone(proxy.executed_thread_id)
-        self.assertEqual(obj.Result, -1)
-        self.assertIn("Touched", obj.State)
-        self.assertIn("Invalid", obj.State)
-        self.assertNotIn("Up-to-date", obj.State)
+        self.assertEqual(proxy.execute_count, 1)
+        self.assertEqual(proxy.executed_thread_id, owner_thread_id)
+        self.assertEqual(obj.Result, 42)
+        self.assertIn("Up-to-date", obj.State)
+        self.assertNotIn("Touched", obj.State)
+        self.assertNotIn("Invalid", obj.State)
 
     def testSaveCommandDoesNotUseDeprecatedAPI(self):
         with tempfile.TemporaryDirectory() as temp_dir:

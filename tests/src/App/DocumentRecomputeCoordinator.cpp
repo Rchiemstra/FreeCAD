@@ -7,6 +7,8 @@
 #include <App/Document.h>
 #include <App/DocumentRecomputeCoordinator.h>
 #include <App/FeatureTest.h>
+#include <App/GenericIsolatedRecompute.h>
+#include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
@@ -500,8 +502,14 @@ TEST_F(DocumentRecomputeCoordinatorTest,
        activeIdenticalPlansCoalesceAndMismatchedPlanIsRejected)
 {
     auto plan = request(
-        {feature("coalesced", {}, _scenarioToken, "First", "coalesced", {}, {}, true)},
+        {feature("First", {}, _scenarioToken, "First", "coalesced", {}, {}, true)},
         "same-active-plan");
+    const auto firstIdentity =
+        _document->collaborationObjectIdentity(object("First"));
+    plan.features.front().stableObjectIdentity = firstIdentity;
+    plan.features.front().presentationObjectModelRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel("First"));
     auto& coordinator = _document->recomputeCoordinator();
     const auto first = coordinator.submit(plan);
     const auto identical = coordinator.submit(plan);
@@ -517,9 +525,28 @@ TEST_F(DocumentRecomputeCoordinatorTest,
     EXPECT_THROW(static_cast<void>(coordinator.submit(std::move(differentFence))),
                  std::invalid_argument);
 
-    _scenario->release("coalesced");
-    EXPECT_EQ(waitTerminal(coordinator, first).state,
-              App::DocumentRecomputeState::Completed);
+    auto differentIdentity = plan;
+    differentIdentity.features.front().stableObjectIdentity = "object-incarnation-2";
+    EXPECT_THROW(static_cast<void>(coordinator.submit(std::move(differentIdentity))),
+                 std::invalid_argument);
+
+    auto differentPresentationRevision = plan;
+    ++*differentPresentationRevision.features.front()
+           .presentationObjectModelRevision;
+    EXPECT_THROW(
+        static_cast<void>(
+            coordinator.submit(std::move(differentPresentationRevision))),
+        std::invalid_argument);
+
+    _scenario->release("First");
+    const auto terminal = waitTerminal(coordinator, first);
+    EXPECT_EQ(terminal.state, App::DocumentRecomputeState::Completed);
+    EXPECT_EQ(featureSnapshot(terminal, "First").stableObjectIdentity,
+              firstIdentity);
+    EXPECT_EQ(
+        featureSnapshot(terminal, "First").presentationObjectModelRevision,
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel("First")));
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,
@@ -557,6 +584,124 @@ TEST_F(DocumentRecomputeCoordinatorTest,
                  std::invalid_argument);
     EXPECT_EQ(_scenario->captureCount(), 0U);
     EXPECT_FALSE(coordinator.hasPendingWork());
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       genericPresentationSelectorMustMatchItsOperationTarget)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto firstIdentity =
+        _document->collaborationObjectIdentity(object("First"));
+    const auto secondIdentity =
+        _document->collaborationObjectIdentity(object("Second"));
+
+    App::DocumentRecomputeFeatureRequest forged;
+    forged.featureId = "First";
+    forged.operationId = "forged-generic-selector";
+    forged.intent.operationType =
+        std::string(App::GenericIsolatedRecomputeOperationType);
+    forged.intent.arguments = {
+        {"feature", "Second"},
+        {"stable_object_identity", secondIdentity}};
+    forged.provenance = "generic selector binding regression";
+    forged.stableObjectIdentity = firstIdentity;
+    forged.presentationObjectModelRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel("First"));
+
+    EXPECT_THROW(
+        static_cast<void>(coordinator.submit(request({forged}))),
+        std::invalid_argument);
+
+    forged.featureId = "Second";
+    forged.stableObjectIdentity.clear();
+    forged.presentationObjectModelRevision.reset();
+    EXPECT_THROW(
+        static_cast<void>(coordinator.submit(request({std::move(forged)}))),
+        std::invalid_argument);
+
+    EXPECT_EQ(_scenario->captureCount(), 0U);
+    EXPECT_FALSE(coordinator.hasPendingWork());
+    EXPECT_FALSE(coordinator.hasUnresolvedWork());
+    EXPECT_FALSE(object("First").mustRecompute());
+    EXPECT_FALSE(object("Second").mustRecompute());
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       waitingLiveNodeRefreshesItsPresentationFenceBeforePrepareFailure)
+{
+    auto downstream = feature(
+        "Second",
+        {"root"},
+        _scenarioToken,
+        "MissingPrepareTarget",
+        "never");
+    downstream.stableObjectIdentity =
+        _document->collaborationObjectIdentity(object("Second"));
+    downstream.presentationObjectModelRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel("Second"));
+
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto id = coordinator.submit(request(
+        {feature("root",
+                 {},
+                 _scenarioToken,
+                 "First",
+                 "root-committed",
+                 {},
+                 {},
+                 true),
+         std::move(downstream)}));
+    ASSERT_TRUE(_scenario->waitStarted("root"));
+
+    object("Second").Label.setValue("Second-newer-before-prepare");
+    const auto refreshedRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel("Second"));
+    _scenario->release("root");
+
+    const auto terminal = waitTerminal(coordinator, id);
+    ASSERT_EQ(terminal.state, App::DocumentRecomputeState::PartialFailure);
+    const auto& failed = featureSnapshot(terminal, "Second");
+    EXPECT_EQ(failed.state, App::DocumentRecomputeFeatureState::Failed);
+    EXPECT_EQ(failed.presentationObjectModelRevision, refreshedRevision);
+    EXPECT_FALSE(failed.outcomeApplied);
+
+    App::RecomputeHandle handle(*_document, id);
+    const auto presented = handle.status();
+    EXPECT_TRUE(presented.terminal());
+    EXPECT_TRUE(object("Second").isTouched());
+    EXPECT_TRUE(object("Second").isError());
+    EXPECT_NE(_document->getErrorDescription(&object("Second")), nullptr);
+}
+
+TEST_F(DocumentRecomputeCoordinatorTest,
+       evictingTerminalSyntheticJobsAlsoEvictsTheirUnresolvedLedgerEntries)
+{
+    auto& coordinator = _document->recomputeCoordinator();
+    constexpr int retainedJobs = 256;
+
+    for (int index = 0; index <= retainedJobs; ++index) {
+        App::DocumentRecomputeFeatureRequest failed;
+        failed.featureId = "synthetic-failure-" + std::to_string(index);
+        failed.operationId = "synthetic-operation-" + std::to_string(index);
+        failed.intent.operationType =
+            "FreeCAD.Tests.UnregisteredSyntheticRecompute";
+        failed.provenance = "synthetic unresolved eviction regression";
+        static_cast<void>(coordinator.submit(request({std::move(failed)})));
+    }
+    ASSERT_TRUE(coordinator.hasUnresolvedWork());
+
+    for (int index = 0; index < retainedJobs; ++index) {
+        App::DocumentRecomputeRequest empty;
+        empty.coalescingKey = "terminal-empty-" + std::to_string(index);
+        static_cast<void>(coordinator.submit(std::move(empty)));
+    }
+
+    EXPECT_FALSE(coordinator.hasPendingWork());
+    EXPECT_FALSE(coordinator.hasUnresolvedWork());
+    EXPECT_FALSE(coordinator.hasUnresolvedExecutableWork());
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,

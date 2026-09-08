@@ -40,6 +40,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <initializer_list>
@@ -98,6 +99,7 @@
 #include "GeoFeature.h"
 #include "License.h"
 #include "Link.h"
+#include "MainThreadSignal.h"
 #include "MergeDocuments.h"
 #include "MutationClassification.h"
 #include "PropertyPythonObject.h"
@@ -131,6 +133,52 @@ namespace fs = std::filesystem;
 
 namespace
 {
+
+template<typename Result, typename OwnerPredicate, typename Callable>
+std::optional<Result> invokeOnDocumentOwnerThread(
+    OwnerPredicate&& isDocumentOwnerThread,
+    Callable&& callable)
+{
+    if (isDocumentOwnerThread()) {
+        return std::forward<Callable>(callable)();
+    }
+    // Gui's blocking dispatcher targets the GUI/main thread. Calling it from
+    // that same thread would deadlock, and a document owned by another thread
+    // cannot be made safe by running its kernel on the GUI thread anyway.
+    if (!MainThreadSignalConfig::hasHooks()
+        || MainThreadSignalConfig::isMainThread()) {
+        return std::nullopt;
+    }
+
+    std::optional<Result> result;
+    std::exception_ptr failure;
+    {
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
+        MainThreadSignalConfig::invoke(
+            [&] {
+                // A GUI/main-thread dispatcher is useful only when that
+                // thread also owns this document. Never turn a mismatched
+                // dispatcher into caller-thread live execution.
+                if (!isDocumentOwnerThread()) {
+                    return;
+                }
+                try {
+                    result.emplace(std::forward<Callable>(callable)());
+                }
+                catch (...) {
+                    failure = std::current_exception();
+                }
+            },
+            true);
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    return result;
+}
 
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 std::atomic<App::Internal::DocumentPostDurableSaveCheckpointHook>
@@ -1430,6 +1478,13 @@ void Document::ensureCollaborationTransactionControlAllowed() const
         throw Base::RuntimeError(
             "transaction, undo, and redo control is unavailable while collaboration notifications replay");
     }
+    if (d->collaborationAggregateRecomputeNotificationActive
+        || std::ranges::any_of(d->objectArray, [](const DocumentObject* object) {
+               return object && object->testStatus(ObjectStatus::PendingRecompute);
+           })) {
+        throw Base::RuntimeError(
+            "transaction, undo, and redo control is unavailable while recompute observers retain objects");
+    }
 }
 
 int Document::openCollaborationCommitTransaction(
@@ -1473,6 +1528,13 @@ void Document::beginCollaborationCommitNotificationBarrier()
 {
     if (d->collaborationCommitNotificationBarrier) {
         throw Base::RuntimeError("collaboration commit notification barrier is already active");
+    }
+    if (std::ranges::any_of(d->collaborationPreparedUndoSlot,
+                            [](const Transaction* transaction) {
+                                return transaction != nullptr;
+                            })) {
+        throw Base::RuntimeError(
+            "collaboration commit retained an unfinalized transient transaction");
     }
 
     // The native transaction restores membership and properties, but its
@@ -1546,6 +1608,13 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     }
 
     auto notifications = std::move(d->collaborationDeferredNotifications);
+    std::unique_ptr<Transaction> retainedTransientTransaction;
+    std::unique_ptr<Transaction> retainedEvictedUndoTransaction;
+    if (!d->collaborationPreparedUndoSlot.empty()
+        && d->collaborationPreparedUndoSlot.front()) {
+        retainedTransientTransaction.reset(d->collaborationPreparedUndoSlot.front());
+        d->collaborationPreparedUndoSlot.front() = nullptr;
+    }
     d->collaborationDeferredNotifications.clear();
     d->collaborationObservedStructuralEffects.clear();
     d->collaborationImportNewObjects.clear();
@@ -1597,12 +1666,25 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     };
 
     if (!committed) {
+        retainedTransientTransaction.reset();
         d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
         emitBecameStable();
         return;
     }
 
     d->collaborationReplayingNotifications = true;
+
+    // Match the ordinary commit path's observer-visible history before replay,
+    // while retaining ownership of the evicted transaction until every
+    // deferred observer is finished. Its destructor can release deleted
+    // objects and Python payloads referenced by those notifications.
+    if (mUndoTransactions.size() > d->UndoMaxStackSize) {
+        auto* evicted = mUndoTransactions.front();
+        discardTransactionFileState(evicted->getID());
+        mUndoMap.erase(evicted->getID());
+        mUndoTransactions.pop_front();
+        retainedEvictedUndoTransaction.reset(evicted);
+    }
 
     bool globalBeforeCloseEmitted = false;
     const auto reportNotificationFailure = [](const char* stage, const std::exception* exception) {
@@ -1912,13 +1994,16 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             reportNotificationFailure("transaction-close", nullptr);
         }
     }
+    // A no-history collaboration commit can own detached objects referenced by
+    // the notifications above. Destroy its transaction only after every
+    // observer has seen the required deletion and transaction-removal events.
+    // Keep replay admission closed while transient or evicted undo-history
+    // transactions destroy their last object/Python payload references:
+    // teardown can re-enter public transaction APIs, and the lifecycle depth
+    // alone does not guard those controls.
+    retainedTransientTransaction.reset();
+    retainedEvictedUndoTransaction.reset();
     d->collaborationReplayingNotifications = false;
-    if (mUndoTransactions.size() > d->UndoMaxStackSize) {
-        discardTransactionFileState(mUndoTransactions.front()->getID());
-        mUndoMap.erase(mUndoTransactions.front()->getID());
-        delete mUndoTransactions.front();
-        mUndoTransactions.pop_front();
-    }
     d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
     emitBecameStable();
 }
@@ -2790,6 +2875,13 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             Application::TransactionSignaller signaller(false, true);
             const int id = d->activeUndoTransaction->getID();
 
+            if (d->collaborationCommitNotificationBarrier
+                && (d->collaborationPreparedUndoSlot.size() != 1
+                    || d->collaborationPreparedUndoSlot.front() != nullptr)) {
+                throw Base::RuntimeError(
+                    "collaboration transaction finalization was not prepared");
+            }
+
             if (retainUndoHistory && d->activeTransactionFileChanges) {
                 d->transactionFileChanges[id] = *d->activeTransactionFileChanges;
             }
@@ -2798,14 +2890,15 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             if (!retainUndoHistory) {
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
-                delete d->activeUndoTransaction;
+                if (d->collaborationCommitNotificationBarrier) {
+                    d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
+                }
+                else {
+                    delete d->activeUndoTransaction;
+                }
                 d->activeUndoTransaction = nullptr;
             }
             else if (d->collaborationCommitNotificationBarrier) {
-                if (d->collaborationPreparedUndoSlot.empty()) {
-                    throw Base::RuntimeError(
-                        "collaboration commit finalization was not prepared");
-                }
                 d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
                 mUndoTransactions.splice(mUndoTransactions.end(),
                                          d->collaborationPreparedUndoSlot,
@@ -3147,6 +3240,13 @@ void Document::clearDocument() // NOLINT
     ensureCollaborationStructuralMutationAllowed(
         CollaborationStructuralMutationKind::Restricted,
         "Document::clearDocument");
+    if (d->collaborationAggregateRecomputeNotificationActive
+        || std::ranges::any_of(d->objectArray, [](const DocumentObject* object) {
+               return object && object->testStatus(ObjectStatus::PendingRecompute);
+           })) {
+        throw Base::RuntimeError(
+            "cannot clear a document while recompute observers retain its objects");
+    }
     const auto clearPublication = documentClearPublicationRequests(*this, d->objectArray);
     d->activeObject = nullptr;
 
@@ -4940,8 +5040,7 @@ DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent inten
         const bool activeRecompute =
             dependency->recomputeCoordinator().hasPendingWork();
         const bool unresolvedRecompute =
-            dependency->recomputeCoordinator().hasUnresolvedWork()
-            && dependency->mustExecute();
+            dependency->recomputeCoordinator().hasUnresolvedExecutableWork();
         if (activeRecompute || unresolvedRecompute) {
             return fail(
                 "RECOMPUTE_PENDING",
@@ -6596,11 +6695,48 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const bool force,
     const int options)
 {
-    enforceAtomicPresentationMutationTarget(*this);
+    auto lifecyclePin = collaborationService().pinDocumentAccess();
+    if (!lifecyclePin) {
+        throw Base::RuntimeError(
+            "asynchronous recompute cannot start while the document is closing");
+    }
 
-    const auto submitEmpty = [this] {
+    if (!isCollaborationOwnerThread()) {
+        if (!objs.empty()) {
+            throw Base::RuntimeError(
+                "off-owner asynchronous recompute requires a whole-document request; raw object targets must be captured on the owner thread");
+        }
+
+        auto dispatched = invokeOnDocumentOwnerThread<std::unique_ptr<RecomputeHandle>>(
+            [this] { return isCollaborationOwnerThread(); },
+            [this, force, options]() {
+                return recomputeAsync({}, force, options);
+            });
+        if (!dispatched) {
+            throw Base::RuntimeError(
+                "asynchronous recompute requires its document owner-thread dispatcher");
+        }
+        return std::move(*dispatched);
+    }
+
+    std::unique_lock<std::recursive_mutex> serialized(collaborationCommitMutex());
+    enforceAtomicPresentationMutationTarget(*this);
+    if (collaborationIdentity().state != DocumentLifecycleState::Live) {
+        throw Base::RuntimeError(
+            "asynchronous recompute requires a live document");
+    }
+    if (collaborationNotificationsReplaying()
+        || (collaborationLifecycleMutationBlocked()
+            && !collaborationDerivedRecomputeGranted())) {
+        throw Base::RuntimeError(
+            "asynchronous recompute cannot start during lifecycle notification replay");
+    }
+
+    const auto submitEmpty = [this, &serialized] {
         DocumentRecomputeRequest request;
         request.coalescingKey = "empty-document-recompute";
+        request.publishTerminalPresentation = false;
+        serialized.unlock();
         const auto id = recomputeCoordinator().submit(std::move(request));
         return std::make_unique<RecomputeHandle>(*this, id);
     };
@@ -6608,7 +6744,8 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
         || d->collaborationCompatibilityStructuralMutationGranted
         || d->collaborationDeferredRecomputeBlocked || d->undoing || d->rollback) {
-        return submitEmpty();
+        throw Base::RuntimeError(
+            "asynchronous recompute cannot start inside another document mutation boundary");
     }
     if (testStatus(Document::PartialDoc)) {
         if (mustExecute()) {
@@ -6618,11 +6755,36 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         return submitEmpty();
     }
     if (testStatus(Document::Recomputing)) {
-        FC_ERR("Recursive calling of recompute for document " << getName());
-        return submitEmpty();
+        throw Base::RuntimeError(
+            "recursive asynchronous document recompute is not supported");
     }
     if (!force && testStatus(Document::SkipRecompute)) {
-        signalSkipRecompute(*this, objs);
+        std::exception_ptr notificationFailure;
+        {
+            Base::FlagToggler<bool> retainSkippedObjects(
+                d->collaborationAggregateRecomputeNotificationActive, false);
+            try {
+                signalSkipRecompute(*this, objs);
+            }
+            catch (...) {
+                notificationFailure = std::current_exception();
+            }
+        }
+        std::exception_ptr teardownFailure;
+        if (!d->pendingRemove.empty()) {
+            try {
+                finalizeCollaborationRecomputeTeardown();
+            }
+            catch (...) {
+                teardownFailure = std::current_exception();
+            }
+        }
+        if (notificationFailure) {
+            std::rethrow_exception(notificationFailure);
+        }
+        if (teardownFailure) {
+            std::rethrow_exception(teardownFailure);
+        }
         return submitEmpty();
     }
 
@@ -6635,104 +6797,393 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     };
 
     d->clearRecomputeLog();
-    if (d->collaborationCommitNotificationBarrier) {
-        d->collaborationDeferredNotifications.push_back(
-            {CollaborationDeferredNotificationKind::BeforeRecompute});
-    }
-    else {
-        signalBeforeRecompute(*this);
-    }
 
-    const auto ordered = getDependencyList(
-        objs.empty() ? d->objectArray : objs,
-        DepSort | options);
-    // Legacy recompute decides whether each downstream object must execute
-    // only after its upstream dependencies have committed.  A detached plan
-    // must therefore include the in-document downstream closure of every
-    // object that is dirty at capture time; otherwise a dependency that is
-    // clean now can be touched by an upstream result after the immutable plan
-    // has already omitted it.
-    std::unordered_set<DocumentObject*> scheduled;
-    scheduled.reserve(ordered.size());
-    for (auto* object : ordered) {
+    std::vector<std::string> facadeTargets;
+    facadeTargets.reserve(objs.size());
+    for (auto* object : objs) {
         if (!object || !object->isAttachedToDocument()
-            || object->getDocument() != this
-            || (!force && !object->isTouched() && object->mustRecompute() == 0)) {
-            continue;
+            || object->getDocument() != this || !object->getNameInDocument()) {
+            throw Base::RuntimeError(
+                "asynchronous recompute contains a detached or foreign explicit target");
         }
-        scheduled.insert(object);
-        for (auto* dependent : object->getInListRecursive()) {
-            if (dependent && dependent->isAttachedToDocument()
-                && dependent->getDocument() == this) {
-                scheduled.insert(dependent);
+        facadeTargets.push_back(
+            std::string(object->getNameInDocument()) + "@"
+            + collaborationObjectIdentity(*object));
+    }
+    std::ranges::sort(facadeTargets);
+    std::string facadeCoalescingKey = "generic-document-facade:";
+    facadeCoalescingKey += objs.empty() ? "all;" : "targets;";
+    for (const auto& target : facadeTargets) {
+        facadeCoalescingKey += target + ";";
+    }
+    facadeCoalescingKey += force ? "force;" : "normal;";
+    facadeCoalescingKey += "options=" + std::to_string(options) + ";";
+
+    const auto captureRequest = [&]() {
+        const auto ordered = getDependencyList(
+            objs.empty() ? d->objectArray : objs,
+            DepSort | options);
+        // Legacy recompute decides whether each downstream object must execute
+        // only after its upstream dependencies have committed. A detached plan
+        // therefore captures the downstream closure of every dirty object.
+        // This complete selection is rebuilt after BeforeRecompute observers
+        // return so their touches and topology edits participate in the plan.
+        std::unordered_set<DocumentObject*> scheduled;
+        scheduled.reserve(ordered.size());
+        for (auto* object : ordered) {
+            if (!object || !object->isAttachedToDocument()
+                || object->getDocument() != this
+                || (!object->isTouched() && object->mustRecompute() == 0)) {
+                continue;
+            }
+            scheduled.insert(object);
+            for (auto* dependent : object->getInListRecursive()) {
+                if (dependent && dependent->isAttachedToDocument()
+                    && dependent->getDocument() == this) {
+                    scheduled.insert(dependent);
+                }
             }
         }
-    }
-    std::vector<DocumentObject*> selected;
-    selected.reserve(ordered.size());
-    for (auto* object : ordered) {
-        if (object && object->isAttachedToDocument() && object->getDocument() == this
-            && scheduled.contains(object)) {
-            selected.push_back(object);
+        std::vector<DocumentObject*> selected;
+        selected.reserve(ordered.size());
+        for (auto* object : ordered) {
+            if (object && object->isAttachedToDocument()
+                && object->getDocument() == this && scheduled.contains(object)) {
+                selected.push_back(object);
+            }
         }
+
+        Internal::ensureGenericIsolatedRecomputeRegistered();
+        auto request = Internal::makeGenericIsolatedRecomputeRequest(
+            *this,
+            selected,
+            "App::Document::recomputeAsync isolated compatibility facade",
+            "generic-document:",
+            !collaborationDerivedRecomputeGranted(),
+            /*forceExecution=*/false);
+        request.coalescingKey = facadeCoalescingKey;
+        return request;
+    };
+
+    auto provisionalRequest = captureRequest();
+    // Coordinator operations call back into DCS/DCC and acquire document
+    // serialization in coordinator -> document order. Release this capture
+    // lock before reserving the active coalescing identity.
+    serialized.unlock();
+    auto reservation =
+        recomputeCoordinator().admitSubmission(std::move(provisionalRequest));
+    const auto id = reservation.id();
+    const bool created = reservation.created();
+    bool needsRemovalTeardown = false;
+    if (created) {
+        serialized.lock();
+        std::optional<DocumentRecomputeRequest> refreshedRequest;
+        std::string refreshFailure;
+        {
+            Base::FlagToggler<bool> retainBeforeObservers(
+                d->collaborationAggregateRecomputeNotificationActive, false);
+            if (d->collaborationCommitNotificationBarrier) {
+                try {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::BeforeRecompute});
+                }
+                catch (const std::exception& error) {
+                    FC_ERR("Failed to queue asynchronous before-recompute notification: "
+                           << error.what());
+                }
+                catch (...) {
+                    FC_ERR("Failed to queue asynchronous before-recompute notification");
+                }
+            }
+            else {
+                const auto reportBeforeFailure = [](std::exception_ptr failure) noexcept {
+                    try {
+                        std::rethrow_exception(std::move(failure));
+                    }
+                    catch (const std::exception& error) {
+                        FC_ERR("Asynchronous before-recompute observer failed: "
+                               << error.what());
+                    }
+                    catch (...) {
+                        FC_ERR("Asynchronous before-recompute observer failed with unknown exception");
+                    }
+                };
+                signalBeforeRecompute.underlying().emit_resilient(
+                    reportBeforeFailure, *this);
+            }
+            try {
+                refreshedRequest = captureRequest();
+            }
+            catch (const std::exception& error) {
+                refreshFailure =
+                    std::string("post-BeforeRecompute plan capture failed: ")
+                    + error.what();
+            }
+            catch (...) {
+                refreshFailure =
+                    "post-BeforeRecompute plan capture failed with unknown exception";
+            }
+        }
+        needsRemovalTeardown = !d->pendingRemove.empty();
+        serialized.unlock();
+        if (refreshedRequest) {
+            try {
+                recomputeCoordinator().replaceSubmission(
+                    reservation, std::move(*refreshedRequest));
+            }
+            catch (const std::exception& error) {
+                refreshFailure =
+                    std::string("post-BeforeRecompute plan admission failed: ")
+                    + error.what();
+            }
+            catch (...) {
+                refreshFailure =
+                    "post-BeforeRecompute plan admission failed with unknown exception";
+            }
+        }
+        if (!refreshFailure.empty()) {
+            recomputeCoordinator().failSubmission(
+                reservation, std::move(refreshFailure));
+        }
+        recomputeCoordinator().activateSubmission(std::move(reservation));
     }
 
-    Internal::ensureGenericIsolatedRecomputeRegistered();
-    auto request = Internal::makeGenericIsolatedRecomputeRequest(
-        *this,
-        selected,
-        "App::Document::recomputeAsync isolated compatibility facade",
-        "generic-document:",
-        !collaborationDerivedRecomputeGranted(),
-        force,
-        // A derived recompute is the coordinator's own authoritative pass
-        // inside a structural commit. Running object code live there is the
-        // thing the isolated venue exists to prevent -- the detached import is
-        // what refuses a feature whose runtime type cannot be serialized,
-        // instead of letting its execute() reach into the live document. Every
-        // other recompute is an ordinary one and takes the owner thread.
-        /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
-    request.coalescingKey += force ? "force;" : "normal;";
-    request.coalescingKey += "options=" + std::to_string(options) + ";";
-    const auto id = recomputeCoordinator().submit(std::move(request));
+    if (needsRemovalTeardown) {
+        serialized.lock();
+        try {
+            finalizeCollaborationRecomputeTeardown();
+        }
+        catch (const std::exception& error) {
+            FC_ERR("Asynchronous before-recompute teardown failed: "
+                   << error.what());
+        }
+        catch (...) {
+            FC_ERR("Asynchronous before-recompute teardown failed with unknown exception");
+        }
+        serialized.unlock();
+    }
     return std::make_unique<RecomputeHandle>(*this, id);
 }
 
 void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot)
 {
+    enforceAtomicPresentationMutationTarget(*this);
+
+    auto lifecyclePin = collaborationService().pinDocumentAccess();
+    if (!lifecyclePin) {
+        return;
+    }
+
+    if (!isCollaborationOwnerThread()) {
+        auto dispatched = invokeOnDocumentOwnerThread<bool>(
+            [this] { return isCollaborationOwnerThread(); },
+            [this, snapshot] {
+                finalizeDetachedRecompute(snapshot);
+                return true;
+            });
+        if (!dispatched) {
+            FC_ERR("Detached recompute presentation for document " << getName()
+                                                                     << " requires its owner-thread dispatcher");
+        }
+        return;
+    }
+
+    std::lock_guard<std::recursive_mutex> serialized(collaborationCommitMutex());
+    enforceAtomicPresentationMutationTarget(*this);
+    if (collaborationIdentity().state != DocumentLifecycleState::Live) {
+        return;
+    }
     std::vector<DocumentObject*> recomputed;
     recomputed.reserve(snapshot.features.size());
+
+    // Snapshot id zero is the coordinator's synchronous no-work notification,
+    // not a public handle job. Every actual job claims presentation only after
+    // owner-thread/lifecycle admission so an unsupported off-owner observer
+    // cannot consume the one available finalization.
+    bool presentationClaimed = false;
+    bool presentationCompleted = false;
+    if (snapshot.id != 0) {
+        if (!recomputeCoordinator().claimPresentationFinalization(snapshot.id)) {
+            return;
+        }
+        presentationClaimed = true;
+    }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (presentationClaimed) {
+            recomputeCoordinator().finishPresentationFinalization(
+                snapshot.id, presentationCompleted);
+        }
+    };
+    if (!snapshot.publishTerminalPresentation) {
+        presentationCompleted = true;
+        return;
+    }
+
+    const auto reportText = [](const char* message) noexcept {
+        try {
+            Base::Console().error(
+                "Detached recompute presentation failed: %s\n", message);
+        }
+        catch (...) {
+        }
+    };
+    const auto reportPresentationFailure = [reportText](
+                                               std::exception_ptr failure) noexcept {
+        try {
+            std::rethrow_exception(std::move(failure));
+        }
+        catch (const Base::Exception& exception) {
+            reportText(exception.what());
+        }
+        catch (const std::exception& exception) {
+            reportText(exception.what());
+        }
+        catch (...) {
+            reportText("unknown exception");
+        }
+    };
+    BOOST_SCOPE_EXIT_ALL(&) {
+        try {
+            finalizeCollaborationRecomputeTeardown();
+        }
+        catch (const Base::Exception& exception) {
+            reportText(exception.what());
+        }
+        catch (const std::exception& exception) {
+            reportText(exception.what());
+        }
+        catch (...) {
+            reportText("unknown teardown exception");
+        }
+    };
+    std::optional<Base::FlagToggler<bool>> retainDirectPresentationObjects;
+    if (!d->collaborationCommitNotificationBarrier) {
+        retainDirectPresentationObjects.emplace(
+            d->collaborationAggregateRecomputeNotificationActive, false);
+    }
     for (const auto& node : snapshot.features) {
+        try {
+        // Name lookup is only a locator. Stable identity is the authority that
+        // prevents an old terminal snapshot from touching, diagnosing, or
+        // signalling a same-name replacement. Synthetic coordinator nodes
+        // without an object identity intentionally have no live presentation.
+        if (node.stableObjectIdentity.empty()) {
+            continue;
+        }
         auto* object = getObject(node.featureId.c_str());
-        if (!object) {
+        if (!object
+            || collaborationObjectIdentity(*object) != node.stableObjectIdentity) {
+            recomputeCoordinator().forgetAllUnresolvedFeature(
+                node.featureId, node.stableObjectIdentity);
+            continue;
+        }
+        const bool objectFenceMatches = node.presentationObjectModelRevision
+            && collaborationRevisions().current(
+                   DocumentRevisionKey::objectModel(node.featureId))
+                == *node.presentationObjectModelRevision;
+        const bool requiresBroadFailureFence =
+            node.state != DocumentRecomputeFeatureState::Committed
+            && !node.outcomeApplied;
+        const bool semanticFenceMatches =
+            !requiresBroadFailureFence
+            || (node.presentationRevisionFenceComplete
+                && collaborationRevisions()
+                       .validate(node.presentationRevisionFence)
+                       .empty());
+        if (!objectFenceMatches || !semanticFenceMatches) {
+            // The detached outcome belongs to an older model state of this
+            // same object incarnation. A later synchronous recompute or edit
+            // owns presentation; retaining this failure would re-dirty and
+            // misdiagnose that newer state.
+            if (!object->isTouched() && object->mustRecompute() == 0
+                && object->isValid() && !object->isError()) {
+                recomputeCoordinator().forgetUnresolvedFeature(
+                    snapshot.id,
+                    node.featureId,
+                    node.stableObjectIdentity);
+            }
+            continue;
+        }
+        // A stale result never owned presentation. Keep its unresolved key if
+        // another mutation left the current object dirty; the save gate must
+        // continue to reflect that executable work.
+        if (node.state == DocumentRecomputeFeatureState::Stale) {
+            continue;
+        }
+        if (node.state == DocumentRecomputeFeatureState::Committed) {
+            if (!node.targetPublicationConfirmed) {
+                // A selector-bearing no-op did not publish the object it
+                // claimed to recompute. It cannot clear an earlier failure or
+                // advertise a recomputed live object.
+                continue;
+            }
+            if (!object->isTouched() && object->mustRecompute() == 0
+                && object->isValid() && !object->isError()) {
+                recomputeCoordinator().forgetAllUnresolvedFeature(
+                    node.featureId, node.stableObjectIdentity);
+            }
+            recomputed.push_back(object);
+            if (d->collaborationCommitNotificationBarrier) {
+                try {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::RecomputedObject, object});
+                }
+                catch (...) {
+                    reportPresentationFailure(std::current_exception());
+                }
+            }
+            else {
+                signalRecomputedObject.underlying().emit_resilient(
+                    reportPresentationFailure, *object);
+            }
             continue;
         }
         recomputed.push_back(object);
-        if (node.state == DocumentRecomputeFeatureState::Committed) {
-            if (d->collaborationCommitNotificationBarrier) {
-                d->collaborationDeferredNotifications.push_back(
-                    {CollaborationDeferredNotificationKind::RecomputedObject, object});
-            }
-            else {
-                signalRecomputedObject(*object);
-            }
+        if (node.outcomeApplied) {
+            // The committed operation already applied its failure state under
+            // the atomic commit boundary. Terminal presentation must not touch
+            // or publish the same failure a second time.
             continue;
         }
-        const std::string diagnostic = node.diagnostic.empty()
-            ? "isolated document recompute did not commit"
-            : node.diagnostic;
-        d->addRecomputeLog(diagnostic.c_str(), object);
+        try {
+            const std::string diagnostic = node.diagnostic.empty()
+                ? "isolated document recompute did not commit"
+                : node.diagnostic;
+            d->addRecomputeLog(diagnostic.c_str(), object);
+        }
+        catch (...) {
+            reportPresentationFailure(std::current_exception());
+        }
+        if (node.state == DocumentRecomputeFeatureState::Failed
+            || node.state == DocumentRecomputeFeatureState::Blocked) {
+            try {
+                object->touch();
+            }
+            catch (...) {
+                reportPresentationFailure(std::current_exception());
+            }
+        }
+        }
+        catch (...) {
+            reportPresentationFailure(std::current_exception());
+        }
     }
     if (d->collaborationCommitNotificationBarrier) {
-        CollaborationDeferredNotification notification {
-            CollaborationDeferredNotificationKind::Recomputed};
-        notification.objects = recomputed;
-        d->collaborationDeferredNotifications.push_back(std::move(notification));
+        try {
+            CollaborationDeferredNotification notification {
+                CollaborationDeferredNotificationKind::Recomputed};
+            notification.objects = recomputed;
+            d->collaborationDeferredNotifications.push_back(std::move(notification));
+        }
+        catch (...) {
+            reportPresentationFailure(std::current_exception());
+        }
     }
     else {
-        signalRecomputed(*this, recomputed);
+        signalRecomputed.underlying().emit_resilient(
+            reportPresentationFailure, *this, recomputed);
     }
-    finalizeCollaborationRecomputeTeardown();
+    presentationCompleted = true;
 }
 
 void Document::finalizeEmptyDetachedRecompute()
@@ -6753,10 +7204,18 @@ void Document::finalizeEmptyDetachedRecompute()
 
 void Document::finalizeCollaborationRecomputeTeardown()
 {
+    finalizeCollaborationRecomputeTeardownWithStatusRelease({});
+}
+
+void Document::finalizeCollaborationRecomputeTeardownWithStatusRelease(
+    const std::function<void()>& releaseRecomputing,
+    const std::vector<Document*>& readinessTransitionDocuments)
+{
     // A deletion observer can request a nested recompute while the outer pass
     // is draining pending removals.  The outer pass owns that teardown and is
     // the only pass allowed to publish the subsequent stable notifications.
-    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
+    if (d->collaborationAggregateRecomputeNotificationActive
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
         return;
     }
 
@@ -6824,6 +7283,13 @@ void Document::finalizeCollaborationRecomputeTeardown()
         }
     };
 
+    // The synchronous compatibility loop must remain visibly recomputing
+    // until every document has both lifecycle guards. Releasing its status
+    // here prevents an admission/readiness gap before pending removals drain.
+    if (releaseRecomputing) {
+        releaseRecomputing();
+    }
+
     std::vector<Document*> drainedPendingRemovalDocuments;
     for (auto* document : teardownDocuments) {
         decltype(document->d->pendingRemove) objects;
@@ -6882,10 +7348,16 @@ void Document::finalizeCollaborationRecomputeTeardown()
     }
     teardownReadinessActive = false;
 
-    if (d->pendingRemove.empty()
-        && std::ranges::find(drainedPendingRemovalDocuments, this)
-            == drainedPendingRemovalDocuments.end()) {
-        drainedPendingRemovalDocuments.push_back(this);
+    const auto addStableDocument = [&](Document* document) {
+        if (document && document->d->pendingRemove.empty()
+            && std::ranges::find(drainedPendingRemovalDocuments, document)
+                == drainedPendingRemovalDocuments.end()) {
+            drainedPendingRemovalDocuments.push_back(document);
+        }
+    };
+    addStableDocument(this);
+    for (auto* transitionedDocument : readinessTransitionDocuments) {
+        addStableDocument(transitionedDocument);
     }
     for (auto* stableDocument : drainedPendingRemovalDocuments) {
         if (stableDocument->d->collaborationCommitNotificationBarrier) {
@@ -6903,57 +7375,563 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
-    // The legacy loop ran its topologically sorted plan up to twice --
-    // "maximum two passes to allow some form of dependency inversion".
-    // Settling an object touches its dependents, and a dependent the single
-    // ordered pass has already walked past is then left stale: a chain that
-    // reaches a dependent through an input property orders the writer after
-    // the reader, so it only lands on the second pass. The coordinator runs
-    // one plan per submission, so a second pass is a second submission.
-    //
-    // A pass is only repeated when something is still touched, so the ordinary
-    // recompute that settles everything the first time still submits once. An
-    // explicit object list is judged on that list alone: a partial recompute
-    // deliberately leaves the dependents it touched for a later recompute, and
-    // must not chase them here.
-    const auto stillTouched = [this, &objs]() {
-        const auto touched = [](const DocumentObject* object) {
-            return object && object->isAttachedToDocument() && object->isTouched();
+    enforceAtomicPresentationMutationTarget(*this);
+
+    auto lifecyclePin = collaborationService().pinDocumentAccess();
+    if (!lifecyclePin) {
+        if (hasError) {
+            *hasError = true;
+        }
+        return 0;
+    }
+
+    if (!isCollaborationOwnerThread()) {
+        if (hasError) {
+            *hasError = !objs.empty();
+        }
+
+        if (!objs.empty()) {
+            FC_ERR("Off-owner synchronous recompute requires a whole-document request; "
+                   "raw object targets must be captured on the owner thread");
+            return 0;
+        }
+
+        auto dispatched = invokeOnDocumentOwnerThread<int>(
+            [this] { return isCollaborationOwnerThread(); },
+            [this, force, hasError, options] {
+                return recompute({}, force, hasError, options);
+            });
+        if (!dispatched) {
+            FC_ERR("Synchronous recompute of document " << getName()
+                                                          << " requires its owner-thread dispatcher");
+            if (hasError) {
+                *hasError = true;
+            }
+            return 0;
+        }
+        return *dispatched;
+    }
+
+    ZoneScoped;
+
+    std::lock_guard<std::recursive_mutex> serialized(collaborationCommitMutex());
+    enforceAtomicPresentationMutationTarget(*this);
+    if (collaborationIdentity().state != DocumentLifecycleState::Live) {
+        if (hasError) {
+            *hasError = true;
+        }
+        return 0;
+    }
+
+    if (hasError) {
+        *hasError = false;
+    }
+
+    // An eager collaboration commit already owns the one native transaction
+    // and rollback boundary. Its derived pass must continue through the
+    // coordinator so detached results are folded into that outer transaction
+    // without opening or merging a second one.
+    if (collaborationDerivedRecomputeGranted()) {
+        const auto stillTouched = [this, &objs]() {
+            const auto touched = [](const DocumentObject* object) {
+                return object && object->isAttachedToDocument() && object->isTouched();
+            };
+            return objs.empty() ? std::ranges::any_of(d->objectArray, touched)
+                                : std::ranges::any_of(objs, touched);
         };
-        return objs.empty() ? std::ranges::any_of(d->objectArray, touched)
-                            : std::ranges::any_of(objs, touched);
+
+        int recomputed = 0;
+        bool failed = false;
+        for (int pass = 0; pass < 2; ++pass) {
+            auto handle = recomputeAsync(objs, force, options);
+            auto snapshot = handle->wait(std::chrono::minutes(6));
+            if (!snapshot.terminal()) {
+                static_cast<void>(
+                    handle->cancel("derived document recompute wait timed out"));
+                do {
+                    snapshot = handle->wait(std::chrono::seconds(30));
+                } while (!snapshot.terminal());
+            }
+            failed = failed || snapshot.state != DocumentRecomputeState::Completed;
+            recomputed += static_cast<int>(std::ranges::count_if(
+                snapshot.features, [](const DocumentRecomputeFeatureSnapshot& feature) {
+                    const bool terminalFeature =
+                        feature.state == DocumentRecomputeFeatureState::Committed
+                        || feature.state == DocumentRecomputeFeatureState::Failed;
+                    return terminalFeature && feature.executed;
+                }));
+            if (failed || !stillTouched()) {
+                break;
+            }
+        }
+        if (hasError) {
+            *hasError = failed;
+        }
+        return recomputed;
+    }
+
+    // A document-wide recompute pass owns pending-removal teardown for every
+    // live document. Re-entrant recompute from a deletion observer must not
+    // enter a second pass or publish an early stable event.
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
+        return 0;
+    }
+
+    // Compatibility callbacks frequently retain historical, eager recompute
+    // calls. The commit coordinator performs its authoritative recompute after
+    // the callback and after this narrowly scoped grant has closed.
+    if (d->collaborationCompatibilityStructuralMutationGranted
+        || d->collaborationDeferredRecomputeBlocked) {
+        return 0;
+    }
+
+    // A stable-read capture, notification replay, or retained transaction
+    // destructor owns this document boundary. In-process feature code must not
+    // re-enter it; coordinator-derived recompute returned through its isolated
+    // branch above.
+    if (collaborationNotificationsReplaying()
+        || collaborationLifecycleMutationBlocked()) {
+        if (hasError) {
+            *hasError = true;
+        }
+        return 0;
+    }
+
+    // Synchronous recompute is the native compatibility kernel. Keeping it in
+    // process lets it participate in a caller-owned transaction and preserves
+    // FeaturePython, dynamic-schema, scheduler-status, and observer semantics.
+    Base::PyGILStateLocker locker;
+
+    if (d->undoing || d->rollback) {
+        if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
+            FC_WARN("Ignore document recompute on undo/redo");
+        }
+        return 0;
+    }
+
+    int objectCount = 0;
+    if (testStatus(Document::PartialDoc)) {
+        if (mustExecute()) {
+            FC_WARN("Please reload partial document '" << Label.getValue()
+                                                       << "' for recomputation.");
+        }
+        return 0;
+    }
+    if (testStatus(Document::Recomputing)) {
+        FC_ERR("Recursive calling of recompute for document " << getName());
+        return 0;
+    }
+
+    if (std::ranges::any_of(objs, [this](const DocumentObject* object) {
+            return !object || !object->isAttachedToDocument()
+                || object->getDocument() != this;
+        })) {
+        if (hasError) {
+            *hasError = true;
+        }
+        return 0;
+    }
+
+    if (!force && testStatus(Document::SkipRecompute)) {
+        std::exception_ptr notificationFailure;
+        {
+            Base::FlagToggler<bool> retainSkippedObjects(
+                d->collaborationAggregateRecomputeNotificationActive, false);
+            try {
+                signalSkipRecompute(*this, objs);
+            }
+            catch (...) {
+                notificationFailure = std::current_exception();
+            }
+        }
+        std::exception_ptr teardownFailure;
+        if (!d->pendingRemove.empty()) {
+            try {
+                finalizeCollaborationRecomputeTeardown();
+            }
+            catch (...) {
+                teardownFailure = std::current_exception();
+            }
+        }
+        if (notificationFailure) {
+            std::rethrow_exception(notificationFailure);
+        }
+        if (teardownFailure) {
+            std::rethrow_exception(teardownFailure);
+        }
+        return 0;
+    }
+
+    d->clearRecomputeLog();
+
+    Base::TimeTracker tracker("Document::recompute");
+    std::optional<Base::ObjectStatusLocker<Document::Status, Document>> recomputingStatus;
+    recomputingStatus.emplace(Document::Recomputing, this);
+    std::optional<Base::FlagToggler<bool>> retainRecomputeObjects;
+    retainRecomputeObjects.emplace(
+        d->collaborationAggregateRecomputeNotificationActive, false);
+
+    std::vector<DocumentObject*> topoSortedObjects;
+    std::vector<Document*> recomputeDocuments {this};
+    std::vector<std::unique_ptr<DocumentCollaborationService::LifecyclePin>>
+        foreignRecomputePins;
+    std::map<Document*, std::unique_ptr<DocumentCollaborationService::LifecyclePin>>
+        candidateRecomputePins;
+    std::vector<std::unique_ptr<std::unique_lock<std::recursive_mutex>>>
+        foreignRecomputeLocks;
+    std::vector<std::unique_ptr<Base::FlagToggler<bool>>>
+        foreignRecomputeRetentions;
+    std::vector<std::unique_ptr<
+        Base::ObjectStatusLocker<Document::Status, Document>>>
+        foreignRecomputingStatuses;
+
+    const auto ensureRecomputeDocument = [&](Document* owner) {
+        if (!owner) {
+            throw Base::RuntimeError(
+                "synchronous recompute dependency has no owning document");
+        }
+        if (std::ranges::find(recomputeDocuments, owner)
+            != recomputeDocuments.end()) {
+            return;
+        }
+        if (!owner->isCollaborationOwnerThread()) {
+            throw Base::RuntimeError(
+                "synchronous recompute cannot span documents with different owner threads");
+        }
+
+        auto candidatePin = candidateRecomputePins.find(owner);
+        if (candidatePin == candidateRecomputePins.end()
+            || !candidatePin->second || !*candidatePin->second) {
+            throw Base::RuntimeError(
+                "synchronous recompute dependency document was not retained before topology capture");
+        }
+        auto pin = std::move(candidatePin->second);
+        candidateRecomputePins.erase(candidatePin);
+        auto lock = std::make_unique<std::unique_lock<std::recursive_mutex>>(
+            owner->collaborationCommitMutex());
+        if (owner->collaborationIdentity().state
+            != DocumentLifecycleState::Live) {
+            throw Base::RuntimeError(
+                "synchronous recompute dependency document is not live");
+        }
+        if (owner->collaborationNotificationsReplaying()
+            || owner->collaborationLifecycleMutationBlocked()
+            || owner->d->collaborationRecomputeTeardownDepth.load(
+                   std::memory_order_acquire)
+                != 0
+            || owner->d->pendingRemovalProcessing.load(
+                   std::memory_order_acquire)
+                || !owner->d->pendingRemove.empty()) {
+            throw Base::RuntimeError(
+                "synchronous recompute dependency document is inside another mutation boundary");
+        }
+        if (owner->testStatus(Document::Recomputing)) {
+            throw Base::RuntimeError(
+                "synchronous recompute dependency document is already recomputing");
+        }
+        auto retention = std::make_unique<Base::FlagToggler<bool>>(
+            owner->d->collaborationAggregateRecomputeNotificationActive,
+            false);
+        auto recomputing = std::make_unique<
+            Base::ObjectStatusLocker<Document::Status, Document>>(
+                Document::Recomputing, owner);
+
+        foreignRecomputePins.push_back(std::move(pin));
+        foreignRecomputeLocks.push_back(std::move(lock));
+        foreignRecomputeRetentions.push_back(std::move(retention));
+        foreignRecomputingStatuses.push_back(std::move(recomputing));
+        recomputeDocuments.push_back(owner);
     };
 
-    int recomputed = 0;
-    bool failed = false;
-    for (int pass = 0; pass < 2; ++pass) {
-        auto handle = recomputeAsync(objs, force, options);
-        auto snapshot = handle->wait(std::chrono::minutes(6));
-        if (!snapshot.terminal()) {
-            static_cast<void>(
-                handle->cancel("document recompute compatibility wait timed out"));
-            snapshot = handle->wait(std::chrono::seconds(30));
+    bool schedulerStatusesActive = false;
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (schedulerStatusesActive) {
+            for (auto* object : topoSortedObjects) {
+                if (object && object->isAttachedToDocument()) {
+                    object->setStatus(ObjectStatus::PendingRecompute, false);
+                    object->setStatus(ObjectStatus::Recompute2, false);
+                }
+            }
         }
-        failed = failed || snapshot.state != DocumentRecomputeState::Completed;
-        // The legacy loop counted the objects it executed, not the nodes it
-        // settled. A feature whose only change was a Prop_NoRecompute property
-        // is settled without ever running execute(), and reporting it here
-        // would tell the caller a recompute happened when none did.
-        recomputed += static_cast<int>(std::ranges::count_if(
-            snapshot.features, [](const DocumentRecomputeFeatureSnapshot& feature) {
-                const bool terminalFeature =
-                    feature.state == DocumentRecomputeFeatureState::Committed
-                    || feature.state == DocumentRecomputeFeatureState::Failed;
-                return terminalFeature && feature.executed;
-            }));
-        if (failed || !stillTouched()) {
-            break;
+    };
+
+    std::exception_ptr recomputeFailure;
+    try {
+        if (d->collaborationCommitNotificationBarrier) {
+            d->collaborationDeferredNotifications.push_back(
+                {CollaborationDeferredNotificationKind::BeforeRecompute});
+        }
+        else {
+            signalBeforeRecompute(*this);
         }
     }
-    if (hasError) {
-        *hasError = failed;
+    catch (...) {
+        recomputeFailure = std::current_exception();
+        if (hasError) {
+            *hasError = true;
+        }
     }
-    return recomputed;
+
+    if (!recomputeFailure) {
+        try {
+            // FreeCAD dependency traversal follows raw cross-document link
+            // targets. Retain every currently registered document before
+            // entering that traversal; participating documents are then
+            // serialized and revalidated by ensureRecomputeDocument().
+            for (auto* candidate : GetApplication().getDocuments()) {
+                if (!candidate || candidate == this) {
+                    continue;
+                }
+                auto pin = std::unique_ptr<
+                    DocumentCollaborationService::LifecyclePin>(
+                    new DocumentCollaborationService::LifecyclePin(
+                        candidate->collaborationService()));
+                if (*pin) {
+                    candidateRecomputePins.emplace(candidate, std::move(pin));
+                }
+            }
+            topoSortedObjects = getDependencyList(
+                objs.empty() ? d->objectArray : objs, DepSort | options);
+            for (auto* object : topoSortedObjects) {
+                if (!object || !object->isAttachedToDocument()) {
+                    throw Base::RuntimeError(
+                        "synchronous recompute dependency became detached during capture");
+                }
+                ensureRecomputeDocument(object->getDocument());
+                for (auto* dependent : object->getInList()) {
+                    if (dependent && dependent->isAttachedToDocument()) {
+                        ensureRecomputeDocument(dependent->getDocument());
+                    }
+                }
+            }
+            for (auto* object : topoSortedObjects) {
+                auto* owner = object->getDocument();
+                if (owner != this) {
+                    owner->d->clearRecomputeLog(object);
+                }
+            }
+            candidateRecomputePins.clear();
+            for (auto* object : topoSortedObjects) {
+                object->setStatus(ObjectStatus::PendingRecompute, true);
+            }
+            schedulerStatusesActive = true;
+        }
+        catch (...) {
+            recomputeFailure = std::current_exception();
+            if (hasError) {
+                *hasError = true;
+            }
+            // Admission did not retain every raw cross-document pointer.
+            // Drop the unowned topology before any status/error teardown can
+            // inspect an object whose document may now close concurrently.
+            topoSortedObjects.clear();
+        }
+    }
+
+    const bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
+    const auto parameters =
+        GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document");
+    const bool canAbort = parameters->GetBool("CanAbortRecompute", true);
+
+    tracker.checkpoint("pre-recompute & topo sort");
+
+    if (!recomputeFailure) {
+        try {
+            std::set<DocumentObject*> filter;
+            std::size_t index = 0;
+            // Maximum two passes allow the established dependency-inversion
+            // behavior. Recompute2 is observable by PartDesign and Spreadsheet.
+            for (int pass = 0; pass < 2 && index < topoSortedObjects.size(); ++pass) {
+            std::unique_ptr<Base::SequencerLauncher> sequencer;
+            if (canAbort) {
+                sequencer = std::make_unique<Base::SequencerLauncher>(
+                    "Recompute...", topoSortedObjects.size());
+            }
+            FC_LOG("Recompute pass " << pass);
+            for (; index < topoSortedObjects.size(); ++index) {
+                auto* object = topoSortedObjects[index];
+                if (!object->isAttachedToDocument() || filter.contains(object)) {
+                    continue;
+                }
+
+                bool didRecompute = false;
+                if (object->mustRecompute()) {
+                    didRecompute = true;
+                    ++objectCount;
+                    auto* owner = object->getDocument();
+                    ensureRecomputeDocument(owner);
+                    const int result = owner->_recomputeFeature(object);
+                    owner->publishCollaborationMutation(*object, false);
+                    if (result != 0) {
+                        if (hasError) {
+                            *hasError = true;
+                        }
+                        if (result < 0) {
+                            pass = 2;
+                            break;
+                        }
+                        object->getInListEx(filter, true);
+                        filter.insert(object);
+                        continue;
+                    }
+                }
+
+                if (object->isTouched() || didRecompute) {
+                    if (d->collaborationCommitNotificationBarrier) {
+                        d->collaborationDeferredNotifications.push_back(
+                            {CollaborationDeferredNotificationKind::RecomputedObject, object});
+                    }
+                    else {
+                        signalRecomputedObject(*object);
+                    }
+                    if (fineGrained) {
+                        const std::vector<DepEdge> inList = object->getInListProp();
+                        for (const auto& [objectFrom, propertyFrom, objectTo, propertyTo] : inList) {
+                            static_cast<void>(objectTo);
+                            if (object->touchedProps.contains(propertyTo) || propertyTo.empty()) {
+                                ensureRecomputeDocument(objectFrom->getDocument());
+                                objectFrom->enforceRecompute(propertyFrom);
+                            }
+                        }
+                        object->purgeTouched();
+                    }
+                    else {
+                        object->purgeTouched();
+                        for (auto* dependent : object->getInList()) {
+                            ensureRecomputeDocument(dependent->getDocument());
+                            dependent->enforceRecompute();
+                        }
+                    }
+                }
+                if (object->mustRecompute() == 0 && object->isValid()
+                    && !object->isError()) {
+                    auto* owner = object->getDocument();
+                    owner->recomputeCoordinator().forgetAllUnresolvedFeature(
+                        object->getNameInDocument(),
+                        owner->collaborationObjectIdentity(*object));
+                }
+                if (sequencer) {
+                    sequencer->next(true);
+                }
+            }
+
+            for (std::size_t candidate = 0;
+                 candidate < topoSortedObjects.size();
+                 ++candidate) {
+                auto* object = topoSortedObjects[candidate];
+                object->setStatus(ObjectStatus::Recompute2, false);
+                if (!filter.contains(object) && object->isTouched()) {
+                    if (pass > 0) {
+                        FC_ERR(object->getFullName() << " still touched after recompute");
+                    }
+                    else {
+                        FC_LOG(object->getFullName() << " still touched after recompute");
+                        if (index >= topoSortedObjects.size()) {
+                            index = candidate;
+                        }
+                        object->setStatus(ObjectStatus::Recompute2, true);
+                    }
+                }
+            }
+            }
+        }
+        catch (Base::Exception& exception) {
+            exception.reportException();
+            recomputeFailure = std::current_exception();
+            if (hasError) {
+                *hasError = true;
+            }
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Exception during document recompute presentation: "
+                   << exception.what());
+            recomputeFailure = std::current_exception();
+            if (hasError) {
+                *hasError = true;
+            }
+        }
+        catch (...) {
+            FC_ERR("Unknown exception during document recompute presentation");
+            recomputeFailure = std::current_exception();
+            if (hasError) {
+                *hasError = true;
+            }
+        }
+    }
+
+    tracker.checkpoint("Recompute");
+
+    if (schedulerStatusesActive) {
+        for (auto* object : topoSortedObjects) {
+            if (!object->isAttachedToDocument()) {
+                continue;
+            }
+            object->setStatus(ObjectStatus::PendingRecompute, false);
+            object->setStatus(ObjectStatus::Recompute2, false);
+        }
+    }
+    schedulerStatusesActive = false;
+
+    std::exception_ptr aggregateFailure;
+    if (!recomputeFailure) {
+        try {
+            if (d->collaborationCommitNotificationBarrier) {
+                CollaborationDeferredNotification notification {
+                    CollaborationDeferredNotificationKind::Recomputed};
+                notification.objects = topoSortedObjects;
+                d->collaborationDeferredNotifications.push_back(std::move(notification));
+            }
+            else {
+                signalRecomputed(*this, topoSortedObjects);
+            }
+        }
+        catch (...) {
+            aggregateFailure = std::current_exception();
+        }
+    }
+
+    foreignRecomputeRetentions.clear();
+    retainRecomputeObjects.reset();
+
+    std::exception_ptr teardownFailure;
+    try {
+        finalizeCollaborationRecomputeTeardownWithStatusRelease(
+            [&] {
+                foreignRecomputingStatuses.clear();
+                recomputingStatus.reset();
+                tracker.checkpoint("Recompute total");
+
+                for (auto* object : topoSortedObjects) {
+                    auto* owner = object->getDocument();
+                    if (!owner->d->_RecomputeLog.empty()
+                        && !owner->testStatus(Status::IgnoreErrorOnRecompute)
+                        && object->isError()) {
+                            const char* text = owner->getErrorDescription(object);
+                            if (text) {
+                                Base::Console().error(
+                                    "%s: %s\n", object->Label.getValue(), text);
+                            }
+                        }
+                    }
+                }
+            },
+            recomputeDocuments);
+    }
+    catch (...) {
+        teardownFailure = std::current_exception();
+    }
+
+    if (recomputeFailure) {
+        std::rethrow_exception(recomputeFailure);
+    }
+    if (aggregateFailure) {
+        std::rethrow_exception(aggregateFailure);
+    }
+    if (teardownFailure) {
+        std::rethrow_exception(teardownFailure);
+    }
+
+    return objectCount;
 }
 
 /*!
@@ -7201,6 +8179,22 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
     enforceAtomicPresentationMutationTarget(*this);
 
+    auto lifecyclePin = collaborationService().pinDocumentAccess();
+    if (!lifecyclePin) {
+        return false;
+    }
+
+    if (!isCollaborationOwnerThread()) {
+        FC_ERR("Off-owner feature recompute cannot safely accept a raw object target");
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> serialized(collaborationCommitMutex());
+    enforceAtomicPresentationMutationTarget(*this);
+    if (collaborationIdentity().state != DocumentLifecycleState::Live) {
+        return false;
+    }
+
     // Match Document::recompute(): the coordinator owns the only recompute
     // that may execute object code for a structural compatibility commit.
     if (d->collaborationCompatibilityStructuralMutationGranted
@@ -7211,6 +8205,81 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     // verify that the feature is (active) part of the document
     if (!feature || !feature->isAttachedToDocument() || feature->getDocument() != this) {
         return false;
+    }
+
+    if (d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0) {
+        return false;
+    }
+
+    if (collaborationNotificationsReplaying()
+        || (collaborationLifecycleMutationBlocked()
+            && !collaborationDerivedRecomputeGranted())) {
+        return false;
+    }
+
+    if (!collaborationDerivedRecomputeGranted()) {
+        d->clearRecomputeLog(feature);
+        if (recursive) {
+            std::vector<DocumentObject*> recursiveTargets {feature};
+            for (auto* dependent : feature->getInListRecursive()) {
+                if (dependent && dependent->isAttachedToDocument()
+                    && dependent->getDocument() == this) {
+                    recursiveTargets.push_back(dependent);
+                }
+            }
+            bool recomputeHasError = false;
+            static_cast<void>(
+                recompute(recursiveTargets, true, &recomputeHasError));
+            return !recomputeHasError;
+        }
+
+        std::exception_ptr operationFailure;
+        bool featureIsValid = false;
+        {
+            // execute(), mutation publication, and every recomputed-object
+            // observer may request removal of the feature. Keep the same
+            // raw object alive across that entire presentation boundary;
+            // pending-removal teardown runs only after the final dereference.
+            Base::FlagToggler<bool> retainPresentedFeature(
+                d->collaborationAggregateRecomputeNotificationActive, false);
+            try {
+                static_cast<void>(_recomputeFeature(feature));
+                publishCollaborationMutation(*feature, false);
+                if (d->collaborationCommitNotificationBarrier) {
+                    d->collaborationDeferredNotifications.push_back(
+                        {CollaborationDeferredNotificationKind::RecomputedObject, feature});
+                }
+                else {
+                    signalRecomputedObject(*feature);
+                }
+                // Preserve the legacy result after execute() and observers
+                // have had a chance to adjust the feature's error state.
+                featureIsValid = feature->isValid();
+                if (featureIsValid && feature->mustRecompute() == 0
+                    && !feature->isError()) {
+                    recomputeCoordinator().forgetAllUnresolvedFeature(
+                        feature->getNameInDocument(),
+                        collaborationObjectIdentity(*feature));
+                }
+            }
+            catch (...) {
+                operationFailure = std::current_exception();
+            }
+        }
+        std::exception_ptr teardownFailure;
+        try {
+            finalizeCollaborationRecomputeTeardown();
+        }
+        catch (...) {
+            teardownFailure = std::current_exception();
+        }
+        if (operationFailure) {
+            std::rethrow_exception(operationFailure);
+        }
+        if (teardownFailure) {
+            std::rethrow_exception(teardownFailure);
+        }
+        return featureIsValid;
     }
 
     static thread_local std::set<const Document*> activeCompatibilityWaits;
@@ -7225,8 +8294,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
     try {
         Internal::ensureGenericIsolatedRecomputeRegistered();
         auto request = Internal::makeGenericIsolatedRecomputeRequest(
-            *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true,
-            /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
+            *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true);
         for (const auto& node : request.features) {
             if (auto* object = getObject(node.featureId.c_str())) {
                 d->clearRecomputeLog(object);
@@ -7235,52 +8303,19 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 
         auto& coordinator = recomputeCoordinator();
         const auto recomputeId = coordinator.submit(std::move(request));
-        const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(6);
-        std::optional<DocumentRecomputeSnapshot> snapshot;
-        while ((snapshot = coordinator.status(recomputeId)) && !snapshot->terminal()) {
-            static_cast<void>(coordinator.poll(recomputeId));
-            if (QCoreApplication::instance()) {
-                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
-            }
-            if (std::chrono::steady_clock::now() >= waitDeadline) {
-                static_cast<void>(coordinator.cancel(
-                    recomputeId, "isolated feature recompute compatibility wait timed out"));
-                static_cast<void>(coordinator.poll(recomputeId));
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        RecomputeHandle handle(*this, recomputeId);
+        auto snapshot = handle.wait(std::chrono::minutes(6));
+        if (!snapshot.terminal()) {
+            static_cast<void>(handle.cancel(
+                "isolated feature recompute compatibility wait timed out"));
+            // A derived recompute belongs to the enclosing transaction. It
+            // must not return while a detached node could still commit after
+            // that transaction closes, so cancellation is pumped to terminal.
+            do {
+                snapshot = handle.wait(std::chrono::seconds(30));
+            } while (!snapshot.terminal());
         }
-        snapshot = coordinator.status(recomputeId);
-        if (!snapshot) {
-            d->addRecomputeLog("isolated feature recompute result is unavailable", feature);
-            return false;
-        }
-
-        bool succeeded = snapshot->state == DocumentRecomputeState::Completed;
-        for (const auto& node : snapshot->features) {
-            auto* object = getObject(node.featureId.c_str());
-            if (!object) {
-                succeeded = false;
-                continue;
-            }
-            if (node.state == DocumentRecomputeFeatureState::Committed) {
-                if (d->collaborationCommitNotificationBarrier) {
-                    d->collaborationDeferredNotifications.push_back(
-                        {CollaborationDeferredNotificationKind::RecomputedObject, object});
-                }
-                else {
-                    signalRecomputedObject(*object);
-                }
-            }
-            else {
-                const std::string diagnostic = node.diagnostic.empty()
-                    ? "isolated feature recompute did not commit"
-                    : node.diagnostic;
-                d->addRecomputeLog(diagnostic.c_str(), object);
-                succeeded = false;
-            }
-        }
-        return succeeded;
+        return snapshot.state == DocumentRecomputeState::Completed;
     }
     catch (const Base::Exception& error) {
         d->addRecomputeLog(error.what(), feature);
@@ -7548,7 +8583,8 @@ void Document::removeObject(const char* sName)
         return;
     }
 
-    if (pos->second->testStatus(ObjectStatus::PendingRecompute)) {
+    if (pos->second->testStatus(ObjectStatus::PendingRecompute)
+        || d->collaborationAggregateRecomputeNotificationActive) {
         if (d->collaborationCompatibilityStructuralMutationGranted) {
             throw Base::RuntimeError(
                 "structural compatibility mutation cannot defer removal of a pending-recompute object");
@@ -7726,6 +8762,8 @@ void Document::_removeObject(DocumentObject* pcObject, RemoveObjectOptions optio
     d->collaborationInitializationSuppression.erase(pcObject);
 
     publishRemovalBoundary();
+    recomputeCoordinator().forgetAllUnresolvedFeature(
+        removedObjectName, removedObjectIdentity);
     d->collaborationObjectIdentities.erase(pcObject);
 }
 

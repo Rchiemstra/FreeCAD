@@ -10,6 +10,13 @@
 >
 > **Update rule:** the integrator updates §11.3 and §11.4 in the same delivery commit that completes each phase. A phase is not complete while its progress entry, reviews, or test evidence is missing.
 
+> **2026-09-08 recompute correction:** historical CC-WP12/CC-WP13 entries below
+> describe the then-current all-coordinator compatibility route. Direct
+> synchronous `Document::recompute()`, `recomputeFeature()`, and GUI Refresh now
+> use the native owner-thread kernel to restore transaction, scheduler,
+> FeaturePython, and performance contracts. Explicit async and
+> coordinator-derived recompute remain isolated and DCC-committed.
+
 ## 1. Problem statement
 
 Collaboration means safely interleaving work from multiple users or agents against one live parametric document and one FreeCAD-rendered model view. It is not ownership of a Part, Body, Feature, or subtree. The coordination unit is a FreeCAD-owned typed operation with explicit semantic dependencies.

@@ -8,8 +8,17 @@
 
 Document::recomputeAsync() returns a RecomputeHandle. The handle exposes a
 document-owned identifier plus status, progress, completion, cancellation, and
-bounded waiting. Document::recompute() submits to the same coordinator and
-waits for that request; it is not a separate live recompute implementation.
+bounded waiting.
+
+Document::recompute() and Document::recomputeFeature() remain synchronous
+in-process compatibility APIs. They execute on the document owner thread,
+participate in an already-open native transaction, and do not silently create a
+second transaction. Full-document recompute (and recursive feature recompute,
+which delegates to it) preserves the established PendingRecompute, Recompute2,
+two-pass, and observer ordering contracts. Non-recursive recomputeFeature()
+preserves its established immediate single-feature behavior. Coordinator-owned
+derived recompute remains isolated and folds validated results into its existing
+outer transaction rather than executing arbitrary feature code live.
 
 \section asyncrecompute_isolation Isolation and commit authority
 
@@ -19,9 +28,13 @@ Workers consume and produce bounded archives and never receive a live Document
 or DocumentObject. Only DocumentCollaborationService and
 DocumentCommitCoordinator may validate and commit results to the live document.
 
-There is no live or main-thread execution fallback. Unsupported or unsafe
-objects produce a structured failure and remain touched so the caller can
-inspect or resolve the error.
+The explicitly asynchronous API has no caller-selected live or main-thread
+execution fallback. Unsupported or unsafe objects produce a structured failure
+and remain touched so the caller can inspect or resolve the error. The one
+trusted application exception is the exact type-gated Spreadsheet transient
+schema application step, which re-executes that built-in type under the commit
+guard after isolated validation. This isolation guarantee does not describe the
+synchronous compatibility APIs above.
 
 \section asyncrecompute_python FeaturePython
 
@@ -32,12 +45,17 @@ GUI-thread state.
 
 \section asyncrecompute_gui GUI and save behavior
 
-GUI code must retain RecomputeHandle instances and poll done() or status() with
-bounded event-loop slices, for example from a short QTimer callback. It must not
-block the GUI thread waiting for completion.
+GUI code that explicitly chooses recomputeAsync() must retain RecomputeHandle
+instances and poll done() or status() with bounded event-loop slices, for example
+from a short QTimer callback. It must not block the GUI thread waiting for an
+asynchronous handle. The established Refresh command instead invokes the fast
+synchronous owner-thread compatibility kernel; TransactionOnRecompute only
+controls its undo grouping.
 
-A canonical save attempted while recompute is active, or when its result is
-stale, returns RECOMPUTE_PENDING. Callers should poll the handle and retry the
-save only after the document reaches a stable terminal boundary.
+A canonical save attempted while recompute is active, or when a stale/failed
+result leaves executable dirty work, returns RECOMPUTE_PENDING. A stale handle
+still reports Stale even when a newer successful synchronous recompute already
+settled the live feature; in that superseded case the clean document may be
+saved. Callers should inspect the handle and retry unresolved work before save.
 
 */

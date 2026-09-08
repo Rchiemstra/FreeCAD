@@ -597,10 +597,12 @@ class Document(PropertyContainer):
         /,
     ) -> RecomputeHandle:
         """
-        Submit the same isolated recompute used by recompute() and return immediately.
+        Submit an explicit isolated recompute and return immediately.
 
-        Poll status(), progress(), or done() on the returned handle to advance
-        dependency-ready work, or call wait() for a responsive compatibility wait.
+        This is distinct from synchronous recompute(), which uses FreeCAD's
+        in-process compatibility scheduler. Poll status(), progress(), or done()
+        to advance dependency-ready work. wait() blocks and is discouraged on
+        the GUI thread.
         """
         ...
 

@@ -18,6 +18,7 @@ DOCUMENT_HEADER = Path("src/App/Document.h")
 DOCUMENT_SOURCE = Path("src/App/Document.cpp")
 DOCUMENT_PYTHON = Path("src/App/DocumentPyImp.cpp")
 DOCUMENT_STUB = Path("src/App/Document.pyi")
+GUI_REFRESH_SOURCE = Path("src/Gui/CommandDoc.cpp")
 COORDINATOR_HEADER = Path("src/App/DocumentRecomputeCoordinator.h")
 COMMIT_SOURCE = Path("src/App/DocumentCommitCoordinator.cpp")
 SERVICE_SOURCE = Path("src/App/DocumentCollaborationService.cpp")
@@ -370,7 +371,7 @@ def _python_reaches_public_facade(
     return visit(start)
 
 
-def test_sync_async_and_feature_facades_share_the_coordinator_generic_plan() -> None:
+def test_sync_compatibility_and_explicit_async_use_their_intended_venues() -> None:
     asynchronous = _compact(_body(DOCUMENT_SOURCE, "Document::recomputeAsync"))
     synchronous = _compact(_body(DOCUMENT_SOURCE, "Document::recompute"))
     feature = _compact(_body(DOCUMENT_SOURCE, "Document::recomputeFeature"))
@@ -386,12 +387,22 @@ def test_sync_async_and_feature_facades_share_the_coordinator_generic_plan() -> 
         "std::make_unique<RecomputeHandle>(*this,id)", submission
     )
     assert 0 <= registration < plan < submission < handle
+    assert "owner_thread_execution" not in asynchronous
 
-    async_call = synchronous.find("recomputeAsync(objs,force,options)")
+    derived = synchronous.find("if(collaborationDerivedRecomputeGranted()){")
+    async_call = synchronous.find("recomputeAsync(objs,force,options)", derived)
     wait = synchronous.find("handle->wait(", async_call)
-    assert 0 <= async_call < wait
+    pending = synchronous.find("ObjectStatus::PendingRecompute", wait)
+    execute = synchronous.find("_recomputeFeature(object)", pending)
+    second_pass = synchronous.find("ObjectStatus::Recompute2", execute)
+    teardown = synchronous.find(
+        "finalizeCollaborationRecomputeTeardownWithStatusRelease(", second_pass
+    )
+    assert 0 <= derived < async_call < wait < pending < execute < second_pass < teardown
     assert "recomputeLegacy(" not in synchronous
 
+    direct = feature.find("if(!collaborationDerivedRecomputeGranted()){")
+    direct_execute = feature.find("_recomputeFeature(feature)", direct)
     feature_registration = feature.find(
         "Internal::ensureGenericIsolatedRecomputeRegistered()"
     )
@@ -400,8 +411,36 @@ def test_sync_async_and_feature_facades_share_the_coordinator_generic_plan() -> 
         feature_registration,
     )
     feature_submit = feature.find("coordinator.submit(", feature_plan)
-    assert 0 <= feature_registration < feature_plan < feature_submit
+    assert 0 <= direct < direct_execute < feature_registration < feature_plan < feature_submit
+    assert "owner_thread_execution" not in feature
     assert "recomputeLegacy(" not in feature
+
+
+def test_refresh_uses_fast_sync_kernel_with_optional_undo_grouping() -> None:
+    activated = _compact(_body(GUI_REFRESH_SOURCE, "StdCmdRefresh::activated"))
+    no_transaction = activated.find("if(eType&NoTransaction){")
+    ungrouped_sync = activated.find(
+        "recomputeDocumentSynchronously(*doc,App::Document::DepNoCycle)",
+        no_transaction,
+    )
+    early_return = activated.find("return;", ungrouped_sync)
+    transaction = activated.find(
+        'App::AutoTransactiontransaction(openActiveDocumentCommand("Recompute"))',
+        early_return,
+    )
+    grouped_sync = activated.find(
+        "recomputeDocumentSynchronously(*doc,App::Document::DepNoCycle)",
+        transaction,
+    )
+    assert (
+        0
+        <= no_transaction
+        < ungrouped_sync
+        < early_return
+        < transaction
+        < grouped_sync
+    )
+    assert "recomputeAsync(" not in activated
 
 
 def test_python_binding_returns_the_exported_handle_and_declares_its_surface() -> None:
@@ -466,12 +505,21 @@ def test_handle_is_pointer_safe_after_close_and_python_timeout_is_bounded() -> N
         assert re.search(rf"\b{method}\(", public), (
             f"missing public handle method {method}"
         )
-    assert "std::unique_ptr<DocumentWeakPtrT>_document;" in header
+    assert "Document*_document{nullptr};" in header
+    assert (
+        "std::shared_ptr<Internal::CollaborationServiceLifetimeGate>_lifetimeGate;"
+        in header
+    )
     assert "Document*" not in public
 
-    null_check = status.find("if(!owner)")
+    pin = status.find(
+        "DocumentCollaborationService::LifecyclePinlifecyclePin(_lifetimeGate)"
+    )
+    null_check = status.find("if(!lifecyclePin)", pin)
     closed_snapshot = status.find("returnclosedDocumentSnapshot()", null_check)
-    assert 0 <= null_check < closed_snapshot
+    dispatch = status.find("returninvokeForDocumentOwner<", closed_snapshot)
+    dereference = status.find("*_document", dispatch)
+    assert 0 <= pin < null_check < closed_snapshot < dispatch < dereference
     assert "snapshot.id=_id" in closed
     assert "snapshot.state=DocumentRecomputeState::Cancelled" in closed
     terminal = _compact(_body(COORDINATOR_HEADER, "terminal"))
@@ -614,6 +662,64 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
     progress = empty_finalize_body.find("snapshot.progress=1.0;", completed)
     finalize = empty_finalize_body.find("finalizeDetachedRecompute(snapshot);", progress)
     assert 0 <= barrier < deferred_before < immediate_before < completed < progress < finalize
+
+
+def test_no_history_commit_keeps_notification_referents_alive_through_replay() -> None:
+    commit = _compact(_body(DOCUMENT_SOURCE, "Document::_commitTransaction"))
+    prepared_slot = commit.find(
+        "if(d->collaborationCommitNotificationBarrier&&"
+        "(d->collaborationPreparedUndoSlot.size()!=1||"
+        "d->collaborationPreparedUndoSlot.front()!=nullptr)){"
+    )
+    file_state = commit.find("d->activeTransactionFileChanges.reset();")
+    no_history = commit.find("if(!retainUndoHistory){")
+    no_history_open = commit.find("{", no_history)
+    no_history_close = _matching(commit, no_history_open, "{", "}")
+    assert no_history_close is not None
+    no_history_body = commit[no_history_open + 1 : no_history_close]
+    exclusive_ownership = (
+        "if(d->collaborationCommitNotificationBarrier){"
+        "d->collaborationPreparedUndoSlot.front()=d->activeUndoTransaction;"
+        "}else{deleted->activeUndoTransaction;}"
+    )
+    retain_or_delete = no_history_body.find(exclusive_ownership)
+    release_active = no_history_body.find(
+        "d->activeUndoTransaction=nullptr;", retain_or_delete
+    )
+    assert 0 <= prepared_slot < file_state < no_history
+    assert 0 <= retain_or_delete < release_active
+
+    finish = _compact(
+        _body(
+            DOCUMENT_SOURCE,
+            "Document::finishCollaborationCommitNotificationBarrier",
+        )
+    )
+    owner = finish.find("std::unique_ptr<Transaction>retainedTransientTransaction;")
+    capture = finish.find(
+        "retainedTransientTransaction.reset("
+        "d->collaborationPreparedUndoSlot.front());",
+        owner,
+    )
+    replay = finish.find("for(constauto&notification:notifications){", capture)
+    destroy = finish.find("retainedTransientTransaction.reset();", replay)
+    reopen_admission = finish.find(
+        "d->collaborationReplayingNotifications=false;", destroy
+    )
+    release_lifecycle = finish.find(
+        "d->collaborationLifecycleMutationBlockDepth.fetch_sub(", reopen_admission
+    )
+    stable = finish.find("emitBecameStable();", release_lifecycle)
+    assert (
+        0
+        <= owner
+        < capture
+        < replay
+        < destroy
+        < reopen_admission
+        < release_lifecycle
+        < stable
+    )
 
 
 def test_derived_recompute_commit_revalidates_and_folds_effects_without_a_transaction() -> None:
@@ -831,9 +937,13 @@ def test_all_56_inventory_callers_reach_a_public_recompute_facade() -> None:
     assert not failures, "\n".join(failures)
 
 
-def test_wp13_removed_legacy_and_structural_recompute_paths_and_handle_wiring() -> None:
+def test_wp13_removed_duplicate_legacy_helper_and_structural_grant_paths() -> None:
     document_recompute = _compact(_body(DOCUMENT_SOURCE, "Document::recompute"))
+    assert "if(collaborationDerivedRecomputeGranted()){" in document_recompute
     assert "recomputeAsync(objs,force,options)" in document_recompute
+    assert "_recomputeFeature(object)" in document_recompute
+    assert "ObjectStatus::PendingRecompute" in document_recompute
+    assert "ObjectStatus::Recompute2" in document_recompute
     assert "recomputeLegacy(" not in document_recompute
 
     legacy_sites: list[str] = []

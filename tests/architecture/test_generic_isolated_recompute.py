@@ -222,7 +222,7 @@ def test_inventory_freezes_all_four_transitive_ingress_routes() -> None:
     )
 
 
-def test_private_feature_execution_has_only_full_recompute_and_detached_friend_callers() -> None:
+def test_private_feature_execution_is_limited_to_compatibility_and_worker_kernels() -> None:
     matches: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*.cpp"):
         source = _suppress_cpp(_read(path))
@@ -230,9 +230,11 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
             line = source.count("\n", 0, match.start()) + 1
             matches.append(f"{path.relative_to(REPO_ROOT).as_posix()}:{line}")
     owners = [entry.rsplit(":", 1)[0] for entry in matches]
-    assert owners.count(DOCUMENT_SOURCE) == 1, matches
+    # Document.cpp contributes the private definition plus the full-document
+    # and one-feature synchronous compatibility calls.
+    assert owners.count(DOCUMENT_SOURCE) == 3, matches
     assert owners.count(GENERIC_SOURCE) == 2, matches
-    assert len(matches) == 3, (
+    assert len(matches) == 5, (
         "_recomputeFeature has an unclassified live caller: " + ", ".join(matches)
     )
 
@@ -242,16 +244,19 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     generic_source = _read(GENERIC_SOURCE)
     friend = _compact(_body(generic_source, "execute"))
     authoritative_friend = _compact(_body(generic_source, "executeAuthoritative"))
-    assert "recomputeAsync(objs,force,options)" in full
-    assert "_recomputeFeature(" not in full
-    assert "_recomputeFeature(" not in facade
-    assert "recomputeCoordinator()" in facade
-    # The facade asks for the owner thread unless this is the coordinator's own
-    # derived pass, which stays isolated so unserializable object code is
-    # refused rather than run live.
+    derived = full.find("if(collaborationDerivedRecomputeGranted()){")
+    async_call = full.find("recomputeAsync(objs,force,options)", derived)
+    live_call = full.find("_recomputeFeature(object)", async_call)
+    assert 0 <= derived < async_call < live_call
+    direct_feature = facade.find("if(!collaborationDerivedRecomputeGranted()){")
+    direct_feature_call = facade.find("_recomputeFeature(feature)", direct_feature)
+    coordinator = facade.find("recomputeCoordinator()", direct_feature_call)
+    assert 0 <= direct_feature < direct_feature_call < coordinator
+    # Only the internal derived branch enters the coordinator. Ordinary
+    # synchronous feature calls keep the native compatibility behavior.
     assert "makeGenericIsolatedRecomputeRequest(" in facade
     assert "*this,*feature,recursive" in facade
-    assert "!collaborationDerivedRecomputeGranted()" in facade
+    assert "owner_thread_execution" not in facade
 
     temp_document = friend.find("document.testStatus(Document::TempDoc)")
     ownership = friend.find("feature.getDocument()!=&document", temp_document)
@@ -567,15 +572,13 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         "App::Internal::GenericIsolatedRecomputeAccess::applyFailure("
         "document,*target,*_failureDiagnostic);return;}" in failure_apply
     )
-    # Both venues answer the same way: the isolated result knows how the
-    # detached execute() went before it is applied, and the owner-thread
-    # operation records it while applying. Neither may report a raising
-    # feature as a success.
+    # The isolated result records how detached execute() went before owner-
+    # thread application. It must not report a raising feature as a success.
     outcomes = [
         _compact(body[1])
         for body in _function_bodies(source, "recomputeOutcomeSucceeded")
     ]
-    assert len(outcomes) == 2, outcomes
+    assert len(outcomes) == 1, outcomes
     for outcome in outcomes:
         assert "return!_failureDiagnostic.has_value();" in outcome
 
@@ -749,25 +752,30 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
     assert "encodeOutputs(targetName,*target,*targetManifest,baseline)" in generic
 
 
-def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
+def test_worker_opt_out_has_no_implicit_async_live_fallback() -> None:
     """A scripted feature's execute() lives in a Python proxy.
 
     The archive cannot carry it, so FeaturePython only opts into worker
-    execution when its proxy implements supportsAsyncRecompute().  Routing the
-    rest to the worker makes collectClosure() refuse the job and the
-    coordinator record a failed node, which leaves Draft, Arch, FEM, Assembly's
-    joints and every user macro permanently touched and invalid.  They are
-    prepared as owner-thread executions inside the commit boundary instead.
+    execution when its proxy implements supportsAsyncRecompute(). The explicit
+    asynchronous API must report that refusal as a failed node rather than run
+    arbitrary proxy code later on the GUI thread. Synchronous compatibility
+    calls use the separate native kernel and never encode a forgeable venue.
     """
     generic = _read(GENERIC_SOURCE)
     prepare = _compact(_body(generic, "prepareGenericRecompute"))
-    opt_out = "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract){"
+    opt_out = (
+        "if(!target->canRecomputeOnWorker()"
+        "&&!provenInertBookkeepingContract){"
+    )
     assert opt_out in prepare
     # The opt-out branch has to come before the general bookkeeping
     # short-circuit: a scripted feature's mustExecute() reports nothing about
     # what its proxy owes, so purging the touch would drop it.
     assert prepare.index(opt_out) < prepare.index("isBookkeepingOnlyTarget(*target)")
-    assert "GenericRecomputeInProcessOperation" in prepare
+    assert "hasnotoptedintoisolatedexecution" in prepare
+    assert prepare.index(opt_out) < prepare.index("collectClosure(document,*target)")
+    assert "owner_thread_execution" not in generic
+    assert "GenericRecomputeInProcessOperation" not in generic
 
     # It defers only to the two exact-type, proven-inert contracts: an
     # App::FeaturePython with a null Proxy cannot run Python execute code at
@@ -781,28 +789,15 @@ def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
     null_proxy = _compact(_body(generic, "isNullProxyExternalLinkHolderBookkeepingTarget"))
     assert "!proxy->getValue().isNone()" in null_proxy
 
-    # The execution stays behind the authoritative guard, which requires the
-    # owner thread, a pending transaction and suppressed publication.
+    # The one remaining authoritative live execute is the narrow
+    # transient-schema result-application path. It stays behind the coordinator
+    # guard, which requires the owner thread, a pending transaction and
+    # suppressed publication.
     assert "GenericIsolatedRecomputeAccess::executeAuthoritative" in _compact(generic)
     authoritative = _compact(_body(generic, "executeAuthoritative"))
     assert "document.isCollaborationOwnerThread()" in authoritative
     assert "document.hasPendingTransaction()" in authoritative
     assert "document.collaborationRevisionPublicationSuppressed()" in authoritative
-
-    # _recomputeFeature() only clears the error, so the operation has to settle
-    # the object itself. Without this the feature stays touched forever: it
-    # re-executes on every later recompute and the document never reports
-    # itself settled.
-    in_process = _compact(
-        _suppress_cpp(
-            generic[generic.index("class GenericRecomputeInProcessOperation") :]
-        ).split("std::unique_ptr<const App::CollaborativeOperation> decodeResult")[0]
-    )
-    assert "target->purgeError();document.settleRecomputedFeature(*target);" in in_process
-    # The failure path deliberately leaves it dirty so the next pass retries.
-    assert "applyFailure(" in in_process
-    assert 'return{target->isTouched(),' in in_process
-
 
 def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
     service_header = _read(SERVICE_HEADER)

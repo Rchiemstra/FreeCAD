@@ -14,7 +14,10 @@ namespace App
 {
 
 class Document;
-class DocumentWeakPtrT;
+namespace Internal
+{
+struct CollaborationServiceLifetimeGate;
+}
 
 /**
  * Pointer-safe public observation and control handle for one document recompute.
@@ -44,12 +47,13 @@ public:
         std::chrono::milliseconds timeout = std::chrono::minutes(6));
 
 private:
-    [[nodiscard]] Document* document() const noexcept;
     DocumentRecomputeSnapshot closedDocumentSnapshot() const;
+    DocumentRecomputeSnapshot statusWithPinnedDocument(Document& document);
     void finalizeIfTerminal(Document& document,
                             const DocumentRecomputeSnapshot& snapshot);
 
-    std::unique_ptr<DocumentWeakPtrT> _document;
+    Document* _document {nullptr};
+    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _lifetimeGate;
     DocumentRecomputeId _id {0};
 };
 

@@ -31,6 +31,7 @@ namespace App
 class Document;
 class Application;
 class DocumentRecomputeCoordinator;
+class RecomputeHandle;
 struct RecoverySnapshotSaveOptions;
 
 namespace Internal
@@ -191,6 +192,7 @@ private:
     friend class Gui::Document;
     friend class Application;
     friend class Document;
+    friend class RecomputeHandle;
     friend class Internal::DocumentCollaborationServiceTestAccess;
     friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& doc,
@@ -208,6 +210,11 @@ private:
         explicit operator bool() const noexcept;
 
     private:
+        friend class RecomputeHandle;
+
+        explicit LifecyclePin(
+            std::shared_ptr<Internal::CollaborationServiceLifetimeGate> gate);
+
         std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
         bool _pinned {false};
     };
@@ -245,7 +252,22 @@ private:
         const std::string& sessionId,
         std::string operationId,
         const CollaborativeOperationIntent& intent,
-        std::string provenance);
+        std::string provenance,
+        const std::string* expectedFeatureId = nullptr,
+        const std::string* expectedStableObjectIdentity = nullptr,
+        std::optional<DocumentRevision>* presentationObjectModelRevision = nullptr,
+        std::vector<DocumentRevisionObservation>* presentationRevisionFence = nullptr,
+        bool* presentationRevisionFenceComplete = nullptr);
+    [[nodiscard]] PreparedEditExecutionId prepareRecomputeEditAsync(
+        const std::string& sessionId,
+        std::string operationId,
+        const CollaborativeOperationIntent& intent,
+        std::string provenance,
+        std::string featureId,
+        std::string stableObjectIdentity,
+        std::optional<DocumentRevision>& presentationObjectModelRevision,
+        std::vector<DocumentRevisionObservation>& presentationRevisionFence,
+        bool& presentationRevisionFenceComplete);
     [[nodiscard]] std::optional<CollaborationPreparedEditResult>
     takePreparedEditOnDocumentThread(const std::string& sessionId,
                                      PreparedEditExecutionId executionId,

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -180,7 +181,12 @@ using namespace App;
 
 DocumentCollaborationService::LifecyclePin::LifecyclePin(
     const DocumentCollaborationService& service)
-    : _gate(service.lifetimeGate())
+    : LifecyclePin(service.lifetimeGate())
+{}
+
+DocumentCollaborationService::LifecyclePin::LifecyclePin(
+    std::shared_ptr<Internal::CollaborationServiceLifetimeGate> gate)
+    : _gate(std::move(gate))
 {
     if (!_gate) {
         return;
@@ -794,11 +800,60 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsync(
         });
 }
 
+PreparedEditExecutionId DocumentCollaborationService::prepareRecomputeEditAsync(
+    const std::string& sessionId,
+    std::string operationId,
+    const CollaborativeOperationIntent& intent,
+    std::string provenance,
+    std::string featureId,
+    std::string stableObjectIdentity,
+    std::optional<DocumentRevision>& presentationObjectModelRevision,
+    std::vector<DocumentRevisionObservation>& presentationRevisionFence,
+    bool& presentationRevisionFenceComplete)
+{
+    auto lifecyclePin = pinDocumentAccess();
+    if (!lifecyclePin) {
+        throw Base::RuntimeError(
+            "cannot prepare detached recompute work while document is closing");
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        throw Base::RuntimeError(
+            "off-owner detached recompute preparation requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<PreparedEditExecutionId>(
+        [this,
+         sessionId,
+         operationId = std::move(operationId),
+         &intent,
+         provenance = std::move(provenance),
+         featureId = std::move(featureId),
+         stableObjectIdentity = std::move(stableObjectIdentity),
+         &presentationObjectModelRevision,
+         &presentationRevisionFence,
+         &presentationRevisionFenceComplete]() mutable {
+            return prepareEditAsyncOnDocumentThread(
+                sessionId,
+                std::move(operationId),
+                intent,
+                std::move(provenance),
+                &featureId,
+                &stableObjectIdentity,
+                &presentationObjectModelRevision,
+                &presentationRevisionFence,
+                &presentationRevisionFenceComplete);
+        });
+}
+
 PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocumentThread(
     const std::string& sessionId,
     std::string operationId,
     const CollaborativeOperationIntent& intent,
-    std::string provenance)
+    std::string provenance,
+    const std::string* expectedFeatureId,
+    const std::string* expectedStableObjectIdentity,
+    std::optional<DocumentRevision>* presentationObjectModelRevision,
+    std::vector<DocumentRevisionObservation>* presentationRevisionFence,
+    bool* presentationRevisionFenceComplete)
 {
     if (!_document.isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
@@ -831,6 +886,50 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         if (identity.state != DocumentLifecycleState::Live
             || identity.instanceId != session.documentInstanceId()) {
             throw Base::RuntimeError("edit session targets a stale document instance");
+        }
+        if ((expectedFeatureId == nullptr) != (expectedStableObjectIdentity == nullptr)) {
+            throw std::logic_error(
+                "detached recompute identity binding is incomplete");
+        }
+        if ((presentationObjectModelRevision != nullptr
+             || presentationRevisionFence != nullptr
+             || presentationRevisionFenceComplete != nullptr)
+            && expectedFeatureId == nullptr) {
+            throw std::logic_error(
+                "detached recompute presentation revision lacks an identity binding");
+        }
+        if ((presentationObjectModelRevision == nullptr)
+                != (presentationRevisionFence == nullptr)
+            || (presentationObjectModelRevision == nullptr)
+                != (presentationRevisionFenceComplete == nullptr)) {
+            throw std::logic_error(
+                "detached recompute presentation revision binding is incomplete");
+        }
+        if (expectedFeatureId != nullptr) {
+            auto* target = _document.getObject(expectedFeatureId->c_str());
+            if (expectedFeatureId->empty()
+                || expectedStableObjectIdentity->empty() || !target
+                || _document.collaborationObjectIdentity(*target)
+                    != *expectedStableObjectIdentity) {
+                throw Base::RuntimeError(
+                    "detached recompute target incarnation is stale");
+            }
+            if (presentationObjectModelRevision != nullptr) {
+                *presentationObjectModelRevision =
+                    _document.collaborationRevisions().current(
+                        DocumentRevisionKey::objectModel(*expectedFeatureId));
+                presentationRevisionFence->clear();
+                *presentationRevisionFenceComplete = false;
+                if (intent.operationType
+                    == GenericIsolatedRecomputeOperationType) {
+                    if (auto fence = Internal::
+                            captureGenericIsolatedRecomputePresentationFence(
+                                _document, *target)) {
+                        *presentationRevisionFence = std::move(*fence);
+                        *presentationRevisionFenceComplete = true;
+                    }
+                }
+            }
         }
         if (!_document.collaborationPreparationSupported()
             && intent.operationType != GenericIsolatedRecomputeOperationType) {
@@ -896,6 +995,21 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         pending.readSet = std::move(canonical.readSet);
         pending.writeSet = std::move(canonical.writeSet);
         pending.publicationEffects = std::move(canonical.publicationEffects);
+        if (presentationRevisionFence != nullptr) {
+            presentationRevisionFence->clear();
+            std::ranges::copy_if(
+                pending.expectedRevisions,
+                std::back_inserter(*presentationRevisionFence),
+                [](const DocumentRevisionObservation& observation) {
+                    // UnknownModelMutation is a conservative commit fence,
+                    // not a document-wide generation: exact property writes
+                    // need not advance it. Presentation instead follows the
+                    // precise object/dependency keys captured by the adapter.
+                    return observation.key.kind
+                        != DocumentRevisionKind::UnknownModelMutation;
+                });
+            *presentationRevisionFenceComplete = true;
+        }
         detachedTask = std::move(preparation.detachedTask);
         isolatedTask = std::move(preparation.isolatedTask);
         preparationPolicy = preparation.policy;
