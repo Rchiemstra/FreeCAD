@@ -1005,6 +1005,25 @@ bool Document::collaborationRecomputeCaptureBlocked() const noexcept
         || !d->pendingRemove.empty();
 }
 
+bool Document::collaborationNestedRecomputeCaptureBlocked() const noexcept
+{
+    // As above, minus the caller's own transaction. An open or merely booked
+    // undo transaction is how every GUI command groups its edits; treating it
+    // as a foreign mutation boundary refused the preparation behind every
+    // recompute inside one and made those recomputes silent no-ops. A recompute
+    // commits in a nested transaction of its own, so it can still roll back
+    // exactly its own work, and the revision fence -- not the absence of a
+    // transaction -- is what protects a capture from anything committed
+    // meanwhile. A transaction being applied or rolled back still blocks.
+    const bool foreignMutationBoundary = d->collaborationCommitNotificationBarrier
+        || transacting() || isTransactionLocked();
+    return (foreignMutationBoundary && !d->collaborationDerivedRecomputeGranted)
+        || d->collaborationReplayingNotifications
+        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
+        || d->pendingRemovalProcessing.load(std::memory_order_acquire)
+        || !d->pendingRemove.empty();
+}
+
 bool Document::collaborationLifecycleMutationBlocked() const noexcept
 {
     return d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 0;
@@ -1134,11 +1153,23 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
             return notification.kind == CollaborationDeferredNotificationKind::NewObject
                 && notification.object == &object;
         });
-    const auto kind = (d->collaborationNewObjectStructuralSetup.contains(&object)
-                       || d->collaborationImportNewObjects.contains(&object)
-                       || deferredNewObject)
-        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
-        : CollaborationStructuralMutationKind::Restricted;
+    // A feature's execute() may create the caches it publishes as recompute
+    // output -- SubShapeBinder's Cache_* transformation matrices, an Arch
+    // component's link property overrides. The coordinator runs execute() on
+    // the owner thread inside the commit boundary, so those additions reach
+    // this gate instead of being discarded in a detached worker. Keyed as
+    // narrowly as the recorder's executeOwnedStatus grant: the object the
+    // coordinator is currently executing, adding a property to itself.
+    const bool executeOwnedDynamicProperty = object.testStatus(ObjectStatus::Recompute);
+    const bool newStructuralObject = d->collaborationNewObjectStructuralSetup.contains(&object)
+        || d->collaborationImportNewObjects.contains(&object) || deferredNewObject;
+    auto kind = CollaborationStructuralMutationKind::Restricted;
+    if (newStructuralObject) {
+        kind = CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
+    }
+    else if (executeOwnedDynamicProperty) {
+        kind = CollaborationStructuralMutationKind::Object;
+    }
     const char* objectName = object.getNameInDocument();
     std::string mutation = "addDynamicProperty on ";
     mutation += (objectName && *objectName) ? objectName : "<unnamed>";
@@ -1161,11 +1192,20 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
             return notification.kind == CollaborationDeferredNotificationKind::NewObject
                 && notification.object == &object;
         });
-    const auto kind = (d->collaborationNewObjectStructuralSetup.contains(&object)
-                       || d->collaborationImportNewObjects.contains(&object)
-                       || deferredNewObject)
-        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
-        : CollaborationStructuralMutationKind::Restricted;
+    // The same execute-owned grant as the addition above: a feature's own
+    // execute() retiring a cache it published, keyed on the object the
+    // coordinator is currently executing. removeDynamicProperty() looked the
+    // property up on this object, so it is provably the object's own.
+    const bool executeOwnedDynamicProperty = object.testStatus(ObjectStatus::Recompute);
+    const bool newStructuralObject = d->collaborationNewObjectStructuralSetup.contains(&object)
+        || d->collaborationImportNewObjects.contains(&object) || deferredNewObject;
+    auto kind = CollaborationStructuralMutationKind::Restricted;
+    if (newStructuralObject) {
+        kind = CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
+    }
+    else if (executeOwnedDynamicProperty) {
+        kind = CollaborationStructuralMutationKind::Object;
+    }
     const char* objectName = object.getNameInDocument();
     std::string mutation = "removeDynamicProperty on ";
     mutation += (objectName && *objectName) ? objectName : "<unnamed>";
@@ -2898,7 +2938,29 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 }
                 d->activeUndoTransaction = nullptr;
             }
+            else if (d->nestedCommitParked) {
+                // A nested commit: the caller already had a transaction open,
+                // so this one is part of that step rather than an undo entry of
+                // its own. Fold it into the parked transaction and leave the
+                // reinstatement to the guard that parked it, so one undo step
+                // covers both. A caller that only had a booking gets this
+                // transaction as its own.
+                mUndoMap.erase(id);
+                discardTransactionFileState(id);
+                if (d->parkedNestedTransaction) {
+                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
+                    delete d->activeUndoTransaction;
+                }
+                else {
+                    d->parkedNestedTransaction = d->activeUndoTransaction;
+                }
+                d->activeUndoTransaction = nullptr;
+            }
             else if (d->collaborationCommitNotificationBarrier) {
+                if (d->collaborationPreparedUndoSlot.empty()) {
+                    throw Base::RuntimeError(
+                        "collaboration commit finalization was not prepared");
+                }
                 d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
                 mUndoTransactions.splice(mUndoTransactions.end(),
                                          d->collaborationPreparedUndoSlot,
@@ -6217,6 +6279,92 @@ const char* Document::getProgramVersion() const
 const char* Document::getFileName() const
 {
     return testStatus(TempDoc) ? TransientDir.getValue() : FileName.getValue();
+}
+
+bool Document::parkTransactionForNestedCommit()
+{
+    if (d->nestedCommitParked) {
+        return false;
+    }
+    // openTransaction() books a name and defers creating the transaction until
+    // the first change, so a caller inside one may have a booking, a live
+    // transaction, or both. Set aside whichever exists: the booking so the
+    // commit's own transaction cannot consume or clear it, and the live
+    // transaction so its records survive to be folded back into.
+    if (!d->activeUndoTransaction && d->bookedTransaction == 0) {
+        return false;
+    }
+    d->parkedNestedTransaction = d->activeUndoTransaction;
+    d->activeUndoTransaction = nullptr;
+    d->parkedNestedBookedTransaction = d->bookedTransaction;
+    d->bookedTransaction = 0;
+    d->nestedCommitParked = true;
+    return true;
+}
+
+void Document::restoreParkedTransactionAfterNestedCommit()
+{
+    if (!d->nestedCommitParked) {
+        return;
+    }
+    if (d->activeUndoTransaction) {
+        // The commit's transaction is still open, so it neither folded nor
+        // rolled back. Fold it now rather than strand the caller's or leak it.
+        if (d->parkedNestedTransaction) {
+            d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
+            mUndoMap.erase(d->activeUndoTransaction->getID());
+            delete d->activeUndoTransaction;
+            d->activeUndoTransaction = nullptr;
+        }
+        else {
+            // Nothing to fold into: the caller only had a booking, so the
+            // commit's transaction becomes the caller's.
+            d->parkedNestedTransaction = d->activeUndoTransaction;
+            d->activeUndoTransaction = nullptr;
+        }
+    }
+    d->activeUndoTransaction = d->parkedNestedTransaction;
+    d->parkedNestedTransaction = nullptr;
+    d->bookedTransaction = d->parkedNestedBookedTransaction;
+    d->parkedNestedBookedTransaction = 0;
+    d->nestedCommitParked = false;
+}
+
+bool Document::hasParkedNestedTransaction() const noexcept
+{
+    return d->nestedCommitParked;
+}
+
+void Document::discardCollaborationNotificationsForDestroyedObject(
+    const DocumentObject* object) noexcept
+{
+    if (!object || !d->collaborationCommitNotificationBarrier) {
+        return;
+    }
+    try {
+        auto& notifications = d->collaborationDeferredNotifications;
+        for (auto& notification : notifications) {
+            auto& objects = notification.objects;
+            objects.erase(std::remove(objects.begin(), objects.end(), object),
+                          objects.end());
+        }
+        // A record naming this object cannot be replayed once it is gone: the
+        // deletion notification alone reads and writes the object's name
+        // pointer. Its properties die with it, so records naming those go too.
+        notifications.erase(
+            std::remove_if(
+                notifications.begin(),
+                notifications.end(),
+                [object](const CollaborationDeferredNotification& notification) {
+                    return notification.object == object
+                        || notification.propertyContainer
+                            == static_cast<const PropertyContainer*>(object);
+                }),
+            notifications.end());
+    }
+    catch (...) {
+        // Nothing here may throw out of a destructor.
+    }
 }
 
 /// Remove all modifications. After this call The document becomes valid again.

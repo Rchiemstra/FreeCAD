@@ -840,6 +840,11 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         "false",
         "CollaborationCompatibilityRecomputePolicy::Deferred",
         "false",
+        # nestInCallerTransaction. Recompute is the only commit that may run
+        # inside a transaction the caller already opened; it takes a nested
+        # transaction of its own, which is folded back on commit. A competing
+        # compatibility mutation is still refused as Busy.
+        "true",
     ]
     assert 0 <= grant < grant_open < derived < grant_close < ordinary
     assert ordinary < ordinary_open < ordinary_close
@@ -899,12 +904,36 @@ def test_recompute_capture_allows_only_touched_state_beyond_normal_capture() -> 
     ):
         assert boundary in document
 
+    # The caller's own undo transaction is not a foreign mutation boundary: it
+    # is how every GUI command groups its edits, and refusing the preparation
+    # behind a recompute inside one made that recompute a silent no-op. The
+    # nested predicate drops that one term and keeps every other boundary.
+    nested = _compact(_body(
+        _read(DOCUMENT_SOURCE), "Document::collaborationNestedRecomputeCaptureBlocked"
+    ))
+    assert "mustExecute()" not in nested
+    assert "hasPendingTransaction()" not in nested
+    assert "getBookedTransactionID()!=0" not in nested
+    for boundary in (
+        "collaborationCommitNotificationBarrier",
+        "collaborationReplayingNotifications",
+        "transacting()",
+        "isTransactionLocked()",
+        "collaborationRecomputeTeardownDepth",
+        "pendingRemovalProcessing",
+        "!d->pendingRemove.empty()",
+    ):
+        assert boundary in nested, boundary
+
     service = _compact(_body(
         _read(SERVICE_SOURCE),
         "DocumentCollaborationService::prepareEditAsyncOnDocumentThread",
     ))
     assert "intent.operationType==GenericIsolatedRecomputeOperationType" in service
-    assert "collaborationRecomputeCaptureBlocked()" in service
+    # Only a recompute capture gets the nested-tolerant predicate; every other
+    # preparation still requires a clean native state.
+    assert "collaborationNestedRecomputeCaptureBlocked()" in service
+    assert "collaborationStableReadBlocked()" in service
 
     recompute = _compact(_body(_read(RECOMPUTE_SOURCE), "DocumentRecomputeCoordinator::poll"))
     assert "_service.takeRecomputePreparedEdit(" in recompute

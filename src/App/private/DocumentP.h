@@ -185,6 +185,15 @@ struct DocumentP
     long lastObjectId {};
     DocumentObject* activeObject {nullptr};
     Transaction* activeUndoTransaction {nullptr};
+    /** The caller's transaction, set aside while a nested commit owns its own.
+     * The nested transaction is folded into this one when it commits, so the
+     * caller's edits and the commit undo as a single step. */
+    Transaction* parkedNestedTransaction {nullptr};
+    /** The caller's booked transaction id, set aside with it. openTransaction()
+     * is lazy: it books a name and only creates the transaction on the first
+     * change, so a nested commit has to set the booking aside too. */
+    int parkedNestedBookedTransaction {0};
+    bool nestedCommitParked {false};
     FileChangeTokenState fileChangeTokens;
     FileChangeTokenState canonicalSaveTokens;
     // The canonical savepoint belongs to both a content revision and a path.

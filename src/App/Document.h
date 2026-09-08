@@ -1075,6 +1075,25 @@ public:
      */
     void purgeTouched();
 
+    /** Set the caller's open transaction aside so a collaboration commit can
+     * own its own, and report whether one was parked. The commit's transaction
+     * is folded back into it when it finalizes. */
+    bool parkTransactionForNestedCommit();
+
+    /** Restore a parked transaction after a nested commit that did not fold
+     * into it, i.e. one that rolled back. */
+    void restoreParkedTransactionAfterNestedCommit();
+
+    /** Whether a caller's transaction is currently parked. */
+    [[nodiscard]] bool hasParkedNestedTransaction() const noexcept;
+
+    /** Drop every deferred notification that names an object being destroyed.
+     *
+     * Replaying one would reach through the freed object. Called from
+     * ~DocumentObject() while a commit barrier is open. */
+    void discardCollaborationNotificationsForDestroyedObject(
+        const DocumentObject* object) noexcept;
+
     /**
      * @brief Settle one feature the recompute has just finished with.
      *
@@ -1972,6 +1991,9 @@ private:
     [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
     [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
+    /** As above, but tolerating an undo transaction the caller already holds,
+     * because a recompute commits in a nested transaction of its own. */
+    [[nodiscard]] bool collaborationNestedRecomputeCaptureBlocked() const noexcept;
     [[nodiscard]] bool collaborationLifecycleMutationBlocked() const noexcept;
     void beginCollaborationStableReadCapture();
     void finishCollaborationStableReadCapture() noexcept;

@@ -596,6 +596,11 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
         "false",
         "CollaborationCompatibilityRecomputePolicy::Deferred",
         "false",
+        # nestInCallerTransaction. Recompute is the only commit that may run
+        # inside a transaction the caller already opened; it takes a nested
+        # transaction of its own, which is folded back on commit. A competing
+        # compatibility mutation is still refused as Busy.
+        "true",
     ]
     assert 0 <= grant_check < nested < ordinary < ordinary_open < ordinary_close
     assert routing.count("commitDerivedRecomputeInActiveTransaction(edit)") == 1

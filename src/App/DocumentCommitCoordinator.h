@@ -114,12 +114,17 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    /** @param nestInCallerTransaction when the caller may already hold an
+     * undo transaction, run this commit in a nested transaction of its own
+     * instead of refusing. Only recompute does this: a competing *compatibility*
+     * mutation is still Busy while a public transaction is open. */
     [[nodiscard]] DocumentCommitResult commitWithPreparationPolicyAndOptions(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool retainUndoHistory = true);
+        bool retainUndoHistory = true,
+        bool nestInCallerTransaction = false);
     [[nodiscard]] DocumentCommitResult commitOnDocumentThread(
         const PreparedEdit& edit,
         bool requireDetachedPreparationSupport,
@@ -134,7 +139,8 @@ private:
         bool requireDetachedPreparationSupport,
         bool structuralCompatibility,
         CollaborationCompatibilityRecomputePolicy recomputePolicy,
-        bool retainUndoHistory);
+        bool retainUndoHistory,
+        bool nestInCallerTransaction = false);
     [[nodiscard]] DocumentCommitResult commitDerivedRecomputeInActiveTransaction(
         const PreparedEdit& edit);
 

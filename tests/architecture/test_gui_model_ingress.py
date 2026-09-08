@@ -673,16 +673,25 @@ def test_long_lived_gui_transaction_is_rejected_as_busy_without_qt_bootstrap() -
 
     coordinator_without_comments = _suppress_cpp_non_code(coordinator, keep_literals=True)
     compact = re.sub(r"\s+", "", coordinator_without_comments)
+    # A transaction being applied or rolled back is unconditionally Busy. A
+    # transaction that is merely open or booked is Busy too, unless this commit
+    # nests: recompute takes a nested transaction of its own rather than
+    # refusing, because an open undo transaction is how every GUI command
+    # groups its edits. A long-lived GUI transaction therefore still makes a
+    # competing compatibility commit Busy.
     busy_admission = (
-        "if(_document.hasPendingTransaction()||_document.transacting()||"
-        "_document.getBookedTransactionID()!=0||_document.isTransactionLocked()){"
+        "constboolnativeTransactionInProgress=_document.transacting()"
+        "||_document.isTransactionLocked()"
+        "||(!nestInCallerTransaction&&(_document.hasPendingTransaction()"
+        "||_document.getBookedTransactionID()!=0));"
+        "if(nativeTransactionInProgress){"
         "returnmakeResult(DocumentCommitStatus::Busy,edit,"
         '"documentalreadyhasanativetransactioninprogress");}'
     )
     assert busy_admission in compact, (
         "DocumentCommitCoordinator admission must couple pending/transacting/booked/locked "
         "native transaction state to DocumentCommitStatus::Busy and the native-transaction-"
-        "in-progress diagnostic"
+        "in-progress diagnostic, with pending/booked conditional on nesting only"
     )
 
 

@@ -189,6 +189,22 @@ public:
      */
     void addObjectChange(const TransactionalObject* Obj, const Property* Prop);
 
+    /**
+     * @brief Fold this transaction's records into an enclosing one.
+     *
+     * Used when a nested transaction finishes and its work must become part of
+     * the transaction that was already open, so the two undo as one step.
+     *
+     * A record the parent already holds is dropped rather than moved: the
+     * parent's snapshot was taken first and is the state undo has to restore.
+     * Records the parent does not hold are moved across, and ownership of the
+     * moved TransactionObject moves with them, so this transaction no longer
+     * destroys them.
+     *
+     * @param[in,out] parent The enclosing transaction to fold into.
+     */
+    void mergeInto(Transaction& parent);
+
 private:
     void applyImpl(Document& doc, bool forward, bool propagateErrors);
 
