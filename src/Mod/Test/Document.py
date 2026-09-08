@@ -2290,10 +2290,21 @@ class DocumentObserverCases(unittest.TestCase):
         SaveName = TempPath + os.sep + "SaveRestoreTests.FCStd"
         self.Doc1 = FreeCAD.newDocument("Observer1")
         self.Doc1.saveAs(SaveName)
-        self.assertEqual(self.Obs.signal.pop(), "DocFinishSave")
-        self.assertEqual(self.Obs.parameter2.pop(), self.Doc1.FileName)
-        self.assertEqual(self.Obs.signal.pop(), "DocStartSave")
-        self.assertEqual(self.Obs.parameter2.pop(), self.Doc1.FileName)
+        # Save-as adopts its new identity only once the write is durable, so
+        # the FileName/Uid/TransientDir/LastModifiedDate changes are announced
+        # after the save reports finishing rather than before it starts. A
+        # failed save-as therefore announces no identity at all, which is what
+        # DocumentCollaborationBoundaryTest asserts in
+        # failedSaveAsEmitsNoProvisionalIdentityOrMetadataPropertyEvents.
+        # Assert the save boundary itself, and let the adoption land wherever
+        # the durability rule puts it.
+        start = self.Obs.signal.index("DocStartSave")
+        finish = self.Obs.signal.index("DocFinishSave")
+        self.assertLess(start, finish)
+        self.assertNotIn("DocChanged", self.Obs.signal[start:finish])
+        # Both save signals report the file they wrote. parameter2 also
+        # collects changed property names, so match on the path itself.
+        self.assertEqual(self.Obs.parameter2.count(self.Doc1.FileName), 2)
         FreeCAD.closeDocument(self.Doc1.Name)
 
     def testDocument(self):
