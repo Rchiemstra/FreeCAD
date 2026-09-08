@@ -396,7 +396,7 @@ def test_sync_async_and_feature_facades_share_the_coordinator_generic_plan() -> 
         "Internal::ensureGenericIsolatedRecomputeRegistered()"
     )
     feature_plan = feature.find(
-        "Internal::makeGenericIsolatedRecomputeRequest(*this,*feature,recursive)",
+        "Internal::makeGenericIsolatedRecomputeRequest(",
         feature_registration,
     )
     feature_submit = feature.find("coordinator.submit(", feature_plan)

@@ -246,7 +246,12 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     assert "_recomputeFeature(" not in full
     assert "_recomputeFeature(" not in facade
     assert "recomputeCoordinator()" in facade
-    assert "makeGenericIsolatedRecomputeRequest(*this,*feature,recursive)" in facade
+    # The facade asks for the owner thread unless this is the coordinator's own
+    # derived pass, which stays isolated so unserializable object code is
+    # refused rather than run live.
+    assert "makeGenericIsolatedRecomputeRequest(" in facade
+    assert "*this,*feature,recursive" in facade
+    assert "!collaborationDerivedRecomputeGranted()" in facade
 
     temp_document = friend.find("document.testStatus(Document::TempDoc)")
     ownership = friend.find("feature.getDocument()!=&document", temp_document)
@@ -442,7 +447,7 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         in prepare
     )
     assert 'constautoforceMode=intent.arguments.find("force_execution")' in prepare
-    assert "intent.arguments.empty()||intent.arguments.size()>3" in prepare
+    assert "intent.arguments.empty()||intent.arguments.size()>4" in prepare
     assert '!intent.arguments.contains("feature")' in prepare
     assert "std::ranges::any_of(intent.arguments" in prepare
     assert 'argument.first!="legacy_revision_semantics"' in prepare
@@ -562,10 +567,17 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         "App::Internal::GenericIsolatedRecomputeAccess::applyFailure("
         "document,*target,*_failureDiagnostic);return;}" in failure_apply
     )
-    outcome = _compact(
-        _body(source, "recomputeOutcomeSucceeded")
-    )
-    assert "return!_failureDiagnostic.has_value();" in outcome
+    # Both venues answer the same way: the isolated result knows how the
+    # detached execute() went before it is applied, and the owner-thread
+    # operation records it while applying. Neither may report a raising
+    # feature as a success.
+    outcomes = [
+        _compact(body[1])
+        for body in _function_bodies(source, "recomputeOutcomeSucceeded")
+    ]
+    assert len(outcomes) == 2, outcomes
+    for outcome in outcomes:
+        assert "return!_failureDiagnostic.has_value();" in outcome
 
 
 def test_worker_boundary_has_no_parent_authority_and_featurepython_is_explicit_opt_in() -> None:
@@ -786,7 +798,7 @@ def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
             generic[generic.index("class GenericRecomputeInProcessOperation") :]
         ).split("std::unique_ptr<const App::CollaborativeOperation> decodeResult")[0]
     )
-    assert "target->purgeError();target->purgeTouched();" in in_process
+    assert "target->purgeError();document.settleRecomputedFeature(*target);" in in_process
     # The failure path deliberately leaves it dirty so the next pass retries.
     assert "applyFailure(" in in_process
     assert 'return{target->isTouched(),' in in_process
@@ -866,7 +878,7 @@ def test_safe_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
     operation = generic.split("classGenericRecomputeBookkeepingOperation", 1)[1]
     operation = operation.split("std::unique_ptr<constApp::CollaborativeOperation>decodeResult", 1)[0]
     assert "target->mustRecompute()" in operation
-    assert "target->purgeTouched()" in operation
+    assert "document.settleRecomputedFeature(*target)" in operation
     assert "executeGenericRecompute" not in operation
 
 
