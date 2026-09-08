@@ -1075,6 +1075,15 @@ public:
      */
     void purgeTouched();
 
+    /**
+     * @brief Settle one feature the recompute has just finished with.
+     *
+     * Clears the feature's touch state and marks the objects that depend on
+     * it for recompute, so a partial recompute still leaves the rest of the
+     * graph knowing it is stale.
+     */
+    void settleRecomputedFeature(DocumentObject& object);
+
     /// Check if there is any touched object in this document.
     bool isTouched() const;
 

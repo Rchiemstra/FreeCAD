@@ -233,12 +233,25 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
         && isLiveSketchAttachmentStatusMutation(*object, property, oldStatus, newStatus);
     const bool groundedJointPlacementLock = attachedStructuralObject
         && isGroundedJointPlacementLockMutation(*object, property, oldStatus, newStatus);
+    // execute() routinely republishes which of its own inputs currently apply:
+    // PartDesign's extrude features flip ReadOnly on AlongSketchNormal and the
+    // offset/length group as the pad type changes. The coordinator runs that
+    // execute() on the owner thread inside the commit boundary, so the writes
+    // land here rather than in a detached process where the recorder never
+    // saw them. This is the recompute-time counterpart of the removal-owned
+    // grant above and is keyed just as narrowly: the object the coordinator is
+    // currently executing, adjusting a property it owns itself.
+    const char* const statusPropertyName = property.getName();
+    const bool executeOwnedStatus = attachedStructuralObject
+        && object->testStatus(ObjectStatus::Recompute) && statusPropertyName
+        && *statusPropertyName
+        && object->getPropertyByName(statusPropertyName) == &property;
     auto kind = Document::CollaborationStructuralMutationKind::Restricted;
     if (newStructuralObject) {
         kind = Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
     }
     else if (removalOwnedStatus || liveSketchAttachmentStatus
-             || groundedJointPlacementLock) {
+             || groundedJointPlacementLock || executeOwnedStatus) {
         kind = Document::CollaborationStructuralMutationKind::Object;
     }
     std::string mutation = "propertyStatus on ";

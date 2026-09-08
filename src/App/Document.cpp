@@ -1024,9 +1024,27 @@ void Document::ensureCollaborationStructuralMutationAllowed(
         && !d->collaborationAtomicPresentationAuditActive
         && !d->collaborationCommitPoisoned
         && !d->collaborationReplayingNotifications;
+    // The coordinator's authoritative recompute is the same controlled
+    // boundary as the compatibility callback above -- owner thread, commit
+    // notification barrier, an open undo transaction, revision publication
+    // suppressed -- differing only in which operation is running. A feature's
+    // own execute() republishing which of its inputs currently apply is
+    // ordinary recompute output, and it reaches this gate only because the
+    // coordinator now runs execute() here instead of in a detached process.
+    // The recorder decides *which* mutations qualify; this only says the
+    // recompute boundary may grant them at all.
+    const bool recomputeGrant = applyGrantableKind
+        && testStatus(Document::Recomputing)
+        && isCollaborationOwnerThread()
+        && d->collaborationCommitNotificationBarrier
+        && d->activeUndoTransaction
+        && d->suppressCollaborationRevisionPublication
+        && !d->collaborationAtomicPresentationAuditActive
+        && !d->collaborationCommitPoisoned
+        && !d->collaborationReplayingNotifications;
     if ((d->collaborationCommitNotificationBarrier
          || collaborationLifecycleMutationBlocked())
-        && !applyGrant) {
+        && !applyGrant && !recomputeGrant) {
         const char* kindName = "Unknown";
         switch (kind) {
             case CollaborationStructuralMutationKind::Restricted:
@@ -1597,6 +1615,60 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         }
     };
     const auto emit = [&](const CollaborationDeferredNotification& notification) {
+        // An object can leave the document inside the barrier: a Draft link
+        // array rebuilds its elements from execute(), which the coordinator
+        // now runs here rather than in a detached process. Its queued change
+        // notifications then describe an object that has since been detached,
+        // and replaying one reaches through a pointer whose signals are gone.
+        // Only the change notifications are dropped -- creation, deletion and
+        // document-scoped records still describe real transitions, and the
+        // object's own deletion notification already reports its departure.
+        switch (notification.kind) {
+            case CollaborationDeferredNotificationKind::ObjectBeforeChange:
+            case CollaborationDeferredNotificationKind::ObjectEarlyChanged:
+            case CollaborationDeferredNotificationKind::ObjectChanged:
+            case CollaborationDeferredNotificationKind::TouchedObject:
+            case CollaborationDeferredNotificationKind::RelabelObject:
+            case CollaborationDeferredNotificationKind::RecomputedObject:
+                // The object may already be destroyed, so this cannot ask it
+                // anything -- isAttachedToDocument() is virtual and reading a
+                // freed vtable is how this crashed in the first place. Compare
+                // the pointer against the document's own list instead: an
+                // object that is still a member of the document is in it, and
+                // nothing else is dereferenced.
+                if (!notification.object
+                    || std::ranges::find(d->objectArray, notification.object)
+                        == d->objectArray.end()) {
+                    return;
+                }
+                break;
+            case CollaborationDeferredNotificationKind::PropertyChanged:
+            case CollaborationDeferredNotificationKind::ChangePropertyEditor:
+            case CollaborationDeferredNotificationKind::AppendDynamicProperty:
+            case CollaborationDeferredNotificationKind::RenameDynamicProperty: {
+                // Same reasoning for a property: its owner may be gone, and the
+                // property died with it. RemoveDynamicProperty is deliberately
+                // excluded -- it retains the property it announces, so it stays
+                // valid even once its container has left.
+                const auto* owner = notification.propertyContainer;
+                if (!owner) {
+                    break;
+                }
+                if (owner == static_cast<const PropertyContainer*>(this)) {
+                    break;
+                }
+                const bool ownerIsLive = std::ranges::any_of(
+                    d->objectArray, [owner](const DocumentObject* candidate) {
+                        return static_cast<const PropertyContainer*>(candidate) == owner;
+                    });
+                if (!ownerIsLive) {
+                    return;
+                }
+                break;
+            }
+            default:
+                break;
+        }
         switch (notification.kind) {
             case CollaborationDeferredNotificationKind::DocumentBeforeChange:
                 signalBeforeChange(*this, *notification.property);
@@ -4900,7 +4972,19 @@ DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent inten
                     "The document has no canonical file path",
                     true);
     }
-    if (hasPendingTransaction() || transacting() || testStatus(Document::Recomputing)) {
+    // An open undo transaction is not an unstable boundary. It is how every
+    // GUI command groups its edits, and the document's content is fully real
+    // while one is open -- FreeCAD has always saved exactly that. Refusing
+    // here made saveAs() fail for any caller that had opened a transaction,
+    // and because the Python binding discards the result the file silently
+    // kept its previous contents.
+    //
+    // The genuinely provisional state is a prepared collaboration commit, and
+    // ensureCollaborationSaveAllowed() already refuses that before any of this
+    // runs. What remains unsafe is writing while a transaction is actually
+    // being applied or rolled back, or while a recompute is midway through
+    // rewriting the objects being serialized.
+    if (transacting() || testStatus(Document::Recomputing)) {
         return fail("DOCUMENT_NOT_STABLE_FOR_SAVE",
                     "The document is not at a stable save boundary",
                     true);
@@ -5398,6 +5482,7 @@ Internal::DocumentFileReplacementResult Document::saveToFileWithPolicy(
 
     // Replacement has completed. Finish observers are presentation work and
     // cannot turn an already durable file into a failed save outcome.
+    //
     runPostDurableSaveMaintenance(replacement.warnings, "observer notification", [&] {
         signalFinishSave(*this, filename);
     });
@@ -6026,6 +6111,44 @@ void Document::purgeTouched() // NOLINT
     }
 }
 
+void Document::settleRecomputedFeature(DocumentObject& object)
+{
+    // The legacy recompute loop did this inline, right where it settled each
+    // object: purge the object's own touch state, and mark everything that
+    // depends on it so a later recompute knows it is stale. Recompute now
+    // settles a feature inside its own committed operation, one feature at a
+    // time, so the propagation has no loop to live in and has to travel with
+    // the settling itself. Without it a partial recompute -- recompute([obj]),
+    // which is exactly what the coordinator issues -- silently leaves every
+    // dependent reporting Up-to-date while holding a stale value.
+    //
+    // Order matters: the fine-grained filter reads touchedProps, and
+    // purgeTouched() clears it.
+    if (GetApplication().isFineGrainedRecomputeEnabled()) {
+        // Only the dependents that actually read a property that changed. An
+        // edge with an empty toProp depends on the object as a whole and so
+        // always propagates. This selectivity is the point of fine-grained
+        // recompute: a dependent bound to an untouched property must stay
+        // settled.
+        for (const auto& [fromObj, fromProp, toObj, toProp] : object.getInListProp()) {
+            if (!fromObj || !fromObj->isAttachedToDocument()) {
+                continue;
+            }
+            if (toProp.empty() || object.touchedProps.contains(toProp)) {
+                fromObj->enforceRecompute(fromProp);
+            }
+        }
+        object.purgeTouched();
+        return;
+    }
+    object.purgeTouched();
+    for (auto* dependent : object.getInList()) {
+        if (dependent && dependent->isAttachedToDocument()) {
+            dependent->enforceRecompute();
+        }
+    }
+}
+
 bool Document::isTouched() const
 {
     for (const auto It : d->objectArray) {
@@ -6544,7 +6667,14 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         "App::Document::recomputeAsync isolated compatibility facade",
         "generic-document:",
         !collaborationDerivedRecomputeGranted(),
-        force);
+        force,
+        // A derived recompute is the coordinator's own authoritative pass
+        // inside a structural commit. Running object code live there is the
+        // thing the isolated venue exists to prevent -- the detached import is
+        // what refuses a feature whose runtime type cannot be serialized,
+        // instead of letting its execute() reach into the live document. Every
+        // other recompute is an ordinary one and takes the owner thread.
+        /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request));
@@ -6756,16 +6886,57 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
-    auto handle = recomputeAsync(objs, force, options);
-    auto snapshot = handle->wait(std::chrono::minutes(6));
-    if (!snapshot.terminal()) {
-        static_cast<void>(handle->cancel("document recompute compatibility wait timed out"));
-        snapshot = handle->wait(std::chrono::seconds(30));
+    // The legacy loop ran its topologically sorted plan up to twice --
+    // "maximum two passes to allow some form of dependency inversion".
+    // Settling an object touches its dependents, and a dependent the single
+    // ordered pass has already walked past is then left stale: a chain that
+    // reaches a dependent through an input property orders the writer after
+    // the reader, so it only lands on the second pass. The coordinator runs
+    // one plan per submission, so a second pass is a second submission.
+    //
+    // A pass is only repeated when something is still touched, so the ordinary
+    // recompute that settles everything the first time still submits once. An
+    // explicit object list is judged on that list alone: a partial recompute
+    // deliberately leaves the dependents it touched for a later recompute, and
+    // must not chase them here.
+    const auto stillTouched = [this, &objs]() {
+        const auto touched = [](const DocumentObject* object) {
+            return object && object->isAttachedToDocument() && object->isTouched();
+        };
+        return objs.empty() ? std::ranges::any_of(d->objectArray, touched)
+                            : std::ranges::any_of(objs, touched);
+    };
+
+    int recomputed = 0;
+    bool failed = false;
+    for (int pass = 0; pass < 2; ++pass) {
+        auto handle = recomputeAsync(objs, force, options);
+        auto snapshot = handle->wait(std::chrono::minutes(6));
+        if (!snapshot.terminal()) {
+            static_cast<void>(
+                handle->cancel("document recompute compatibility wait timed out"));
+            snapshot = handle->wait(std::chrono::seconds(30));
+        }
+        failed = failed || snapshot.state != DocumentRecomputeState::Completed;
+        // The legacy loop counted the objects it executed, not the nodes it
+        // settled. A feature whose only change was a Prop_NoRecompute property
+        // is settled without ever running execute(), and reporting it here
+        // would tell the caller a recompute happened when none did.
+        recomputed += static_cast<int>(std::ranges::count_if(
+            snapshot.features, [](const DocumentRecomputeFeatureSnapshot& feature) {
+                const bool terminalFeature =
+                    feature.state == DocumentRecomputeFeatureState::Committed
+                    || feature.state == DocumentRecomputeFeatureState::Failed;
+                return terminalFeature && feature.executed;
+            }));
+        if (failed || !stillTouched()) {
+            break;
+        }
     }
     if (hasError) {
-        *hasError = snapshot.state != DocumentRecomputeState::Completed;
+        *hasError = failed;
     }
-    return static_cast<int>(snapshot.completedFeatures + snapshot.failedFeatures);
+    return recomputed;
 }
 
 /*!
@@ -7036,7 +7207,9 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 
     try {
         Internal::ensureGenericIsolatedRecomputeRegistered();
-        auto request = Internal::makeGenericIsolatedRecomputeRequest(*this, *feature, recursive);
+        auto request = Internal::makeGenericIsolatedRecomputeRequest(
+            *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true,
+            /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
         for (const auto& node : request.features) {
             if (auto* object = getObject(node.featureId.c_str())) {
                 d->clearRecomputeLog(object);

@@ -208,6 +208,7 @@ struct DocumentRecomputeCoordinator::Job
         DocumentRecomputeFeatureState state {DocumentRecomputeFeatureState::Waiting};
         std::optional<PreparedEditExecutionId> executionId;
         std::string diagnostic;
+        bool executed {true};
     };
 
     DocumentRecomputeId id {0};
@@ -666,10 +667,6 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             sessionId = job.sessionId;
         }
         DocumentCommitResult commit;
-        const bool recomputeSucceeded =
-            terminal->preparedEdit->operation().recomputeOutcomeSucceeded();
-        const std::string recomputeDiagnostic(
-            terminal->preparedEdit->operation().recomputeOutcomeDiagnostic());
         try {
             commit = _service.commitRecomputeEdit(sessionId, *terminal->preparedEdit);
         }
@@ -685,11 +682,22 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             commit.status = DocumentCommitStatus::ApplyFailed;
             commit.message = "recompute commit failed with unknown exception";
         }
+        // Read the recompute outcome only once the commit has run. An isolated
+        // result already knows how the detached execute() went before it is
+        // applied, but an owner-thread operation *is* the execute(): asking it
+        // beforehand would report every raising feature as a success.
+        const bool recomputeSucceeded =
+            terminal->preparedEdit->operation().recomputeOutcomeSucceeded();
+        const bool recomputeExecuted =
+            terminal->preparedEdit->operation().recomputeCountedFeature();
+        const std::string recomputeDiagnostic(
+            terminal->preparedEdit->operation().recomputeOutcomeDiagnostic());
         {
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
             auto& node = job.nodes.at(featureId);
             node.diagnostic = commit.message;
+            node.executed = recomputeExecuted;
             switch (commit.status) {
                 case DocumentCommitStatus::Committed:
                     node.state = recomputeSucceeded
@@ -835,7 +843,8 @@ std::optional<DocumentRecomputeSnapshot> DocumentRecomputeCoordinator::statusLoc
     snapshot.features.reserve(job.nodes.size());
     std::size_t terminalCount = 0;
     for (const auto& [featureId, node] : job.nodes) {
-        snapshot.features.push_back({featureId, node.state, node.diagnostic});
+        snapshot.features.push_back(
+            {featureId, node.state, node.diagnostic, node.executed});
         if (node.state == DocumentRecomputeFeatureState::Committed) {
             ++snapshot.completedFeatures;
         }

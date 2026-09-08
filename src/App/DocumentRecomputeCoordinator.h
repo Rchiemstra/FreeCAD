@@ -76,6 +76,8 @@ struct AppExport DocumentRecomputeFeatureSnapshot
     std::string featureId;
     DocumentRecomputeFeatureState state {DocumentRecomputeFeatureState::Waiting};
     std::string diagnostic;
+    /** False when the node settled without running the feature's execute(). */
+    bool executed {true};
 };
 
 /** Copyable, pointer-free observation of a recompute plan. */

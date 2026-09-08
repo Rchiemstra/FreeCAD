@@ -1514,7 +1514,14 @@ TEST_F(DocumentCollaborationBoundaryTest, recomputeResultClassifiesKnownAndUnkno
 
     EXPECT_GT(feature->ExecCount.getValue(), executionsBefore)
         << (diagnostic ? diagnostic : "no recompute diagnostic");
-    expectExactDeltasAndConflicts(before, {0, 4, 0, 0, 2}, "recompute output writes");
+    // One recompute publishes one model revision and one unknown-model
+    // revision. The larger counts this expected before were the detached
+    // venue's archive round-trip publishing several times for a single
+    // recompute; an ordinary recompute now executes on the owner thread and
+    // publishes once. This is the same delta the failure path asserts in
+    // errorOnlyFeatureRecomputePublishesEveryAttempt, so a recompute costs the
+    // same revisions whether it succeeds or raises.
+    expectExactDeltasAndConflicts(before, {0, 1, 0, 0, 1}, "recompute output writes");
 }
 
 TEST_F(DocumentCollaborationBoundaryTest,

@@ -24,6 +24,7 @@ GRANTED_LIVE_OBJECT_PREDICATES = (
     "removalOwnedStatus",
     "liveSketchAttachmentStatus",
     "groundedJointPlacementLock",
+    "executeOwnedStatus",
 )
 
 
@@ -64,6 +65,25 @@ def test_only_the_enumerated_predicates_escape_restricted() -> None:
     compact_recorder = _compact(recorder)
     for predicate in GRANTED_LIVE_OBJECT_PREDICATES:
         assert f"constbool{predicate}=attachedStructuralObject&&" in compact_recorder
+
+
+def test_execute_owned_status_is_keyed_on_the_executing_object_and_its_own_property() -> None:
+    """A feature's execute() may republish which of its own inputs apply.
+
+    PartDesign's extrude features flip ReadOnly on AlongSketchNormal as the pad
+    type changes.  The coordinator runs execute() on the owner thread inside
+    the commit boundary, so that write is recorded here rather than discarded
+    in a detached worker.  The grant is keyed on the object the coordinator is
+    currently executing touching a property it owns itself -- it must not let
+    an execute() restatus some *other* object.
+    """
+    recorder = _compact(_read(RECORDER_SOURCE))
+    assert (
+        "constboolexecuteOwnedStatus=attachedStructuralObject"
+        "&&object->testStatus(ObjectStatus::Recompute)" in recorder
+    ), recorder
+    # The property must belong to the executing object itself.
+    assert "object->getPropertyByName(statusPropertyName)==&property;" in recorder
 
 
 def test_grounded_joint_lock_matches_exactly_one_bit_on_two_named_properties() -> None:

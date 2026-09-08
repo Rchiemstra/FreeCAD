@@ -29,7 +29,8 @@ AppExport void ensureGenericIsolatedRecomputeRegistered();
     Document& document,
     DocumentObject& feature,
     bool recursive,
-    bool preserveLegacyRevisionSemantics = true);
+    bool preserveLegacyRevisionSemantics = true,
+    bool ownerThreadExecution = false);
 
 /** Build an immutable plan for an already dependency-filtered feature set. */
 [[nodiscard]] AppExport DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
@@ -38,7 +39,8 @@ AppExport void ensureGenericIsolatedRecomputeRegistered();
     std::string_view provenance,
     std::string_view coalescingPrefix,
     bool preserveLegacyRevisionSemantics = false,
-    bool forceExecution = false);
+    bool forceExecution = false,
+    bool ownerThreadExecution = false);
 
 /** Narrow friend used only by the isolated worker implementation. */
 class GenericIsolatedRecomputeAccess;
