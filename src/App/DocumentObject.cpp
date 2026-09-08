@@ -87,6 +87,12 @@ DocumentObject::DocumentObject()
 
 DocumentObject::~DocumentObject()
 {
+    // A feature's execute() can destroy objects outright -- App::Link rebuilds
+    // its elements that way -- and any deferred notification still naming this
+    // one would be replayed against freed memory.
+    if (_pDoc) {
+        _pDoc->discardCollaborationNotificationsForDestroyedObject(this);
+    }
     if (!PythonObject.is(Py::_None())) {
         Base::PyGILStateLocker lock;
         // Remark: The API of Py::Object has been changed to set whether the wrapper owns the passed
