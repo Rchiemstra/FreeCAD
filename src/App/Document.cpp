@@ -36,6 +36,7 @@
 #include <vector>
 #include <list>
 #include <algorithm>
+#include <iterator>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -1707,9 +1708,25 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
             case CollaborationDeferredNotificationKind::RecomputedObject:
                 signalRecomputedObject(*notification.object);
                 break;
-            case CollaborationDeferredNotificationKind::Recomputed:
-                signalRecomputed(*this, notification.objects);
+            case CollaborationDeferredNotificationKind::Recomputed: {
+                // The recomputed set is captured before the commit settles, so
+                // a feature that removed objects during its execute() -- a
+                // Draft link array rebuilding its elements -- leaves freed
+                // pointers in it. Hand observers only what the document still
+                // holds.
+                std::vector<DocumentObject*> live;
+                live.reserve(notification.objects.size());
+                std::ranges::copy_if(
+                    notification.objects,
+                    std::back_inserter(live),
+                    [this](DocumentObject* candidate) {
+                        return candidate
+                            && std::ranges::find(d->objectArray, candidate)
+                                != d->objectArray.end();
+                    });
+                signalRecomputed(*this, live);
                 break;
+            }
             case CollaborationDeferredNotificationKind::OpenTransaction:
                 if (!deferStableNotification) {
                     signalOpenTransaction(*this, notification.text);
