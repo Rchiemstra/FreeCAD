@@ -231,9 +231,16 @@ class CAMSanity:
                 )
             )
         else:
-            if os.path.isfile(obj.LastPostProcessOutput):
-                data["filesize"] = str(os.path.getsize(obj.LastPostProcessOutput) / 1000)
-                data["linecount"] = str(sum(1 for line in open(obj.LastPostProcessOutput)))
+            # str() first: open() takes an int as a file descriptor, so a job
+            # object whose LastPostProcessOutput is not a real path -- a test
+            # double, say -- can otherwise reach open() as an integer and hand
+            # back a live descriptor such as stdout, which is then closed when
+            # the file object is collected.
+            gcode_file = str(obj.LastPostProcessOutput)
+            if os.path.isfile(gcode_file):
+                data["filesize"] = str(os.path.getsize(gcode_file) / 1000)
+                with open(gcode_file) as gcode:
+                    data["linecount"] = str(sum(1 for line in gcode))
             else:
                 data["filesize"] = str(0.0)
                 data["linecount"] = str(0)
