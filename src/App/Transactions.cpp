@@ -170,19 +170,29 @@ void Transaction::mergeInto(Transaction& parent)
                     prop = nested->_PropChangeMap.erase(prop);
                 }
                 else {
-                    // The parent already holds a record for this property id.
-                    // When both are plain value snapshots the parent's is the
-                    // older one and the one undo has to restore. A mismatched
-                    // pair (e.g. one side is a rename or move record) cannot
-                    // be resolved by keeping either whole record: fixing that
-                    // needs _PropChangeMap to hold more than one record per
-                    // property id, which is a pre-existing limitation this
-                    // merge inherits rather than introduces. Warn rather than
-                    // silently drop the wrong half.
-                    assert(isValueSnapshot(prop->second) == isValueSnapshot(inserted.first->second));
-                    if (isValueSnapshot(prop->second) != isValueSnapshot(inserted.first->second)) {
-                        FC_WARN("mergeInto: property record kind mismatch between "
-                                "parent and nested transaction, keeping the parent's");
+                    // The parent already holds a record for this property
+                    // id. When both are plain value snapshots the parent's
+                    // is the older one and the one undo has to restore.
+                    //
+                    // A mismatched pair is not automatically a loss. A
+                    // parent move record re-homes the property and its value
+                    // travels with it, and a parent addition record removes
+                    // the property on undo, so in both cases the nested value
+                    // snapshot they displace would never have been restored.
+                    // A parent rename record is the lossy one: applyChnImpl()
+                    // renames and stops, so the nested write is dropped.
+                    // Resolving that needs _PropChangeMap to hold more than
+                    // one record per property id -- a pre-existing limit this
+                    // merge inherits rather than introduces, and one a single
+                    // transaction hits too via setProperty() then
+                    // renameProperty(). Log it for anyone chasing a lost
+                    // value; it is far too common to warn about, since every
+                    // spreadsheet recompute that clears a cell range lands
+                    // here through removeDynamicProperty().
+                    if (isValueSnapshot(prop->second)
+                        != isValueSnapshot(inserted.first->second)) {
+                        FC_LOG("mergeInto: property record kind mismatch on "
+                               << prop->first << ", keeping the parent's");
                     }
                     ++prop;
                 }
