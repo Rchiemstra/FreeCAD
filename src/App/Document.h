@@ -216,6 +216,7 @@ class DocumentCollaborationConcurrencyTestAccess;
 class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
 class GenericIsolatedRecomputeAccess;
+class NestedCommitBookingTestAccess;
 struct DocumentFileReplacementResult;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 enum class DocumentPostDurableSaveCheckpoint
@@ -1081,8 +1082,11 @@ public:
     bool parkTransactionForNestedCommit();
 
     /** Restore a parked transaction after a nested commit that did not fold
-     * into it, i.e. one that rolled back. */
-    void restoreParkedTransactionAfterNestedCommit();
+     * into it, i.e. one that rolled back.
+     *
+     * Called from ~ParkedTransactionGuard(), so it must not throw: a throw
+     * unwinding into another throw during that unwind would terminate. */
+    void restoreParkedTransactionAfterNestedCommit() noexcept;
 
     /** Whether a caller's transaction is currently parked. */
     [[nodiscard]] bool hasParkedNestedTransaction() const noexcept;
@@ -1673,6 +1677,7 @@ public:
     friend class Internal::DocumentStructuralCompatibilityTestAccess;
     friend class Internal::CollaborationStructuralMutationRecorder;
     friend class Internal::GenericIsolatedRecomputeAccess;
+    friend class Internal::NestedCommitBookingTestAccess;
     friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
@@ -2056,6 +2061,11 @@ private:
     void abortApplicationTransactionThroughCoordinator();
     void lockTransactionInternal();
     void unlockTransactionInternal();
+    /** The id openCollaborationCommitTransaction() should open its transaction
+     * under: 0 to mint a fresh one, or the caller's parked booked id when this
+     * nested commit has nothing parked to fold into and must become the
+     * caller's own transaction instead. */
+    [[nodiscard]] int nestedCommitTransactionId() const noexcept;
     int openCollaborationCommitTransaction(std::string name, bool retainUndoHistory);
     bool commitCollaborationCommitTransaction(bool retainUndoHistory);
     void applyCollaborationRecomputeFailure(DocumentObject& object,

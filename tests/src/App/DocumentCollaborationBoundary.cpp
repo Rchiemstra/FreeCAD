@@ -2365,6 +2365,33 @@ TEST_F(DocumentCollaborationBoundaryTest, structuredSaveSkipsAnUnchangedCanonica
     EXPECT_FALSE(document()->hasPendingFileChanges());
 }
 
+TEST_F(DocumentCollaborationBoundaryTest,
+       abortingATransactionThatRecomputedRestoresTheCleanFileState)
+{
+    auto* object = document()->addObject<App::FeatureTest>("NestedRecomputeSavepoint");
+    ASSERT_NE(object, nullptr);
+    ScopedTemporaryDirectory temporary("fc_nested_recompute_savepoint_");
+    const auto path = (temporary.path / "nested-recompute.FCStd").string();
+    ASSERT_EQ(document()->saveAsWithOutcome(path.c_str()).disposition,
+              App::DocumentSaveDisposition::Written);
+    ASSERT_EQ(document()->getFileChangeState(), App::DocumentFileState::Clean);
+
+    document()->openTransaction("edit then recompute");
+    object->Label.setValue("dirty before recompute");
+    ASSERT_EQ(document()->getFileChangeState(), App::DocumentFileState::Modified);
+
+    // The recompute below commits through a nested transaction inside this
+    // still-open caller transaction. An empty recompute plan would open no
+    // nested transaction and leave the defect unexercised, so the object
+    // must actually need recomputing here.
+    object->touch();
+    ASSERT_GT(document()->recompute(), 0);
+
+    document()->abortTransaction();
+    EXPECT_EQ(document()->getFileChangeState(), App::DocumentFileState::Clean);
+    EXPECT_FALSE(document()->hasPendingFileChanges());
+}
+
 TEST_F(DocumentCollaborationBoundaryTest, canonicalSavepointIsBoundToItsFilePath)
 {
     ScopedTemporaryDirectory temporary("fc_canonical_path_binding_");
