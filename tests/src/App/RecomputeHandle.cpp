@@ -766,7 +766,10 @@ TEST_F(RecomputeHandleTest, mergingANestedRemovalIntoAChangeRecordDoesNotLeakThe
     ASSERT_EQ(_document->getAvailableUndos(), 1);
     ASSERT_TRUE(_document->undo(booked));
     EXPECT_EQ(_document->getObject(objectName.c_str()), object);
-    EXPECT_STREQ(object->Label.getValue(), "edited before nested removal");
+    // Undoing the caller's step reverts everything it contained -- both the
+    // label edit and the nested removal -- so the label returns to what it
+    // was before the transaction opened, not to its mid-transaction value.
+    EXPECT_STREQ(object->Label.getValue(), "NestedRemovalTarget");
 }
 
 TEST_F(RecomputeHandleTest, mergingANestedRemovalOfANewlyAddedObjectDestroysItWithoutLeaking)
