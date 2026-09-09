@@ -628,7 +628,7 @@ TEST_F(DocumentRecomputeCoordinatorTest,
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,
-       waitingLiveNodeRefreshesItsPresentationFenceBeforePrepareFailure)
+       nonGenericPrepareFailureWithoutSemanticFenceSuppressesPresentation)
 {
     auto downstream = feature(
         "Second",
@@ -666,14 +666,18 @@ TEST_F(DocumentRecomputeCoordinatorTest,
     const auto& failed = featureSnapshot(terminal, "Second");
     EXPECT_EQ(failed.state, App::DocumentRecomputeFeatureState::Failed);
     EXPECT_EQ(failed.presentationObjectModelRevision, refreshedRevision);
+    EXPECT_FALSE(failed.presentationRevisionFenceComplete);
+    EXPECT_TRUE(failed.presentationRevisionFence.empty());
     EXPECT_FALSE(failed.outcomeApplied);
 
     App::RecomputeHandle handle(*_document, id);
     const auto presented = handle.status();
     EXPECT_TRUE(presented.terminal());
     EXPECT_TRUE(object("Second").isTouched());
-    EXPECT_TRUE(object("Second").isError());
-    EXPECT_NE(_document->getErrorDescription(&object("Second")), nullptr);
+    EXPECT_FALSE(object("Second").isError());
+    EXPECT_EQ(_document->getErrorDescription(&object("Second")), nullptr);
+    EXPECT_TRUE(coordinator.hasUnresolvedWork());
+    EXPECT_TRUE(coordinator.hasUnresolvedExecutableWork());
 }
 
 TEST_F(DocumentRecomputeCoordinatorTest,

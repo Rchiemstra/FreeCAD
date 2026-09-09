@@ -10,6 +10,12 @@ Document::recomputeAsync() returns a RecomputeHandle. The handle exposes a
 document-owned identifier plus status, progress, completion, cancellation, and
 bounded waiting.
 
+A new asynchronous request is first admitted as a provisional reservation so
+coalescing has one stable coordinator identity. After BeforeRecompute observers
+run, the document recaptures the plan, replaces that reservation, and only then
+activates it. Capture or replacement failure is published through the reserved
+handle; an existing coalesced request is neither replaced nor activated again.
+
 Document::recompute() and Document::recomputeFeature() remain synchronous
 in-process compatibility APIs. They execute on the document owner thread,
 participate in an already-open native transaction, and do not silently create a
@@ -30,18 +36,27 @@ DocumentCommitCoordinator may validate and commit results to the live document.
 
 The explicitly asynchronous API has no caller-selected live or main-thread
 execution fallback. Unsupported or unsafe objects produce a structured failure
-and remain touched so the caller can inspect or resolve the error. The one
-trusted application exception is the exact type-gated Spreadsheet transient
-schema application step, which re-executes that built-in type under the commit
-guard after isolated validation. This isolation guarantee does not describe the
-synchronous compatibility APIs above.
+and remain touched so the caller can inspect or resolve the error. Generic
+archive execution admits only exact, internally audited, registered native
+types with a canonical property and extension schema. Unregistered or derived
+runtime types, executable targets with extensions, expressions, dynamic or
+Python-object properties, and nondefault values omitted by Transient or
+NoPersist serialization fail closed. An exact canonical App::Link may appear
+only as an isolated closure input; it is never a direct asynchronous recompute
+target. This isolation guarantee does not describe the synchronous compatibility
+APIs above.
 
 \section asyncrecompute_python FeaturePython
 
-App::FeaturePython is unsupported unless it explicitly opts in through
-supportsAsyncRecompute(). An opted-in proxy must be fully serializable and its
-execute path must not access FreeCADGui, Qt widgets, view providers, or other
-GUI-thread state.
+App::FeaturePython worker execution is always unsupported, regardless of the
+historical supportsAsyncRecompute() hook. The closed inert-target type list is
+the exact base App::DocumentObject and exact App::FeaturePython. The former has
+only its base no-op execute contract; the latter may settle proven no-execute
+bookkeeping only with a null Proxy and safe exact App::Link dependencies. These
+narrow cases do not execute Python or grant archive output authority.
+Spreadsheet has no authoritative live replay or fallback in the asynchronous
+path. Supporting it asynchronously requires a typed, complete-state adapter
+whose application preserves its signal and observer contract.
 
 \section asyncrecompute_gui GUI and save behavior
 
@@ -56,6 +71,10 @@ A canonical save attempted while recompute is active, or when a stale/failed
 result leaves executable dirty work, returns RECOMPUTE_PENDING. A stale handle
 still reports Stale even when a newer successful synchronous recompute already
 settled the live feature; in that superseded case the clean document may be
-saved. Callers should inspect the handle and retry unresolved work before save.
+saved. Unresolved live failures are recorded by stable object identity and
+generation before a terminal handle state is visible: a removed or same-name
+replacement object is filtered out, and an older handle cannot erase a newer
+failure. Callers should inspect the handle and retry unresolved work before
+save.
 
 */

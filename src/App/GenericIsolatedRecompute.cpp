@@ -6,6 +6,7 @@
 #include "CollaborativeOperation.h"
 #include "Document.h"
 #include "DocumentObject.h"
+#include "Extension.h"
 #include "GeometryWorkerOperationRegistry.h"
 #include "Link.h"
 #include "MergeDocuments.h"
@@ -27,6 +28,7 @@
 #include <boost/scope_exit.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -58,21 +60,6 @@ public:
             || !feature.isAttachedToDocument()) {
             throw Base::RuntimeError(
                 "generic recompute worker access requires an attached temporary document");
-        }
-        return document._recomputeFeature(&feature);
-    }
-
-    static int executeAuthoritative(Document& document, DocumentObject& feature)
-    {
-        if (document.testStatus(Document::TempDoc)
-            || !document.testStatus(Document::Recomputing)
-            || !document.isCollaborationOwnerThread()
-            || !document.hasPendingTransaction()
-            || !document.collaborationRevisionPublicationSuppressed()
-            || feature.getDocument() != &document
-            || !feature.isAttachedToDocument()) {
-            throw Base::RuntimeError(
-                "authoritative transient-schema recompute requires the coordinator commit boundary");
         }
         return document._recomputeFeature(&feature);
     }
@@ -254,11 +241,15 @@ std::string sectionDigest(const std::vector<App::GeometryArchiveSection>& sectio
 std::vector<std::pair<std::string, App::Property*>> namedProperties(
     const App::DocumentObject& object)
 {
-    std::vector<std::pair<const char*, App::Property*>> raw;
-    object.getPropertyNamedList(raw);
+    // ExtensionContainer does not override getPropertyNamedList(). Build the
+    // named view from its virtual full property list so built-in LinkExtension
+    // state is included in manifests, fences, and side-effect validation.
+    std::vector<App::Property*> raw;
+    object.getPropertyList(raw);
     std::vector<std::pair<std::string, App::Property*>> result;
     result.reserve(raw.size());
-    for (const auto& [name, property] : raw) {
+    for (auto* property : raw) {
+        const char* name = property ? object.getPropertyName(property) : nullptr;
         if (!name || !property) {
             throw std::runtime_error("generic recompute encountered an unnamed property");
         }
@@ -274,117 +265,25 @@ std::vector<std::pair<std::string, App::Property*>> namedProperties(
     return result;
 }
 
-bool isPartFeatureShapeRecomputeOutput(const App::DocumentObject& object,
-                                       const App::Property& property)
-{
-    const Base::Type partFeatureType = Base::Type::fromName("Part::Feature");
-    return !partFeatureType.isBad()
-        && object.getTypeId().isDerivedFrom(partFeatureType)
-        && object.getPropertyByName("Shape") == &property;
-}
+bool hasCanonicalExtensionSet(const App::DocumentObject& object,
+                              const App::DocumentObject& canonical);
 
-bool isSketchObjectExecuteRecomputeOutput(const App::DocumentObject& object,
-                                          const App::Property& property)
+bool isSafePlainAppLinkArchiveInput(const App::DocumentObject& object)
 {
-    // SketchObject::execute() solves into Geometry, rebuilds its transient
-    // external-geometry cache, and builds InternalShape before Shape.  These
-    // members predate Prop_Output, so preserve that exact built-in contract
-    // without linking FreeCADApp to Sketcher or admitting link-valued
-    // ExternalGeometry, user-owned Constraints, or derived Python types.
-    const Base::Type sketchObjectType = Base::Type::fromName("Sketcher::SketchObject");
-    if (sketchObjectType.isBad() || object.getTypeId() != sketchObjectType) {
-        return false;
-    }
-    return object.getPropertyByName("Geometry") == &property
-        || object.getPropertyByName("InternalShape") == &property
-        || object.getPropertyByName("ExternalGeo") == &property;
-}
-
-bool isPartDesignAddSubShapeRecomputeOutput(const App::DocumentObject& object,
-                                            const App::Property& property)
-{
-    // FeatureAddSub implementations build AddSubShape as their execute-owned
-    // additive/subtractive tool cache before producing Shape. Keep the
-    // compatibility contract to that exact nonstructural member and registered
-    // ancestry without introducing an App-to-PartDesign link.
-    const Base::Type addSubType = Base::Type::fromName("PartDesign::FeatureAddSub");
-    return !addSubType.isBad()
-        && object.getTypeId().isDerivedFrom(addSubType)
-        && object.getPropertyByName("AddSubShape") == &property;
-}
-
-bool isPartDesignSuppressedShapeRecomputeOutput(const App::DocumentObject& object,
-                                                 const App::Property& property)
-{
-    // PartDesign::Feature::recompute() unconditionally clears this cache for
-    // active features and rebuilds it for suppressed ones before delegating
-    // to execute(). It is therefore an execute-owned geometry output even
-    // though the legacy property predates Prop_Output.
-    const Base::Type featureType = Base::Type::fromName("PartDesign::Feature");
-    return !featureType.isBad()
-        && object.getTypeId().isDerivedFrom(featureType)
-        && object.getPropertyByName("SuppressedShape") == &property;
-}
-
-bool isPartDesignDirectionRecomputeOutput(const App::DocumentObject& object,
-                                          const App::Property& property)
-{
-    // FeatureExtrude::computeDirection() always writes Direction, including
-    // custom-vector mode (where a zero vector falls back to the profile normal).
-    // Keep this exact built-in property in a stable manifest contract so an
-    // expression-driven UseCustomVector mode change cannot alter the schema
-    // while the detached recompute is running.
-    const Base::Type featureExtrudeType = Base::Type::fromName("PartDesign::FeatureExtrude");
-    return !featureExtrudeType.isBad()
-        && object.getTypeId().isDerivedFrom(featureExtrudeType)
-        && object.getPropertyByName("Direction") == &property;
-}
-
-bool isPartDesignProfilePlacementRecomputeOutput(const App::DocumentObject& object,
-                                                  const App::Property& property)
-{
-    // ProfileBased feature execution calls positionByPrevious() and derives
-    // the feature Placement from its base feature, support, or sketch. This is
-    // an established execute-owned output even though Placement predates
-    // Prop_Output. Restrict the compatibility declaration to that ancestry and
-    // exact built-in member.
-    const Base::Type profileBasedType = Base::Type::fromName("PartDesign::ProfileBased");
-    return !profileBasedType.isBad()
-        && object.getTypeId().isDerivedFrom(profileBasedType)
-        && object.getPropertyByName("Placement") == &property;
-}
-
-bool isAttachExtensionPlacementRecomputeOutput(const App::DocumentObject& object,
-                                               const App::Property& property)
-{
-    // AttachExtension::extensionExecute() runs positionBySupport(), which
-    // derives the extended object's Placement from the attachment engine and
-    // writes it back. Placement predates Prop_Output, so without this
-    // declaration an attached feature publishes nothing and the caller keeps
-    // the identity placement it started with.
-    //
-    // Keyed on the registered extension alone, deliberately not on the current
-    // MapMode: MapMode is a mutable value and the manifest schema has to stay
-    // stable for the whole detached recompute. A deactivated attachment simply
-    // leaves Placement unchanged, which publishes nothing either way.
-    const Base::Type attachExtensionType = Base::Type::fromName("Part::AttachExtension");
-    return !attachExtensionType.isBad()
-        && object.hasExtension(attachExtensionType)
-        && object.getPropertyByName("Placement") == &property;
-}
-
-bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
-{
-    // A plain native App::Link to a non-Python object has no model execute
-    // work when its virtual mustExecute() is false. Its native extension would
-    // only touch the transient view notification property; disabled
-    // copy-on-change has no setup work. This exact contract lets a newly set
-    // persistent link clear its Enforce/Touch bookkeeping without attempting
-    // to execute or serialize its dependency graph in the worker.
-    // Derived links, arrays, copy-on-change links, unresolved links, and links
-    // that can invoke a Python proxy remain fail-closed.
+    // A plain native App::Link may be captured as a target's structural input,
+    // but never used as a bookkeeping-only recompute target: its extension
+    // execute path touches _LinkTouched to refresh the GUI. Derived links,
+    // arrays, copy-on-change links, unresolved links, noncanonical extensions,
+    // and links that can invoke a Python proxy remain fail-closed.
     const Base::Type linkType = Base::Type::fromName("App::Link");
     if (linkType.isBad() || object.getTypeId() != linkType
+        || typeid(object) != typeid(App::Link)) {
+        return false;
+    }
+    std::unique_ptr<App::DocumentObject> canonical(
+        static_cast<App::DocumentObject*>(linkType.createInstance()));
+    if (!canonical || typeid(*canonical) != typeid(App::Link)
+        || !hasCanonicalExtensionSet(object, *canonical)
         || object.mustExecute() != 0) {
         return false;
     }
@@ -394,6 +293,7 @@ bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
             != App::LinkBaseExtension::CopyOnChangeDisabled
         || link->getLinkCopyOnChangeSourceValue()
         || link->getLinkCopyOnChangeGroupValue()
+        || !object.ExpressionEngine.getExpressions().empty()
         || std::ranges::any_of(namedProperties(object), [](const auto& entry) {
                return entry.second->testStatus(App::Property::PropDynamic);
            })) {
@@ -405,6 +305,20 @@ bool isSafePlainAppLinkBookkeepingTarget(const App::DocumentObject& object)
     }
     return !freecad_cast<App::PropertyPythonObject*>(
         linked->getPropertyByName("Proxy"));
+}
+
+bool isSafePlainDocumentObjectBookkeepingTarget(
+    const App::DocumentObject& object)
+{
+    // The exact base DocumentObject has the base no-op execute() and owns no
+    // extension behavior. Its dynamic values are not serialized or copied by
+    // the bookkeeping operation; only its recompute status is settled.
+    const Base::Type objectType = Base::Type::fromName("App::DocumentObject");
+    return !objectType.isBad() && object.getTypeId() == objectType
+        && typeid(object) == typeid(App::DocumentObject)
+        && !object.hasExtensions()
+        && object.ExpressionEngine.getExpressions().empty()
+        && object.mustExecute() == 0;
 }
 
 bool isNullProxyExternalLinkHolderBookkeepingTarget(
@@ -440,7 +354,7 @@ bool isNullProxyExternalLinkHolderBookkeepingTarget(
         && std::ranges::all_of(dependencies, [&object](const auto* dependency) {
                return dependency
                    && dependency->getDocument() == object.getDocument()
-                   && isSafePlainAppLinkBookkeepingTarget(*dependency);
+                   && isSafePlainAppLinkArchiveInput(*dependency);
            });
 }
 
@@ -455,15 +369,6 @@ bool owesUnconditionalExecuteWork(const App::DocumentObject& object)
     // listed here; the shortcut stays unsound for any that is not, which is
     // why it is a deny-list on proven offenders rather than a heuristic.
     //
-    // AttachExtension::extensionExecute() re-derives the extended object's
-    // Placement on every execution -- its isTouched_Mapping() is hardcoded
-    // true precisely because the attachment inputs sit behind links whose
-    // changes never touch AttachmentSupport itself.
-    const Base::Type attachExtensionType = Base::Type::fromName("Part::AttachExtension");
-    if (!attachExtensionType.isBad() && object.hasExtension(attachExtensionType)) {
-        return true;
-    }
-
     // AssemblyObject::execute() runs the joint solver whenever the
     // SolveOnRecompute preference is set, which is the default. It declares no
     // mustExecute() of its own, so a touched assembly reports 0 and would
@@ -480,50 +385,68 @@ bool isBookkeepingOnlyTarget(const App::DocumentObject& object)
         return false;
     }
     return object.mustRecompute() == 0
-        || isSafePlainAppLinkBookkeepingTarget(object)
+        || isSafePlainDocumentObjectBookkeepingTarget(object)
         || isNullProxyExternalLinkHolderBookkeepingTarget(object);
 }
 
-bool usesAuthoritativeTransientRecomputeSchema(const App::DocumentObject& object)
+bool hasAuditedWorkerResultTypeId(const App::DocumentObject& object)
 {
-    // Spreadsheet cell values are derived Prop_NoPersist dynamic properties.
-    // They cannot cross the FCStd worker archive, so the isolated execution is
-    // used as a fail-closed preflight and the exact built-in Sheet type repeats
-    // its deterministic execute() inside the coordinator-owned transaction.
-    const Base::Type spreadsheetType = Base::Type::fromName("Spreadsheet::Sheet");
-    return !spreadsheetType.isBad() && object.getTypeId() == spreadsheetType;
+    static constexpr std::array auditedTypes {
+        "App::FeatureTest",
+        "App::FeatureTestException",
+        "App::FeatureTestColumn",
+        "App::FeatureTestRow",
+        "App::FeatureTestAbsAddress",
+        "App::FeatureTestPlacement",
+    };
+    return std::ranges::any_of(auditedTypes, [&object](const char* name) {
+        const Base::Type type = Base::Type::fromName(name);
+        return !type.isBad() && object.getTypeId() == type;
+    });
 }
 
-bool isArchiveTransientDynamicProperty(const App::Property& property)
+bool hasKnownInertBookkeepingTypeId(const App::DocumentObject& object)
 {
-    return property.testStatus(App::Property::PropDynamic)
-        && property.testStatus(App::Property::PropNoPersist);
+    static constexpr std::array inertTypes {
+        "App::DocumentObject",
+        "App::FeaturePython",
+    };
+    return std::ranges::any_of(inertTypes, [&object](const char* name) {
+        const Base::Type type = Base::Type::fromName(name);
+        return !type.isBad() && object.getTypeId() == type;
+    });
 }
 
-std::vector<std::pair<std::string, App::Property*>> persistentNamedProperties(
-    const App::DocumentObject& object)
+bool hasExactRegisteredRuntimeType(const App::DocumentObject& object)
 {
-    auto properties = namedProperties(object);
-    if (usesAuthoritativeTransientRecomputeSchema(object)) {
-        std::erase_if(properties, [](const auto& entry) {
-            return isArchiveTransientDynamicProperty(*entry.second);
-        });
-    }
-    return properties;
+    std::unique_ptr<App::DocumentObject> registeredType(
+        static_cast<App::DocumentObject*>(object.getTypeId().createInstance()));
+    return registeredType && typeid(*registeredType) == typeid(object);
+}
+
+bool hasPythonObjectProperty(const App::DocumentObject& object)
+{
+    return std::ranges::any_of(namedProperties(object), [](const auto& entry) {
+        return entry.second->isDerivedFrom<App::PropertyPythonObject>();
+    });
+}
+
+bool hasAuditedCompleteWorkerResultContract(const App::DocumentObject& object)
+{
+    // canRecomputeOnWorker() predates the isolated archive protocol and only
+    // promised thread affinity. An existing binary or addon override therefore
+    // cannot, by itself, prove that every execute-owned result is represented
+    // by transferable declared properties. Admit only exact types audited for
+    // the stronger protocol; new production types need a typed adapter or an
+    // explicit entry here together with native round-trip coverage.
+    return hasAuditedWorkerResultTypeId(object)
+        && hasExactRegisteredRuntimeType(object)
+        && object.canRecomputeOnWorker();
 }
 
 bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
                                const App::Property& property)
 {
-    // Part::Feature::execute() touches Shape even for the plain assignable
-    // feature, while legacy edit/touch behavior requires Shape to remain a
-    // normal (non-Prop_Output) property.  Keep this compatibility contract
-    // narrow: exact registered Part ancestry plus the built-in Shape member.
-    const auto expressions = object.ExpressionEngine.getExpressions();
-    const bool expressionOutput = std::ranges::any_of(
-        expressions, [&property](const auto& expression) {
-            return expression.first.getProperty() == &property;
-        });
     // Transient structural outputs such as PartDesign::Feature::_Body are
     // reconstructed ownership hints, not worker publications.  Keep them in
     // the manifest and baseline so an execute-time mutation still fails
@@ -535,15 +458,7 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
             || property.isDerivedFrom<App::PropertyPythonObject>());
     const bool compatibleOutput = object.isOutputProperty(&property)
         && !transientStructuralOutput;
-    return compatibleOutput
-        || expressionOutput
-        || isPartFeatureShapeRecomputeOutput(object, property)
-        || isSketchObjectExecuteRecomputeOutput(object, property)
-        || isPartDesignAddSubShapeRecomputeOutput(object, property)
-        || isPartDesignSuppressedShapeRecomputeOutput(object, property)
-        || isPartDesignDirectionRecomputeOutput(object, property)
-        || isPartDesignProfilePlacementRecomputeOutput(object, property)
-        || isAttachExtensionPlacementRecomputeOutput(object, property);
+    return compatibleOutput;
 }
 
 ObjectManifest manifestFor(const App::DocumentObject& object)
@@ -554,7 +469,7 @@ ObjectManifest manifestFor(const App::DocumentObject& object)
     ObjectManifest result;
     result.name = object.getNameInDocument();
     result.type = object.getTypeId().getName();
-    for (const auto& [name, property] : persistentNamedProperties(object)) {
+    for (const auto& [name, property] : namedProperties(object)) {
         result.properties.push_back(
             {name,
              std::string(property->getTypeId().getName()),
@@ -692,7 +607,7 @@ void validateDetachedSchema(
         if (found == actualByName.end() || found->second->getTypeId().getName() != object.type) {
             throw std::runtime_error("generic recompute changed an object name or type");
         }
-        const auto actualProperties = persistentNamedProperties(*found->second);
+        const auto actualProperties = namedProperties(*found->second);
         if (actualProperties.size() != object.properties.size()) {
             throw std::runtime_error("generic recompute changed a property set");
         }
@@ -900,6 +815,186 @@ bool sameCapturedProperty(const App::Property& current,
     return currentWriter.getString() == baseline.serialized;
 }
 
+bool hasCanonicalExtensionSet(const App::DocumentObject& object,
+                              const App::DocumentObject& canonical)
+{
+    const Base::Type extensionType = App::Extension::getExtensionClassTypeId();
+    const auto actualExtensions = object.getExtensionsDerivedFrom(extensionType);
+    const auto canonicalExtensions = canonical.getExtensionsDerivedFrom(extensionType);
+    if (actualExtensions.size() != canonicalExtensions.size()) {
+        return false;
+    }
+    for (const auto* canonicalExtension : canonicalExtensions) {
+        // Only dispatch the virtual type query on the freshly constructed
+        // built-in peer. The live object may carry an addon extension whose
+        // virtual methods must not run merely to reject the archive request.
+        const Base::Type type = canonicalExtension->getExtensionTypeId();
+        const auto* actualExtension = object.getExtension(type, false, true);
+        if (!actualExtension
+            || typeid(*actualExtension) != typeid(*canonicalExtension)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hasAuditedArchivePropertyTypeId(const App::DocumentObject& object,
+                                     const App::Property& property)
+{
+    // Exact registered value types only. In particular, do not let a future
+    // file-backed, Python-backed, or addon Property become serializable merely
+    // because a trusted object class acquired a new static member.
+    static constexpr std::array auditedTypes {
+        "App::PropertyString",
+        "App::PropertyExpressionEngine",
+        "App::PropertyBool",
+        "App::PropertyInteger",
+        "App::PropertyFloat",
+        "App::PropertyBoolList",
+        "App::PropertyPath",
+        "App::PropertyStringList",
+        "App::PropertyEnumeration",
+        "App::PropertyIntegerConstraint",
+        "App::PropertyFloatConstraint",
+        "App::PropertyColor",
+        "App::PropertyColorList",
+        "App::PropertyMaterial",
+        "App::PropertyMaterialList",
+        "App::PropertyDistance",
+        "App::PropertyAngle",
+        "App::PropertyIntegerList",
+        "App::PropertyFloatList",
+        "App::PropertyLink",
+        "App::PropertyLinkSub",
+        "App::PropertyLinkList",
+        "App::PropertyLinkSubList",
+        "App::PropertyVector",
+        "App::PropertyVectorList",
+        "App::PropertyMatrix",
+        "App::PropertyPlacement",
+        "App::PropertyQuantity",
+    };
+    if (std::ranges::any_of(auditedTypes, [&property](const char* name) {
+        const Base::Type type = Base::Type::fromName(name);
+        return !type.isBad() && property.getTypeId() == type;
+    })) {
+        return true;
+    }
+
+    // These structural value types occur in the canonical exact App::Link
+    // input schema. They are not generally admitted on executable targets.
+    const Base::Type linkType = Base::Type::fromName("App::Link");
+    if (linkType.isBad() || object.getTypeId() != linkType
+        || typeid(object) != typeid(App::Link)) {
+        return false;
+    }
+    static constexpr std::array linkOnlyTypes {
+        "App::PropertyXLink",
+        "App::PropertyLinkSubHidden",
+        "App::PropertyPlacementList",
+    };
+    return std::ranges::any_of(linkOnlyTypes, [&property](const char* name) {
+        const Base::Type type = Base::Type::fromName(name);
+        return !type.isBad() && property.getTypeId() == type;
+    });
+}
+
+bool hasCanonicalAuditedArchiveSchema(const App::DocumentObject& object)
+{
+    // The object type is already restricted to a built-in audited candidate
+    // before this function is called, so constructing its registered peer
+    // cannot dispatch an addon constructor on the owner thread.
+    std::unique_ptr<App::DocumentObject> registered(
+        static_cast<App::DocumentObject*>(object.getTypeId().createInstance()));
+    if (!registered || typeid(*registered) != typeid(object)) {
+        return false;
+    }
+    if (!hasCanonicalExtensionSet(object, *registered)) {
+        return false;
+    }
+
+    const auto actual = namedProperties(object);
+    const auto canonical = namedProperties(*registered);
+    if (actual.size() != canonical.size()) {
+        return false;
+    }
+    constexpr unsigned long volatileStatusMask =
+        (1UL << App::Property::Touched) | (1UL << App::Property::Busy);
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        const auto& [actualName, actualProperty] = actual[index];
+        const auto& [canonicalName, canonicalProperty] = canonical[index];
+        if (actualName != canonicalName
+            || actualProperty->testStatus(App::Property::PropDynamic)
+            || !hasAuditedArchivePropertyTypeId(object, *actualProperty)
+            || actualProperty->getTypeId() != canonicalProperty->getTypeId()
+            || actualProperty->getType() != canonicalProperty->getType()
+            || (actualProperty->getStatus() & ~volatileStatusMask)
+                != (canonicalProperty->getStatus() & ~volatileStatusMask)) {
+            return false;
+        }
+
+        // Link scope and internal behavior flags are C++ configuration, not
+        // all of which is represented by FCStd. A same-named link property
+        // with different runtime configuration would otherwise execute under
+        // different dependency semantics in the worker.
+        const auto* actualLink =
+            dynamic_cast<const App::PropertyLinkBase*>(actualProperty);
+        const auto* canonicalLink =
+            dynamic_cast<const App::PropertyLinkBase*>(canonicalProperty);
+        if (static_cast<bool>(actualLink) != static_cast<bool>(canonicalLink)) {
+            return false;
+        }
+        if (actualLink) {
+            if (actualLink->getScope() != canonicalLink->getScope()) {
+                return false;
+            }
+            for (int flag = App::PropertyLinkBase::LinkAllowExternal;
+                 flag <= App::PropertyLinkBase::LinkSilentRestore;
+                 ++flag) {
+                if (actualLink->testFlag(flag) != canonicalLink->testFlag(flag)) {
+                    return false;
+                }
+            }
+        }
+
+        // FCStd deliberately omits transient and no-persist values. Require
+        // those inputs to equal the registered constructor state; otherwise
+        // the worker would silently execute against a different value.
+        const auto propertyType = actualProperty->getType();
+        if ((propertyType & (App::Prop_Transient | App::Prop_NoPersist)) != 0
+            && !sameSerializedProperty(*actualProperty, *canonicalProperty)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hasAuditedArchiveContract(const App::DocumentObject& object,
+                               const App::DocumentObject& target)
+{
+    const bool auditedExecutable = hasAuditedWorkerResultTypeId(object);
+    const Base::Type linkType = Base::Type::fromName("App::Link");
+    const bool auditedInputLink = &object != &target && !linkType.isBad()
+        && object.getTypeId() == linkType;
+    if (!auditedExecutable && !auditedInputLink) {
+        return false;
+    }
+    if (!hasExactRegisteredRuntimeType(object)) {
+        return false;
+    }
+    if (auditedExecutable) {
+        if (!object.canRecomputeOnWorker() || object.hasExtensions()
+            || hasPythonObjectProperty(object)
+            || !object.ExpressionEngine.getExpressions().empty()) {
+            return false;
+        }
+    }
+    else if (!isSafePlainAppLinkArchiveInput(object)) {
+        return false;
+    }
+    return hasCanonicalAuditedArchiveSchema(object);
+}
+
 std::vector<std::uint8_t> encodeOutputs(
     const std::string& targetName,
     const App::DocumentObject& target,
@@ -988,12 +1083,10 @@ class GenericRecomputeOperation final: public App::CollaborativeOperation
 public:
     GenericRecomputeOperation(std::string target,
                               std::string stableIdentity,
-                              std::vector<DecodedOutput> outputs,
-                              const bool authoritativeTransientSchema)
+                              std::vector<DecodedOutput> outputs)
         : _target(std::move(target))
         , _stableIdentity(std::move(stableIdentity))
         , _outputs(std::move(outputs))
-        , _authoritativeTransientSchema(authoritativeTransientSchema)
     {}
 
     GenericRecomputeOperation(std::string target,
@@ -1030,23 +1123,6 @@ public:
             App::Document::Recomputing, &document);
         Base::ObjectStatusLocker<App::ObjectStatus, App::DocumentObject> executing(
             App::Recompute, target);
-        if (_authoritativeTransientSchema) {
-            if (!usesAuthoritativeTransientRecomputeSchema(*target)) {
-                throw std::runtime_error(
-                    "generic recompute transient-schema target contract no longer matches");
-            }
-            const int result =
-                App::Internal::GenericIsolatedRecomputeAccess::executeAuthoritative(
-                    document, *target);
-            if (result != 0) {
-                const char* diagnostic = document.getErrorDescription(target);
-                throw std::runtime_error(
-                    diagnostic && *diagnostic
-                        ? std::string("authoritative transient-schema recompute failed: ")
-                            + diagnostic
-                        : "authoritative transient-schema recompute failed");
-            }
-        }
         for (const auto& output : _outputs) {
             auto* property = target->getPropertyByName(output.name.c_str());
             if (!property || property->getTypeId().getName() != output.type
@@ -1140,7 +1216,6 @@ private:
     std::string _target;
     std::string _stableIdentity;
     std::vector<DecodedOutput> _outputs;
-    bool _authoritativeTransientSchema {false};
     std::optional<std::string> _failureDiagnostic;
     mutable bool _applied {false};
     mutable std::vector<std::unique_ptr<App::Property>> _appliedOutputs;
@@ -1216,8 +1291,7 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     const App::GeometryArchive& archive,
     const std::string& target,
     const std::string& stableIdentity,
-    const std::map<std::string, std::string>& expectedOutputs,
-    const bool authoritativeTransientSchema)
+    const std::map<std::string, std::string>& expectedOutputs)
 {
     const auto& section = requireSection(archive, "recompute.outputs", 1);
     BinaryReader reader(section.bytes);
@@ -1260,8 +1334,7 @@ std::unique_ptr<const App::CollaborativeOperation> decodeResult(
     return std::make_unique<const GenericRecomputeOperation>(
         target,
         stableIdentity,
-        std::move(outputs),
-        authoritativeTransientSchema);
+        std::move(outputs));
 }
 
 std::vector<App::DocumentRevisionPublicationRequest> decodeLegacyPublicationEffects(
@@ -1344,17 +1417,9 @@ std::vector<App::DocumentObject*> collectClosure(
             throw std::invalid_argument(
                 "generic recompute has an unresolved cross-document dependency");
         }
-        if (!object->canRecomputeOnWorker()) {
+        if (!hasAuditedArchiveContract(*object, target)) {
             throw std::invalid_argument(
-                "generic recompute object has not opted into isolated execution: "
-                + std::string(object->getNameInDocument()));
-        }
-        std::unique_ptr<App::DocumentObject> registeredType(
-            static_cast<App::DocumentObject*>(object->getTypeId().createInstance()));
-        const auto* registeredObject = registeredType.get();
-        if (!registeredObject || typeid(*registeredObject) != typeid(*object)) {
-            throw std::invalid_argument(
-                "generic recompute object runtime type is not serializable: "
+                "generic recompute object lacks an audited archive contract: "
                 + std::string(object->getNameInDocument()));
         }
         closure.push_back(object);
@@ -1392,6 +1457,9 @@ capturePresentationRevisionFence(
         if (!object || object->getDocument() != &document
             || !object->isAttachedToDocument() || !object->getNameInDocument()
             || seen.size() > MaxObjects) {
+            return std::nullopt;
+        }
+        if (!hasAuditedArchiveContract(*object, target)) {
             return std::nullopt;
         }
         const std::string name = object->getNameInDocument();
@@ -1460,19 +1528,35 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
             "generic recompute target stable identity is stale");
     }
 
-    // The two exact-type predicates below are proven-inert contracts -- an
-    // App::FeaturePython with a null Proxy literally cannot run Python execute
-    // code -- so they keep their cheap bookkeeping path even though the type
-    // never opts into worker execution. Only the general mustRecompute()
-    // shortcut, which proves nothing about execute(), is deferred until after
-    // the opt-out branch.
-    const bool provenInertBookkeepingContract =
-        isSafePlainAppLinkBookkeepingTarget(*target)
-        || isNullProxyExternalLinkHolderBookkeepingTarget(*target);
-
-    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract) {
+    // Reject unknown type ids without constructing or invoking addon-owned
+    // code merely to answer an explicit asynchronous request.
+    const bool auditedWorkerType = hasAuditedWorkerResultTypeId(*target);
+    const bool knownInertType = hasKnownInertBookkeepingTypeId(*target);
+    if (!auditedWorkerType && !knownInertType) {
         throw std::invalid_argument(
             "generic recompute object has not opted into isolated execution: "
+            + targetName);
+    }
+    if (!hasExactRegisteredRuntimeType(*target)) {
+        throw std::invalid_argument(
+            "generic recompute target runtime type is not serializable: "
+            + targetName);
+    }
+    const bool provenInertBookkeepingContract = knownInertType
+        && (isSafePlainDocumentObjectBookkeepingTarget(*target)
+            || isNullProxyExternalLinkHolderBookkeepingTarget(*target));
+    if (!auditedWorkerType && !provenInertBookkeepingContract) {
+        throw std::invalid_argument(
+            "generic recompute object has not opted into isolated execution: "
+            + targetName);
+    }
+    if (auditedWorkerType
+        && (!hasAuditedCompleteWorkerResultContract(*target)
+            || target->hasExtensions() || hasPythonObjectProperty(*target)
+            || !target->ExpressionEngine.getExpressions().empty()
+            || !hasCanonicalAuditedArchiveSchema(*target))) {
+        throw std::invalid_argument(
+            "generic recompute target lacks an audited archive contract: "
             + targetName);
     }
 
@@ -1598,21 +1682,17 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
 
     auto publicationEffectsTemplate = effects;
     auto operationExpectedOutputs = expectedOutputs;
-    const bool authoritativeTransientSchema =
-        usesAuthoritativeTransientRecomputeSchema(*target);
     App::CollaborativeOperationPreparation::IsolatedTask isolated {
         std::move(request),
         std::move(input),
         [targetName,
          stableIdentity = document.collaborationObjectIdentity(*target),
-         expectedOutputs = std::move(operationExpectedOutputs),
-         authoritativeTransientSchema](
+         expectedOutputs = std::move(operationExpectedOutputs)](
             const App::GeometryArchive& output) {
             return decodeResult(output,
                                 targetName,
                                 stableIdentity,
-                                expectedOutputs,
-                                authoritativeTransientSchema);
+                                expectedOutputs);
         },
         preserveLegacyRevisionSemantics
             ? App::CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder(
@@ -1672,12 +1752,23 @@ App::GeometryArchive executeGenericRecompute(
         static_cast<void>(importer.importObjects(archiveStream));
     }
     validateDetachedSchema(*detached, manifests);
-    auto baseline = capturePropertySnapshots(*detached, manifests);
-
     auto* target = detached->getObject(targetName.c_str());
-    if (!target || !target->canRecomputeOnWorker()) {
+    if (!target) {
+        throw std::runtime_error("generic recompute target disappeared after import");
+    }
+    for (const auto& manifest : manifests) {
+        auto* object = detached->getObject(manifest.name.c_str());
+        if (!object || !hasAuditedArchiveContract(*object, *target)) {
+            throw std::runtime_error(
+                "generic recompute closure is not worker-safe after import");
+        }
+    }
+    if (!hasAuditedCompleteWorkerResultContract(*target)) {
         throw std::runtime_error("generic recompute target is not worker-safe after import");
     }
+    // No property Save/Paste snapshot work is allowed until the imported
+    // closure has passed the same exact schema boundary as its live source.
+    auto baseline = capturePropertySnapshots(*detached, manifests);
     if (stopToken.stop_requested()) {
         throw std::runtime_error("generic recompute cancelled before feature execution");
     }

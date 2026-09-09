@@ -111,7 +111,7 @@ public:
     short mustExecute() const override;
     /// recalculate the Feature
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
     /// returns the type name of the ViewProvider
     // Hint: Probably it makes sense to have a view provider for unittests (e.g.
     // Gui::ViewProviderTest)
@@ -135,7 +135,7 @@ public:
 
     /// recalculate the Feature and throw an exception
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
     /// returns the type name of the ViewProvider
     const char* getViewProviderName() const override
     {
@@ -158,7 +158,7 @@ public:
     /** @name methods override Feature */
     //@{
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
     //@}
 };
 
@@ -177,7 +177,7 @@ public:
     /** @name methods override Feature */
     //@{
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
     //@}
 };
 
@@ -188,7 +188,7 @@ class AppExport FeatureTestAbsAddress: public DocumentObject
 public:
     FeatureTestAbsAddress();
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
 
     App::PropertyString Address;
     App::PropertyBool Valid;
@@ -210,7 +210,7 @@ public:
     /** @name methods override Feature */
     //@{
     DocumentObjectExecReturn* execute() override;
-    bool canRecomputeOnWorker() const override { return true; }
+    bool canRecomputeOnWorker() const override;
     //@}
 };
 

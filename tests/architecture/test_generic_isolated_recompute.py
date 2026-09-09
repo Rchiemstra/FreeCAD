@@ -27,9 +27,6 @@ COMMIT_SOURCE = "src/App/DocumentCommitCoordinator.cpp"
 APP_CMAKE = "src/App/CMakeLists.txt"
 APP_TEST_CMAKE = "tests/src/App/CMakeLists.txt"
 NATIVE_TEST = "tests/src/App/GenericIsolatedRecompute.cpp"
-EXTRUDE_SOURCE = "src/Mod/PartDesign/App/FeatureExtrude.cpp"
-REVOLVED_SOURCE = "src/Mod/PartDesign/App/FeatureRevolved.cpp"
-ATTACH_SOURCE = "src/Mod/Part/App/AttachExtension.cpp"
 
 
 def _read(path: str | Path) -> str:
@@ -233,8 +230,8 @@ def test_private_feature_execution_is_limited_to_compatibility_and_worker_kernel
     # Document.cpp contributes the private definition plus the full-document
     # and one-feature synchronous compatibility calls.
     assert owners.count(DOCUMENT_SOURCE) == 3, matches
-    assert owners.count(GENERIC_SOURCE) == 2, matches
-    assert len(matches) == 5, (
+    assert owners.count(GENERIC_SOURCE) == 1, matches
+    assert len(matches) == 4, (
         "_recomputeFeature has an unclassified live caller: " + ", ".join(matches)
     )
 
@@ -243,7 +240,6 @@ def test_private_feature_execution_is_limited_to_compatibility_and_worker_kernel
     facade = _compact(_body(document, "Document::recomputeFeature"))
     generic_source = _read(GENERIC_SOURCE)
     friend = _compact(_body(generic_source, "execute"))
-    authoritative_friend = _compact(_body(generic_source, "executeAuthoritative"))
     derived = full.find("if(collaborationDerivedRecomputeGranted()){")
     async_call = full.find("recomputeAsync(objs,force,options)", derived)
     live_call = full.find("_recomputeFeature(object)", async_call)
@@ -263,30 +259,7 @@ def test_private_feature_execution_is_limited_to_compatibility_and_worker_kernel
     attached = friend.find("!feature.isAttachedToDocument()", ownership)
     private_call = friend.find("returndocument._recomputeFeature(&feature);", attached)
     assert 0 <= temp_document < ownership < attached < private_call
-
-    ordinary_document = authoritative_friend.find("document.testStatus(Document::TempDoc)")
-    recomputing = authoritative_friend.find(
-        "!document.testStatus(Document::Recomputing)", ordinary_document
-    )
-    owner_thread = authoritative_friend.find(
-        "!document.isCollaborationOwnerThread()", recomputing
-    )
-    transaction = authoritative_friend.find("!document.hasPendingTransaction()", owner_thread)
-    publication = authoritative_friend.find(
-        "!document.collaborationRevisionPublicationSuppressed()", transaction
-    )
-    authoritative_call = authoritative_friend.find(
-        "returndocument._recomputeFeature(&feature);", publication
-    )
-    assert (
-        0
-        <= ordinary_document
-        < recomputing
-        < owner_thread
-        < transaction
-        < publication
-        < authoritative_call
-    )
+    assert "executeAuthoritative" not in generic_source
 
     legacy_matches: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*"):
@@ -415,7 +388,7 @@ def test_private_feature_execution_is_limited_to_compatibility_and_worker_kernel
     )
 
 
-def test_documentobject_python_and_gui_delegate_to_the_isolated_document_facade() -> None:
+def test_documentobject_python_and_gui_delegate_to_the_public_sync_facade() -> None:
     object_body = _compact(_body(_read(OBJECT_SOURCE), "DocumentObject::recomputeFeature"))
     assert "doc->recomputeFeature(this,recursive)" in object_body
     assert "_recomputeFeature" not in object_body
@@ -452,11 +425,17 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         in prepare
     )
     assert 'constautoforceMode=intent.arguments.find("force_execution")' in prepare
+    assert (
+        'constautoidentityArgument=intent.arguments.find("stable_object_identity")'
+        in prepare
+    )
     assert "intent.arguments.empty()||intent.arguments.size()>4" in prepare
     assert '!intent.arguments.contains("feature")' in prepare
+    assert "identityArgument==intent.arguments.end()" in prepare
     assert "std::ranges::any_of(intent.arguments" in prepare
     assert 'argument.first!="legacy_revision_semantics"' in prepare
     assert 'argument.first!="force_execution"' in prepare
+    assert 'argument.first!="stable_object_identity"' in prepare
     assert (
         "constboolpreserveLegacyRevisionSemantics="
         "legacyMode!=intent.arguments.end()" in prepare
@@ -484,6 +463,12 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     parameter_section = execute.find('requireSection(input,"recompute.params",2)')
     decode = execute.find("decodeParameters(parameterSection.bytes)")
     first_schema = execute.find("validateDetachedSchema(*detached,manifests)")
+    closure_contract = execute.find(
+        "hasAuditedArchiveContract(*object,*target)", first_schema
+    )
+    target_contract = execute.find(
+        "!hasAuditedCompleteWorkerResultContract(*target)", closure_contract
+    )
     baseline = execute.find("capturePropertySnapshots(*detached,manifests)")
     run = execute.find("GenericIsolatedRecomputeAccess::execute(*detached,*target)")
     second_schema = execute.find("validateDetachedSchema(*detached,manifests)", first_schema + 1)
@@ -494,7 +479,17 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
     )
     side_effect = execute.find('"genericrecomputeproducedanundeclaredpropertysideeffect:')
     publication = execute.find('{"recompute.outputs",encodeOutputs(')
-    assert 0 <= document_section < parameter_section < decode < first_schema < baseline < run
+    assert (
+        0
+        <= document_section
+        < parameter_section
+        < decode
+        < first_schema
+        < closure_contract
+        < target_contract
+        < baseline
+        < run
+    )
     assert run < second_schema < failure_branch < failure_publication < side_effect < publication
     assert execute.count("validateDetachedSchema(*detached,manifests)") == 2
 
@@ -583,7 +578,7 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         assert "return!_failureDiagnostic.has_value();" in outcome
 
 
-def test_worker_boundary_has_no_parent_authority_and_featurepython_is_explicit_opt_in() -> None:
+def test_worker_boundary_has_no_parent_authority_and_featurepython_is_rejected() -> None:
     generic = _read(GENERIC_SOURCE)
     signature = _function_bodies(generic, "executeGenericRecompute")[0][0]
     assert "GeometryArchive" in signature and "stop_token" in signature
@@ -600,22 +595,182 @@ def test_worker_boundary_has_no_parent_authority_and_featurepython_is_explicit_o
     closure = _compact(_body(generic, "collectClosure"))
     assert "object->getDocument()!=&document" in closure
     assert "dependency->getDocument()!=&document" in closure
-    assert "!object->canRecomputeOnWorker()" in closure
+    contract = closure.find("!hasAuditedArchiveContract(*object,target)")
+    dependencies = closure.find("object->getOutList()", contract)
+    assert 0 <= contract < dependencies
 
-    python_opt_in = _compact(_body(_read(PYTHON_FEATURE_HEADER), "canRecomputeOnWorker"))
-    assert "!FeatureT::canRecomputeOnWorker()" in python_opt_in
-    assert "imp->supportsAsyncRecompute()==FeaturePythonImp::Accepted" in python_opt_in
+    python_boundary = _compact(
+        _body(_read(PYTHON_FEATURE_HEADER), "canRecomputeOnWorker")
+    )
+    assert python_boundary == "returnfalse;"
+    assert "supportsAsyncRecompute" not in python_boundary
+
+
+def test_worker_admission_freezes_exact_types_properties_and_schema() -> None:
+    source = _read(GENERIC_SOURCE)
+
+    def string_literals(symbol: str) -> list[str]:
+        body = _suppress_cpp(_body(source, symbol, raw=True), literals=False)
+        return re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', body)
+
+    assert string_literals("hasAuditedWorkerResultTypeId") == [
+        "App::FeatureTest",
+        "App::FeatureTestException",
+        "App::FeatureTestColumn",
+        "App::FeatureTestRow",
+        "App::FeatureTestAbsAddress",
+        "App::FeatureTestPlacement",
+    ]
+    audited_types = _compact(_body(source, "hasAuditedWorkerResultTypeId"))
+    assert "object.getTypeId()==type" in audited_types
+    assert "isDerivedFrom" not in audited_types
+    # These exact types may settle proven no-execute bookkeeping. App::Link is
+    # deliberately absent: it is admissible only as a closure input.
+    assert string_literals("hasKnownInertBookkeepingTypeId") == [
+        "App::DocumentObject",
+        "App::FeaturePython",
+    ]
+    inert_types = _compact(_body(source, "hasKnownInertBookkeepingTypeId"))
+    assert "object.getTypeId()==type" in inert_types
+    assert "isDerivedFrom" not in inert_types
+    assert string_literals("hasAuditedArchivePropertyTypeId") == [
+        "App::PropertyString",
+        "App::PropertyExpressionEngine",
+        "App::PropertyBool",
+        "App::PropertyInteger",
+        "App::PropertyFloat",
+        "App::PropertyBoolList",
+        "App::PropertyPath",
+        "App::PropertyStringList",
+        "App::PropertyEnumeration",
+        "App::PropertyIntegerConstraint",
+        "App::PropertyFloatConstraint",
+        "App::PropertyColor",
+        "App::PropertyColorList",
+        "App::PropertyMaterial",
+        "App::PropertyMaterialList",
+        "App::PropertyDistance",
+        "App::PropertyAngle",
+        "App::PropertyIntegerList",
+        "App::PropertyFloatList",
+        "App::PropertyLink",
+        "App::PropertyLinkSub",
+        "App::PropertyLinkList",
+        "App::PropertyLinkSubList",
+        "App::PropertyVector",
+        "App::PropertyVectorList",
+        "App::PropertyMatrix",
+        "App::PropertyPlacement",
+        "App::PropertyQuantity",
+        # Exact App::Link closure inputs have three additional built-in
+        # structural value types.  The object type discriminator itself is
+        # part of the same closed admission function.
+        "App::Link",
+        "App::PropertyXLink",
+        "App::PropertyLinkSubHidden",
+        "App::PropertyPlacementList",
+    ]
+
+    extensions = _compact(_body(source, "hasCanonicalExtensionSet"))
+    for fragment in (
+        "App::Extension::getExtensionClassTypeId()",
+        "object.getExtensionsDerivedFrom(extensionType)",
+        "canonical.getExtensionsDerivedFrom(extensionType)",
+        "actualExtensions.size()!=canonicalExtensions.size()",
+        "for(constauto*canonicalExtension:canonicalExtensions)",
+        "object.getExtension(type,false,true)",
+        "typeid(*actualExtension)!=typeid(*canonicalExtension)",
+    ):
+        assert fragment in extensions, f"canonical extension gate omitted {fragment}"
+    assert extensions.count("getExtensionsDerivedFrom(extensionType)") == 2
+    assert extensions.count("object.getExtension(type,false,true)") == 1
+
+    property_types = _compact(_body(source, "hasAuditedArchivePropertyTypeId"))
+    assert "property.getTypeId()==type" in property_types
+    assert "object.getTypeId()!=linkType" in property_types
+    assert "typeid(object)!=typeid(App::Link)" in property_types
+    exact_runtime = _compact(_body(source, "hasExactRegisteredRuntimeType"))
+    assert "typeid(*registeredType)==typeid(object)" in exact_runtime
+
+    schema = _compact(_body(source, "hasCanonicalAuditedArchiveSchema"))
+    for fragment in (
+        "typeid(*registered)!=typeid(object)",
+        "!hasCanonicalExtensionSet(object,*registered)",
+        "actual.size()!=canonical.size()",
+        "actualName!=canonicalName",
+        "actualProperty->testStatus(App::Property::PropDynamic)",
+        "!hasAuditedArchivePropertyTypeId(object,*actualProperty)",
+        "actualProperty->getTypeId()!=canonicalProperty->getTypeId()",
+        "actualProperty->getType()!=canonicalProperty->getType()",
+        "(1UL<<App::Property::Touched)|(1UL<<App::Property::Busy)",
+        "(actualProperty->getStatus()&~volatileStatusMask)!="
+        "(canonicalProperty->getStatus()&~volatileStatusMask)",
+        "actualLink->getScope()!=canonicalLink->getScope()",
+        "for(intflag=App::PropertyLinkBase::LinkAllowExternal;"
+        "flag<=App::PropertyLinkBase::LinkSilentRestore;++flag)",
+        "actualLink->testFlag(flag)!=canonicalLink->testFlag(flag)",
+        "App::Prop_Transient|App::Prop_NoPersist",
+        "!sameSerializedProperty(*actualProperty,*canonicalProperty)",
+    ):
+        assert fragment in schema, f"canonical archive schema omitted {fragment}"
+
+    prepare = _compact(_body(source, "prepareGenericRecompute"))
+    audited = prepare.find(
+        "constboolauditedWorkerType=hasAuditedWorkerResultTypeId(*target)"
+    )
+    inert = prepare.find(
+        "constboolknownInertType=hasKnownInertBookkeepingTypeId(*target)"
+    )
+    unknown_rejection = prepare.find("if(!auditedWorkerType&&!knownInertType){", inert)
+    exact_runtime = prepare.find(
+        "if(!hasExactRegisteredRuntimeType(*target)){", unknown_rejection
+    )
+    archive_contract = prepare.find(
+        "!hasCanonicalAuditedArchiveSchema(*target)", exact_runtime
+    )
+    closure = prepare.find("collectClosure(document,*target)", archive_contract)
+    assert 0 <= audited < inert < unknown_rejection < exact_runtime < archive_contract < closure
+
+
+def test_archive_contract_rejects_extensions_expressions_python_and_dynamic_schema() -> None:
+    source = _read(GENERIC_SOURCE)
+    contract = _compact(_body(source, "hasAuditedArchiveContract"))
+    for fragment in (
+        "constboolauditedExecutable=hasAuditedWorkerResultTypeId(object)",
+        "constboolauditedInputLink=&object!=&target",
+        "if(!auditedExecutable&&!auditedInputLink){returnfalse;}",
+        "if(!hasExactRegisteredRuntimeType(object)){returnfalse;}",
+        "!object.canRecomputeOnWorker()",
+        "object.hasExtensions()",
+        "hasPythonObjectProperty(object)",
+        "!object.ExpressionEngine.getExpressions().empty()",
+        "!isSafePlainAppLinkArchiveInput(object)",
+        "returnhasCanonicalAuditedArchiveSchema(object);",
+    ):
+        assert fragment in contract, f"archive contract omitted {fragment}"
+
+    safe_link = _compact(_body(source, "isSafePlainAppLinkArchiveInput"))
+    assert "typeid(object)!=typeid(App::Link)" in safe_link
+    assert "!hasCanonicalExtensionSet(object,*canonical)" in safe_link
+    assert "object.mustExecute()!=0" in safe_link
+    assert "link->ElementCount.getValue()!=0" in safe_link
+    assert "App::LinkBaseExtension::CopyOnChangeDisabled" in safe_link
+    assert "!object.ExpressionEngine.getExpressions().empty()" in safe_link
+    assert "entry.second->testStatus(App::Property::PropDynamic)" in safe_link
+    assert "linked->getPropertyByName(" in safe_link
+    assert "App::PropertyPythonObject" in safe_link
+
+    declared = _compact(_body(source, "isDeclaredRecomputeOutput"))
+    assert declared.endswith("returncompatibleOutput;")
+    assert "hasExtension" not in declared
 
 
 def test_worker_import_is_a_state_transfer_that_skips_schema_migrations() -> None:
     """The worker archive is written by this build from already-migrated state.
 
-    Re-running a deprecated-property migration against it does not upgrade a
-    stale file, it overwrites a live value: FeatureExtrude re-derives SideType
-    from the residual Midplane flag and the worker then executes different
-    semantics than the caller asked for.  Freeze both halves of the contract --
-    the import scope that declares the transfer, and the migration sites that
-    honour it.
+    It is a same-version transfer, not a request to reinterpret an old file.
+    Freeze the import scope and the shared predicate used by restore hooks. The
+    presence of this defense does not admit any otherwise unsupported type.
     """
     execute = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
     assert "App::Document::CurrentSchemaTransfer,detached" in execute
@@ -629,72 +784,6 @@ def test_worker_import_is_a_state_transfer_that_skips_schema_migrations() -> Non
     predicate = _compact(_body(_read(OBJECT_SOURCE), "DocumentObject::isRestoringDeprecatedSchema"))
     assert "doc->testStatus(Document::CurrentSchemaTransfer)" in predicate
 
-    for source, qualified in (
-        (EXTRUDE_SOURCE, "FeatureExtrude::onDocumentRestored"),
-        (REVOLVED_SOURCE, "Revolved::onDocumentRestored"),
-    ):
-        migration = _compact(_body(_read(source), qualified))
-        assert migration.startswith("if(!isRestoringDeprecatedSchema()){"), qualified
-        # The guard must return before the migration, not merely branch around it.
-        assert "ProfileBased::onDocumentRestored();return;}" in migration, qualified
-
-
-def test_attachment_derived_placement_is_a_declared_recompute_output() -> None:
-    """AttachExtension::extensionExecute() writes the extended object's Placement.
-
-    Placement predates Prop_Output, so without an explicit declaration an
-    attached feature publishes nothing and the caller keeps its identity
-    placement.  The declaration is keyed on the registered extension rather
-    than the live MapMode so the manifest schema stays stable for the whole
-    detached recompute.
-    """
-    generic = _read(GENERIC_SOURCE)
-    declared = _compact(_body(generic, "isDeclaredRecomputeOutput"))
-    assert "isAttachExtensionPlacementRecomputeOutput(object,property)" in declared
-
-    # String literals are blanked by the comment/literal scanner, so the type
-    # and property names have to be read from the raw body.
-    literal = _compact(_body(generic, "isAttachExtensionPlacementRecomputeOutput", raw=True))
-    assert 'Base::Type::fromName("Part::AttachExtension")' in literal
-    assert 'object.getPropertyByName("Placement")==&property' in literal
-
-    predicate = _compact(_body(generic, "isAttachExtensionPlacementRecomputeOutput"))
-    assert "object.hasExtension(attachExtensionType)" in predicate
-    # Keyed on the extension alone: a live MapMode read would let an expression
-    # change the manifest schema mid-recompute.
-    assert "MapMode" not in predicate
-
-
-def test_state_transfer_import_does_not_pre_derive_the_attached_placement() -> None:
-    """The worker snapshots its comparison baseline right after the import.
-
-    Opening a document re-derives the attached placement in
-    onExtendedDocumentRestored() so a stored value cannot drift from its
-    supports.  A same-version state transfer is not an open: re-deriving there
-    puts the pending recompute's own output into the pre-execute baseline, the
-    placement execute() computes then compares equal to it, and the caller is
-    told nothing changed and keeps its stale value.  Freeze the ordering that
-    makes this matter and the guard that answers it.
-    """
-    execute = _compact(_body(_read(GENERIC_SOURCE), "executeGenericRecompute"))
-    imported = execute.split("importer.importObjects(archiveStream));", 1)
-    assert len(imported) == 2, "worker no longer imports the caller archive"
-    # The baseline is taken from the imported document, so any restore hook that
-    # writes a declared output lands in it.
-    assert "capturePropertySnapshots(*detached,manifests)" in imported[1]
-
-    restored = _compact(_body(_read(ATTACH_SOURCE), "AttachExtension::onExtendedDocumentRestored"))
-    guard = "if(document&&document->testStatus(App::Document::CurrentSchemaTransfer)){return;}"
-    assert guard in restored
-    # The guard has to return before the placement is re-derived, not after it.
-    assert restored.split(guard, 1)[1].startswith("boolbAttached=positionBySupport();")
-
-    # Same status bit the worker import scopes, read at the one site that needs
-    # it: DocumentObject.h is included across the tree, so this deliberately
-    # does not add a member there for a single caller.
-    document_header = _compact(_suppress_cpp(_read(DOCUMENT_HEADER)))
-    assert "CurrentSchemaTransfer=15" in document_header
-
 
 def test_unconditional_executors_are_never_bookkeeping_only_recompute_targets() -> None:
     """mustExecute() does not answer whether execute() is a no-op.
@@ -703,8 +792,8 @@ def test_unconditional_executors_are_never_bookkeeping_only_recompute_targets() 
     conflated the two -- it executes every touched object -- so a class whose
     execute() does unconditional work is invisible to the mustRecompute()
     shortcut, and short-circuiting it purges the touch and drops the work.
-    Two are proven: an attached feature re-derives its Placement on every
-    execution, and AssemblyObject::execute() runs the joint solver.
+    AssemblyObject::execute() is one proven case: it runs the joint solver even
+    though mustExecute() does not declare that work.
     """
     generic = _read(GENERIC_SOURCE)
     bookkeeping = _compact(_body(generic, "isBookkeepingOnlyTarget"))
@@ -712,16 +801,12 @@ def test_unconditional_executors_are_never_bookkeeping_only_recompute_targets() 
     assert "object.mustRecompute()==0" in bookkeeping
 
     literal = _compact(_body(generic, "owesUnconditionalExecuteWork", raw=True))
-    assert 'Base::Type::fromName("Part::AttachExtension")' in literal
     assert 'Base::Type::fromName("Assembly::AssemblyObject")' in literal
     predicate = _compact(_body(generic, "owesUnconditionalExecuteWork"))
-    assert "object.hasExtension(attachExtensionType)" in predicate
     assert "object.getTypeId().isDerivedFrom(assemblyType)" in predicate
 
-    # The premises: the extension really does re-derive on every execution, and
-    # the assembly really does solve from execute() without declaring it.
-    mapping = _compact(_body(_read("src/Mod/Part/App/AttachExtension.h"), "isTouched_Mapping"))
-    assert mapping == "returntrue;"
+    # The premise: the assembly really does solve from execute() without
+    # declaring that work through mustExecute().
     assembly = _read("src/Mod/Assembly/App/AssemblyObject.cpp")
     assert "solve(false);" in _compact(_body(assembly, "AssemblyObject::execute"))
     assert "AssemblyObject::mustExecute" not in assembly
@@ -734,7 +819,9 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
     setNewPlacements() moves every jointed part.  The worker publishes only the
     recomputed target's own declared outputs, so a solve that runs detached
     converges and is then discarded, leaving the parts where they were.  The
-    assembly therefore has to opt out of worker execution.
+    assembly therefore remains outside the exact audited worker type list. Its
+    historical worker-affinity opt-out is retained as defense in depth, not as
+    archive admission authority.
     """
     header = _compact(_suppress_cpp(_read("src/Mod/Assembly/App/AssemblyObject.h")))
     assert "boolcanRecomputeOnWorker()constoverride{returnfalse;}" in header
@@ -752,52 +839,34 @@ def test_assembly_solving_is_not_reproducible_in_the_worker() -> None:
     assert "encodeOutputs(targetName,*target,*targetManifest,baseline)" in generic
 
 
-def test_worker_opt_out_has_no_implicit_async_live_fallback() -> None:
-    """A scripted feature's execute() lives in a Python proxy.
-
-    The archive cannot carry it, so FeaturePython only opts into worker
-    execution when its proxy implements supportsAsyncRecompute(). The explicit
-    asynchronous API must report that refusal as a failed node rather than run
-    arbitrary proxy code later on the GUI thread. Synchronous compatibility
-    calls use the separate native kernel and never encode a forgeable venue.
-    """
+def test_unaudited_types_have_no_implicit_async_live_fallback() -> None:
+    """Thread-affinity hooks never grant generic archive or commit authority."""
     generic = _read(GENERIC_SOURCE)
     prepare = _compact(_body(generic, "prepareGenericRecompute"))
-    opt_out = (
-        "if(!target->canRecomputeOnWorker()"
-        "&&!provenInertBookkeepingContract){"
+    unknown = "if(!auditedWorkerType&&!knownInertType){"
+    exact_runtime = "if(!hasExactRegisteredRuntimeType(*target)){"
+    inert_contract = (
+        "constboolprovenInertBookkeepingContract=knownInertType&&"
+        "(isSafePlainDocumentObjectBookkeepingTarget(*target)||"
+        "isNullProxyExternalLinkHolderBookkeepingTarget(*target));"
     )
-    assert opt_out in prepare
-    # The opt-out branch has to come before the general bookkeeping
-    # short-circuit: a scripted feature's mustExecute() reports nothing about
-    # what its proxy owes, so purging the touch would drop it.
-    assert prepare.index(opt_out) < prepare.index("isBookkeepingOnlyTarget(*target)")
-    assert "hasnotoptedintoisolatedexecution" in prepare
-    assert prepare.index(opt_out) < prepare.index("collectClosure(document,*target)")
+    assert unknown in prepare
+    assert exact_runtime in prepare
+    assert inert_contract in prepare
+    assert prepare.index(unknown) < prepare.index(exact_runtime)
+    assert prepare.index(inert_contract) < prepare.index("isBookkeepingOnlyTarget(*target)")
+    assert prepare.index(inert_contract) < prepare.index("collectClosure(document,*target)")
     assert "owner_thread_execution" not in generic
     assert "GenericRecomputeInProcessOperation" not in generic
+    assert "executeAuthoritative" not in generic
 
-    # It defers only to the two exact-type, proven-inert contracts: an
-    # App::FeaturePython with a null Proxy cannot run Python execute code at
-    # all, so it keeps its cheap bookkeeping path. The general
-    # mustRecompute() shortcut, which proves nothing about execute(), does not
-    # get that privilege.
-    assert (
-        "constboolprovenInertBookkeepingContract=isSafePlainAppLinkBookkeepingTarget(*target)"
-        "||isNullProxyExternalLinkHolderBookkeepingTarget(*target);" in prepare
-    )
+    bookkeeping = _compact(_body(generic, "isBookkeepingOnlyTarget"))
+    assert "isSafePlainDocumentObjectBookkeepingTarget(object)" in bookkeeping
+    assert "isNullProxyExternalLinkHolderBookkeepingTarget(object)" in bookkeeping
+    assert "isSafePlainAppLinkArchiveInput(object)" not in bookkeeping
     null_proxy = _compact(_body(generic, "isNullProxyExternalLinkHolderBookkeepingTarget"))
     assert "!proxy->getValue().isNone()" in null_proxy
-
-    # The one remaining authoritative live execute is the narrow
-    # transient-schema result-application path. It stays behind the coordinator
-    # guard, which requires the owner thread, a pending transaction and
-    # suppressed publication.
-    assert "GenericIsolatedRecomputeAccess::executeAuthoritative" in _compact(generic)
-    authoritative = _compact(_body(generic, "executeAuthoritative"))
-    assert "document.isCollaborationOwnerThread()" in authoritative
-    assert "document.hasPendingTransaction()" in authoritative
-    assert "document.collaborationRevisionPublicationSuppressed()" in authoritative
+    assert "isSafePlainAppLinkArchiveInput(*dependency)" in null_proxy
 
 def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
     service_header = _read(SERVICE_HEADER)
@@ -840,11 +909,6 @@ def test_recompute_commit_is_private_and_uses_the_deferred_dcc_policy() -> None:
         "false",
         "CollaborationCompatibilityRecomputePolicy::Deferred",
         "false",
-        # nestInCallerTransaction. Recompute is the only commit that may run
-        # inside a transaction the caller already opened; it takes a nested
-        # transaction of its own, which is folded back on commit. A competing
-        # compatibility mutation is still refused as Busy.
-        "true",
     ]
     assert 0 <= grant < grant_open < derived < grant_close < ordinary
     assert ordinary < ordinary_open < ordinary_close
@@ -873,13 +937,149 @@ def test_safe_touch_bookkeeping_stays_in_the_lightweight_commit_lane() -> None:
     )
     bookkeeping = _compact(_body(source, "isBookkeepingOnlyTarget"))
     assert "object.mustRecompute()==0" in bookkeeping
-    assert "isSafePlainAppLinkBookkeepingTarget(object)" in bookkeeping
+    assert "isSafePlainDocumentObjectBookkeepingTarget(object)" in bookkeeping
+    assert "isNullProxyExternalLinkHolderBookkeepingTarget(object)" in bookkeeping
+    assert "isSafePlainAppLinkArchiveInput(object)" not in bookkeeping
+
+    # The broad mustRecompute()==0 shortcut is reachable only after the target
+    # passed the exact audited/inert type and runtime-contract gates.
+    prepare = _compact(_body(source, "prepareGenericRecompute"))
+    known = prepare.find(
+        "constboolknownInertType=hasKnownInertBookkeepingTypeId(*target)"
+    )
+    exact = prepare.find("if(!hasExactRegisteredRuntimeType(*target)){", known)
+    inert_contract = prepare.find("constboolprovenInertBookkeepingContract=", exact)
+    rejected = prepare.find(
+        "if(!auditedWorkerType&&!provenInertBookkeepingContract){",
+        inert_contract,
+    )
+    shortcut = prepare.find("isBookkeepingOnlyTarget(*target)", rejected)
+    assert 0 <= known < exact < inert_contract < rejected < shortcut
+
     assert "PreparationPolicy::DetachedInProcess" in generic
     operation = generic.split("classGenericRecomputeBookkeepingOperation", 1)[1]
     operation = operation.split("std::unique_ptr<constApp::CollaborativeOperation>decodeResult", 1)[0]
     assert "target->mustRecompute()" in operation
     assert "document.settleRecomputedFeature(*target)" in operation
     assert "executeGenericRecompute" not in operation
+
+
+def test_presentation_fences_are_cleared_recaptured_and_fail_closed() -> None:
+    coordinator = _read(RECOMPUTE_SOURCE)
+    activation = _compact(_body(
+        coordinator, "DocumentRecomputeCoordinator::activateSubmission"
+    ))
+    object_reset = activation.find("node.presentationObjectModelRevision.reset()")
+    fence_clear = activation.find("node.presentationRevisionFence.clear()", object_reset)
+    incomplete = activation.find(
+        "node.presentationRevisionFenceComplete=false", fence_clear
+    )
+    begin_session = activation.find("_service.beginEditSession(", incomplete)
+    assert 0 <= object_reset < fence_clear < incomplete < begin_session
+
+    service = _compact(_body(
+        _read(SERVICE_SOURCE),
+        "DocumentCollaborationService::prepareEditAsyncOnDocumentThread",
+    ))
+    initial_clear = service.find("presentationRevisionFence->clear()")
+    initial_incomplete = service.find(
+        "*presentationRevisionFenceComplete=false", initial_clear
+    )
+    provisional_capture = service.find(
+        "captureGenericIsolatedRecomputePresentationFence(", initial_incomplete
+    )
+    provisional_complete = service.find(
+        "*presentationRevisionFenceComplete=true", provisional_capture
+    )
+    preparation = service.find(
+        "CollaborativeOperationRegistry::instance().prepare(", provisional_complete
+    )
+    canonical = service.find("validatePreparedEditMetadata(", preparation)
+    replacement_incomplete = service.find(
+        "*presentationRevisionFenceComplete=false", canonical
+    )
+    exact_fence = service.find(
+        "std::vector<DocumentRevisionObservation>exactFence", replacement_incomplete
+    )
+    replace_fence = service.find(
+        "*presentationRevisionFence=std::move(exactFence)", exact_fence
+    )
+    exact_complete = service.find(
+        "*presentationRevisionFenceComplete=true", replace_fence
+    )
+    assert (
+        0
+        <= initial_clear
+        < initial_incomplete
+        < provisional_capture
+        < provisional_complete
+        < preparation
+        < canonical
+        < replacement_incomplete
+        < exact_fence
+        < replace_fence
+        < exact_complete
+    )
+
+    finalize = _compact(_body(
+        _read(DOCUMENT_SOURCE), "Document::finalizeDetachedRecompute"
+    ))
+    broad_failure = finalize.find("constboolrequiresBroadFailureFence=")
+    semantic = finalize.find("constboolsemanticFenceMatches=", broad_failure)
+    fence_complete = finalize.find(
+        "node.presentationRevisionFenceComplete", semantic
+    )
+    validate = finalize.find(
+        ".validate(node.presentationRevisionFence).empty()", fence_complete
+    )
+    apply = finalize.find("objectFenceMatches&&semanticFenceMatches", validate)
+    assert 0 <= broad_failure < semantic < fence_complete < validate < apply
+
+    schedule = _compact(_body(
+        coordinator, "DocumentRecomputeCoordinator::scheduleReady"
+    ))
+    assert "boolfenceComplete=false" in schedule
+    generic = schedule.find(
+        "candidate.operationType==GenericIsolatedRecomputeOperationType"
+    )
+    capture = schedule.find(
+        "captureGenericIsolatedRecomputePresentationFence(", generic
+    )
+    complete = schedule.find("fenceComplete=true", capture)
+    publish = schedule.find(
+        "presentationRevisionFenceComplete=fenceComplete", complete
+    )
+    assert 0 <= generic < capture < complete < publish
+    assert schedule.count("fenceComplete=true") == 1
+
+
+def test_unresolved_ledger_precedes_terminal_publication_and_is_generation_safe() -> None:
+    coordinator = _read(RECOMPUTE_SOURCE)
+    finalize = _compact(_body(
+        coordinator, "DocumentRecomputeCoordinator::finalizeIfTerminal"
+    ))
+    synthetic = finalize.find("_unresolvedSyntheticFeatures.insert_or_assign(")
+    generation = finalize.find("found->second.generation<=id", synthetic)
+    live = finalize.find("_unresolvedLiveFeatures.insert_or_assign(", generation)
+    session = finalize.find("foundJob->second->sessionFinalized=true", live)
+    terminal = finalize.find("foundJob->second->state=terminalState", session)
+    assert 0 <= synthetic < generation < live < session < terminal
+
+    identity_filter = finalize.find("std::erase_if(liveFailures")
+    lookup = finalize.find("document.getObject(candidate.featureId", identity_filter)
+    identity = finalize.find(
+        "document.collaborationObjectIdentity(*object)!=candidate.stableObjectIdentity",
+        lookup,
+    )
+    finalize_state = finalize.find("finalizeState()", identity)
+    assert 0 <= identity_filter < lookup < identity < finalize_state
+
+    forget = _compact(_body(
+        coordinator, "DocumentRecomputeCoordinator::forgetUnresolvedFeature"
+    ))
+    comparison = forget.find("found->second.generation<=id")
+    erase = forget.find("_unresolvedLiveFeatures.erase(found)", comparison)
+    assert 0 <= comparison < erase
 
 
 def test_recompute_capture_allows_only_touched_state_beyond_normal_capture() -> None:
@@ -904,35 +1104,12 @@ def test_recompute_capture_allows_only_touched_state_beyond_normal_capture() -> 
     ):
         assert boundary in document
 
-    # The caller's own undo transaction is not a foreign mutation boundary: it
-    # is how every GUI command groups its edits, and refusing the preparation
-    # behind a recompute inside one made that recompute a silent no-op. The
-    # nested predicate drops that one term and keeps every other boundary.
-    nested = _compact(_body(
-        _read(DOCUMENT_SOURCE), "Document::collaborationNestedRecomputeCaptureBlocked"
-    ))
-    assert "mustExecute()" not in nested
-    assert "hasPendingTransaction()" not in nested
-    assert "getBookedTransactionID()!=0" not in nested
-    for boundary in (
-        "collaborationCommitNotificationBarrier",
-        "collaborationReplayingNotifications",
-        "transacting()",
-        "isTransactionLocked()",
-        "collaborationRecomputeTeardownDepth",
-        "pendingRemovalProcessing",
-        "!d->pendingRemove.empty()",
-    ):
-        assert boundary in nested, boundary
-
     service = _compact(_body(
         _read(SERVICE_SOURCE),
         "DocumentCollaborationService::prepareEditAsyncOnDocumentThread",
     ))
     assert "intent.operationType==GenericIsolatedRecomputeOperationType" in service
-    # Only a recompute capture gets the nested-tolerant predicate; every other
-    # preparation still requires a clean native state.
-    assert "collaborationNestedRecomputeCaptureBlocked()" in service
+    assert "collaborationRecomputeCaptureBlocked()" in service
     assert "collaborationStableReadBlocked()" in service
 
     recompute = _compact(_body(_read(RECOMPUTE_SOURCE), "DocumentRecomputeCoordinator::poll"))

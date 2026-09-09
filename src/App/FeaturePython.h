@@ -348,11 +348,11 @@ public:
 
     bool canRecomputeOnWorker() const override
     {
-        if (!FeatureT::canRecomputeOnWorker()) {
-            return false;
-        }
-
-        return imp->supportsAsyncRecompute() == FeaturePythonImp::Accepted;
+        // A Python proxy may mutate its own Python state without changing a
+        // transferable property. The generic archive protocol cannot observe
+        // or publish that state, regardless of its historical thread-affinity
+        // opt-in. Scripted features require a dedicated typed result adapter.
+        return false;
     }
 
     /**

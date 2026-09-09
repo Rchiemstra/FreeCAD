@@ -187,6 +187,14 @@ isolated. This restores caller-transaction, FeaturePython, scheduler-status, and
 interactive performance contracts without reviving a fallback for isolated
 requests.
 
+A 2026-09-09 integrity correction further supersedes the historical CC-WP11
+claims that generic isolation covers unported features and that FeaturePython
+can opt into worker execution. Generic archive recompute is now fail-closed to
+exact internally audited registered native types and canonical schemas;
+FeaturePython never executes in the worker, and Spreadsheet has no authoritative
+live replay or fallback. The CC-WP11 row is retained unchanged as a record of
+what that package claimed and tested at its original commit.
+
 Allowed states are `Not started`, `Sol review`, `Terra fix`, `Luna test`, `Sol re-review`, `Ready to commit`, `Pushed/Done`, and `Blocked`.
 
 | WP | Deliverable | State | Initial Sol | Terra | Luna Docker | Native/live gates | Final Sol | Commit | Push | Evidence / next action |

@@ -1005,25 +1005,6 @@ bool Document::collaborationRecomputeCaptureBlocked() const noexcept
         || !d->pendingRemove.empty();
 }
 
-bool Document::collaborationNestedRecomputeCaptureBlocked() const noexcept
-{
-    // As above, minus the caller's own transaction. An open or merely booked
-    // undo transaction is how every GUI command groups its edits; treating it
-    // as a foreign mutation boundary refused the preparation behind every
-    // recompute inside one and made those recomputes silent no-ops. A recompute
-    // commits in a nested transaction of its own, so it can still roll back
-    // exactly its own work, and the revision fence -- not the absence of a
-    // transaction -- is what protects a capture from anything committed
-    // meanwhile. A transaction being applied or rolled back still blocks.
-    const bool foreignMutationBoundary = d->collaborationCommitNotificationBarrier
-        || transacting() || isTransactionLocked();
-    return (foreignMutationBoundary && !d->collaborationDerivedRecomputeGranted)
-        || d->collaborationReplayingNotifications
-        || d->collaborationRecomputeTeardownDepth.load(std::memory_order_acquire) != 0
-        || d->pendingRemovalProcessing.load(std::memory_order_acquire)
-        || !d->pendingRemove.empty();
-}
-
 bool Document::collaborationLifecycleMutationBlocked() const noexcept
 {
     return d->collaborationLifecycleMutationBlockDepth.load(std::memory_order_acquire) != 0;
@@ -1153,23 +1134,23 @@ void Document::ensureCollaborationDynamicPropertyMutationAllowed(
             return notification.kind == CollaborationDeferredNotificationKind::NewObject
                 && notification.object == &object;
         });
-    // A feature's execute() may create the caches it publishes as recompute
-    // output -- SubShapeBinder's Cache_* transformation matrices, an Arch
-    // component's link property overrides. The coordinator runs execute() on
-    // the owner thread inside the commit boundary, so those additions reach
-    // this gate instead of being discarded in a detached worker. Keyed as
-    // narrowly as the recorder's executeOwnedStatus grant: the object the
-    // coordinator is currently executing, adding a property to itself.
-    const bool executeOwnedDynamicProperty = object.testStatus(ObjectStatus::Recompute);
-    const bool newStructuralObject = d->collaborationNewObjectStructuralSetup.contains(&object)
+    const bool newStructuralObject =
+        d->collaborationNewObjectStructuralSetup.contains(&object)
         || d->collaborationImportNewObjects.contains(&object) || deferredNewObject;
-    auto kind = CollaborationStructuralMutationKind::Restricted;
-    if (newStructuralObject) {
-        kind = CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
-    }
-    else if (executeOwnedDynamicProperty) {
-        kind = CollaborationStructuralMutationKind::Object;
-    }
+    // Eager compatibility commits may run the native recompute kernel while
+    // the coordinator owns the transaction. Some established execute paths
+    // maintain dynamic caches on the object being recomputed. Scope that
+    // privilege to the coordinator's derived-recompute grant as well as the
+    // object's execute status: a detached result merely applied under the
+    // commit barrier must not acquire structural authority from Recompute.
+    const bool derivedExecuteOwnedProperty =
+        d->collaborationDerivedRecomputeGranted
+        && object.testStatus(ObjectStatus::Recompute);
+    const auto kind = newStructuralObject
+        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
+        : derivedExecuteOwnedProperty
+        ? CollaborationStructuralMutationKind::Object
+        : CollaborationStructuralMutationKind::Restricted;
     const char* objectName = object.getNameInDocument();
     std::string mutation = "addDynamicProperty on ";
     mutation += (objectName && *objectName) ? objectName : "<unnamed>";
@@ -1192,20 +1173,17 @@ void Document::ensureCollaborationDynamicPropertyRemovalAllowed(
             return notification.kind == CollaborationDeferredNotificationKind::NewObject
                 && notification.object == &object;
         });
-    // The same execute-owned grant as the addition above: a feature's own
-    // execute() retiring a cache it published, keyed on the object the
-    // coordinator is currently executing. removeDynamicProperty() looked the
-    // property up on this object, so it is provably the object's own.
-    const bool executeOwnedDynamicProperty = object.testStatus(ObjectStatus::Recompute);
-    const bool newStructuralObject = d->collaborationNewObjectStructuralSetup.contains(&object)
+    const bool newStructuralObject =
+        d->collaborationNewObjectStructuralSetup.contains(&object)
         || d->collaborationImportNewObjects.contains(&object) || deferredNewObject;
-    auto kind = CollaborationStructuralMutationKind::Restricted;
-    if (newStructuralObject) {
-        kind = CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
-    }
-    else if (executeOwnedDynamicProperty) {
-        kind = CollaborationStructuralMutationKind::Object;
-    }
+    const bool derivedExecuteOwnedProperty =
+        d->collaborationDerivedRecomputeGranted
+        && object.testStatus(ObjectStatus::Recompute);
+    const auto kind = newStructuralObject
+        ? CollaborationStructuralMutationKind::DynamicPropertyOnNewObject
+        : derivedExecuteOwnedProperty
+        ? CollaborationStructuralMutationKind::Object
+        : CollaborationStructuralMutationKind::Restricted;
     const char* objectName = object.getNameInDocument();
     std::string mutation = "removeDynamicProperty on ";
     mutation += (objectName && *objectName) ? objectName : "<unnamed>";
@@ -2102,6 +2080,10 @@ void Document::emitCollaborationTouchedObject(DocumentObject& object)
             {CollaborationDeferredNotificationKind::TouchedObject, &object});
         return;
     }
+    if (d->collaborationRecomputePresentationTouches) {
+        d->collaborationRecomputePresentationTouches->push_back(&object);
+        return;
+    }
     signalTouchedObject(object);
 }
 
@@ -2938,29 +2920,7 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 }
                 d->activeUndoTransaction = nullptr;
             }
-            else if (d->nestedCommitParked) {
-                // A nested commit: the caller already had a transaction open,
-                // so this one is part of that step rather than an undo entry of
-                // its own. Fold it into the parked transaction and leave the
-                // reinstatement to the guard that parked it, so one undo step
-                // covers both. A caller that only had a booking gets this
-                // transaction as its own.
-                mUndoMap.erase(id);
-                discardTransactionFileState(id);
-                if (d->parkedNestedTransaction) {
-                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-                    delete d->activeUndoTransaction;
-                }
-                else {
-                    d->parkedNestedTransaction = d->activeUndoTransaction;
-                }
-                d->activeUndoTransaction = nullptr;
-            }
             else if (d->collaborationCommitNotificationBarrier) {
-                if (d->collaborationPreparedUndoSlot.empty()) {
-                    throw Base::RuntimeError(
-                        "collaboration commit finalization was not prepared");
-                }
                 d->collaborationPreparedUndoSlot.front() = d->activeUndoTransaction;
                 mUndoTransactions.splice(mUndoTransactions.end(),
                                          d->collaborationPreparedUndoSlot,
@@ -6281,60 +6241,6 @@ const char* Document::getFileName() const
     return testStatus(TempDoc) ? TransientDir.getValue() : FileName.getValue();
 }
 
-bool Document::parkTransactionForNestedCommit()
-{
-    if (d->nestedCommitParked) {
-        return false;
-    }
-    // openTransaction() books a name and defers creating the transaction until
-    // the first change, so a caller inside one may have a booking, a live
-    // transaction, or both. Set aside whichever exists: the booking so the
-    // commit's own transaction cannot consume or clear it, and the live
-    // transaction so its records survive to be folded back into.
-    if (!d->activeUndoTransaction && d->bookedTransaction == 0) {
-        return false;
-    }
-    d->parkedNestedTransaction = d->activeUndoTransaction;
-    d->activeUndoTransaction = nullptr;
-    d->parkedNestedBookedTransaction = d->bookedTransaction;
-    d->bookedTransaction = 0;
-    d->nestedCommitParked = true;
-    return true;
-}
-
-void Document::restoreParkedTransactionAfterNestedCommit()
-{
-    if (!d->nestedCommitParked) {
-        return;
-    }
-    if (d->activeUndoTransaction) {
-        // The commit's transaction is still open, so it neither folded nor
-        // rolled back. Fold it now rather than strand the caller's or leak it.
-        if (d->parkedNestedTransaction) {
-            d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-            mUndoMap.erase(d->activeUndoTransaction->getID());
-            delete d->activeUndoTransaction;
-            d->activeUndoTransaction = nullptr;
-        }
-        else {
-            // Nothing to fold into: the caller only had a booking, so the
-            // commit's transaction becomes the caller's.
-            d->parkedNestedTransaction = d->activeUndoTransaction;
-            d->activeUndoTransaction = nullptr;
-        }
-    }
-    d->activeUndoTransaction = d->parkedNestedTransaction;
-    d->parkedNestedTransaction = nullptr;
-    d->bookedTransaction = d->parkedNestedBookedTransaction;
-    d->parkedNestedBookedTransaction = 0;
-    d->nestedCommitParked = false;
-}
-
-bool Document::hasParkedNestedTransaction() const noexcept
-{
-    return d->nestedCommitParked;
-}
-
 void Document::discardCollaborationNotificationsForDestroyedObject(
     const DocumentObject* object) noexcept
 {
@@ -7143,6 +7049,8 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
     }
     std::vector<DocumentObject*> recomputed;
     recomputed.reserve(snapshot.features.size());
+    std::vector<DocumentObject*> individuallyRecomputed;
+    individuallyRecomputed.reserve(snapshot.features.size());
 
     // Snapshot id zero is the coordinator's synchronous no-work notification,
     // not a public handle job. Every actual job claims presentation only after
@@ -7205,24 +7113,44 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
         }
     };
     std::optional<Base::FlagToggler<bool>> retainDirectPresentationObjects;
+    std::vector<DocumentObject*> presentationTouches;
     if (!d->collaborationCommitNotificationBarrier) {
         retainDirectPresentationObjects.emplace(
             d->collaborationAggregateRecomputeNotificationActive, false);
+        presentationTouches.reserve(snapshot.features.size());
+        if (d->collaborationRecomputePresentationTouches) {
+            throw Base::RuntimeError(
+                "detached recompute presentation notification batch is already active");
+        }
+        d->collaborationRecomputePresentationTouches = &presentationTouches;
     }
+    BOOST_SCOPE_EXIT_ALL(&) {
+        if (d->collaborationRecomputePresentationTouches == &presentationTouches) {
+            d->collaborationRecomputePresentationTouches = nullptr;
+        }
+    };
+
+    struct PresentationPlanEntry
+    {
+        const DocumentRecomputeFeatureSnapshot* node {nullptr};
+        DocumentObject* object {nullptr};
+        bool fencesMatch {false};
+    };
+    std::vector<PresentationPlanEntry> presentationPlan;
+    presentationPlan.reserve(snapshot.features.size());
+
+    // Validate every node against one pre-presentation document state. A
+    // failed upstream is touched below, which advances model revisions and may
+    // propagate touch state to a blocked dependent. Sequential validation
+    // would therefore make this terminal snapshot invalidate itself.
     for (const auto& node : snapshot.features) {
-        try {
-        // Name lookup is only a locator. Stable identity is the authority that
-        // prevents an old terminal snapshot from touching, diagnosing, or
-        // signalling a same-name replacement. Synthetic coordinator nodes
-        // without an object identity intentionally have no live presentation.
         if (node.stableObjectIdentity.empty()) {
             continue;
         }
         auto* object = getObject(node.featureId.c_str());
         if (!object
             || collaborationObjectIdentity(*object) != node.stableObjectIdentity) {
-            recomputeCoordinator().forgetAllUnresolvedFeature(
-                node.featureId, node.stableObjectIdentity);
+            presentationPlan.push_back({&node, nullptr, false});
             continue;
         }
         const bool objectFenceMatches = node.presentationObjectModelRevision
@@ -7238,7 +7166,26 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
                 && collaborationRevisions()
                        .validate(node.presentationRevisionFence)
                        .empty());
-        if (!objectFenceMatches || !semanticFenceMatches) {
+        presentationPlan.push_back(
+            {&node, object, objectFenceMatches && semanticFenceMatches});
+    }
+
+    // Apply every accepted presentation mutation before invoking an observer.
+    // This keeps the validation/apply phase atomic with respect to callbacks;
+    // direct object notifications are emitted from the retained list below.
+    for (const auto& entry : presentationPlan) {
+        try {
+        const auto& node = *entry.node;
+        auto* object = entry.object;
+        // Name lookup is only a locator. Stable identity is the authority that
+        // prevents an old terminal snapshot from touching, diagnosing, or
+        // signalling a same-name replacement.
+        if (!object) {
+            recomputeCoordinator().forgetAllUnresolvedFeature(
+                node.featureId, node.stableObjectIdentity);
+            continue;
+        }
+        if (!entry.fencesMatch) {
             // The detached outcome belongs to an older model state of this
             // same object incarnation. A later synchronous recompute or edit
             // owns presentation; retaining this failure would re-dirty and
@@ -7267,23 +7214,12 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             }
             if (!object->isTouched() && object->mustRecompute() == 0
                 && object->isValid() && !object->isError()) {
-                recomputeCoordinator().forgetAllUnresolvedFeature(
+                recomputeCoordinator().forgetUnresolvedFeature(
+                    snapshot.id,
                     node.featureId, node.stableObjectIdentity);
             }
             recomputed.push_back(object);
-            if (d->collaborationCommitNotificationBarrier) {
-                try {
-                    d->collaborationDeferredNotifications.push_back(
-                        {CollaborationDeferredNotificationKind::RecomputedObject, object});
-                }
-                catch (...) {
-                    reportPresentationFailure(std::current_exception());
-                }
-            }
-            else {
-                signalRecomputedObject.underlying().emit_resilient(
-                    reportPresentationFailure, *object);
-            }
+            individuallyRecomputed.push_back(object);
             continue;
         }
         recomputed.push_back(object);
@@ -7316,7 +7252,19 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             reportPresentationFailure(std::current_exception());
         }
     }
+    if (d->collaborationRecomputePresentationTouches == &presentationTouches) {
+        d->collaborationRecomputePresentationTouches = nullptr;
+    }
     if (d->collaborationCommitNotificationBarrier) {
+        for (auto* object : individuallyRecomputed) {
+            try {
+                d->collaborationDeferredNotifications.push_back(
+                    {CollaborationDeferredNotificationKind::RecomputedObject, object});
+            }
+            catch (...) {
+                reportPresentationFailure(std::current_exception());
+            }
+        }
         try {
             CollaborationDeferredNotification notification {
                 CollaborationDeferredNotificationKind::Recomputed};
@@ -7328,6 +7276,14 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
         }
     }
     else {
+        for (auto* object : presentationTouches) {
+            signalTouchedObject.underlying().emit_resilient(
+                reportPresentationFailure, *object);
+        }
+        for (auto* object : individuallyRecomputed) {
+            signalRecomputedObject.underlying().emit_resilient(
+                reportPresentationFailure, *object);
+        }
         signalRecomputed.underlying().emit_resilient(
             reportPresentationFailure, *this, recomputed);
     }
@@ -7367,7 +7323,21 @@ void Document::finalizeCollaborationRecomputeTeardownWithStatusRelease(
         return;
     }
 
-    const auto teardownDocuments = GetApplication().getDocuments();
+    // Only drain documents whose synchronous recompute boundary is retained
+    // and serialized by the caller.  Enumerating every application document
+    // here lets a nested recompute drain an unrelated document's deferred
+    // removals while that document is still notifying its observers.  It also
+    // crosses that document's lifecycle and owner-thread boundary without a
+    // pin or commit lock.
+    std::vector<Document*> teardownDocuments {this};
+    teardownDocuments.reserve(readinessTransitionDocuments.size() + 1);
+    for (auto* document : readinessTransitionDocuments) {
+        if (document
+            && std::ranges::find(teardownDocuments, document)
+                == teardownDocuments.end()) {
+            teardownDocuments.push_back(document);
+        }
+    }
     std::size_t protectedDocumentCount = 0;
     try {
         for (auto* teardownDocument : teardownDocuments) {

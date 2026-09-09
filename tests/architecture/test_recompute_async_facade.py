@@ -382,11 +382,47 @@ def test_sync_compatibility_and_explicit_async_use_their_intended_venues() -> No
     plan = asynchronous.find(
         "Internal::makeGenericIsolatedRecomputeRequest(", registration
     )
-    submission = asynchronous.find("recomputeCoordinator().submit(", plan)
-    handle = asynchronous.find(
-        "std::make_unique<RecomputeHandle>(*this,id)", submission
+    admission = asynchronous.find(
+        "recomputeCoordinator().admitSubmission(", plan
     )
-    assert 0 <= registration < plan < submission < handle
+    created_branch = asynchronous.find("if(created){", admission)
+    deferred_before = asynchronous.find(
+        "CollaborationDeferredNotificationKind::BeforeRecompute",
+        created_branch,
+    )
+    direct_before = asynchronous.find(
+        "signalBeforeRecompute.underlying().emit_resilient(",
+        deferred_before,
+    )
+    refreshed_capture = asynchronous.find(
+        "refreshedRequest=captureRequest()", direct_before
+    )
+    replacement = asynchronous.find(
+        "recomputeCoordinator().replaceSubmission(", refreshed_capture
+    )
+    failure = asynchronous.find(
+        "recomputeCoordinator().failSubmission(", replacement
+    )
+    activation = asynchronous.find(
+        "recomputeCoordinator().activateSubmission(", failure
+    )
+    handle = asynchronous.find(
+        "std::make_unique<RecomputeHandle>(*this,id)", activation
+    )
+    assert (
+        0
+        <= registration
+        < plan
+        < admission
+        < created_branch
+        < deferred_before
+        < direct_before
+        < refreshed_capture
+        < replacement
+        < failure
+        < activation
+        < handle
+    )
     assert "owner_thread_execution" not in asynchronous
 
     derived = synchronous.find("if(collaborationDerivedRecomputeGranted()){")
@@ -596,11 +632,6 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
         "false",
         "CollaborationCompatibilityRecomputePolicy::Deferred",
         "false",
-        # nestInCallerTransaction. Recompute is the only commit that may run
-        # inside a transaction the caller already opened; it takes a nested
-        # transaction of its own, which is folded back on commit. A competing
-        # compatibility mutation is still refused as Busy.
-        "true",
     ]
     assert 0 <= grant_check < nested < ordinary < ordinary_open < ordinary_close
     assert routing.count("commitDerivedRecomputeInActiveTransaction(edit)") == 1

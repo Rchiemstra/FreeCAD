@@ -87,9 +87,10 @@ DocumentObject::DocumentObject()
 
 DocumentObject::~DocumentObject()
 {
-    // A feature's execute() can destroy objects outright -- App::Link rebuilds
-    // its elements that way -- and any deferred notification still naming this
-    // one would be replayed against freed memory.
+    // Objects can be destroyed while a coordinator-owned deferred-notification
+    // batch is live (for example, create/delete coalescing or a controlled
+    // compatibility mutation). Never replay a queued notification through a
+    // pointer whose object has since been destroyed.
     if (_pDoc) {
         _pDoc->discardCollaborationNotificationsForDestroyedObject(this);
     }

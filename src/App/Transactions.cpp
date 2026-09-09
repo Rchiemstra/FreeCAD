@@ -132,28 +132,6 @@ bool Transaction::isEmpty() const
     return _Objects.empty();
 }
 
-void Transaction::mergeInto(Transaction& parent)
-{
-    if (&parent == this) {
-        return;
-    }
-    auto& index = _Objects.get<0>();
-    for (auto entry = index.begin(); entry != index.end();) {
-        if (parent.hasObject(entry->first)) {
-            // The parent recorded this object before the nested transaction
-            // started, so its snapshot is the older one and the one undo has to
-            // restore. Destroy the newer duplicate rather than keeping both.
-            delete entry->second;
-            entry = index.erase(entry);
-            continue;
-        }
-        parent._Objects.push_back(*entry);
-        // Ownership moved with the record; drop it here without destroying it
-        // so ~Transaction() cannot free what the parent now owns.
-        entry = index.erase(entry);
-    }
-}
-
 bool Transaction::hasObject(const TransactionalObject* Obj) const
 {
 #if BOOST_VERSION < 107500

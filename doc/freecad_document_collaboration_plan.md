@@ -15,7 +15,13 @@
 > synchronous `Document::recompute()`, `recomputeFeature()`, and GUI Refresh now
 > use the native owner-thread kernel to restore transaction, scheduler,
 > FeaturePython, and performance contracts. Explicit async and
-> coordinator-derived recompute remain isolated and DCC-committed.
+> coordinator-derived recompute remain isolated and DCC-committed. The
+> FeaturePython restoration applies only to that synchronous compatibility
+> kernel: explicit async admits exact internally audited native archive types,
+> never FeaturePython worker execution or Spreadsheet authoritative live replay.
+> Exact base `App::DocumentObject` and exact null-proxy `App::FeaturePython` are
+> the only inert bookkeeping target types. An exact canonical `App::Link` is
+> closure input only, not an async target.
 
 ## 1. Problem statement
 

@@ -689,18 +689,9 @@ PreparedEdit DocumentCollaborationService::prepareEditOnDocumentThread(
     // Inline typed intent may be prepared while objects are merely touched.
     // The final DCC admission still rejects an eager commit until pending
     // recompute is resolved, and revisions protect a preparation from any
-    // detached result committed in the meantime. Lifecycle, replay and
-    // teardown boundaries remain excluded.
-    //
-    // Only a recompute may be prepared inside the caller's transaction: it
-    // commits in a nested transaction of its own, so it neither observes nor
-    // disturbs the caller's edits. Every other preparation still requires a
-    // clean native state, which is what the asynchronous path opposite
-    // decides the same way.
-    const bool recomputeCapture =
-        intent.operationType == GenericIsolatedRecomputeOperationType;
-    if (recomputeCapture ? _document.collaborationNestedRecomputeCaptureBlocked()
-                         : _document.collaborationRecomputeCaptureBlocked()) {
+    // detached result committed in the meantime. Active transaction,
+    // lifecycle, replay, and teardown boundaries remain excluded.
+    if (_document.collaborationRecomputeCaptureBlocked()) {
         throw Base::RuntimeError(
             "collaboration preparation requires a stable document boundary");
     }
@@ -883,7 +874,7 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         std::lock_guard lock(_document.collaborationCommitMutex());
         const bool recomputeCapture =
             intent.operationType == GenericIsolatedRecomputeOperationType;
-        if (recomputeCapture ? _document.collaborationNestedRecomputeCaptureBlocked()
+        if (recomputeCapture ? _document.collaborationRecomputeCaptureBlocked()
                              : _document.collaborationStableReadBlocked()) {
             throw Base::RuntimeError(
                 "detached preparation requires a stable document boundary");
@@ -1005,10 +996,15 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
         pending.writeSet = std::move(canonical.writeSet);
         pending.publicationEffects = std::move(canonical.publicationEffects);
         if (presentationRevisionFence != nullptr) {
-            presentationRevisionFence->clear();
+            // The generic closure fence captured above is only provisional.
+            // Mark it unusable before any allocation needed to replace it, so
+            // an exception can never expose a partial or stale fence as exact.
+            *presentationRevisionFenceComplete = false;
+            std::vector<DocumentRevisionObservation> exactFence;
+            exactFence.reserve(pending.expectedRevisions.size());
             std::ranges::copy_if(
                 pending.expectedRevisions,
-                std::back_inserter(*presentationRevisionFence),
+                std::back_inserter(exactFence),
                 [](const DocumentRevisionObservation& observation) {
                     // UnknownModelMutation is a conservative commit fence,
                     // not a document-wide generation: exact property writes
@@ -1017,6 +1013,7 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsyncOnDocument
                     return observation.key.kind
                         != DocumentRevisionKind::UnknownModelMutation;
                 });
+            *presentationRevisionFence = std::move(exactFence);
             *presentationRevisionFenceComplete = true;
         }
         detachedTask = std::move(preparation.detachedTask);
@@ -1206,14 +1203,8 @@ DocumentCollaborationService::takePreparedEditOnDocumentThread(
     {
         std::lock_guard lock(_document.collaborationCommitMutex());
         const auto identity = _document.collaborationIdentity();
-        // A recompute prepares under the nested predicate, so it has to be
-        // collected under the same one: the caller's own undo transaction is
-        // not a foreign mutation boundary. Refusing here left the result
-        // uncollectable and failed the feature with "terminal detached
-        // preparation could not be collected", which is what made a
-        // recompute inside a transaction fail instead of apply.
         const bool captureBlocked = allowPendingRecompute
-            ? _document.collaborationNestedRecomputeCaptureBlocked()
+            ? _document.collaborationRecomputeCaptureBlocked()
             : _document.collaborationStableReadBlocked();
         if (identity.state != DocumentLifecycleState::Live || captureBlocked) {
             return std::nullopt;

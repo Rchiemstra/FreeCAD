@@ -65,7 +65,13 @@ are not model intent and do not participate in model conflict detection.
    results are pointer-free bounded values.
 5. The parent-side trusted adapter declares dependencies, validates worker
    output, and constructs `PreparedEdit`. Workers never choose authoritative
-   semantic dependencies or publish live revisions.
+   semantic dependencies or publish live revisions. For generic archive
+   recompute, `canRecomputeOnWorker()` proves thread affinity only; it grants no
+   archive or commit authority. Admission additionally requires an exact
+   internally audited registered native type and its canonical property and
+   extension schema. Unregistered or derived runtime types, executable targets
+   with extensions, expressions, dynamic or Python-object properties, and
+   nondefault Transient/NoPersist state fail closed.
 6. `PreparedEditExecutor` is restricted to trusted lightweight/value work.
    Heavy or untrusted detached OCC work uses `GeometryJobManager` and defaults
    to an isolated `FreeCADCmd` process. An explicitly isolated request has no
@@ -76,13 +82,20 @@ are not model intent and do not participate in model conflict detection.
    immutable dependency-ordered work, schedules downstream work only after
    upstream commit, rejects stale output, and commits derived results through
    DCC without creating new user undo entries. The synchronous compatibility
-   kernel is the documented owner-thread exception.
+   kernel is the documented owner-thread exception. An exact canonical
+   `App::Link` may be a generic closure input but never an asynchronous target.
+   FeaturePython never executes in the generic worker, and Spreadsheet has no
+   authoritative live replay or fallback; either requires an explicit typed
+   adapter with complete transferable state.
 8. A failed recompute feature remains touched/error and receives no partial
    result. Successfully committed upstream features may remain committed.
 9. Save while unresolved recompute exists returns structured
    `RECOMPUTE_PENDING` and does not overwrite canonical FCStd. After successful
    completion, the first save is `Written` and the next unchanged save is
-   `Unchanged`.
+   `Unchanged`. The coordinator records unresolved failures by stable object
+   identity and generation before publishing a terminal job state. Removed or
+   same-name replacement objects are filtered, and an older completion cannot
+   erase a newer unresolved generation.
 10. Unsupported cross-document atomic mutation is rejected unless a typed
     adapter explicitly implements its atomicity, dependency, rollback, and
     publication contract.
@@ -124,6 +137,11 @@ The target public surface is deliberately small:
   pointer-free `RecomputeHandle`.
 - Python exposes `Document.recomputeAsync(...)` with status, progress,
   cancellation, and completion access.
+- A new `recomputeAsync()` request reserves its coalescing identity from a
+  provisional plan, recaptures and replaces that plan after BeforeRecompute
+  observers, and activates the reservation only after replacement succeeds or
+  its failure has been attached to the same handle. A coalesced existing job is
+  not replaced or activated a second time.
 - Existing synchronous `Document.recompute()` and `recomputeFeature()` use
   the owner-thread compatibility kernel. This preserves native transaction
   grouping and the scheduler/observer contracts relied on by existing features.
@@ -139,7 +157,13 @@ Compatibility does not weaken the detached boundary. Unsupported unsafe
 features, unresolved cross-document dependencies, unserializable proxies,
 undeclared structural effects, or GUI access from an explicitly asynchronous
 recompute fail explicitly and remain touched; they are never silently rerouted
-to execute later on the GUI thread.
+to execute later on the GUI thread. In particular, historical FeaturePython
+opt-in and Spreadsheet authoritative replay are not generic async escape
+hatches. The only inert bookkeeping target types are exact base
+`App::DocumentObject` and exact `App::FeaturePython`; the latter additionally
+requires a null Proxy and safe exact `App::Link` dependencies. These paths
+perform no Python execution, and give the link input no target bookkeeping
+authority.
 
 ## Worker protocol
 
@@ -155,6 +179,10 @@ a versioned FCG snapshot/result archive:
 - The trusted parent adapter owns semantic dependency declarations and rejects
   wrong job IDs, wrong digests, version/build mismatch, undeclared output, and
   malformed, truncated, traversing, or oversized archives.
+- Generic FCStd closure capture accepts only the closed audited type/property
+  inventory and exact canonical schema described above. Exact canonical
+  `App::Link` is input-only; FeaturePython and Spreadsheet execution are not
+  recovered through a parent-thread fallback.
 - Publication is atomic. Per-job workspaces are private, bounded, and cleaned
   by the startup janitor. Heartbeat, cancellation, deadline, crash, hang, OOM,
   and worker-tree termination have distinct structured outcomes.

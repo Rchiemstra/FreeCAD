@@ -275,7 +275,8 @@ void ensureBlockingRecomputeAdapterRegistered()
                            return argument.first != "token"
                                && argument.first != "target"
                                && argument.first != "fail"
-                               && argument.first != "no_publish";
+                               && argument.first != "no_publish"
+                               && argument.first != "publish_existence";
                        })) {
                     throw std::invalid_argument("invalid blocking recompute intent");
                 }
@@ -288,6 +289,17 @@ void ensureBlockingRecomputeAdapterRegistered()
                 if (noPublish && intent.arguments.at("no_publish") != "1") {
                     throw std::invalid_argument(
                         "invalid blocking recompute publication mode");
+                }
+                const bool publishExistence =
+                    intent.arguments.contains("publish_existence");
+                if (publishExistence
+                    && intent.arguments.at("publish_existence") != "1") {
+                    throw std::invalid_argument(
+                        "invalid blocking recompute existence mode");
+                }
+                if (noPublish && publishExistence) {
+                    throw std::invalid_argument(
+                        "blocking recompute publication modes conflict");
                 }
                 auto state = BlockingRecomputeStore::get(intent.arguments.at("token"));
                 if (!state) {
@@ -304,14 +316,16 @@ void ensureBlockingRecomputeAdapterRegistered()
                         throw std::invalid_argument(
                             "unknown blocking recompute target");
                     }
-                    const auto targetModel =
-                        App::DocumentRevisionKey::objectModel(
-                            targetArgument->second);
-                    reads.push_back(targetModel);
+                    const auto targetRevision = publishExistence
+                        ? App::DocumentRevisionKey::objectExistence(
+                              targetArgument->second)
+                        : App::DocumentRevisionKey::objectModel(
+                              targetArgument->second);
+                    reads.push_back(targetRevision);
                     if (!noPublish) {
-                        writes.push_back(targetModel);
+                        writes.push_back(targetRevision);
                         effects.push_back(
-                            {targetModel,
+                            {targetRevision,
                              document.collaborationObjectIdentity(*target)});
                     }
                 }
@@ -434,7 +448,8 @@ protected:
     std::unique_ptr<App::RecomputeHandle> blockingHandle(
         App::DocumentObject* target = nullptr,
         const bool fail = false,
-        const bool publishTarget = true)
+        const bool publishTarget = true,
+        const bool publishExistence = false)
     {
         App::DocumentRecomputeFeatureRequest feature;
         feature.featureId = target && target->getNameInDocument()
@@ -458,6 +473,9 @@ protected:
         }
         if (target && !publishTarget) {
             feature.intent.arguments.emplace("no_publish", "1");
+        }
+        if (target && publishExistence) {
+            feature.intent.arguments.emplace("publish_existence", "1");
         }
         feature.provenance = "native recompute handle cancellation test";
 
@@ -1106,6 +1124,187 @@ TEST_F(RecomputeHandleTest,
 }
 
 TEST_F(RecomputeHandleTest,
+       removedTargetIsNotRetainedInTheTerminalFailureLedger)
+{
+    auto* feature =
+        _document->addObject<App::FeatureTestColumn>("RemovedFailureTarget");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("D");
+
+    auto handle = blockingHandle(feature, /*fail=*/true);
+    ASSERT_TRUE(_blocking->waitUntilStarted(10s));
+    _document->removeObject("RemovedFailureTarget");
+    _blocking->release();
+    const auto terminal = handle->wait(10s);
+
+    ASSERT_EQ(terminal.state, App::DocumentRecomputeState::PartialFailure)
+        << terminal.diagnostic;
+    EXPECT_EQ(_document->getObject("RemovedFailureTarget"), nullptr);
+    EXPECT_FALSE(_document->recomputeCoordinator().hasUnresolvedWork());
+    EXPECT_FALSE(
+        _document->recomputeCoordinator().hasUnresolvedExecutableWork());
+}
+
+TEST_F(RecomputeHandleTest,
+       blockedCleanDependentReceivesATrustedFailureFenceAndBlocksSave)
+{
+    App::Internal::ensureGenericIsolatedRecomputeRegistered();
+    auto* upstream =
+        _document->addObject<App::FeatureTestColumn>("A_FailedUpstream");
+    auto* dependent =
+        _document->addObject<App::FeatureTest>("Z_BlockedDependent");
+    ASSERT_NE(upstream, nullptr);
+    ASSERT_NE(dependent, nullptr);
+    upstream->purgeTouched();
+    dependent->Source1.setValue(upstream);
+    ASSERT_EQ(_document->recompute({dependent}), 1);
+    ASSERT_FALSE(dependent->mustRecompute());
+    upstream->Column.setValue("C");
+    // Keep the dependent clean so only terminal failure presentation makes it
+    // unresolved. Its real model link still puts the upstream revisions in
+    // the blocked node's semantic presentation fence.
+    dependent->purgeTouched();
+    ASSERT_FALSE(dependent->mustRecompute());
+
+    App::DocumentRecomputeFeatureRequest root;
+    root.featureId = upstream->getNameInDocument();
+    root.operationId = "blocked-fence-upstream";
+    root.intent.operationType = std::string(BlockingRecomputeOperationType);
+    root.intent.arguments = {
+        {"token", _blockingToken}, {"target", root.featureId}, {"fail", "1"}};
+    root.provenance = "blocked presentation fence regression";
+    root.stableObjectIdentity =
+        _document->collaborationObjectIdentity(*upstream);
+    root.presentationObjectModelRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel(root.featureId));
+
+    App::DocumentRecomputeFeatureRequest blocked;
+    blocked.featureId = dependent->getNameInDocument();
+    blocked.dependencies = {root.featureId};
+    blocked.operationId = "blocked-fence-dependent";
+    blocked.intent.operationType =
+        std::string(App::GenericIsolatedRecomputeOperationType);
+    blocked.intent.arguments = {
+        {"feature", blocked.featureId},
+        {"stable_object_identity",
+         _document->collaborationObjectIdentity(*dependent)}};
+    blocked.provenance = "blocked presentation fence regression";
+    blocked.stableObjectIdentity =
+        _document->collaborationObjectIdentity(*dependent);
+    blocked.presentationObjectModelRevision =
+        _document->collaborationRevisions().current(
+            App::DocumentRevisionKey::objectModel(blocked.featureId));
+
+    App::DocumentRecomputeRequest request;
+    request.features = {std::move(root), std::move(blocked)};
+    const auto id = _document->recomputeCoordinator().submit(std::move(request));
+    ASSERT_TRUE(_blocking->waitUntilStarted(10s));
+
+    int upstreamTouchNotifications = 0;
+    bool dependentWasPresentedBeforeObserver = false;
+    int perObjectRecomputedNotifications = 0;
+    int aggregateFailureEntries = 0;
+    auto touchConnection = _document->signalTouchedObject.connect(
+        [&](const App::DocumentObject& touched) {
+            if (&touched != upstream) {
+                return;
+            }
+            ++upstreamTouchNotifications;
+            dependentWasPresentedBeforeObserver =
+                dependent->isTouched() && dependent->isError();
+            dependent->Label.setValue("observer edit after terminal presentation");
+        });
+    auto objectConnection = _document->signalRecomputedObject.connect(
+        [&](const App::DocumentObject& candidate) {
+            if (&candidate == upstream || &candidate == dependent) {
+                ++perObjectRecomputedNotifications;
+            }
+        });
+    auto aggregateConnection = _document->signalRecomputed.connect(
+        [&](const App::Document&,
+            const std::vector<App::DocumentObject*>& objects) {
+            aggregateFailureEntries += static_cast<int>(
+                std::ranges::count(objects, upstream));
+            aggregateFailureEntries += static_cast<int>(
+                std::ranges::count(objects, dependent));
+        });
+    _blocking->release();
+    App::RecomputeHandle handle(*_document, id);
+    const auto terminal = handle.wait(10s);
+
+    ASSERT_EQ(terminal.state, App::DocumentRecomputeState::PartialFailure)
+        << terminal.diagnostic;
+    const auto blockedResult = std::ranges::find(
+        terminal.features,
+        std::string("Z_BlockedDependent"),
+        &App::DocumentRecomputeFeatureSnapshot::featureId);
+    ASSERT_NE(blockedResult, terminal.features.end());
+    EXPECT_EQ(blockedResult->state,
+              App::DocumentRecomputeFeatureState::Blocked);
+    EXPECT_TRUE(blockedResult->presentationObjectModelRevision);
+    EXPECT_TRUE(blockedResult->presentationRevisionFenceComplete);
+    EXPECT_TRUE(dependent->mustRecompute());
+    EXPECT_EQ(upstreamTouchNotifications, 1);
+    EXPECT_TRUE(dependentWasPresentedBeforeObserver)
+        << "touch observers must not run inside the prevalidated apply phase";
+    EXPECT_STREQ(dependent->Label.getValue(),
+                 "observer edit after terminal presentation");
+    EXPECT_EQ(perObjectRecomputedNotifications, 0);
+    EXPECT_EQ(aggregateFailureEntries, 2);
+    EXPECT_TRUE(_document->recomputeCoordinator().hasUnresolvedExecutableWork());
+}
+
+TEST_F(RecomputeHandleTest,
+       olderCommittedPresentationCannotEraseANewerFailureGeneration)
+{
+    auto* feature =
+        _document->addObject<App::FeatureTestColumn>("GenerationTarget");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("C");
+
+    auto older = blockingHandle(feature);
+    ASSERT_TRUE(_blocking->waitUntilStarted(10s));
+    _blocking->release();
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    std::optional<App::DocumentRecomputeSnapshot> olderTerminal;
+    while (std::chrono::steady_clock::now() < deadline) {
+        static_cast<void>(
+            _document->recomputeCoordinator().poll(older->id()));
+        olderTerminal =
+            _document->recomputeCoordinator().status(older->id());
+        if (olderTerminal && olderTerminal->terminal()) {
+            break;
+        }
+        std::this_thread::sleep_for(2ms);
+    }
+    ASSERT_TRUE(olderTerminal && olderTerminal->terminal());
+    ASSERT_EQ(olderTerminal->state, App::DocumentRecomputeState::Completed);
+
+    BlockingRecomputeStore::remove(_blockingToken);
+    _blocking = std::make_shared<BlockingRecomputeState>();
+    BlockingRecomputeStore::add(_blockingToken, _blocking);
+    auto newer = blockingHandle(feature, /*fail=*/true);
+    ASSERT_TRUE(_blocking->waitUntilStarted(10s));
+    _blocking->release();
+    ASSERT_EQ(newer->wait(10s).state,
+              App::DocumentRecomputeState::PartialFailure);
+    ASSERT_TRUE(_document->recomputeCoordinator().hasUnresolvedWork());
+
+    // Make the live model superficially clean without satisfying the newer
+    // failed generation. This is the exact state in which the old
+    // generation-blind clear used to erase the newer ledger record.
+    feature->purgeTouched();
+    feature->resetError();
+    ASSERT_FALSE(feature->mustRecompute());
+    ASSERT_EQ(older->status().state, App::DocumentRecomputeState::Completed);
+    EXPECT_TRUE(_document->recomputeCoordinator().hasUnresolvedWork());
+
+    feature->touch();
+    EXPECT_TRUE(_document->recomputeCoordinator().hasUnresolvedExecutableWork());
+}
+
+TEST_F(RecomputeHandleTest,
        detachedPresentationRetainsObjectsAndIsolatesThrowingObservers)
 {
     auto destroyed = std::make_shared<bool>(false);
@@ -1674,6 +1873,47 @@ TEST_F(RecomputeHandleTest,
 }
 
 TEST_F(RecomputeHandleTest,
+       nestedRecomputeDoesNotDrainAnUnrelatedDocumentsPendingRemoval)
+{
+    _extraDocumentNames.push_back(
+        App::GetApplication().getUniqueDocumentName("unrelatedRecompute"));
+    auto* unrelatedDocument = App::GetApplication().newDocument(
+        _extraDocumentNames.back().c_str(), "Unrelated recompute teardown");
+    ASSERT_NE(unrelatedDocument, nullptr);
+
+    auto destroyed = std::make_shared<bool>(false);
+    auto targetOwner = std::make_unique<DestructionProbeFeature>();
+    auto* unrelatedTarget = targetOwner.get();
+    unrelatedTarget->destroyed = destroyed;
+    unrelatedDocument->addObject(targetOwner.get(), "UnrelatedRemovalTarget");
+    static_cast<void>(targetOwner.release());
+
+    auto* nestedTarget = _document->addObject<App::FeatureTest>("NestedDocumentTarget");
+    ASSERT_NE(nestedTarget, nullptr);
+
+    bool nestedRecomputeSawLiveObject = false;
+    bool laterObserverSawLiveObject = false;
+    auto removingConnection = unrelatedDocument->signalRecomputed.connect(
+        [&](const App::Document&, const std::vector<App::DocumentObject*>& objects) {
+            EXPECT_NE(std::ranges::find(objects, unrelatedTarget), objects.end());
+            unrelatedDocument->removeObject("UnrelatedRemovalTarget");
+            EXPECT_EQ(_document->recompute({nestedTarget}), 1);
+            nestedRecomputeSawLiveObject = !*destroyed;
+        });
+    auto observingConnection = unrelatedDocument->signalRecomputed.connect(
+        [&](const App::Document&, const std::vector<App::DocumentObject*>&) {
+            laterObserverSawLiveObject = !*destroyed;
+        });
+
+    EXPECT_EQ(unrelatedDocument->recompute({unrelatedTarget}), 1);
+
+    EXPECT_TRUE(nestedRecomputeSawLiveObject);
+    EXPECT_TRUE(laterObserverSawLiveObject);
+    EXPECT_TRUE(*destroyed);
+    EXPECT_EQ(unrelatedDocument->getObject("UnrelatedRemovalTarget"), nullptr);
+}
+
+TEST_F(RecomputeHandleTest,
        nestedFeatureRecomputeCannotDrainAnOuterAggregateRemoval)
 {
     auto destroyed = std::make_shared<bool>(false);
@@ -2035,6 +2275,68 @@ TEST_F(RecomputeHandleTest,
               0);
     EXPECT_EQ(_document->getAvailableUndos(), 1);
     EXPECT_STREQ(survivor->Label.getValue(), "Eviction trigger");
+}
+
+TEST_F(RecomputeHandleTest,
+       committedRecomputeWithoutBoundTargetPublicationFailsAndBlocksSave)
+{
+    auto* feature =
+        _document->addObject<App::FeatureTestColumn>("MissingPublicationTarget");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("D");
+
+    auto handle = blockingHandle(
+        feature, /*fail=*/false, /*publishTarget=*/false);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+    _blocking->release();
+    const auto terminal = handle->wait(10s);
+
+    ASSERT_EQ(terminal.state, App::DocumentRecomputeState::PartialFailure)
+        << terminal.diagnostic;
+    ASSERT_EQ(terminal.features.size(), 1U);
+    EXPECT_EQ(terminal.features.front().state,
+              App::DocumentRecomputeFeatureState::Failed);
+    EXPECT_FALSE(terminal.features.front().targetPublicationConfirmed);
+    EXPECT_NE(terminal.features.front().diagnostic.find(
+                  "did not publish its bound target"),
+              std::string::npos);
+    EXPECT_TRUE(feature->mustRecompute());
+    EXPECT_TRUE(_document->recomputeCoordinator().hasUnresolvedExecutableWork());
+
+    _savePath = std::filesystem::temp_directory_path()
+        / (_documentName + "-missing-publication.FCStd");
+    const auto save =
+        _document->saveAsWithOutcome(_savePath.string().c_str());
+    EXPECT_EQ(save.disposition, App::DocumentSaveDisposition::Failed);
+    EXPECT_EQ(save.errorCode, "RECOMPUTE_PENDING");
+    EXPECT_FALSE(std::filesystem::exists(_savePath));
+}
+
+TEST_F(RecomputeHandleTest,
+       existencePublicationCannotClaimRemovalWhileTargetRemainsLive)
+{
+    auto* feature =
+        _document->addObject<App::FeatureTestColumn>("FalseRemovalTarget");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("C");
+
+    auto handle = blockingHandle(feature,
+                                 /*fail=*/false,
+                                 /*publishTarget=*/true,
+                                 /*publishExistence=*/true);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
+    _blocking->release();
+    const auto terminal = handle->wait(10s);
+
+    ASSERT_EQ(terminal.state, App::DocumentRecomputeState::PartialFailure)
+        << terminal.diagnostic;
+    ASSERT_EQ(terminal.features.size(), 1U);
+    EXPECT_EQ(terminal.features.front().state,
+              App::DocumentRecomputeFeatureState::Failed);
+    EXPECT_FALSE(terminal.features.front().targetPublicationConfirmed);
+    EXPECT_EQ(_document->getObject("FalseRemovalTarget"), feature);
+    EXPECT_TRUE(feature->mustRecompute());
+    EXPECT_TRUE(_document->recomputeCoordinator().hasUnresolvedExecutableWork());
 }
 
 TEST_F(RecomputeHandleTest, zeroTimeoutObservesNonterminalWorkAndCancellationTerminates)

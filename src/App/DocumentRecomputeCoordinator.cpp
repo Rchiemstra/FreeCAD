@@ -118,11 +118,11 @@ std::string canonicalizeAndSign(App::DocumentRecomputeRequest& request)
         std::ranges::sort(
             feature.presentationRevisionFence,
             {},
-            &DocumentRevisionObservation::key);
+            &App::DocumentRevisionObservation::key);
         if (std::ranges::adjacent_find(
                 feature.presentationRevisionFence,
                 {},
-                &DocumentRevisionObservation::key)
+                &App::DocumentRevisionObservation::key)
             != feature.presentationRevisionFence.end()) {
             throw std::invalid_argument(
                 "recompute presentation fence contains a duplicate key");
@@ -560,11 +560,11 @@ void DocumentRecomputeCoordinator::failSubmission(
     SubmissionReservation& reservation,
     std::string diagnostic) noexcept
 {
+    bool finalizeNodes = false;
     try {
         if (reservation._coordinator != this || !reservation._created) {
             return;
         }
-        bool finalizeNodes = false;
         {
             std::lock_guard stateLock(_stateMutex);
             const auto found = _jobs.find(reservation._id);
@@ -572,25 +572,43 @@ void DocumentRecomputeCoordinator::failSubmission(
                 return;
             }
             auto& job = *found->second;
-            job.activationPending = false;
-            job.diagnostic = std::move(diagnostic);
             if (job.nodes.empty()) {
                 job.state = DocumentRecomputeState::PartialFailure;
             }
             else {
+                // Publish every terminal node state before copying diagnostics.
+                // A diagnostic allocation failure must not leave part of an
+                // unactivated plan permanently Waiting.
                 for (auto& [featureId, node] : job.nodes) {
                     static_cast<void>(featureId);
                     node.state = DocumentRecomputeFeatureState::Failed;
-                    node.diagnostic = job.diagnostic;
                 }
                 finalizeNodes = true;
             }
-        }
-        if (finalizeNodes) {
-            finalizeIfTerminal(reservation._id);
+            job.activationPending = false;
+            job.diagnostic = std::move(diagnostic);
+            for (auto& [featureId, node] : job.nodes) {
+                static_cast<void>(featureId);
+                try {
+                    node.diagnostic = job.diagnostic;
+                }
+                catch (...) {
+                    // State is authoritative; diagnostics are best effort in
+                    // this noexcept rejection path.
+                }
+            }
         }
     }
     catch (...) {
+    }
+    if (finalizeNodes) {
+        try {
+            finalizeIfTerminal(reservation._id);
+        }
+        catch (...) {
+            // Ledger allocation can be retried by the next poll. Do not expose
+            // a terminal job until finalizeIfTerminal succeeds.
+        }
     }
 }
 
@@ -611,9 +629,62 @@ void DocumentRecomputeCoordinator::activateSubmission(
             return;
         }
         needsSession = !found->second->nodes.empty();
+        // Presentation fences are coordinator-owned observations. Discard the
+        // caller's provisional values before any fallible activation step;
+        // DCS recaptures them under the document lock for each live selector.
+        for (auto& [featureId, node] : found->second->nodes) {
+            static_cast<void>(featureId);
+            if (!node.request.stableObjectIdentity.empty()) {
+                node.presentationObjectModelRevision.reset();
+                node.presentationRevisionFence.clear();
+                node.presentationRevisionFenceComplete = false;
+            }
+        }
     }
 
     std::string sessionId;
+    const auto failActivation = [&](const char* detail) noexcept {
+        try {
+            std::lock_guard stateLock(_stateMutex);
+            const auto found = _jobs.find(id);
+            if (found == _jobs.end() || jobTerminal(found->second->state)) {
+                return;
+            }
+            auto& job = *found->second;
+            // Make the plan terminal at feature granularity before any
+            // diagnostic allocation. activationPending is cleared only after
+            // no Waiting node remains.
+            for (auto& [featureId, node] : job.nodes) {
+                static_cast<void>(featureId);
+                if (!featureTerminal(node.state)) {
+                    node.state = DocumentRecomputeFeatureState::Failed;
+                }
+            }
+            job.activationPending = false;
+            try {
+                job.diagnostic = "recompute activation failed";
+                if (detail && *detail) {
+                    job.diagnostic += ": ";
+                    job.diagnostic += detail;
+                }
+            }
+            catch (...) {
+                job.diagnostic.clear();
+            }
+            for (auto& [featureId, node] : job.nodes) {
+                static_cast<void>(featureId);
+                try {
+                    node.diagnostic = job.diagnostic;
+                }
+                catch (...) {
+                    // State remains terminal even if diagnostics cannot be
+                    // retained under memory pressure.
+                }
+            }
+        }
+        catch (...) {
+        }
+    };
     try {
         if (needsSession) {
             sessionId =
@@ -621,37 +692,19 @@ void DocumentRecomputeCoordinator::activateSubmission(
         }
     }
     catch (const std::exception& error) {
-        std::lock_guard stateLock(_stateMutex);
-        auto& job = *_jobs.at(id);
-        job.activationPending = false;
-        job.diagnostic =
-            std::string("recompute activation failed: ") + error.what();
-        for (auto& [featureId, node] : job.nodes) {
-            static_cast<void>(featureId);
-            if (!featureTerminal(node.state)) {
-                node.state = DocumentRecomputeFeatureState::Failed;
-                node.diagnostic = job.diagnostic;
-            }
-        }
+        failActivation(error.what());
     }
     catch (...) {
-        std::lock_guard stateLock(_stateMutex);
-        auto& job = *_jobs.at(id);
-        job.activationPending = false;
-        job.diagnostic =
-            "recompute activation failed with unknown exception";
-        for (auto& [featureId, node] : job.nodes) {
-            static_cast<void>(featureId);
-            if (!featureTerminal(node.state)) {
-                node.state = DocumentRecomputeFeatureState::Failed;
-                node.diagnostic = job.diagnostic;
-            }
-        }
+        failActivation("unknown exception");
     }
 
     {
         std::lock_guard stateLock(_stateMutex);
-        auto& job = *_jobs.at(id);
+        const auto found = _jobs.find(id);
+        if (found == _jobs.end() || jobTerminal(found->second->state)) {
+            return;
+        }
+        auto& job = *found->second;
         if (!job.activationPending) {
             // A session-admission failure converted every node to a terminal
             // failure so the asynchronous caller still receives a handle.
@@ -674,10 +727,84 @@ void DocumentRecomputeCoordinator::activateSubmission(
 
 void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
 {
+    struct BlockedPresentationCandidate
+    {
+        std::string featureId;
+        std::string stableObjectIdentity;
+        std::string operationType;
+    };
+    const auto refreshBlockedPresentation =
+        [&](const std::vector<BlockedPresentationCandidate>& candidates) noexcept {
+            if (candidates.empty()) {
+                return;
+            }
+            try {
+                auto lifecyclePin = _service.pinDocumentAccess();
+                if (!lifecyclePin) {
+                    return;
+                }
+                auto& document = _service.document();
+                if (!document.isCollaborationOwnerThread()) {
+                    return;
+                }
+                std::lock_guard<std::recursive_mutex> serialized(
+                    document.collaborationCommitMutex());
+                if (document.collaborationIdentity().state
+                    != DocumentLifecycleState::Live) {
+                    return;
+                }
+                for (const auto& candidate : candidates) {
+                    std::optional<DocumentRevision> objectRevision;
+                    std::vector<DocumentRevisionObservation> fence;
+                    bool fenceComplete = false;
+                    auto* object = document.getObject(candidate.featureId.c_str());
+                    if (object
+                        && document.collaborationObjectIdentity(*object)
+                            == candidate.stableObjectIdentity) {
+                        objectRevision = document.collaborationRevisions().current(
+                            DocumentRevisionKey::objectModel(
+                                candidate.featureId));
+                        if (candidate.operationType
+                            == GenericIsolatedRecomputeOperationType) {
+                            if (auto captured = Internal::
+                                    captureGenericIsolatedRecomputePresentationFence(
+                                        document, *object)) {
+                                fence = std::move(*captured);
+                                fenceComplete = true;
+                            }
+                        }
+                    }
+                    std::lock_guard stateLock(_stateMutex);
+                    const auto foundJob = _jobs.find(id);
+                    if (foundJob == _jobs.end()) {
+                        return;
+                    }
+                    const auto foundNode =
+                        foundJob->second->nodes.find(candidate.featureId);
+                    if (foundNode == foundJob->second->nodes.end()
+                        || foundNode->second.state
+                            != DocumentRecomputeFeatureState::Blocked) {
+                        continue;
+                    }
+                    foundNode->second.presentationObjectModelRevision =
+                        objectRevision;
+                    foundNode->second.presentationRevisionFence =
+                        std::move(fence);
+                    foundNode->second.presentationRevisionFenceComplete =
+                        fenceComplete;
+                }
+            }
+            catch (...) {
+                // An incomplete fence suppresses presentation. Never turn a
+                // failed observation capture into authority over the object.
+            }
+        };
+
     while (true) {
         std::optional<DocumentRecomputeFeatureRequest> request;
         std::string sessionId;
         std::string selectedFeature;
+        std::vector<BlockedPresentationCandidate> newlyBlocked;
         {
             std::lock_guard stateLock(_stateMutex);
             const auto foundJob = _jobs.find(id);
@@ -702,10 +829,18 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                         return featureFailed(job.nodes.at(dependency).state)
                             || job.nodes.at(dependency).state
                                 == DocumentRecomputeFeatureState::Cancelled;
-                    });
+                });
                 if (failedDependency != node.request.dependencies.end()) {
+                    std::string blockedDiagnostic =
+                        "dependency did not commit: " + *failedDependency;
+                    if (!node.request.stableObjectIdentity.empty()) {
+                        newlyBlocked.push_back(
+                            {featureId,
+                             node.request.stableObjectIdentity,
+                             node.request.intent.operationType});
+                    }
+                    node.diagnostic = std::move(blockedDiagnostic);
                     node.state = DocumentRecomputeFeatureState::Blocked;
-                    node.diagnostic = "dependency did not commit: " + *failedDependency;
                     changed = true;
                 }
             }
@@ -730,15 +865,20 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                                            });
             });
             if (ready != job.nodes.end()) {
-                ready->second.state = DocumentRecomputeFeatureState::Preparing;
+                // Copy every fallible launch input before publishing Preparing.
+                // Otherwise allocation failure leaves a node with no execution
+                // identity that neither poll nor scheduleReady can advance.
                 selectedFeature = ready->first;
                 request = ready->second.request;
                 sessionId = job.sessionId;
+                ready->second.state = DocumentRecomputeFeatureState::Preparing;
             }
             else if (!changed) {
                 break;
             }
         }
+
+        refreshBlockedPresentation(newlyBlocked);
 
         if (!request) {
             continue;
@@ -750,6 +890,71 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             request->presentationRevisionFence;
         bool presentationRevisionFenceComplete =
             request->presentationRevisionFenceComplete;
+        if (!request->stableObjectIdentity.empty()) {
+            // A retry must not reuse a fence captured by a preceding attempt.
+            // prepareRecomputeEditAsync() replaces all three values atomically
+            // once it owns a stable document boundary.
+            presentationObjectRevision.reset();
+            presentationRevisionFence.clear();
+            presentationRevisionFenceComplete = false;
+        }
+        std::optional<PreparedEditExecutionId> unclaimedExecution;
+        BOOST_SCOPE_EXIT_ALL(&) {
+            if (unclaimedExecution) {
+                try {
+                    static_cast<void>(
+                        _service.cancelPreparedEdit(*unclaimedExecution));
+                }
+                catch (...) {
+                }
+            }
+        };
+        const auto failPreparationSubmission =
+            [&](const char* detail) noexcept {
+                try {
+                    std::lock_guard stateLock(_stateMutex);
+                    const auto foundJob = _jobs.find(id);
+                    if (foundJob == _jobs.end()) {
+                        return;
+                    }
+                    const auto foundNode =
+                        foundJob->second->nodes.find(selectedFeature);
+                    if (foundNode == foundJob->second->nodes.end()) {
+                        return;
+                    }
+                    auto& node = foundNode->second;
+                    // Terminal state first; fence/diagnostic retention is
+                    // useful evidence but cannot be allowed to strand the
+                    // state machine if allocation fails.
+                    node.state = DocumentRecomputeFeatureState::Failed;
+                    node.presentationObjectModelRevision =
+                        presentationObjectRevision;
+                    node.presentationRevisionFence =
+                        std::move(presentationRevisionFence);
+                    node.presentationRevisionFenceComplete =
+                        presentationRevisionFenceComplete;
+                    try {
+                        node.diagnostic =
+                            "detached preparation submission failed";
+                        if (detail && *detail) {
+                            node.diagnostic += ": ";
+                            node.diagnostic += detail;
+                        }
+                    }
+                    catch (...) {
+                        node.diagnostic.clear();
+                    }
+                    if (foundJob->second->diagnostic.empty()) {
+                        try {
+                            foundJob->second->diagnostic = node.diagnostic;
+                        }
+                        catch (...) {
+                        }
+                    }
+                }
+                catch (...) {
+                }
+            };
         try {
             const auto executionId = request->stableObjectIdentity.empty()
                 ? _service.prepareEditAsync(sessionId,
@@ -766,24 +971,44 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
                       presentationObjectRevision,
                       presentationRevisionFence,
                       presentationRevisionFenceComplete);
-            std::lock_guard stateLock(_stateMutex);
-            const auto foundJob = _jobs.find(id);
-            if (foundJob == _jobs.end()) {
+            unclaimedExecution = executionId;
+            bool cancelExecution = false;
+            bool jobDisappeared = false;
+            {
+                std::lock_guard stateLock(_stateMutex);
+                const auto foundJob = _jobs.find(id);
+                if (foundJob == _jobs.end()) {
+                    jobDisappeared = true;
+                    cancelExecution = true;
+                }
+                else {
+                    const auto foundNode =
+                        foundJob->second->nodes.find(selectedFeature);
+                    if (foundNode == foundJob->second->nodes.end()) {
+                        jobDisappeared = true;
+                        cancelExecution = true;
+                        continue;
+                    }
+                    auto& node = foundNode->second;
+                    node.presentationObjectModelRevision =
+                        presentationObjectRevision;
+                    node.presentationRevisionFence =
+                        std::move(presentationRevisionFence);
+                    node.presentationRevisionFenceComplete =
+                        presentationRevisionFenceComplete;
+                    node.executionId = executionId;
+                    unclaimedExecution.reset();
+                    if (foundJob->second->cancelRequested) {
+                        node.state = DocumentRecomputeFeatureState::Cancelling;
+                        cancelExecution = true;
+                    }
+                }
+            }
+            if (cancelExecution) {
                 static_cast<void>(_service.cancelPreparedEdit(executionId));
+            }
+            if (jobDisappeared) {
                 return;
-            }
-            auto& node = foundJob->second->nodes.at(selectedFeature);
-            node.presentationObjectModelRevision = presentationObjectRevision;
-            node.presentationRevisionFence = presentationRevisionFence;
-            node.presentationRevisionFenceComplete =
-                presentationRevisionFenceComplete;
-            if (foundJob->second->cancelRequested) {
-                node.state = DocumentRecomputeFeatureState::Cancelling;
-                node.executionId = executionId;
-                static_cast<void>(_service.cancelPreparedEdit(executionId));
-            }
-            else {
-                node.executionId = executionId;
             }
         }
         catch (const GeometryJobQueueFull&) {
@@ -793,70 +1018,39 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
             std::lock_guard stateLock(_stateMutex);
             const auto foundJob = _jobs.find(id);
             if (foundJob != _jobs.end()) {
-                auto& node = foundJob->second->nodes.at(selectedFeature);
+                const auto foundNode =
+                    foundJob->second->nodes.find(selectedFeature);
+                if (foundNode == foundJob->second->nodes.end()) {
+                    return;
+                }
+                auto& node = foundNode->second;
                 node.presentationObjectModelRevision = presentationObjectRevision;
-                node.presentationRevisionFence = presentationRevisionFence;
+                node.presentationRevisionFence =
+                    std::move(presentationRevisionFence);
                 node.presentationRevisionFenceComplete =
                     presentationRevisionFenceComplete;
                 node.state = foundJob->second->cancelRequested
                     ? DocumentRecomputeFeatureState::Cancelled
                     : DocumentRecomputeFeatureState::Waiting;
                 if (foundJob->second->cancelRequested) {
-                    node.diagnostic =
-                        "recompute cancelled while awaiting preparation capacity";
+                    try {
+                        node.diagnostic =
+                            "recompute cancelled while awaiting preparation capacity";
+                    }
+                    catch (...) {
+                    }
                 }
             }
             return;
         }
         catch (const Base::Exception& error) {
-            std::lock_guard stateLock(_stateMutex);
-            const auto foundJob = _jobs.find(id);
-            if (foundJob != _jobs.end()) {
-                auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.presentationObjectModelRevision = presentationObjectRevision;
-                node.presentationRevisionFence = presentationRevisionFence;
-                node.presentationRevisionFenceComplete =
-                    presentationRevisionFenceComplete;
-                node.state = DocumentRecomputeFeatureState::Failed;
-                node.diagnostic = std::string("detached preparation submission failed: ")
-                    + error.what();
-                if (foundJob->second->diagnostic.empty()) {
-                    foundJob->second->diagnostic = node.diagnostic;
-                }
-            }
+            failPreparationSubmission(error.what());
         }
         catch (const std::exception& error) {
-            std::lock_guard stateLock(_stateMutex);
-            const auto foundJob = _jobs.find(id);
-            if (foundJob != _jobs.end()) {
-                auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.presentationObjectModelRevision = presentationObjectRevision;
-                node.presentationRevisionFence = presentationRevisionFence;
-                node.presentationRevisionFenceComplete =
-                    presentationRevisionFenceComplete;
-                node.state = DocumentRecomputeFeatureState::Failed;
-                node.diagnostic = std::string("detached preparation submission failed: ")
-                    + error.what();
-                if (foundJob->second->diagnostic.empty()) {
-                    foundJob->second->diagnostic = node.diagnostic;
-                }
-            }
+            failPreparationSubmission(error.what());
         }
         catch (...) {
-            std::lock_guard stateLock(_stateMutex);
-            const auto foundJob = _jobs.find(id);
-            if (foundJob != _jobs.end()) {
-                auto& node = foundJob->second->nodes.at(selectedFeature);
-                node.presentationObjectModelRevision = presentationObjectRevision;
-                node.presentationRevisionFence = presentationRevisionFence;
-                node.presentationRevisionFenceComplete =
-                    presentationRevisionFenceComplete;
-                node.state = DocumentRecomputeFeatureState::Failed;
-                node.diagnostic = "detached preparation submission failed with unknown exception";
-                if (foundJob->second->diagnostic.empty()) {
-                    foundJob->second->diagnostic = node.diagnostic;
-                }
-            }
+            failPreparationSubmission("unknown exception");
         }
     }
     finalizeIfTerminal(id);
@@ -1031,11 +1225,18 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         }
 
         std::string sessionId;
+        std::string targetStableIdentity;
         {
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
-            job.nodes.at(featureId).state = DocumentRecomputeFeatureState::Committing;
+            auto& node = job.nodes.at(featureId);
+            // Copy every potentially allocating value before publishing the
+            // Committing state. A throw after that state transition would
+            // strand the node because only preparation/execution states are
+            // advanced by a later poll.
+            targetStableIdentity = node.request.stableObjectIdentity;
             sessionId = job.sessionId;
+            node.state = DocumentRecomputeFeatureState::Committing;
         }
         DocumentCommitResult commit;
         try {
@@ -1043,16 +1244,59 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
         }
         catch (const Base::Exception& error) {
             commit.status = DocumentCommitStatus::ApplyFailed;
-            commit.message = std::string("recompute commit failed: ") + error.what();
+            try {
+                commit.message = std::string("recompute commit failed: ") + error.what();
+            }
+            catch (...) {
+            }
         }
         catch (const std::exception& error) {
             commit.status = DocumentCommitStatus::ApplyFailed;
-            commit.message = std::string("recompute commit failed: ") + error.what();
+            try {
+                commit.message = std::string("recompute commit failed: ") + error.what();
+            }
+            catch (...) {
+            }
         }
         catch (...) {
             commit.status = DocumentCommitStatus::ApplyFailed;
-            commit.message = "recompute commit failed with unknown exception";
+            try {
+                commit.message = "recompute commit failed with unknown exception";
+            }
+            catch (...) {
+            }
         }
+        const auto failPostCommitClassification = [&](const char* detail) noexcept {
+            try {
+                std::lock_guard stateLock(_stateMutex);
+                const auto foundJob = _jobs.find(id);
+                if (foundJob == _jobs.end()) {
+                    return;
+                }
+                auto& job = *foundJob->second;
+                auto& node = job.nodes.at(featureId);
+                // Set the fail-closed state before formatting diagnostics: a
+                // second allocation failure must not strand Committing.
+                node.state = DocumentRecomputeFeatureState::Failed;
+                node.outcomeApplied = false;
+                node.targetPublicationConfirmed = false;
+                try {
+                    node.diagnostic = "recompute post-commit classification failed";
+                    if (detail && *detail) {
+                        node.diagnostic += ": ";
+                        node.diagnostic += detail;
+                    }
+                    if (job.diagnostic.empty()) {
+                        job.diagnostic = node.diagnostic;
+                    }
+                }
+                catch (...) {
+                }
+            }
+            catch (...) {
+            }
+        };
+        try {
         // Read the operation's outcome only after commit. Some trusted result
         // operations finalize their failure state while applying, so querying
         // them earlier could misclassify a cleanly applied failure as success.
@@ -1062,35 +1306,89 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
             terminal->preparedEdit->operation().recomputeCountedFeature();
         const std::string recomputeDiagnostic(
             terminal->preparedEdit->operation().recomputeOutcomeDiagnostic());
+        std::optional<DocumentRevision> publishedTargetModelRevision;
+        bool targetPublicationConfirmed = targetStableIdentity.empty();
+        if (commit.status == DocumentCommitStatus::Committed
+            && !targetStableIdentity.empty()) {
+            const auto modelKey = DocumentRevisionKey::objectModel(featureId);
+            const auto existenceKey =
+                DocumentRevisionKey::objectExistence(featureId);
+            const auto hasBoundEffect = [&](const DocumentRevisionKey& key) {
+                return std::ranges::any_of(
+                    terminal->preparedEdit->publicationEffects(),
+                    [&](const auto& effect) {
+                        return effect.key == key
+                            && effect.stableObjectIdentity
+                            && *effect.stableObjectIdentity
+                                == targetStableIdentity;
+                    });
+            };
+            const auto publishedModel = std::ranges::find(
+                commit.publishedRevisions,
+                modelKey,
+                &DocumentRevisionObservation::key);
+            const auto publishedExistence = std::ranges::find(
+                commit.publishedRevisions,
+                existenceKey,
+                &DocumentRevisionObservation::key);
+            const bool modelEvidence = hasBoundEffect(modelKey)
+                && publishedModel != commit.publishedRevisions.end();
+            const bool removalEvidence = hasBoundEffect(existenceKey)
+                && publishedExistence != commit.publishedRevisions.end();
+            if (modelEvidence || removalEvidence) {
+                auto lifecyclePin = _service.pinDocumentAccess();
+                if (lifecyclePin) {
+                    auto& document = _service.document();
+                    if (document.isCollaborationOwnerThread()) {
+                        std::lock_guard<std::recursive_mutex> serialized(
+                            document.collaborationCommitMutex());
+                        if (document.collaborationIdentity().state
+                            == DocumentLifecycleState::Live) {
+                            auto* object = document.getObject(featureId.c_str());
+                            if (modelEvidence && object
+                                && document.collaborationObjectIdentity(*object)
+                                    == targetStableIdentity) {
+                                publishedTargetModelRevision =
+                                    publishedModel->revision;
+                                targetPublicationConfirmed = true;
+                            }
+                            else if (removalEvidence && !object) {
+                                targetPublicationConfirmed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         {
             std::lock_guard stateLock(_stateMutex);
             auto& job = *_jobs.at(id);
             auto& node = job.nodes.at(featureId);
             node.diagnostic = commit.message;
             node.executed = recomputeExecuted;
-            node.outcomeApplied = commit.status == DocumentCommitStatus::Committed;
+            node.targetPublicationConfirmed = targetPublicationConfirmed;
+            if (publishedTargetModelRevision) {
+                node.presentationObjectModelRevision =
+                    *publishedTargetModelRevision;
+            }
             switch (commit.status) {
                 case DocumentCommitStatus::Committed:
-                    node.state = recomputeSucceeded
-                        ? DocumentRecomputeFeatureState::Committed
-                        : DocumentRecomputeFeatureState::Failed;
-                    if (!node.request.stableObjectIdentity.empty()) {
-                        const auto modelKey =
-                            DocumentRevisionKey::objectModel(featureId);
-                        const auto publishedModel = std::ranges::find(
-                            commit.publishedRevisions,
-                            modelKey,
-                            &DocumentRevisionObservation::key);
-                        if (publishedModel != commit.publishedRevisions.end()) {
-                            node.presentationObjectModelRevision =
-                                publishedModel->revision;
-                            node.targetPublicationConfirmed = true;
-                        }
+                    if (!targetPublicationConfirmed) {
+                        node.state = DocumentRecomputeFeatureState::Failed;
+                        node.outcomeApplied = false;
+                        node.diagnostic =
+                            "recompute commit did not publish its bound target";
                     }
-                    if (!recomputeSucceeded) {
+                    else if (!recomputeSucceeded) {
+                        node.state = DocumentRecomputeFeatureState::Failed;
+                        node.outcomeApplied = true;
                         node.diagnostic = recomputeDiagnostic.empty()
                             ? "detached feature recompute failed"
                             : recomputeDiagnostic;
+                    }
+                    else {
+                        node.state = DocumentRecomputeFeatureState::Committed;
+                        node.outcomeApplied = true;
                     }
                     break;
                 case DocumentCommitStatus::Conflict:
@@ -1108,6 +1406,22 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
                 && job.diagnostic.empty()) {
                 job.diagnostic = node.diagnostic;
             }
+        }
+        }
+        catch (const Base::Exception& error) {
+            failPostCommitClassification(error.what());
+            changed = true;
+            continue;
+        }
+        catch (const std::exception& error) {
+            failPostCommitClassification(error.what());
+            changed = true;
+            continue;
+        }
+        catch (...) {
+            failPostCommitClassification("unknown exception");
+            changed = true;
+            continue;
         }
         changed = true;
     }
@@ -1160,8 +1474,17 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
 
 void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId id)
 {
+    struct LiveFailureCandidate
+    {
+        std::string featureId;
+        std::string stableObjectIdentity;
+    };
+
     std::string sessionId;
     std::string reason;
+    DocumentRecomputeState terminalState {DocumentRecomputeState::Running};
+    std::vector<LiveFailureCandidate> liveFailures;
+    std::vector<std::string> syntheticFailures;
     {
         std::lock_guard stateLock(_stateMutex);
         const auto foundJob = _jobs.find(id);
@@ -1175,45 +1498,107 @@ void DocumentRecomputeCoordinator::finalizeIfTerminal(const DocumentRecomputeId 
             return;
         }
         if (job.cancelRequested) {
-            job.state = DocumentRecomputeState::Cancelled;
+            terminalState = DocumentRecomputeState::Cancelled;
             reason = job.diagnostic.empty() ? "recompute plan cancelled" : job.diagnostic;
         }
         else if (std::ranges::any_of(job.nodes, [](const auto& entry) {
                      return featureFailed(entry.second.state)
                          || entry.second.state == DocumentRecomputeFeatureState::Cancelled;
                  })) {
-            job.state = DocumentRecomputeState::PartialFailure;
+            terminalState = DocumentRecomputeState::PartialFailure;
             reason = "recompute plan reached a partial failure";
         }
         else {
-            job.state = DocumentRecomputeState::Completed;
+            terminalState = DocumentRecomputeState::Completed;
             reason = "recompute plan completed";
         }
         for (const auto& [featureId, node] : job.nodes) {
+            if (node.state != DocumentRecomputeFeatureState::Committed
+                && node.request.stableObjectIdentity.empty()) {
+                syntheticFailures.push_back(featureId);
+            }
+            else if (node.state != DocumentRecomputeFeatureState::Committed) {
+                liveFailures.push_back(
+                    {featureId,
+                     node.request.stableObjectIdentity});
+            }
+        }
+    }
+
+    auto lifecyclePin = _service.pinDocumentAccess();
+    auto finalizeState = [&] {
+        std::lock_guard stateLock(_stateMutex);
+        const auto foundJob = _jobs.find(id);
+        if (foundJob == _jobs.end() || jobTerminal(foundJob->second->state)
+            || !std::ranges::all_of(foundJob->second->nodes, [](const auto& entry) {
+                   return featureTerminal(entry.second.state);
+               })) {
+            return;
+        }
+
+        // Populate every save-blocking record before publishing the terminal
+        // job state. If allocation fails, the job remains nonterminal and a
+        // later poll can retry instead of exposing a terminal result with a
+        // missing unresolved ledger entry.
+        for (const auto& featureId : syntheticFailures) {
+            _unresolvedSyntheticFeatures.insert_or_assign(
+                std::pair {id, featureId}, true);
+        }
+        for (const auto& candidate : liveFailures) {
+            const auto unresolvedKey = std::pair {
+                candidate.featureId, candidate.stableObjectIdentity};
+            const auto found = _unresolvedLiveFeatures.find(unresolvedKey);
+            if (found == _unresolvedLiveFeatures.end()
+                || found->second.generation <= id) {
+                _unresolvedLiveFeatures.insert_or_assign(
+                    unresolvedKey, UnresolvedLiveFeature {id});
+            }
+        }
+        for (const auto& [featureId, node] : foundJob->second->nodes) {
             if (node.state == DocumentRecomputeFeatureState::Committed) {
                 _unresolvedSyntheticFeatures.erase({id, featureId});
             }
-            else if (node.request.stableObjectIdentity.empty()) {
-                _unresolvedSyntheticFeatures.insert_or_assign(
-                    std::pair {id, featureId}, true);
+        }
+        if (!foundJob->second->sessionFinalized
+            && !foundJob->second->sessionId.empty()) {
+            sessionId = foundJob->second->sessionId;
+            foundJob->second->sessionFinalized = true;
+        }
+        // Publish terminal last: every ledger entry and the session hand-off
+        // must already be complete when a status reader can observe it.
+        foundJob->second->state = terminalState;
+    };
+
+    if (lifecyclePin) {
+        auto& document = _service.document();
+        if (document.isCollaborationOwnerThread()) {
+            std::lock_guard<std::recursive_mutex> serialized(
+                document.collaborationCommitMutex());
+            if (document.collaborationIdentity().state
+                == DocumentLifecycleState::Live) {
+                std::erase_if(liveFailures, [&document](const auto& candidate) {
+                    auto* object = document.getObject(candidate.featureId.c_str());
+                    return !object
+                        || document.collaborationObjectIdentity(*object)
+                            != candidate.stableObjectIdentity;
+                });
             }
             else {
-                const auto unresolvedKey = std::pair {
-                    featureId, node.request.stableObjectIdentity};
-                const auto found = _unresolvedLiveFeatures.find(unresolvedKey);
-                const bool replace = found == _unresolvedLiveFeatures.end()
-                    || found->second.generation <= id;
-                if (replace) {
-                    _unresolvedLiveFeatures.insert_or_assign(
-                        unresolvedKey,
-                        UnresolvedLiveFeature {id});
-                }
+                liveFailures.clear();
             }
+            finalizeState();
         }
-        if (!job.sessionFinalized && !job.sessionId.empty()) {
-            job.sessionFinalized = true;
-            sessionId = job.sessionId;
+        else {
+            // Public mutation is expected on the owner thread. Retain every
+            // candidate fail-closed when its live identity cannot be checked.
+            finalizeState();
         }
+    }
+    else {
+        // Teardown owns the document from here; no future canonical save can
+        // observe this coordinator. It is still safe to close the job state.
+        liveFailures.clear();
+        finalizeState();
     }
     if (!sessionId.empty()) {
         try {

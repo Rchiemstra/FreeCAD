@@ -1312,19 +1312,17 @@ public:
     }
 
     /**
-     * @brief Whether isolated recompute can transfer this object's complete result.
+     * @brief Whether this object's recompute path is safe in a worker context.
      *
-     * This is used by async recompute scheduling. Objects that can touch GUI or
-     * other thread-affine state during recompute must return false. Returning
-     * true means both that the recompute path is worker-safe and that every
-     * execute-owned state change needed by later recomputes is represented by
-     * the declared property result transferred back by the isolated facade.
-     * Types with hidden caches, status changes, or mutations of other objects
-     * must remain false until they provide a complete typed result protocol.
+     * This historical hook describes thread affinity only. It is necessary but
+     * not sufficient for the isolated archive protocol: that protocol also
+     * requires an exact audited type whose complete execute-owned result can be
+     * transferred. Existing overrides therefore do not acquire new commit
+     * authority merely by returning true.
      */
     virtual bool canRecomputeOnWorker() const
     {
-        return false;
+        return true;
     }
 
     /**

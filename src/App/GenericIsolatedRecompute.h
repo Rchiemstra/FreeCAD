@@ -38,7 +38,7 @@ captureGenericIsolatedRecomputePresentationFence(
     bool recursive,
     bool preserveLegacyRevisionSemantics = true);
 
-/** ABI bridge for the removed caller-selected live execution venue. */
+/** Source-compatibility bridge for the removed caller-selected live venue. */
 [[nodiscard]] AppExport DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     Document& document,
     DocumentObject& feature,
@@ -55,7 +55,7 @@ captureGenericIsolatedRecomputePresentationFence(
     bool preserveLegacyRevisionSemantics = false,
     bool forceExecution = false);
 
-/** ABI bridge for the removed caller-selected live execution venue. */
+/** Source-compatibility bridge for the removed caller-selected live venue. */
 [[nodiscard]] AppExport DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
     Document& document,
     const std::vector<DocumentObject*>& features,

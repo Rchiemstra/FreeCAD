@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <sstream>
+#include <typeinfo>
 
 #include <Base/Console.h>
 #include <Base/Exception.h>
@@ -169,6 +170,12 @@ FeatureTest::FeatureTest()
     // clang-format on
 }
 
+bool FeatureTest::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTest::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTest);
+}
+
 FeatureTest::~FeatureTest() = default;
 
 short FeatureTest::mustExecute() const
@@ -252,6 +259,12 @@ FeatureTestException::FeatureTestException()
     ADD_PROPERTY(ExceptionType, (Base::Exception::getClassTypeId().getKey()));
 }
 
+bool FeatureTestException::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTestException::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTestException);
+}
+
 DocumentObjectExecReturn* FeatureTestException::execute()
 {
     // ExceptionType;
@@ -272,6 +285,12 @@ FeatureTestColumn::FeatureTestColumn()
     ADD_PROPERTY_TYPE(Value, (0L), "Test", App::Prop_Output, "");
 }
 
+bool FeatureTestColumn::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTestColumn::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTestColumn);
+}
+
 DocumentObjectExecReturn* FeatureTestColumn::execute()
 {
     Value.setValue(decodeColumn(Column.getStrValue(), Silent.getValue()));
@@ -290,6 +309,12 @@ FeatureTestRow::FeatureTestRow()
     ADD_PROPERTY_TYPE(Value, (0L), "Test", App::Prop_Output, "");
 }
 
+bool FeatureTestRow::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTestRow::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTestRow);
+}
+
 DocumentObjectExecReturn* FeatureTestRow::execute()
 {
     Value.setValue(decodeRow(Row.getStrValue(), Silent.getValue()));
@@ -305,6 +330,12 @@ FeatureTestAbsAddress::FeatureTestAbsAddress()
 {
     ADD_PROPERTY_TYPE(Address, (""), "Test", Prop_None, "");
     ADD_PROPERTY_TYPE(Valid, (false), "Test", PropertyType(Prop_Output | Prop_ReadOnly), "");
+}
+
+bool FeatureTestAbsAddress::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTestAbsAddress::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTestAbsAddress);
 }
 
 DocumentObjectExecReturn* FeatureTestAbsAddress::execute()
@@ -325,6 +356,12 @@ FeatureTestPlacement::FeatureTestPlacement()
     ADD_PROPERTY_TYPE(Input2, (Base::Placement()), "Test", Prop_None, "");
     ADD_PROPERTY_TYPE(MultLeft, (Base::Placement()), "Test", Prop_Output, "");
     ADD_PROPERTY_TYPE(MultRight, (Base::Placement()), "Test", Prop_Output, "");
+}
+
+bool FeatureTestPlacement::canRecomputeOnWorker() const
+{
+    return getTypeId() == FeatureTestPlacement::getClassTypeId()
+        && typeid(*this) == typeid(FeatureTestPlacement);
 }
 
 DocumentObjectExecReturn* FeatureTestPlacement::execute()

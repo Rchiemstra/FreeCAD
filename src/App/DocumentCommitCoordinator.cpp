@@ -415,8 +415,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitRecompute(const PreparedEd
         false,
         false,
         CollaborationCompatibilityRecomputePolicy::Deferred,
-        false,
-        /*nestInCallerTransaction=*/true);
+        false);
 }
 
 DocumentCommitResult DocumentCommitCoordinator::commitCompatibility(
@@ -474,8 +473,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool retainUndoHistory,
-    const bool nestInCallerTransaction)
+    const bool retainUndoHistory)
 {
     if (!MainThreadSignalConfig::hasHooks()) {
         if (!_document.isCollaborationOwnerThread()) {
@@ -487,16 +485,14 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+                                                 retainUndoHistory);
     }
     if (MainThreadSignalConfig::isMainThread()) {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+                                                 retainUndoHistory);
     }
 
     std::optional<DocumentCommitResult> result;
@@ -514,16 +510,14 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
               requireDetachedPreparationSupport,
               structuralCompatibility,
               recomputePolicy,
-              retainUndoHistory,
-              nestInCallerTransaction] {
+              retainUndoHistory] {
                 try {
                     result.emplace(commitOnDocumentThreadWithOptions(
                         edit,
                         requireDetachedPreparationSupport,
                         structuralCompatibility,
                         recomputePolicy,
-                        retainUndoHistory,
-                        nestInCallerTransaction));
+                        retainUndoHistory));
                 }
                 catch (...) {
                     failure = std::current_exception();
@@ -726,8 +720,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     const bool requireDetachedPreparationSupport,
     const bool structuralCompatibility,
     const CollaborationCompatibilityRecomputePolicy recomputePolicy,
-    const bool retainUndoHistory,
-    const bool nestInCallerTransaction)
+    const bool retainUndoHistory)
 {
     if (!_document.isCollaborationOwnerThread()) {
         return makeResult(DocumentCommitStatus::Unsupported,
@@ -777,37 +770,12 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                           edit,
                           "document contains a mutable Python payload that cannot be prepared");
     }
-    const bool nativeTransactionInProgress = _document.transacting()
-        || _document.isTransactionLocked()
-        || (!nestInCallerTransaction
-            && (_document.hasPendingTransaction()
-                || _document.getBookedTransactionID() != 0));
-    if (nativeTransactionInProgress) {
+    if (_document.hasPendingTransaction() || _document.transacting()
+        || _document.getBookedTransactionID() != 0 || _document.isTransactionLocked()) {
         return makeResult(DocumentCommitStatus::Busy,
                           edit,
                           "document already has a native transaction in progress");
     }
-    // An undo transaction that is merely *open* is not a conflict. It is how
-    // every GUI command groups its edits, and refusing here made every
-    // recompute inside one a silent no-op. Set it aside and run this commit in
-    // a nested transaction of its own, so a rollback can still undo exactly
-    // this commit without touching the caller's edits; the nested transaction
-    // is folded back into the caller's when it commits, leaving one undo step.
-    struct ParkedTransactionGuard
-    {
-        Document& document;
-        bool parked;
-        ~ParkedTransactionGuard()
-        {
-            if (parked) {
-                // A no-op once the commit folded the nested transaction in;
-                // on any other exit it hands the caller's transaction back.
-                document.restoreParkedTransactionAfterNestedCommit();
-            }
-        }
-    } parkedTransactionGuard {
-        _document,
-        nestInCallerTransaction && _document.parkTransactionForNestedCommit()};
     if (recomputePolicy != CollaborationCompatibilityRecomputePolicy::Eager
         && recomputePolicy != CollaborationCompatibilityRecomputePolicy::Deferred) {
         return makeResult(DocumentCommitStatus::InvalidPreparedEdit,

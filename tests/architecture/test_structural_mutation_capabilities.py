@@ -19,10 +19,6 @@ RECORDER_SOURCE = "src/App/private/CollaborationStructuralMutationRecorder.cpp"
 DOCUMENT_SOURCE = "src/App/Document.cpp"
 JOINT_SOURCE = "src/Mod/Assembly/JointObject.py"
 
-#: Every predicate allowed to promote an add/removeDynamicProperty mutation on
-#: a live, pre-existing object out of ``Restricted``.
-GRANTED_DYNAMIC_PROPERTY_PREDICATES = ("executeOwnedDynamicProperty",)
-
 #: Every predicate allowed to promote a propertyStatus mutation on a live,
 #: pre-existing object out of ``Restricted``.
 GRANTED_LIVE_OBJECT_PREDICATES = (
@@ -91,6 +87,53 @@ def test_execute_owned_status_is_keyed_on_the_executing_object_and_its_own_prope
     assert "object->getPropertyByName(statusPropertyName)==&property;" in recorder
 
 
+def test_dynamic_property_recompute_authority_requires_the_derived_grant() -> None:
+    """Recompute status alone must not grant detached structural authority.
+
+    The narrow exception serves the eager DCC compatibility path while its
+    native execute() is running.  Applying an isolated result under the commit
+    barrier may leave the same status bit set, but has no derived-recompute
+    grant and therefore remains Restricted.  Spreadsheet's established
+    no-persist transient schema exception remains an earlier, separate case.
+    """
+    document = _read(DOCUMENT_SOURCE)
+    functions = (
+        (
+            "ensureCollaborationDynamicPropertyMutationAllowed(",
+            "ensureCollaborationDynamicPropertyRemovalAllowed(",
+        ),
+        (
+            "ensureCollaborationDynamicPropertyRemovalAllowed(",
+            "Document::CollaborationSpreadsheetRecomputeSchemaScope::",
+        ),
+    )
+    for start, end in functions:
+        body = _compact(_slice(document, start, end))
+        spreadsheet = body.find("constboolspreadsheetTransientSchema=")
+        spreadsheet_return = body.find(
+            "if(spreadsheetTransientSchema){return;}", spreadsheet
+        )
+        conjunction = body.find(
+            "constboolderivedExecuteOwnedProperty="
+            "d->collaborationDerivedRecomputeGranted"
+            "&&object.testStatus(ObjectStatus::Recompute);",
+            spreadsheet_return,
+        )
+        kind = body.find(
+            "constautokind=newStructuralObject?"
+            "CollaborationStructuralMutationKind::DynamicPropertyOnNewObject:"
+            "derivedExecuteOwnedProperty?"
+            "CollaborationStructuralMutationKind::Object:"
+            "CollaborationStructuralMutationKind::Restricted;",
+            conjunction,
+        )
+        enforce = body.find(
+            "ensureCollaborationStructuralMutationAllowed(kind", kind
+        )
+        assert 0 <= spreadsheet < spreadsheet_return < conjunction < kind < enforce
+        assert body.count("ObjectStatus::Recompute") == 1
+
+
 def test_grounded_joint_lock_matches_exactly_one_bit_on_two_named_properties() -> None:
     """Assembly grounds a part by making its placement read-only.
 
@@ -129,45 +172,4 @@ def test_the_capability_matches_what_assembly_actually_writes() -> None:
     assert 'obj.setPropertyStatus("Placement", tag)' in setter
     assert 'obj.setPropertyStatus("LinkPlacement", tag)' in setter
     # The link the predicate keys on is the one the joint declares.
-    assert _compact('"App::PropertyLinkGlobal", "ObjectToGround",') in _compact(joint)
-
-
-def test_only_the_enumerated_predicates_escape_restricted_for_dynamic_properties() -> None:
-    """The same closed enumeration, for adding and removing dynamic properties.
-
-    A feature's execute() publishes caches as dynamic properties --
-    SubShapeBinder's ``Cache_*`` transformation matrices, Arch component link
-    overrides, Report column rebuilds. The coordinator runs execute() on the
-    owner thread inside the commit boundary, so those additions reach the gate
-    rather than being discarded in a detached worker.
-
-    The grant is keyed exactly as the recorder's ``executeOwnedStatus``: the
-    object the coordinator is currently executing, mutating a property of its
-    own. It must not let one feature's execute() restructure another object.
-    """
-    document = _read(DOCUMENT_SOURCE)
-    for guard in (
-        "void Document::ensureCollaborationDynamicPropertyMutationAllowed(",
-        "void Document::ensureCollaborationDynamicPropertyRemovalAllowed(",
-    ):
-        selection = _compact(
-            _slice(document, guard, "ensureCollaborationStructuralMutationAllowed(kind,")
-        )
-        # Restricted is the default and the refused kind.
-        assert "autokind=CollaborationStructuralMutationKind::Restricted;" in selection, guard
-        # A new object keeps its own kind; nothing else may reach Object except
-        # the enumerated predicates.
-        assert (
-            "if(newStructuralObject){kind=CollaborationStructuralMutationKind"
-            "::DynamicPropertyOnNewObject;}" in selection
-        ), guard
-        granted = "||".join(GRANTED_DYNAMIC_PROPERTY_PREDICATES)
-        assert (
-            f"elseif({granted})"
-            "{kind=CollaborationStructuralMutationKind::Object;}" in selection
-        ), guard
-        # Keyed on the object the coordinator is currently executing.
-        assert (
-            "constboolexecuteOwnedDynamicProperty="
-            "object.testStatus(ObjectStatus::Recompute);" in selection
-        ), guard
+    assert _compact('"App::PropertyLinkGlobal","ObjectToGround",') in _compact(joint)

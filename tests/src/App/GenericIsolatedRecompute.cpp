@@ -6,6 +6,7 @@
 #include <App/CollaborativeOperation.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
+#include <App/DocumentObjectPy.h>
 #include <App/Expression.h>
 #include <App/FeatureTest.h>
 #include <App/GenericIsolatedRecompute.h>
@@ -16,6 +17,7 @@
 #include <App/PropertyPythonObject.h>
 #include <App/Range.h>
 #include <Base/Exception.h>
+#include <Base/Interpreter.h>
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
@@ -31,6 +33,9 @@
 
 namespace
 {
+
+class DerivedWorkerFeature final: public App::FeatureTestColumn
+{};
 
 class GenericIsolatedRecomputeTest: public ::testing::Test
 {
@@ -86,6 +91,23 @@ protected:
             _otherDocumentName.c_str(), "External generic recompute test");
     }
 
+    void executeAndApply(const std::string& featureName)
+    {
+        auto preparation = prepare(featureName);
+        ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
+        ASSERT_NE(preparation.isolatedTask, nullptr);
+        const auto output =
+            App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+                std::string(App::GenericIsolatedRecomputeOperationType),
+                preparation.isolatedTask->inputArchive,
+                std::stop_token {});
+        auto operation = preparation.isolatedTask->decodeResult(output);
+        ASSERT_NE(operation, nullptr);
+        operation->apply(*_document);
+        const auto postcondition = operation->checkPostcondition(*_document);
+        EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    }
+
     std::string _documentName;
     std::string _otherDocumentName;
     App::Document* _document {nullptr};
@@ -136,6 +158,15 @@ App::GeometryArchive resultArchive(const std::string_view target,
     return archive;
 }
 
+void addGroupExtension(App::DocumentObject& object)
+{
+    Base::PyGILStateLocker gil;
+    Py::Object pythonObject(object.getPyObject(), true);
+    Py::Tuple args(1);
+    args.setItem(0, Py::String("App::GroupExtensionPython"));
+    static_cast<void>(pythonObject.callMemberFunction("addExtension", args));
+}
+
 }  // namespace
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -175,7 +206,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       subpathExpressionMarksAndAppliesItsOwningProperty)
+       expressionsAreRejectedBeforeArchivingOrWorkerExecution)
 {
     auto* feature = _document->addObject<App::FeatureTest>("PlacementExpression");
     ASSERT_NE(feature, nullptr);
@@ -185,22 +216,9 @@ TEST_F(GenericIsolatedRecomputeTest,
         std::shared_ptr<App::Expression>(App::Expression::parse(feature, "Distance")));
     ASSERT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 0.0);
 
-    auto preparation = prepare("PlacementExpression");
-    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
-    ASSERT_NE(preparation.isolatedTask, nullptr);
-
-    const auto output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
-        std::string(App::GenericIsolatedRecomputeOperationType),
-        preparation.isolatedTask->inputArchive,
-        std::stop_token {});
-    auto operation = preparation.isolatedTask->decodeResult(output);
-    ASSERT_NE(operation, nullptr);
-
+    EXPECT_THROW(static_cast<void>(prepare("PlacementExpression")),
+                 std::invalid_argument);
     EXPECT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 0.0);
-    operation->apply(*_document);
-    EXPECT_DOUBLE_EQ(feature->Placement.getValue().getPosition().x, 23.5);
-    const auto postcondition = operation->checkPostcondition(*_document);
-    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -283,15 +301,14 @@ TEST_F(GenericIsolatedRecomputeTest,
          {"stable_object_identity",
           _document->collaborationObjectIdentity(*storage)},
          {"force_execution", "1"}}};
-    auto forced = App::CollaborativeOperationRegistry::instance().prepare(
-        *_document, forcedIntent);
-    EXPECT_EQ(forced.policy, App::PreparationPolicy::IsolatedProcess);
-    EXPECT_NE(forced.isolatedTask, nullptr);
-    EXPECT_FALSE(forced.detachedTask);
+    EXPECT_THROW(
+        static_cast<void>(App::CollaborativeOperationRegistry::instance().prepare(
+            *_document, forcedIntent)),
+        std::invalid_argument);
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       plainExternalAppLinkUsesNarrowEnforceOnlyBookkeeping)
+       appLinkTargetIsRejectedBecauseItsExecutePublishesViewRefreshState)
 {
     auto* other = createOtherDocument();
     ASSERT_NE(other, nullptr);
@@ -310,18 +327,11 @@ TEST_F(GenericIsolatedRecomputeTest,
     ASSERT_EQ(link->mustExecute(), 0);
     ASSERT_TRUE(link->mustRecompute());
 
-    auto preparation = prepare("ExternalLink");
-    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
-    EXPECT_EQ(preparation.isolatedTask, nullptr);
-    ASSERT_TRUE(preparation.detachedTask);
-    auto operation = preparation.detachedTask(std::stop_token {});
-    ASSERT_NE(operation, nullptr);
-    operation->apply(*_document);
-    const auto postcondition = operation->checkPostcondition(*_document);
-    EXPECT_TRUE(postcondition.satisfied) << postcondition.message;
+    EXPECT_THROW(static_cast<void>(prepare("ExternalLink")),
+                 std::invalid_argument);
     EXPECT_EQ(link->LinkedObject.getValue(), source);
-    EXPECT_FALSE(link->isTouched());
-    EXPECT_FALSE(link->mustRecompute());
+    EXPECT_TRUE(link->isTouched());
+    EXPECT_TRUE(link->mustRecompute());
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -365,11 +375,8 @@ TEST_F(GenericIsolatedRecomputeTest,
     auto* link = _document->addObject<App::Link>("ExternalLink");
     ASSERT_NE(link, nullptr);
     link->LinkedObject.setValue(source);
-    auto linkPreparation = prepare("ExternalLink");
-    ASSERT_TRUE(linkPreparation.detachedTask);
-    auto linkOperation = linkPreparation.detachedTask(std::stop_token {});
-    ASSERT_NE(linkOperation, nullptr);
-    linkOperation->apply(*_document);
+    ASSERT_EQ(_document->recompute({link}), 1);
+    ASSERT_FALSE(link->mustRecompute());
 
     auto* holder = _document->addObject("App::FeaturePython", "Holder");
     ASSERT_NE(holder, nullptr);
@@ -471,7 +478,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       configuredPartialLinkBaselineIsNotAnExecuteSideEffect)
+       dynamicConfiguredLinkSchemaIsRejectedBeforeArchiving)
 {
     auto* feature = _document->addObject<App::FeatureTest>("PartialLinkBaseline");
     ASSERT_NE(feature, nullptr);
@@ -484,22 +491,41 @@ TEST_F(GenericIsolatedRecomputeTest,
     ASSERT_NE(links, nullptr);
     links->setAllowPartial(true);
 
-    auto preparation = prepare("PartialLinkBaseline");
-    ASSERT_EQ(preparation.policy, App::PreparationPolicy::IsolatedProcess);
-    ASSERT_NE(preparation.isolatedTask, nullptr);
-
-    App::GeometryArchive output;
-    EXPECT_NO_THROW(
-        output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
-            std::string(App::GenericIsolatedRecomputeOperationType),
-            preparation.isolatedTask->inputArchive,
-            std::stop_token {}));
-    auto operation = preparation.isolatedTask->decodeResult(output);
-    ASSERT_NE(operation, nullptr);
-    operation->apply(*_document);
+    EXPECT_THROW(static_cast<void>(prepare("PartialLinkBaseline")),
+                 std::invalid_argument);
     EXPECT_EQ(links->getSize(), 0);
-    EXPECT_TRUE(feature->isValid());
-    EXPECT_FALSE(feature->mustRecompute());
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       everyAuditedTestFeatureHasANativeWorkerRoundTrip)
+{
+    auto* row = _document->addObject<App::FeatureTestRow>("Row");
+    auto* address =
+        _document->addObject<App::FeatureTestAbsAddress>("AbsoluteAddress");
+    auto* placement =
+        _document->addObject<App::FeatureTestPlacement>("Placement");
+    ASSERT_NE(row, nullptr);
+    ASSERT_NE(address, nullptr);
+    ASSERT_NE(placement, nullptr);
+
+    row->Row.setValue("12");
+    row->Silent.setValue(true);
+    address->Address.setValue("$A$12");
+    placement->Input1.setValue(
+        Base::Placement(Base::Vector3d(10, 20, 30), Base::Rotation()));
+    placement->Input2.setValue(
+        Base::Placement(Base::Vector3d(1, 2, 3), Base::Rotation()));
+
+    executeAndApply("Row");
+    executeAndApply("AbsoluteAddress");
+    executeAndApply("Placement");
+
+    EXPECT_EQ(row->Value.getValue(), 11);
+    EXPECT_TRUE(address->Valid.getValue());
+    EXPECT_EQ(placement->MultLeft.getValue().getPosition(),
+              Base::Vector3d(11, 22, 33));
+    EXPECT_EQ(placement->MultRight.getValue().getPosition(),
+              Base::Vector3d(11, 22, 33));
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
@@ -693,9 +719,9 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       crossDocumentClosureAndUnoptedAsyncPythonFeatureAreRejected)
+       crossDocumentClosureThroughCanonicalLinkIsRejected)
 {
-    auto* target = _document->addObject<App::FeatureTestColumn>("CrossDocument");
+    auto* target = _document->addObject<App::FeatureTest>("CrossDocument");
     ASSERT_NE(target, nullptr);
     auto* other = createOtherDocument();
     ASSERT_NE(other, nullptr);
@@ -705,11 +731,11 @@ TEST_F(GenericIsolatedRecomputeTest,
         App::Application::getTempFileName("generic-recompute-owner.FCStd"));
     other->FileName.setValue(
         App::Application::getTempFileName("generic-recompute-external.FCStd"));
-    auto* externalLink = dynamic_cast<App::PropertyXLink*>(
-        target->addDynamicProperty("App::PropertyXLink", "ExternalSource"));
+    auto* externalLink = _document->addObject<App::Link>("ExternalSource");
     ASSERT_NE(externalLink, nullptr);
     try {
-        externalLink->setValue(external);
+        externalLink->LinkedObject.setValue(external);
+        target->Source1.setValue(externalLink);
     }
     catch (const Base::Exception& error) {
         FAIL() << "cross-document test setup failed: " << error.what();
@@ -722,9 +748,14 @@ TEST_F(GenericIsolatedRecomputeTest,
     }
 
     EXPECT_THROW(static_cast<void>(prepare("CrossDocument")), std::invalid_argument);
+}
 
+TEST_F(GenericIsolatedRecomputeTest,
+       featurePythonExecutionIsCategoricallyRejected)
+{
     // A scripted feature's execute() lives in a Python proxy that the worker
-    // archive cannot carry, so an ordinary detached request must fail closed.
+    // archive cannot carry. The historical thread-affinity hook is not an
+    // isolated result-contract opt-in.
     auto* python = _document->addObject("App::FeaturePython", "PythonFeature");
     ASSERT_NE(python, nullptr);
     EXPECT_FALSE(python->canRecomputeOnWorker());
@@ -751,7 +782,7 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
-       structuralAndPythonOutputPropertiesAreRejectedBeforePublication)
+       dynamicStructuralAndPythonPropertiesAreRejectedBeforeArchiving)
 {
     auto* structural = _document->addObject<App::FeatureTestColumn>("StructuralOutput");
     ASSERT_NE(structural, nullptr);
@@ -773,5 +804,117 @@ TEST_F(GenericIsolatedRecomputeTest,
                                          App::Prop_Output),
               nullptr);
     EXPECT_THROW(static_cast<void>(prepare("PythonOutput")),
+                 std::invalid_argument);
+
+    auto* pythonInput =
+        _document->addObject<App::FeatureTestColumn>("PythonInput");
+    ASSERT_NE(pythonInput, nullptr);
+    ASSERT_NE(pythonInput->addDynamicProperty("App::PropertyPythonObject",
+                                              "InputPython",
+                                              "Test",
+                                              "Rejected Python input"),
+              nullptr);
+    EXPECT_THROW(static_cast<void>(prepare("PythonInput")),
+                 std::invalid_argument);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       archiveOmittedAndRuntimeOnlyValuesMustMatchConstructorState)
+{
+    auto* dynamic =
+        _document->addObject<App::FeatureTestColumn>("PlainDynamicProperty");
+    ASSERT_NE(dynamic, nullptr);
+    ASSERT_NE(dynamic->addDynamicProperty("App::PropertyInteger",
+                                          "DynamicInput",
+                                          "Test",
+                                          "Rejected dynamic input"),
+              nullptr);
+    EXPECT_THROW(static_cast<void>(prepare("PlainDynamicProperty")),
+                 std::invalid_argument);
+
+    auto* noPersist =
+        _document->addObject<App::FeatureTestColumn>("DynamicNoPersist");
+    ASSERT_NE(noPersist, nullptr);
+    auto* omitted = dynamic_cast<App::PropertyInteger*>(
+        noPersist->addDynamicProperty("App::PropertyInteger",
+                                      "OmittedInput",
+                                      "Test",
+                                      "Rejected no-persist input",
+                                      App::Prop_NoPersist));
+    ASSERT_NE(omitted, nullptr);
+    omitted->setValue(91);
+    EXPECT_THROW(static_cast<void>(prepare("DynamicNoPersist")),
+                 std::invalid_argument);
+
+    auto* runtimeStatus =
+        _document->addObject<App::FeatureTestColumn>("RuntimeTransient");
+    ASSERT_NE(runtimeStatus, nullptr);
+    runtimeStatus->Column.setStatus(App::Property::Transient, true);
+    runtimeStatus->Column.setValue("D");
+    EXPECT_THROW(static_cast<void>(prepare("RuntimeTransient")),
+                 std::invalid_argument);
+
+    auto* staticTransient =
+        _document->addObject<App::FeatureTest>("StaticTransient");
+    ASSERT_NE(staticTransient, nullptr);
+    staticTransient->TypeTransient.setValue(8128);
+    EXPECT_THROW(static_cast<void>(prepare("StaticTransient")),
+                 std::invalid_argument);
+
+    auto* configuredLink =
+        _document->addObject<App::FeatureTest>("ConfiguredStaticLink");
+    ASSERT_NE(configuredLink, nullptr);
+    configuredLink->Source1.setScope(App::LinkScope::Global);
+    EXPECT_THROW(static_cast<void>(prepare("ConfiguredStaticLink")),
+                 std::invalid_argument);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       exactRuntimeTypeAndCanonicalExtensionSetAreRequired)
+{
+    auto derivedOwner = std::make_unique<DerivedWorkerFeature>();
+    auto* derived = derivedOwner.get();
+    _document->addObject(derivedOwner.get(), "UnregisteredDerived");
+    static_cast<void>(derivedOwner.release());
+    ASSERT_FALSE(derived->canRecomputeOnWorker());
+    EXPECT_THROW(static_cast<void>(prepare("UnregisteredDerived")),
+                 std::invalid_argument);
+
+    auto* extendedTarget =
+        _document->addObject<App::FeatureTest>("ExtendedTarget");
+    ASSERT_NE(extendedTarget, nullptr);
+    ASSERT_NO_THROW(addGroupExtension(*extendedTarget));
+    EXPECT_THROW(static_cast<void>(prepare("ExtendedTarget")),
+                 std::invalid_argument);
+
+    auto* extendedDependency =
+        _document->addObject<App::FeatureTest>("ExtendedDependency");
+    auto* target = _document->addObject<App::FeatureTest>("ExtensionConsumer");
+    ASSERT_NE(extendedDependency, nullptr);
+    ASSERT_NE(target, nullptr);
+    ASSERT_NO_THROW(addGroupExtension(*extendedDependency));
+    target->Source1.setValue(extendedDependency);
+    EXPECT_THROW(static_cast<void>(prepare("ExtensionConsumer")),
+                 std::invalid_argument);
+
+    auto* source = _document->addObject<App::FeatureTest>("LinkSource");
+    auto* extendedLink = _document->addObject<App::Link>("ExtendedLink");
+    auto* linkConsumer =
+        _document->addObject<App::FeatureTest>("ExtendedLinkConsumer");
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(extendedLink, nullptr);
+    ASSERT_NE(linkConsumer, nullptr);
+    source->purgeTouched();
+    extendedLink->LinkedObject.setValue(source);
+    extendedLink->purgeTouched();
+    ASSERT_NO_THROW(addGroupExtension(*extendedLink));
+    const auto groupExtension =
+        Base::Type::fromName("App::GroupExtensionPython");
+    ASSERT_FALSE(groupExtension.isBad());
+    ASSERT_TRUE(extendedLink->hasExtension(groupExtension, false));
+    EXPECT_THROW(static_cast<void>(prepare("ExtendedLink")),
+                 std::invalid_argument);
+    linkConsumer->Source1.setValue(extendedLink);
+    EXPECT_THROW(static_cast<void>(prepare("ExtendedLinkConsumer")),
                  std::invalid_argument);
 }
