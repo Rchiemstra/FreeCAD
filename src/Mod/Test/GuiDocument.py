@@ -181,7 +181,22 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
-    def testRefreshRejectsUnoptedFeaturePythonWithoutLiveExecution(self):
+    def testRefreshRunsUnoptedFeaturePythonOnTheOwnerThread(self):
+        """An un-opted scripted feature recomputes, on the owner thread.
+
+        A FeaturePython proxy only opts into worker execution when it
+        implements supportsAsyncRecompute(); its execute() otherwise lives in a
+        proxy the archive cannot carry, so a detached process cannot reproduce
+        it. Refusing the job instead would leave the feature permanently
+        touched and invalid -- Draft, Arch, FEM, Assembly's joints and every
+        user macro included -- so the coordinator runs execute() on the owner
+        thread inside its commit boundary.
+
+        What has to hold is that the refresh command does not *block* on it and
+        that the proxy never runs off the main thread, not that the feature is
+        left unrecomputed.
+        """
+
         class RefreshProxy:
             def __init__(self):
                 self.executed_thread_id = None
@@ -200,22 +215,29 @@ class TestGuiDocument(unittest.TestCase):
         obj.Proxy = proxy
         obj.touch()
 
+        main_thread_id = threading.get_ident()
         start = time.monotonic()
         FreeCADGui.runCommand("Std_Refresh", 0)
         elapsed = time.monotonic() - start
 
         deadline = time.monotonic() + 2.0
-        while "Invalid" not in obj.State and time.monotonic() < deadline:
+        while "Up-to-date" not in obj.State and time.monotonic() < deadline:
             FreeCADGui.updateGui()
             time.sleep(0.005)
 
+        # Dispatched, not run inline: the proxy sleeps 50ms and the command
+        # still returns immediately.
         self.assertLess(elapsed, 0.033)
-        self.assertEqual(proxy.execute_count, 0)
-        self.assertIsNone(proxy.executed_thread_id)
-        self.assertEqual(obj.Result, -1)
-        self.assertIn("Touched", obj.State)
-        self.assertIn("Invalid", obj.State)
-        self.assertNotIn("Up-to-date", obj.State)
+        # Executed exactly once, and on the main thread -- a Python proxy must
+        # never be driven from a worker.
+        self.assertEqual(proxy.execute_count, 1)
+        self.assertEqual(proxy.executed_thread_id, main_thread_id)
+        # The recompute actually landed rather than failing the node.
+        self.assertEqual(obj.Result, 42)
+        self.assertIn("Up-to-date", obj.State)
+        self.assertNotIn("Invalid", obj.State)
+        self.assertNotIn("Touched", obj.State)
+
 
     def testSaveCommandDoesNotUseDeprecatedAPI(self):
         with tempfile.TemporaryDirectory() as temp_dir:
