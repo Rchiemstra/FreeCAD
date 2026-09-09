@@ -2836,6 +2836,11 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             d->activeTransactionFileChanges.reset();
 
             if (!retainUndoHistory) {
+                // The transaction is discarded outright, so any deferred
+                // notification still naming it would replay through freed
+                // memory once the barrier lifts.
+                retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
+                                                              nullptr);
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
                 delete d->activeUndoTransaction;
@@ -2851,6 +2856,10 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
                 if (d->parkedNestedTransaction) {
+                    // The records move to the parent, so the notifications
+                    // that name them follow.
+                    retargetCollaborationTransactionNotifications(
+                        d->activeUndoTransaction, d->parkedNestedTransaction);
                     d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
                     delete d->activeUndoTransaction;
                 }
@@ -4995,12 +5004,19 @@ DocumentSaveOutcome Document::saveWithOutcomeImpl(const DocumentSaveIntent inten
         if (!dependency) {
             continue;
         }
+        // Only work still in flight can leave a half-written model behind. A
+        // recompute that finished and *failed* is a terminal, resolved answer:
+        // the model legitimately holds an error, which is the most ordinary
+        // state a FreeCAD document is ever in -- a broken constraint, an empty
+        // tip shape, a feature mid-edit. Those documents have always been
+        // saveable, and they must stay saveable: the coordinator keeps a failed
+        // feature in its unresolved set until some later job commits it, so
+        // refusing on that set made a document with an errored feature
+        // impossible to save at all, and DocumentPy::saveAs() drops the result,
+        // so it failed silently.
         const bool activeRecompute =
             dependency->recomputeCoordinator().hasPendingWork();
-        const bool unresolvedRecompute =
-            dependency->recomputeCoordinator().hasUnresolvedWork()
-            && dependency->mustExecute();
-        if (activeRecompute || unresolvedRecompute) {
+        if (activeRecompute) {
             return fail(
                 "RECOMPUTE_PENDING",
                 "Canonical save of document '" + std::string(getName())
@@ -6208,6 +6224,8 @@ void Document::restoreParkedTransactionAfterNestedCommit()
         // The commit's transaction is still open, so it neither folded nor
         // rolled back. Fold it now rather than strand the caller's or leak it.
         if (d->parkedNestedTransaction) {
+            retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
+                                                          d->parkedNestedTransaction);
             d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
             mUndoMap.erase(d->activeUndoTransaction->getID());
             delete d->activeUndoTransaction;
@@ -6261,6 +6279,35 @@ void Document::discardCollaborationNotificationsForDestroyedObject(
     }
     catch (...) {
         // Nothing here may throw out of a destructor.
+    }
+}
+
+void Document::retargetCollaborationTransactionNotifications(
+    const Transaction* retiring,
+    Transaction* replacement) noexcept
+{
+    if (!retiring || retiring == replacement) {
+        return;
+    }
+    auto& notifications = d->collaborationDeferredNotifications;
+    for (auto entry = notifications.begin(); entry != notifications.end();) {
+        const bool namesRetiring =
+            (entry->kind == CollaborationDeferredNotificationKind::TransactionAppendObject
+             || entry->kind == CollaborationDeferredNotificationKind::TransactionRemoveObject)
+            && entry->transaction == retiring;
+        if (!namesRetiring) {
+            ++entry;
+            continue;
+        }
+        if (!replacement
+            && entry->kind
+                == CollaborationDeferredNotificationKind::TransactionAppendObject) {
+            // Nothing survives to append the view provider to.
+            entry = notifications.erase(entry);
+            continue;
+        }
+        entry->transaction = replacement;
+        ++entry;
     }
 }
 

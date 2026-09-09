@@ -1094,6 +1094,21 @@ public:
     void discardCollaborationNotificationsForDestroyedObject(
         const DocumentObject* object) noexcept;
 
+    /** Repoint or drop every deferred notification naming a transaction that
+     * is going away.
+     *
+     * A deferred TransactionAppend/Remove holds a raw Transaction*, and a
+     * recompute commit discards its own transaction (or folds it into the
+     * caller's), so replaying one afterwards would reach through freed memory.
+     * With a replacement the records moved there and the notification follows
+     * them. Without one the transaction is simply gone: an append has nothing
+     * left to append to and is dropped, while a remove keeps its contract by
+     * reporting a null transaction, which is how Gui::Document is told that
+     * no undo will restore the view provider. */
+    void retargetCollaborationTransactionNotifications(
+        const Transaction* retiring,
+        Transaction* replacement) noexcept;
+
     /**
      * @brief Settle one feature the recompute has just finished with.
      *
