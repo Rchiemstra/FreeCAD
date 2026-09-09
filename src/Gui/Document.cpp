@@ -1439,7 +1439,18 @@ void Document::slotSaveOutcome(const App::Document& document,
             FC_ERR("Cannot advance shared-presentation persisted marker after save");
         }
     }
-    if (canonicalWrite) {
+    // The window layout is GUI state, not model content. A change-aware save
+    // that wrote nothing because the model was already persisted still has to
+    // record where the user put the window -- otherwise moving or resizing a
+    // document window and saving silently loses the layout. Only a copy or a
+    // recovery snapshot, which target a path the document does not adopt, are
+    // left alone.
+    const bool persistWindowLayout =
+        (outcome.disposition == App::DocumentSaveDisposition::Written
+         || outcome.disposition == App::DocumentSaveDisposition::Unchanged)
+        && outcome.intent != App::DocumentSaveIntent::Copy
+        && outcome.intent != App::DocumentSaveIntent::Recovery;
+    if (persistWindowLayout) {
         const auto& savedPath = outcome.targetPath.empty() ? outcome.canonicalPath
                                                            : outcome.targetPath;
         WindowLayout::save(*this, savedPath);
