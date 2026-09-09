@@ -476,6 +476,21 @@ OverlayTabWidget::OverlayTabWidget(QWidget* parent, Qt::DockWidgetArea pos)
     connect(_animator, &QAbstractAnimation::stateChanged, this, &OverlayTabWidget::onAnimationStateChanged);
 }
 
+OverlayTabWidget::~OverlayTabWidget()
+{
+    // The animator is a child of this widget and animates one of its own
+    // properties, so it observes this object and stops itself when the widget
+    // is destroyed. Stopping emits stateChanged(), which Qt would deliver to
+    // onAnimationStateChanged() -- but by then this destructor body has run and
+    // only the QWidget base remains, so the call asserts on the object type.
+    // Qt severs the connection in ~QObject(), which is too late, so sever it
+    // here while the derived object is still whole.
+    if (_animator) {
+        _animator->stop();
+        _animator->disconnect(this);
+    }
+}
+
 void OverlayTabWidget::refreshIcons()
 {
     auto curStyleSheet = App::GetApplication()
