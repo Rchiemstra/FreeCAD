@@ -6,6 +6,7 @@
 #include <App/CollaborativeOperation.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
+#include <App/DocumentObjectGroup.h>
 #include <App/Expression.h>
 #include <App/FeatureTest.h>
 #include <App/GenericIsolatedRecompute.h>
@@ -97,6 +98,16 @@ const App::DocumentRecomputeFeatureRequest& node(
     }
     return *found;
 }
+
+// A plain App::FeatureTest subclass with no PROPERTY_HEADER of its own.
+// Added through the raw-pointer overload of Document::addObject(), its
+// getTypeId() still resolves to App::FeatureTest while its actual RTTI does
+// not, so collectClosure()'s recreate-and-compare check treats it as a
+// runtime type the worker archive cannot reproduce -- the same trick
+// DocumentCollaborationPythonCompatibility.cpp's StructureAddingOnExecuteFeature
+// uses, here as a closure *dependency* rather than the target itself.
+class UnserializableDependencyFeature final: public App::FeatureTest
+{};
 
 constexpr std::uint32_t GenericProtocolMagic = 0x31524947U;
 constexpr std::uint32_t GenericProtocolVersion = 2;
@@ -663,6 +674,61 @@ TEST_F(GenericIsolatedRecomputeTest,
     // The execution itself stays gated on the commit boundary: applying it
     // outside an owner-thread prepared commit is refused, not run.
     EXPECT_THROW(operation->apply(*_document), Base::Exception);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       optedInTargetWithAnUnoptedDependencyFallsBackToOwnerThreadExecution)
+{
+    // Holder opts in, but the scripted feature it groups does not -- exactly
+    // the JointGroup/GroundedJoint shape from the Assembly workbench. Before
+    // the fix, prepareGenericRecompute() picks the worker venue from Holder's
+    // own opt-in alone and collectClosure() then throws for UnoptedDependency,
+    // permanently failing the node instead of falling back to the owner
+    // thread the way the target-level opt-out already does.
+    auto* dependency = _document->addObject("App::FeaturePython", "UnoptedDependency");
+    ASSERT_NE(dependency, nullptr);
+    EXPECT_FALSE(dependency->canRecomputeOnWorker());
+
+    auto* holder = _document->addObject<App::DocumentObjectGroup>("Holder");
+    ASSERT_NE(holder, nullptr);
+    EXPECT_FALSE(holder->addObject(dependency).empty());
+    EXPECT_TRUE(holder->canRecomputeOnWorker());
+    // Purging the touch keeps the bookkeeping-only short-circuit at :1691 out
+    // of the way, so control is guaranteed to reach the closure probe instead
+    // of returning early for an unrelated reason.
+    holder->purgeTouched();
+
+    auto preparation = prepare("Holder");
+    EXPECT_EQ(preparation.policy, App::PreparationPolicy::DetachedInProcess);
+    EXPECT_EQ(preparation.isolatedTask, nullptr);  // owner-thread venue, not the worker
+    ASSERT_TRUE(preparation.detachedTask);
+    auto operation = preparation.detachedTask(std::stop_token {});
+    ASSERT_NE(operation, nullptr);
+    // Still gated on the commit boundary rather than executed here, exactly
+    // like the un-opted target case above.
+    EXPECT_THROW(operation->apply(*_document), Base::Exception);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       optedInDependencyWithUnserializableRuntimeTypeStillFailsClosed)
+{
+    // Guard against over-fixing: closureOptsIntoWorkerExecution() asks only
+    // "did every closure member opt into worker execution". A dependency
+    // whose actual runtime type collectClosure() cannot reproduce in the
+    // worker must still fail the preparation instead of being waved through
+    // to the owner-thread fallback merely because it opted in.
+    auto* dependency = new UnserializableDependencyFeature;
+    _document->addObject(dependency, "UnserializableDependency");
+    EXPECT_TRUE(dependency->canRecomputeOnWorker());
+
+    auto* target = _document->addObject<App::FeatureTestColumn>("OptedInTarget");
+    ASSERT_NE(target, nullptr);
+    auto* link = dynamic_cast<App::PropertyLink*>(
+        target->addDynamicProperty("App::PropertyLink", "DependencySource"));
+    ASSERT_NE(link, nullptr);
+    link->setValue(dependency);
+
+    EXPECT_THROW(static_cast<void>(prepare("OptedInTarget")), std::invalid_argument);
 }
 
 TEST_F(GenericIsolatedRecomputeTest,

@@ -116,26 +116,52 @@ std::string pendingRecomputeDetail(App::Document& document, std::string message)
     return message;
 }
 
+// The plan pendingTransactionRecomputeTargets() returns is force-executed over
+// its whole out-list closure, and settling a member enforces recompute on
+// *its* in-list (Document::settleRecomputedFeature). A dependent left outside
+// the plan therefore stays touched once the authoritative recompute finishes,
+// and the postcondition guard in commitOnDocumentThreadWithOptions() rejects
+// the commit for a leftover the plan itself created. Closing the seed set
+// under both link directions to a fixed point guarantees no link crosses the
+// boundary of the selection, so settling any member can only enforce another
+// member already in the plan.
+void closeRecomputeSelectionUnderLinkGraph(App::Document& document,
+                                           std::vector<App::DocumentObject*> pending,
+                                           std::unordered_set<App::DocumentObject*>& selected)
+{
+    while (!pending.empty()) {
+        auto* object = pending.back();
+        pending.pop_back();
+        if (!object || object->getDocument() != &document || !object->isAttachedToDocument()) {
+            continue;
+        }
+        if (!selected.insert(object).second) {
+            continue;
+        }
+        for (auto* neighbour : object->getInList()) {
+            pending.push_back(neighbour);
+        }
+        for (auto* neighbour : object->getOutList()) {
+            pending.push_back(neighbour);
+        }
+    }
+}
+
 std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
     App::Document& document)
 {
     const auto objects = document.getObjects();
     std::unordered_set<App::DocumentObject*> selected;
+    std::vector<App::DocumentObject*> pending;
     selected.reserve(objects.size());
     for (auto* object : objects) {
-        if (!object
-            || (!object->isTouched()
-                && !document.collaborationTransactionOwnsNewObject(*object))) {
-            continue;
-        }
-        selected.insert(object);
-        for (auto* dependent : object->getInListRecursive()) {
-            if (dependent && dependent->getDocument() == &document
-                && dependent->isAttachedToDocument()) {
-                selected.insert(dependent);
-            }
+        if (object
+            && (object->isTouched()
+                || document.collaborationTransactionOwnsNewObject(*object))) {
+            pending.push_back(object);
         }
     }
+    closeRecomputeSelectionUnderLinkGraph(document, std::move(pending), selected);
 
     std::vector<App::DocumentObject*> targets;
     targets.reserve(selected.size());

@@ -1093,6 +1093,39 @@ TEST_F(DocumentCollaborationServiceTest, commitsBehindRevisionAndObserverBoundar
 }
 
 TEST_F(DocumentCollaborationServiceTest,
+       eagerRecomputeClosesOverAGroupReachedOnlyThroughAnUnrelatedOutListMember)
+{
+    // Owner is a dependent-only group: the eager plan's old seed -- the
+    // touched object plus one hop of getInListRecursive() -- never reaches
+    // it. _target links straight to Leaf; Leaf's only other link is Owner's
+    // Group membership, which sits entirely outside that seed.
+    auto* leaf = _document->addObject<FeatureTest>("Leaf");
+    auto* owner = _document->addObject<DocumentObjectGroup>("Owner");
+    ASSERT_NE(leaf, nullptr);
+    ASSERT_NE(owner, nullptr);
+    EXPECT_FALSE(owner->addObject(leaf).empty());  // Owner --Group--> Leaf
+    static_cast<FeatureTest*>(_target)->Source1.setValue(leaf);  // Target --Source1--> Leaf
+    _document->recompute();
+    ASSERT_FALSE(_document->mustExecute());
+
+    // An ordinary eager compatibility edit that only relabels Target: the
+    // plan seeds {Target}, and Target's dependency closure force-executed
+    // under it is {Leaf, Target}. Settling Leaf enforces recompute on its
+    // in-list, which includes Owner -- outside that plan before the fix, so
+    // the authoritative recompute leaves it Touched and the commit is
+    // rejected even though the recompute itself reported no error.
+    auto prepared = prepare("relabel-with-cross-branch-owner", "After");
+
+    const auto result =
+        _document->collaborationService().commitEdit(_session.sessionId(), prepared);
+
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "After");
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_FALSE(owner->isTouched());
+}
+
+TEST_F(DocumentCollaborationServiceTest,
        emptyCoordinatorPublicationCommitsWithoutAdvancingRevisionJournal)
 {
     const auto identity = _document->collaborationIdentity();
