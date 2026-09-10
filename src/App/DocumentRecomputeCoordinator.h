@@ -54,6 +54,11 @@ struct AppExport DocumentRecomputeFeatureRequest
     std::string operationId;
     CollaborativeOperationIntent intent;
     std::string provenance;
+    /** This node's feature code may run live on the thread that polls the
+     *  handle, rather than detached. An upper bound: a node that turns out to
+     *  be bookkeeping-only settles without executing at all, which the
+     *  snapshot's `executed` flag reports afterwards. */
+    bool ownerThreadExecution {false};
 };
 
 /**
@@ -78,6 +83,11 @@ struct AppExport DocumentRecomputeFeatureSnapshot
     std::string diagnostic;
     /** False when the node settled without running the feature's execute(). */
     bool executed {true};
+    /** See DocumentRecomputeFeatureRequest::ownerThreadExecution. When true,
+     *  a status() or wait() call on this plan may run this feature's execute()
+     *  synchronously on the calling thread, and wait()'s timeout does not
+     *  bound that execution. */
+    bool ownerThreadExecution {false};
 };
 
 /** Copyable, pointer-free observation of a recompute plan. */
@@ -91,6 +101,9 @@ struct AppExport DocumentRecomputeSnapshot
     double progress {0.0};
     std::string diagnostic;
     std::vector<DocumentRecomputeFeatureSnapshot> features;
+    /** Nodes whose execute() may run live on the polling thread. Non-zero
+     *  means wait(timeout) is not a bounded-latency call. */
+    std::size_t ownerThreadFeatures {0};
 
     [[nodiscard]] bool terminal() const noexcept
     {

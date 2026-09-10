@@ -275,6 +275,69 @@ TEST_F(RecomputeHandleTest, asyncFacadeCommitsThroughTheProductionFreeCADCmdBack
 }
 
 TEST_F(RecomputeHandleTest,
+       ownerThreadVenueDeclaresItselfWhileTheIsolatedVenueKeepsAShortWaitBounded)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("VenueProbe");
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+
+    // Default venue. The plan says up front that this node's execute() runs
+    // live on whichever thread polls the handle, and nothing runs until one
+    // does: the count staying at zero across the submit is what distinguishes
+    // owner-thread execution from work already dispatched elsewhere.
+    auto owner = _document->recomputeAsync({feature});
+    EXPECT_EQ(feature->ExecCount.getValue(), 0)
+        << "owner-thread work must not begin before the handle is polled";
+    const auto declared = owner->wait(120s);
+    ASSERT_TRUE(declared.terminal()) << declared.diagnostic;
+    ASSERT_EQ(declared.features.size(), 1U);
+    EXPECT_TRUE(declared.features.front().ownerThreadExecution);
+    EXPECT_EQ(declared.ownerThreadFeatures, 1U);
+    EXPECT_EQ(feature->ExecCount.getValue(), 1);  // ran on the polling thread
+
+    // Isolated venue. The same worker-capable feature does not run here: a
+    // zero timeout comes back with the node still running and ExecCount
+    // untouched, which is only possible if execute() happened elsewhere.
+    feature->touch();
+    auto isolated = _document->recomputeAsync(
+        {feature}, false, 0, App::RecomputeVenue::Isolated);
+    const auto started = std::chrono::steady_clock::now();
+    const auto pending = isolated->wait(0ms);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, 500ms);
+    ASSERT_EQ(pending.features.size(), 1U);
+    EXPECT_FALSE(pending.features.front().ownerThreadExecution);
+    EXPECT_EQ(pending.ownerThreadFeatures, 0U);
+    EXPECT_FALSE(pending.terminal());
+    EXPECT_EQ(feature->ExecCount.getValue(), 1);
+
+    const auto done = isolated->wait(120s);
+    ASSERT_TRUE(done.terminal()) << done.diagnostic;
+    EXPECT_EQ(done.state, App::DocumentRecomputeState::Completed) << done.diagnostic;
+    EXPECT_EQ(feature->ExecCount.getValue(), 2);  // came back from the worker
+}
+
+TEST_F(RecomputeHandleTest, isolatedVenueStillFallsBackForAnUnoptedFeature)
+{
+    auto* blocker = _document->addObject<App::FeatureTestAsyncBlocker>("Unopted");
+    ASSERT_NE(blocker, nullptr);
+    ASSERT_FALSE(blocker->canRecomputeOnWorker());
+    blocker->touch();
+    App::FeatureTestAsyncBlocker::resetBlocker();
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+
+    auto handle = _document->recomputeAsync(
+        {blocker}, false, 0, App::RecomputeVenue::Isolated);
+    const auto snapshot = handle->wait(60s);
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+    // Asked for isolated, got the owner thread, and said so.
+    ASSERT_EQ(snapshot.features.size(), 1U);
+    EXPECT_TRUE(snapshot.features.front().ownerThreadExecution);
+    EXPECT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+        << snapshot.diagnostic;
+    EXPECT_FALSE(blocker->mustRecompute());
+}
+
+TEST_F(RecomputeHandleTest,
        fullDocumentFacadeDoesNotMakeIndependentSiblingCommitsStale)
 {
     auto* first = _document->addObject<App::FeatureTest>("IndependentFirst");

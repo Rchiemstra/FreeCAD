@@ -19,6 +19,7 @@
 #include <Base/Type.h>
 #include <Base/Writer.h>
 
+
 #include <QCryptographicHash>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
 # include <QByteArrayView>
@@ -753,12 +754,99 @@ bool serializesPayloadToDocFile(const App::Property& property)
     return probe.registeredDocFiles();
 }
 
-// The full persistence archive round-trips through ZipWriter and therefore does
-// carry SaveDocFile payloads. It is deterministic for equal content, so it is a
-// sound equality basis where the plain XML is blind.
+// Reduce a Persistence archive to what it actually carries: each entry's name
+// and its uncompressed content, in archive order. Nothing else -- not the
+// timestamp, not the compressed size, not the CRC -- takes part in a value
+// comparison.
+//
+// XML-only comparison is not an option: a property that stores its payload
+// through SaveDocFile serializes to a constant file reference, so its XML is
+// identical for an empty payload and a computed one.
+std::string canonicalArchiveContents(const std::string& archiveBytes)
+{
+    // ZipWriter stamps the current local time into every entry --
+    // zipoutputstreambuf.cpp packs tm_hour/tm_min/(tm_sec >> 1), giving two
+    // second resolution -- so two archives of identical content serialized on
+    // opposite sides of a boundary differ in bytes alone, and an unchanged
+    // input then reads as an undeclared side effect.
+    //
+    // Walk the records and zero only the modification time and date. Every
+    // other byte stays exactly as written: names, sizes, CRCs and the deflate
+    // payload all still take part in the comparison, so a real value change is
+    // still a change. Anything that does not parse as a zip falls through to
+    // the raw bytes rather than collapsing to a value that compares equal.
+    const auto size = archiveBytes.size();
+    const auto byteAt = [&archiveBytes](const std::size_t at) -> std::uint32_t {
+        return static_cast<unsigned char>(archiveBytes[at]);
+    };
+    const auto u16 = [&byteAt](const std::size_t at) -> std::uint32_t {
+        return byteAt(at) | (byteAt(at + 1) << 8);
+    };
+    const auto u32 = [&byteAt](const std::size_t at) -> std::uint32_t {
+        return byteAt(at) | (byteAt(at + 1) << 8) | (byteAt(at + 2) << 16)
+            | (byteAt(at + 3) << 24);
+    };
+
+    std::string canonical = archiveBytes;
+    std::size_t at = 0;
+    bool sawEntry = false;
+    while (at + 4 <= size) {
+        const std::uint32_t signature = u32(at);
+        if (signature == 0x04034b50U) {  // local file header
+            if (at + 30 > size) {
+                return archiveBytes;
+            }
+            if ((u16(at + 6) & 0x0008U) != 0) {
+                // A trailing data descriptor carries the sizes, so the payload
+                // cannot be skipped from this header alone. ZipWriter does not
+                // emit those, but refuse rather than mis-walk if one appears.
+                return archiveBytes;
+            }
+            canonical[at + 10] = 0;
+            canonical[at + 11] = 0;
+            canonical[at + 12] = 0;
+            canonical[at + 13] = 0;
+            const std::size_t advance =
+                std::size_t {30} + u16(at + 26) + u16(at + 28) + u32(at + 18);
+            if (at + advance > size) {
+                return archiveBytes;
+            }
+            at += advance;
+            sawEntry = true;
+        }
+        else if (signature == 0x02014b50U) {  // central directory header
+            if (at + 46 > size) {
+                return archiveBytes;
+            }
+            canonical[at + 12] = 0;
+            canonical[at + 13] = 0;
+            canonical[at + 14] = 0;
+            canonical[at + 15] = 0;
+            const std::size_t advance =
+                std::size_t {46} + u16(at + 28) + u16(at + 30) + u16(at + 32);
+            if (at + advance > size) {
+                return archiveBytes;
+            }
+            at += advance;
+        }
+        else if (signature == 0x06054b50U) {  // end of central directory
+            break;
+        }
+        else {
+            return archiveBytes;
+        }
+    }
+    if (!sawEntry) {
+        // Nothing recognizable was normalized, so comparing canonical forms
+        // would compare two unchanged copies and tell us nothing new.
+        return archiveBytes;
+    }
+    return canonical;
+}
+
 std::string valueArchive(const App::Property& property)
 {
-    return dumpProperty(const_cast<App::Property&>(property));
+    return canonicalArchiveContents(dumpProperty(const_cast<App::Property&>(property)));
 }
 
 bool requiresDetachedValueSnapshot(const App::Property& property)
@@ -1958,6 +2046,87 @@ std::vector<DocumentObject*> planDependencies(DocumentObject& object)
     return outList;
 }
 
+// Kahn's algorithm cannot tell a cycle member from an acyclic consumer sitting
+// downstream of one: both are simply missing from its ordered set. Relaxing
+// every edge of every missing node therefore deletes valid dependencies -- with
+// Z_Group <-> Z_Source -> C_First -> B_Middle -> A_Result nothing is ordered at
+// all, every edge goes, and the coordinator's name-ordered ready scan
+// (DocumentRecomputeCoordinator.cpp:389, over a std::map) then runs A_Result
+// before B_Middle while an upstream failure no longer blocks its dependents.
+//
+// Strongly connected components separate the two cases exactly. Kosaraju is
+// used rather than Tarjan because both adjacency directions already exist at
+// the call site -- dependencies forward, dependents reversed -- and both of its
+// passes are plain iterative sweeps, so a deep dependency chain cannot overflow
+// the stack the way a recursive Tarjan would.
+std::map<std::string, std::size_t> stronglyConnectedComponents(
+    const std::vector<DocumentRecomputeFeatureRequest>& features,
+    const std::map<std::string, std::vector<std::string>>& dependents)
+{
+    std::map<std::string, const std::vector<std::string>*> forward;
+    for (const auto& feature : features) {
+        forward.emplace(feature.featureId, &feature.dependencies);
+    }
+
+    // Pass one: record each node after all of its forward successors are done.
+    // Each entry is stacked twice, once to expand and once to record.
+    std::set<std::string> seen;
+    std::vector<std::string> finished;
+    finished.reserve(features.size());
+    for (const auto& feature : features) {
+        if (seen.contains(feature.featureId)) {
+            continue;
+        }
+        std::vector<std::pair<std::string, bool>> stack {{feature.featureId, false}};
+        while (!stack.empty()) {
+            auto [name, expanded] = std::move(stack.back());
+            stack.pop_back();
+            if (expanded) {
+                finished.push_back(std::move(name));
+                continue;
+            }
+            if (!seen.insert(name).second) {
+                continue;
+            }
+            stack.emplace_back(name, true);
+            for (const auto& next : *forward.at(name)) {
+                if (!seen.contains(next)) {
+                    stack.emplace_back(next, false);
+                }
+            }
+        }
+    }
+
+    // Pass two: sweep the reversed graph in reverse finishing order. Every node
+    // reached in one sweep forms one strongly connected component.
+    std::map<std::string, std::size_t> component;
+    std::size_t nextComponent = 0;
+    for (auto entry = finished.rbegin(); entry != finished.rend(); ++entry) {
+        if (component.contains(*entry)) {
+            continue;
+        }
+        std::vector<std::string> stack {*entry};
+        while (!stack.empty()) {
+            const auto name = std::move(stack.back());
+            stack.pop_back();
+            if (!component.emplace(name, nextComponent).second) {
+                continue;
+            }
+            const auto reverse = dependents.find(name);
+            if (reverse == dependents.end()) {
+                continue;
+            }
+            for (const auto& previous : reverse->second) {
+                if (!component.contains(previous)) {
+                    stack.push_back(previous);
+                }
+            }
+        }
+        ++nextComponent;
+    }
+    return component;
+}
+
 }  // namespace
 
 DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
@@ -2004,6 +2173,11 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         if (ownerThreadExecution) {
             node.intent.arguments.emplace("owner_thread_execution", "1");
         }
+        // Mirror the venue prepareGenericRecompute() will actually pick: the
+        // caller's flag, or the target's own opt-out, whichever forces the
+        // owner thread. A caller inspecting the plan before it runs needs to
+        // know this up front, not only after execute() has already run.
+        node.ownerThreadExecution = ownerThreadExecution || !object->canRecomputeOnWorker();
         node.provenance = std::string(provenance);
         for (auto* dependency : planDependencies(*object)) {
             if (dependency && dependency != object && dependency->getDocument() == &document
@@ -2055,13 +2229,32 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
             }
         }
         if (ordered.size() != request.features.size()) {
+            const auto component =
+                stronglyConnectedComponents(request.features, dependents);
+            std::map<std::size_t, std::size_t> componentSize;
+            for (const auto& [featureId, id] : component) {
+                static_cast<void>(featureId);
+                ++componentSize[id];
+            }
             for (auto& feature : request.features) {
-                if (ordered.contains(feature.featureId)) {
+                const auto own = component.at(feature.featureId);
+                const bool selfEdge =
+                    std::ranges::find(feature.dependencies, feature.featureId)
+                    != feature.dependencies.end();
+                if (componentSize.at(own) < 2 && !selfEdge) {
+                    // Acyclic. Ordered late only because a cycle sits upstream;
+                    // every one of its edges is valid and the coordinator needs
+                    // all of them to keep it behind its inputs and to block it
+                    // when one of them fails.
                     continue;
                 }
+                // Drop only the edges that stay inside this cycle. Edges leaving
+                // it, and every edge into it from downstream, are preserved:
+                // the condensation of a directed graph is a DAG, so what is left
+                // is acyclic and the coordinator will accept it.
                 std::erase_if(feature.dependencies,
-                              [&ordered](const std::string& dependency) {
-                                  return !ordered.contains(dependency);
+                              [&component, own](const std::string& dependency) {
+                                  return component.at(dependency) == own;
                               });
             }
         }
@@ -2094,6 +2287,11 @@ DocumentRecomputeRequest makeGenericIsolatedRecomputeRequest(
         preserveLegacyRevisionSemantics,
         true,
         ownerThreadExecution);
+}
+
+std::string canonicalRecomputeArchiveContents(const std::string& archiveBytes)
+{
+    return canonicalArchiveContents(archiveBytes);
 }
 
 }  // namespace App::Internal

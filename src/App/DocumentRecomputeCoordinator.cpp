@@ -844,7 +844,14 @@ std::optional<DocumentRecomputeSnapshot> DocumentRecomputeCoordinator::statusLoc
     std::size_t terminalCount = 0;
     for (const auto& [featureId, node] : job.nodes) {
         snapshot.features.push_back(
-            {featureId, node.state, node.diagnostic, node.executed});
+            {featureId,
+             node.state,
+             node.diagnostic,
+             node.executed,
+             node.request.ownerThreadExecution});
+        if (node.request.ownerThreadExecution) {
+            ++snapshot.ownerThreadFeatures;
+        }
         if (node.state == DocumentRecomputeFeatureState::Committed) {
             ++snapshot.completedFeatures;
         }
