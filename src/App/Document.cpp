@@ -1472,6 +1472,23 @@ void Document::ensureCollaborationTransactionControlAllowed() const
     }
 }
 
+int Document::nestedCommitTransactionId() const noexcept
+{
+    // A nested transaction that will be folded into a parked one is deleted
+    // straight after the fold, so it must NOT reuse the parent's id:
+    // _openTransaction() throws on an id already in mUndoMap, and the parent
+    // is registered there.
+    //
+    // A nested transaction that has nothing to fold into *becomes* the
+    // caller's, so it has to be born under the caller's booked id. Otherwise
+    // activeUndoTransaction->getID() != bookedTransaction, and
+    // Application::closeActiveTransaction(), which resolves documents by
+    // getBookedTransactionID(), can never reach this document again.
+    return (!d->nestedCommitParked || d->parkedNestedTransaction)
+        ? 0
+        : d->parkedNestedBookedTransaction;
+}
+
 int Document::openCollaborationCommitTransaction(
     std::string name,
     const bool retainUndoHistory)
@@ -1480,7 +1497,7 @@ int Document::openCollaborationCommitTransaction(
         throw Base::RuntimeError("collaboration commit notification barrier is not active");
     }
     Base::FlagToggler<bool> transactionGrant(d->collaborationTransactionControlGranted, false);
-    return _openTransaction(std::move(name), 0, !retainUndoHistory);
+    return _openTransaction(std::move(name), nestedCommitTransactionId(), !retainUndoHistory);
 }
 
 bool Document::commitCollaborationCommitTransaction(const bool retainUndoHistory)
@@ -2835,7 +2852,54 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
             }
             d->activeTransactionFileChanges.reset();
 
-            if (!retainUndoHistory) {
+            if (d->nestedCommitParked) {
+                // A nested commit: the caller already had a transaction open,
+                // so this one is part of that step rather than an undo entry of
+                // its own. Fold it into the parked transaction and leave the
+                // reinstatement to the guard that parked it, so one undo step
+                // covers both. A caller that only had a booking gets this
+                // transaction as its own. This has to be tested before
+                // !retainUndoHistory below: commitRecompute() always passes
+                // retainUndoHistory == false together with a parked nested
+                // commit, so checking !retainUndoHistory first would take that
+                // branch instead and discard the nested commit's undo records
+                // outright rather than fold them into the caller's.
+                if (d->parkedNestedTransaction) {
+                    // The records move to the parent, so the notifications
+                    // that name them follow.
+                    mUndoMap.erase(id);
+                    discardTransactionFileState(id);
+                    retargetCollaborationTransactionNotifications(
+                        d->activeUndoTransaction, d->parkedNestedTransaction);
+                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
+                    delete d->activeUndoTransaction;
+                }
+                else if (!d->activeUndoTransaction->isEmpty()) {
+                    // Nothing to fold into: the caller only had a booking, so
+                    // this transaction becomes the caller's and must keep its
+                    // undo-map registration and file state rather than have
+                    // them discarded here. nestedCommitTransactionId() minted
+                    // it under the booked id precisely so that
+                    // activeUndoTransaction->getID() == bookedTransaction
+                    // holds again once the guard restores it.
+                    assert(d->activeUndoTransaction->getID()
+                           == d->parkedNestedBookedTransaction);
+                    d->parkedNestedTransaction = d->activeUndoTransaction;
+                }
+                else {
+                    // Nothing was recorded. Adopting an empty transaction
+                    // would defeat openTransaction()'s laziness and push an
+                    // empty undo entry, so retire it and leave the caller
+                    // with the bare booking it arrived with.
+                    retargetCollaborationTransactionNotifications(
+                        d->activeUndoTransaction, nullptr);
+                    mUndoMap.erase(id);
+                    discardTransactionFileState(id);
+                    delete d->activeUndoTransaction;
+                }
+                d->activeUndoTransaction = nullptr;
+            }
+            else if (!retainUndoHistory) {
                 // The transaction is discarded outright, so any deferred
                 // notification still naming it would replay through freed
                 // memory once the barrier lifts.
@@ -2844,28 +2908,6 @@ bool Document::_commitTransaction(const bool notify, const bool retainUndoHistor
                 mUndoMap.erase(id);
                 discardTransactionFileState(id);
                 delete d->activeUndoTransaction;
-                d->activeUndoTransaction = nullptr;
-            }
-            else if (d->nestedCommitParked) {
-                // A nested commit: the caller already had a transaction open,
-                // so this one is part of that step rather than an undo entry of
-                // its own. Fold it into the parked transaction and leave the
-                // reinstatement to the guard that parked it, so one undo step
-                // covers both. A caller that only had a booking gets this
-                // transaction as its own.
-                mUndoMap.erase(id);
-                discardTransactionFileState(id);
-                if (d->parkedNestedTransaction) {
-                    // The records move to the parent, so the notifications
-                    // that name them follow.
-                    retargetCollaborationTransactionNotifications(
-                        d->activeUndoTransaction, d->parkedNestedTransaction);
-                    d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-                    delete d->activeUndoTransaction;
-                }
-                else {
-                    d->parkedNestedTransaction = d->activeUndoTransaction;
-                }
                 d->activeUndoTransaction = nullptr;
             }
             else if (d->collaborationCommitNotificationBarrier) {
@@ -6211,38 +6253,85 @@ bool Document::parkTransactionForNestedCommit()
     d->activeUndoTransaction = nullptr;
     d->parkedNestedBookedTransaction = d->bookedTransaction;
     d->bookedTransaction = 0;
+    // The nested commit's own _openTransaction() unconditionally resets
+    // activeTransactionFileChanges, so the caller's before/after snapshot has
+    // to be parked here or it is lost before the nested commit even runs. A
+    // caller that has not made a transactional file change yet has no
+    // snapshot to park, so synthesize a no-op one from the current tokens.
+    d->parkedNestedTransactionFileChanges = d->activeTransactionFileChanges
+        ? *d->activeTransactionFileChanges
+        : DocumentP::TransactionFileChangeState {
+              transactionalTokens(d->fileChangeTokens),
+              transactionalTokens(d->fileChangeTokens)};
+    d->activeTransactionFileChanges.reset();
     d->nestedCommitParked = true;
     return true;
 }
 
-void Document::restoreParkedTransactionAfterNestedCommit()
+void Document::restoreParkedTransactionAfterNestedCommit() noexcept
 {
     if (!d->nestedCommitParked) {
         return;
     }
-    if (d->activeUndoTransaction) {
-        // The commit's transaction is still open, so it neither folded nor
-        // rolled back. Fold it now rather than strand the caller's or leak it.
-        if (d->parkedNestedTransaction) {
-            retargetCollaborationTransactionNotifications(d->activeUndoTransaction,
-                                                          d->parkedNestedTransaction);
-            d->activeUndoTransaction->mergeInto(*d->parkedNestedTransaction);
-            mUndoMap.erase(d->activeUndoTransaction->getID());
-            delete d->activeUndoTransaction;
-            d->activeUndoTransaction = nullptr;
-        }
-        else {
-            // Nothing to fold into: the caller only had a booking, so the
-            // commit's transaction becomes the caller's.
-            d->parkedNestedTransaction = d->activeUndoTransaction;
-            d->activeUndoTransaction = nullptr;
-        }
-    }
+    d->nestedCommitParked = false;  // no re-entry into the fold below
+    Transaction* stray = d->activeUndoTransaction;
     d->activeUndoTransaction = d->parkedNestedTransaction;
     d->parkedNestedTransaction = nullptr;
     d->bookedTransaction = d->parkedNestedBookedTransaction;
     d->parkedNestedBookedTransaction = 0;
-    d->nestedCommitParked = false;
+
+    if (stray) {
+        // The commit's transaction is still open, so it neither folded nor
+        // rolled back. Fold it now rather than strand the caller's or leak it.
+        if (d->activeUndoTransaction) {
+            retargetCollaborationTransactionNotifications(stray, d->activeUndoTransaction);
+            stray->mergeInto(*d->activeUndoTransaction);
+            mUndoMap.erase(stray->getID());
+            discardTransactionFileState(stray->getID());
+            delete stray;
+        }
+        else if (stray->getID() == d->bookedTransaction || stray->isEmpty()) {
+            // openCollaborationCommitTransaction() minted this under the
+            // caller's booked id (the ordinary booking-only case), or it
+            // recorded nothing at all. Either way it can become the
+            // caller's transaction without breaking the invariant that
+            // activeUndoTransaction->getID() == bookedTransaction.
+            d->activeUndoTransaction = stray;
+        }
+        else {
+            // Opened during the park by something other than
+            // openCollaborationCommitTransaction() (reachable: notification
+            // replay hits _checkTransaction(), which falls back to
+            // GetApplication().getGlobalTransaction() because the booking is
+            // parked), so it carries an id the caller's booking does not
+            // name. Adopting it would break the booked-id invariant; retire
+            // it as its own step rather than strand its records.
+            FC_WARN("nested commit left a transaction with an unbookable id");
+            const int booked = d->bookedTransaction;
+            d->activeUndoTransaction = stray;
+            _commitTransaction(false);  // parked flag already cleared
+            d->bookedTransaction = booked;  // _commitTransaction zeroes it
+        }
+    }
+
+    if (d->parkedNestedTransactionFileChanges) {
+        if (d->activeUndoTransaction) {
+            auto restored = *d->parkedNestedTransactionFileChanges;
+            // The nested commit's own file changes belong to the caller's step,
+            // so fold them into the restored record's 'after' rather than the
+            // nested commit's now-discarded one; otherwise undo/abort would
+            // restore the file-change tokens to a state that predates the
+            // recompute, leaving the document reported dirty after a rollback
+            // that already restored its content.
+            restored.after = transactionalTokens(d->fileChangeTokens);
+            d->activeTransactionFileChanges = restored;
+        }
+        // Otherwise no transaction owns this snapshot. Every consumer
+        // (_commitTransaction, _abortTransaction,
+        // rollbackCollaborationTransaction) is gated on activeUndoTransaction,
+        // so installing it only leaves state nothing can retire.
+        d->parkedNestedTransactionFileChanges.reset();
+    }
 }
 
 bool Document::hasParkedNestedTransaction() const noexcept

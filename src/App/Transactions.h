@@ -195,11 +195,13 @@ public:
      * Used when a nested transaction finishes and its work must become part of
      * the transaction that was already open, so the two undo as one step.
      *
-     * A record the parent already holds is dropped rather than moved: the
-     * parent's snapshot was taken first and is the state undo has to restore.
-     * Records the parent does not hold are moved across, and ownership of the
-     * moved TransactionObject moves with them, so this transaction no longer
-     * destroys them.
+     * Merging is per property, not per record. The two transactions can
+     * have recorded the same object for different properties, so a record
+     * the parent already holds is merged into rather than dropped: every
+     * property snapshot the parent lacks moves across, and one it already
+     * has is kept, that snapshot being the older one and the state undo
+     * has to restore. Ownership of each moved snapshot moves with it, so
+     * this transaction no longer destroys what the parent now owns.
      *
      * @param[in,out] parent The enclosing transaction to fold into.
      */

@@ -193,6 +193,12 @@ struct DocumentP
      * is lazy: it books a name and only creates the transaction on the first
      * change, so a nested commit has to set the booking aside too. */
     int parkedNestedBookedTransaction {0};
+    /** The caller's in-progress file-change before/after snapshot, set aside
+     * with it. Document::_openTransaction() unconditionally clears
+     * activeTransactionFileChanges when the nested commit opens its own
+     * transaction, so the caller's snapshot has to be parked here or it is
+     * lost before the nested commit even runs. */
+    std::optional<TransactionFileChangeState> parkedNestedTransactionFileChanges;
     bool nestedCommitParked {false};
     FileChangeTokenState fileChangeTokens;
     FileChangeTokenState canonicalSaveTokens;

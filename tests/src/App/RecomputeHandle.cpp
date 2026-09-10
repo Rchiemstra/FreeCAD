@@ -10,7 +10,9 @@
 #include <App/PropertyLinks.h>
 #include <App/PropertyStandard.h>
 #include <App/RecomputeHandle.h>
+#include <App/Transactions.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
+#include <App/private/DocumentP.h>
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
@@ -28,6 +30,25 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+namespace App::Internal
+{
+
+/** Exposes the id of the document's currently open (but not yet committed)
+ * undo transaction, purely so tests can assert fix 1's invariant that a live
+ * transaction always carries the caller's booked id. Returns 0 when no
+ * transaction is currently open. */
+class NestedCommitBookingTestAccess
+{
+public:
+    static int activeTransactionId(const App::Document& document) noexcept
+    {
+        return document.d->activeUndoTransaction ? document.d->activeUndoTransaction->getID()
+                                                  : 0;
+    }
+};
+
+}  // namespace App::Internal
 
 namespace
 {
@@ -578,4 +599,208 @@ TEST_F(RecomputeHandleTest, documentCloseLeavesAStablePointerFreeTerminalSnapsho
     EXPECT_EQ(afterClose.diagnostic, "recompute document is no longer live");
     EXPECT_TRUE(handle->poll());
     EXPECT_FALSE(handle->cancel("closed document"));
+}
+
+TEST_F(RecomputeHandleTest, syncRecomputeInsideACallerTransactionUndoesItsDerivedOutput)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("NestedRecomputeColumn");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("B");
+    ASSERT_EQ(_document->recompute({feature}), 1);
+    const int valueForB = feature->Value.getValue();
+
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    _document->openTransaction("edit column");
+    feature->Column.setValue("E");
+    // The recompute below runs a nested commit inside this still-open caller
+    // transaction, so its Value write must fold into the caller's undo step
+    // rather than land in a transaction of its own that gets discarded.
+    ASSERT_EQ(_document->recompute({feature}), 1);
+    _document->commitTransaction();
+    ASSERT_EQ(_document->getAvailableUndos(), 1);
+
+    ASSERT_TRUE(_document->undo());
+    EXPECT_STREQ(feature->Column.getValue(), "B");
+    EXPECT_EQ(feature->Value.getValue(), valueForB);
+
+    ASSERT_TRUE(_document->redo());
+    EXPECT_STREQ(feature->Column.getValue(), "E");
+}
+
+TEST_F(RecomputeHandleTest, bookingOnlyTransactionAdoptsTheRecomputesUndoStepOnAbort)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("BookingOnlyAbortColumn");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("B");
+    ASSERT_EQ(_document->recompute({feature}), 1);
+    const int valueForB = feature->Value.getValue();
+
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    // Changing the input before opening a transaction leaves the write
+    // untracked, so the transaction below only ever gets a booking, never a
+    // live App::Transaction, until the recompute's own nested commit opens
+    // one.
+    feature->Column.setValue("E");
+    const int booked = _document->openTransaction("booking only recompute (abort)");
+    ASSERT_GT(booked, 0);
+    ASSERT_EQ(_document->getBookedTransactionID(), booked);
+    ASSERT_EQ(App::Internal::NestedCommitBookingTestAccess::activeTransactionId(*_document), 0);
+
+    // The recompute below opens its own nested transaction because the
+    // caller only has a booking: parkTransactionForNestedCommit() has
+    // nothing to park but the booking, so the nested transaction must be
+    // minted under `booked` and adopted as the caller's own.
+    ASSERT_EQ(_document->recompute({feature}), 1);
+
+    EXPECT_EQ(_document->getBookedTransactionID(), booked);
+    EXPECT_EQ(App::Internal::NestedCommitBookingTestAccess::activeTransactionId(*_document),
+              booked);
+
+    _document->abortTransaction();
+    EXPECT_EQ(feature->Value.getValue(), valueForB);
+    EXPECT_EQ(_document->getAvailableUndos(), 0);
+}
+
+TEST_F(RecomputeHandleTest, bookingOnlyTransactionAdoptsTheRecomputesUndoStepOnCommit)
+{
+    auto* feature = _document->addObject<App::FeatureTestColumn>("BookingOnlyCommitColumn");
+    ASSERT_NE(feature, nullptr);
+    feature->Column.setValue("B");
+    ASSERT_EQ(_document->recompute({feature}), 1);
+    const int valueForB = feature->Value.getValue();
+
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    feature->Column.setValue("E");
+    const int booked = _document->openTransaction("booking only recompute (commit)");
+    ASSERT_GT(booked, 0);
+    ASSERT_EQ(_document->getBookedTransactionID(), booked);
+
+    ASSERT_EQ(_document->recompute({feature}), 1);
+
+    EXPECT_EQ(_document->getBookedTransactionID(), booked);
+    EXPECT_EQ(App::Internal::NestedCommitBookingTestAccess::activeTransactionId(*_document),
+              booked);
+
+    _document->commitTransaction();
+    ASSERT_EQ(_document->getAvailableUndos(), 1);
+
+    ASSERT_TRUE(_document->undo(booked));
+    EXPECT_EQ(feature->Value.getValue(), valueForB);
+}
+
+TEST_F(RecomputeHandleTest, emptyRecomputeInsideABookingOnlyTransactionRecordsNoUndo)
+{
+    auto* storage = _document->addObject<App::DocumentObject>("BookingOnlyEmptyStorage");
+    ASSERT_NE(storage, nullptr);
+    auto* value = dynamic_cast<App::PropertyInteger*>(storage->addDynamicProperty(
+        "App::PropertyInteger", "Value", "Data", "", App::Prop_NoRecompute));
+    ASSERT_NE(value, nullptr);
+    // Untracked: no transaction is open yet, so this write is not undoable
+    // and merely leaves `storage` touched without recording anything.
+    value->setValue(7);
+    ASSERT_TRUE(storage->isTouched());
+    ASSERT_EQ(storage->mustRecompute(), 0);
+
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    const int booked = _document->openTransaction("booking only, nothing to record");
+    ASSERT_GT(booked, 0);
+    ASSERT_EQ(_document->getBookedTransactionID(), booked);
+    ASSERT_EQ(App::Internal::NestedCommitBookingTestAccess::activeTransactionId(*_document), 0);
+
+    // A Prop_NoRecompute-only change touches an object without ever calling
+    // execute() on it (see
+    // fullDocumentFacadeDoesNotExecuteTouchedNoRecomputeStorageObject above),
+    // so the recompute below settles it through a nested commit that records
+    // no properties at all. Fix 1(ii)'s empty-transaction retirement must
+    // leave the caller with the bare booking rather than an empty undo entry.
+    EXPECT_EQ(_document->recompute(), 0);
+
+    EXPECT_EQ(_document->getBookedTransactionID(), booked);
+    EXPECT_EQ(App::Internal::NestedCommitBookingTestAccess::activeTransactionId(*_document), 0);
+
+    _document->commitTransaction();
+    EXPECT_EQ(_document->getAvailableUndos(), 0);
+}
+
+TEST_F(RecomputeHandleTest, mergingANestedRemovalIntoAChangeRecordDoesNotLeakTheObject)
+{
+    auto* object = _document->addObject<App::FeatureTest>("NestedRemovalTarget");
+    ASSERT_NE(object, nullptr);
+    const std::string objectName = object->getNameInDocument();
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    const int booked = _document->openTransaction("edit then nested removal");
+    ASSERT_GT(booked, 0);
+    object->Label.setValue("edited before nested removal");
+    // The caller's transaction now holds a Chn record for `object`.
+
+    // Simulate a recompute's nested commit removing the object the caller
+    // just edited: park the caller's transaction, do the removal in a
+    // transaction of its own, and fold it back exactly as
+    // DocumentCommitCoordinator's ParkedTransactionGuard does around a real
+    // recompute commit.
+    ASSERT_TRUE(_document->parkTransactionForNestedCommit());
+    _document->openTransaction("nested removal");
+    _document->removeObject(objectName.c_str());
+    // The nested transaction now holds a New record for `object` (removed
+    // objects are tracked as status New; see Transaction::addObjectNew()):
+    // mergeInto() has to reconcile it against the parent's Chn record rather
+    // than just dropping the nested record, or the detached object leaks.
+    _document->commitTransaction();
+    _document->restoreParkedTransactionAfterNestedCommit();
+
+    // The caller's own transaction is live again, carrying the merged
+    // record; committing it is the caller's own responsibility, same as for
+    // an ordinary edit.
+    _document->commitTransaction();
+
+    ASSERT_EQ(_document->getAvailableUndos(), 1);
+    ASSERT_TRUE(_document->undo(booked));
+    EXPECT_EQ(_document->getObject(objectName.c_str()), object);
+    // Undoing the caller's step reverts everything it contained -- both the
+    // label edit and the nested removal -- so the label returns to what it
+    // was before the transaction opened, not to its mid-transaction value.
+    EXPECT_STREQ(object->Label.getValue(), "NestedRemovalTarget");
+}
+
+TEST_F(RecomputeHandleTest, mergingANestedRemovalOfANewlyAddedObjectDestroysItWithoutLeaking)
+{
+    _document->setMaxUndoStackSize(20);
+    _document->clearUndos();
+
+    const int booked = _document->openTransaction("add then nested removal");
+    ASSERT_GT(booked, 0);
+    auto* object = _document->addObject<App::FeatureTest>("DelNewCancelTarget");
+    ASSERT_NE(object, nullptr);
+    const std::string objectName = object->getNameInDocument();
+    // The caller's transaction now holds a Del record for `object` (Del
+    // means the object was added during this transaction; undo would
+    // remove it).
+
+    ASSERT_TRUE(_document->parkTransactionForNestedCommit());
+    _document->openTransaction("nested removal of the new object");
+    _document->removeObject(objectName.c_str());
+    // The nested transaction holds a New record for the same object
+    // (removed during this transaction). Added-then-removed cancels out:
+    // the merged step must do neither, and since nothing else owns the
+    // now-detached object, mergeInto() has to destroy it right there or it
+    // leaks. `object` is dangling from this point on.
+    _document->commitTransaction();
+    _document->restoreParkedTransactionAfterNestedCommit();
+    _document->commitTransaction();
+
+    EXPECT_EQ(_document->getObject(objectName.c_str()), nullptr);
+    if (_document->getAvailableUndos() > 0) {
+        EXPECT_TRUE(_document->undo(booked));
+    }
+    EXPECT_EQ(_document->getObject(objectName.c_str()), nullptr);
 }
