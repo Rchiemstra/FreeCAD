@@ -42,6 +42,12 @@ AppExport void ensureGenericIsolatedRecomputeRegistered();
     bool forceExecution = false,
     bool ownerThreadExecution = false);
 
+/** Reduce a Persistence archive to entry names plus uncompressed contents.
+ *  Exposed so the timestamp-independence of property equality is directly
+ *  testable; returns the input unchanged when the archive cannot be walked. */
+[[nodiscard]] AppExport std::string canonicalRecomputeArchiveContents(
+    const std::string& archiveBytes);
+
 /** Narrow friend used only by the isolated worker implementation. */
 class GenericIsolatedRecomputeAccess;
 

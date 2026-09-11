@@ -15,22 +15,29 @@
 #include <App/ObjectIdentifier.h>
 #include <App/PropertyLinks.h>
 #include <App/PropertyPythonObject.h>
+#include <App/PropertyStandard.h>
 #include <App/Range.h>
+#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 namespace
 {
+
+using namespace std::chrono_literals;
 
 class GenericIsolatedRecomputeTest: public ::testing::Test
 {
@@ -583,6 +590,84 @@ TEST_F(GenericIsolatedRecomputeTest,
 }
 
 TEST_F(GenericIsolatedRecomputeTest,
+       cycleRepairKeepsEveryDependencyDownstreamOfTheCycle)
+{
+    // Z_Group <-> Z_Source is the cycle; C_First -> B_Middle -> A_Result hangs
+    // off it, acyclic. Alphabetical order is the reverse of dependency order,
+    // so the coordinator's name-ordered ready scan runs A_Result first if the
+    // edges are lost.
+    auto* group = _document->addObject<App::FeatureTest>("Z_Group");
+    auto* source = _document->addObject<App::FeatureTest>("Z_Source");
+    auto* first = _document->addObject<App::FeatureTest>("C_First");
+    auto* middle = _document->addObject<App::FeatureTest>("B_Middle");
+    auto* result = _document->addObject<App::FeatureTest>("A_Result");
+    ASSERT_NE(result, nullptr);
+    group->Source1.setValue(source);
+    source->Source1.setValue(group);   // closes the cycle
+    first->Source1.setValue(source);
+    middle->Source1.setValue(first);
+    result->Source1.setValue(middle);
+
+    const auto request = App::Internal::makeGenericIsolatedRecomputeRequest(
+        *_document,
+        {group, source, first, middle, result},
+        "cycle repair test",
+        "cycle-repair:");
+
+    ASSERT_EQ(request.features.size(), 5U);
+    // Inside the cycle: relaxed, so the plan is submittable at all.
+    EXPECT_TRUE(node(request, "Z_Group").dependencies.empty());
+    EXPECT_TRUE(node(request, "Z_Source").dependencies.empty());
+    // Downstream of the cycle: every edge intact, including the one that
+    // reaches back into the cyclic component.
+    EXPECT_EQ(node(request, "C_First").dependencies,
+              std::vector<std::string> {"Z_Source"});
+    EXPECT_EQ(node(request, "B_Middle").dependencies,
+              std::vector<std::string> {"C_First"});
+    EXPECT_EQ(node(request, "A_Result").dependencies,
+              std::vector<std::string> {"B_Middle"});
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       aFailureInsideTheCycleBlocksItsDownstreamConsumersInOrder)
+{
+    auto* group = _document->addObject<App::FeatureTest>("Z_Group");
+    auto* source = _document->addObject<App::FeatureTest>("Z_Source");
+    auto* first = _document->addObject<App::FeatureTest>("C_First");
+    auto* middle = _document->addObject<App::FeatureTest>("B_Middle");
+    auto* result = _document->addObject<App::FeatureTest>("A_Result");
+    ASSERT_NE(result, nullptr);
+    group->Source1.setValue(source);
+    source->Source1.setValue(group);
+    first->Source1.setValue(source);
+    middle->Source1.setValue(first);
+    result->Source1.setValue(middle);
+    first->ExceptionType.setValue(2);   // C_First raises
+
+    for (auto* object : {group, source, first, middle, result}) {
+        object->touch();
+    }
+    auto handle = _document->recomputeAsync({group, source, first, middle, result});
+    const auto snapshot = handle->wait(120s);
+    ASSERT_TRUE(snapshot.terminal()) << snapshot.diagnostic;
+
+    const auto state = [&snapshot](const std::string& name) {
+        const auto found = std::ranges::find(
+            snapshot.features, name,
+            &App::DocumentRecomputeFeatureSnapshot::featureId);
+        EXPECT_NE(found, snapshot.features.end()) << name;
+        return found->state;
+    };
+
+    EXPECT_EQ(state("C_First"), App::DocumentRecomputeFeatureState::Failed);
+    // The whole downstream chain is held back, not run against stale inputs.
+    EXPECT_EQ(state("B_Middle"), App::DocumentRecomputeFeatureState::Blocked);
+    EXPECT_EQ(state("A_Result"), App::DocumentRecomputeFeatureState::Blocked);
+    EXPECT_EQ(result->ExecCount.getValue(), 0);
+    EXPECT_EQ(middle->ExecCount.getValue(), 0);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
        malformedIntentUnknownFeatureAndMalformedWorkerPayloadFailClosed)
 {
     auto* feature = _document->addObject<App::FeatureTestColumn>("Column");
@@ -755,4 +840,47 @@ TEST_F(GenericIsolatedRecomputeTest,
               nullptr);
     EXPECT_THROW(static_cast<void>(prepare("PythonOutput")),
                  std::invalid_argument);
+}
+
+TEST_F(GenericIsolatedRecomputeTest,
+       archiveEqualityIgnoresTheZipStampButStillSeesASameSizePayloadChange)
+{
+    auto* feature = _document->addObject<App::FeatureTest>("ArchiveProbe");
+    ASSERT_NE(feature, nullptr);
+    auto* payload =
+        dynamic_cast<App::PropertyString*>(feature->getPropertyByName("String"));
+    ASSERT_NE(payload, nullptr);
+    payload->setValue("payload-A");
+
+    std::ostringstream first(std::ios::out | std::ios::binary);
+    payload->dumpToStream(first, 1);
+    const std::string firstArchive = first.str();
+
+    // Cross a real ZIP stamp boundary. tm_sec >> 1 gives two-second
+    // resolution, so 2.1s guarantees a different stamp, and the ASSERT_NE
+    // below proves the boundary was actually crossed rather than assuming it.
+    std::this_thread::sleep_for(2100ms);
+
+    std::ostringstream second(std::ios::out | std::ios::binary);
+    payload->dumpToStream(second, 1);
+    const std::string secondArchive = second.str();
+
+    ASSERT_NE(firstArchive, secondArchive)
+        << "raw archives did not differ; the test never exercised the boundary";
+    EXPECT_EQ(App::Internal::canonicalRecomputeArchiveContents(firstArchive),
+              App::Internal::canonicalRecomputeArchiveContents(secondArchive));
+
+    // A payload change of identical length is still a change.
+    payload->setValue("payload-B");
+    std::ostringstream changed(std::ios::out | std::ios::binary);
+    payload->dumpToStream(changed, 1);
+    EXPECT_NE(App::Internal::canonicalRecomputeArchiveContents(firstArchive),
+              App::Internal::canonicalRecomputeArchiveContents(changed.str()));
+
+    // Unwalkable input falls back to raw bytes rather than collapsing to
+    // equal -- the guard against the canonicalizer failing open.
+    EXPECT_EQ(App::Internal::canonicalRecomputeArchiveContents("not-a-zip"),
+              std::string("not-a-zip"));
+    EXPECT_NE(App::Internal::canonicalRecomputeArchiveContents("not-a-zip"),
+              App::Internal::canonicalRecomputeArchiveContents("not-a-zap"));
 }

@@ -40,6 +40,16 @@ public:
     [[nodiscard]] bool poll();
     [[nodiscard]] bool cancel(
         std::string reason = "recompute cancelled by caller");
+
+    /**
+     * Pump the coordinator until the plan is terminal or the timeout expires.
+     *
+     * The timeout bounds the number of polling rounds, not the duration of one
+     * round. A plan whose snapshot reports ownerThreadFeatures > 0 runs those
+     * features' execute() synchronously inside this call, and a single such
+     * feature can exceed the timeout on its own. Check the snapshot before
+     * relying on wait() for bounded latency.
+     */
     [[nodiscard]] DocumentRecomputeSnapshot wait(
         std::chrono::milliseconds timeout = std::chrono::minutes(6));
 

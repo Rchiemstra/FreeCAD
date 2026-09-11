@@ -6874,7 +6874,8 @@ void Document::renameObjectIdentifiers(
 std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const std::vector<DocumentObject*>& objs,
     const bool force,
-    const int options)
+    const int options,
+    const RecomputeVenue venue)
 {
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -6965,13 +6966,17 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         "generic-document:",
         !collaborationDerivedRecomputeGranted(),
         force,
-        // A derived recompute is the coordinator's own authoritative pass
-        // inside a structural commit. Running object code live there is the
-        // thing the isolated venue exists to prevent -- the detached import is
-        // what refuses a feature whose runtime type cannot be serialized,
-        // instead of letting its execute() reach into the live document. Every
-        // other recompute is an ordinary one and takes the owner thread.
-        /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
+        // The coordinator's own derived pass inside a structural commit is
+        // always isolated: refusing to run unserializable object code live is
+        // exactly what that venue is for. Every other plan takes the venue the
+        // caller asked for, and the default is the owner thread -- one
+        // FreeCADCmd spawn per feature is a cost neither an interactive
+        // session nor the test suite can carry.
+        //
+        // Either way a target that does not opt into worker execution falls
+        // back to the owner thread inside GenericIsolatedRecompute.cpp:1714.
+        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread
+            && !collaborationDerivedRecomputeGranted());
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request));

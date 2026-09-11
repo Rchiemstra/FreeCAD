@@ -25,6 +25,10 @@ PyObject* snapshotToPython(const DocumentRecomputeSnapshot& snapshot)
     result.setItem("progress", Py::Float(snapshot.progress));
     result.setItem("diagnostic", Py::String(snapshot.diagnostic));
     result.setItem("terminal", Py::Boolean(snapshot.terminal()));
+    // Non-zero means wait() on this snapshot is not a bounded-latency call --
+    // see RecomputeHandle::wait()'s doc comment. Python and MCP callers have
+    // no other way to find this out before they wait.
+    result.setItem("owner_thread_features", Py::Long(snapshot.ownerThreadFeatures));
 
     Py::List features;
     for (const auto& feature : snapshot.features) {
@@ -32,6 +36,7 @@ PyObject* snapshotToPython(const DocumentRecomputeSnapshot& snapshot)
         item.setItem("feature", Py::String(feature.featureId));
         item.setItem("state", Py::String(documentRecomputeFeatureStateName(feature.state)));
         item.setItem("diagnostic", Py::String(feature.diagnostic));
+        item.setItem("owner_thread", Py::Boolean(feature.ownerThreadExecution));
         features.append(item);
     }
     result.setItem("features", features);

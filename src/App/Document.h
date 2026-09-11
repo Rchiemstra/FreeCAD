@@ -250,6 +250,29 @@ struct CollaborationRollbackResult
 };
 
 /**
+ * Where a recompute plan's feature code runs.
+ *
+ * OwnerThread is the default because it is the only venue an interactive
+ * session or a test suite can afford: the isolated venue spawns one
+ * FreeCADCmd worker per feature, measured at 2170ms against 4ms in process
+ * (see "Run ordinary recomputes on the owner thread"). Isolated is for a
+ * caller that has explicitly traded latency for not running object code
+ * inside its own commit -- it is the venue that refuses a feature whose
+ * runtime type cannot be serialized instead of letting execute() reach into
+ * the live document.
+ *
+ * Isolated is a request, not a guarantee. A target that does not opt into
+ * worker execution still falls back to the owner thread, because refusing it
+ * would leave Draft, Arch, FEM, PartDesign, Spreadsheet and every user macro
+ * permanently touched and invalid.
+ */
+enum class RecomputeVenue : std::uint8_t
+{
+    OwnerThread,
+    Isolated,
+};
+
+/**
  * @brief A class that represents a FreeCAD document.
  *
  * A document is a container for all objects that are part of a FreeCAD
@@ -1170,7 +1193,8 @@ public:
     [[nodiscard]] std::unique_ptr<RecomputeHandle> recomputeAsync(
         const std::vector<DocumentObject*>& objs = {},
         bool force = false,
-        int options = 0);
+        int options = 0,
+        RecomputeVenue venue = RecomputeVenue::OwnerThread);
 
     /**
      * @brief Recompute a single object.
