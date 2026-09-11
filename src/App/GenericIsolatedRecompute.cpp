@@ -1233,9 +1233,10 @@ public:
         auto* target = requireTarget(document);
         // A target that never opts into worker execution must still be here at
         // commit time -- that is the contract this operation was prepared
-        // under. When the caller asked for the owner thread the venue was its
-        // choice rather than the target's, so opting in is expected and the
-        // check does not apply.
+        // under. When the caller asked for the owner thread, or an un-opted
+        // member of the target's dependency closure forced the fallback, the
+        // venue was not the target's own choice, so opting in is expected and
+        // the check does not apply.
         if (!_ownerThreadRequested && target->canRecomputeOnWorker()) {
             throw std::runtime_error(
                 "generic recompute in-process target opted into isolated execution before commit");
@@ -1498,6 +1499,41 @@ std::vector<App::DocumentObject*> collectClosure(
     return closure;
 }
 
+// Walks the same out-list graph collectClosure() walks, asking only "can every
+// object in it run in the worker?". A closure member that has not opted in
+// cannot be reproduced in the detached process, so the whole job must take the
+// owner-thread venue -- the same rationale as the target-level opt-out below,
+// widened from the target alone to its dependency closure. Every other
+// closure rule (cross-document links, unserializable runtime types) stays
+// fail-closed inside collectClosure() itself: those are refusals, not venue
+// choices, so this probe does not attempt to evaluate them and simply skips
+// what it cannot judge, leaving collectClosure() to reject it later if the
+// worker venue is still chosen.
+bool closureOptsIntoWorkerExecution(const App::Document& document, App::DocumentObject& target)
+{
+    std::vector<App::DocumentObject*> pending {&target};
+    std::unordered_set<App::DocumentObject*> seen;
+    while (!pending.empty()) {
+        auto* object = pending.back();
+        pending.pop_back();
+        if (!object || !seen.insert(object).second) {
+            continue;
+        }
+        if (object->getDocument() != &document || !object->isAttachedToDocument()) {
+            // Not this probe's call: collectClosure() rejects a cross-document
+            // or detached member fail-closed, so leave that refusal to it.
+            continue;
+        }
+        if (!object->canRecomputeOnWorker()) {
+            return false;
+        }
+        for (auto* dependency : object->getOutList()) {
+            pending.push_back(dependency);
+        }
+    }
+    return true;
+}
+
 App::CollaborativeOperationPreparation prepareGenericRecompute(
     const App::Document& document,
     const App::CollaborativeOperationIntent& intent)
@@ -1551,12 +1587,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         || isNullProxyExternalLinkHolderBookkeepingTarget(*target);
 
     // Preparing the target to execute on the owner thread inside the
-    // coordinator's commit boundary. Two callers want it: an object that never
-    // opts into worker execution (below), and a caller that asked for the
-    // owner thread because a detached process is not worth ~2s of startup.
+    // coordinator's commit boundary. Three callers want it: an object that
+    // never opts into worker execution (below), a caller that asked for the
+    // owner thread because a detached process is not worth ~2s of startup,
+    // and -- venueForcedByClosure -- a target that did opt in but whose
+    // dependency closure contains something that did not, so the worker
+    // cannot reproduce the job at all.
     const auto prepareOwnerThreadExecution = [&document, &targetName, target,
                                               preserveLegacyRevisionSemantics,
-                                              ownerThreadExecution]() {
+                                              ownerThreadExecution](
+                                                 bool venueForcedByClosure = false) {
         // The object has not opted into worker execution, so its execute()
         // cannot be reproduced in the detached process at all: for every
         // ordinary Python scripted feature the behaviour lives in a proxy the
@@ -1621,15 +1661,20 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
             effects.push_back(
                 {App::DocumentRevisionKey::unknownModelMutation(), std::nullopt});
         }
+        // The operation's commit-time guard only tolerates an opted-in target
+        // when the venue was not the target's own choice (see apply() above).
+        // That is true both when the caller asked for the owner thread and
+        // when the closure forced it, so either one satisfies the guard.
+        const bool targetOptOutNotRequired = ownerThreadExecution || venueForcedByClosure;
         App::CollaborativeOperationPreparation::DetachedTask task =
-            [targetName, stableIdentity, ownerThreadExecution](
+            [targetName, stableIdentity, targetOptOutNotRequired](
                 const std::stop_token stopToken) {
                 if (stopToken.stop_requested()) {
                     throw std::runtime_error(
                         "generic recompute in-process preparation was cancelled");
                 }
                 return std::make_unique<const GenericRecomputeInProcessOperation>(
-                    targetName, stableIdentity, ownerThreadExecution);
+                    targetName, stableIdentity, targetOptOutNotRequired);
             };
         return App::CollaborativeOperationPreparation {std::move(reads),
                                                        std::move(writes),
@@ -1687,6 +1732,21 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         // Same decision tree as the detached venue -- the opt-out and
         // bookkeeping branches above already ran -- only the venue differs.
         return prepareOwnerThreadExecution();
+    }
+
+    if (!closureOptsIntoWorkerExecution(document, *target)) {
+        // The target itself opted in -- the branch at the top of this
+        // function already ruled out the opposite -- but something in its
+        // dependency closure did not, and collectClosure() below would
+        // refuse the whole job for that reason alone. Refusing here would
+        // turn an opted-in group holding one un-opted scripted feature (a
+        // JointGroup holding a Python joint, an Origin holding nothing but
+        // still walked, ...) into a permanently failed node instead of the
+        // owner-thread fallback that exists for exactly this shape. Cross-
+        // document links and unserializable runtime types are not handled
+        // here and still fail closed inside collectClosure() when the
+        // worker venue is chosen.
+        return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
     }
 
     auto closure = collectClosure(document, *target);
