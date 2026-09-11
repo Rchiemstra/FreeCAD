@@ -64,6 +64,10 @@ PartExport App::CollaborativeOperationPreparation prepareCollaborativeBooleanFor
 PartExport CollaborativeBooleanDigest
 collaborativeBooleanShapeDigestForTests(const TopoDS_Shape& shape);
 
+/** Stable semantic digest shared by trusted parent-side geometry adapters. */
+PartExport CollaborativeBooleanDigest
+collaborativeGeometryShapeDigest(const TopoDS_Shape& shape);
+
 }  // namespace Internal
 
 }  // namespace Part

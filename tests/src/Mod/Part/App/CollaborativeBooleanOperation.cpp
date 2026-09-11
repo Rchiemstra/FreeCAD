@@ -7,6 +7,7 @@
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/FeatureTest.h>
+#include <App/GeometryWorkerOperationRegistry.h>
 #include <App/PropertyLinks.h>
 #include <Base/Placement.h>
 #include <Mod/Part/App/CollaborativeBooleanOperation.h>
@@ -113,7 +114,11 @@ protected:
 
     void waitUntilTerminal(App::PreparedEditExecutionId executionId)
     {
-        for (int attempt = 0; attempt < 5000; ++attempt) {
+        // A cold installed FreeCADCmd must load the Part module and OCC before
+        // publishing its first result.  Keep the poll responsive but allow a
+        // bounded startup window on slower native CI hosts.
+        const auto deadline = std::chrono::steady_clock::now() + 30s;
+        while (std::chrono::steady_clock::now() < deadline) {
             const auto status =
                 _document->collaborationService().preparedEditStatus(executionId);
             if (status
@@ -130,10 +135,17 @@ protected:
     std::unique_ptr<const App::CollaborativeOperation>
     materialize(App::CollaborativeOperationPreparation& preparation)
     {
-        if (!preparation.isDetached()) {
-            throw std::runtime_error("Boolean adapter did not return detached work");
+        if (preparation.policy != App::PreparationPolicy::IsolatedProcess
+            || preparation.detachedTask || !preparation.isolatedTask) {
+            throw std::runtime_error("Boolean adapter did not return isolated work");
         }
-        return preparation.detachedTask(std::stop_token {});
+        auto& task = *preparation.isolatedTask;
+        task.inputArchive.metadata.operationType = task.request.operationType;
+        auto output = App::Internal::GeometryWorkerOperationRegistry::instance().execute(
+            task.request.operationType, task.inputArchive, std::stop_token {});
+        output.metadata = task.inputArchive.metadata;
+        output.metadata.kind = App::GeometryArchiveKind::Result;
+        return task.decodeResult(output);
     }
 
     std::string _documentName;

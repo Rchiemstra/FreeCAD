@@ -3,6 +3,7 @@
 
 #include <FCGlobal.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -15,6 +16,11 @@ namespace App
 
 class Document;
 class Application;
+
+namespace Internal
+{
+class CollaborationRegistryTestAccess;
+}
 
 using DocumentInstanceId = std::uint64_t;
 using DocumentLifecycleEpoch = std::uint64_t;
@@ -85,6 +91,16 @@ public:
 
 private:
     friend class Application;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    friend class Internal::CollaborationRegistryTestAccess;
+#endif
+
+    struct PreparedDocumentClose
+    {
+        DocumentIdentity closingIdentity;
+        DocumentLifecycleEpoch closedEpoch {0};
+        bool tombstoneQueued {false};
+    };
 
     using IdentityByDocument = std::unordered_map<const Document*, DocumentIdentity>;
     using IdentityByInstance = std::unordered_map<DocumentInstanceId, DocumentIdentity>;
@@ -96,15 +112,27 @@ private:
     [[nodiscard]] std::optional<DocumentIdentity> advanceEpoch(
         const Document& document,
         DocumentLifecycleEpoch reservedEpoch);
+    [[nodiscard]] std::optional<PreparedDocumentClose>
+    prepareDocumentClose(const Document& document);
+    [[nodiscard]] std::optional<DocumentIdentity> completePreparedDocumentClose(
+        const Document& document,
+        const PreparedDocumentClose& prepared);
 
     void updateIdentityLocked(const Document* document, const DocumentIdentity& identity);
     void retainTombstoneLocked(const DocumentIdentity& identity);
+    void evictClosedTombstonesLocked();
 
     const std::size_t _tombstoneCapacity;
     mutable std::mutex _mutex;
     IdentityByDocument _byDocument;
     IdentityByInstance _byInstance;
     std::deque<DocumentInstanceId> _tombstoneOrder;
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    using TombstonePreparationTestHook = void (*)();
+    inline static std::atomic<TombstonePreparationTestHook>
+        _tombstonePreparationTestHook {nullptr};
+#endif
 };
 
 }  // namespace App

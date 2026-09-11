@@ -772,6 +772,13 @@ void Revolved::updateProperties()
 
 void Revolved::onDocumentRestored()
 {
+    if (!isRestoringDeprecatedSchema()) {
+        // See FeatureExtrude::onDocumentRestored(): on a same-version state
+        // transfer SideType is authoritative and must not be re-derived.
+        ProfileBased::onDocumentRestored();
+        return;
+    }
+
     Base::StateLocker migrating(migratingDeprecatedProperties);
 
     if (isLegacyTwoAngles(Type.getValueAsString())) {

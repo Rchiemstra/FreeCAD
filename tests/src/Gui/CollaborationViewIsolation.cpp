@@ -139,6 +139,37 @@ protected:
         return {_document->isTouched(), _guiDocument->isModified()};
     }
 
+    struct FileChangeSnapshot
+    {
+        bool hasPending {};
+        App::DocumentFileState state {};
+        App::DocumentFileChanges pendingChanges {};
+
+        bool operator==(const FileChangeSnapshot& other) const
+        {
+            return hasPending == other.hasPending && state == other.state
+                && pendingChanges.toUnderlyingType()
+                == other.pendingChanges.toUnderlyingType();
+        }
+    };
+
+    FileChangeSnapshot captureFileChangeState() const
+    {
+        return {
+            _document->hasPendingFileChanges(),
+            _document->getFileChangeState(),
+            _document->getPendingFileChanges(),
+        };
+    }
+
+    static void expectPersonalViewFileStateUnchanged(
+        const FileChangeSnapshot& before,
+        const FileChangeSnapshot& after
+    )
+    {
+        EXPECT_EQ(after, before);
+    }
+
     Gui::TreeWidget* tree() const
     {
         return _tree.get();
@@ -187,6 +218,7 @@ TEST_F(CollaborationViewIsolationTest, personalCameraChangesDoNotAdvanceAppRevis
     ASSERT_FALSE(Gui::Camera::rotationsMatch(initialOrientation, targetOrientation));
     const auto before = captureModelAndDocumentRevisions();
     const auto dirtyBefore = captureDirtyState();
+    const auto fileBefore = captureFileChangeState();
 
     viewer->setCameraOrientation(targetOrientation);
     QApplication::processEvents();
@@ -195,12 +227,14 @@ TEST_F(CollaborationViewIsolationTest, personalCameraChangesDoNotAdvanceAppRevis
     EXPECT_FALSE(Gui::Camera::rotationsMatch(viewer->getCameraOrientation(), initialOrientation));
     EXPECT_EQ(captureModelAndDocumentRevisions(), before);
     EXPECT_EQ(captureDirtyState(), dirtyBefore);
+    expectPersonalViewFileStateUnchanged(fileBefore, captureFileChangeState());
 }
 
 TEST_F(CollaborationViewIsolationTest, selectionAndPreselectionDoNotAdvanceAppRevisions)
 {
     const auto before = captureModelAndDocumentRevisions();
     const auto dirtyBefore = captureDirtyState();
+    const auto fileBefore = captureFileChangeState();
     const char* objectName = selectedObject()->getNameInDocument();
 
     ASSERT_TRUE(Gui::Selection().addSelection(documentName().c_str(), objectName));
@@ -217,10 +251,12 @@ TEST_F(CollaborationViewIsolationTest, selectionAndPreselectionDoNotAdvanceAppRe
     EXPECT_TRUE(Gui::Selection().hasPreselection());
     EXPECT_EQ(captureModelAndDocumentRevisions(), before);
     EXPECT_EQ(captureDirtyState(), dirtyBefore);
+    expectPersonalViewFileStateUnchanged(fileBefore, captureFileChangeState());
 
     Gui::Selection().clearCompleteSelection();
     EXPECT_EQ(captureModelAndDocumentRevisions(), before);
     EXPECT_EQ(captureDirtyState(), dirtyBefore);
+    expectPersonalViewFileStateUnchanged(fileBefore, captureFileChangeState());
 }
 
 TEST_F(CollaborationViewIsolationTest, treeExpansionAndScrollDoNotAdvanceAppRevisions)
@@ -236,6 +272,7 @@ TEST_F(CollaborationViewIsolationTest, treeExpansionAndScrollDoNotAdvanceAppRevi
     ASSERT_NE(documentItem, nullptr);
     const auto before = captureModelAndDocumentRevisions();
     const auto dirtyBefore = captureDirtyState();
+    const auto fileBefore = captureFileChangeState();
     tree()->expandItem(documentItem);
     QApplication::processEvents();
     ASSERT_TRUE(documentItem->isExpanded());
@@ -292,4 +329,5 @@ TEST_F(CollaborationViewIsolationTest, treeExpansionAndScrollDoNotAdvanceAppRevi
 
     EXPECT_EQ(captureModelAndDocumentRevisions(), before);
     EXPECT_EQ(captureDirtyState(), dirtyBefore);
+    expectPersonalViewFileStateUnchanged(fileBefore, captureFileChangeState());
 }

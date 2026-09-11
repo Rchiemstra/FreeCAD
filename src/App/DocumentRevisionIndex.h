@@ -22,6 +22,7 @@ using DocumentRevision = std::uint64_t;
 using DocumentPublicationSequence = std::uint64_t;
 
 class DocumentRevisionPublicationReservation;
+class DocumentCommitCoordinator;
 
 enum class DocumentRevisionKind
 {
@@ -158,6 +159,8 @@ struct AppExport DocumentRevisionPublicationRequest
 {
     DocumentRevisionKey key;
     std::optional<std::string> stableObjectIdentity;
+    /** Atomic counter advance; ordinary model mutations advance by one. */
+    DocumentRevision revisionDelta {1};
 };
 
 /** One pointer-free App property explicitly admitted by an atomic presentation request. */
@@ -289,7 +292,8 @@ public:
     /**
      * Canonical mixed-scope publication with one identity decision per semantic key.
      * Each ObjectProperty request also publishes the matching ObjectModel key with
-     * the same identity. Expanded duplicates advance only once per publication.
+     * the same identity. Duplicate/expanded requests use the greatest declared
+     * delta, so ordinary duplicate requests still advance only once.
      */
     [[nodiscard]] std::vector<DocumentRevisionObservation>
     publish(const std::vector<DocumentRevisionPublicationRequest>& changes);
@@ -365,6 +369,11 @@ public:
 
 private:
     friend class DocumentRevisionIndex;
+    friend class DocumentCommitCoordinator;
+
+    void cancelPreparedPublication() noexcept;
+    [[nodiscard]] bool commitPrepared(
+        std::vector<DocumentRevisionObservation>& observations) noexcept;
 
     DocumentRevisionPublicationReservation(
         DocumentRevisionIndex* owner,
@@ -372,6 +381,7 @@ private:
         std::vector<DocumentRevisionConflict> conflicts,
         std::vector<DocumentRevisionObservation> observations,
         std::vector<DocumentRevision*> revisionSlots,
+        std::vector<DocumentRevision> revisionDeltas,
         bool journalPrepared) noexcept;
 
     DocumentRevisionIndex* _owner {nullptr};
@@ -379,6 +389,7 @@ private:
     std::vector<DocumentRevisionConflict> _conflicts;
     std::vector<DocumentRevisionObservation> _observations;
     std::vector<DocumentRevision*> _revisionSlots;
+    std::vector<DocumentRevision> _revisionDeltas;
     bool _journalPrepared {false};
 };
 

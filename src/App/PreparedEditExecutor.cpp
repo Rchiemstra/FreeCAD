@@ -120,8 +120,13 @@ public:
     }
 
     [[nodiscard]] PreparedEditExecutionId
-    submit(CollaborativeOperationPreparation::DetachedTask task)
+    submit(CollaborativeOperationPreparation::DetachedTask task,
+           const PreparationPolicy policy)
     {
+        if (policy != PreparationPolicy::DetachedInProcess) {
+            throw std::invalid_argument(
+                "prepared-edit executor accepts only DetachedInProcess value work");
+        }
         if (!task) {
             throw std::invalid_argument("prepared-edit executor task is required");
         }
@@ -350,9 +355,10 @@ PreparedEditExecutor::PreparedEditExecutor(std::size_t workerCount,
 PreparedEditExecutor::~PreparedEditExecutor() = default;
 
 PreparedEditExecutionId PreparedEditExecutor::submit(
-    CollaborativeOperationPreparation::DetachedTask task)
+    CollaborativeOperationPreparation::DetachedTask task,
+    const PreparationPolicy policy)
 {
-    return _impl->submit(std::move(task));
+    return _impl->submit(std::move(task), policy);
 }
 
 bool PreparedEditExecutor::cancel(PreparedEditExecutionId id)

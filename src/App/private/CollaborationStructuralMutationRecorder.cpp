@@ -4,10 +4,15 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 
 #include "App/Application.h"
 #include "App/DocumentObject.h"
 #include "App/ExtensionContainer.h"
+#include "App/PropertyGeo.h"
+#include "App/PropertyLinks.h"
+#include "App/PropertyStandard.h"
+#include "App/Transactions.h"
 #include "DocumentP.h"
 
 namespace App::Internal
@@ -18,7 +23,9 @@ namespace
 
 bool isNewStructuralObject(const DocumentP& state, const DocumentObject& object)
 {
-    if (state.collaborationNewObjectStructuralSetup.contains(&object)
+    if ((state.activeUndoTransaction
+         && state.activeUndoTransaction->isObjectNew(&object))
+        || state.collaborationNewObjectStructuralSetup.contains(&object)
         || state.collaborationImportNewObjects.contains(&object)) {
         return true;
     }
@@ -27,6 +34,120 @@ bool isNewStructuralObject(const DocumentP& state, const DocumentObject& object)
         [&object](const CollaborationDeferredNotification& notification) {
             return notification.kind == CollaborationDeferredNotificationKind::NewObject
                 && notification.object == &object;
+        });
+}
+
+bool propertyStatusMutationAffectsPersistence(const Property& property,
+                                              const unsigned long oldStatus,
+                                              const unsigned long newStatus)
+{
+    const auto changed = oldStatus ^ newStatus;
+    constexpr unsigned long serializedStatusMask =
+        (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+        | (1UL << Property::Transient) | (1UL << Property::Output)
+        | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+        | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+        | (1UL << Property::UserEdit);
+    return (changed & serializedStatusMask) != 0
+        && !property.testStatus(Property::PropNoPersist);
+}
+
+bool isLiveSketchAttachmentStatusMutation(const DocumentObject& object,
+                                          const Property& property,
+                                          const unsigned long oldStatus,
+                                          const unsigned long newStatus)
+{
+    const Base::Type sketchType = Base::Type::fromName("Sketcher::SketchObject");
+    if (sketchType.isBad() || object.getTypeId() != sketchType) {
+        return false;
+    }
+
+    const auto* rawSupport = object.getPropertyByName("AttachmentSupport");
+    const auto* support = freecad_cast<const PropertyLinkSubList*>(rawSupport);
+    const auto* rawMapMode = object.getPropertyByName("MapMode");
+    const auto* mapMode = freecad_cast<const PropertyEnumeration*>(rawMapMode);
+    if (!support || rawSupport->getTypeId() != PropertyLinkSubList::getClassTypeId()
+        || !mapMode || rawMapMode->getTypeId() != PropertyEnumeration::getClassTypeId()
+        || mapMode->getValue() == 0) {
+        return false;
+    }
+    const bool hasLiveSupport = std::ranges::any_of(
+        support->getValues(), [](const DocumentObject* linked) {
+            return linked && linked->getDocument() && linked->isAttachedToDocument();
+        });
+    if (!hasLiveSupport) {
+        return false;
+    }
+
+    // AttachExtension owns exactly these presentation flags while a sketch is
+    // actively supported: updateSinglePropertyStatus() exposes its attachment
+    // controls and makes the inherited Placement read-only. Keep arbitrary
+    // status changes, deactivated sketches, and unsupported sketches outside
+    // this compatibility contract.
+    const auto changed = oldStatus ^ newStatus;
+    const char* propertyName = property.getName();
+    if (!propertyName) {
+        return false;
+    }
+    const std::string_view name(propertyName);
+    if (changed == (1UL << Property::Hidden)) {
+        const bool exactProperty =
+            (name == "MapPathParameter"
+             && property.getTypeId() == PropertyFloat::getClassTypeId())
+            || (name == "MapReversed"
+                && property.getTypeId() == PropertyBool::getClassTypeId())
+            || (name == "AttachmentOffset"
+                && property.getTypeId() == PropertyPlacement::getClassTypeId());
+        return exactProperty && object.getPropertyByName(propertyName) == &property;
+    }
+    return changed == (1UL << Property::ReadOnly) && name == "Placement"
+        && property.getTypeId() == PropertyPlacement::getClassTypeId()
+        && object.getPropertyByName(propertyName) == &property;
+}
+
+bool isGroundedJointPlacementLockMutation(const DocumentObject& object,
+                                          const Property& property,
+                                          const unsigned long oldStatus,
+                                          const unsigned long newStatus)
+{
+    // Assembly's GroundedJoint pins the grounded object by flipping the
+    // ReadOnly bit on its Placement -- and LinkPlacement when the grounded
+    // object is a link -- from the joint's own onChanged, onDocumentRestored
+    // and onDelete. The mutation therefore lands on a different, already
+    // existing object than the one the commit created, so the new-object grant
+    // never covers it and grounding a part inside an agent commit is refused.
+    //
+    // A grounded joint is an App::FeaturePython whose behaviour lives in a
+    // Python proxy, so unlike the sketch case above there is no C++ type to
+    // key on. Key on the exact structural signature instead: a live object in
+    // this object's in-list holding an App::PropertyLinkGlobal named
+    // ObjectToGround that points back here. Nothing else in FreeCAD uses that
+    // property name, and the property is added locked by the joint itself.
+    const auto changed = oldStatus ^ newStatus;
+    if (changed != (1UL << Property::ReadOnly)) {
+        return false;
+    }
+    const char* propertyName = property.getName();
+    if (!propertyName) {
+        return false;
+    }
+    const std::string_view name(propertyName);
+    if ((name != "Placement" && name != "LinkPlacement")
+        || property.getTypeId() != PropertyPlacement::getClassTypeId()
+        || object.getPropertyByName(propertyName) != &property) {
+        return false;
+    }
+    return std::ranges::any_of(
+        object.getInList(), [&object](const DocumentObject* joint) {
+            if (!joint || !joint->isAttachedToDocument()
+                || joint->getDocument() != object.getDocument()) {
+                return false;
+            }
+            const auto* rawGround = joint->getPropertyByName("ObjectToGround");
+            const auto* ground = freecad_cast<const PropertyLinkGlobal*>(rawGround);
+            return ground
+                && rawGround->getTypeId() == PropertyLinkGlobal::getClassTypeId()
+                && ground->getValue() == &object;
         });
 }
 
@@ -80,6 +201,84 @@ void CollaborationStructuralMutationRecorder::ensurePropertySchemaMutationAllowe
         mutation += container.getTypeId().getName();
     }
     document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
+}
+
+void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowed(
+    Document& document,
+    Property& property,
+    const unsigned long oldStatus,
+    const unsigned long newStatus)
+{
+    // Internal guards use runtime-only status bits such as User3 while
+    // maintaining group link caches. Those transitions do not change the
+    // persisted property schema and are safe inside an atomic commit.
+    if (!propertyStatusMutationAffectsPersistence(property, oldStatus, newStatus)) {
+        return;
+    }
+    auto* container = property.getContainer();
+    const auto* object = dynamic_cast<const DocumentObject*>(container);
+    const bool attachedStructuralObject = object && object->getDocument() == &document
+        && document.containsObject(object);
+    const bool newStructuralObject = attachedStructuralObject
+        && isNewStructuralObject(*document.d, *object);
+    // unsetupObject() may adjust persistent property flags while an object is
+    // being removed (for example PartDesign attachment/placement flags). The
+    // object already carries Document's internal Remove status, so these
+    // changes cannot survive the removal boundary and are covered by its
+    // structural transaction snapshot. Do not grant the same authority to a
+    // surviving existing object.
+    const bool removalOwnedStatus = attachedStructuralObject
+        && object->testStatus(ObjectStatus::Remove);
+    const bool liveSketchAttachmentStatus = attachedStructuralObject
+        && isLiveSketchAttachmentStatusMutation(*object, property, oldStatus, newStatus);
+    const bool groundedJointPlacementLock = attachedStructuralObject
+        && isGroundedJointPlacementLockMutation(*object, property, oldStatus, newStatus);
+    // execute() routinely republishes which of its own inputs currently apply:
+    // PartDesign's extrude features flip ReadOnly on AlongSketchNormal and the
+    // offset/length group as the pad type changes. The coordinator runs that
+    // execute() on the owner thread inside the commit boundary, so the writes
+    // land here rather than in a detached process where the recorder never
+    // saw them. This is the recompute-time counterpart of the removal-owned
+    // grant above and is keyed just as narrowly: the object the coordinator is
+    // currently executing, adjusting a property it owns itself.
+    const char* const statusPropertyName = property.getName();
+    const bool executeOwnedStatus = attachedStructuralObject
+        && object->testStatus(ObjectStatus::Recompute) && statusPropertyName
+        && *statusPropertyName
+        && object->getPropertyByName(statusPropertyName) == &property;
+    auto kind = Document::CollaborationStructuralMutationKind::Restricted;
+    if (newStructuralObject) {
+        kind = Document::CollaborationStructuralMutationKind::DynamicPropertyOnNewObject;
+    }
+    else if (removalOwnedStatus || liveSketchAttachmentStatus
+             || groundedJointPlacementLock || executeOwnedStatus) {
+        kind = Document::CollaborationStructuralMutationKind::Object;
+    }
+    std::string mutation = "propertyStatus on ";
+    if (object) {
+        const char* objectName = object->getNameInDocument();
+        mutation += (objectName && *objectName) ? objectName : "<unnamed>";
+    }
+    else if (container) {
+        mutation += container->getTypeId().getName();
+    }
+    else {
+        mutation += "<detached>";
+    }
+    if (const char* propertyName = property.getName(); propertyName && *propertyName) {
+        mutation += ".";
+        mutation += propertyName;
+    }
+    document.ensureCollaborationStructuralMutationAllowed(kind, mutation.c_str());
+}
+
+bool CollaborationStructuralMutationRecorder::isTransactionOwnedNewObject(
+    const Document& document,
+    const DocumentObject& object)
+{
+    return object.getDocument() == &document && document.containsObject(&object)
+        && document.d->activeUndoTransaction
+        && document.d->activeUndoTransaction->isObjectNew(&object);
 }
 
 void CollaborationStructuralMutationRecorder::ensureDynamicPropertyRemovalAllowed(

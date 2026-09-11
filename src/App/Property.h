@@ -39,11 +39,17 @@ namespace Py
 class Object;
 }
 
+namespace Gui
+{
+class Application;
+}
+
 namespace App
 {
 
 class PropertyContainer;
 class ObjectIdentifier;
+class TransactionObject;
 
 /**
  * @brief %Base class of all properties.
@@ -537,7 +543,12 @@ public:
     friend class PropertyContainer;
     friend struct PropertyData;
     friend class DynamicProperty;
+    friend class Document;
+    friend class TransactionObject;
     friend class DocumentObject;
+    // Exact no-notify status restoration is capability-scoped to the GUI
+    // shared-presentation coordinator; it is not an exported addon API.
+    friend class Gui::Application;
 
 protected:
     /** @brief %Status bits of the property.
@@ -610,7 +621,6 @@ public:
     /// Signal emitted when the property value has changed.
     fastsignals::signal<void(const App::Property&)> signalChanged;
 };
-
 
 /**
  * @brief A template class to inhibit nested calls for setting values.

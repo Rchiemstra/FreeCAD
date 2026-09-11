@@ -24,7 +24,12 @@
 #include "FCGlobal.h"
 
 #include <boost/regex.hpp>
+#include <memory>
 #include <string>
+#include <vector>
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+# include <functional>
+#endif
 #include <Base/FileInfo.h>
 
 namespace App
@@ -40,15 +45,52 @@ public:
         Standard,
         TimeStamp
     };
+
+    struct PostReplacementResult
+    {
+        bool backupCreated {false};
+        bool displacedFileConsumed {false};
+        std::vector<std::string> warnings;
+    };
+
     void setPolicy(const Policy p);
     void setNumberOfFiles(const int count);
     void useBackupExtension(const bool on);
     void setDateFormat(const std::string& fmt);
+    // Legacy compatibility path. Authoritative saves must never route through
+    // this pre-replacement, pathname-owned operation.
     void apply(const std::string& sourcename, const std::string& targetname);
+
+    /**
+     * Compatibility-only path-based rotation for legacy callers and tests.
+     * New authoritative save integration must use the lease overload below.
+     *
+     * Unlike apply(), this never modifies targetname. Backup-history and
+     * Expected filesystem cleanup problems are returned as warnings. The
+     * caller must still catch allocation or programming failures at the save
+     * boundary. If displacedFileConsumed is false, the caller retains
+     * ownership of sourcename as recovery evidence. A source that is the
+     * target or any normalized/filesystem alias of it is rejected before
+     * deletion or history rotation.
+     */
+    [[nodiscard]] PostReplacementResult
+    applyAfterReplacement(const std::string& sourcename,
+                          const std::string& targetname);
+    /** Rotate/discard through the exact opaque lease returned by DocumentFileWriter. */
+    [[nodiscard]] PostReplacementResult
+    applyAfterReplacement(const std::string& sourcename,
+                          const std::string& targetname,
+                          const std::shared_ptr<void>& displacedFileLease);
 
 private:
     void applyStandard(const std::string& sourcename, const std::string& targetname) const;
     void applyTimeStamp(const std::string& sourcename, const std::string& targetname);
+    PostReplacementResult applyStandardAfterReplacement(const std::string& sourcename,
+                                                        const std::string& targetname,
+                                                        const std::shared_ptr<void>& lease);
+    PostReplacementResult applyTimeStampAfterReplacement(const std::string& sourcename,
+                                                         const std::string& targetname,
+                                                         const std::shared_ptr<void>& lease);
     static bool fileComparisonByDate(const Base::FileInfo& i, const Base::FileInfo& j);
     bool startsWith(const std::string& st1, const std::string& st2) const;
     bool checkValidString(const std::string& cmpl, const boost::regex& e) const;
@@ -65,3 +107,24 @@ private:
     std::string saveBackupDateFormat {"%Y%m%d-%H%M%S"};
 };
 }  // namespace App
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+namespace App::Internal
+{
+using BackupPolicyBeforeInstallHook = std::function<void(const std::string&)>;
+AppExport void
+setBackupPolicyBeforeInstallHookForTesting(BackupPolicyBeforeInstallHook hook);
+
+enum class BackupPolicyTestCheckpoint
+{
+    AfterLinkBeforeDirectoryFlush,
+    AfterDirectoryFlushBeforeSourceUnlink,
+    AfterSourceUnlinkBeforeDirectoryFlush,
+};
+using BackupPolicyCheckpointHook =
+    std::function<void(BackupPolicyTestCheckpoint,
+                       const std::string& source,
+                       const std::string& destination)>;
+AppExport void setBackupPolicyCheckpointHookForTesting(BackupPolicyCheckpointHook hook);
+}  // namespace App::Internal
+#endif

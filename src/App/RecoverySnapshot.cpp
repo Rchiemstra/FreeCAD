@@ -450,6 +450,10 @@ bool writeRecoverySnapshotToTransientDir(const Document& doc,
                                          const RecoverySnapshotSaveOptions& options)
 {
     auto& mutableDocument = const_cast<Document&>(doc);
+    // A recovery archive is still a document serialization.  Reject it at
+    // the prepared-commit boundary before pinning lifecycle state, reading
+    // document identity, or deriving/touching any filesystem path.
+    mutableDocument.ensureCollaborationSaveAllowed();
     auto lifecyclePin = mutableDocument.collaborationService().pinDocumentAccess();
     if (!lifecyclePin) {
         throw Base::RuntimeError(

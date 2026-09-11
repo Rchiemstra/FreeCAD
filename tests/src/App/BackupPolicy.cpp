@@ -31,9 +31,15 @@
 
 #include <filesystem>
 #include <array>
+#include <condition_variable>
 #include <fstream>
+#include <iterator>
 #include <regex>
+#include <stdexcept>
 #include <string>
+#include <thread>
+#include <mutex>
+#include <vector>
 
 #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L && defined(_LIBCPP_VERSION) \
     && _LIBCPP_VERSION >= 13000
@@ -54,9 +60,21 @@ protected:
         tests::initApplication();
     }
 
+    void TearDown() override
+    {
+        App::Internal::setBackupPolicyBeforeInstallHookForTesting({});
+        App::Internal::setBackupPolicyCheckpointHookForTesting({});
+    }
+
     void apply(const std::string& sourcename, const std::string& targetname)
     {
         _policy.apply(sourcename, targetname);
+    }
+
+    App::BackupPolicy::PostReplacementResult
+    applyAfterReplacement(const std::string& sourcename, const std::string& targetname)
+    {
+        return _policy.applyAfterReplacement(sourcename, targetname);
     }
 
     void setPolicyTerms(App::BackupPolicy::Policy p, int count, bool useExt, const std::string& fmt)
@@ -126,6 +144,394 @@ TEST_F(BackupPolicyTest, StandardSourceDoesNotExist)
 
     // Act & Assert
     EXPECT_THROW(apply("nonexistent.fcstd", "backup.fcstd"), Base::FileException);
+}
+
+TEST_F(BackupPolicyTest, LegacyApplyMissingDestinationParentKeepsBaseFileException)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto source = createTempFile("source.fcstd");
+    const auto destination = getTempPath() / "missing-parent" / "document.FCStd";
+
+    EXPECT_THROW(apply(source.string(), destination.string()), Base::FileException);
+}
+
+TEST_F(BackupPolicyTest, StandardAfterReplacementBacksUpDisplacedFileWithoutTouchingCanonical)
+{
+    // Arrange
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    {
+        std::ofstream stream(displaced, std::ios::out | std::ios::trunc);
+        stream << "old bytes";
+    }
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    constexpr auto expectedPermissions = std::filesystem::perms::owner_read
+        | std::filesystem::perms::owner_write | std::filesystem::perms::group_read;
+    std::filesystem::permissions(displaced,
+                                 expectedPermissions,
+                                 std::filesystem::perm_options::replace,
+                                 permissionError);
+    ASSERT_FALSE(permissionError) << permissionError.message();
+#endif
+    {
+        std::ofstream stream(canonical, std::ios::out | std::ios::trunc);
+        stream << "new bytes";
+    }
+
+    // Act
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    // Assert
+    EXPECT_TRUE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_TRUE(result.warnings.empty());
+    EXPECT_FALSE(std::filesystem::exists(displaced));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "1"));
+    std::ifstream canonicalStream(canonical);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(canonicalStream),
+                          std::istreambuf_iterator<char>()),
+              "new bytes");
+    std::ifstream backupStream(canonical.string() + "1");
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(backupStream),
+                          std::istreambuf_iterator<char>()),
+              "old bytes");
+#if !defined(_WIN32)
+    EXPECT_EQ(std::filesystem::status(canonical.string() + "1").permissions()
+                  & std::filesystem::perms::all,
+              expectedPermissions);
+#endif
+}
+
+TEST_F(BackupPolicyTest, AfterReplacementWithBackupsDisabledDeletesOnlyDisplacedFile)
+{
+    // Arrange
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 0, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+
+    // Act
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    // Assert
+    EXPECT_FALSE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_TRUE(result.warnings.empty());
+    EXPECT_FALSE(std::filesystem::exists(displaced));
+    EXPECT_TRUE(std::filesystem::exists(canonical));
+}
+
+TEST_F(BackupPolicyTest, TimestampAfterReplacementCreatesBackupWithoutMovingCanonical)
+{
+    // Arrange
+    setPolicyTerms(App::BackupPolicy::Policy::TimeStamp, 1, true, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    {
+        std::ofstream stream(displaced, std::ios::out | std::ios::trunc);
+        stream << "old bytes";
+    }
+    {
+        std::ofstream stream(canonical, std::ios::out | std::ios::trunc);
+        stream << "new bytes";
+    }
+
+    // Act
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    // Assert
+    EXPECT_TRUE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_TRUE(result.warnings.empty());
+    std::ifstream canonicalStream(canonical);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(canonicalStream),
+                          std::istreambuf_iterator<char>()),
+              "new bytes");
+    std::vector<std::filesystem::path> backups;
+    for (const auto& entry : std::filesystem::directory_iterator(getTempPath())) {
+        if (entry.path().extension() == ".FCBak") {
+            backups.push_back(entry.path());
+        }
+    }
+    ASSERT_EQ(backups.size(), 1);
+    std::ifstream backupStream(backups.front());
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(backupStream),
+                          std::istreambuf_iterator<char>()),
+              "old bytes");
+}
+
+TEST_F(BackupPolicyTest, AfterReplacementReportsMissingSnapshotAsWarning)
+{
+    // Arrange
+    setPolicyTerms(App::BackupPolicy::Policy::TimeStamp, 1, true, "%Y-%m-%d_%H-%M-%S");
+    const auto canonical = createTempFile("document.FCStd");
+
+    // Act
+    const auto result = applyAfterReplacement(
+        (getTempPath() / "missing.displaced").string(), canonical.string());
+
+    // Assert
+    EXPECT_FALSE(result.backupCreated);
+    EXPECT_FALSE(result.displacedFileConsumed);
+    ASSERT_EQ(result.warnings.size(), 1);
+    EXPECT_TRUE(std::filesystem::exists(canonical));
+}
+
+TEST_F(BackupPolicyTest, AfterReplacementRejectsCanonicalSourceForEveryPolicy)
+{
+    for (const auto policy : {App::BackupPolicy::Standard, App::BackupPolicy::TimeStamp}) {
+        setPolicyTerms(policy, 0, true, "%Y-%m-%d_%H-%M-%S");
+        const auto canonical = createTempFile(
+            policy == App::BackupPolicy::Standard ? "standard.FCStd" : "timestamp.FCStd");
+        {
+            std::ofstream stream(canonical, std::ios::out | std::ios::trunc);
+            stream << "canonical bytes";
+        }
+
+        const auto result = applyAfterReplacement(canonical.string(), canonical.string());
+
+        EXPECT_FALSE(result.backupCreated);
+        EXPECT_FALSE(result.displacedFileConsumed);
+        EXPECT_FALSE(result.warnings.empty());
+        EXPECT_TRUE(std::filesystem::exists(canonical));
+        std::ifstream stream(canonical);
+        EXPECT_EQ(std::string(std::istreambuf_iterator<char>(stream),
+                              std::istreambuf_iterator<char>()),
+                  "canonical bytes");
+    }
+}
+
+TEST_F(BackupPolicyTest, AfterReplacementRejectsNormalizedAndHardlinkAliasesForEveryPolicy)
+{
+    for (const auto policy : {App::BackupPolicy::Standard, App::BackupPolicy::TimeStamp}) {
+        setPolicyTerms(policy, 1, true, "%Y-%m-%d_%H-%M-%S");
+        const std::string stem =
+            policy == App::BackupPolicy::Standard ? "standard-alias" : "timestamp-alias";
+        const auto canonical = createTempFile(stem + ".FCStd");
+        const auto normalizedAlias = canonical.parent_path() / "." / canonical.filename();
+        auto result = applyAfterReplacement(normalizedAlias.string(), canonical.string());
+        EXPECT_FALSE(result.backupCreated);
+        EXPECT_FALSE(result.displacedFileConsumed);
+        EXPECT_FALSE(result.warnings.empty());
+        EXPECT_TRUE(std::filesystem::exists(canonical));
+
+        const auto hardlink = getTempPath() / (stem + ".hardlink");
+        std::error_code error;
+        std::filesystem::create_hard_link(canonical, hardlink, error);
+        if (error) {
+            GTEST_SKIP() << "Hard links are unavailable: " << error.message();
+        }
+        result = applyAfterReplacement(hardlink.string(), canonical.string());
+        EXPECT_FALSE(result.backupCreated);
+        EXPECT_FALSE(result.displacedFileConsumed);
+        EXPECT_FALSE(result.warnings.empty());
+        EXPECT_TRUE(std::filesystem::exists(canonical));
+        EXPECT_TRUE(std::filesystem::exists(hardlink));
+    }
+}
+
+TEST_F(BackupPolicyTest, StandardLateCandidateCollisionIsRetriedWithoutClobber)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 2, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    {
+        std::ofstream stream(displaced, std::ios::out | std::ios::trunc);
+        stream << "old bytes";
+    }
+    std::string collision;
+    bool injected = false;
+    App::Internal::setBackupPolicyBeforeInstallHookForTesting(
+        [&](const std::string& candidate) {
+            if (!injected) {
+                injected = true;
+                collision = candidate;
+                std::ofstream stream(candidate, std::ios::out | std::ios::trunc);
+                stream << "foreign candidate";
+            }
+        });
+
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    ASSERT_TRUE(injected);
+    ASSERT_TRUE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_TRUE(result.warnings.empty());
+    std::ifstream collisionStream(collision);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(collisionStream),
+                          std::istreambuf_iterator<char>()),
+              "foreign candidate");
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "2"));
+    std::ifstream installedStream(canonical.string() + "2");
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(installedStream),
+                          std::istreambuf_iterator<char>()),
+              "old bytes");
+}
+
+TEST_F(BackupPolicyTest, InstallFailurePreservesHistoryAndDisplacedSnapshot)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    const auto oldBackup = createTempFile("document.FCStd1");
+    App::Internal::setBackupPolicyBeforeInstallHookForTesting(
+        [](const std::string&) { throw std::runtime_error("injected install failure"); });
+
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    EXPECT_FALSE(result.backupCreated);
+    EXPECT_FALSE(result.displacedFileConsumed);
+    EXPECT_FALSE(result.warnings.empty());
+    EXPECT_TRUE(std::filesystem::exists(displaced));
+    EXPECT_TRUE(std::filesystem::exists(oldBackup));
+    EXPECT_TRUE(std::filesystem::exists(canonical));
+}
+
+TEST_F(BackupPolicyTest, ProtectedLateCollisionIsNeverPruned)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    const auto oldBackup = createTempFile("document.FCStd1");
+    bool injected = false;
+    App::Internal::setBackupPolicyBeforeInstallHookForTesting(
+        [&](const std::string& candidate) {
+            if (!injected) {
+                injected = true;
+                std::ofstream stream(candidate, std::ios::out | std::ios::trunc);
+                stream << "foreign collision";
+            }
+        });
+
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    ASSERT_TRUE(injected);
+    EXPECT_TRUE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_FALSE(result.warnings.empty());
+    EXPECT_FALSE(std::filesystem::exists(oldBackup));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "2"));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "3"));
+    std::ifstream collision(canonical.string() + "2");
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(collision),
+                          std::istreambuf_iterator<char>()),
+              "foreign collision");
+}
+
+#if !defined(_WIN32)
+TEST_F(BackupPolicyTest, PreConsumptionDurabilityFailureRetainsSourceAndHistory)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    const auto oldBackup = createTempFile("document.FCStd1");
+    App::Internal::setBackupPolicyCheckpointHookForTesting(
+        [](const App::Internal::BackupPolicyTestCheckpoint checkpoint,
+           const std::string&,
+           const std::string&) {
+            if (checkpoint
+                == App::Internal::BackupPolicyTestCheckpoint::
+                    AfterDirectoryFlushBeforeSourceUnlink) {
+                throw std::runtime_error("injected pre-consumption durability failure");
+            }
+        });
+
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    EXPECT_TRUE(result.backupCreated);
+    EXPECT_FALSE(result.displacedFileConsumed);
+    EXPECT_FALSE(result.warnings.empty());
+    EXPECT_TRUE(std::filesystem::exists(displaced));
+    EXPECT_TRUE(std::filesystem::exists(oldBackup));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "2"));
+}
+
+TEST_F(BackupPolicyTest, PostConsumptionDurabilityFailureDoesNotPruneHistory)
+{
+    setPolicyTerms(App::BackupPolicy::Policy::Standard, 1, false, "%Y-%m-%d_%H-%M-%S");
+    const auto displaced = createTempFile("document.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    const auto oldBackup = createTempFile("document.FCStd1");
+    App::Internal::setBackupPolicyCheckpointHookForTesting(
+        [](const App::Internal::BackupPolicyTestCheckpoint checkpoint,
+           const std::string&,
+           const std::string&) {
+            if (checkpoint
+                == App::Internal::BackupPolicyTestCheckpoint::
+                    AfterSourceUnlinkBeforeDirectoryFlush) {
+                throw std::runtime_error("injected post-consumption durability failure");
+            }
+        });
+
+    const auto result = applyAfterReplacement(displaced.string(), canonical.string());
+
+    EXPECT_TRUE(result.backupCreated);
+    EXPECT_TRUE(result.displacedFileConsumed);
+    EXPECT_FALSE(result.warnings.empty());
+    EXPECT_FALSE(std::filesystem::exists(displaced));
+    EXPECT_TRUE(std::filesystem::exists(oldBackup));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "2"));
+}
+#endif
+
+TEST_F(BackupPolicyTest, ConcurrentRotationsUseDistinctAtomicCandidates)
+{
+    const auto firstDisplaced = createTempFile("first.displaced");
+    const auto secondDisplaced = createTempFile("second.displaced");
+    const auto canonical = createTempFile("document.FCStd");
+    {
+        std::ofstream stream(firstDisplaced, std::ios::out | std::ios::trunc);
+        stream << "first old bytes";
+    }
+    {
+        std::ofstream stream(secondDisplaced, std::ios::out | std::ios::trunc);
+        stream << "second old bytes";
+    }
+
+    App::BackupPolicy firstPolicy;
+    firstPolicy.setPolicy(App::BackupPolicy::Standard);
+    firstPolicy.setNumberOfFiles(3);
+    App::BackupPolicy secondPolicy;
+    secondPolicy.setPolicy(App::BackupPolicy::Standard);
+    secondPolicy.setNumberOfFiles(3);
+    App::BackupPolicy::PostReplacementResult firstResult;
+    App::BackupPolicy::PostReplacementResult secondResult;
+    std::mutex startMutex;
+    std::condition_variable startCondition;
+    int ready = 0;
+    bool start = false;
+    const auto waitForStart = [&] {
+        std::unique_lock lock(startMutex);
+        ++ready;
+        startCondition.notify_all();
+        startCondition.wait(lock, [&] { return start; });
+    };
+    std::thread first([&] {
+        waitForStart();
+        firstResult = firstPolicy.applyAfterReplacement(firstDisplaced.string(),
+                                                        canonical.string());
+    });
+    std::thread second([&] {
+        waitForStart();
+        secondResult = secondPolicy.applyAfterReplacement(secondDisplaced.string(),
+                                                          canonical.string());
+    });
+    {
+        std::unique_lock lock(startMutex);
+        startCondition.wait(lock, [&] { return ready == 2; });
+        start = true;
+    }
+    startCondition.notify_all();
+    first.join();
+    second.join();
+
+    EXPECT_TRUE(firstResult.backupCreated);
+    EXPECT_TRUE(firstResult.displacedFileConsumed);
+    EXPECT_TRUE(secondResult.backupCreated);
+    EXPECT_TRUE(secondResult.displacedFileConsumed);
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "1"));
+    EXPECT_TRUE(std::filesystem::exists(canonical.string() + "2"));
 }
 
 TEST_F(BackupPolicyTest, StandardWithZeroFilesDeletesExisting)

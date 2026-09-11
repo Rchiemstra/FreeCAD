@@ -3668,6 +3668,15 @@ public:
             return;
         }
 
+        const auto saveIntent = doc.getActiveSaveIntent();
+        if (saveIntent == DocumentSaveIntent::Copy
+            || saveIntent == DocumentSaveIntent::Recovery) {
+            // Copies and recovery snapshots do not change the source
+            // document's canonical identity or timestamp.  Treating them as
+            // canonical saves would spuriously dirty every linking document.
+            return;
+        }
+
         QFileInfo info(myPos->first);
         QString path(info.absoluteFilePath());
         const char* filename = doc.getFileName();

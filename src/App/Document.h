@@ -40,6 +40,7 @@
 #include "TransactionDefs.h"
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <vector>
@@ -60,6 +61,7 @@ namespace Gui
 {
 class Document;
 class MergeDocuments;
+class ViewProviderDocumentObject;
 }
 
 namespace Spreadsheet
@@ -87,6 +89,92 @@ enum class DocumentSaveAsStatus
     SaveFailed,
 };
 
+/** The authoritative relationship between the in-memory document and its canonical file. */
+enum class DocumentFileState
+{
+    NotSaved,
+    Clean,
+    Modified,
+};
+
+/** Persistent change categories.  These deliberately exclude session-only view activity. */
+enum class DocumentFileChange
+{
+    None = 0,
+    Model = 1,
+    Appearance = 2,
+};
+using DocumentFileChanges = Base::Flags<DocumentFileChange>;
+
+/** Whether a persistent change belongs to the current App transaction. */
+enum class DocumentFileChangeOwnership
+{
+    AutoTransaction,
+    Sticky,
+};
+
+enum class DocumentSaveIntent
+{
+    Canonical,
+    Force,
+    SaveAs,
+    Copy,
+    Recovery,
+};
+
+enum class DocumentSaveDisposition
+{
+    Written,
+    Unchanged,
+    CopyWritten,
+    Failed,
+};
+
+struct AppExport DocumentSaveOutcome
+{
+    DocumentSaveIntent intent {DocumentSaveIntent::Canonical};
+    /// Canonical identity retained by the document after the request.
+    std::string canonicalPath;
+    /// Destination attempted or written by this request (copy/recovery included).
+    std::string targetPath;
+    DocumentSaveDisposition disposition {DocumentSaveDisposition::Failed};
+    bool fileWritten {false};
+    /// True only after the installed file passed the platform's strongest
+    /// available durability verification. POSIX also fsyncs the parent
+    /// directory; Windows flushes the installed file handle because Win32
+    /// exposes no directory-fsync equivalent.
+    bool durabilityVerified {false};
+    DocumentFileState resultingState {DocumentFileState::NotSaved};
+    DocumentFileChanges pendingChanges;
+    bool lastCanonicalSaveFailed {false};
+    std::string errorCode;
+    std::string message;
+    /// Non-fatal post-replacement or observer-maintenance diagnostics.
+    std::vector<std::string> warnings;
+
+    [[nodiscard]] bool succeeded() const noexcept
+    {
+        return disposition != DocumentSaveDisposition::Failed;
+    }
+};
+
+struct AppExport DocumentMutationReadiness
+{
+    bool stableEventSupported {true};
+    bool ready {false};
+    bool pendingTransaction {false};
+    int bookedTransaction {0};
+    bool transactionLocked {false};
+    bool recomputing {false};
+    bool mustExecute {false};
+    bool pendingRemoval {false};
+    bool commitBarrier {false};
+    bool notificationReplay {false};
+    bool poisoned {false};
+    bool quarantined {false};
+    std::string diagnostic;
+};
+
 enum class RemoveObjectOption
 {
     None = 0,
@@ -100,6 +188,7 @@ using RemoveObjectOptions = Base::Flags<RemoveObjectOption>;
 }
 ENABLE_BITMASK_OPERATORS(App::AddObjectOption)
 ENABLE_BITMASK_OPERATORS(App::RemoveObjectOption)
+ENABLE_BITMASK_OPERATORS(App::DocumentFileChange)
 
 namespace App
 {
@@ -112,17 +201,36 @@ class Application;
 class Transaction;
 class DocumentCommitCoordinator;
 class DocumentCollaborationService;
+class DocumentRecomputeCoordinator;
+class RecomputeHandle;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
 struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
+struct DocumentRecomputeSnapshot;
 struct RecoverySnapshotSaveOptions;
 namespace Internal
 {
 class DocumentCollaborationConcurrencyTestAccess;
 class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
+class GenericIsolatedRecomputeAccess;
+class NestedCommitBookingTestAccess;
+struct DocumentFileReplacementResult;
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+enum class DocumentPostDurableSaveCheckpoint
+{
+    BeforeBackupMaintenance,
+    BeforeProgramVersionUpdate,
+    BeforeFailedReplacementRecoveryWarning,
+    BeforeFailedReplacementOutcomePromotion,
+};
+using DocumentPostDurableSaveCheckpointHook =
+    void (*)(DocumentPostDurableSaveCheckpoint);
+AppExport void setDocumentPostDurableSaveCheckpointHookForTesting(
+    DocumentPostDurableSaveCheckpointHook hook) noexcept;
+#endif
 class AppExport CollaborationImportReplay
 {
 public:
@@ -139,6 +247,29 @@ struct CollaborationRollbackResult
 {
     bool restored {true};
     std::array<char, 1024> diagnostic {};
+};
+
+/**
+ * Where a recompute plan's feature code runs.
+ *
+ * OwnerThread is the default because it is the only venue an interactive
+ * session or a test suite can afford: the isolated venue spawns one
+ * FreeCADCmd worker per feature, measured at 2170ms against 4ms in process
+ * (see "Run ordinary recomputes on the owner thread"). Isolated is for a
+ * caller that has explicitly traded latency for not running object code
+ * inside its own commit -- it is the venue that refuses a feature whose
+ * runtime type cannot be serialized instead of letting execute() reach into
+ * the live document.
+ *
+ * Isolated is a request, not a guarantee. A target that does not opt into
+ * worker execution still falls back to the owner thread, because refusing it
+ * would leave Draft, Arch, FEM, PartDesign, Spreadsheet and every user macro
+ * permanently touched and invalid.
+ */
+enum class RecomputeVenue : std::uint8_t
+{
+    OwnerThread,
+    Isolated,
 };
 
 /**
@@ -193,7 +324,33 @@ public:
         /// Whether a recompute is necessary on restore for migration purposes.
         RecomputeOnRestore = 13,
         /// Whether the local coordinate system of older versions should be migrated.
-        MigrateLCS = 14
+        MigrateLCS = 14,
+        /** Whether the content being restored is a same-version state transfer.
+         *
+         * Set while a document is populated from an archive that this exact
+         * program version wrote out of an already-restored in-memory document,
+         * as the isolated recompute worker does.  Such content is by
+         * construction current, so deprecated-property migrations must not run
+         * against it: they are file-format upgrades, and re-applying one to
+         * already-migrated state rewrites live values.  Guard every such
+         * migration with DocumentObject::isRestoringDeprecatedSchema().
+         */
+        CurrentSchemaTransfer = 15
+    };
+
+    /** Suppress authoritative file-change tracking for temporary render/cache work. */
+    class AppExport FileChangeTrackingScope final
+    {
+    public:
+        explicit FileChangeTrackingScope(Document& document);
+        ~FileChangeTrackingScope();
+
+        FileChangeTrackingScope(const FileChangeTrackingScope&) = delete;
+        FileChangeTrackingScope& operator=(const FileChangeTrackingScope&) = delete;
+
+    private:
+        Document& document;
+        bool previous;
     };
     // clang-format on
 
@@ -306,6 +463,11 @@ public:
     App::MainThreadSignal<void(const Document&, const std::string&)> signalStartSave;
     /// Signal finishing a save action to a file.
     App::MainThreadSignal<void(const Document&, const std::string&)> signalFinishSave;
+    /// Signal when authoritative persistent file state or its failure overlay changes.
+    App::ResilientMainThreadSignal<void(const Document&)>& signalFileChangeStateChanged();
+    /// Signal exactly once for each completed structured save request.
+    App::ResilientMainThreadSignal<void(const Document&, const DocumentSaveOutcome&)>&
+        signalSaveOutcome();
     /// Signal before recomputing the document.
     App::MainThreadSignal<void(const Document&)> signalBeforeRecompute;
     /// Signal after recomputing the document but before the document is fully
@@ -322,7 +484,7 @@ public:
     App::MainThreadSignal<void(const Document&)> signalAbortTransaction;
     /// Signal after document recompute/transaction state has fully unwound and
     /// observers may treat the document as stable again.
-    App::MainThreadSignal<void(const Document&)> signalBecameStable;
+    App::ResilientMainThreadSignal<void(const Document&)> signalBecameStable;
     /// Signal on a skipping a recompute.
     App::MainThreadSignal<void(const Document&, const std::vector<DocumentObject*>&)> signalSkipRecompute;
     /// Signal on finishing restoring an object.
@@ -346,6 +508,12 @@ public:
     /// Save the document to the file in Property Path
     bool save();
 
+    /// Save canonically and report whether bytes were written or the file was already current.
+    DocumentSaveOutcome saveWithOutcome();
+
+    /// Rewrite the canonical file even when no persistent change is pending.
+    DocumentSaveOutcome forceSave();
+
     /**
      * @brief Save the document to a specified file.
      *
@@ -362,12 +530,61 @@ public:
      */
     DocumentSaveAsStatus saveAsWithPolicy(const char* file, bool overwrite);
 
+    /// Save As with staged identity and a structured, non-throwing outcome.
+    DocumentSaveOutcome saveAsWithOutcome(const char* file, bool overwrite = false);
+
+    /// Save As with a conflict-safe, recoverable destination SHA-256 CAS.
+    ///
+    /// The replacement path uses strict no-replace move-aside/verify/install
+    /// primitives. It preserves displaced versions and recovery paths, but has
+    /// a brief crash-guarded window in which the destination name is unavailable.
+    /// Platforms without the required primitive fail before mutating the target.
+    DocumentSaveOutcome saveAsWithOutcome(const char* file,
+                                          bool overwrite,
+                                          const std::string& expectedDestinationSha256);
+
     /**
      * @brief Save a copy of the document to a specified file.
      *
      * @param[in] file: The file name to save the copy to.
      */
     bool saveCopy(const char* file) const;
+
+    /// Always write a copy without moving the canonical savepoint.
+    DocumentSaveOutcome saveCopyWithOutcome(const char* file);
+
+    /// Return true only when persistent content differs from its savepoint.
+    [[nodiscard]] bool hasPendingFileChanges() const;
+
+    /// Return the authoritative base file state.
+    [[nodiscard]] DocumentFileState getFileChangeState() const;
+
+    /// Return persistent change categories relative to the canonical savepoint.
+    [[nodiscard]] DocumentFileChanges getPendingFileChanges() const;
+
+    /// Return whether the last canonical save attempt failed.
+    [[nodiscard]] bool lastCanonicalSaveFailed() const;
+
+    /// Return the intent of the serialization currently emitting legacy save signals.
+    [[nodiscard]] DocumentSaveIntent getActiveSaveIntent() const noexcept;
+
+    /**
+     * Report a persistent change owned outside App (normally a ViewProvider appearance change).
+     * Session-only, NoModify, transient, and nonpersistent changes must not call this method.
+     */
+    void markFileChange(DocumentFileChange category,
+                        DocumentFileChangeOwnership ownership =
+                            DocumentFileChangeOwnership::AutoTransaction);
+
+    /// Compatibility bridge for legacy Gui::Document::setModified callers.
+    void setCompatibilityFileModified(bool modified,
+                                      DocumentFileChangeOwnership ownership =
+                                          DocumentFileChangeOwnership::AutoTransaction);
+
+    /// Publish a recovery-write outcome without moving the canonical savepoint.
+    void reportRecoverySaveOutcome(const std::string& path,
+                                   bool written,
+                                   const std::string& message = {});
 
     /**
      * @brief Return whether App-side document state allows a recovery write.
@@ -378,6 +595,9 @@ public:
      * this does not depend on undo state being enabled.
      */
     bool canWriteRecoverySnapshot() const;
+
+    /// Read-only mutation readiness used by GUI and automation health reporting.
+    [[nodiscard]] DocumentMutationReadiness getMutationReadiness() const;
 
     /**
      * @brief Restore the document from the file in Property Path.
@@ -450,6 +670,14 @@ public:
     void exportObjects(const std::vector<DocumentObject*>& objs, std::ostream& out);
 
     /**
+     * Export an immutable object closure for the trusted isolated-recompute
+     * worker. Unlike exportObjects(), this never adds diagnostic properties or
+     * invokes extension export hooks, so capture cannot mutate the live model.
+     */
+    void exportObjectsForIsolatedRecompute(const std::vector<DocumentObject*>& objs,
+                                           std::ostream& out);
+
+    /**
      * @brief Write the dependency graph of this document.
      *
      * The output is in the DOT format of Graphviz.
@@ -508,19 +736,31 @@ public:
     DocumentRevisionIndex& collaborationRevisions();
     const DocumentRevisionIndex& collaborationRevisions() const;
     DocumentCollaborationService& collaborationService();
+    DocumentRecomputeCoordinator& recomputeCoordinator();
+    const DocumentRecomputeCoordinator& recomputeCoordinator() const;
     bool collaborationRevisionPublicationSuppressed() const;
     bool collaborationRevisionPublicationSuppressed(const PropertyContainer* container) const;
     bool collaborationRevisionPublicationSuppressed(const Property* property) const;
     void beginCollaborationAtomicPresentationAudit(
         std::vector<CollaborationAtomicPresentationWrite> allowedWrites);
+    void beginCollaborationReadOnlyPostconditionAudit();
+    void noteCollaborationReadOnlyMutationAttempt() noexcept;
     void recordCollaborationAtomicPresentationEffects(
         const std::vector<DocumentRevisionPublicationRequest>& effects,
         const Property* property = nullptr) noexcept;
     [[nodiscard]] bool collaborationAtomicPresentationAuditViolated() const noexcept;
     void endCollaborationAtomicPresentationAudit() noexcept;
     std::string collaborationObjectIdentity(const DocumentObject& object) const;
+    /** True only when aborting the active transaction removes this live object. */
+    [[nodiscard]] bool collaborationTransactionOwnsNewObject(
+        const DocumentObject& object) const noexcept;
     void publishCollaborationMutation(const PropertyContainer& container, bool structural);
     bool collaborationPreparationSupported() const;
+
+    /// Dynamic-property schema is serialized independently from transient
+    /// property values.  This predicate deliberately excludes only schemas
+    /// marked Prop_NoPersist.
+    static bool dynamicPropertySchemaAffectsPersistence(const Property* property) noexcept;
 
     Property* addDynamicProperty(std::string_view type,
                                  const char* name = nullptr,
@@ -529,6 +769,9 @@ public:
                                  short attr = 0,
                                  bool ro = false,
                                  bool hidden = false) override;
+    bool changeDynamicProperty(const Property* property,
+                               const char* group,
+                               const char* doc) override;
     bool renameDynamicProperty(Property* property, const char* name) override;
     bool removeDynamicProperty(const char* name) override;
 
@@ -856,6 +1099,52 @@ public:
      */
     void purgeTouched();
 
+    /** Set the caller's open transaction aside so a collaboration commit can
+     * own its own, and report whether one was parked. The commit's transaction
+     * is folded back into it when it finalizes. */
+    bool parkTransactionForNestedCommit();
+
+    /** Restore a parked transaction after a nested commit that did not fold
+     * into it, i.e. one that rolled back.
+     *
+     * Called from ~ParkedTransactionGuard(), so it must not throw: a throw
+     * unwinding into another throw during that unwind would terminate. */
+    void restoreParkedTransactionAfterNestedCommit() noexcept;
+
+    /** Whether a caller's transaction is currently parked. */
+    [[nodiscard]] bool hasParkedNestedTransaction() const noexcept;
+
+    /** Drop every deferred notification that names an object being destroyed.
+     *
+     * Replaying one would reach through the freed object. Called from
+     * ~DocumentObject() while a commit barrier is open. */
+    void discardCollaborationNotificationsForDestroyedObject(
+        const DocumentObject* object) noexcept;
+
+    /** Repoint or drop every deferred notification naming a transaction that
+     * is going away.
+     *
+     * A deferred TransactionAppend/Remove holds a raw Transaction*, and a
+     * recompute commit discards its own transaction (or folds it into the
+     * caller's), so replaying one afterwards would reach through freed memory.
+     * With a replacement the records moved there and the notification follows
+     * them. Without one the transaction is simply gone: an append has nothing
+     * left to append to and is dropped, while a remove keeps its contract by
+     * reporting a null transaction, which is how Gui::Document is told that
+     * no undo will restore the view provider. */
+    void retargetCollaborationTransactionNotifications(
+        const Transaction* retiring,
+        Transaction* replacement) noexcept;
+
+    /**
+     * @brief Settle one feature the recompute has just finished with.
+     *
+     * Clears the feature's touch state and marks the objects that depend on
+     * it for recompute, so a partial recompute still leaves the rest of the
+     * graph knowing it is stale.
+     */
+    void settleRecomputedFeature(DocumentObject& object);
+
     /// Check if there is any touched object in this document.
     bool isTouched() const;
 
@@ -899,6 +1188,13 @@ public:
                   bool force = false,
                   bool* hasError = nullptr,
                   int options = 0);
+
+    /** Submit the same detached recompute used by recompute() and return immediately. */
+    [[nodiscard]] std::unique_ptr<RecomputeHandle> recomputeAsync(
+        const std::vector<DocumentObject*>& objs = {},
+        bool force = false,
+        int options = 0,
+        RecomputeVenue venue = RecomputeVenue::OwnerThread);
 
     /**
      * @brief Recompute a single object.
@@ -1397,11 +1693,15 @@ public:
     friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class RecomputeHandle;
     friend class Gui::Document;
     friend class Gui::MergeDocuments;
+    friend class Gui::ViewProviderDocumentObject;
     friend class Internal::DocumentCollaborationConcurrencyTestAccess;
     friend class Internal::DocumentStructuralCompatibilityTestAccess;
     friend class Internal::CollaborationStructuralMutationRecorder;
+    friend class Internal::GenericIsolatedRecomputeAccess;
+    friend class Internal::NestedCommitBookingTestAccess;
     friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
@@ -1491,6 +1791,28 @@ protected:
      */
     bool saveToFile(const char* filename) const;
 
+    DocumentSaveOutcome saveWithOutcomeImpl(DocumentSaveIntent intent,
+                                            const std::string& path,
+                                            bool forceWrite,
+                                            bool adoptIdentity,
+                                            bool captureErrors,
+                                            bool overwriteDestination = true,
+                                            std::string expectedDestinationSha256 = {});
+    DocumentSaveOutcome saveCopyWithOutcomeImpl(const std::string& path, bool captureErrors);
+    void ensureCollaborationSaveAllowed() const;
+    void prepareCanonicalSaveMetadata();
+    void establishCanonicalSavepoint(std::array<std::uint64_t, 6> tokens,
+                                     bool clearFailure,
+                                     std::string canonicalPath) noexcept;
+    void restoreTransactionFileState(int transactionId, bool after);
+    void discardTransactionFileState(int transactionId);
+    [[nodiscard]] bool shouldTrackFileChange(const Property* property) const;
+    void emitFileChangeStateIfChanged(DocumentFileState previousState,
+                                      DocumentFileChanges previousChanges,
+                                      bool previousFailure,
+                                      bool persistentMutation = false) noexcept;
+    void onPropertyStatusChanged(const Property& property, unsigned long oldStatus) override;
+
     /**
      * @brief Count the object of a given type.
      *
@@ -1552,7 +1874,9 @@ protected:
      * This function creates an actual transaction regardless of Application
      * AutoTransaction setting.
      */
-    int _openTransaction(std::string name = "", int id = 0);
+    int _openTransaction(std::string name = "",
+                         int id = 0,
+                         bool preserveRedoHistory = false);
     /**
      * @brief Commit the Command transaction.
      *
@@ -1561,7 +1885,7 @@ protected:
      *
      * @param notify If true, notify the application to close the transaction.
      */
-    bool _commitTransaction(bool notify = false);
+    bool _commitTransaction(bool notify = false, bool retainUndoHistory = true);
     /**
      * @brief Abort the running transaction.
      *
@@ -1571,13 +1895,33 @@ protected:
     void _abortTransaction();
 
 private:
+    void beginCollaborationAtomicPresentationAuditImpl(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites,
+        bool readOnly,
+        bool preparedOwner);
+    void endCollaborationAtomicPresentationAuditImpl(bool preparedOwner) noexcept;
+    void beginCollaborationPreparedAtomicPresentationAudit(
+        std::vector<CollaborationAtomicPresentationWrite> allowedWrites);
+    void beginCollaborationPreparedReadOnlyPostconditionAudit();
+    void endCollaborationPreparedAtomicPresentationAudit() noexcept;
+    void emitCollaborationBecameStable() const;
+    [[nodiscard]] bool collaborationStableNotificationActive() const noexcept;
+    [[nodiscard]] bool collaborationPendingRemovalProcessing() const noexcept;
+
+    Internal::DocumentFileReplacementResult saveToFileWithPolicy(
+        const char* filename,
+        std::array<std::uint64_t, 6>* serializedFileTokens,
+        DocumentSaveIntent intent,
+        bool overwriteDestination,
+        const std::string& expectedDestinationSha256,
+        const std::string& forbiddenAliasPath) const;
+
     enum class CollaborationStructuralMutationKind
     {
         Restricted,
         Object,
         DynamicPropertyOnNewObject
     };
-
     class AppExport CollaborationStructuralMutationGrant final
     {
     public:
@@ -1588,6 +1932,51 @@ private:
             const CollaborationStructuralMutationGrant&) = delete;
         CollaborationStructuralMutationGrant& operator=(
             const CollaborationStructuralMutationGrant&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationDeferredRecomputeFence final
+    {
+    public:
+        explicit CollaborationDeferredRecomputeFence(Document& document);
+        ~CollaborationDeferredRecomputeFence();
+
+        CollaborationDeferredRecomputeFence(
+            const CollaborationDeferredRecomputeFence&) = delete;
+        CollaborationDeferredRecomputeFence& operator=(
+            const CollaborationDeferredRecomputeFence&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationDerivedRecomputeGrant final
+    {
+    public:
+        explicit CollaborationDerivedRecomputeGrant(Document& document);
+        ~CollaborationDerivedRecomputeGrant();
+
+        CollaborationDerivedRecomputeGrant(
+            const CollaborationDerivedRecomputeGrant&) = delete;
+        CollaborationDerivedRecomputeGrant& operator=(
+            const CollaborationDerivedRecomputeGrant&) = delete;
+
+    private:
+        Document& _document;
+    };
+
+    class CollaborationRecomputeStableNotificationDeferral final
+    {
+    public:
+        explicit CollaborationRecomputeStableNotificationDeferral(Document& document);
+        ~CollaborationRecomputeStableNotificationDeferral();
+
+        CollaborationRecomputeStableNotificationDeferral(
+            const CollaborationRecomputeStableNotificationDeferral&) = delete;
+        CollaborationRecomputeStableNotificationDeferral& operator=(
+            const CollaborationRecomputeStableNotificationDeferral&) = delete;
 
     private:
         Document& _document;
@@ -1644,6 +2033,10 @@ private:
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
+    [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
+    /** As above, but tolerating an undo transaction the caller already holds,
+     * because a recompute commits in a nested transaction of its own. */
+    [[nodiscard]] bool collaborationNestedRecomputeCaptureBlocked() const noexcept;
     [[nodiscard]] bool collaborationLifecycleMutationBlocked() const noexcept;
     void beginCollaborationStableReadCapture();
     void finishCollaborationStableReadCapture() noexcept;
@@ -1666,6 +2059,13 @@ private:
         const PropertyContainer& container);
     [[nodiscard]] CollaborationStructuralMutationGrant
     openCollaborationStructuralMutationGrant();
+    [[nodiscard]] CollaborationDeferredRecomputeFence
+    openCollaborationDeferredRecomputeFence();
+    [[nodiscard]] CollaborationDerivedRecomputeGrant
+    openCollaborationDerivedRecomputeGrant();
+    [[nodiscard]] CollaborationRecomputeStableNotificationDeferral
+    openCollaborationRecomputeStableNotificationDeferral();
+    [[nodiscard]] bool collaborationDerivedRecomputeGranted() const noexcept;
     [[nodiscard]] bool collaborationStructuralImportDeferralRequired() const noexcept;
     [[nodiscard]] bool collaborationImportBoundaryActive() const noexcept;
     [[nodiscard]] CollaborationImportDeferralScope
@@ -1674,10 +2074,26 @@ private:
     [[nodiscard]] std::vector<DocumentRevisionPublicationRequest>
     takeCollaborationObservedStructuralEffects();
     void ensureCollaborationTransactionControlAllowed() const;
+    [[nodiscard]] int openCompatibilityTransactionImpl(TransactionName name, int tid);
+    [[nodiscard]] int setActiveCompatibilityTransactionImpl(TransactionName name, int tid);
+    void commitCompatibilityTransactionImpl();
+    void abortCompatibilityTransactionImpl() const;
+    [[nodiscard]] bool undoCompatibilityTransactionImpl(int id);
+    [[nodiscard]] bool redoCompatibilityTransactionImpl(int id);
+    void clearCompatibilityTransactionHistoryImpl();
+    [[nodiscard]] bool commitApplicationTransactionThroughCoordinator();
+    void abortApplicationTransactionThroughCoordinator();
     void lockTransactionInternal();
     void unlockTransactionInternal();
-    int openCollaborationCommitTransaction(std::string name);
-    bool commitCollaborationCommitTransaction();
+    /** The id openCollaborationCommitTransaction() should open its transaction
+     * under: 0 to mint a fresh one, or the caller's parked booked id when this
+     * nested commit has nothing parked to fold into and must become the
+     * caller's own transaction instead. */
+    [[nodiscard]] int nestedCommitTransactionId() const noexcept;
+    int openCollaborationCommitTransaction(std::string name, bool retainUndoHistory);
+    bool commitCollaborationCommitTransaction(bool retainUndoHistory);
+    void applyCollaborationRecomputeFailure(DocumentObject& object,
+                                            std::string_view diagnostic);
     void setCollaborationRevisionPublicationSuppressed(bool suppressed) noexcept;
     void beginCollaborationCommitNotificationBarrier();
     void prepareCollaborationCommitFinalization();
@@ -1699,6 +2115,9 @@ private:
     void emitCollaborationChangePropertyEditor(const Property& property);
     [[nodiscard]] bool discardCollaborationTransientObjectNotifications(
         DocumentObject& object);
+    void finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapshot);
+    void finalizeEmptyDetachedRecompute();
+    void finalizeCollaborationRecomputeTeardown();
     CollaborationRollbackResult rollbackCollaborationTransaction() noexcept;
     void changePropertyOfObject(TransactionalObject* obj, const Property* prop,
                                 const std::function<void()>& changeFunc);

@@ -30,7 +30,7 @@ if App.GuiUp:
     from PySide import QtCore, QtGui, QtWidgets
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 
 translate = App.Qt.translate
 

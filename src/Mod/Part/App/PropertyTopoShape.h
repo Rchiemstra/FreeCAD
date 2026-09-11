@@ -97,6 +97,7 @@ public:
     App::Property* Copy() const override;
     void Paste(const App::Property& from) override;
     unsigned int getMemSize() const override;
+    bool isSame(const App::Property& other) const override;
     //@}
 
     /// Get valid paths for this property; used by auto completer
@@ -272,6 +273,7 @@ public:
 
     Property* Copy() const override;
     void Paste(const Property& from) override;
+    bool isSame(const App::Property& other) const override;
 
     unsigned int getMemSize() const override
     {

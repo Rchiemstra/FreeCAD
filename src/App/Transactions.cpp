@@ -132,6 +132,138 @@ bool Transaction::isEmpty() const
     return _Objects.empty();
 }
 
+void Transaction::mergeInto(Transaction& parent)
+{
+    if (&parent == this) {
+        return;
+    }
+    auto& index = _Objects.get<0>();
+    auto& parentIndex = parent._Objects.get<1>();
+    for (auto entry = index.begin(); entry != index.end();) {
+        auto parentPos = parentIndex.find(entry->first);
+        if (parentPos != parentIndex.end()) {
+            // The parent already has a record for this object, but the two
+            // records can cover different properties of it: TransactionObject
+            // only snapshots a property the first time it sees it (see
+            // setProperty()), so whichever transaction touched a given
+            // property first is the one holding the snapshot undo must
+            // restore for that property. Merge the two records property by
+            // property instead of discarding this whole nested record.
+            auto* nested = entry->second;
+            auto* target = parentPos->second;
+            // Mirrors TransactionObject::applyChnImpl()'s dispatch order: a
+            // move, rename, or addition entry is restored by an earlier
+            // branch that never reads the property field, so holding such an
+            // entry does not mean the property's *value* is covered by this
+            // record.
+            auto isValueSnapshot = [](const TransactionObject::PropData& data) {
+                return !data.propertyTarget && !data.target && data.nameOrig.empty()
+                    && data.property;
+            };
+            for (auto prop = nested->_PropChangeMap.begin(); prop != nested->_PropChangeMap.end();) {
+                auto inserted = target->_PropChangeMap.emplace(prop->first, prop->second);
+                if (inserted.second) {
+                    // The parent had no snapshot of this property yet; hand it
+                    // the nested one. Remove it here without destroying it, so
+                    // ~TransactionObject() below does not also delete the
+                    // Property that the parent's copy now owns.
+                    prop = nested->_PropChangeMap.erase(prop);
+                }
+                else {
+                    // The parent already holds a record for this property
+                    // id. When both are plain value snapshots the parent's
+                    // is the older one and the one undo has to restore.
+                    //
+                    // A mismatched pair is not automatically a loss. A
+                    // parent move record re-homes the property and its value
+                    // travels with it, and a parent addition record removes
+                    // the property on undo, so in both cases the nested value
+                    // snapshot they displace would never have been restored.
+                    // A parent rename record is the lossy one: applyChnImpl()
+                    // renames and stops, so the nested write is dropped.
+                    // Resolving that needs _PropChangeMap to hold more than
+                    // one record per property id -- a pre-existing limit this
+                    // merge inherits rather than introduces, and one a single
+                    // transaction hits too via setProperty() then
+                    // renameProperty(). Log it for anyone chasing a lost
+                    // value; it is far too common to warn about, since every
+                    // spreadsheet recompute that clears a cell range lands
+                    // here through removeDynamicProperty().
+                    if (isValueSnapshot(prop->second)
+                        != isValueSnapshot(inserted.first->second)) {
+                        FC_LOG("mergeInto: property record kind mismatch on "
+                               << prop->first << ", keeping the parent's");
+                    }
+                    ++prop;
+                }
+            }
+            // The nested record's own lifecycle event still has to be
+            // replayed onto the parent's, mirroring the state machine
+            // addObjectNew()/addObjectDel() already implement for a single
+            // transaction, applied in the order parent-then-nested.
+            switch (nested->status) {
+            case TransactionObject::Chn:
+                // The nested transaction only changed properties. The
+                // parent's lifecycle record still describes the merged step.
+                break;
+
+            case TransactionObject::New:
+                // The nested transaction removed the object, so the merged
+                // step removes it too. ~Transaction() reads status and
+                // _NameInDocument both to re-add the object on undo and to
+                // destroy it when the step is never undone, so dropping the
+                // nested record here would orphan the detached object.
+                if (target->status == TransactionObject::Del) {
+                    // The parent added it and the nested transaction removed
+                    // it again: the merged step does neither, and nothing is
+                    // left to own the detached object. Destroy it exactly as
+                    // Transaction::addObjectNew() does for this pair inside a
+                    // single transaction.
+                    const auto* object = entry->first;
+                    parentIndex.erase(parentPos);
+                    delete target;
+                    if (!object->isAttachedToDocument()) {
+                        if (object->isDerivedFrom<DocumentObject>()) {
+                            // #0003323: suppress backlink teardown through
+                            // dangling peers.
+                            const_cast<DocumentObject*>(static_cast<const DocumentObject*>(object))
+                                ->setStatus(ObjectStatus::Destroy, true);
+                        }
+                        delete object;
+                    }
+                }
+                else {
+                    assert(target->status == TransactionObject::Chn);
+                    target->status = TransactionObject::New;
+                    target->_NameInDocument = std::move(nested->_NameInDocument);
+                }
+                break;
+
+            case TransactionObject::Del:
+                // The nested transaction added the object. The only
+                // consistent pairing is a parent that removed it: the merged
+                // step then does neither, and the object is live again, so
+                // it must NOT be destroyed. Any other parent status means
+                // the object was both pre-existing and newly created, which
+                // cannot happen.
+                assert(target->status == TransactionObject::New);
+                if (target->status == TransactionObject::New) {
+                    parentIndex.erase(parentPos);
+                    delete target;
+                }
+                break;
+            }
+            delete nested;
+            entry = index.erase(entry);
+            continue;
+        }
+        parent._Objects.push_back(*entry);
+        // Ownership moved with the record; drop it here without destroying it
+        // so ~Transaction() cannot free what the parent now owns.
+        entry = index.erase(entry);
+    }
+}
+
 bool Transaction::hasObject(const TransactionalObject* Obj) const
 {
 #if BOOST_VERSION < 107500
@@ -139,6 +271,13 @@ bool Transaction::hasObject(const TransactionalObject* Obj) const
 #else
     return !!_Objects.get<1>().contains(Obj);
 #endif
+}
+
+bool Transaction::isObjectNew(const TransactionalObject* Obj) const
+{
+    const auto& index = _Objects.get<1>();
+    const auto pos = index.find(Obj);
+    return pos != index.end() && pos->second->status == TransactionObject::Del;
 }
 
 void Transaction::changeProperty(TransactionalObject* Obj,
@@ -396,6 +535,14 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
 
             if (!data.property) {
                 // here means we are undoing/redoing and property add operation
+                auto* currentProp = pcObj->getDynamicPropertyByName(v.second.name.c_str());
+                if (!currentProp
+                    || (propagateErrors && currentProp->getID() != v.first)) {
+                    // A same-name property may already have been restored by
+                    // another entry. Do not mistake it for the property whose
+                    // addition this entry is undoing.
+                    continue;
+                }
                 if (!pcObj->removeDynamicProperty(v.second.name.c_str()) && propagateErrors) {
                     throw Base::RuntimeError("dynamic property removal failed");
                 }
@@ -422,6 +569,18 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                 // a new property, the property key inside redo stack will not
                 // match. So we search by name first.
                 prop = pcObj->getDynamicPropertyByName(data.name.c_str());
+                if (prop && propagateErrors && data.propertyType != prop->getTypeId()) {
+                    // A checked rollback must restore the recorded dynamic
+                    // property schema as well as its value. Spreadsheet
+                    // recompute can replace a transient cell property with a
+                    // same-name property of another type, which cannot accept
+                    // Paste() from the original property snapshot.
+                    if (!pcObj->removeDynamicProperty(data.name.c_str())) {
+                        throw Base::RuntimeError(
+                            "mismatched dynamic property removal failed");
+                    }
+                    prop = nullptr;
+                }
                 if (!prop) {
                     // Still not found, re-create the property
                     prop = pcObj->addDynamicProperty(data.propertyType.getName(),
@@ -437,6 +596,12 @@ void TransactionObject::applyChnImpl(TransactionalObject* pcObj, bool propagateE
                         }
                         continue;
                     }
+                    // Undo recreation preserves the semantic identity of the
+                    // removed dynamic property.  This lets auxiliary native
+                    // transaction state resolve it without retaining a raw
+                    // pointer and prevents a same-name replacement from being
+                    // mistaken for the original property.
+                    prop->_id = v.first;
                     prop->setStatusValue(data.property->getStatus());
                 }
             }

@@ -7,6 +7,7 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/DocumentObject.h"
+#include "App/DocumentRecomputeCoordinator.h"
 #include "App/FeatureTest.h"
 #include "App/private/CollaborativeOperationRegistryInternal.h"
 #include <src/App/InitApplication.h>
@@ -123,6 +124,12 @@ public:
     {
         std::lock_guard lock(_mutex);
         return _maxActivePreparations;
+    }
+
+    [[nodiscard]] std::size_t activePreparations() const
+    {
+        std::lock_guard lock(_mutex);
+        return _activePreparations;
     }
 
     [[nodiscard]] std::size_t maxActiveCommits() const
@@ -393,15 +400,6 @@ std::optional<App::PreparedEditExecutionSnapshot> waitForTerminal(
     return std::nullopt;
 }
 
-class AsyncBlockerRelease final
-{
-public:
-    ~AsyncBlockerRelease()
-    {
-        App::FeatureTestAsyncBlocker::releaseBlocker();
-    }
-};
-
 class DocumentCollaborationConcurrencyTest: public ::testing::Test
 {
 protected:
@@ -555,38 +553,29 @@ TEST_F(DocumentCollaborationConcurrencyTest,
 }
 
 TEST_F(DocumentCollaborationConcurrencyTest,
-       detachedPreparationOverlapsLiveRecomputeWhileFinalCommitWaits)
+       coordinatorPreparationOverlapsIndependentPreparationWithoutCommitLock)
 {
-    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
-        _document->addObject("App::FeatureTestAsyncBlocker", "RecomputeBlocker"));
-    ASSERT_NE(blocker, nullptr);
-    App::FeatureTestAsyncBlocker::resetBlocker();
-    AsyncBlockerRelease releaseBlockerOnExit;
-    App::FeatureTestAsyncBlocker::releaseBlocker();
-    _document->recompute();
-    App::FeatureTestAsyncBlocker::resetBlocker();
+    Scenario coordinatorScenario;
+    App::DocumentRecomputeFeatureRequest feature;
+    feature.featureId = "TargetA";
+    feature.operationId = "coordinator-concurrency";
+    feature.intent = makeIntent(
+        coordinatorScenario, "SourceA", "TargetA", "coordinator");
+    feature.provenance = "coordinator concurrency acceptance";
+    App::DocumentRecomputeRequest request;
+    request.features.push_back(std::move(feature));
+    request.coalescingKey = "coordinator-concurrency-plan";
 
-    Scenario commitScenario;
-    commitScenario.probe->releasePreparations();
-    const auto commitId =
-        submit(commitScenario, "recompute-commit", "SourceA", "TargetA", "after");
-    auto commitCandidate = collect(commitId);
-    ASSERT_TRUE(commitCandidate.has_value());
-    ASSERT_EQ(commitCandidate->status, App::PreparedEditExecutionStatus::Completed);
-    ASSERT_NE(commitCandidate->preparedEdit, nullptr);
+    auto& coordinator = _document->recomputeCoordinator();
+    const auto recomputeId = coordinator.submit(std::move(request));
+    ASSERT_TRUE(coordinatorScenario.probe->waitForPreparationEntries(1));
 
-    Scenario activePreparation;
-    const auto activeId =
-        submit(activePreparation, "recompute-overlap", "SourceB", "TargetB", "later");
-    const bool preparationStarted = activePreparation.probe->waitForPreparationEntries(1);
-    EXPECT_TRUE(preparationStarted);
-
-    blocker->touch();
-    App::GetApplication().queueRecomputeRequest(
-        App::RecomputeRequest::fromDocumentObject(*blocker));
-    const bool recomputeStarted = App::FeatureTestAsyncBlocker::waitUntilStarted(2s);
-    EXPECT_TRUE(recomputeStarted);
-    EXPECT_EQ(activePreparation.probe->maxActivePreparations(), 1U);
+    Scenario independentScenario;
+    const auto independentId = submit(
+        independentScenario, "independent-overlap", "SourceB", "TargetB", "independent");
+    ASSERT_TRUE(independentScenario.probe->waitForPreparationEntries(1));
+    EXPECT_EQ(coordinatorScenario.probe->activePreparations(), 1U);
+    EXPECT_EQ(independentScenario.probe->activePreparations(), 1U);
 
     auto& commitMutex =
         App::Internal::DocumentCollaborationConcurrencyTestAccess::commitMutex(
@@ -595,18 +584,37 @@ TEST_F(DocumentCollaborationConcurrencyTest,
     if (commitMutexAvailable) {
         commitMutex.unlock();
     }
-    EXPECT_FALSE(commitMutexAvailable);
-    EXPECT_EQ(commitScenario.probe->commitEntries(), 0U);
+    EXPECT_TRUE(commitMutexAvailable);
+    EXPECT_EQ(coordinatorScenario.probe->commitEntries(), 0U);
 
-    App::FeatureTestAsyncBlocker::releaseBlocker();
-    const auto commitResult = _document->collaborationService().commitEdit(
-        _session.sessionId(), *commitCandidate->preparedEdit);
+    coordinatorScenario.probe->releasePreparations();
+    std::optional<App::DocumentRecomputeSnapshot> snapshot;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        static_cast<void>(coordinator.poll(recomputeId));
+        snapshot = coordinator.status(recomputeId);
+        if (snapshot && snapshot->terminal()) {
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
 
-    EXPECT_TRUE(commitResult.committed());
-    EXPECT_EQ(commitScenario.probe->commitEntries(), 1U);
+    ASSERT_TRUE(snapshot.has_value());
+    ASSERT_TRUE(snapshot->terminal()) << snapshot->diagnostic;
+    EXPECT_EQ(snapshot->state, App::DocumentRecomputeState::Completed);
+    EXPECT_EQ(snapshot->completedFeatures, 1U);
+    EXPECT_EQ(snapshot->failedFeatures, 0U);
+    ASSERT_EQ(snapshot->features.size(), 1U);
+    EXPECT_EQ(snapshot->features.front().state,
+              App::DocumentRecomputeFeatureState::Committed);
+    EXPECT_EQ(coordinatorScenario.probe->commitEntries(), 1U);
+    EXPECT_EQ(_document->getObject("TargetA")->Label.getStrValue(),
+              "SourceA-before/coordinator");
+    EXPECT_EQ(independentScenario.probe->activePreparations(), 1U);
 
-    activePreparation.probe->releasePreparations();
-    auto uncommitted = collect(activeId);
+    independentScenario.probe->releasePreparations();
+    auto uncommitted = collect(independentId);
     ASSERT_TRUE(uncommitted.has_value());
     EXPECT_EQ(uncommitted->status, App::PreparedEditExecutionStatus::Completed);
+    EXPECT_EQ(independentScenario.probe->commitEntries(), 0U);
 }

@@ -98,6 +98,7 @@
 #include "ComboView.h"
 #include "Command.h"
 #include "DockWindowManager.h"
+#include "DocumentChangesWidget.h"
 #include "DownloadManager.h"
 #include "FileDialog.h"
 #include "InputHintWidget.h"
@@ -334,6 +335,9 @@ struct MainWindowP
     StatusBarLabel* actionLabel;
     InputHintWidget* hintLabel;
     QLabel* rightSideLabel;
+    StatusBarLabel* documentStateLabel;
+    DocumentChangesWidget* documentChangesWidget;
+    QDockWidget* documentChangesDock;
     std::vector<StatusBarItem> statusBarItems;
     ParameterGrp::handle hStatusBar;
     QTimer* actionTimer;
@@ -545,6 +549,17 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
          .persistentVisibility = true}
     );
 
+    d->documentStateLabel = new StatusBarLabel(statusBar());
+    d->documentStateLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+    addStatusBarItem(
+        d->documentStateLabel,
+        {.id = "documentFileState",
+         .title = tr("Document file state"),
+         .slot = StatusBarSlot::Right,
+         .order = 300,
+         .persistentVisibility = true}
+    );
+
     auto* toggleBottomPanelsButton = new QToolButton(statusBar());
     toggleBottomPanelsButton->setIconSize(QSize(16, 16));
     toggleBottomPanelsButton->setIcon(BitmapFactory().pixmap("Std_ToggleBottomPanels"));
@@ -637,6 +652,19 @@ MainWindow::MainWindow(QWidget* parent, Qt::WindowFlags f)
     connect(d->mdiArea, &QMdiArea::subWindowActivated, this, &MainWindow::onWindowActivated);
 
     setupDockWindows();
+
+    d->documentChangesWidget = new DocumentChangesWidget(d->documentStateLabel, this);
+    d->documentChangesDock = DockWindowManager::instance()->addDockWindow(
+        "Document Changes", d->documentChangesWidget, Qt::RightDockWidgetArea);
+    d->documentChangesDock->setObjectName(QStringLiteral("Document Changes"));
+    d->documentChangesDock->setWindowTitle(tr("Document Changes"));
+    d->documentChangesDock->setFeatures(
+        QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable
+        | QDockWidget::DockWidgetFloatable);
+    d->documentChangesWidget->setDockContainer(d->documentChangesDock);
+    connect(d->documentStateLabel, &QLabel::linkActivated, this, [this](const QString&) {
+        d->documentChangesWidget->showPanel();
+    });
 
     // accept drops on the window, get handled in dropEvent, dragEnterEvent
     setAcceptDrops(true);
@@ -1017,7 +1045,21 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
     box.setText(text);
 
 
-    box.setInformativeText(QObject::tr("Otherwise, all changes will be lost."));
+    QStringList pendingCategories;
+    const auto pending = doc->getPendingFileChanges();
+    if (pending.testFlag(App::DocumentFileChange::Model)) {
+        pendingCategories.append(QObject::tr("Model"));
+    }
+    if (pending.testFlag(App::DocumentFileChange::Appearance)) {
+        pendingCategories.append(QObject::tr("Appearance"));
+    }
+    const QString path = QString::fromStdString(doc->FileName.getStrValue());
+    box.setInformativeText(
+        QObject::tr("Pending: %1\nFile: %2\nClosing without saving discards these changes. "
+                    "Camera navigation is session-only and is not included.")
+            .arg(pendingCategories.isEmpty() ? QObject::tr("unsaved document")
+                                             : pendingCategories.join(QObject::tr(", ")),
+                 path.isEmpty() ? QObject::tr("Not saved") : path));
     box.setStandardButtons(QMessageBox::Discard | QMessageBox::Cancel | QMessageBox::Save);
     box.setDefaultButton(QMessageBox::Save);
     box.setEscapeButton(QMessageBox::Cancel);
@@ -1037,6 +1079,7 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
 
     // add shortcuts
     QAbstractButton* saveBtn = box.button(QMessageBox::Save);
+    saveBtn->setText(QObject::tr("Save Changes"));
     if (saveBtn->shortcut().isEmpty()) {
         QString text = saveBtn->text();
         text.prepend(QLatin1Char('&'));
@@ -1044,6 +1087,7 @@ int MainWindow::confirmSave(App::Document* doc, QWidget* parent, bool addCheckbo
     }
 
     QAbstractButton* discardBtn = box.button(QMessageBox::Discard);
+    discardBtn->setText(QObject::tr("Close Without Saving"));
     if (discardBtn->shortcut().isEmpty()) {
         QString text = discardBtn->text();
         text.prepend(QLatin1Char('&'));
@@ -1141,13 +1185,18 @@ bool MainWindow::closeAllDocuments(bool close)
     }
 
     if (failedSaves > 0) {
-        int ret = QMessageBox::question(
-            getMainWindow(),
+        QMessageBox box(
+            QMessageBox::Warning,
             QObject::tr("%1 Document(s) not saved").arg(QString::number(failedSaves)),
             QObject::tr("Some documents could not be saved. Cancel closing?"),
             QMessageBox::Discard | QMessageBox::Cancel,
-            QMessageBox::Discard
-        );
+            getMainWindow());
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.setEscapeButton(QMessageBox::Cancel);
+        if (auto* discard = box.button(QMessageBox::Discard)) {
+            discard->setText(QObject::tr("Close Without Saving"));
+        }
+        const int ret = box.exec();
         if (ret == QMessageBox::Cancel) {
             return false;
         }

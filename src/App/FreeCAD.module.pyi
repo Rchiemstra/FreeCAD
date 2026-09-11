@@ -272,6 +272,9 @@ def setActiveTransaction(name: str, persist: bool = False, /) -> int:
 
     While active, document changes open transactions with this application-wide
     name and identifier. ``persist`` is kept for compatibility and has no effect.
+
+    Commit is supported for one participating document; multi-document commit
+    requires a typed atomic adapter.
     """
     ...
 

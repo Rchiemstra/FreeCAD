@@ -53,14 +53,27 @@ CollaborativeOperationPreparation CollaborativeOperationRegistry::prepare(
     }
 
     auto preparation = adapter(document, intent);
-    if (static_cast<bool>(preparation.operation)
-        == static_cast<bool>(preparation.detachedTask)) {
+    const unsigned int outputCount = static_cast<unsigned int>(
+        static_cast<bool>(preparation.operation))
+        + static_cast<unsigned int>(static_cast<bool>(preparation.detachedTask))
+        + static_cast<unsigned int>(static_cast<bool>(preparation.isolatedTask));
+    if (outputCount != 1) {
         throw std::invalid_argument(
-            "registered adapter must return exactly one synchronous operation or detached task");
+            "registered adapter must return exactly one synchronous, detached, or isolated task");
     }
     if (preparation.operation
         && preparation.operation->typeId() != intent.operationType) {
         throw std::invalid_argument("registered adapter returned a mismatched operation type");
+    }
+    if (preparation.isolatedTask) {
+        const auto& isolated = *preparation.isolatedTask;
+        if (preparation.policy != PreparationPolicy::IsolatedProcess
+            || isolated.request.policy != PreparationPolicy::IsolatedProcess
+            || isolated.request.operationType != intent.operationType
+            || isolated.request.inputDigest.empty() || !isolated.decodeResult) {
+            throw std::invalid_argument(
+                "registered isolated adapter returned an invalid geometry task");
+        }
     }
     preparation.registrationId = foundRegistrationId;
     return preparation;

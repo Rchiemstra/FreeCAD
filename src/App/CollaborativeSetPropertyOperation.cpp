@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -176,7 +177,10 @@ void validateArgumentNames(const CollaborativeOperationIntent& intent)
 [[nodiscard]] bool propertyHasExpression(const DocumentObject& object,
                                          const Property& property)
 {
-    return static_cast<bool>(object.getExpression(ObjectIdentifier(property)).expression);
+    const auto expressions = object.ExpressionEngine.getExpressions();
+    return std::ranges::any_of(expressions, [&property](const auto& expression) {
+        return expression.first.getProperty() == &property;
+    });
 }
 
 [[nodiscard]] bool hasIndependentNativePropertyProof(const DocumentObject& object,

@@ -58,6 +58,26 @@ TEST_F(FeaturePartTest, testGetElementName)
     // TBD
 }
 
+TEST_F(FeaturePartTest, shapeRecomputesWithoutChangingLegacyOutputStatus)
+{
+    for (const auto* box : _boxes) {
+        ASSERT_NE(box, nullptr);
+        EXPECT_FALSE(box->isOutputProperty(&box->Shape));
+    }
+
+    std::vector<App::DocumentObject*> boxes(_boxes.begin(), _boxes.end());
+    bool hasError = false;
+    ASSERT_EQ(_doc->recompute(boxes, false, &hasError), static_cast<int>(boxes.size()));
+    ASSERT_FALSE(hasError);
+    for (const auto* box : _boxes) {
+        EXPECT_TRUE(box->isValid());
+        EXPECT_FALSE(box->mustExecute());
+        EXPECT_FALSE(box->Shape.getValue().IsNull());
+        EXPECT_DOUBLE_EQ(getVolume(box->Shape.getValue()), 6.0);
+        EXPECT_FALSE(box->isOutputProperty(&box->Shape));
+    }
+}
+
 TEST_F(FeaturePartTest, create)
 {
     // Arrange

@@ -123,51 +123,78 @@ void PropertyContainer::setPropertyStatus(unsigned char bit, bool value)
     std::vector<Property*> list;
     getPropertyList(list);
     const auto status = static_cast<Property::Status>(bit);
-    bool changed = false;
+
+    struct StatusChange
+    {
+        Property* property;
+        unsigned long oldStatus;
+        unsigned long newStatus;
+    };
+    std::vector<StatusChange> changes;
+    changes.reserve(list.size());
     for (auto* property : list) {
         if (property->testStatus(status) == value) {
             continue;
         }
-        if (!changed) {
-            if (Document* document = documentFromPropertyContainer(this)) {
-                enforceAtomicPresentationMutationTarget(document);
-                Internal::CollaborationStructuralMutationRecorder::
-                    ensurePropertySchemaMutationAllowed(*document, *this);
-            }
-            changed = true;
-        }
         const unsigned long oldStatus = property->StatusBits.to_ulong();
-        property->StatusBits.set(status, value);
-        static const unsigned long signalMask = (1 << Property::ReadOnly) | (1 << Property::Hidden);
-        const unsigned long newStatus = property->StatusBits.to_ulong();
-        if ((newStatus & signalMask) != (oldStatus & signalMask)) {
-            onPropertyStatusChanged(*property, oldStatus);
+        auto newStatusBits = property->StatusBits;
+        newStatusBits.set(status, value);
+        const unsigned long newStatus = newStatusBits.to_ulong();
+        changes.push_back({property, oldStatus, newStatus});
+    }
+    if (changes.empty()) {
+        return;
+    }
+
+    Document* const document = documentFromPropertyContainer(this);
+    if (document) {
+        enforceAtomicPresentationMutationTarget(document);
+        for (const auto& change : changes) {
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertyStatusMutationAllowed(
+                    *document,
+                    *change.property,
+                    change.oldStatus,
+                    change.newStatus);
         }
     }
-    if (changed) {
-        if (Document* document = documentFromPropertyContainer(this)) {
-            MutationClassificationInput input;
-            input.source = CollaborationMutationSource::PropertyStatus;
-            input.mutationKind = MutationKind::StructuralProperty;
-            input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
-            if (const auto* object = dynamic_cast<const DocumentObject*>(this)) {
-                if (!object->isAttachedToDocument() || object->getDocument() != document
-                    || !document->containsObject(object)) {
-                    return;
-                }
-                input.containerKind = CollaborationContainerKind::DocumentObject;
-                input.objectName = object->getNameInDocument();
-                input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
+    else {
+        // GUI-owned containers must admit the whole bulk operation before
+        // the first StatusBits assignment. Otherwise a later undeclared or
+        // foreign ViewProvider property could reject after an earlier prefix
+        // had already changed.
+        for (const auto& change : changes) {
+            this->onBeforeChange(change.property);
+        }
+    }
+
+    for (const auto& change : changes) {
+        change.property->StatusBits = decltype(change.property->StatusBits)(change.newStatus);
+        onPropertyStatusChanged(*change.property, change.oldStatus);
+    }
+
+    if (document) {
+        MutationClassificationInput input;
+        input.source = CollaborationMutationSource::PropertyStatus;
+        input.mutationKind = MutationKind::StructuralProperty;
+        input.propertyFamily = CollaborationPropertyFamily::NotApplicable;
+        if (const auto* object = dynamic_cast<const DocumentObject*>(this)) {
+            if (!object->isAttachedToDocument() || object->getDocument() != document
+                || !document->containsObject(object)) {
+                return;
             }
-            else if (dynamic_cast<const Document*>(this)) {
-                input.containerKind = CollaborationContainerKind::Document;
-            }
-            const auto effects = classifyMutation(input);
-            document->recordCollaborationAtomicPresentationEffects(effects);
-            Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
-            if (!document->collaborationRevisionPublicationSuppressed(this)) {
-                static_cast<void>(document->collaborationRevisions().publish(effects));
-            }
+            input.containerKind = CollaborationContainerKind::DocumentObject;
+            input.objectName = object->getNameInDocument();
+            input.stableObjectIdentity = document->collaborationObjectIdentity(*object);
+        }
+        else if (dynamic_cast<const Document*>(this)) {
+            input.containerKind = CollaborationContainerKind::Document;
+        }
+        const auto effects = classifyMutation(input);
+        document->recordCollaborationAtomicPresentationEffects(effects);
+        Internal::CollaborationStructuralMutationRecorder::record(*document, effects);
+        if (!document->collaborationRevisionPublicationSuppressed(this)) {
+            static_cast<void>(document->collaborationRevisions().publish(effects));
         }
     }
 }

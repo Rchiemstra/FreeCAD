@@ -63,6 +63,7 @@
 #include "ConePy.h"
 #include "ConicPy.h"
 #include "CollaborativeBooleanOperation.h"
+#include "CollaborativeSweepFilletOperations.h"
 #include "CustomFeature.h"
 #include "CylinderPy.h"
 #include "Datums.h"
@@ -245,6 +246,7 @@ PyMOD_INIT_FUNC(Part)
     PyObject* partModule = Part::initModule();
     try {
         Part::ensureCollaborativeBooleanOperationRegistered();
+        Part::ensureCollaborativeSweepFilletOperationsRegistered();
     }
     catch (const std::exception& exception) {
         Py_XDECREF(partModule);

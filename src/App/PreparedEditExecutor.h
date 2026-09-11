@@ -59,10 +59,12 @@ struct AppExport PreparedEditExecutionResult
  * Bounded worker pool for tasks that operate exclusively on detached values.
  *
  * This pool is independent of the application's recompute worker. Submitted
- * tasks must capture all inputs by value and cooperate with cancellation via
- * the supplied stop token. A stop request runs registered std::stop_callback
- * functions synchronously on the requesting thread. Trusted tasks must keep
- * those callbacks bounded and must not wait for executor progress from them.
+ * tasks must be trusted, lightweight DetachedInProcess value work, capture all
+ * inputs by value, and cooperate with cancellation via the supplied stop
+ * token. Heavy or untrusted work is rejected and belongs to GeometryJobManager.
+ * A stop request runs registered std::stop_callback functions synchronously on
+ * the requesting thread. Trusted tasks must keep those callbacks bounded and
+ * must not wait for executor progress from them.
  */
 class AppExport PreparedEditExecutor
 {
@@ -90,7 +92,8 @@ private:
     friend class Internal::PreparedEditExecutorTestAccess;
 
     [[nodiscard]] PreparedEditExecutionId
-    submit(CollaborativeOperationPreparation::DetachedTask task);
+    submit(CollaborativeOperationPreparation::DetachedTask task,
+           PreparationPolicy policy);
     /** Disown a job without joining its task; a running job reaps itself. */
     [[nodiscard]] bool abandon(PreparedEditExecutionId id);
 

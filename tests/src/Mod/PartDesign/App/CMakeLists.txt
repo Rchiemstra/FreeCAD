@@ -2,6 +2,7 @@
 
 add_executable(PartDesign_tests_run
         BackwardCompatibility.cpp
+        CollaborationCompatibility.cpp
         DatumPlane.cpp
         ShapeBinder.cpp
         Pad.cpp

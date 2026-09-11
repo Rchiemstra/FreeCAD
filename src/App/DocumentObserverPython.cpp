@@ -23,6 +23,9 @@
  ***************************************************************************/
 
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #include <CXX/Objects.hxx>
 #include "Application.h"
@@ -34,6 +37,57 @@
 
 using namespace App;
 namespace sp = std::placeholders;
+
+namespace
+{
+
+struct StablePythonObserverConnection
+{
+    fastsignals::scoped_connection slot;
+    Py::Object callable;
+};
+
+struct StablePythonObserverRegistry
+{
+    std::mutex mutex;
+    std::unordered_map<
+        App::DocumentObserverPython*,
+        std::shared_ptr<StablePythonObserverConnection>> connections;
+};
+
+StablePythonObserverRegistry& stablePythonObserverRegistry()
+{
+    // Application's stable signal is also function-local static storage and
+    // is constructed before this registry on the first observer. Keep the
+    // registry for process lifetime so late Python/extension teardown cannot
+    // encounter reverse static-destruction order.
+    static auto* registry = new StablePythonObserverRegistry;
+    return *registry;
+}
+
+void notifyStablePythonObserver(
+    const std::weak_ptr<StablePythonObserverConnection>& weak,
+    const App::Document& document)
+{
+    Base::PyGILStateLocker lock;
+    const auto stable = weak.lock();
+    if (!stable) {
+        return;
+    }
+    try {
+        Py::Tuple args(1);
+        args.setItem(
+            0,
+            Py::asObject(const_cast<App::Document&>(document).getPyObject()));
+        Base::pyCall(stable->callable.ptr(), args.ptr());
+    }
+    catch (Py::Exception&) {
+        Base::PyException exception;
+        exception.reportException();
+    }
+}
+
+}  // namespace
 
 std::vector<DocumentObserverPython*> DocumentObserverPython::_instances;
 
@@ -117,9 +171,37 @@ DocumentObserverPython::DocumentObserverPython(const Py::Object& obj)
     FC_PY_ELEMENT_ARG2(BeforeAddingDynamicExtension, BeforeAddingDynamicExtension)
     FC_PY_ELEMENT_ARG2(AddedDynamicExtension, AddedDynamicExtension)
     // NOLINTEND
+
+    auto stable = std::make_shared<StablePythonObserverConnection>();
+    FC_PY_GetCallable(obj.ptr(), "slotBecameStableDocument", stable->callable);
+    if (!stable->callable.isNone()) {
+        const std::weak_ptr<StablePythonObserverConnection> weak = stable;
+        stable->slot = App::GetApplication().signalBecameStableDocument().connect(
+            [weak](const App::Document& document) {
+                notifyStablePythonObserver(weak, document);
+            });
+        auto& registry = stablePythonObserverRegistry();
+        std::lock_guard lock(registry.mutex);
+        registry.connections.emplace(this, std::move(stable));
+    }
 }
 
-DocumentObserverPython::~DocumentObserverPython() = default;
+DocumentObserverPython::~DocumentObserverPython()
+{
+    std::shared_ptr<StablePythonObserverConnection> stable;
+    auto& registry = stablePythonObserverRegistry();
+    {
+        std::lock_guard lock(registry.mutex);
+        const auto found = registry.connections.find(this);
+        if (found != registry.connections.end()) {
+            stable = std::move(found->second);
+            registry.connections.erase(found);
+        }
+    }
+    // Disconnect outside the registry mutex. A signal already in flight may
+    // keep the state alive, but it never calls through a destroyed observer.
+    stable.reset();
+}
 
 void DocumentObserverPython::slotCreatedDocument(const App::Document& Doc)
 {
