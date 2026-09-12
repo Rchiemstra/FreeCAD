@@ -24,6 +24,7 @@ expat = "*"
 fmt = "*"
 freetype = "*"
 git = "*"
+gmsh = ">=4.13.1,<5"
 graphviz = "*"
 gtest= "*"
 harfbuzz = "*"
@@ -70,6 +71,7 @@ zlib = "*"
 zstd = "*"
 compiler-rt = ">=18.1.8,<22"
 gmsh = ">=4.13.1,<5"
+blas = { version = "*", build = "openblas*" }
 
 ## Linux Dependencies (x86-64)
 [target.linux-64.dependencies]
