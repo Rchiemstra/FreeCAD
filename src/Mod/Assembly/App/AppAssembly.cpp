@@ -59,17 +59,17 @@ PyMOD_INIT_FUNC(AssemblyApp)
     // call PyType_Ready, otherwise we run into a segmentation fault, later on.
     // This function is responsible for adding inherited slots from a type's base class.
 
-    Assembly::AssemblyObject ::init();
-    Assembly::AssemblyLink ::init();
-    Assembly::BomObject ::init();
-    Assembly::ReviewNote ::init();
+    Assembly::AssemblyObject::init();
+    Assembly::AssemblyLink::init();
+    Assembly::BomObject::init();
+    Assembly::ReviewNote::init();
 
-    Assembly::BomGroup ::init();
-    Assembly::JointGroup ::init();
-    Assembly::ViewGroup ::init();
-    Assembly::SimulationGroup ::init();
-    Assembly::SnapshotGroup ::init();
-    Assembly::ReviewNoteGroup ::init();
+    Assembly::BomGroup::init();
+    Assembly::JointGroup::init();
+    Assembly::ViewGroup::init();
+    Assembly::SimulationGroup::init();
+    Assembly::SnapshotGroup::init();
+    Assembly::ReviewNoteGroup::init();
 
     PyMOD_Return(mod);
 }
