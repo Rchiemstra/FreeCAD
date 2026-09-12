@@ -28,7 +28,7 @@
 #                             an apt security refresh (event: cron).
 # It does NOT run on pull_request -- PRs use the current images in 127.0.0.1:5001.
 #
-# NOTE on concurrent workflows: push/tag/manual can start BOTH workflows (this
+# NOTE on concurrent workflows: tag/manual can start BOTH workflows (this
 # one AND ci.yml). ci.yml has a public-image wait gate before its first heavy
 # image pull, so the first run can wait here while kaniko populates the registry.
 #
