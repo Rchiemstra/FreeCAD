@@ -1,12 +1,11 @@
 # =============================================================================
-# FreeCAD Woodpecker CI (Linux) -- FreeCAD-start branch
+# FreeCAD Woodpecker CI (Linux)
 # =============================================================================
 # Triggers (top-level `when` below):
 #   * manual, tag                        (any branch; tags ignore branch filter)
-#   * push to FreeCAD-start              (branch filter excludes main)
-#   * pull_request targeting FreeCAD-start (Woodpecker `branch` matches the PR
-#                                          target branch, so this also excludes
-#                                          PRs into main)
+#   * push to FreeCAD-start, fix/*, chore/*, or integrate/*
+#   * pull_request targeting those branches (Woodpecker `branch` matches the PR
+#                                            target branch)
 # `main` is intentionally NOT triggered.
 #
 # ---------------------------------------------------------------------------
@@ -150,7 +149,7 @@
 when:
   - event: [manual, tag]
   - event: [push, pull_request]
-    branch: FreeCAD-start
+    branch: [FreeCAD-start, "fix/*", "chore/*", "integrate/*"]
 
 labels:
   backend: docker

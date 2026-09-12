@@ -1,8 +1,7 @@
 # Chair MCP modeling and recovery architecture
 
-This overview follows the five chair-modeling reports in `.idea` on branch
-`integrate/change-aware-save-mcp-autonomy`. Progress and validation evidence are
-recorded in [the issue ledger](../.idea/issue_progress.md).
+This overview describes the chair-modeling recovery paths for branch
+`integrate/change-aware-save-mcp-autonomy`.
 
 ## Request and mutation path
 
