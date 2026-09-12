@@ -3,9 +3,8 @@
 # =============================================================================
 # Triggers (top-level `when` below):
 #   * manual, tag                        (any branch; tags ignore branch filter)
-#   * push to FreeCAD-start, fix/*, chore/*, or integrate/*
-#   * pull_request targeting those branches (Woodpecker `branch` matches the PR
-#                                            target branch)
+#   * pull_request opened or updated, targeting FreeCAD-start, fix/*, chore/*,
+#     or integrate/* (Woodpecker `branch` matches the PR target branch)
 # `main` is intentionally NOT triggered.
 #
 # ---------------------------------------------------------------------------
@@ -56,7 +55,7 @@
 #       publishes the registry UI/API on 127.0.0.1:5001. Verify on the agent host
 #       with `curl http://127.0.0.1:5001/v2/`. If the agent is remote, use a TLS
 #       registry or add the LAN IP to that daemon's insecure-registries instead.
-#   FIRST RUN: build-images.yml runs alongside this workflow on push/tag/manual.
+#   FIRST RUN: build-images.yml runs alongside this workflow on tag/manual.
 #       The public-image `ci-images-ready` gate polls `registry-freecad:5000` from inside
 #       the Woodpecker job network and blocks the heavy image pulls until both
 #       current-commit tags exist (PRs wait for the rolling `:24.04` tags, since
@@ -148,7 +147,7 @@
 
 when:
   - event: [manual, tag]
-  - event: [push, pull_request]
+  - event: pull_request
     branch: [FreeCAD-start, "fix/*", "chore/*", "integrate/*"]
 
 labels:
@@ -339,7 +338,7 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
-  # core/e2e: gated push/tag/manual (not PR). Per-marker output files + rm -f so
+  # core/e2e: gated tag/manual (not PR). Per-marker output files + rm -f so
   # parallel/sequential runs cannot read a stale or interleaved verdict. The
   # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
   - name: freecad-mcp-core-tests
@@ -352,7 +351,7 @@ steps:
       # core marker still collects those tests and they skip → verdict=1.
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
-      - event: [push, tag, manual]
+      - event: [tag, manual]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
@@ -363,6 +362,6 @@ steps:
     environment:
       MARKER: e2e
     when:
-      - event: [push, tag, manual]
+      - event: [tag, manual]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
