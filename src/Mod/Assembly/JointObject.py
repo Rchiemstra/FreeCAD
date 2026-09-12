@@ -34,6 +34,101 @@ if App.GuiUp:
     import FreeCADGui as Gui
     from PySide import QtGui, QtWidgets
 
+
+_deferred_joint_view_providers = {}
+_deferred_joint_view_provider_observer = None
+
+
+def _deferred_joint_key(joint):
+    document = getattr(joint, "Document", None)
+    name = getattr(joint, "Name", None)
+    if document is None or not name:
+        return None
+    return (document.Name, name)
+
+
+class _DeferredJointViewProviderObserver:
+    def slotCreatedObject(self, view_object):
+        global _deferred_joint_view_provider_observer
+
+        joint = getattr(view_object, "Object", None)
+        key = _deferred_joint_key(joint)
+        pending = _deferred_joint_view_providers.get(key)
+        if key is None or pending is None:
+            return
+        if pending[0] is not joint:
+            _deferred_joint_view_providers.pop(key)
+            if not _deferred_joint_view_providers:
+                Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+                _deferred_joint_view_provider_observer = None
+            return
+        _deferred_joint_view_providers.pop(key)
+        grounded = pending[1]
+
+        try:
+            if grounded:
+                ViewProviderGroundedJoint(view_object)
+            else:
+                ViewProviderJoint(view_object)
+        finally:
+            if not _deferred_joint_view_providers:
+                Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+                _deferred_joint_view_provider_observer = None
+
+    def slotDeletedObject(self, view_object):
+        cancelScheduledJointViewProvider(getattr(view_object, "Object", None))
+
+    def slotDeletedDocument(self, document):
+        global _deferred_joint_view_provider_observer
+
+        document_name = getattr(document, "Name", None)
+        for key in tuple(_deferred_joint_view_providers):
+            if key[0] == document_name:
+                del _deferred_joint_view_providers[key]
+        if not _deferred_joint_view_providers and _deferred_joint_view_provider_observer is not None:
+            Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+            _deferred_joint_view_provider_observer = None
+
+
+def scheduleJointViewProvider(joint, grounded=False):
+    """Attach a provider when native GUI replay creates a delayed ViewObject."""
+    global _deferred_joint_view_provider_observer
+
+    if not App.GuiUp or "Gui" not in globals():
+        return
+
+    if getattr(joint, "ViewObject", None) is not None:
+        if grounded:
+            ViewProviderGroundedJoint(joint.ViewObject)
+        else:
+            ViewProviderJoint(joint.ViewObject)
+        return
+
+    key = _deferred_joint_key(joint)
+    if key is None:
+        return
+    _deferred_joint_view_providers[key] = (joint, bool(grounded))
+    if _deferred_joint_view_provider_observer is None:
+        _deferred_joint_view_provider_observer = _DeferredJointViewProviderObserver()
+        Gui.addDocumentObserver(_deferred_joint_view_provider_observer)
+
+
+def cancelScheduledJointViewProvider(joint):
+    """Discard a deferred provider request for a rolled-back joint."""
+    global _deferred_joint_view_provider_observer
+
+    key = _deferred_joint_key(joint)
+    if key is None:
+        return
+    _deferred_joint_view_providers.pop(key, None)
+    if (
+        not _deferred_joint_view_providers
+        and _deferred_joint_view_provider_observer is not None
+        and "Gui" in globals()
+    ):
+        Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+        _deferred_joint_view_provider_observer = None
+
 __title__ = "Assembly Joint object"
 __author__ = "Ondsel"
 __url__ = "https://www.freecad.org"
@@ -610,9 +705,10 @@ class Joint:
         if not joint.hasExtension("App::SuppressibleExtensionPython"):
             joint.addExtension("App::SuppressibleExtensionPython")
 
-        if App.GuiUp:
-            if not joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
-                joint.ViewObject.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+        view_object = getattr(joint, "ViewObject", None)
+        if App.GuiUp and view_object is not None:
+            if not view_object.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
+                view_object.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
         if hasattr(joint, "Activated"):
             activated = joint.Activated
@@ -814,6 +910,8 @@ class Joint:
             solveIfAllowed(self.getAssembly(joint))
 
     def execute(self, joint):
+        self.ensureViewProvider(joint)
+
         errStr = joint.Label + ": " + QT_TRANSLATE_NOOP("Assembly", "Broken link in: ")
         if (
             hasattr(joint, "Reference1")
@@ -834,6 +932,20 @@ class Joint:
             raise Exception(errStr + "Reference2")
 
         self.updateJCSPlacements(joint)
+
+    def ensureViewProvider(self, joint):
+        """Attach the joint view provider once a deferred GUI object is available."""
+        if not App.GuiUp:
+            return
+
+        view_object = getattr(joint, "ViewObject", None)
+        if view_object is None:
+            return
+
+        if getattr(view_object, "Proxy", None) is None:
+            ViewProviderJoint(view_object)
+        elif not view_object.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
+            view_object.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def setJointConnectors(self, joint, refs, solve=True, presolve=True):
         # current selection is a vector of strings like "Assembly.Assembly1.Assembly2.Body.Pad.Edge16" including both what selection return as obj_name and obj_sub
@@ -1285,7 +1397,7 @@ class RigidGroupJoint:
             "App::PropertyLinkList",
             "ObjectsToRigidGroup",
             "RigidGroup",
-            QT_TRANSLATE_NOOP("App::Property", "List of references to compnents to group together"),
+            QT_TRANSLATE_NOOP("App::Property", "List of references to components to group together"),
         )
         joint.ObjectsToRigidGroup = objects_to_rigid_group
 

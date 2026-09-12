@@ -257,6 +257,51 @@ class ReuseAndOwnershipTests(unittest.TestCase):
 
 
 class MainRefusalTests(unittest.TestCase):
+    def test_authenticated_isolated_flag_is_available(self):
+        args = launcher._parse_args(["--authenticated-isolated"])
+        self.assertTrue(args.authenticated_isolated)
+
+    def test_authenticated_isolated_rejects_legacy_lifecycle_options(self):
+        code = launcher.main(["--authenticated-isolated", "--wait"])
+        self.assertEqual(code, 2)
+
+    def test_authenticated_isolated_delegates_setup_then_launcher(self):
+        import os
+        calls = []
+        original_run = launcher.subprocess.run
+        try:
+            def run(command, **kwargs):
+                calls.append((command, kwargs))
+                return type("Result", (), {"returncode": 0})()
+
+            launcher.subprocess.run = run
+            code = launcher.main(
+                ["--authenticated-isolated", "--freecad", str(LAUNCHER), "chair.FCStd"]
+            )
+        finally:
+            launcher.subprocess.run = original_run
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0][0][-1].endswith("setup_isolated_profile.py"))
+        self.assertTrue(calls[1][0][-2].endswith("start_freecad_isolated.py"))
+        self.assertEqual(calls[1][0][-1], "chair.FCStd")
+        self.assertEqual(calls[0][1]["env"]["FREECAD_MCP_ISOLATED_FREECAD"], str(LAUNCHER.resolve()))
+
+    def test_authenticated_isolated_stops_when_setup_fails(self):
+        calls = []
+        original_run = launcher.subprocess.run
+        try:
+            launcher.subprocess.run = lambda *args, **kwargs: calls.append(args[0]) or type(
+                "Result", (), {"returncode": 7}
+            )()
+            code = launcher.main(["--authenticated-isolated"])
+        finally:
+            launcher.subprocess.run = original_run
+
+        self.assertEqual(code, 7)
+        self.assertEqual(len(calls), 1)
+
     def test_main_refuses_when_endpoint_is_occupied(self):
         """An occupied endpoint must abort before the profile is touched."""
         import io
