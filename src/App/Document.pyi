@@ -316,21 +316,11 @@ class Document(PropertyContainer):
     def addObject(
         self,
         type: str,
-        name: str = None,
-        objProxy: object = None,
-        viewProxy: object = None,
+        name: str = ...,
+        objProxy: object | None = None,
+        viewProxy: object | None = None,
         attach: bool = False,
-        viewType: str = None,
-    ) -> DocumentObject: ...
-
-    def addObject(
-        self,
-        type: str,
-        name: str = None,
-        objProxy: object = None,
-        viewProxy: object = None,
-        attach: bool = False,
-        viewType: str = None,
+        viewType: str = ...,
     ) -> DocumentObject:
         """
         Add an object to document.

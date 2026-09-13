@@ -528,13 +528,20 @@ MDIView* MDIView::changeViewMode(MDIView* view, ViewMode mode)
     MDIView* clone = needsClone ? view->clone() : nullptr;
 
     if (clone) {
+        // Reorder so the clone's activation is the last write, and let queued
+        // activation events process before the old view goes away; otherwise the
+        // second F11 press briefly activates a different tab. Ported from main's
+        // fix to the (now extracted) in-place version of this logic.
         if (mode == Child) {
             getMainWindow()->addWindow(clone);
+            getMainWindow()->setActiveWindow(clone);
+            qApp->processEvents();  // let the close and any queued activation settle
+            view->deleteSelf();
         }
         else {
+            view->deleteSelf();
             clone->setCurrentViewMode(mode);
         }
-        view->deleteSelf();
         return clone;
     }
 
