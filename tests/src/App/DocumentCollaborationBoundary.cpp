@@ -355,6 +355,9 @@ constexpr std::array reviewedDelegations {
         1
     },
     ReviewedDelegation {"PropertyStandard.cpp:PropertyIntegerSet::setPyObject", "setValues(", 1},
+    ReviewedDelegation {"PropertyStandard.cpp:PropertyIntPairList::setPyObject",
+                        "PropertyLists::setPyObject(",
+                        1},
     ReviewedDelegation {"PropertyStandard.cpp:PropertyFloat::setPathValue", "setValue(", 1},
     ReviewedDelegation {
         "PropertyStandard.cpp:PropertyFloatConstraint::setConstraints",
@@ -494,7 +497,7 @@ constexpr std::array expectedSourceMutators {
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "conversion", 1},
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "setter", 2},
     ExpectedMutatorInventory {"PropertyStandard.cpp", "collection", 2},
-    ExpectedMutatorInventory {"PropertyStandard.cpp", "setter", 104},
+    ExpectedMutatorInventory {"PropertyStandard.cpp", "setter", 105},
     ExpectedMutatorInventory {"PropertyUnits.cpp", "setter", 4},
 };
 
@@ -532,8 +535,8 @@ constexpr std::array expectedLifecycleMutators {
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "Paste", 1},
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "Restore", 1},
     ExpectedMutatorInventory {"PropertyPythonObject.cpp", "RestoreDocFile", 1},
-    ExpectedMutatorInventory {"PropertyStandard.cpp", "Paste", 18},
-    ExpectedMutatorInventory {"PropertyStandard.cpp", "Restore", 20},
+    ExpectedMutatorInventory {"PropertyStandard.cpp", "Paste", 19},
+    ExpectedMutatorInventory {"PropertyStandard.cpp", "Restore", 21},
     ExpectedMutatorInventory {"PropertyStandard.cpp", "RestoreDocFile", 3},
 };
 

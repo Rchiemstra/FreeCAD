@@ -59,6 +59,7 @@ SET(PathPythonBaseGui_SRCS
     Path/Base/Gui/PropertyEditor.py
     Path/Base/Gui/SetupSheet.py
     Path/Base/Gui/SetupSheetOpPrototype.py
+    Path/Base/Gui/Theme.py
     Path/Base/Gui/Util.py
 )
 
@@ -80,6 +81,7 @@ SET(PathPythonDressupGui_SRCS
     Path/Dressup/Gui/LeadInOut.py
     Path/Dressup/Gui/Mirror.py
     Path/Dressup/Gui/Boundary.py
+    Path/Dressup/Gui/PlungeMilling.py
     Path/Dressup/Gui/Preferences.py
     Path/Dressup/Gui/RampEntry.py
     Path/Dressup/Gui/Tags.py
@@ -187,6 +189,7 @@ SET(PathPythonToolsFeedsSpeeds_SRCS
 
 SET(PathPythonMachineUi_SRCS
     Machine/ui/__init__.py
+    Machine/ui/mtconnect_import_dialog.py
 )
 
 SET(PathPythonMachineUiEditor_SRCS
@@ -199,6 +202,8 @@ SET(PathPythonMachineUiEditor_SRCS
 SET(PathPythonMachineModels_SRCS
     Machine/models/__init__.py
     Machine/models/machine.py
+    Machine/models/mtconnect_import.py
+    Machine/models/validate.py
 )
 
 SET(PathPythonToolsToolBit_SRCS
@@ -349,7 +354,7 @@ SET(PathPythonPostScripts_SRCS
     Path/Post/scripts/fangling_legacy_post.py
     Path/Post/scripts/gcode_pre.py
     Path/Post/scripts/generic_post.py
-    Path/Post/scripts/generic_plasma_post.py
+    Path/Post/scripts/generic_sheet_cutting_post.py
     Path/Post/scripts/grbl_post.py
     Path/Post/scripts/grbl_legacy_post.py
     Path/Post/scripts/heidenhain_legacy_post.py
@@ -569,12 +574,14 @@ SET(Tests_SRCS
     CAMTests/TestDxfPost.py
     CAMTests/TestFanucPost.py
     CAMTests/TestGenericPost.py
-    CAMTests/TestGenericPlasma.py
+    CAMTests/TestGenericSheetCutting.py
     CAMTests/TestGrblPost.py
+    CAMTests/TestKineticNCBeamicon2LegacyPost.py
     CAMTests/TestLinuxCNCPost.py
     CAMTests/TestLinuxCNCLegacyPost.py
     CAMTests/TestLinkingGenerator.py
     CAMTests/TestMachine.py
+    CAMTests/TestMachineValidate.py
     CAMTests/TestMach3Mach4LegacyPost.py
     CAMTests/TestMach3Mach4Post.py
     CAMTests/TestMassoG3Post.py
@@ -639,6 +646,7 @@ SET(Tests_SRCS
     CAMTests/TestPathToolBitEditorWidget.py
     CAMTests/TestPathToolBitListWidget.py
     CAMTests/TestPathToolBitPropertyEditorWidget.py
+    CAMTests/TestPathToolDocObject.py
     CAMTests/TestPathToolDocumentObjectEditorWidget.py
     CAMTests/TestPathToolShapeClasses.py
     CAMTests/TestPathToolShapeDoc.py
@@ -656,6 +664,7 @@ SET(Tests_SRCS
     CAMTests/TestPostGCodes.py
     CAMTests/TestPostMCodes.py
     CAMTests/TestSnapmakerPost.py
+    CAMTests/TestPostTapping.py
     CAMTests/TestPostToolProcessing.py
     CAMTests/TestSVGPost.py
     CAMTests/TestTSPSolver.py
@@ -677,6 +686,7 @@ SET(Tests_SRCS
     CAMTests/TestSurfaceMeshGenerator.py
     CAMTests/TestSurfaceWaterlineGenerator.py
     CAMTests/TestSurfaceZLevelGenerator.py
+    CAMTests/TestMachineMTConnectImport.py
 )
 
 # Generate _cam_test_modules.py listing all Test*.py modules for __init__.py
@@ -696,6 +706,14 @@ SET(Tests_Fixtures
     CAMTests/Fixtures/OpHelix_v0-21.FCStd
     CAMTests/Fixtures/test_17748_cam_profile.FCStd
     CAMTests/Fixtures/test_28534_truncated_pocket.FCStd
+)
+
+SET(Tests_Fixtures_MTConnect
+    CAMTests/Fixtures/mtconnect/probe_xyz_mm.xml
+    CAMTests/Fixtures/mtconnect/probe_xyz_inch.xml
+    CAMTests/Fixtures/mtconnect/probe_xyzac_trt.xml
+    CAMTests/Fixtures/mtconnect/probe_foreign_vendor.xml
+    CAMTests/Fixtures/mtconnect/probe_multi_device.xml
 )
 
 SET(PathImages_Ops
@@ -778,6 +796,7 @@ SET(test_files
   ${Path_Scripts}
   ${Tests_SRCS}
   ${Tests_Fixtures}
+  ${Tests_Fixtures_MTConnect}
 )
 
 ADD_CUSTOM_TARGET(Tests ALL
@@ -1088,6 +1107,13 @@ INSTALL(
         ${Tests_Fixtures}
     DESTINATION
         Mod/CAM/CAMTests/Fixtures
+)
+
+INSTALL(
+    FILES
+        ${Tests_Fixtures_MTConnect}
+    DESTINATION
+        Mod/CAM/CAMTests/Fixtures/mtconnect
 )
 
 INSTALL(

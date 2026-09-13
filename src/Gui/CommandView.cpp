@@ -2006,11 +2006,6 @@ Action* StdViewDockUndockFullscreen::createAction()
 
 void StdViewDockUndockFullscreen::activated(int iMsg)
 {
-    // Check if main window is in fullscreen mode.
-    if (getMainWindow()->isFullScreen()) {
-        getMainWindow()->showNormal();
-    }
-
     MDIView* view = getMainWindow()->activeWindow();
     if (!view) {  // no active view
         return;

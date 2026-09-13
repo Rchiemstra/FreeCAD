@@ -4497,6 +4497,17 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
         reader.FileVersion = 0;
     }
 
+    // Imported objects may reference strings stored in the source document's
+    // StringHasher table, for example in topological element maps. Restore the
+    // source table before reading the objects so their persisted references can
+    // be resolved. Use a separate hasher instead of replacing the target
+    // document's table.
+    if (reader.hasAttribute("StringHasher")) {
+        StringHasherRef sourceHasher = new StringHasher;
+        sourceHasher->Restore(reader);
+        addStringHasher(sourceHasher);
+    }
+
     std::vector<DocumentObject*> objs = readObjects(reader);
     for (const auto o : objs) {
         if (o && o->isAttachedToDocument()) {
@@ -4539,6 +4550,7 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     else {
         signalImportObjects(objs, reader);
     }
+    DocumentP::checkStringHasher(reader);
     afterRestore(objs, true);
 
     if (deferImportCompletion) {
