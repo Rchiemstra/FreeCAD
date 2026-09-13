@@ -307,7 +307,7 @@ steps:
   # freecad-mcp track
   # ---------------------------------------------------------------------------
 
-  # Fast first check: Python syntax smoke for the MCP package (no install).
+  # Syntax smoke plus the typed Body reference contract and architecture gate.
   - name: freecad-mcp-lint
     image: python:3.12
     depends_on: [all-submodules-check]

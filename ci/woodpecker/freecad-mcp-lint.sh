@@ -11,4 +11,8 @@ cd tools/mcp/freecad-mcp
 # it ran or covered anything.
 echo "freecad-mcp lint: byte-compiling src tests ci addon"
 python -m compileall src tests ci addon
+echo "freecad-mcp lint: installing pinned Body contract checker"
+# Exercise the minimum supported SDK as well as the pinned type checker.
+python -m pip install . "mypy==2.3.1" "mcp==1.26.0"
+python ci/check_body_create_contract.py
 echo "freecad-mcp lint: OK"
