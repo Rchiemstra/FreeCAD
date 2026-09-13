@@ -3686,6 +3686,15 @@ public:
             return;
         }
 
+        const auto saveIntent = doc.getActiveSaveIntent();
+        if (saveIntent == DocumentSaveIntent::Copy
+            || saveIntent == DocumentSaveIntent::Recovery) {
+            // Copies and recovery snapshots do not change the source
+            // document's canonical identity or timestamp.  Treating them as
+            // canonical saves would spuriously dirty every linking document.
+            return;
+        }
+
         QFileInfo info(myPos->first);
         QString path(info.absoluteFilePath());
         const char* filename = doc.getFileName();
@@ -5996,6 +6005,14 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
             key->_removeBackLink(owner);
         }
     }
+    for (auto& [pair, hidden] : _PropDeps) {
+        auto& propName = pair.first;
+        auto* source = pair.second;
+        if (!hidden && source && source->isAttachedToDocument()) {
+            source->_removeBackLinkProp(getName(), owner, propName.c_str());
+        }
+    }
+    _PropDeps.clear();
     _XLinks.clear();
     _Deps.clear();
 }
@@ -6315,9 +6332,17 @@ void PropertyXLinkContainer::clearDeps()
                 obj->_removeBackLinkProp(getName(), owner);
             }
         }
+        for (auto& [pair, hidden] : _PropDeps) {
+            auto& propName = pair.first;
+            auto* source = pair.second;
+            if (!hidden && source && source->isAttachedToDocument()) {
+                source->_removeBackLinkProp(getName(), owner, propName.c_str());
+            }
+        }
     }
 
     _Deps.clear();
+    _PropDeps.clear();
     _XLinks.clear();
     _LinkRestored = false;
 }

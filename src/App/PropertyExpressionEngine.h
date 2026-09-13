@@ -350,6 +350,7 @@ private:
      */
     std::vector<App::ObjectIdentifier> computeEvaluationOrder(ExecuteOption option);
 
+    void rebuildDependencies();
     void slotChangedObject(const App::DocumentObject& obj, const App::Property& prop);
     void slotChangedProperty(const App::DocumentObject& obj, const App::Property& prop);
     void updateHiddenReference(const std::string& key);

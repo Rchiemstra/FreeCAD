@@ -1660,6 +1660,100 @@ class SpreadsheetCases(unittest.TestCase):
         FreeCAD.closeDocument(square.Name)
         FreeCAD.closeDocument(base.Name)
 
+    def test_external_expression_refreshes_changed_source_on_restore(self):
+        """A closed external dependent leaves no stale backlink and refreshes on restore."""
+        source_name = "RestoreExpressionSource"
+        dependent_name = "RestoreExpressionDependent"
+        source_path = self.TempPath + os.sep + "restore-expression-source.FCStd"
+        dependent_path = self.TempPath + os.sep + "restore-expression-dependent.FCStd"
+        source = FreeCAD.newDocument(source_name)
+        dependent = FreeCAD.newDocument(dependent_name)
+        try:
+            parameters = source.addObject("Spreadsheet::Sheet", "Parameters")
+            parameters.setAlias("A1", "Width")
+            parameters.set("A1", "10 mm")
+            source.recompute()
+            source.saveAs(source_path)
+
+            box = dependent.addObject("Part::Box", "DerivedBox")
+            box.Width = 5
+            box.Height = 5
+            dependent.saveAs(dependent_path)
+            box.setExpression("Length", source_name + "#Parameters.Width")
+            dependent.recompute()
+            self.assertAlmostEqual(box.Shape.BoundBox.XLength, 10.0)
+            dependent.save()
+
+            FreeCAD.closeDocument(dependent.Name)
+            dependent = None
+            parameters.set("A1", "20 mm")
+            source.recompute()
+            source.save()
+
+            dependent = FreeCAD.openDocument(dependent_path)
+            dependent.recompute()
+            box = dependent.getObject("DerivedBox")
+            self.assertAlmostEqual(box.Length.Value, 20.0)
+            self.assertAlmostEqual(box.Shape.BoundBox.XLength, 20.0)
+        finally:
+            if dependent is not None:
+                FreeCAD.closeDocument(dependent.Name)
+            FreeCAD.closeDocument(source.Name)
+
+    def test_external_expression_backlinks_clear_before_document_clear_and_restore(self):
+        """Document clear and restore must not leave a source backlink to old expressions."""
+        source_name = "ClearRestoreExpressionSource"
+        dependent_name = "ClearRestoreExpressionDependent"
+        source_path = self.TempPath + os.sep + "clear-restore-expression-source.FCStd"
+        dependent_path = self.TempPath + os.sep + "clear-restore-expression-dependent.FCStd"
+        source = FreeCAD.newDocument(source_name)
+        dependent = FreeCAD.newDocument(dependent_name)
+        try:
+            parameters = source.addObject("Spreadsheet::Sheet", "Parameters")
+            parameters.setAlias("A1", "Width")
+            parameters.set("A1", "10 mm")
+            source.recompute()
+            source.saveAs(source_path)
+
+            box = dependent.addObject("Part::Box", "DerivedBox")
+            box.Width = 5
+            box.Height = 5
+            dependent.saveAs(dependent_path)
+            box.setExpression("Length", source_name + "#Parameters.Width")
+            dependent.recompute()
+            dependent.save()
+
+            dependent.clearDocument()
+            parameters.set("A1", "20 mm")
+            source.recompute()
+            source.save()
+
+            dependent.restore()
+            dependent.recompute()
+            box = dependent.getObject("DerivedBox")
+            self.assertAlmostEqual(box.Length.Value, 20.0)
+            self.assertAlmostEqual(box.Shape.BoundBox.XLength, 20.0)
+
+            dependent.restore()
+            dependent.recompute()
+            box = dependent.getObject("DerivedBox")
+            self.assertAlmostEqual(box.Length.Value, 20.0)
+            self.assertAlmostEqual(box.Shape.BoundBox.XLength, 20.0)
+            self.assertFalse(dependent.isTouched())
+            parameters.set("A1", "30 mm")
+            source.recompute()
+            source.save()
+            self.assertFalse(source.isTouched())
+            self.assertNotIn("Invalid", parameters.State)
+            self.assertTrue(dependent.isTouched())
+            dependent.recompute()
+            box = dependent.getObject("DerivedBox")
+            self.assertAlmostEqual(box.Length.Value, 30.0)
+            self.assertAlmostEqual(box.Shape.BoundBox.XLength, 30.0)
+        finally:
+            FreeCAD.closeDocument(dependent.Name)
+            FreeCAD.closeDocument(source.Name)
+
     def test_expression_with_alias(self):
         # https://forum.freecad.org/viewtopic.php?p=564502#p564502
         ss1 = self.doc.addObject("Spreadsheet::Sheet", "Input")

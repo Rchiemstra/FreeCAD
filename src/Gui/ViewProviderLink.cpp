@@ -1550,7 +1550,16 @@ void LinkView::onLinkedUpdateData(LinkInfoPtr info, const App::Property* prop)
         // of links, to inform tree view of children change, and other
         // parent objects about the change. But we need to be careful to not
         // touch the object if the property of change is marked as output.
-        ext->_LinkTouched.touch();
+        auto* linkDoc = linkOwner->pcLinked->getObject()->getDocument();
+        if (linkDoc && linkDoc->collaborationNotificationsReplaying()) {
+            linkOwner->pcLinked->getDocument()->signalChangedObject(
+                *linkOwner->pcLinked,
+                ext->_LinkTouched
+            );
+        }
+        else {
+            ext->_LinkTouched.touch();
+        }
     }
     else {
         // In case the owner object does not have link extension, here is a

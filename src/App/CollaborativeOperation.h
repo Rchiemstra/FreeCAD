@@ -37,6 +37,30 @@ public:
     [[nodiscard]] virtual CollaborativePostconditionResult
     checkPostcondition(const Document& document) const = 0;
 
+    /** Detached recompute adapters may commit an authoritative failure state. */
+    /** Whether this feature counts towards the recompute's reported total.
+     *
+     * The legacy loop counted an object when its mustRecompute() was true --
+     * not when execute() ran. The two differ: a plain App::Link is settled
+     * without executing yet still counts, while an object whose only change
+     * was a Prop_NoRecompute property never sets Enforce and counts for
+     * nothing. Operations that execute always count; the bookkeeping settle
+     * answers with the state it found.
+     */
+    [[nodiscard]] virtual bool recomputeCountedFeature() const noexcept
+    {
+        return true;
+    }
+
+    [[nodiscard]] virtual bool recomputeOutcomeSucceeded() const noexcept
+    {
+        return true;
+    }
+    [[nodiscard]] virtual std::string_view recomputeOutcomeDiagnostic() const noexcept
+    {
+        return {};
+    }
+
 protected:
     CollaborativeOperation() = default;
     CollaborativeOperation(const CollaborativeOperation&) = delete;

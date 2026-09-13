@@ -337,6 +337,11 @@ public:
     void enforceRecompute(const std::string& propName);
 
     /**
+     * @brief Enforce one recompute while recording several changed input properties.
+     */
+    void enforceRecompute(const std::vector<std::string>& propNames);
+
+    /**
      * @brief Check whether the document object must be recomputed.
      *
      * This means that the 'Enforce' flag is set or that \ref mustExecute()
@@ -375,6 +380,17 @@ public:
     {
         return StatusBits.test(ObjectStatus::Restore);
     }
+
+    /** Check whether a restore in progress may carry pre-migration content.
+     *
+     * Deprecated-property migrations in onDocumentRestored() must be guarded
+     * by this predicate.  It is false when the owning document is being
+     * populated by a same-version state transfer (the isolated recompute
+     * worker's import), where the content was written by this exact program
+     * version from already-migrated state, so re-running a migration would
+     * overwrite live values instead of upgrading stale ones.
+     */
+    bool isRestoringDeprecatedSchema() const;
 
     /// Check whether this document object is being removed.
     bool isRemoving() const
@@ -432,10 +448,7 @@ public:
      * @param[in] pos The status bit to set.
      * @param[in] on The value to set the status bit to.
      */
-    void setStatus(ObjectStatus pos, bool on)
-    {
-        StatusBits.set(size_t(pos), on);
-    }
+    void setStatus(ObjectStatus pos, bool on);
 
     /// Check whether the document object is exporting.
     int isExporting() const;
@@ -1146,6 +1159,9 @@ public:
 
     bool removeDynamicProperty(const char* prop) override;
 
+    bool changeDynamicProperty(const Property* prop,
+                               const char* group,
+                               const char* doc) override;
     bool renameDynamicProperty(Property *prop, const char *name) override;
 
     /**

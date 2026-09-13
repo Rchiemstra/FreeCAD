@@ -1031,6 +1031,14 @@ void FeatureExtrude::Restore(Base::XMLReader& reader)
 
 void FeatureExtrude::onDocumentRestored()
 {
+    if (!isRestoringDeprecatedSchema()) {
+        // Same-version state transfer: SideType is already authoritative and
+        // Midplane is only a residual deprecated shadow of it.  Re-deriving
+        // SideType from Midplane here would discard the live value.
+        ProfileBased::onDocumentRestored();
+        return;
+    }
+
     Base::StateLocker migrating(migratingDeprecatedProperties);
 
     // property Type no longer has TwoLengths.

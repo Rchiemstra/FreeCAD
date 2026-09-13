@@ -189,6 +189,8 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     try {
         if (!App::writeRecoverySnapshotToTransientDir(*doc, options)) {
             saver.restoreFailedSaveAttempt();
+            doc->reportRecoverySaveOutcome(
+                doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
             Base::Console().warning(
                 "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
                 name.c_str()
@@ -198,10 +200,13 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     }
     catch (...) {
         saver.restoreFailedSaveAttempt();
+        doc->reportRecoverySaveOutcome(
+            doc->TransientDir.getStrValue(), false, "Recovery snapshot write threw an exception");
         throw;
     }
 
     saver.finishSuccessfulSaveAttempt();
+    doc->reportRecoverySaveOutcome(doc->TransientDir.getStrValue(), true);
 
     Base::Console().log(
         "Save auto-recovery file in %fs\n",
@@ -259,24 +264,11 @@ AutoSaveProperty::AutoSaveProperty(const App::Document* doc)
     : timerId(-1)
 {
     auto* mutableDoc = const_cast<App::Document*>(doc);
-    documentChanged = mutableDoc->signalChanged.connect(
-        [this](const App::Document&, const App::Property&) { markDirtyForAutosave(); }
+    fileChangeState = mutableDoc->signalFileChangeStateChanged().connect(
+        [this](const App::Document& changedDoc) {
+            slotFileChangeStateChanged(changedDoc);
+        }
     );
-    documentNew = mutableDoc->signalNewObject.connect([this](const App::DocumentObject&) {
-        markDirtyForAutosave();
-    });
-    documentDeleted = mutableDoc->signalDeletedObject.connect([this](const App::DocumentObject&) {
-        markDirtyForAutosave();
-    });
-    documentMod = mutableDoc->signalChangedObject.connect(
-        [this](const App::DocumentObject&, const App::Property&) { markDirtyForAutosave(); }
-    );
-    documentUndo = mutableDoc->signalUndo.connect([this](const App::Document&) {
-        markDirtyForAutosave();
-    });
-    documentRedo = mutableDoc->signalRedo.connect([this](const App::Document&) {
-        markDirtyForAutosave();
-    });
     documentStable = mutableDoc->signalBecameStable.connect([this](const App::Document& changedDoc) {
         slotDocumentBecameStable(changedDoc);
     });
@@ -286,13 +278,21 @@ AutoSaveProperty::AutoSaveProperty(const App::Document* doc)
 
 AutoSaveProperty::~AutoSaveProperty()
 {
-    documentChanged.disconnect();
-    documentNew.disconnect();
-    documentDeleted.disconnect();
-    documentMod.disconnect();
-    documentUndo.disconnect();
-    documentRedo.disconnect();
+    fileChangeState.disconnect();
     documentStable.disconnect();
+}
+
+void AutoSaveProperty::slotFileChangeStateChanged(const App::Document& document)
+{
+    if (document.hasPendingFileChanges()) {
+        markDirtyForAutosave();
+        return;
+    }
+    if (!saveInProgress) {
+        dirty = false;
+        dirtyDuringSaveAttempt = false;
+        blockedUntilStable = false;
+    }
 }
 
 void AutoSaveProperty::markDirtyForAutosave()
