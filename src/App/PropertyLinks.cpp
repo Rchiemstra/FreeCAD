@@ -5987,6 +5987,14 @@ void PropertyXLinkContainer::breakLink(App::DocumentObject* obj, bool clear)
             key->_removeBackLink(owner);
         }
     }
+    for (auto& [pair, hidden] : _PropDeps) {
+        auto& propName = pair.first;
+        auto* source = pair.second;
+        if (!hidden && source && source->isAttachedToDocument()) {
+            source->_removeBackLinkProp(getName(), owner, propName.c_str());
+        }
+    }
+    _PropDeps.clear();
     _XLinks.clear();
     _Deps.clear();
 }
@@ -6306,9 +6314,17 @@ void PropertyXLinkContainer::clearDeps()
                 obj->_removeBackLinkProp(getName(), owner);
             }
         }
+        for (auto& [pair, hidden] : _PropDeps) {
+            auto& propName = pair.first;
+            auto* source = pair.second;
+            if (!hidden && source && source->isAttachedToDocument()) {
+                source->_removeBackLinkProp(getName(), owner, propName.c_str());
+            }
+        }
     }
 
     _Deps.clear();
+    _PropDeps.clear();
     _XLinks.clear();
     _LinkRestored = false;
 }

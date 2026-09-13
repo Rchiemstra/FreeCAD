@@ -756,6 +756,8 @@ public:
         const DocumentObject& object) const noexcept;
     void publishCollaborationMutation(const PropertyContainer& container, bool structural);
     bool collaborationPreparationSupported() const;
+    /** True while deferred collaboration ObjectChanged notifications replay. */
+    [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
 
     /// Dynamic-property schema is serialized independently from transient
     /// property values.  This predicate deliberately excludes only schemas
@@ -2031,7 +2033,6 @@ private:
 
     std::recursive_mutex& collaborationCommitMutex() noexcept;
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
-    [[nodiscard]] bool collaborationNotificationsReplaying() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
     [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
     /** As above, but tolerating an undo transaction the caller already holds,
@@ -2124,6 +2125,8 @@ private:
     [[nodiscard]] Base::ScopeGuard setDefiningTransaction();
 
 private:
+    void clearObjectDependenciesForDocumentTeardown();
+
     // # Data Member of the document
     // +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     std::list<Transaction*> mUndoTransactions;

@@ -144,6 +144,13 @@ struct CollaborationDeferredNotification
     std::shared_ptr<Property> retainedProperty;
 };
 
+struct CollaborationDeferredExternalRecompute
+{
+    Document* document {nullptr};
+    DocumentObject* object {nullptr};
+    std::vector<std::string> propertyNames;
+};
+
 // Pimpl class
 struct DocumentP
 {
@@ -293,6 +300,8 @@ struct DocumentP
     std::unordered_set<const DocumentObject*> collaborationImportNewObjects;
     std::unordered_set<const Property*> collaborationPropertyPublicationSuppression;
     std::vector<CollaborationDeferredNotification> collaborationDeferredNotifications;
+    std::vector<CollaborationDeferredExternalRecompute>
+        collaborationDeferredExternalRecomputes;
     std::vector<DocumentRevisionPublicationRequest> collaborationObservedStructuralEffects;
     std::shared_ptr<Internal::CollaborationImportReplay> collaborationActiveImportReplay;
     const DocumentObject* collaborationSpreadsheetRecomputeSchemaObject {nullptr};

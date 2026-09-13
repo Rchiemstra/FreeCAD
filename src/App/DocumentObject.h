@@ -337,6 +337,11 @@ public:
     void enforceRecompute(const std::string& propName);
 
     /**
+     * @brief Enforce one recompute while recording several changed input properties.
+     */
+    void enforceRecompute(const std::vector<std::string>& propNames);
+
+    /**
      * @brief Check whether the document object must be recomputed.
      *
      * This means that the 'Enforce' flag is set or that \ref mustExecute()

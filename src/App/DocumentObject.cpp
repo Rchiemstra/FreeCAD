@@ -341,8 +341,16 @@ void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
 
 void DocumentObject::enforceRecompute(const std::string& propName)
 {
-    touch(false);
+    enforceAtomicPresentationMutationTarget(_pDoc);
     touchedProps.insert(propName);
+    touch(false);
+}
+
+void DocumentObject::enforceRecompute(const std::vector<std::string>& propNames)
+{
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    touchedProps.insert(propNames.begin(), propNames.end());
+    touch(false);
 }
 
 void DocumentObject::enforceRecompute()

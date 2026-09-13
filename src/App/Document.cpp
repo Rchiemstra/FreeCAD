@@ -1561,6 +1561,8 @@ void Document::beginCollaborationCommitNotificationBarrier()
 
     d->collaborationDeferredNotifications.clear();
     d->collaborationDeferredNotifications.reserve(64);
+    d->collaborationDeferredExternalRecomputes.clear();
+    d->collaborationDeferredExternalRecomputes.reserve(8);
     d->collaborationObservedStructuralEffects.clear();
     d->collaborationObservedStructuralEffects.reserve(16);
     d->collaborationImportNewObjects.clear();
@@ -1603,7 +1605,9 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
     }
 
     auto notifications = std::move(d->collaborationDeferredNotifications);
+    auto externalRecomputes = std::move(d->collaborationDeferredExternalRecomputes);
     d->collaborationDeferredNotifications.clear();
+    d->collaborationDeferredExternalRecomputes.clear();
     d->collaborationObservedStructuralEffects.clear();
     d->collaborationImportNewObjects.clear();
     d->collaborationActiveImportReplay.reset();
@@ -1657,6 +1661,37 @@ void Document::finishCollaborationCommitNotificationBarrier(bool committed) noex
         d->collaborationLifecycleMutationBlockDepth.fetch_sub(1, std::memory_order_release);
         emitBecameStable();
         return;
+    }
+
+    // These targets were reached from a committed source document while its
+    // prepared mutation target was bound. Touch them only after that target
+    // and this document's barrier have been released, before observer replay
+    // can synchronously close or otherwise mutate a dependent document.
+    for (const auto& record : externalRecomputes) {
+        if (!record.document || !GetApplication().getDocumentName(record.document) || !record.object
+            || std::ranges::find(record.document->d->objectArray, record.object)
+                == record.document->d->objectArray.end()) {
+            continue;
+        }
+        try {
+            record.object->enforceRecompute(record.propertyNames);
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("Deferred external recompute propagation failed: " << exception.what());
+            poisonCollaborationCommit("deferred external recompute propagation failed");
+            if (GetApplication().getDocumentName(record.document)) {
+                record.document->poisonCollaborationCommit(
+                    "deferred external recompute propagation failed");
+            }
+        }
+        catch (...) {
+            FC_ERR("Deferred external recompute propagation failed with unknown exception");
+            poisonCollaborationCommit("deferred external recompute propagation failed");
+            if (GetApplication().getDocumentName(record.document)) {
+                record.document->poisonCollaborationCommit(
+                    "deferred external recompute propagation failed");
+            }
+        }
     }
 
     d->collaborationReplayingNotifications = true;
@@ -3261,6 +3296,7 @@ void Document::clearDocument() // NOLINT
 
     if (!d->objectArray.empty()) {
         GetApplication().signalDeleteDocument(*this);
+        clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
         GetApplication().signalNewDocument(*this, false);
     }
@@ -3713,6 +3749,7 @@ Document::~Document()
     Console().log("-Delete Features of %s \n", getName());
 #endif
 
+    clearObjectDependenciesForDocumentTeardown();
     d->clearDocument();
 
     // Remark: The API of Py::Object has been changed to set whether the wrapper owns the passed
@@ -5937,6 +5974,7 @@ void Document::restore(const char* filename,
     if (!d->objectArray.empty()) {
         signal = true;
         GetApplication().signalDeleteDocument(*this);
+        clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
     }
 
@@ -6421,6 +6459,37 @@ void Document::settleRecomputedFeature(DocumentObject& object)
     //
     // Order matters: the fine-grained filter reads touchedProps, and
     // purgeTouched() clears it.
+    const auto enforceDependent = [this](DocumentObject& dependent,
+                                         const std::string& propertyName,
+                                         const bool propertySpecific) {
+        auto* dependentDocument = dependent.getDocument();
+        if (d->collaborationCommitNotificationBarrier && dependentDocument
+            && dependentDocument != this) {
+            auto record = std::ranges::find_if(
+                d->collaborationDeferredExternalRecomputes,
+                [dependentDocument, &dependent](const auto& candidate) {
+                    return candidate.document == dependentDocument && candidate.object == &dependent;
+                });
+            if (record == d->collaborationDeferredExternalRecomputes.end()) {
+                record = d->collaborationDeferredExternalRecomputes.emplace(
+                    d->collaborationDeferredExternalRecomputes.end(),
+                    CollaborationDeferredExternalRecompute {dependentDocument, &dependent});
+            }
+            if (propertySpecific
+                && std::ranges::find(record->propertyNames, propertyName)
+                    == record->propertyNames.end()) {
+                record->propertyNames.push_back(propertyName);
+            }
+            return;
+        }
+        if (propertySpecific) {
+            dependent.enforceRecompute(propertyName);
+        }
+        else {
+            dependent.enforceRecompute();
+        }
+    };
+
     if (GetApplication().isFineGrainedRecomputeEnabled()) {
         // Only the dependents that actually read a property that changed. An
         // edge with an empty toProp depends on the object as a whole and so
@@ -6432,7 +6501,7 @@ void Document::settleRecomputedFeature(DocumentObject& object)
                 continue;
             }
             if (toProp.empty() || object.touchedProps.contains(toProp)) {
-                fromObj->enforceRecompute(fromProp);
+                enforceDependent(*fromObj, fromProp, true);
             }
         }
         object.purgeTouched();
@@ -6441,7 +6510,7 @@ void Document::settleRecomputedFeature(DocumentObject& object)
     object.purgeTouched();
     for (auto* dependent : object.getInList()) {
         if (dependent && dependent->isAttachedToDocument()) {
-            dependent->enforceRecompute();
+            enforceDependent(*dependent, {}, false);
         }
     }
 }
@@ -8042,6 +8111,16 @@ void Document::breakDependency(DocumentObject* pcObject, const bool clear) // NO
 {
     // Nullify all dependent objects
     PropertyLinkBase::breakLinks(pcObject, d->objectArray, clear);
+}
+
+void Document::clearObjectDependenciesForDocumentTeardown()
+{
+    // clearDocument() deletes objectMap directly. Clear expression fine-grained
+    // dependencies while every source and owner is still attached. This path
+    // neither allocates nor invokes ordinary link-property notifications.
+    for (auto* owner : d->objectArray) {
+        owner->ExpressionEngine.breakLink(owner, true);
+    }
 }
 
 std::vector<DocumentObject*>

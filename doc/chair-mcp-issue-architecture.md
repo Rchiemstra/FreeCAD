@@ -131,7 +131,8 @@ transaction before a screenshot is captured. Screenshot exceptions now preserve
 the successful model result and add a presentation warning. Server-side deferred
 object presentation failures receive the same treatment. Returning a generic
 mutation failure at this point invites duplicate objects when the caller retries.
-This additional finding is tracked as issue 6.
+This additional finding is tracked as recovery-review issue 6. It is unrelated
+to current chair-review CHAIR-06, which covers missing sketch DOF diagnostics.
 
 ## Authenticated lifecycle setup
 
@@ -179,3 +180,36 @@ legacy launcher labels its unauthenticated mode and points to this option.
 
 The diagrams describe the reported failure paths and implemented recovery flow.
 Final regression results are recorded in the issue ledger.
+
+## CHAIR-07 assembly link replay touch
+
+During `finishCollaborationCommitNotificationBarrier`, deferred `ObjectChanged`
+replay runs after eager recompute has already settled assembly links. The GUI
+link observer still calls `_LinkTouched.touch()` on non-Output linked-object
+changes, which re-dirties `FrontLeft` / `FrontRight` and leaves
+`pending_recompute` set even though the model commit is otherwise complete.
+
+```mermaid
+sequenceDiagram
+ participant Commit as Compatibility commit
+ participant Rec as Eager recompute
+ participant Barrier as finishCollaborationCommitNotificationBarrier
+ participant Replay as Deferred ObjectChanged
+ participant Slot as Gui::Document::slotChangedObject
+ participant LV as LinkView::onLinkedUpdateData
+ participant Link as App::Link _LinkTouched
+ Commit->>Rec: execute graph; links settle
+ Rec->>Barrier: committed=true; barrier already down
+ Barrier->>Replay: collaborationReplayingNotifications=true
+ Replay->>Slot: signalChangedObject(linked body, non-Output)
+ Slot->>LV: ViewProvider updateData
+ Note over LV,Link: Old: Property::touch after execute leaves Touch/Enforce
+ Note over LV,Link: New: skip App-dirtying touch while replaying; signal-only tree notify
+```
+
+Worktree `C:\Users\Rchie\Music\FreeCADModeling\FreeCAD-wt-chair07`, branch
+`fix/chair-07-assembly-link-touched`. Product fix is localized to
+`Gui::LinkView::onLinkedUpdateData` in `src/Gui/ViewProviderLink.cpp`.
+`Document::collaborationNotificationsReplaying()` is public so the GUI observer
+can read replay state. Luna run17 and v12 gtests are Sol-verified; the fixture
+`verdict: "reproduced"` label is a latency classifier, not a returning producer.

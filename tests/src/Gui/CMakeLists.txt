@@ -8,6 +8,7 @@ add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
         CollaborationCompatibilityAdapter.cpp
+        CollaborationLinkReplayGuard.cpp
         CollaborationAuthorityRemoval.cpp
         CollaborationDomainIntegration.cpp
         CollaborationResponsiveness.cpp
@@ -40,6 +41,16 @@ target_link_libraries(Gui_tests_run PRIVATE
 )
 
 target_compile_definitions(Gui_tests_run PRIVATE TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+# Collaboration integration tests use the production isolated-recompute
+# backend, which resolves only a trusted sibling FreeCADCmd executable.
+add_dependencies(Gui_tests_run FreeCADMainCmd)
+if(NOT WIN32)
+    add_custom_command(TARGET Gui_tests_run POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:FreeCADMainCmd>"
+            "$<TARGET_FILE_DIR:Gui_tests_run>/$<TARGET_FILE_NAME:FreeCADMainCmd>")
+endif()
 
 # Kept in its own process because it deliberately destroys the one supported
 # MainWindow instance and verifies the QObject child-teardown path.
