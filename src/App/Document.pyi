@@ -281,10 +281,12 @@ class Document(PropertyContainer):
         /,
         *,
         structural: bool = False,
+        postcondition: Callable[[], object] | None = None,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
 
         Object creation and removal require the explicit ``structural=True`` scope.
+        The optional postcondition runs after recompute and before publication.
         """
         ...
 

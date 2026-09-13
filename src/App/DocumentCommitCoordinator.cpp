@@ -470,23 +470,49 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThread(
     }
 
     CollaborativePostconditionResult postcondition;
+    bool postconditionAuditActive = false;
+    bool postconditionMutatedDocument = false;
+    const auto finishPostconditionAudit = [&]() noexcept {
+        if (postconditionAuditActive) {
+            _document.endCollaborationAtomicPresentationAudit();
+            postconditionAuditActive = false;
+        }
+    };
     try {
+        // Postconditions observe the final recomputed state. Reuse the native
+        // empty-write audit to make that interval read-only: property writes
+        // are recorded as violations and structural writes are rejected at
+        // their mutation entry points.
+        _document.beginCollaborationAtomicPresentationAudit({});
+        postconditionAuditActive = true;
         postcondition = operation.checkPostcondition(_document);
+        postconditionMutatedDocument =
+            _document.collaborationAtomicPresentationAuditViolated();
+        finishPostconditionAudit();
     }
     catch (const Base::Exception& exception) {
+        finishPostconditionAudit();
         return abortAndRestore(makeResult(DocumentCommitStatus::PostconditionFailed,
                                           edit,
                                           stageFailure("postcondition check failed",
                                                        exception.what())));
     }
     catch (const std::exception& exception) {
+        finishPostconditionAudit();
         return abortAndRestore(makeResult(DocumentCommitStatus::PostconditionFailed,
                                           edit,
                                           stageFailure("postcondition check failed",
                                                        exception.what())));
     }
     catch (...) {
+        finishPostconditionAudit();
         abortRestoreAndRethrow("unknown postcondition failure");
+    }
+    if (postconditionMutatedDocument) {
+        return abortAndRestore(makeResult(
+            DocumentCommitStatus::PostconditionFailed,
+            edit,
+            "postcondition attempted to mutate the document after final recompute"));
     }
     if (!postcondition.satisfied) {
         return abortAndRestore(makeResult(DocumentCommitStatus::PostconditionFailed,

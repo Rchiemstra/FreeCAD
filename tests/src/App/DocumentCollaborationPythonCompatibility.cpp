@@ -889,6 +889,36 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
+       postconditionKeywordRunsInsideNativeCommitAndRollsBack)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    CallbackProbe probe;
+    probe.target = _target;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_NE(callback.get(), nullptr);
+    PyObjectRef method(
+        PyObject_GetAttrString(document.get(), "commitCompatibilityMutation"));
+    ASSERT_NE(method.get(), nullptr);
+    PyObjectRef positional(PyTuple_Pack(1, callback.get()));
+    ASSERT_NE(positional.get(), nullptr);
+    PyObjectRef keywords(Py_BuildValue(
+        "{s:O}", "postcondition", reinterpret_cast<PyObject*>(&PyBool_Type)));
+    ASSERT_NE(keywords.get(), nullptr);
+    const auto wildcardBefore = wildcardRevision();
+
+    PyObjectRef result(PyObject_Call(method.get(), positional.get(), keywords.get()));
+
+    ASSERT_NE(result.get(), nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result.get(), "status")),
+                 "PostconditionFailed");
+    EXPECT_EQ(PyObject_IsTrue(PyDict_GetItemString(result.get(), "committed")), 0);
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_EQ(wildcardRevision(), wildcardBefore);
+}
+
+TEST_F(DocumentCollaborationPythonCompatibilityTest,
        structuralMutationRequiresExplicitKeywordOptIn)
 {
     Base::PyGILStateLocker gil;
@@ -2285,6 +2315,24 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest, rejectsNonCallableInput)
     EXPECT_EQ(result.get(), nullptr);
     EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_TypeError));
     PyErr_Clear();
+
+    CallbackProbe probe;
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_NE(callback.get(), nullptr);
+    PyObjectRef method(
+        PyObject_GetAttrString(document.get(), "commitCompatibilityMutation"));
+    ASSERT_NE(method.get(), nullptr);
+    PyObjectRef positional(PyTuple_Pack(1, callback.get()));
+    ASSERT_NE(positional.get(), nullptr);
+    PyObjectRef keywords(Py_BuildValue("{s:i}", "postcondition", 7));
+    ASSERT_NE(keywords.get(), nullptr);
+
+    PyObjectRef invalidPostcondition(
+        PyObject_Call(method.get(), positional.get(), keywords.get()));
+    EXPECT_EQ(invalidPostcondition.get(), nullptr);
+    EXPECT_TRUE(PyErr_ExceptionMatches(PyExc_TypeError));
+    PyErr_Clear();
+    EXPECT_EQ(probe.calls, 0);
 }
 
 }  // namespace

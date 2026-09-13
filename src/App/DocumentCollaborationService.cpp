@@ -98,8 +98,11 @@ App::DocumentCommitResult rejectedCompatibilityCommit(App::DocumentCommitStatus 
 class CompatibilityMutationOperation final : public App::CollaborativeOperation
 {
 public:
-    explicit CompatibilityMutationOperation(App::CollaborationCompatibilityCallback callback)
+    CompatibilityMutationOperation(
+        App::CollaborationCompatibilityCallback callback,
+        App::CollaborationCompatibilityPostcondition postcondition)
         : _callback(std::move(callback))
+        , _postcondition(std::move(postcondition))
     {}
 
     [[nodiscard]] std::string_view typeId() const noexcept override
@@ -115,11 +118,15 @@ public:
     [[nodiscard]] App::CollaborativePostconditionResult
     checkPostcondition(const App::Document&) const override
     {
-        return {true, {}};
+        if (!_postcondition) {
+            return {true, {}};
+        }
+        return {_postcondition(), "compatibility mutation postcondition was not satisfied"};
     }
 
 private:
     App::CollaborationCompatibilityCallback _callback;
+    App::CollaborationCompatibilityPostcondition _postcondition;
 };
 
 }  // namespace
@@ -950,6 +957,16 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
     CollaborationCompatibilityMutation mutation,
     CollaborationCompatibilityCallback callback)
 {
+    return commitCompatibilityMutationWithPostcondition(
+        std::move(mutation), std::move(callback), {});
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithPostcondition(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityPostcondition postcondition)
+{
     const std::string rejectedOperationId = "legacy-compatibility";
     auto lifecyclePin = pinDocumentAccess();
     if (!lifecyclePin) {
@@ -965,9 +982,12 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
             "off-owner compatibility mutation requires a document-thread dispatcher");
     }
     return invokeOnDocumentThread<DocumentCommitResult>(
-        [this, mutation = std::move(mutation), callback = std::move(callback)]() mutable {
-            return commitCompatibilityMutationOnDocumentThread(std::move(mutation),
-                                                               std::move(callback));
+        [this,
+         mutation = std::move(mutation),
+         callback = std::move(callback),
+         postcondition = std::move(postcondition)]() mutable {
+            return commitCompatibilityMutationWithPostconditionOnDocumentThread(
+                std::move(mutation), std::move(callback), std::move(postcondition));
         });
 }
 
@@ -975,6 +995,16 @@ DocumentCommitResult
 DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
     CollaborationCompatibilityMutation mutation,
     CollaborationCompatibilityCallback callback)
+{
+    return commitCompatibilityMutationWithPostconditionOnDocumentThread(
+        std::move(mutation), std::move(callback), {});
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithPostconditionOnDocumentThread(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityPostcondition postcondition)
 {
     const std::string rejectedOperationId = "legacy-compatibility";
     if (!_document.isCollaborationOwnerThread()) {
@@ -1053,8 +1083,8 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
     }
     const auto expected = _document.collaborationRevisions().capture(writeSet);
     const std::string operationId = Base::Uuid::createUuid();
-    auto operation =
-        std::make_unique<CompatibilityMutationOperation>(std::move(callback));
+    auto operation = std::make_unique<CompatibilityMutationOperation>(
+        std::move(callback), std::move(postcondition));
     const std::string operationType(operation->typeId());
     PreparedEdit edit(PreparedEdit::ConstructionKey {},
                       1,

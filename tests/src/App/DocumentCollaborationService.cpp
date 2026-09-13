@@ -94,6 +94,11 @@ public:
 class DocumentStructuralCompatibilityTestAccess
 {
 public:
+    static bool commitCoordinatorTransaction(Document& document)
+    {
+        return document.commitCollaborationCommitTransaction();
+    }
+
     static std::string grantDiagnostic(Document& document)
     {
         try {
@@ -661,6 +666,150 @@ protected:
 
 static_assert(!std::is_constructible_v<DocumentCollaborationService, Document&>);
 static_assert(!std::is_copy_constructible_v<DocumentCollaborationService>);
+
+TEST_F(DocumentCollaborationServiceTest,
+       compatibilityPostconditionRunsAfterRecomputeBeforeCommit)
+{
+    std::vector<std::string> events;
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executeCallsBefore = target->ExecCount.getValue();
+    CollaborationCompatibilityMutation mutation;
+
+    const auto result =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(mutation),
+            [&] {
+                events.emplace_back("apply");
+                target->Label.setValue("After");
+                target->touch();
+            },
+            [&] {
+                events.emplace_back("postcondition");
+                return target->Label.getStrValue() == "After"
+                    && target->ExecCount.getValue() > executeCallsBefore;
+            });
+
+    EXPECT_TRUE(result.committed());
+    EXPECT_EQ(events, (std::vector<std::string> {"apply", "postcondition"}));
+    EXPECT_GT(target->ExecCount.getValue(), executeCallsBefore);
+    EXPECT_EQ(target->Label.getStrValue(), "After");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       failedCompatibilityPostconditionRollsBackAfterRecompute)
+{
+    std::vector<std::string> events;
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto executeCallsBefore = target->ExecCount.getValue();
+    bool observedRecompute = false;
+    CollaborationCompatibilityMutation mutation;
+
+    const auto result =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(mutation),
+            [&] {
+                events.emplace_back("apply");
+                target->Label.setValue("Must roll back");
+                target->touch();
+            },
+            [&] {
+                events.emplace_back("postcondition");
+                observedRecompute = target->ExecCount.getValue() > executeCallsBefore;
+                return false;
+            });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::PostconditionFailed);
+    EXPECT_EQ(events, (std::vector<std::string> {"apply", "postcondition"}));
+    EXPECT_TRUE(observedRecompute);
+    EXPECT_EQ(target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       compatibilityPostconditionCannotCommitAnUnvalidatedWrite)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    CollaborationCompatibilityMutation mutation;
+
+    const auto result =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(mutation),
+            [&] {
+                target->Label.setValue("Applied");
+                target->touch();
+            },
+            [&] {
+                target->Label.setValue("Unvalidated postcondition write");
+                return true;
+            });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::PostconditionFailed);
+    EXPECT_NE(result.message.find("attempted to mutate"), std::string::npos);
+    EXPECT_EQ(target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       nativeRejectionAfterSuccessfulCompatibilityPostconditionReleasesNoCommit)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    const auto wildcard = DocumentRevisionKey::unknownModelMutation();
+    bool inspected = false;
+    CollaborationCompatibilityMutation mutation;
+
+    const auto result =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(mutation),
+            [&] {
+                target->Label.setValue("Applied");
+                target->touch();
+            },
+            [&] {
+                inspected = target->Label.getStrValue() == "Applied";
+                static_cast<void>(_document->collaborationRevisions().publish(
+                    std::vector<DocumentRevisionKey> {wildcard}));
+                return inspected;
+            });
+
+    EXPECT_TRUE(inspected);
+    EXPECT_EQ(result.status, DocumentCommitStatus::Conflict);
+    EXPECT_FALSE(result.committed());
+    EXPECT_EQ(target->Label.getStrValue(), "Before");
+}
+
+TEST_F(DocumentCollaborationServiceTest,
+       escapedCompatibilityTransactionReportsRollbackFailureAndFencesDocument)
+{
+    auto* target = freecad_cast<FeatureTest*>(_target);
+    ASSERT_NE(target, nullptr);
+    CollaborationCompatibilityMutation mutation;
+
+    const auto result =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(mutation),
+            [&] {
+                target->Label.setValue("Irreversibly committed");
+                ASSERT_TRUE(Internal::DocumentStructuralCompatibilityTestAccess::
+                                commitCoordinatorTransaction(*_document));
+            },
+            [] { return true; });
+
+    EXPECT_EQ(result.status, DocumentCommitStatus::RollbackFailed);
+    EXPECT_FALSE(result.committed());
+    EXPECT_EQ(target->Label.getStrValue(), "Irreversibly committed");
+
+    bool followupApplied = false;
+    CollaborationCompatibilityMutation followup;
+    const auto rejected =
+        _document->collaborationService().commitCompatibilityMutationWithPostcondition(
+            std::move(followup),
+            [&] { followupApplied = true; },
+            [] { return true; });
+    EXPECT_EQ(rejected.status, DocumentCommitStatus::RollbackFailed);
+    EXPECT_FALSE(followupApplied);
+}
 
 TEST_F(DocumentCollaborationServiceTest, sessionsAreAdvisoryAndCancellable)
 {

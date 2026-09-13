@@ -29,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -53,8 +54,13 @@ namespace
 
 constexpr const char* PreparedEditCapsuleName = "App.PreparedEdit";
 
-class PythonCompatibilityCallbackFailure final
-{};
+class PythonCompatibilityCallbackFailure final: public std::runtime_error
+{
+public:
+    PythonCompatibilityCallbackFailure()
+        : std::runtime_error("Python compatibility callback failed")
+    {}
+};
 
 class PythonCompatibilityCallbackError final
 {
@@ -83,9 +89,18 @@ public:
 
     void restore()
     {
+        // Cleanup performed by the native coordinator is allowed to execute
+        // Python-backed objects. Never let a secondary cleanup error replace
+        // the callback or postcondition exception promised by this API.
+        PyErr_Clear();
         PyErr_Restore(std::exchange(_type, nullptr),
                       std::exchange(_value, nullptr),
                       std::exchange(_traceback, nullptr));
+    }
+
+    [[nodiscard]] bool captured() const noexcept
+    {
+        return _type || _value || _traceback;
     }
 
 private:
@@ -1157,56 +1172,106 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
 {
     PyObject* callback = nullptr;
     PyObject* structural = Py_False;
-    static const std::array<const char*, 3> kwlist {
-        "", "structural", nullptr};
+    PyObject* postcondition = Py_None;
+    static const std::array<const char*, 4> kwlist {
+        "", "structural", "postcondition", nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!:commitCompatibilityMutation",
+                                             "O|$O!O:commitCompatibilityMutation",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
-                                             &structural)) {
+                                             &structural,
+                                             &postcondition)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
         PyErr_SetString(PyExc_TypeError, "callback must be callable");
         return nullptr;
     }
+    if (postcondition != Py_None && !PyCallable_Check(postcondition)) {
+        PyErr_SetString(PyExc_TypeError, "postcondition must be callable or None");
+        return nullptr;
+    }
 
     PY_TRY
     {
-        Py_INCREF(callback);
-        auto retainedCallback = std::shared_ptr<PyObject>(callback, [](PyObject* object) {
-            if (!object || !Py_IsInitialized()) {
-                return;
-            }
-            Base::PyGILStateLocker gil;
-            Py_DECREF(object);
-        });
+        const auto retainCallable = [](PyObject* callable) {
+            Py_INCREF(callable);
+            return std::shared_ptr<PyObject>(callable, [](PyObject* object) {
+                if (!object || !Py_IsInitialized()) {
+                    return;
+                }
+                Base::PyGILStateLocker gil;
+                Py_DECREF(object);
+            });
+        };
+        auto retainedCallback = retainCallable(callback);
+        std::shared_ptr<PyObject> retainedPostcondition;
+        if (postcondition != Py_None) {
+            retainedPostcondition = retainCallable(postcondition);
+        }
+        const bool hasPostcondition = static_cast<bool>(retainedPostcondition);
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
             mutation.scope = Base::asBoolean(structural)
                 ? CollaborationCompatibilityScope::Structural
                 : CollaborationCompatibilityScope::UnknownModel;
-            const auto result =
-                getDocumentPtr()->collaborationService().commitCompatibilityMutation(
-                    std::move(mutation),
-                    [retainedCallback = std::move(retainedCallback), callbackError] {
+            CollaborationCompatibilityCallback nativeCallback =
+                [retainedCallback = std::move(retainedCallback), callbackError] {
+                    Base::PyGILStateLocker gil;
+                    PyObject* callbackResult = PyObject_CallNoArgs(retainedCallback.get());
+                    if (!callbackResult) {
+                        callbackError->capture();
+                        throw PythonCompatibilityCallbackFailure();
+                    }
+                    Py_DECREF(callbackResult);
+                };
+            CollaborationCompatibilityPostcondition nativePostcondition;
+            if (retainedPostcondition) {
+                nativePostcondition =
+                    [retainedPostcondition = std::move(retainedPostcondition), callbackError] {
                         Base::PyGILStateLocker gil;
-                        PyObject* callbackResult =
-                            PyObject_CallNoArgs(retainedCallback.get());
-                        if (!callbackResult) {
+                        PyObject* postconditionResult =
+                            PyObject_CallNoArgs(retainedPostcondition.get());
+                        if (!postconditionResult) {
                             callbackError->capture();
                             throw PythonCompatibilityCallbackFailure();
                         }
-                        Py_DECREF(callbackResult);
-                    });
+                        const int satisfied = PyObject_IsTrue(postconditionResult);
+                        if (satisfied < 0) {
+                            callbackError->capture();
+                            Py_DECREF(postconditionResult);
+                            throw PythonCompatibilityCallbackFailure();
+                        }
+                        Py_DECREF(postconditionResult);
+                        return satisfied != 0;
+                    };
+            }
+            const auto result = getDocumentPtr()
+                                    ->collaborationService()
+                                    .commitCompatibilityMutationWithPostcondition(
+                                        std::move(mutation),
+                                        std::move(nativeCallback),
+                                        std::move(nativePostcondition));
+            if (callbackError->captured() && !hasPostcondition
+                && result.status != DocumentCommitStatus::RollbackFailed) {
+                callbackError->restore();
+                return nullptr;
+            }
             return Py::new_reference_to(commitResultToPython(result));
         }
         catch (const PythonCompatibilityCallbackFailure&) {
             callbackError->restore();
             return nullptr;
+        }
+        catch (...) {
+            if (callbackError->captured()) {
+                callbackError->restore();
+                return nullptr;
+            }
+            throw;
         }
     }
     PY_CATCH;

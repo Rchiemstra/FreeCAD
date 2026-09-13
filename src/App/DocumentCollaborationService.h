@@ -79,6 +79,7 @@ struct AppExport CollaborationCompatibilityMutation
 };
 
 using CollaborationCompatibilityCallback = std::function<void()>;
+using CollaborationCompatibilityPostcondition = std::function<bool()>;
 
 /** Result of the service-owned native transaction commit point. */
 struct AppExport CollaborationAtomicCommitPointResult
@@ -143,6 +144,10 @@ public:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutation(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPostcondition(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityPostcondition postcondition);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
         CollaborationCompatibilityCallback callback);
 
@@ -200,6 +205,11 @@ private:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult
+    commitCompatibilityMutationWithPostconditionOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityPostcondition postcondition);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
         CollaborationCompatibilityCallback callback);
     [[nodiscard]] DocumentCommitResult serializeAtomicCompatibilityCallback(
