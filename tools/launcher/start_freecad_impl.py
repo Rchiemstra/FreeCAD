@@ -768,6 +768,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Seconds to wait for the MCP RPC server (default: 120)",
     )
     parser.add_argument(
+        "--authenticated-isolated",
+        action="store_true",
+        help=(
+            "Provision and launch the existing manifest-bound authenticated "
+            "isolated MCP profile instead of the legacy compatibility listener"
+        ),
+    )
+    parser.add_argument(
         "args",
         nargs=argparse.REMAINDER,
         help="Arguments passed to FreeCAD (e.g. a .FCStd file)",
@@ -789,6 +797,37 @@ def _start_freecad(
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.authenticated_isolated:
+        incompatible = [
+            flag
+            for flag, enabled in (
+                ("--wait", args.wait),
+                ("--no-wait-for-mcp", args.no_wait_for_mcp),
+                ("--force-new", args.force_new),
+            )
+            if enabled
+        ]
+        if incompatible or args.mcp_timeout != 120.0:
+            print(
+                "ERROR: --authenticated-isolated owns its readiness and lifecycle; "
+                "do not combine it with legacy launcher wait, force, or timeout options.",
+                file=sys.stderr,
+            )
+            return 2
+        scripts = _freecad_mcp_dir() / "scripts"
+        setup = scripts / "setup_isolated_profile.py"
+        isolated_launcher = scripts / "start_freecad_isolated.py"
+        environment = os.environ.copy()
+        if args.freecad:
+            environment["FREECAD_MCP_ISOLATED_FREECAD"] = str(Path(args.freecad).resolve())
+        print("Starting manifest-bound authenticated isolated MCP profile.")
+        setup_result = subprocess.run([sys.executable, str(setup)], env=environment)
+        if setup_result.returncode:
+            return setup_result.returncode
+        return subprocess.run(
+            [sys.executable, str(isolated_launcher), *args.args], env=environment
+        ).returncode
 
     if not args.freecad:
         print(
@@ -884,8 +923,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"MCP RPC server is ready on localhost:{MCP_RPC_PORT}")
     print(
-        "Cursor can connect via FreeCAD/tools/mcp/freecad-mcp "
-        "(uv run freecad-mcp in your MCP config)."
+        "Legacy compatibility listener is unauthenticated; authenticated RPC v2 "
+        "lifecycle tools are unavailable in this mode.\n"
+        "For the manifest-bound authenticated isolated instance, run:\n"
+        "  start_freecad.py --authenticated-isolated\n"
+        "Then configure MCP with the command printed by the isolated launcher."
     )
     return 0
 
