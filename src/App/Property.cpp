@@ -440,8 +440,9 @@ void Property::setStatusValue(unsigned long status)
     if (status != oldStatus && father) {
         if (auto* document = documentFromPropertyContainer(father)) {
             enforceAtomicPresentationMutationTarget(document);
-            Internal::CollaborationStructuralMutationRecorder::
-                ensurePropertySchemaMutationAllowed(*document, *father);
+            // User3/Touched and other non-schema flags are used as temporary
+            // lockers (e.g. GeoFeatureGroupExtension::extensionOnChanged).
+            // Property schema still goes through DynamicProperty / setPropertyStatus.
         }
     }
     StatusBits = decltype(StatusBits)(status);
