@@ -78,6 +78,28 @@ def validate_executable(path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _format_rc(rc: int) -> str:
+    """Describe a FreeCAD child exit, including Python's negative signal codes.
+
+    A SIGSEGV child becomes ``returncode == -11``; ``sys.exit(-11)`` is 245.
+    """
+    if rc < 0:
+        return f"{rc} (killed by signal {-rc})"
+    if rc == 245:
+        return "245 (unsigned SIGSEGV / sys.exit(-11))"
+    return str(rc)
+
+
+def _ensure_headless_gl() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+
+
+def _log(message: str, *, error: bool = False) -> None:
+    stream = sys.stderr if error else sys.stdout
+    print(message, file=stream, flush=True)
+
+
 def run_and_capture(cmd: list[str]) -> tuple[int, str]:
     """Run `cmd` and return (returncode, combined stdout+stderr string).
 
@@ -120,47 +142,67 @@ def main(argv: list[str]) -> int:
 
     Returns the last non-zero exit code from any GUI test module, or 0 on success.
     """
+    _ensure_headless_gl()
     exec_arg = argv[1] if len(argv) > 1 else None
     freecad_exec = find_executable(exec_arg)
 
-    print(f"Using FreeCAD executable: {freecad_exec}")
+    _log(f"Using FreeCAD executable: {freecad_exec}")
+    _log(
+        "headless env "
+        f"QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM')} "
+        f"LIBGL_ALWAYS_SOFTWARE={os.environ.get('LIBGL_ALWAYS_SOFTWARE')}"
+    )
 
     ok, msg = validate_executable(freecad_exec)
     if msg:
-        print(msg, file=sys.stderr)
+        _log(msg, error=True)
     if not ok:
-        print(f"Aborting: invalid FreeCAD executable: {freecad_exec}", file=sys.stderr)
+        _log(f"Aborting: invalid FreeCAD executable: {freecad_exec}", error=True)
         return 3
 
     code, out = run_and_capture([freecad_exec, "-t"])
     if code != 0:
-        print(
-            f"Warning: listing tests returned exit code {code}; attempting to parse output anyway",
-            file=sys.stderr,
+        _log(
+            f"Warning: listing tests returned exit code {_format_rc(code)}; "
+            "attempting to parse output anyway",
+            error=True,
         )
+        _log(out, error=True)
 
     tests = parse_registered_tests(out)
     if not tests:
-        print("No registered tests found; exiting with success.")
+        # A 7-second "success" here is how pipelines 341-343 went green without
+        # running any GUI module. Treat an empty list as a miss unless listing
+        # itself was a clean zero with truly no units (should not happen here).
+        if code != 0:
+            _log("No registered tests found after a failed listing.", error=True)
+            return 1 if code < 0 else code
+        _log("No registered tests found; exiting with success.")
         return 0
 
     gui_tests = [t for t in tests if "Gui" in t]
     if not gui_tests:
-        print("No GUI tests found in registered tests; nothing to run.")
+        _log("No GUI tests found in registered tests; nothing to run.")
         return 0
 
-    print("Found GUI test modules:")
+    _log("Found GUI test modules:")
     for t in gui_tests:
-        print("  ", t)
+        _log(f"  {t}")
 
     last_rc = 0
     for mod in gui_tests:
-        print(f"\nRunning GUI tests for module: {mod}")
+        _log(f"\nRunning GUI tests for module: {mod}")
         rc, out = run_and_capture([freecad_exec, "-t", mod])
-        print(out)
+        _log(out)
         if rc != 0:
-            print(f"Module {mod} exited with code {rc}", file=sys.stderr)
+            _log(f"Module {mod} exited with code {_format_rc(rc)}", error=True)
             last_rc = rc
+            if rc < 0 or rc == 245:
+                _log(
+                    f"Stopping after {mod}: FreeCAD GUI child segfaulted.",
+                    error=True,
+                )
+                return 1
 
     return last_rc
 
