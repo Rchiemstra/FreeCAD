@@ -197,41 +197,57 @@ def main(argv: list[str]) -> int:
     for t in gui_tests:
         _log(f"  {t}")
 
+    # TestSketcherGui is one FreeCAD -t unit that loads several classes. Split
+    # them so a SIGSEGV names the class and gdb re-runs only that unit.
+    sketcher_gui_units = [
+        "SketcherTests.TestConstraintPreselectionGui.SketcherGuiTestCases",
+        "SketcherTests.TestDistanceLabelExtensionGui.TestDistanceLabelExtensionGui",
+        "SketcherTests.TestConstraintCommandsGui.TestConstraintCommandsGui",
+        "SketcherTests.TestOnViewParameterGui.TestOnViewParameterGui",
+        "SketcherTests.TestPlacementUpdate.TestSketchPlacementUpdate",
+        "SketcherTests.TestExternalFacePreselection.TestExternalFacePreselection",
+        "SketcherTests.TestSketcherOffsetGui.TestSketcherOffsetGui",
+    ]
+
     last_rc = 0
     for mod in gui_tests:
-        _log(f"\nRunning GUI tests for module: {mod}")
-        rc, out = run_and_capture(_with_crash_helper([freecad_exec, "-t", mod]))
-        _log(out)
-        if rc != 0:
-            _log(f"Module {mod} exited with code {_format_rc(rc)}", error=True)
-            last_rc = rc
-            if rc < 0 or rc == 245:
-                _log(
-                    f"Stopping after {mod}: FreeCAD GUI child segfaulted.",
-                    error=True,
-                )
-                gdb = shutil.which("gdb")
-                if gdb:
-                    _log(f"Re-running {mod} under gdb for a backtrace.", error=True)
-                    _, gdb_out = run_and_capture(
-                        [
-                            gdb,
-                            "-batch",
-                            "-return-child-result",
-                            "-ex",
-                            "set pagination off",
-                            "-ex",
-                            "run",
-                            "-ex",
-                            "thread apply all bt 30",
-                            "--args",
-                            freecad_exec,
-                            "-t",
-                            mod,
-                        ]
+        units = sketcher_gui_units if mod == "TestSketcherGui" else [mod]
+        if len(units) > 1:
+            _log(f"\nExpanding {mod} into {len(units)} GUI units")
+        for unit in units:
+            _log(f"\nRunning GUI tests for module: {unit}")
+            rc, out = run_and_capture(_with_crash_helper([freecad_exec, "-t", unit]))
+            _log(out)
+            if rc != 0:
+                _log(f"Module {unit} exited with code {_format_rc(rc)}", error=True)
+                last_rc = rc
+                if rc < 0 or rc == 245:
+                    _log(
+                        f"Stopping after {unit}: FreeCAD GUI child segfaulted.",
+                        error=True,
                     )
-                    _log(gdb_out, error=True)
-                return 1
+                    gdb = shutil.which("gdb")
+                    if gdb:
+                        _log(f"Re-running {unit} under gdb for a backtrace.", error=True)
+                        _, gdb_out = run_and_capture(
+                            [
+                                gdb,
+                                "-batch",
+                                "-return-child-result",
+                                "-ex",
+                                "set pagination off",
+                                "-ex",
+                                "run",
+                                "-ex",
+                                "thread apply all bt 30",
+                                "--args",
+                                freecad_exec,
+                                "-t",
+                                unit,
+                            ]
+                        )
+                        _log(gdb_out, error=True)
+                    return 1
 
     return last_rc
 

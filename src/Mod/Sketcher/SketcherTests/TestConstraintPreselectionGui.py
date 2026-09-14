@@ -156,7 +156,23 @@ class SketcherGuiTestCases(unittest.TestCase):
 
         FreeCADGui.getMainWindow().show()
         self.pump_gui_events()
+        self.view = FreeCADGui.ActiveDocument.ActiveView
+        if self.view:
+            # Realize a non-zero viewport before setEdit. Woodpecker
+            # TestSketcherGui SIGSEGV'd on first sketch edit (pipelines 354/357).
+            for _ in range(25):
+                try:
+                    size = self.view.getSize()
+                    if size and size[0] > 0 and size[1] > 0:
+                        break
+                except Exception:
+                    pass
+                self.pump_gui_events(iterations=2, delay=0.02)
+            self.view.viewTop()
+            self.pump_gui_events()
+        print("SketchGuiTest: setEdit begin", flush=True)
         FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
+        print("SketchGuiTest: setEdit done", flush=True)
         self.pump_gui_events()
 
         self.view = FreeCADGui.ActiveDocument.ActiveView
