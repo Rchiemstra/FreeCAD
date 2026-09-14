@@ -181,6 +181,22 @@ class SketcherGuiTestCases(unittest.TestCase):
             self.view.fitAll()
             self.pump_gui_events()
 
+    def project_world_to_viewport(self, view, world_point, attempts=8):
+        """Map a sketch point to Coin pixels after the camera is actually ready.
+
+        WP361 aggregate TestSketcherGui: getPointOnViewport returned (0, 0) and
+        the hover hit Vertex2. The same test passed in the class-only process.
+        (0, 0) is also the C++ failure sentinel, so retry viewTop/fitAll.
+        """
+        last = (0, 0)
+        for _ in range(attempts):
+            self.configure_view_state(view)
+            last = tuple(int(value) for value in view.getPointOnViewport(world_point))
+            if last != (0, 0):
+                return last
+            self.pump_gui_events(iterations=8, delay=0.02)
+        return last
+
     def tearDown(self):
         FreeCADGui.Selection.clearPreselection()
         FreeCADGui.Selection.clearSelection()
@@ -256,9 +272,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        self.configure_view_state(self.view)
-
-        marker_coin = tuple(int(value) for value in self.view.getPointOnViewport(marker_point))
+        marker_coin = self.project_world_to_viewport(self.view, marker_point)
 
         vertex_offsets = []
         for dy in range(-12, 13, 2):
@@ -311,9 +325,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        self.configure_view_state(self.view)
-
-        midpoint_coin = tuple(int(value) for value in self.view.getPointOnViewport(midpoint))
+        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
 
         edge_offsets = []
         for dy in range(-10, 11, 2):
@@ -369,9 +381,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        self.configure_view_state(self.view)
-
-        midpoint_coin = tuple(int(value) for value in self.view.getPointOnViewport(midpoint))
+        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
 
         before_info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
         before_kind = self.classify_preselection(before_info, "Constraint0")
@@ -431,13 +441,11 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        self.configure_view_state(self.view)
-
         # The angle bisector is the horizontal axis, so the label text will be centered at
         # x=20, y=0.
         text_center = FreeCAD.Vector(20.0, 0.0, 0.0)
         before_info = SketcherGui.getActiveSketchPreselection(
-            tuple(int(value) for value in self.view.getPointOnViewport(text_center))
+            self.project_world_to_viewport(self.view, text_center)
         )
         before_kind = self.classify_preselection(before_info, "Constraint0")
 

@@ -4127,9 +4127,12 @@ SbVec2s View3DInventorViewer::getPointOnViewport(const SbVec3f& pnt) const
     float fRatio = vp.getViewportAspectRatio();
     const SbVec2s& sp = vp.getViewportSizePixels();
     SoCamera* camera = this->getSoRenderManager()->getCamera();
-    if (!camera || !viewerHasUsablePickVolume(this)) {
+    if (!camera) {
         return {0, 0};
     }
+    // WP361: a false-unusable frustum still projected the sketch midpoint to a
+    // finite screen point. Returning {0,0} here made Vertex2 win at the origin
+    // pixel. Keep Inf/NaN rejection in finiteNormalizedToShortPixel.
     SbViewVolume vv = camera->getViewVolume(fRatio);
 
     SbVec3f pt(pnt);
