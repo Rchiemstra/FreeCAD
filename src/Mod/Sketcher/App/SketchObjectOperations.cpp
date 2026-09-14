@@ -2819,6 +2819,13 @@ bool SketchObject::convertToNURBS(int GeoId)
     if (geo->is<Part::GeomPoint>())
         return false;
 
+    // Internal BSplines are already NURBS. Rebuilding them via toNurbs()
+    // drops InternalAlignment/Weight constraints (pipeline 359
+    // test_converting_existing_bspline_preserves_constraints). External
+    // geometry still copies into the sketch below.
+    if (GeoId >= 0 && geo->is<Part::GeomBSplineCurve>())
+        return true;
+
     const auto* geo1 = static_cast<const Part::GeomCurve*>(geo);
 
     Part::GeomBSplineCurve* bspline;

@@ -83,6 +83,11 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         pad.Profile = sketch
         pad.Length = 20.0
         self.doc.recompute()
+        # The consumed profile stays pickable otherwise and wins over the Pad
+        # face under Coin's vertex-over-face priority (pipeline 359:
+        # SubElementNames=('BaseSketch.Vertex2',)).
+        if GUI_AVAILABLE and sketch.ViewObject:
+            sketch.ViewObject.Visibility = False
 
         # Second sketch on top face for external geometry
         self.testSketch = body.newObject("Sketcher::SketchObject", "TestSketch")
@@ -94,25 +99,35 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         self.pad = pad
 
     def hover_for_preselection(self, viewport, center_pos, span=6, step=2):
-        for dy in range(-span, span + 1, step):
-            for dx in range(-span, span + 1, step):
-                pos = QtCore.QPoint(center_pos.x() + dx, center_pos.y() + dy)
-                event = QtGui.QMouseEvent(
-                    QtCore.QEvent.MouseMove,
-                    pos,
-                    viewport.mapToGlobal(pos),
-                    QtCore.Qt.NoButton,
-                    QtCore.Qt.NoButton,
-                    QtCore.Qt.NoModifier,
-                )
-                QtGui.QApplication.sendEvent(viewport, event)
-                self.pump(100)
+        fallback = None
+        probes = [(0, 0)] + [
+            (dx, dy)
+            for dy in range(-span, span + 1, step)
+            for dx in range(-span, span + 1, step)
+            if dx or dy
+        ]
+        for dx, dy in probes:
+            pos = QtCore.QPoint(center_pos.x() + dx, center_pos.y() + dy)
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseMove,
+                pos,
+                viewport.mapToGlobal(pos),
+                QtCore.Qt.NoButton,
+                QtCore.Qt.NoButton,
+                QtCore.Qt.NoModifier,
+            )
+            QtGui.QApplication.sendEvent(viewport, event)
+            self.pump(100)
 
-                presel = FreeCADGui.Selection.getPreselection()
-                if presel.ObjectName:
-                    return presel
+            presel = FreeCADGui.Selection.getPreselection()
+            if not presel.ObjectName:
+                continue
+            if any("Face" in name for name in presel.SubElementNames):
+                return presel
+            if fallback is None:
+                fallback = presel
 
-        return FreeCADGui.Selection.getPreselection()
+        return fallback or FreeCADGui.Selection.getPreselection()
 
     @unittest.skipIf(not GUI_AVAILABLE, "GUI not available")
     def testNoDepthBufferInEditRoot(self):
@@ -217,6 +232,7 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         self.pump(300)
 
         view = FreeCADGui.ActiveDocument.ActiveView
+        view.setAnimationEnabled(False)
         view.viewFront()
         view.fitAll()
         self.pump(300)
@@ -229,7 +245,11 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
                 return False
             # Re-fit each probe: offscreen the viewport size/aspect may not be
             # settled when fitAll() first runs, so fit until it frames the face.
+            view.viewFront()
             view.fitAll()
+            direction = view.getViewDirection()
+            if abs(direction.y) < 0.85:
+                return False
             screen_x, screen_y = view.getPointOnScreen(face_center_3d)
             margin_x = width * 0.1
             margin_y = height * 0.1
@@ -251,7 +271,7 @@ class TestExternalFacePreselection(SketcherGuiTestCase):
         viewport = view.graphicsView().viewport()
         screen_pt = view.getPointOnScreen(face_center_3d)
         hover_pos = self.viewport_to_qpoint(view, viewport, screen_pt)
-        presel = self.hover_for_preselection(viewport, hover_pos)
+        presel = self.hover_for_preselection(viewport, hover_pos, span=20, step=4)
         self.assertNotEqual(
             presel.ObjectName,
             "",
