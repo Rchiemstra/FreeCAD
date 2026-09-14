@@ -34,7 +34,7 @@ __url__ = "https://www.freecad.org"
 
 from pivy import coin
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 
 
 class SoSwitchMarker(coin.SoSwitch):

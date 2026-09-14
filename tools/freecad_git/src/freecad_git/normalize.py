@@ -45,7 +45,6 @@ _EXCLUDED_PROPERTY_PATTERNS = (
 
 _DEFAULT_EXCLUDED_PROPERTIES = frozenset(
     {
-        "ExpressionEngine",
         "Visibility",
         "VisibilityList",
         "DisplayMode",

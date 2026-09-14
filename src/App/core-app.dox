@@ -72,8 +72,10 @@
  *
  * In @ref SecUndoRedo "Documents" we explain more about the transaction
  * system.  Although transactions are mainly a feature of documents and
- * document objects, there is also applicaton-wide functionality that allows
- * creating transactions in multiple documents sharing the same transaction ID.
+ * document objects, there is also application-wide compatibility functionality
+ * that can book multiple documents under one transaction ID. Such a group can
+ * be aborted, but commit is rejected before any participant closes unless a
+ * typed adapter supplies the cross-document atomicity contract.
  *
  * @section SecApplicationLinks Links between document objects
  *
@@ -182,10 +184,11 @@
  * Although the transactions themselves only capture changes regarding document
  * objects, the transactions are managed in the document.  Although the
  * transactions are managed inside a document, it is possible to support
- * transactions that affect multiple documents.  This is managed by the GUI and
- * if a change affects multiple documents, then all documents will store
- * transactions that change its document and they will all have the same
- * transaction ID.
+ * transactions that affect multiple documents. The compatibility layer can
+ * assign the same transaction ID to those document-local transactions, but it
+ * cannot commit the group atomically. Unsupported grouped commits are rejected
+ * before any document transaction is closed; a typed cross-document adapter is
+ * required to supply atomic commit, rollback, dependencies, and publication.
  *
  * The mechanisms for undo and redo are part of the @ref APP "App" level, but
  * the GUI defines the transactions (where to open a transaction, where to

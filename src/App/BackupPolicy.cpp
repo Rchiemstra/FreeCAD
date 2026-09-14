@@ -23,7 +23,23 @@
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/regex.hpp>
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdlib>
+#include <ctime>
+#include <cwctype>
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 #include <Base/TimeInfo.h>
 #include <Base/Console.h>
@@ -34,8 +50,492 @@
 #include <Base/Writer.h>
 
 #include "BackupPolicy.h"
+#include "DocumentFileWriter.h"
+
+#include <FCConfig.h>
+
+#ifdef FC_OS_WIN32
+# include <windows.h>
+#else
+# include <cerrno>
+# include <fcntl.h>
+# include <sys/stat.h>
+# include <unistd.h>
+#endif
 
 using namespace App;
+
+namespace
+{
+
+namespace fs = std::filesystem;
+
+struct AtomicInstallResult
+{
+    bool installed {false};
+    bool sourceConsumed {false};
+    bool durabilityVerified {false};
+    bool destinationExists {false};
+    std::string error;
+};
+
+enum class BackupInstallCheckpoint
+{
+    AfterLinkBeforeDirectoryFlush,
+    AfterDirectoryFlushBeforeSourceUnlink,
+    AfterSourceUnlinkBeforeDirectoryFlush,
+};
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+std::mutex backupHookMutex;
+App::Internal::BackupPolicyBeforeInstallHook backupBeforeInstallHook;
+App::Internal::BackupPolicyCheckpointHook backupCheckpointHook;
+
+void invokeBackupBeforeInstallHook(const std::string& candidate)
+{
+    App::Internal::BackupPolicyBeforeInstallHook hook;
+    {
+        const std::scoped_lock guard(backupHookMutex);
+        hook = backupBeforeInstallHook;
+    }
+    if (hook) {
+        hook(candidate);
+    }
+}
+
+void invokeBackupCheckpointHook(const App::Internal::BackupPolicyTestCheckpoint checkpoint,
+                                const std::string& source,
+                                const std::string& destination)
+{
+    App::Internal::BackupPolicyCheckpointHook hook;
+    {
+        const std::scoped_lock guard(backupHookMutex);
+        hook = backupCheckpointHook;
+    }
+    if (hook) {
+        hook(checkpoint, source, destination);
+    }
+}
+
+bool hasBackupCheckpointHook()
+{
+    const std::scoped_lock guard(backupHookMutex);
+    return static_cast<bool>(backupCheckpointHook);
+}
+#endif
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API) && !defined(FC_OS_WIN32)
+std::string currentExceptionMessage()
+{
+    try {
+        throw;
+    }
+    catch (const std::exception& exception) {
+        return exception.what();
+    }
+    catch (...) {
+        return "unknown injected failure";
+    }
+}
+#endif
+
+#ifndef FC_OS_WIN32
+class ScopedDescriptor
+{
+public:
+    explicit ScopedDescriptor(const int value = -1)
+        : value(value)
+    {}
+
+    ~ScopedDescriptor()
+    {
+        if (value >= 0) {
+            ::close(value);
+        }
+    }
+
+    ScopedDescriptor(const ScopedDescriptor&) = delete;
+    ScopedDescriptor& operator=(const ScopedDescriptor&) = delete;
+
+    [[nodiscard]] int get() const noexcept
+    {
+        return value;
+    }
+
+private:
+    int value {-1};
+};
+
+int openReadOnly(const fs::path& path)
+{
+    int flags = O_RDONLY;
+# ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+# endif
+# ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+# endif
+    return ::open(path.c_str(), flags);
+}
+
+int openDirectory(const fs::path& path)
+{
+    int flags = O_RDONLY;
+# ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+# endif
+# ifdef O_DIRECTORY
+    flags |= O_DIRECTORY;
+# endif
+    return ::open(path.c_str(), flags);
+}
+
+bool sameIdentity(const struct stat& left, const struct stat& right) noexcept
+{
+    return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+}
+#endif
+
+AtomicInstallResult atomicInstallNoReplace(const std::string& source,
+                                           const std::string& destination,
+                                           const bool invokeTestHook)
+{
+    const auto sourcePath = Base::FileInfo::stringToPath(source);
+    const auto destinationPath = Base::FileInfo::stringToPath(destination);
+#ifdef FC_OS_WIN32
+# if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (invokeTestHook) {
+        invokeBackupBeforeInstallHook(destination);
+    }
+# else
+    (void)invokeTestHook;
+# endif
+    if (MoveFileExW(sourcePath.c_str(), destinationPath.c_str(), MOVEFILE_WRITE_THROUGH) != 0) {
+        return {.installed = true,
+                .sourceConsumed = true,
+                .durabilityVerified = true};
+    }
+    const DWORD error = GetLastError();
+    return {.destinationExists = error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS,
+            .error = std::system_category().message(static_cast<int>(error))};
+#else
+    ScopedDescriptor sourceDescriptor(openReadOnly(sourcePath));
+    if (sourceDescriptor.get() < 0) {
+        const int error = errno;
+        return {.error = std::generic_category().message(error)};
+    }
+    struct stat pinnedSource {};
+    if (::fstat(sourceDescriptor.get(), &pinnedSource) != 0) {
+        const int error = errno;
+        return {.error = std::generic_category().message(error)};
+    }
+    if (!S_ISREG(pinnedSource.st_mode)) {
+        return {.error = std::generic_category().message(EINVAL)};
+    }
+    if (::fsync(sourceDescriptor.get()) != 0) {
+        const int error = errno;
+        return {.error = "Unable to flush the displaced snapshot before backup install: "
+                + std::generic_category().message(error)};
+    }
+
+    ScopedDescriptor destinationParent(openDirectory(destinationPath.parent_path()));
+    if (destinationParent.get() < 0) {
+        const int error = errno;
+        return {.error = std::generic_category().message(error)};
+    }
+    ScopedDescriptor sourceParent(openDirectory(sourcePath.parent_path()));
+    if (sourceParent.get() < 0) {
+        const int error = errno;
+        return {.error = std::generic_category().message(error)};
+    }
+
+    struct stat sourceAtBoundary {};
+    if (::lstat(sourcePath.c_str(), &sourceAtBoundary) != 0
+        || !sameIdentity(pinnedSource, sourceAtBoundary)) {
+        return {.error = "The displaced snapshot path changed before backup install"};
+    }
+# if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    if (invokeTestHook) {
+        // This is intentionally the last operation before the no-replace OS
+        // primitive so tests exercise EEXIST rather than a preflight branch.
+        invokeBackupBeforeInstallHook(destination);
+    }
+# else
+    (void)invokeTestHook;
+# endif
+    if (::link(sourcePath.c_str(), destinationPath.c_str()) != 0) {
+        const int error = errno;
+        return {.destinationExists = error == EEXIST,
+                .error = std::generic_category().message(error)};
+    }
+
+    AtomicInstallResult result;
+    result.installed = true;
+    struct stat installedSnapshot {};
+    const bool installedInspected = ::lstat(destinationPath.c_str(), &installedSnapshot) == 0;
+    if (!installedInspected || !sameIdentity(pinnedSource, installedSnapshot)) {
+        // Never adopt or remove a path whose identity is not the pinned
+        // displaced snapshot; retain the source as recovery evidence.
+        result.installed = false;
+        result.error = "The installed backup does not identify the displaced snapshot";
+        return result;
+    }
+    ScopedDescriptor installedDescriptor(openReadOnly(destinationPath));
+    struct stat pinnedInstalled {};
+    if (installedDescriptor.get() < 0
+        || ::fstat(installedDescriptor.get(), &pinnedInstalled) != 0
+        || !sameIdentity(pinnedSource, pinnedInstalled)) {
+        result.installed = false;
+        result.error = "The installed backup could not be pinned to the displaced snapshot";
+        return result;
+    }
+
+    const auto checkpointFailure = [&](const BackupInstallCheckpoint checkpoint)
+        -> std::string {
+# if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+        try {
+            App::Internal::BackupPolicyTestCheckpoint exposedCheckpoint =
+                App::Internal::BackupPolicyTestCheckpoint::AfterLinkBeforeDirectoryFlush;
+            switch (checkpoint) {
+                case BackupInstallCheckpoint::AfterLinkBeforeDirectoryFlush:
+                    break;
+                case BackupInstallCheckpoint::AfterDirectoryFlushBeforeSourceUnlink:
+                    exposedCheckpoint = App::Internal::BackupPolicyTestCheckpoint::
+                        AfterDirectoryFlushBeforeSourceUnlink;
+                    break;
+                case BackupInstallCheckpoint::AfterSourceUnlinkBeforeDirectoryFlush:
+                    exposedCheckpoint = App::Internal::BackupPolicyTestCheckpoint::
+                        AfterSourceUnlinkBeforeDirectoryFlush;
+                    break;
+            }
+            invokeBackupCheckpointHook(exposedCheckpoint, source, destination);
+        }
+        catch (...) {
+            return currentExceptionMessage();
+        }
+# else
+        (void)checkpoint;
+# endif
+        return {};
+    };
+
+    if (auto error = checkpointFailure(BackupInstallCheckpoint::AfterLinkBeforeDirectoryFlush);
+        !error.empty()) {
+        result.error = std::move(error);
+        return result;
+    }
+    if (::fsync(destinationParent.get()) != 0) {
+        const int error = errno;
+        result.error = "Unable to make the installed backup name durable: "
+            + std::generic_category().message(error);
+        return result;
+    }
+    if (auto error = checkpointFailure(
+            BackupInstallCheckpoint::AfterDirectoryFlushBeforeSourceUnlink);
+        !error.empty()) {
+        result.error = std::move(error);
+        return result;
+    }
+
+    struct stat sourceBeforeUnlink {};
+    struct stat destinationBeforeUnlink {};
+    if (::lstat(sourcePath.c_str(), &sourceBeforeUnlink) != 0
+        || !sameIdentity(pinnedSource, sourceBeforeUnlink)
+        || ::lstat(destinationPath.c_str(), &destinationBeforeUnlink) != 0
+        || !sameIdentity(pinnedInstalled, destinationBeforeUnlink)) {
+        result.installed = false;
+        result.error = "The displaced snapshot or installed backup path changed before cleanup";
+        return result;
+    }
+    if (::unlink(sourcePath.c_str()) != 0) {
+        const int error = errno;
+        result.durabilityVerified = true;
+        result.error = std::generic_category().message(error);
+        return result;
+    }
+    result.sourceConsumed = true;
+    if (auto error = checkpointFailure(
+            BackupInstallCheckpoint::AfterSourceUnlinkBeforeDirectoryFlush);
+        !error.empty()) {
+        result.error = std::move(error);
+        return result;
+    }
+    if (::fsync(sourceParent.get()) != 0) {
+        const int error = errno;
+        result.error = "Unable to make displaced snapshot cleanup durable: "
+            + std::generic_category().message(error);
+        return result;
+    }
+    result.durabilityVerified = true;
+    return result;
+#endif
+}
+
+AtomicInstallResult installDisplacedNoReplace(const std::string& source,
+                                              const std::string& destination,
+                                              const std::shared_ptr<void>& lease)
+{
+    if (!lease) {
+        // Compatibility-only path implementation for callers that predate
+        // DocumentFileWriter's retained displaced-file lease.
+        return atomicInstallNoReplace(source, destination, true);
+    }
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+    const auto checkpoint = [&](const App::Internal::DisplacedFileLeaseCheckpoint point) {
+        switch (point) {
+            case App::Internal::DisplacedFileLeaseCheckpoint::BeforeNamespaceInstall:
+                invokeBackupBeforeInstallHook(destination);
+                break;
+            case App::Internal::DisplacedFileLeaseCheckpoint::AfterLinkBeforeDirectoryFlush:
+                invokeBackupCheckpointHook(
+                    App::Internal::BackupPolicyTestCheckpoint::AfterLinkBeforeDirectoryFlush,
+                    source,
+                    destination);
+                break;
+            // The retained-lease path has no source-unlink checkpoints: its
+            // portable link fallback deliberately never removes the displaced
+            // pathname. Only the non-lease compatibility path still reports
+            // the two unlink checkpoints.
+        }
+    };
+    const auto installed = App::Internal::installDisplacedFileLeaseNoReplace(
+        lease, source, destination, checkpoint, hasBackupCheckpointHook());
+#else
+    const auto installed =
+        App::Internal::installDisplacedFileLeaseNoReplace(lease, source, destination);
+#endif
+    return {.installed = installed.installed,
+            .sourceConsumed = installed.sourceConsumed,
+            .durabilityVerified = installed.durabilityVerified,
+            .destinationExists = installed.destinationExists,
+            .error = installed.error};
+}
+
+AtomicInstallResult discardDisplaced(const std::string& source,
+                                     const std::shared_ptr<void>& lease)
+{
+    if (!lease) {
+        Base::FileInfo sourceInfo(source);
+        const bool consumed = sourceInfo.deleteFile();
+        return {.sourceConsumed = consumed,
+                .durabilityVerified = consumed,
+                .error = consumed ? std::string {} : "Unable to remove the displaced file"};
+    }
+    const auto discarded = App::Internal::discardDisplacedFileLease(lease, source);
+    return {.sourceConsumed = discarded.sourceConsumed,
+            .durabilityVerified = discarded.durabilityVerified,
+            .error = discarded.error};
+}
+
+fs::path normalizePathForComparison(const std::string& value)
+{
+    std::error_code error;
+    auto absolute = fs::absolute(Base::FileInfo::stringToPath(value), error);
+    if (error) {
+        return Base::FileInfo::stringToPath(value).lexically_normal();
+    }
+    const auto filename = absolute.filename();
+    auto parent = fs::weakly_canonical(absolute.parent_path(), error);
+    if (error) {
+        return absolute.lexically_normal();
+    }
+    return (parent / filename).lexically_normal();
+}
+
+bool platformPathsEqual(fs::path left, fs::path right)
+{
+#ifdef FC_OS_WIN32
+    auto leftNative = left.native();
+    auto rightNative = right.native();
+    std::ranges::transform(leftNative, leftNative.begin(), [](const wchar_t value) {
+        return static_cast<wchar_t>(std::towlower(value));
+    });
+    std::ranges::transform(rightNative, rightNative.begin(), [](const wchar_t value) {
+        return static_cast<wchar_t>(std::towlower(value));
+    });
+    return leftNative == rightNative;
+#else
+    return left == right;
+#endif
+}
+
+bool pathsAlias(const std::string& source, const std::string& target)
+{
+    const auto sourcePath = Base::FileInfo::stringToPath(source);
+    const auto targetPath = Base::FileInfo::stringToPath(target);
+    if (platformPathsEqual(normalizePathForComparison(source),
+                           normalizePathForComparison(target))) {
+        return true;
+    }
+    std::error_code error;
+    const bool equivalent = fs::equivalent(sourcePath, targetPath, error);
+    return !error && equivalent;
+}
+
+void appendPostReplacementWarning(BackupPolicy::PostReplacementResult& result,
+                                  std::string warning)
+{
+    Base::Console().warning("%s\n", warning.c_str());
+    result.warnings.push_back(std::move(warning));
+}
+
+void pruneInstalledHistory(BackupPolicy::PostReplacementResult& result,
+                           std::vector<Base::FileInfo> backups,
+                           const std::string& installed,
+                           const std::vector<std::string>& protectedCandidates,
+                           const int retainedCount)
+{
+    int removals = std::max<int>(0, static_cast<int>(backups.size()) - retainedCount);
+    if (removals == 0) {
+        return;
+    }
+    std::sort(backups.begin(), backups.end(), [](const auto& left, const auto& right) {
+        return left.lastModified() < right.lastModified();
+    });
+    for (const Base::FileInfo& backup : backups) {
+        if (removals == 0) {
+            break;
+        }
+        // Never prune the backup that was just installed, even when its
+        // preserved source timestamp makes it appear to be the oldest file.
+        if (backup.filePath() == installed
+            || std::ranges::find(protectedCandidates, backup.filePath())
+                != protectedCandidates.end()) {
+            continue;
+        }
+        if (backup.deleteFile()) {
+            --removals;
+        }
+        else {
+            appendPostReplacementWarning(result,
+                                         "Unable to remove old backup file: "
+                                             + backup.fileName());
+        }
+    }
+    if (removals > 0) {
+        appendPostReplacementWarning(
+            result,
+            "Backup history exceeds its configured limit because late collision entries were "
+            "left untouched");
+    }
+}
+
+}  // namespace
+
+#if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
+void App::Internal::setBackupPolicyBeforeInstallHookForTesting(
+    BackupPolicyBeforeInstallHook hook)
+{
+    const std::scoped_lock guard(backupHookMutex);
+    backupBeforeInstallHook = std::move(hook);
+}
+
+void App::Internal::setBackupPolicyCheckpointHookForTesting(BackupPolicyCheckpointHook hook)
+{
+    const std::scoped_lock guard(backupHookMutex);
+    backupCheckpointHook = std::move(hook);
+}
+#endif
 
 void BackupPolicy::setPolicy(const Policy p)
 {
@@ -55,6 +555,22 @@ void BackupPolicy::setDateFormat(const std::string& fmt)
 }
 void BackupPolicy::apply(const std::string& sourcename, const std::string& targetname)
 {
+    // Keep legacy validation/exception types for an empty path. Valid save
+    // paths share the exact same in-process and OS advisory lock as the new
+    // replacement primitive and post-replacement history rotation.
+    std::unique_ptr<Internal::DocumentFileLock> destinationLock;
+    if (!targetname.empty() && Base::FileInfo(sourcename).exists()) {
+        try {
+            destinationLock = std::make_unique<Internal::DocumentFileLock>(targetname, -1);
+            if (!destinationLock->isLocked()) {
+                throw std::runtime_error("destination lock unavailable");
+            }
+        }
+        catch (const std::exception&) {
+            throw Base::FileException("Cannot lock project file for backup management",
+                                      Base::FileInfo(targetname));
+        }
+    }
     switch (policy) {
         case Standard:
             applyStandard(sourcename, targetname);
@@ -63,6 +579,443 @@ void BackupPolicy::apply(const std::string& sourcename, const std::string& targe
             applyTimeStamp(sourcename, targetname);
             break;
     }
+}
+
+BackupPolicy::PostReplacementResult
+BackupPolicy::applyAfterReplacement(const std::string& sourcename,
+                                    const std::string& targetname)
+{
+    PostReplacementResult result;
+    try {
+        if (targetname.empty()) {
+            appendPostReplacementWarning(result, "The canonical backup name is empty");
+            return result;
+        }
+        if (!sourcename.empty() && pathsAlias(sourcename, targetname)) {
+            appendPostReplacementWarning(
+                result,
+                "The displaced snapshot aliases the canonical file; backup management was "
+                "refused");
+            return result;
+        }
+        Internal::DocumentFileLock destinationLock(targetname, -1);
+        if (!destinationLock.isLocked()) {
+            appendPostReplacementWarning(
+                result,
+                "Unable to lock the canonical file while managing backup history");
+            return result;
+        }
+        switch (policy) {
+            case Standard:
+                return applyStandardAfterReplacement(sourcename, targetname, {});
+            case TimeStamp:
+                return applyTimeStampAfterReplacement(sourcename, targetname, {});
+        }
+        appendPostReplacementWarning(result, "Unknown backup policy");
+    }
+    catch (const std::exception& exception) {
+        appendPostReplacementWarning(result,
+                                     "Unable to manage the previous file after replacement: "
+                                         + std::string(exception.what()));
+    }
+    catch (...) {
+        appendPostReplacementWarning(
+            result,
+            "Unable to manage the previous file after replacement: unknown error");
+    }
+    return result;
+}
+
+BackupPolicy::PostReplacementResult
+BackupPolicy::applyAfterReplacement(const std::string& sourcename,
+                                    const std::string& targetname,
+                                    const std::shared_ptr<void>& displacedFileLease)
+{
+    PostReplacementResult result;
+    try {
+        if (!displacedFileLease) {
+            appendPostReplacementWarning(
+                result,
+                "Authoritative backup management requires the retained displaced-file lease");
+            return result;
+        }
+        if (targetname.empty()) {
+            appendPostReplacementWarning(result, "The canonical backup name is empty");
+            return result;
+        }
+        if (sourcename.empty() || pathsAlias(sourcename, targetname)) {
+            appendPostReplacementWarning(
+                result,
+                "The displaced snapshot aliases the canonical file; backup management was "
+                "refused");
+            return result;
+        }
+        Internal::DocumentFileLock destinationLock(targetname, -1);
+        if (!destinationLock.isLocked()) {
+            appendPostReplacementWarning(
+                result,
+                "Unable to lock the canonical file while managing backup history");
+            return result;
+        }
+        switch (policy) {
+            case Standard:
+                return applyStandardAfterReplacement(
+                    sourcename, targetname, displacedFileLease);
+            case TimeStamp:
+                return applyTimeStampAfterReplacement(
+                    sourcename, targetname, displacedFileLease);
+        }
+        appendPostReplacementWarning(result, "Unknown backup policy");
+    }
+    catch (const std::exception& exception) {
+        appendPostReplacementWarning(result,
+                                     "Unable to manage the previous file after replacement: "
+                                         + std::string(exception.what()));
+    }
+    catch (...) {
+        appendPostReplacementWarning(
+            result,
+            "Unable to manage the previous file after replacement: unknown error");
+    }
+    return result;
+}
+
+BackupPolicy::PostReplacementResult
+BackupPolicy::applyStandardAfterReplacement(const std::string& sourcename,
+                                            const std::string& targetname,
+                                            const std::shared_ptr<void>& lease)
+{
+    PostReplacementResult result;
+    Base::FileInfo source(sourcename);
+    if (sourcename.empty() || (!lease && (!source.exists() || !source.isFile()))) {
+        appendPostReplacementWarning(result,
+                                     "The displaced previous file is unavailable for backup");
+        return result;
+    }
+    if (numberOfFiles <= 0) {
+        const auto discarded = discardDisplaced(sourcename, lease);
+        result.displacedFileConsumed = discarded.sourceConsumed;
+        if (!result.displacedFileConsumed) {
+            appendPostReplacementWarning(result,
+                                         "Unable to remove the unneeded displaced previous file: "
+                                             + discarded.error);
+        }
+        else if (!discarded.durabilityVerified) {
+            appendPostReplacementWarning(
+                result,
+                "The displaced previous file was removed, but cleanup durability is unverified: "
+                    + discarded.error);
+        }
+        return result;
+    }
+
+    Base::FileInfo target(targetname);
+    const std::string canonicalName = target.fileName();
+    Base::FileInfo directory(target.dirPath());
+    int highestSuffix = 0;
+    for (const Base::FileInfo& entry : directory.getDirectoryContent()) {
+        const std::string file = entry.fileName();
+        if (!entry.isFile() || file.substr(0, canonicalName.length()) != canonicalName) {
+            continue;
+        }
+        const std::string suffix = file.substr(canonicalName.length());
+        if (!suffix.empty() && suffix.find_first_not_of("0123456789") == std::string::npos) {
+            highestSuffix = std::max(highestSuffix, std::atoi(suffix.c_str()));
+        }
+    }
+
+    int suffix = highestSuffix + 1;
+    std::string installed;
+    bool installationDurable = false;
+    std::vector<std::string> protectedCandidates;
+    for (int attempt = 0; attempt < numberOfFiles + 128; ++attempt) {
+        const std::string candidate = target.filePath() + std::to_string(suffix++);
+        const bool existedBeforeAttempt = Base::FileInfo(candidate).exists();
+        const auto install = installDisplacedNoReplace(sourcename, candidate, lease);
+        if (install.installed) {
+            result.backupCreated = true;
+            result.displacedFileConsumed = install.sourceConsumed;
+            installationDurable = install.durabilityVerified && install.sourceConsumed;
+            installed = candidate;
+            if (!install.durabilityVerified) {
+                appendPostReplacementWarning(
+                    result,
+                    "The backup name was installed, but transfer durability is unverified; "
+                    "the displaced snapshot was retained when possible: "
+                        + install.error);
+            }
+            else if (!install.sourceConsumed) {
+                appendPostReplacementWarning(
+                    result,
+                    "The backup was installed, but the displaced snapshot name remains: "
+                        + install.error);
+            }
+            break;
+        }
+        if (install.destinationExists && !existedBeforeAttempt) {
+            protectedCandidates.push_back(candidate);
+        }
+        if (!install.destinationExists) {
+            result.displacedFileConsumed = install.sourceConsumed;
+            appendPostReplacementWarning(
+                result,
+                "Unable to install the displaced previous file in backup history: "
+                    + install.error);
+            return result;
+        }
+    }
+    if (!result.backupCreated) {
+        appendPostReplacementWarning(
+            result,
+            "Unable to reserve a collision-free standard backup history entry");
+        return result;
+    }
+    if (!installationDurable) {
+        // Never prune known-good history until the newly installed snapshot
+        // and its source-name transition are durably accounted for.
+        return result;
+    }
+
+    try {
+        std::vector<Base::FileInfo> backups;
+        for (const Base::FileInfo& entry : directory.getDirectoryContent()) {
+            const std::string file = entry.fileName();
+            if (!entry.isFile() || file.substr(0, canonicalName.length()) != canonicalName) {
+                continue;
+            }
+            const std::string suffixText = file.substr(canonicalName.length());
+            if (!suffixText.empty()
+                && suffixText.find_first_not_of("0123456789") == std::string::npos) {
+                backups.push_back(entry);
+            }
+        }
+        pruneInstalledHistory(result,
+                              std::move(backups),
+                              installed,
+                              protectedCandidates,
+                              numberOfFiles);
+    }
+    catch (const std::exception& exception) {
+        appendPostReplacementWarning(
+            result,
+            "The new backup is installed, but old history could not be pruned: "
+                + std::string(exception.what()));
+    }
+    return result;
+}
+
+BackupPolicy::PostReplacementResult
+BackupPolicy::applyTimeStampAfterReplacement(const std::string& sourcename,
+                                             const std::string& targetname,
+                                             const std::shared_ptr<void>& lease)
+{
+    PostReplacementResult result;
+    Base::FileInfo source(sourcename);
+    if (sourcename.empty() || (!lease && (!source.exists() || !source.isFile()))) {
+        appendPostReplacementWarning(result,
+                                     "The displaced previous file is unavailable for backup");
+        return result;
+    }
+    if (numberOfFiles <= 0) {
+        const auto discarded = discardDisplaced(sourcename, lease);
+        result.displacedFileConsumed = discarded.sourceConsumed;
+        if (!result.displacedFileConsumed) {
+            appendPostReplacementWarning(result,
+                                         "Unable to remove the unneeded displaced previous file: "
+                                             + discarded.error);
+        }
+        else if (!discarded.durabilityVerified) {
+            appendPostReplacementWarning(
+                result,
+                "The displaced previous file was removed, but cleanup durability is unverified: "
+                    + discarded.error);
+        }
+        return result;
+    }
+
+    Base::FileInfo target(targetname);
+    const std::string extension = target.extension();
+    std::string backupBase;
+    std::string projectBase;
+    if (!extension.empty()) {
+        backupBase = target.filePath().substr(0, target.filePath().length() - extension.length());
+        projectBase = target.fileName().substr(0, target.fileName().length() - extension.length());
+    }
+    else {
+        backupBase = target.filePath() + ".";
+        projectBase = target.fileName() + ".";
+    }
+
+    std::string installed;
+    bool installationDurable = false;
+    std::vector<std::string> protectedCandidates;
+    if (!useFCBakExtension) {
+        for (int suffix = 1; suffix < numberOfFiles + 128; ++suffix) {
+            const std::string candidate = target.filePath() + std::to_string(suffix);
+            const bool existedBeforeAttempt = Base::FileInfo(candidate).exists();
+            const auto install = installDisplacedNoReplace(sourcename, candidate, lease);
+            if (install.installed) {
+                result.backupCreated = true;
+                result.displacedFileConsumed = install.sourceConsumed;
+                installationDurable = install.durabilityVerified && install.sourceConsumed;
+                installed = candidate;
+                if (!install.durabilityVerified) {
+                    appendPostReplacementWarning(
+                        result,
+                        "The backup name was installed, but transfer durability is unverified; "
+                        "the displaced snapshot was retained when possible: "
+                            + install.error);
+                }
+                else if (!install.sourceConsumed) {
+                    appendPostReplacementWarning(
+                        result,
+                        "The backup was installed, but the displaced snapshot name remains: "
+                            + install.error);
+                }
+                break;
+            }
+            if (install.destinationExists && !existedBeforeAttempt) {
+                protectedCandidates.push_back(candidate);
+            }
+            if (!install.destinationExists) {
+                result.displacedFileConsumed = install.sourceConsumed;
+                appendPostReplacementWarning(
+                    result,
+                    "Unable to install the displaced previous file in backup history: "
+                        + install.error);
+                return result;
+            }
+        }
+    }
+    else {
+        std::string dateFormat = saveBackupDateFormat;
+        boost::replace_all(dateFormat, ".", "-");
+        Base::TimeInfo modified = source.lastModified();
+        const std::time_t modifiedTime = modified.getTime_t();
+        std::tm localTime {};
+#if defined(_WIN32)
+        localtime_s(&localTime, &modifiedTime);
+#else
+        localtime_r(&modifiedTime, &localTime);
+#endif
+        constexpr std::size_t bufferLength = 128;
+        std::array<char, bufferLength> buffer {};
+        if (std::strftime(buffer.data(), bufferLength, dateFormat.c_str(), &localTime) == 0) {
+            appendPostReplacementWarning(result,
+                                         "The backup date format was invalid; using a safe format");
+            constexpr std::string_view fallback {"%Y-%m-%d_%H-%M-%S"};
+            std::strftime(buffer.data(), bufferLength, fallback.data(), &localTime);
+        }
+        std::string timestamp = buffer.data();
+        const auto invalidCharacter = [](const char character) {
+#if defined(_WIN32)
+            return std::string_view("<>:\"/\\|?*").find(character) != std::string_view::npos;
+#else
+            return character == '/';
+#endif
+        };
+        if (std::ranges::any_of(timestamp, invalidCharacter)) {
+            std::ranges::replace_if(timestamp, invalidCharacter, '-');
+            appendPostReplacementWarning(
+                result,
+                "Invalid backup filename characters were replaced with '-'");
+        }
+
+        std::string candidateBase = backupBase + timestamp;
+        if (!candidateBase.empty() && candidateBase.back() == ' ') {
+            candidateBase.pop_back();
+        }
+        std::vector<std::string> candidates;
+        if (!candidateBase.empty() && candidateBase.back() != '-') {
+            candidates.push_back(candidateBase + ".FCBak");
+            candidateBase += '-';
+        }
+        for (int suffix = 1; suffix < numberOfFiles + 128; ++suffix) {
+            candidates.push_back(candidateBase + std::to_string(suffix) + ".FCBak");
+        }
+        for (const std::string& candidate : candidates) {
+            const bool existedBeforeAttempt = Base::FileInfo(candidate).exists();
+            const auto install = installDisplacedNoReplace(sourcename, candidate, lease);
+            if (install.installed) {
+                result.backupCreated = true;
+                result.displacedFileConsumed = install.sourceConsumed;
+                installationDurable = install.durabilityVerified && install.sourceConsumed;
+                installed = candidate;
+                if (!install.durabilityVerified) {
+                    appendPostReplacementWarning(
+                        result,
+                        "The backup name was installed, but transfer durability is unverified; "
+                        "the displaced snapshot was retained when possible: "
+                            + install.error);
+                }
+                else if (!install.sourceConsumed) {
+                    appendPostReplacementWarning(
+                        result,
+                        "The backup was installed, but the displaced snapshot name remains: "
+                            + install.error);
+                }
+                break;
+            }
+            if (install.destinationExists && !existedBeforeAttempt) {
+                protectedCandidates.push_back(candidate);
+            }
+            if (!install.destinationExists) {
+                result.displacedFileConsumed = install.sourceConsumed;
+                appendPostReplacementWarning(
+                    result,
+                    "Unable to install the displaced previous file in backup history: "
+                        + install.error);
+                return result;
+            }
+        }
+    }
+
+    if (!result.backupCreated) {
+        appendPostReplacementWarning(
+            result,
+            "Unable to reserve a collision-free timestamp backup history entry");
+        return result;
+    }
+    if (!installationDurable) {
+        return result;
+    }
+
+    try {
+        std::vector<Base::FileInfo> backups;
+        Base::FileInfo directory(target.dirPath());
+        for (const Base::FileInfo& entry : directory.getDirectoryContent()) {
+            if (!entry.isFile()) {
+                continue;
+            }
+            const std::string file = entry.fileName();
+            std::string entryExtension = entry.extension();
+            std::ranges::transform(entryExtension,
+                                   entryExtension.begin(),
+                                   [](const unsigned char ch) {
+                                       return static_cast<char>(std::toupper(ch));
+                                   });
+            const bool oldNumeric = startsWith(file, target.fileName())
+                && file.length() > target.fileName().length()
+                && checkDigits(file.substr(target.fileName().length()));
+            const bool timestamped = entryExtension == "FCBAK" && startsWith(file, projectBase)
+                && checkValidComplement(file, projectBase, entry.extension());
+            if (oldNumeric || timestamped) {
+                backups.push_back(entry);
+            }
+        }
+        pruneInstalledHistory(result,
+                              std::move(backups),
+                              installed,
+                              protectedCandidates,
+                              numberOfFiles);
+    }
+    catch (const std::exception& exception) {
+        appendPostReplacementWarning(
+            result,
+            "The new backup is installed, but old history could not be pruned: "
+                + std::string(exception.what()));
+    }
+    return result;
 }
 
 void BackupPolicy::applyStandard(const std::string& sourcename, const std::string& targetname) const
@@ -366,10 +1319,15 @@ bool BackupPolicy::checkDigits(const std::string& cmpl) const
 
 bool BackupPolicy::renameFileNoErase(Base::FileInfo fi, const std::string& newName)
 {
-    // linux just replaces the file if it exists, so the existence is to be tested before rename
-    const Base::FileInfo nf(newName);
-    if (!nf.exists()) {
-        return fi.renameFile(newName.c_str());
+    // A separate exists() check is a no-clobber TOCTOU. The OS primitive owns
+    // the collision decision at the namespace boundary.
+    try {
+        const auto result = atomicInstallNoReplace(fi.filePath(), newName, false);
+        return result.installed;
     }
-    return false;
+    catch (...) {
+        // This historical helper reports inability to reserve a name as false;
+        // legacy apply() retains its established Base::FileException boundary.
+        return false;
+    }
 }

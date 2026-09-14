@@ -343,7 +343,17 @@ PythonConsole* MacroManager::getPythonConsole() const
 {
     // search for the Python console
     if (!this->pyConsole) {
-        this->pyConsole = Gui::getMainWindow()->findChild<Gui::PythonConsole*>();
+        // The console is a child of the main window, and there is not always one to
+        // search. Gui::Application::setActiveDocument() records its two comment lines
+        // through here, and document teardown calls it whenever the document being
+        // closed is the active one -- which a headless process reaches with no main
+        // window ever bootstrapped. Nothing is recorded in that case, so report no
+        // console rather than dereferencing null.
+        auto* mainWindow = Gui::getMainWindow();
+        if (!mainWindow) {
+            return nullptr;
+        }
+        this->pyConsole = mainWindow->findChild<Gui::PythonConsole*>();
     }
 
     return this->pyConsole;

@@ -30,6 +30,7 @@ namespace App
 
 class Document;
 class Application;
+class DocumentRecomputeCoordinator;
 struct RecoverySnapshotSaveOptions;
 
 namespace Internal
@@ -70,16 +71,38 @@ enum class CollaborationCompatibilityScope
     Structural
 };
 
+/** Recompute policy for the synchronous native compatibility boundary. */
+enum class CollaborationCompatibilityRecomputePolicy
+{
+    Eager,
+    Deferred
+};
+
 /** Pointer-free declaration for the short synchronous compatibility path. */
 struct AppExport CollaborationCompatibilityMutation
 {
     CollaborationCompatibilityScope scope {CollaborationCompatibilityScope::UnknownModel};
     std::string objectName;
     std::string stableObjectIdentity;
+    std::string propertyName;
 };
 
 using CollaborationCompatibilityCallback = std::function<void()>;
 using CollaborationCompatibilityPostcondition = std::function<bool()>;
+
+/**
+ * Options for the extended synchronous compatibility boundary.
+ *
+ * This is deliberately separate from CollaborationCompatibilityMutation so
+ * the layout and exported call shape of the legacy declaration remain ABI
+ * stable.
+ */
+struct AppExport CollaborationCompatibilityMutationOptions
+{
+    CollaborationCompatibilityRecomputePolicy recomputePolicy {
+        CollaborationCompatibilityRecomputePolicy::Eager};
+    CollaborationCompatibilityPostcondition postcondition;
+};
 
 /** Result of the service-owned native transaction commit point. */
 struct AppExport CollaborationAtomicCommitPointResult
@@ -121,6 +144,8 @@ public:
     [[nodiscard]] bool cancelEdit(const std::string& sessionId,
                                   std::string reason = "cancelled by caller");
 
+    [[nodiscard]] CollaborationEditSnapshot captureSemanticRevisions(
+        std::vector<DocumentRevisionKey> keys) const;
     [[nodiscard]] CollaborationEditSnapshot snapshotForEdit(
         const std::string& sessionId,
         std::vector<DocumentRevisionKey> keys) const;
@@ -128,6 +153,12 @@ public:
                                            std::string operationId,
                                            const CollaborativeOperationIntent& intent,
                                            std::string provenance);
+    [[nodiscard]] PreparedEdit prepareEditWithExpectedRevisions(
+        const std::string& sessionId,
+        std::string operationId,
+        const CollaborativeOperationIntent& intent,
+        std::vector<DocumentRevisionObservation> expectedRevisions,
+        std::string provenance);
     [[nodiscard]] PreparedEditExecutionId prepareEditAsync(
         const std::string& sessionId,
         std::string operationId,
@@ -148,10 +179,19 @@ public:
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback,
         CollaborationCompatibilityPostcondition postcondition);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicy(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithOptions(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityMutationOptions options);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
         CollaborationCompatibilityCallback callback);
 
 private:
+    friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
     friend class Application;
     friend class Document;
@@ -178,11 +218,24 @@ private:
 
     explicit DocumentCollaborationService(Document& document);
 
+    [[nodiscard]] int openCompatibilityTransaction(TransactionName name, int transactionId);
+    [[nodiscard]] int openMutationTransaction(std::string name, int transactionId);
+    [[nodiscard]] int setActiveCompatibilityTransaction(TransactionName name, int transactionId);
+    void commitCompatibilityTransaction();
+    void abortCompatibilityTransaction();
+    [[nodiscard]] bool undoCompatibilityTransaction(int transactionId);
+    [[nodiscard]] bool redoCompatibilityTransaction(int transactionId);
+    void clearCompatibilityTransactionHistory();
+    [[nodiscard]] bool commitApplicationTransaction();
+    void abortApplicationTransaction();
+
     [[nodiscard]] LifecyclePin pinDocumentAccess() const;
     [[nodiscard]] std::shared_ptr<Internal::CollaborationServiceLifetimeGate>
     lifetimeGate() const;
 
     [[nodiscard]] EditSession requireActiveSession(const std::string& sessionId) const;
+    [[nodiscard]] CollaborationEditSnapshot captureSemanticRevisionsOnDocumentThread(
+        std::vector<DocumentRevisionKey> keys) const;
     [[nodiscard]] CollaborationEditSnapshot snapshotForEditOnDocumentThread(
         const std::string& sessionId,
         std::vector<DocumentRevisionKey> keys) const;
@@ -190,7 +243,8 @@ private:
         const std::string& sessionId,
         std::string operationId,
         const CollaborativeOperationIntent& intent,
-        std::string provenance);
+        std::string provenance,
+        const std::vector<DocumentRevisionObservation>* expectedRevisionFence = nullptr);
     [[nodiscard]] PreparedEditExecutionId prepareEditAsyncOnDocumentThread(
         const std::string& sessionId,
         std::string operationId,
@@ -198,8 +252,18 @@ private:
         std::string provenance);
     [[nodiscard]] std::optional<CollaborationPreparedEditResult>
     takePreparedEditOnDocumentThread(const std::string& sessionId,
-                                     PreparedEditExecutionId executionId);
+                                     PreparedEditExecutionId executionId,
+                                     bool allowPendingRecompute = false);
+    [[nodiscard]] std::optional<CollaborationPreparedEditResult>
+    takeRecomputePreparedEdit(const std::string& sessionId,
+                              PreparedEditExecutionId executionId);
     [[nodiscard]] DocumentCommitResult commitEditOnDocumentThread(
+        const std::string& sessionId,
+        const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitRecomputeEdit(
+        const std::string& sessionId,
+        const PreparedEdit& edit);
+    [[nodiscard]] DocumentCommitResult commitRecomputeEditOnDocumentThread(
         const std::string& sessionId,
         const PreparedEdit& edit);
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(
@@ -210,6 +274,14 @@ private:
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback,
         CollaborationCompatibilityPostcondition postcondition);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicyOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityRecomputePolicy recomputePolicy);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithOptionsOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityMutationOptions options);
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallbackOnDocumentThread(
         CollaborationCompatibilityCallback callback);
     [[nodiscard]] DocumentCommitResult serializeAtomicCompatibilityCallback(
@@ -240,6 +312,12 @@ private:
 
     struct PendingDetachedPreparation
     {
+        enum class Backend
+        {
+            InProcess,
+            IsolatedProcess
+        };
+
         std::string sessionId;
         std::uint64_t adapterRegistrationId {0};
         std::string operationId;
@@ -251,6 +329,10 @@ private:
         std::vector<DocumentRevisionKey> writeSet;
         std::vector<DocumentRevisionPublicationRequest> publicationEffects;
         std::string provenance;
+        Backend backend {Backend::InProcess};
+        CollaborativeOperationPreparation::IsolatedResultDecoder isolatedResultDecoder;
+        CollaborativeOperationPreparation::IsolatedPublicationEffectDecoder
+            isolatedPublicationEffectDecoder;
         bool collecting {false};
     };
 

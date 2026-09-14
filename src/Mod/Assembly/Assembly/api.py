@@ -85,15 +85,20 @@ def createJoint(
 
     joint_group = UtilsAssembly.getJointGroup(assembly)
     joint = joint_group.newObject("App::FeaturePython", "Joint")
-    JointObject.Joint(joint, type_index)
-    joint.Label = JointObject.JointTypes[type_index] if label is None else label
-    _attach_joint_view_provider(joint, grounded=False)
+    try:
+        JointObject.Joint(joint, type_index)
+        joint.Label = JointObject.JointTypes[type_index] if label is None else label
+        _attach_joint_view_provider(joint, grounded=False)
 
-    _apply_joint_properties(joint, properties)
-    joint.Proxy.setJointConnectors(joint, [ref1, ref2], solve=bool(solve), presolve=bool(presolve))
-
-    if recompute:
-        assembly.Document.recompute()
+        _apply_joint_properties(joint, properties)
+        joint.Proxy.setJointConnectors(
+            joint, [ref1, ref2], solve=bool(solve), presolve=bool(presolve)
+        )
+        if recompute:
+            assembly.Document.recompute()
+    except Exception:
+        _remove_failed_joint(joint)
+        raise
 
     return joint
 
@@ -108,13 +113,16 @@ def createGroundedJoint(assembly, component, *, label=None, recompute=True):
 
     joint_group = UtilsAssembly.getJointGroup(assembly)
     joint = joint_group.newObject("App::FeaturePython", "GroundedJoint")
-    JointObject.GroundedJoint(joint, component)
-    if label is not None:
-        joint.Label = label
-    _attach_joint_view_provider(joint, grounded=True)
-
-    if recompute:
-        assembly.Document.recompute()
+    try:
+        JointObject.GroundedJoint(joint, component)
+        if label is not None:
+            joint.Label = label
+        _attach_joint_view_provider(joint, grounded=True)
+        if recompute:
+            assembly.Document.recompute()
+    except Exception:
+        _remove_failed_joint(joint)
+        raise
 
     return joint
 
@@ -238,16 +246,33 @@ def _attach_joint_view_provider(joint, grounded):
     if not App.GuiUp:
         return
 
+    import JointObject
+
     view_object = getattr(joint, "ViewObject", None)
     if view_object is None:
+        JointObject.scheduleJointViewProvider(joint, grounded)
         return
-
-    import JointObject
 
     if grounded:
         JointObject.ViewProviderGroundedJoint(view_object)
     else:
         JointObject.ViewProviderJoint(view_object)
+
+
+def _remove_failed_joint(joint):
+    """Remove a partially initialized joint without masking its original error."""
+    import JointObject
+
+    JointObject.cancelScheduledJointViewProvider(joint)
+    document = getattr(joint, "Document", None)
+    name = getattr(joint, "Name", None)
+    if document is None or not name:
+        return
+
+    try:
+        document.removeObject(name)
+    except Exception:
+        pass
 
 
 __all__ = [

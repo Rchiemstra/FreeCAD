@@ -112,6 +112,18 @@ public:
 		return detail::signal_impl_ptr(m_slots)->invoke<combiner_type, result_type, signature_type, signal_arg_t<Arguments>...>(args...);
 	}
 
+	/**
+	 * Calls every void slot even when an earlier slot throws. The failure
+	 * handler receives the captured exception for each failed subscriber.
+	 */
+	template <class FailureHandler>
+	void emit_resilient(FailureHandler&& failureHandler, signal_arg_t<Arguments>... args) const noexcept
+	{
+		static_assert(std::is_void_v<Return>, "Resilient emission is only supported for void signals");
+		detail::signal_impl_ptr(m_slots)->template invoke_resilient<signature_type>(
+			std::forward<FailureHandler>(failureHandler), args...);
+	}
+
 	void swap(signal& other) noexcept
 	{
 		m_slots.swap(other.m_slots);

@@ -440,9 +440,18 @@ void Property::setStatusValue(unsigned long status)
     if (status != oldStatus && father) {
         if (auto* document = documentFromPropertyContainer(father)) {
             enforceAtomicPresentationMutationTarget(document);
-            // User3/Touched and other non-schema flags are used as temporary
-            // lockers (e.g. GeoFeatureGroupExtension::extensionOnChanged).
-            // Property schema still goes through DynamicProperty / setPropertyStatus.
+            // User3/Touched and other non-schema flags are temporary lockers
+            // (e.g. GeoFeatureGroupExtension::extensionOnChanged). Persistence
+            // schema still goes through DynamicProperty / setPropertyStatus;
+            // ensurePropertyStatusMutationAllowed ignores those runtime bits.
+            Internal::CollaborationStructuralMutationRecorder::
+                ensurePropertyStatusMutationAllowed(*document, *this, oldStatus, status);
+        }
+        else {
+            // ViewProvider properties are GUI-owned containers. Their existing
+            // pre-change path reaches GUI audit and the owning App transaction
+            // before StatusBits is modified.
+            father->onBeforeChange(this);
         }
     }
     StatusBits = decltype(StatusBits)(status);
@@ -451,8 +460,7 @@ void Property::setStatusValue(unsigned long status)
         if (status != oldStatus) {
             publishPropertyMutation(*this, true);
         }
-        static unsigned long signalMask = (1 << ReadOnly) | (1 << Hidden);
-        if ((status & signalMask) != (oldStatus & signalMask)) {
+        if (status != oldStatus) {
             father->onPropertyStatusChanged(*this, oldStatus);
         }
     }

@@ -133,8 +133,10 @@ TEST_F(CollaborativeSetPropertyIndependenceTest,
     const auto secondResult =
         _document->collaborationService().commitEdit(_session.sessionId(), second);
 
-    EXPECT_TRUE(firstResult.committed());
-    EXPECT_TRUE(secondResult.committed());
+    EXPECT_TRUE(firstResult.committed())
+        << documentCommitStatusName(firstResult.status) << ": " << firstResult.message;
+    EXPECT_TRUE(secondResult.committed())
+        << documentCommitStatusName(secondResult.status) << ": " << secondResult.message;
     EXPECT_EQ(_first->getValue(), 10);
     EXPECT_EQ(_second->getValue(), 20);
 }
@@ -231,10 +233,13 @@ TEST_F(CollaborativeSetPropertyIndependenceTest,
 TEST_F(CollaborativeSetPropertyIndependenceTest,
        initialExpressionUsesConservativeExactBaseFallback)
 {
+    SCOPED_TRACE("stage: bind initial expression to Second");
     _target->setExpression(
         ObjectIdentifier(*_second),
         std::shared_ptr<Expression>(Expression::parse(_target, "42")));
+    SCOPED_TRACE("stage: recompute initial expression");
     _document->recompute();
+    SCOPED_TRACE("stage: prepare conservative expression fallback");
     auto expressionFallback = prepare("expression", intent("First", "10"));
     EXPECT_EQ(expressionFallback.writeSet(),
               (std::vector<DocumentRevisionKey> {
@@ -244,10 +249,13 @@ TEST_F(CollaborativeSetPropertyIndependenceTest,
 
 TEST_F(CollaborativeSetPropertyIndependenceTest, expressionBoundTargetIsRejected)
 {
+    SCOPED_TRACE("stage: bind expression to target property First");
     _target->setExpression(
         ObjectIdentifier(*_first),
         std::shared_ptr<Expression>(Expression::parse(_target, "42")));
+    SCOPED_TRACE("stage: recompute expression-bound target");
     _document->recompute();
+    SCOPED_TRACE("stage: reject preparation for expression-bound target");
     EXPECT_THROW(static_cast<void>(prepare("bound-target", intent("First", "10"))),
                  std::invalid_argument);
 }

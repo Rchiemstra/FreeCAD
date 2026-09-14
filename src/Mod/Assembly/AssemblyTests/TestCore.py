@@ -25,6 +25,8 @@ import FreeCAD as App
 import Assembly
 import Part
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import UtilsAssembly
 import JointObject
@@ -323,6 +325,222 @@ class TestCore(AssemblyTestBase):
 
         with self.assertRaises(Assembly.JointCreationError):
             Assembly.makeJointReference(box1, "Face6?")
+
+    def test_api_removes_joint_after_constructor_failure(self):
+        """A failed joint constructor must not leave an invalid group member."""
+        box1 = self.assembly.newObject("Part::Box", "ApiConstructorFailureBox1")
+        box2 = self.assembly.newObject("Part::Box", "ApiConstructorFailureBox2")
+        ref1 = Assembly.makeJointReference(box1, "Face6", "Vertex7")
+        ref2 = Assembly.makeJointReference(box2, "Face6", "Vertex7")
+
+        with patch.object(JointObject, "Joint", side_effect=RuntimeError("constructor failed")):
+            with self.assertRaisesRegex(RuntimeError, "constructor failed"):
+                Assembly.createJoint(self.assembly, "Fixed", ref1, ref2, recompute=False)
+
+        self.assertIsNone(self.doc.getObject("Joint"))
+
+    def test_api_removes_joint_after_connector_failure(self):
+        """A failed connector assignment must not leave an invalid group member."""
+        box1 = self.assembly.newObject("Part::Box", "ApiConnectorFailureBox1")
+        box2 = self.assembly.newObject("Part::Box", "ApiConnectorFailureBox2")
+        ref1 = Assembly.makeJointReference(box1, "Face6", "Vertex7")
+        ref2 = Assembly.makeJointReference(box2, "Face6", "Vertex7")
+        original_set_connectors = JointObject.Joint.setJointConnectors
+
+        def fail_nonempty_connectors(proxy, joint, refs, **kwargs):
+            if refs:
+                raise RuntimeError("connector failed")
+            return original_set_connectors(proxy, joint, refs, **kwargs)
+
+        with patch.object(JointObject.Joint, "setJointConnectors", new=fail_nonempty_connectors):
+            with self.assertRaisesRegex(RuntimeError, "connector failed"):
+                Assembly.createJoint(self.assembly, "Fixed", ref1, ref2, recompute=False)
+
+        self.assertIsNone(self.doc.getObject("Joint"))
+
+    def test_api_removes_grounded_joint_after_constructor_failure(self):
+        """A failed grounded-joint constructor must not leave a group member."""
+        box = self.assembly.newObject("Part::Box", "ApiGroundedConstructorFailureBox")
+
+        with patch.object(
+            JointObject, "GroundedJoint", side_effect=RuntimeError("grounded constructor failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "grounded constructor failed"):
+                Assembly.createGroundedJoint(self.assembly, box, recompute=False)
+
+        self.assertIsNone(self.doc.getObject("GroundedJoint"))
+
+    def test_joint_migration_allows_deferred_view_object(self):
+        """A GUI replay may create the document object before its view object."""
+        class DeferredJoint:
+            ViewObject = None
+
+            def __init__(self):
+                self.extensions = set()
+
+            def hasExtension(self, extension):
+                return extension in self.extensions
+
+            def addExtension(self, extension):
+                self.extensions.add(extension)
+
+        joint = DeferredJoint()
+        proxy = JointObject.Joint.__new__(JointObject.Joint)
+        original_app = JointObject.App
+        JointObject.App = SimpleNamespace(GuiUp=True)
+        try:
+            proxy.migrationScript5(joint)
+        finally:
+            JointObject.App = original_app
+
+        self.assertIn("App::SuppressibleExtensionPython", joint.extensions)
+
+    def test_joint_deferred_view_provider_is_attached_on_recompute(self):
+        """A delayed GUI object receives the joint provider and suppressible extension."""
+        class DeferredViewObject:
+            def __init__(self):
+                self.Proxy = None
+                self.extensions = set()
+
+            def hasExtension(self, extension):
+                return extension in self.extensions
+
+            def addExtension(self, extension):
+                self.extensions.add(extension)
+
+        joint = SimpleNamespace(ViewObject=DeferredViewObject())
+        proxy = JointObject.Joint.__new__(JointObject.Joint)
+        original_app = JointObject.App
+        JointObject.App = SimpleNamespace(GuiUp=True)
+        try:
+            proxy.ensureViewProvider(joint)
+        finally:
+            JointObject.App = original_app
+
+        self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
+        self.assertIn(
+            "Gui::ViewProviderSuppressibleExtensionPython", joint.ViewObject.extensions
+        )
+
+    def test_joint_deferred_view_provider_observes_gui_replay(self):
+        """The GUI observer installs the provider when native replay creates it."""
+        class DeferredViewObject:
+            def __init__(self, obj):
+                self.Object = obj
+                self.Proxy = None
+                self.extensions = set()
+
+            def hasExtension(self, extension):
+                return extension in self.extensions
+
+            def addExtension(self, extension):
+                self.extensions.add(extension)
+
+        document = SimpleNamespace(Name="DeferredViewProviderDocument")
+        joint = SimpleNamespace(Document=document, Name="Joint", ViewObject=None)
+        gui = SimpleNamespace(
+            addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock()
+        )
+        original_app = JointObject.App
+        original_gui = getattr(JointObject, "Gui", None)
+        original_observer = JointObject._deferred_joint_view_provider_observer
+        original_pending = dict(JointObject._deferred_joint_view_providers)
+        JointObject.App = SimpleNamespace(GuiUp=True)
+        JointObject.Gui = gui
+        JointObject._deferred_joint_view_providers.clear()
+        JointObject._deferred_joint_view_provider_observer = None
+        try:
+            JointObject.scheduleJointViewProvider(joint)
+            observer = JointObject._deferred_joint_view_provider_observer
+            self.assertIsNotNone(observer)
+            gui.addDocumentObserver.assert_called_once_with(observer)
+
+            view_object = DeferredViewObject(joint)
+            joint.ViewObject = view_object
+            observer.slotCreatedObject(view_object)
+        finally:
+            JointObject.App = original_app
+            JointObject.Gui = original_gui
+            JointObject._deferred_joint_view_providers.clear()
+            JointObject._deferred_joint_view_providers.update(original_pending)
+            JointObject._deferred_joint_view_provider_observer = original_observer
+
+        self.assertIsInstance(view_object.Proxy, JointObject.ViewProviderJoint)
+        self.assertIn("Gui::ViewProviderSuppressibleExtensionPython", view_object.extensions)
+        gui.removeDocumentObserver.assert_called_once_with(observer)
+
+    def test_joint_deferred_view_provider_request_can_be_cancelled(self):
+        """A failed creation removes its replay request before its name is reused."""
+        document = SimpleNamespace(Name="DeferredCancellationDocument")
+        joint = SimpleNamespace(Document=document, Name="Joint", ViewObject=None)
+        gui = SimpleNamespace(
+            addDocumentObserver=MagicMock(), removeDocumentObserver=MagicMock()
+        )
+        original_app = JointObject.App
+        original_gui = getattr(JointObject, "Gui", None)
+        JointObject.App = SimpleNamespace(GuiUp=True)
+        JointObject.Gui = gui
+        JointObject._deferred_joint_view_providers.clear()
+        JointObject._deferred_joint_view_provider_observer = None
+        try:
+            JointObject.scheduleJointViewProvider(joint)
+            observer = JointObject._deferred_joint_view_provider_observer
+            JointObject.cancelScheduledJointViewProvider(joint)
+        finally:
+            JointObject.App = original_app
+            JointObject.Gui = original_gui
+            JointObject._deferred_joint_view_providers.clear()
+            JointObject._deferred_joint_view_provider_observer = None
+
+        self.assertNotIn((document.Name, joint.Name), JointObject._deferred_joint_view_providers)
+        gui.removeDocumentObserver.assert_called_once_with(observer)
+
+    def test_joint_deferred_view_provider_is_skipped_headless(self):
+        """Headless recomputes never access a view object."""
+        joint = SimpleNamespace(ViewObject=None)
+        proxy = JointObject.Joint.__new__(JointObject.Joint)
+        original_app = JointObject.App
+        JointObject.App = SimpleNamespace(GuiUp=False)
+        try:
+            proxy.ensureViewProvider(joint)
+        finally:
+            JointObject.App = original_app
+
+    def test_api_joint_provider_is_attached_after_native_gui_publication(self):
+        """Native compatibility replay publishes a deferred joint ViewObject."""
+        if not App.GuiUp:
+            self.skipTest("requires a native GUI document publication")
+
+        first = self.assembly.newObject("Part::Box", "DeferredProviderFirst")
+        second = self.assembly.newObject("Part::Box", "DeferredProviderSecond")
+        self.doc.recompute()
+        self.assertFalse(self.doc.mustExecute())
+        created = []
+
+        def create_joint():
+            joint = Assembly.createJoint(
+                self.assembly,
+                "Fixed",
+                Assembly.makeJointReference(first, "Face6", "Vertex7"),
+                Assembly.makeJointReference(second, "Face6", "Vertex7"),
+                solve=False,
+                presolve=False,
+                recompute=False,
+            )
+            self.assertIsNone(joint.ViewObject)
+            created.append(joint)
+            return True
+
+        result = self.doc.commitCompatibilityMutation(
+            create_joint, structural=True, recompute=False
+        )
+        self.assertTrue(result.get("committed"), result)
+        joint = created[0]
+        self.assertIsNotNone(joint.ViewObject)
+        self.assertIsInstance(joint.ViewObject.Proxy, JointObject.ViewProviderJoint)
+        self.assertTrue(
+            joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython")
+        )
 
     def test_api_solve_false_does_not_move_component(self):
         """Create a joint without forcing a solve."""

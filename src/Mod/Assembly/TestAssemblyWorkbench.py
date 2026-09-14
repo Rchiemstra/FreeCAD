@@ -31,6 +31,7 @@ from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
 from AssemblyTests.TestWebotsExport import TestWebotsExport
 from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
 from AssemblyTests.TestSimulationExport import TestSimulationExport
+from AssemblyTests.TestPreferencesImport import TestPreferencesImport
 from AssemblyTests.TestReviewNotesIssues import (
     TestReviewNotesIssues,
     TestReviewNotesGuiIssues,
@@ -46,5 +47,6 @@ True if TestWebotsExport else False
 True if TestReviewNotes else False
 True if TestReviewNotesGui else False
 True if TestSimulationExport else False
+True if TestPreferencesImport else False
 True if TestReviewNotesIssues else False
 True if TestReviewNotesGuiIssues else False

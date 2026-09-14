@@ -33,7 +33,7 @@ if App.GuiUp:
     from PySide.QtGui import QIcon
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 import CommandCreateJoint
 
 __title__ = "Assembly Command Insert Component"

@@ -122,6 +122,21 @@ public:
     );
 
     App::DocumentObjectExecReturn* execute() override;
+
+    /** Assembly solving cannot be reproduced in the isolated worker.
+     *
+     * execute() runs solve(), whose whole product is written onto *other*
+     * objects: ensureIdentityPlacements() normalises member link groups and
+     * setNewPlacements() moves every jointed part. The worker publishes only
+     * the recomputed target's own declared outputs, so a solve that runs in
+     * the detached process converges and is then discarded, leaving the parts
+     * exactly where they were. Recompute on the owner thread instead.
+     */
+    bool canRecomputeOnWorker() const override
+    {
+        return false;
+    }
+
     void onChanged(const App::Property* prop) override;
     void unsetupObject() override;
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts

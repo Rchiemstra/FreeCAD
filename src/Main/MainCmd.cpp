@@ -42,6 +42,7 @@
 
 // FreeCAD doc header
 #include <App/Application.h>
+#include <App/GeometryWorkerMain.h>
 #include <App/ProgramInformation.h>
 
 using App::Application;
@@ -134,6 +135,12 @@ int main(int argc, char** argv)
         std::cout << "Please contact the application's support team for more information.";
         std::cout << std::endl;
         exit(101);
+    }
+
+    if (App::Internal::geometryWorkerRequested()) {
+        const int workerExitCode = App::Internal::runGeometryWorkerMain();
+        Application::destruct();
+        return workerExitCode;
     }
 
     // Run phase ===========================================================

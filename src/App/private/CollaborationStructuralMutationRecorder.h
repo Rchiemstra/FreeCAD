@@ -30,6 +30,14 @@ public:
     static void ensurePropertySchemaMutationAllowed(
         Document& document,
         const PropertyContainer& container);
+    static void ensurePropertyStatusMutationAllowed(
+        Document& document,
+        Property& property,
+        unsigned long oldStatus,
+        unsigned long newStatus);
+    [[nodiscard]] static bool isTransactionOwnedNewObject(
+        const Document& document,
+        const DocumentObject& object);
     static void ensureDynamicPropertyRemovalAllowed(
         Document& document,
         const PropertyContainer& container,

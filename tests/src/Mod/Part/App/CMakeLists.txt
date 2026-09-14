@@ -6,6 +6,7 @@ add_executable(Part_tests_run
         BRepMesh.cpp
         CollaborativeBooleanOperation.cpp
         CollaborativeBooleanPreparation.cpp
+        CollaborativeSweepFilletOperations.cpp
         FaceMakerBullseye.cpp
         FaceMakerUnified.cpp
         FeatureChamfer.cpp

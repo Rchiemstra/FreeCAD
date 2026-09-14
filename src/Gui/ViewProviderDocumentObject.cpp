@@ -181,6 +181,52 @@ App::Property* ViewProviderDocumentObject::addDynamicProperty(
     return prop;
 }
 
+bool ViewProviderDocumentObject::changeDynamicProperty(const App::Property* prop,
+                                                        const char* group,
+                                                        const char* doc)
+{
+    App::DocumentObject* docobject = getObject();
+    App::Document* document = docobject ? docobject->getDocument() : nullptr;
+    const std::string oldGroup = prop && getPropertyGroup(prop) ? getPropertyGroup(prop) : "";
+    const std::string oldDocumentation = prop && getPropertyDocumentation(prop)
+        ? getPropertyDocumentation(prop)
+        : "";
+    const bool changed = ViewProvider::changeDynamicProperty(prop, group, doc);
+    const bool metadataChanged = prop
+        && (oldGroup != (getPropertyGroup(prop) ? getPropertyGroup(prop) : "")
+            || oldDocumentation
+                != (getPropertyDocumentation(prop) ? getPropertyDocumentation(prop) : ""));
+    if (changed && metadataChanged && document
+        && App::Document::dynamicPropertySchemaAffectsPersistence(prop)) {
+        // Existing-object metadata is outside the transaction payload. A new
+        // object introduced by this transaction disappears as a whole on
+        // abort, so its file-change token may share that ownership safely.
+        const bool transactionOwnedNewObject =
+            docobject && document->collaborationTransactionOwnsNewObject(*docobject);
+        document->markFileChange(
+            App::DocumentFileChange::Appearance,
+            transactionOwnedNewObject
+                ? App::DocumentFileChangeOwnership::AutoTransaction
+                : App::DocumentFileChangeOwnership::Sticky);
+    }
+    return changed;
+}
+
+bool ViewProviderDocumentObject::renameDynamicProperty(App::Property* prop, const char* name)
+{
+    const std::string oldName = prop && prop->getName() ? std::string(prop->getName())
+                                                        : std::string {};
+    const bool renamed = ViewProvider::renameDynamicProperty(prop, name);
+    if (renamed) {
+        App::DocumentObject* docobject = getObject();
+        App::Document* document = docobject ? docobject->getDocument() : nullptr;
+        if (document) {
+            document->renamePropertyOfObject(this, prop, oldName.c_str());
+        }
+    }
+    return renamed;
+}
+
 void ViewProviderDocumentObject::onBeforeChange(const App::Property* prop)
 {
     if (Application::Instance) {
@@ -224,7 +270,7 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
                 // the proper way.
                 Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
                     App::Property::NoModify,
-                    &Visibility
+                    &getObject()->Visibility
                 );
                 // bool mod = false;
                 // if (pcDocument)
@@ -237,6 +283,14 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
                 getObject()->Visibility.setValue(Visibility.getValue());
             }
         }
+        if (testStatus(Gui::ViewStatus::TouchDocument) && getObject()
+            && getObject()->getDocument()) {
+            // The mirrored App::DocumentObject::Visibility property is
+            // intentionally NoModify to prevent double accounting.  The
+            // ViewProvider is therefore the sole Appearance authority for a
+            // user-visible show/hide change.
+            getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+        }
     }
     else if (prop == &SelectionStyle) {
         if (getRoot()->isOfType(SoFCSelectionRoot::getClassTypeId())) {
@@ -246,12 +300,16 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
         }
     }
 
-    if (prop && !prop->testStatus(App::Property::NoModify) && pcDocument
-        && !pcDocument->isModified() && testStatus(Gui::ViewStatus::TouchDocument)) {
+    if (prop && prop != &Visibility && !prop->testStatus(App::Property::NoModify)
+        && !prop->testStatus(App::Property::Transient)
+        && !prop->testStatus(App::Property::PropTransient)
+        && !prop->testStatus(App::Property::PropNoPersist)
+        && testStatus(Gui::ViewStatus::TouchDocument) && getObject()
+        && getObject()->getDocument()) {
         if (prop) {
             FC_LOG(prop->getFullName() << " changed");
         }
-        pcDocument->setModified(true);
+        getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
     }
 
     ViewProvider::onChanged(prop);
@@ -775,9 +833,47 @@ bool ViewProviderDocumentObject::getDetailPath(
 
 void ViewProviderDocumentObject::onPropertyStatusChanged(const App::Property& prop, unsigned long oldStatus)
 {
-    (void)oldStatus;
     if (!App::Document::isAnyRestoring() && pcObject && pcObject->getDocument()) {
-        pcObject->getDocument()->signalChangePropertyEditor(*pcObject->getDocument(), prop);
+        constexpr unsigned long serializedStatusMask =
+            (1UL << App::Property::ReadOnly) | (1UL << App::Property::Hidden)
+            | (1UL << App::Property::Transient) | (1UL << App::Property::Output)
+            | (1UL << App::Property::LockDynamic) | (1UL << App::Property::Ordered)
+            | (1UL << App::Property::EvalOnRestore) | (1UL << App::Property::CopyOnChange)
+            | (1UL << App::Property::UserEdit);
+        const bool serializedDelta = ((oldStatus ^ prop.getStatus()) & serializedStatusMask) != 0;
+        const bool affectsPersistence = serializedDelta
+            && !prop.testStatus(App::Property::PropNoPersist);
+        if (Application::Instance) {
+            // This marks the preflight-created entry before any subsequent
+            // accounting or observer can fail. Rollback can therefore always
+            // recover the exact original StatusBits.
+            Application::Instance->recordSharedPresentationPropertyStatusMutation(
+                *this, prop, oldStatus);
+        }
+        if (affectsPersistence
+            && testStatus(Gui::ViewStatus::TouchDocument)
+        ) {
+            auto* document = pcObject->getDocument();
+            const bool boundaryRollbackOwned = Application::Instance
+                && Application::Instance->sharedPresentationPropertyStatusRollbackActive();
+            const bool transactionOwnedNewObject =
+                document->collaborationTransactionOwnsNewObject(*pcObject);
+            document->markFileChange(
+                App::DocumentFileChange::Appearance,
+                (boundaryRollbackOwned || transactionOwnedNewObject)
+                    ? App::DocumentFileChangeOwnership::AutoTransaction
+                    : App::DocumentFileChangeOwnership::Sticky);
+        }
+        if (serializedDelta) {
+            auto* document = pcObject->getDocument();
+            document->emitCollaborationChangePropertyEditor(prop);
+            if (affectsPersistence && Application::Instance) {
+                // Route the status transition through the same deferred GUI
+                // notification stream as a value change, without invoking
+                // ViewProviderDocumentObject::onChanged() side effects.
+                Application::Instance->notifyPropertyStatusChangedObject(*this, prop);
+            }
+        }
     }
 }
 

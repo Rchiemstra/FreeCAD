@@ -33,7 +33,7 @@ if App.GuiUp:
     from PySide.QtWidgets import QPushButton, QMenu
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 from functools import partial
 
 __title__ = "Assembly Command Create Bill of Materials"
