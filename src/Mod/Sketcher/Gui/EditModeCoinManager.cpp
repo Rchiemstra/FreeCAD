@@ -1743,7 +1743,15 @@ void EditModeCoinManager::createEditModeInventorNodes()
     pEditModeGeometryCoinManager->createEditModeInventorNodes();
 
     // stuff for the RootCross lines +++++++++++++++++++++++++++++++++++++++
-    SoGroup* crossRoot = new Gui::SoSkipBoundingGroup;
+    // Viewport-sized axes must not feed viewAll/fitAll. Visible axes were
+    // already a SkipBoundingGroup; the default mode is INCLUDE_BBOX, so an
+    // action that does not set EXCLUDE still frames them. Occluded copies
+    // used to live on a plain SoSeparator and did feed fitAll: after
+    // onCameraChanged stretched them to the frustum, the next fitAll locked
+    // (or exploded) the ortho height. Class-only radial then clicked a
+    // ~10-unit circle at height ~8e4 and hit Vertex1.
+    auto* crossRoot = new Gui::SoSkipBoundingGroup;
+    crossRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     editModeScenegraphNodes.pickStyleAxes = new SoPickStyle();
     editModeScenegraphNodes.pickStyleAxes->style = SoPickStyle::SHAPE;
     crossRoot->addChild(editModeScenegraphNodes.pickStyleAxes);
@@ -1795,7 +1803,8 @@ void EditModeCoinManager::createEditModeInventorNodes()
     visibleAxes->addChild(editModeScenegraphNodes.RootCrossVSet);
 
     // stuff for the Origin Point
-    SoGroup* originPointRoot = new Gui::SoSkipBoundingGroup;
+    auto* originPointRoot = new Gui::SoSkipBoundingGroup;
+    originPointRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     originPointRoot->setName("OriginPointRoot_SkipBBox");
     editModeScenegraphNodes.EditRoot->addChild(originPointRoot);
 
@@ -1828,8 +1837,10 @@ void EditModeCoinManager::createEditModeInventorNodes()
         = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
     visibleOrigin->addChild(editModeScenegraphNodes.OriginPointSet);
 
-    // pass for occluded transparency
-    auto* occludedOverlayRoot = new SoSeparator;
+    // pass for occluded transparency. Same world coordinates as the visible
+    // axes (updateAxesLength); exclude from fitAll for the same reason.
+    auto* occludedOverlayRoot = new Gui::SoSkipBoundingGroup;
+    occludedOverlayRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     occludedOverlayRoot->setName("OccludedOverlayRoot");
     editModeScenegraphNodes.EditRoot->addChild(occludedOverlayRoot);
 

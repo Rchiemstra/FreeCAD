@@ -29,6 +29,15 @@ class SketcherGuiTestCases(unittest.TestCase):
             if delay > 0.0:
                 time.sleep(delay)
 
+    def wait_until(self, predicate, timeout_ms=2000, step_ms=50):
+        remaining = timeout_ms
+        while remaining > 0:
+            if predicate():
+                return True
+            self.pump_gui_events(iterations=1, delay=step_ms / 1000.0)
+            remaining -= step_ms
+        return predicate()
+
     @staticmethod
     def build_issue_25840_sketch(sketch):
         # Mirrors the uploaded repro geometry from issue #25840.
@@ -99,6 +108,9 @@ class SketcherGuiTestCases(unittest.TestCase):
         step=8,
     ):
         center_coin = tuple(int(value) for value in view.getPointOnViewport(seed_world_point))
+        if center_coin == (0, 0):
+            return None
+
         sum_x = 0
         sum_y = 0
         target_count = 0
@@ -121,6 +133,45 @@ class SketcherGuiTestCases(unittest.TestCase):
             int(round(sum_x / target_count)),
             int(round(sum_y / target_count)),
         )
+
+    def wait_for_pickable_constraint_probe(
+        self,
+        view,
+        seed_world_point,
+        expected_constraint_name,
+        projected_coin,
+        span=32,
+        step=2,
+        timeout_ms=2000,
+    ):
+        """Redraw without changing the camera, then wait until Constraint is pickable.
+
+        SoDatumLabel::generatePrimitives is a no-op while imgWidth/imgHeight are 0;
+        those are filled only in GLRender. A short pump after addConstraint does not
+        wait for a pickable annotation. Do not fitAll: SoDatumLabel::computeBBox is
+        camera-scale-dependent.
+        """
+        found = {"coin": None}
+
+        def constraint_is_pickable():
+            view.redraw()
+            if projected_coin != (0, 0):
+                info = SketcherGui.getActiveSketchPreselection(projected_coin)
+                if self.classify_preselection(info, expected_constraint_name) == "target_constraint":
+                    found["coin"] = projected_coin
+                    return True
+            found["coin"] = self.find_constraint_probe_viewport_point(
+                view,
+                seed_world_point,
+                expected_constraint_name,
+                span=span,
+                step=step,
+            )
+            return found["coin"] is not None
+
+        view.redraw()
+        self.wait_until(constraint_is_pickable, timeout_ms=timeout_ms)
+        return found["coin"]
 
     @classmethod
     def configure_view_state(cls, view, tilt=None):
@@ -182,6 +233,12 @@ class SketcherGuiTestCases(unittest.TestCase):
             self.pump_gui_events()
 
     def _restore_finite_camera_height(self, view):
+        """Cleanup-only: do not call this to make a recovery or projection assertion pass.
+
+        Production Inf-camera recovery lives in ViewProviderSketch::setEditViewer.
+        This helper exists so a poisoned ortho height cannot leak into later
+        classes (WP363 Offset after Inf-camera). It is fixture teardown, not proof.
+        """
         camera = view.getCameraNode()
         if camera is None or not hasattr(camera, "height"):
             return
@@ -189,46 +246,60 @@ class SketcherGuiTestCases(unittest.TestCase):
         if not math.isfinite(height) or height <= 0.0:
             camera.height.setValue(200.0)
 
-    def _find_preselection_from_viewport_center(self, view, wanted, span=48, step=4):
-        try:
-            size = view.getSize()
-        except Exception:
+    def _ortho_camera_height(self, view):
+        camera = view.getCameraNode()
+        if camera is None or not hasattr(camera, "height"):
             return None
-        if not size or size[0] < 2 or size[1] < 2:
+        return float(camera.height.getValue())
+
+    def _preselection_matches(self, info, wanted, object_name=None):
+        if object_name is not None and (not info or info.get("ObjectName") != object_name):
+            return False
+        return self.classify_preselection(info, "Constraint0") == wanted
+
+    def _find_preselection_near_viewport(
+        self,
+        seed_coin,
+        wanted,
+        object_name=None,
+        span=16,
+        step=2,
+    ):
+        """Bounded preselection search around an already-projected seed pixel.
+
+        The seed must be the requested world point's projection, not the
+        viewport centre and not a substitute for a (0, 0) sentinel. The hit
+        must keep the intended object and subelement kind.
+        """
+        if seed_coin == (0, 0):
             return None
-        center = (int(size[0] // 2), int(size[1] // 2))
         for dy in range(-span, span + 1, step):
             for dx in range(-span, span + 1, step):
-                point = (center[0] + dx, center[1] + dy)
+                point = (seed_coin[0] + dx, seed_coin[1] + dy)
                 info = SketcherGui.getActiveSketchPreselection(point)
-                if self.classify_preselection(info, "Constraint0") == wanted:
+                if self._preselection_matches(info, wanted, object_name):
                     return point
         return None
 
     def project_world_to_viewport(self, view, world_point, attempts=8):
-        """Map a sketch point to Coin pixels after the camera is actually ready.
+        """Project the requested world point to Coin pixels.
 
-        WP361/362 aggregate TestSketcherGui: getPointOnViewport stayed at (0, 0)
-        after fitAll retries (class-only process still passed). (0, 0) is also
-        the C++ failure sentinel. Restore a finite ortho height, then if Coin
-        still returns the sentinel, pick from the fitted viewport center.
+        (0, 0) is the C++ failure sentinel. This helper does not restore camera
+        height, does not call viewTop/fitAll, and does not scan for a nearby
+        edge. An arbitrary edge near the viewport centre is not this point.
         """
         last = (0, 0)
         for _ in range(attempts):
-            self._restore_finite_camera_height(view)
-            self.configure_view_state(view)
             last = tuple(int(value) for value in view.getPointOnViewport(world_point))
             if last != (0, 0):
                 return last
-            fallback = self._find_preselection_from_viewport_center(view, "edge")
-            if fallback is not None:
-                return fallback
             self.pump_gui_events(iterations=8, delay=0.02)
         return last
 
     def tearDown(self):
         try:
             if getattr(self, "view", None):
+                # Cleanup after the test body, not part of the recovery proof.
                 self._restore_finite_camera_height(self.view)
         except Exception:
             pass
@@ -306,7 +377,13 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
+        self.configure_view_state(self.view)
         marker_coin = self.project_world_to_viewport(self.view, marker_point)
+        self.assertNotEqual(
+            marker_coin,
+            (0, 0),
+            f"expected a usable projection of {marker_point}, not the (0, 0) sentinel",
+        )
 
         vertex_offsets = []
         for dy in range(-12, 13, 2):
@@ -359,7 +436,13 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
+        self.configure_view_state(self.view)
         midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+        self.assertNotEqual(
+            midpoint_coin,
+            (0, 0),
+            f"expected a usable projection of {midpoint}, not the (0, 0) sentinel",
+        )
 
         edge_offsets = []
         for dy in range(-10, 11, 2):
@@ -415,7 +498,13 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
+        self.configure_view_state(self.view)
         midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+        self.assertNotEqual(
+            midpoint_coin,
+            (0, 0),
+            f"expected a usable projection of {midpoint}, not the (0, 0) sentinel",
+        )
 
         before_info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
         before_kind = self.classify_preselection(before_info, "Constraint0")
@@ -436,12 +525,11 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        text_coin = self.find_constraint_probe_viewport_point(
+        text_coin = self.wait_for_pickable_constraint_probe(
             self.view,
             midpoint,
             self.expected_constraint_name,
-            span=32,
-            step=2,
+            projected_coin=midpoint_coin,
         )
         after_info = (
             SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
@@ -475,12 +563,18 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
+        self.configure_view_state(self.view)
+
         # The angle bisector is the horizontal axis, so the label text will be centered at
         # x=20, y=0.
         text_center = FreeCAD.Vector(20.0, 0.0, 0.0)
-        before_info = SketcherGui.getActiveSketchPreselection(
-            self.project_world_to_viewport(self.view, text_center)
+        text_center_coin = self.project_world_to_viewport(self.view, text_center)
+        self.assertNotEqual(
+            text_center_coin,
+            (0, 0),
+            f"expected a usable projection of {text_center}, not the (0, 0) sentinel",
         )
+        before_info = SketcherGui.getActiveSketchPreselection(text_center_coin)
         before_kind = self.classify_preselection(before_info, "Constraint0")
 
         constraint_id = self.sketch.addConstraint(
@@ -498,12 +592,11 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        text_coin = self.find_constraint_probe_viewport_point(
+        text_coin = self.wait_for_pickable_constraint_probe(
             self.view,
             text_center,
             self.expected_constraint_name,
-            span=32,
-            step=2,
+            projected_coin=text_center_coin,
         )
         info = SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
         kind = self.classify_preselection(info, self.expected_constraint_name)
@@ -529,19 +622,36 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.assertIsNotNone(camera)
         try:
             camera.height.setValue(float("inf"))
-            self.pump_gui_events()
-            self.assertFalse(math.isfinite(camera.height.getValue()))
+            # Observe Inf before the camera sensor recovers it. Do not pump
+            # first — onCameraChanged now restores during an open edit.
+            self.assertFalse(math.isfinite(self._ortho_camera_height(self.view)))
 
+            # Production recovery during an already-open edit. Do not
+            # viewTop/fitAll, do not helper-restore, and do not scan for an
+            # edge first.
+            self.pump_gui_events()
+            self.view = FreeCADGui.ActiveDocument.ActiveView
+
+            recovered_height = self._ortho_camera_height(self.view)
+            self.assertIsNotNone(recovered_height)
+            self.assertTrue(
+                math.isfinite(recovered_height) and recovered_height > 0.0,
+                recovered_height,
+            )
+
+            # Keep setEditViewer recovery: re-poison, observe Inf without
+            # pumping, then resetEdit/setEdit (sensor is detached on unset).
+            camera = self.view.getCameraNode()
+            camera.height.setValue(float("inf"))
+            self.assertFalse(math.isfinite(self._ortho_camera_height(self.view)))
             FreeCADGui.ActiveDocument.resetEdit()
             self.pump_gui_events()
             FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
             self.pump_gui_events()
             self.view = FreeCADGui.ActiveDocument.ActiveView
-            self.configure_view_state(self.view)
 
-            camera = self.view.getCameraNode()
-            self.assertIsNotNone(camera)
-            recovered_height = float(camera.height.getValue())
+            recovered_height = self._ortho_camera_height(self.view)
+            self.assertIsNotNone(recovered_height)
             self.assertTrue(
                 math.isfinite(recovered_height) and recovered_height > 0.0,
                 recovered_height,
@@ -549,9 +659,29 @@ class SketcherGuiTestCases(unittest.TestCase):
 
             midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
             self.assertNotEqual(midpoint_coin, (0, 0), midpoint_coin)
+
             info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
-            kind = self.classify_preselection(info, "Constraint0")
-            self.assertEqual(kind, "edge", f"info={info}, midpoint_coin={midpoint_coin}")
+            if not self._preselection_matches(info, "edge", self.sketch.Name):
+                midpoint_coin = self._find_preselection_near_viewport(
+                    midpoint_coin,
+                    "edge",
+                    object_name=self.sketch.Name,
+                )
+                self.assertIsNotNone(
+                    midpoint_coin,
+                    f"no Edge of {self.sketch.Name} near projected midpoint",
+                )
+                info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+
+            names = (info or {}).get("SubElementNames") or []
+            detail = f"info={info}, midpoint_coin={midpoint_coin}, height={recovered_height}"
+            self.assertEqual((info or {}).get("ObjectName"), self.sketch.Name, detail)
+            self.assertTrue(any(name.startswith("Edge") for name in names), detail)
+            self.assertEqual(
+                self.classify_preselection(info, "Constraint0"),
+                "edge",
+                detail,
+            )
         finally:
             try:
                 self._restore_finite_camera_height(self.view)

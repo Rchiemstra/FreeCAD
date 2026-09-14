@@ -128,6 +128,37 @@ bool isFiniteVector(const Base::Vector3d& vector)
 {
     return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
 }
+
+void restoreUsableSketchCamera(SoCamera* camera)
+{
+    if (!camera || !camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
+        return;
+    }
+    auto* ortho = static_cast<SoOrthographicCamera*>(camera);
+    float recoveredHeight = 0.0F;
+    if (!Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(
+            ortho->height.getValue(),
+            recoveredHeight
+        )) {
+        return;
+    }
+    if (ortho->height.getValue() != recoveredHeight) {
+        ortho->height.setValue(recoveredHeight);
+    }
+    float nearDist = camera->nearDistance.getValue();
+    float farDist = camera->farDistance.getValue();
+    float focalDist = camera->focalDistance.getValue();
+    if (Gui::View3DInventorViewerInternal::recoveredCameraDistances(
+            recoveredHeight,
+            nearDist,
+            farDist,
+            focalDist
+        )) {
+        camera->nearDistance.setValue(nearDist);
+        camera->farDistance.setValue(farDist);
+        camera->focalDistance.setValue(focalDist);
+    }
+}
 }  // namespace
 
 /************** ViewProviderSketch::ParameterObserver *********************/
@@ -4690,18 +4721,7 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
         static_cast<void*>(camera)
     );
     auto restoreFiniteOrthographicHeight = [](SoCamera* restoreCamera) {
-        if (!restoreCamera
-            || !restoreCamera->isOfType(SoOrthographicCamera::getClassTypeId())) {
-            return;
-        }
-        float recoveredHeight = 0.0F;
-        if (!Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(
-                static_cast<SoOrthographicCamera*>(restoreCamera)->height.getValue(),
-                recoveredHeight
-            )) {
-            return;
-        }
-        static_cast<SoOrthographicCamera*>(restoreCamera)->height.setValue(recoveredHeight);
+        restoreUsableSketchCamera(restoreCamera);
     };
     if (camera && !viewer->hasUsablePickVolume()) {
         restoreFiniteOrthographicHeight(camera);
@@ -4844,6 +4864,12 @@ void ViewProviderSketch::onCameraChanged(SoCamera* cam)
     // Stretch the axes to cover the whole viewport.
     Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(this->getActiveView());
     auto* viewer = view ? view->getViewer() : nullptr;
+    // During an already-open edit the camera can become Inf/~1e10 (fitAll /
+    // viewObjects / leaked shared viewer). setEditViewer is not re-entered.
+    // Restore here so the next pick/assert does not project to the centre.
+    if (viewer && !viewer->hasUsablePickVolume()) {
+        restoreUsableSketchCamera(cam);
+    }
     if (viewer && viewer->hasUsablePickVolume()) {
         Base::Placement plc = getEditingPlacement();
         const Base::BoundBox2d vpBBox = viewer->getViewportOnXYPlaneOfPlacement(plc);

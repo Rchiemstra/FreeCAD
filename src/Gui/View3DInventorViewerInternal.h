@@ -6,11 +6,23 @@
 namespace Gui::View3DInventorViewerInternal
 {
 
+// Sketch-edit traces: Inf is unusable, and ~1e10 still projects every
+// world point to the viewport centre. Match the observed collapse bound.
+constexpr float minUsablePickExtent = 1.0e-6F;
+constexpr float maxUsablePickExtent = 1.0e6F;
+
+inline bool isUsablePickExtent(float extent)
+{
+    return std::isfinite(extent) && extent > minUsablePickExtent
+        && extent < maxUsablePickExtent;
+}
+
 inline bool volumeExtentsUsable(float volumeWidth, float volumeHeight, float volumeDepth)
 {
-    return std::isfinite(volumeWidth) && std::isfinite(volumeHeight)
-        && std::isfinite(volumeDepth) && volumeWidth > 0.0F && volumeHeight > 0.0F
-        && volumeDepth > 0.0F;
+    // Depth is only required to be a positive finite span. Near/far can be
+    // large while the ortho height is still a usable pick scale.
+    return isUsablePickExtent(volumeWidth) && isUsablePickExtent(volumeHeight)
+        && std::isfinite(volumeDepth) && volumeDepth > 0.0F;
 }
 
 inline bool isUsablePickVolume(
@@ -42,8 +54,41 @@ constexpr float sketchEditFallbackHeight = 200.0F;
 
 inline bool recoveredOrthographicHeight(float observed, float& out)
 {
-    out = recoverPositiveExtent(observed, sketchEditFallbackHeight);
-    return out > 0.0F;
+    if (isUsablePickExtent(observed)) {
+        out = observed;
+        return true;
+    }
+    out = sketchEditFallbackHeight;
+    return isUsablePickExtent(out);
+}
+
+inline bool recoveredCameraDistances(
+    float height,
+    float& nearDist,
+    float& farDist,
+    float& focalDist
+)
+{
+    if (!isUsablePickExtent(height)) {
+        height = sketchEditFallbackHeight;
+    }
+    bool changed = false;
+    if (!std::isfinite(nearDist) || nearDist <= 0.0F) {
+        const float fromHeight = height * 0.005F;
+        nearDist = fromHeight > 0.1F ? fromHeight : 0.1F;
+        changed = true;
+    }
+    if (!std::isfinite(farDist) || farDist <= nearDist) {
+        const float fromHeight = height * 10.0F;
+        const float fromNear = nearDist * 10.0F;
+        farDist = fromHeight > fromNear ? fromHeight : fromNear;
+        changed = true;
+    }
+    if (!std::isfinite(focalDist) || focalDist < nearDist || focalDist > farDist) {
+        focalDist = 0.5F * (nearDist + farDist);
+        changed = true;
+    }
+    return changed;
 }
 
 inline bool finiteNormalizedToShortPixel(float normalized, int pixels, short& out)

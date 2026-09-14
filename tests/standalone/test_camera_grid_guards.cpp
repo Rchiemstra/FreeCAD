@@ -41,6 +41,22 @@ int main()
     float restoredHeight = 0.0F;
     assert(recoveredOrthographicHeight(inf, restoredHeight));
     assert(restoredHeight == sketchEditFallbackHeight);
+    float pathologicalHeight = 0.0F;
+    assert(recoveredOrthographicHeight(1.0e10F, pathologicalHeight));
+    assert(pathologicalHeight == sketchEditFallbackHeight);
+    assert(!volumeExtentsUsable(1.0e10F, 1.0e10F, 1.0F));
+    float nearDist = nan;
+    float farDist = inf;
+    float focalDist = nan;
+    assert(Gui::View3DInventorViewerInternal::recoveredCameraDistances(
+        200.0F,
+        nearDist,
+        farDist,
+        focalDist
+    ));
+    assert(std::isfinite(nearDist) && nearDist > 0.0F);
+    assert(std::isfinite(farDist) && farDist > nearDist);
+    assert(std::isfinite(focalDist));
     const auto afterViewObjects = recoverCameraExtent(inf, restoredHeight);
     const auto recoveredAfterRewrite = planSketchGrid(afterViewObjects, 10.0, 0.0, 0.0);
     assert(recoveredAfterRewrite.valid);

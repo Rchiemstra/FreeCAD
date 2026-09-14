@@ -4,6 +4,7 @@
 #include <gtest/gtest-spi.h>
 
 #include <array>
+#include <cmath>
 #include <limits>
 
 #include <Gui/View3DInventorViewerInternal.h>
@@ -34,6 +35,16 @@ TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
         1.0F,
         1.0F
     ));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickExtent(1.0e10F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
+        true,
+        1024,
+        768,
+        1.0e10F,
+        1.0e10F,
+        1.0F
+    ));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickExtent(200.0F));
     EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 1.0F));
 }
 
@@ -72,6 +83,24 @@ TEST(PickVolume, infOrthographicHeightRecoversToSketchEditFallback)
     EXPECT_FLOAT_EQ(recovered, Gui::View3DInventorViewerInternal::sketchEditFallbackHeight);
     EXPECT_TRUE(Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(40.0F, recovered));
     EXPECT_FLOAT_EQ(recovered, 40.0F);
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(1.0e10F, recovered));
+    EXPECT_FLOAT_EQ(recovered, Gui::View3DInventorViewerInternal::sketchEditFallbackHeight);
+}
+
+TEST(PickVolume, nanNearDistanceRecoversWithFiniteHeight)
+{
+    float nearDist = std::numeric_limits<float>::quiet_NaN();
+    float farDist = std::numeric_limits<float>::infinity();
+    float focalDist = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::recoveredCameraDistances(
+        200.0F,
+        nearDist,
+        farDist,
+        focalDist
+    ));
+    EXPECT_TRUE(std::isfinite(nearDist) && nearDist > 0.0F);
+    EXPECT_TRUE(std::isfinite(farDist) && farDist > nearDist);
+    EXPECT_TRUE(std::isfinite(focalDist) && focalDist >= nearDist && focalDist <= farDist);
 }
 
 TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)

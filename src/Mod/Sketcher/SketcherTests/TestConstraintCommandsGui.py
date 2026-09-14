@@ -59,10 +59,22 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         self.assertEqual(self.sketch.getDriving(0), driving)
         self.doc.undo()
 
-    def click_world(self, point):
-        pos = self.viewport_to_qpoint(self.view, self.viewport, self.view.getPointOnScreen(point))
+    def click_world(self, point, intended_subelements=None):
+        coin = self.view.getPointOnScreen(point)
+        pos = self.viewport_to_qpoint(self.view, self.viewport, coin)
+        self.note_gui_trace(
+            world_point=point,
+            coin_point=coin,
+            intended_subelements=intended_subelements,
+        )
         self.move(self.viewport, pos)
         self.click(self.viewport, pos)
+
+    def wait_for_constraint_count(self, count, timeout_ms=1000):
+        self.assertTrue(
+            self.wait_until(lambda: self.sketch.ConstraintCount == count, timeout_ms=timeout_ms),
+            f"Expected ConstraintCount == {count} after the click",
+        )
 
     def test_coordinate_distances_from_selection(self):
         for axis, value in (("X", 40), ("Y", 30)):
@@ -80,9 +92,18 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
             ):
                 with self.subTest(axis=axis, points=points):
                     Gui.Selection.clearSelection()
-                    Gui.runCommand("Sketcher_ConstrainDistance" + axis)
-                    for point in points:
-                        self.click_world(point)
+                    command = "Sketcher_ConstrainDistance" + axis
+                    self.trace_before_command(command)
+                    Gui.runCommand(command)
+                    for index, point in enumerate(points):
+                        if len(points) == 1:
+                            intended = ("Edge1",)
+                        elif index == 0:
+                            intended = ("Vertex1",)
+                        else:
+                            intended = ("Vertex2",)
+                        self.click_world(point, intended_subelements=intended)
+                    self.wait_for_constraint_count(1)
                     self.assert_distance(axis, value)
 
     def test_reference_coordinate_distances(self):
@@ -198,9 +219,12 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         for command in ("Radius", "Diameter", "Radiam"):
             with self.subTest(command=command):
                 Gui.Selection.clearSelection()
-                Gui.runCommand("Sketcher_Constrain" + command)
+                command_name = "Sketcher_Constrain" + command
+                self.trace_before_command(command_name)
+                Gui.runCommand(command_name)
                 # Pick away from the sketch axes so the circle is unambiguous.
-                self.click_world(App.Vector(-8, 6, 0))
+                self.click_world(App.Vector(-8, 6, 0), intended_subelements=("Edge2",))
+                self.wait_for_constraint_count(1)
                 self.assertEqual(self.sketch.ConstraintCount, 1)
                 expected = "Radius" if command == "Radius" else "Diameter"
                 self.assertEqual(self.sketch.Constraints[0].Type, expected)

@@ -1209,9 +1209,52 @@ void SoDatumLabel::generateArcLengthPrimitives(
     generateArrowSelectionPrimitive(action, geom.pnt4, geom.dirEnd, arrowWidth, arrowLength);
 }
 
+void SoDatumLabel::ensurePickImageSize(SoState* state)
+{
+    constexpr float floatEpsilon = std::numeric_limits<float>::epsilon();
+    if (!state || (this->imgHeight > floatEpsilon && this->imgWidth > floatEpsilon)) {
+        return;
+    }
+
+    const SbVec2s vpSize = SoViewportRegionElement::get(state).getViewportSizePixels();
+    if (vpSize[0] <= 0) {
+        return;
+    }
+
+    const float scale = getScaleFactor(state);
+    if (!(scale > floatEpsilon) || !std::isfinite(scale)) {
+        return;
+    }
+
+    if (this->datumtype.getValue() == SYMMETRIC) {
+        this->imgHeight = scale * 25.0F;
+        this->imgWidth = scale * 25.0F;
+        return;
+    }
+
+    if (!hasDatumText()) {
+        return;
+    }
+
+    // Rasterize into the image field without notifying. GLRender is the only
+    // other writer of imgWidth; pick can happen first (and in this view never
+    // successfully reached prepareRenderScene). Field notify here would
+    // invalidate Coin caches and re-enter the pick action.
+    const SbBool oldNotify = this->image.enableNotify(FALSE);
+    int srcw = 1;
+    int srch = 1;
+    getDimension(scale, srcw, srch);
+    this->image.enableNotify(oldNotify);
+}
+
 void SoDatumLabel::generatePrimitives(SoAction* action)
 {
-    // Initialisation check (needs something more sensible) prevents an infinite loop bug
+    // Path when imgWidth was 0: ensurePickImageSize → getDimension (image
+    // notify off) → typed generate*Primitives. Do not touch() here.
+    if (action) {
+        ensurePickImageSize(action->getState());
+    }
+
     constexpr float floatEpsilon = std::numeric_limits<float>::epsilon();
     if (this->imgHeight <= floatEpsilon || this->imgWidth <= floatEpsilon) {
         return;

@@ -231,6 +231,12 @@ private:
     SbVec3f getLabelTextCenterArcLength(const SbVec3f&, const SbVec3f&, const SbVec3f&) const;
     bool hasDatumText() const;
     void getDimension(float scale, int& srcw, int& srch);
+    /** Fill imgWidth/imgHeight for picking when GLRender has not run yet.
+     *
+     * Must not notify Inventor fields: a notify from generatePrimitives
+     * re-enters SoRayPickAction (the historical infinite-loop guard).
+     */
+    void ensurePickImageSize(SoState* state);
     DistanceGeometry calculateDistanceGeometry(const SbVec3f* points) const;
     DiameterGeometry calculateDiameterGeometry(const SbVec3f* points) const;
     AngleGeometry calculateAngleGeometry(const SbVec3f* points) const;
