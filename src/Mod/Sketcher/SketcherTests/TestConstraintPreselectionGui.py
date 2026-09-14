@@ -227,6 +227,11 @@ class SketcherGuiTestCases(unittest.TestCase):
         return last
 
     def tearDown(self):
+        try:
+            if getattr(self, "view", None):
+                self._restore_finite_camera_height(self.view)
+        except Exception:
+            pass
         FreeCADGui.Selection.clearPreselection()
         FreeCADGui.Selection.clearSelection()
         if FreeCADGui.ActiveDocument:
@@ -522,27 +527,33 @@ class SketcherGuiTestCases(unittest.TestCase):
 
         camera = self.view.getCameraNode()
         self.assertIsNotNone(camera)
-        camera.height.setValue(float("inf"))
-        self.pump_gui_events()
-        self.assertFalse(math.isfinite(camera.height.getValue()))
+        try:
+            camera.height.setValue(float("inf"))
+            self.pump_gui_events()
+            self.assertFalse(math.isfinite(camera.height.getValue()))
 
-        FreeCADGui.ActiveDocument.resetEdit()
-        self.pump_gui_events()
-        FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
-        self.pump_gui_events()
-        self.view = FreeCADGui.ActiveDocument.ActiveView
-        self.configure_view_state(self.view)
+            FreeCADGui.ActiveDocument.resetEdit()
+            self.pump_gui_events()
+            FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
+            self.pump_gui_events()
+            self.view = FreeCADGui.ActiveDocument.ActiveView
+            self.configure_view_state(self.view)
 
-        camera = self.view.getCameraNode()
-        self.assertIsNotNone(camera)
-        recovered_height = float(camera.height.getValue())
-        self.assertTrue(
-            math.isfinite(recovered_height) and recovered_height > 0.0,
-            recovered_height,
-        )
+            camera = self.view.getCameraNode()
+            self.assertIsNotNone(camera)
+            recovered_height = float(camera.height.getValue())
+            self.assertTrue(
+                math.isfinite(recovered_height) and recovered_height > 0.0,
+                recovered_height,
+            )
 
-        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
-        self.assertNotEqual(midpoint_coin, (0, 0), midpoint_coin)
-        info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
-        kind = self.classify_preselection(info, "Constraint0")
-        self.assertEqual(kind, "edge", f"info={info}, midpoint_coin={midpoint_coin}")
+            midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+            self.assertNotEqual(midpoint_coin, (0, 0), midpoint_coin)
+            info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+            kind = self.classify_preselection(info, "Constraint0")
+            self.assertEqual(kind, "edge", f"info={info}, midpoint_coin={midpoint_coin}")
+        finally:
+            try:
+                self._restore_finite_camera_height(self.view)
+            except Exception:
+                pass
