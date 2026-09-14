@@ -10,6 +10,24 @@
 namespace
 {
 
+TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
+{
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
+        false,
+        1024,
+        768,
+        1.0F,
+        1.0F,
+        1.0F
+    ));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 0, 768, 1.0F, 1.0F, 1.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 0, 1.0F, 1.0F, 1.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 0.0F, 1.0F, 1.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 0.0F, 1.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 0.0F));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 1.0F));
+}
+
 TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)
 {
     EXPECT_NONFATAL_FAILURE(

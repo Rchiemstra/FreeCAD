@@ -26,6 +26,7 @@
 #include <boost/core/ignore_unused.hpp>
 #include <Inventor/SbBox3f.h>
 #include <Inventor/SbLine.h>
+#include <Inventor/SbViewVolume.h>
 #include <Inventor/SbTime.h>
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/actions/SoRayPickAction.h>
@@ -893,13 +894,25 @@ SoPickedPointList ViewProviderSketch::getPickedPointsOnRay(
 ) const
 {
     SoPickedPointList picks;
-    if (!viewer || !isInEditMode()) {
+    if (!viewer || !isInEditMode() || !viewer->getSoRenderManager()) {
+        return picks;
+    }
+
+    SoCamera* camera = viewer->getSoRenderManager()->getCamera();
+    const SbViewportRegion& viewport = viewer->getSoRenderManager()->getViewportRegion();
+    const SbVec2s viewportPixels = viewport.getViewportSizePixels();
+    if (!camera || viewportPixels[0] <= 0 || viewportPixels[1] <= 0) {
+        return picks;
+    }
+
+    const SbViewVolume volume = camera->getViewVolume();
+    if (volume.getWidth() <= 0.0F || volume.getHeight() <= 0.0F || volume.getDepth() <= 0.0F) {
         return picks;
     }
 
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(viewer->getSoRenderManager()->getCamera());
+    root->addChild(camera);
 
     auto trans = new SoTransform;
     trans->ref();
@@ -1142,7 +1155,8 @@ bool ViewProviderSketch::getProjectingLine(const SbVec2s& pnt,
     SbViewVolume vol = pCam->getViewVolume();
 
     vol.projectPointToLine(SbVec2f(pX, pY), line);
-    return isFiniteVector(line.getPosition()) && isFiniteVector(line.getDirection());
+    return isFiniteVector(line.getPosition()) && isFiniteVector(line.getDirection())
+        && line.getDirection().sqrLength() > std::numeric_limits<float>::epsilon();
 }
 
 Base::Placement ViewProviderSketch::getEditingPlacement() const

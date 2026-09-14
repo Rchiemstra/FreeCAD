@@ -160,6 +160,10 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.pump_gui_events()
 
         self.view = FreeCADGui.ActiveDocument.ActiveView
+        if self.view:
+            self.view.viewTop()
+            self.view.fitAll()
+            self.pump_gui_events()
 
     def tearDown(self):
         FreeCADGui.Selection.clearPreselection()

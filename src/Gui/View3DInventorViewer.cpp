@@ -177,6 +177,11 @@ FC_LOG_LEVEL_INIT("3DViewer", true, true)
 
 using namespace Gui;
 
+namespace
+{
+bool viewerHasUsablePickVolume(const View3DInventorViewer* viewer);
+}
+
 class View3DInventorViewer::ScopedRenderIntent
 {
 public:
@@ -1734,6 +1739,11 @@ void View3DInventorViewer::resetEditingRoot(bool updateLinks)
 
 SoPickedPoint* View3DInventorViewer::getPointOnRay(const SbVec2s& pos, const ViewProvider* vp) const
 {
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return nullptr;
+    }
+
     SoPath* path {};
     if (vp == editViewProvider && pcEditingRoot->getNumChildren() > 1) {
         path = new SoPath(1);
@@ -1763,7 +1773,7 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(const SbVec2s& pos, const Vie
     // transformation
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(getSoRenderManager()->getCamera());
+    root->addChild(camera);
     root->addChild(trans);
     root->addChild(path->getTail());
 
@@ -1788,6 +1798,11 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(
 {
     // Note: There seems to be a  bug with setRay() which causes SoRayPickAction
     // to fail to get intersections between the ray and a line
+
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return nullptr;
+    }
 
     SoPath* path {};
     if (vp == editViewProvider && pcEditingRoot->getNumChildren() > 1) {
@@ -1818,7 +1833,7 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(
 
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(getSoRenderManager()->getCamera());
+    root->addChild(camera);
     root->addChild(trans);
     root->addChild(path->getTail());
 
@@ -2741,7 +2756,11 @@ SbVec2f View3DInventorViewer::screenCoordsOfPath(SoPath* path) const
 
     // Now, project the object space coordinates of the object
     // into "normalized" screen coordinates.
-    SbViewVolume vol = getSoRenderManager()->getCamera()->getViewVolume();
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return {0.0F, 0.0F};
+    }
+    SbViewVolume vol = camera->getViewVolume();
     vol.projectToScreen(imageCoords, imageCoords);
 
     // Translate "normalized" screen coordinates to pixel coords.
@@ -3800,9 +3819,47 @@ SbRotation View3DInventorViewer::getCameraOrientation() const
     return cam->orientation.getValue();
 }
 
+namespace
+{
+bool viewerHasUsablePickVolume(const View3DInventorViewer* viewer)
+{
+    if (!viewer || !viewer->getSoRenderManager()) {
+        return false;
+    }
+
+    auto* manager = viewer->getSoRenderManager();
+    SoCamera* camera = manager->getCamera();
+    const SbVec2s pixels = manager->getViewportRegion().getViewportSizePixels();
+    if (!camera) {
+        return View3DInventorViewerInternal::isUsablePickVolume(
+            false,
+            pixels[0],
+            pixels[1],
+            0.0F,
+            0.0F,
+            0.0F
+        );
+    }
+
+    const SbViewVolume volume = camera->getViewVolume();
+    return View3DInventorViewerInternal::isUsablePickVolume(
+        true,
+        pixels[0],
+        pixels[1],
+        volume.getWidth(),
+        volume.getHeight(),
+        volume.getDepth()
+    );
+}
+}  // namespace
+
 SbVec2f View3DInventorViewer::getNormalizedPosition(const SbVec2s& pnt) const
 {
     const SbViewportRegion& vp = this->getSoRenderManager()->getViewportRegion();
+    const SbVec2s pixels = vp.getViewportSizePixels();
+    if (pixels[0] <= 0 || pixels[1] <= 0) {
+        return {0.0F, 0.0F};
+    }
 
     short xpos {};
     short ypos {};
@@ -3837,7 +3894,7 @@ Base::BoundBox2d View3DInventorViewer::getViewportOnXYPlaneOfPlacement(Base::Pla
 
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // Return empty box.
         return Base::BoundBox2d(0, 0, 0, 0);
     }
@@ -3872,6 +3929,9 @@ Base::BoundBox2d View3DInventorViewer::getViewportOnXYPlaneOfPlacement(Base::Pla
 
         SbLine line;
         vol.projectPointToLine(SbVec2f(x, y), line);
+        if (line.getDirection().sqrLength() <= 0.0F) {
+            return;
+        }
 
         SbVec3f pt;
         // Intersection point on the XY plane.
@@ -3906,7 +3966,7 @@ SbVec3f View3DInventorViewer::getPointOnXYPlaneOfPlacement(
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         throw Base::RuntimeError("No camera node found");
     }
 
@@ -3967,7 +4027,7 @@ SbVec3f View3DInventorViewer::getPointOnLine(
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // return invalid point
         return {};
     }
@@ -3987,7 +4047,9 @@ SbVec3f View3DInventorViewer::getPointOnLine(
     SbVec3f pt, ptOnFocalPlaneAndOnLine, ptOnFocalPlane;
     SbPlane focalPlane = vol.getPlane(focalDist);
     vol.projectPointToLine(pnt2d, line);
-    focalPlane.intersect(line, ptOnFocalPlane);
+    if (line.getDirection().sqrLength() <= 0.0F || !focalPlane.intersect(line, ptOnFocalPlane)) {
+        return {};
+    }
 
     // Check if line is orthogonal to the focal plane
     SbVec3f focalPlaneNormal = focalPlane.getNormal();
@@ -4021,7 +4083,7 @@ SbVec3f View3DInventorViewer::getPointOnFocalPlane(const SbVec2s& pnt) const
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // return invalid point
         return {};
     }
@@ -4040,7 +4102,9 @@ SbVec3f View3DInventorViewer::getPointOnFocalPlane(const SbVec2s& pnt) const
     SbVec3f pt;
     SbPlane focalPlane = vol.getPlane(focalDist);
     vol.projectPointToLine(pnt2d, line);
-    focalPlane.intersect(line, pt);
+    if (line.getDirection().sqrLength() <= 0.0F || !focalPlane.intersect(line, pt)) {
+        return {};
+    }
 
     return pt;
 }
@@ -4050,7 +4114,11 @@ SbVec2s View3DInventorViewer::getPointOnViewport(const SbVec3f& pnt) const
     const SbViewportRegion& vp = this->getSoRenderManager()->getViewportRegion();
     float fRatio = vp.getViewportAspectRatio();
     const SbVec2s& sp = vp.getViewportSizePixels();
-    SbViewVolume vv = this->getSoRenderManager()->getCamera()->getViewVolume(fRatio);
+    SoCamera* camera = this->getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return {0, 0};
+    }
+    SbViewVolume vv = camera->getViewVolume(fRatio);
 
     SbVec3f pt(pnt);
     vv.projectToScreen(pt, pt);
