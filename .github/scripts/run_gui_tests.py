@@ -92,7 +92,6 @@ def _format_rc(rc: int) -> str:
 
 def _ensure_headless_gl() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
 
 def _log(message: str, *, error: bool = False) -> None:
