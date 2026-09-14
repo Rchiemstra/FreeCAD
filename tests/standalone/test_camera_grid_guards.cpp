@@ -63,6 +63,19 @@ int main()
     assert(valid.vlines >= 1);
     assert(valid.nlines == 2 * valid.vlines);
     assert(std::isfinite(valid.minX) && std::isfinite(valid.maxY));
+    int ox = 0;
+    int oy = 0;
+    assert(PartGui::GridExtensionInternal::tryGridOffsets(
+        valid.minX,
+        valid.minY,
+        10.0,
+        valid.vlines,
+        valid.nlines,
+        ox,
+        oy
+    ));
+    assert(ox == valid.offsetX);
+    assert(oy == valid.offsetY);
 
     int dummyVertices[] = {2, 2};
     assert(canWriteEditedField(dummyVertices));

@@ -76,6 +76,29 @@ Expected suites (13): `GuiDocument`, `TestSpreadsheetWindowGui`, `TestSketcherGu
 3. **Recovery regression (header-only, UBSan):** Inf extent → fallback 200 → `planSketchGrid` **valid** `recovered_vlines=30 recovered_nlines=60`. Inf height after a simulated `viewObjects` rewrite recovers again to the same plan.
 4. Production: restore ortho height when pick volume unusable, including **after** `viewObjects`; Inf `getMaxDimension()` (-1) forces a grid rebuild from a finite fallback.
 
+## Re-review (grid safety) — demonstrated only
+
+Reviewer probes used `-fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all`. Plain `-fsanitize=undefined` does **not** enable `float-cast-overflow` (GCC instrumentation docs). Reproduced here:
+
+| Probe | Sanitizer | Result |
+| --- | --- | --- |
+| Old `static_cast<int>(1e10)` / `149 + 2147483520` / `INT_MIN - 150` | `undefined,float-cast-overflow`, no recover | **trapped** (exit ≠ 0) for cases 1–3 |
+| Same old large-X cast | `undefined` only (prior log) | silent; **not** evidence |
+| `planSketchGrid` / `tryGridOffsets` on those three inputs, plus Inf→200 recovery | `undefined,float-cast-overflow`, no recover | **ok** `origin_vlines=150 recovered_vlines=30` |
+| 64 rejected + failed-after-alloc FakeNode builds | ASan | **live=0** |
+
+Resolved in source + those probes:
+
+1. **Offset overflow.** `planSketchGrid` now refuses a plan unless `tryCastToInt` and the later add/sub of `vlines`/`nlines` succeed. `createGridPart` uses `plan.offsetX` / `plan.offsetY` and `tryAddInt` in the loops.
+2. **Coin ownership on early return.** Plan is computed before `SoLineSet` / `SoVertexProperty` allocation. Nodes are `Gui::CoinPtr` and are published to `GridRoot` only after vertex fill succeeds. Rejected plans allocate no grid/vts; ASan 64-iteration probe stayed at `live=0`.
+
+Not marked resolved here:
+
+- **Full GUI invalid→valid recovery in a running FreeCAD.** `test_inf_camera_recovers_finite_pick_and_edge_preselection` was added to `TestConstraintPreselectionGui`. It has not been executed against a local debug binary in this step.
+- **Pipeline 362** on `6e24093e21` **failed** `freecad-e2e` (exit 1). Same aggregate gate as 361: `TestSketcherGui` 51 tests / `FAILED (failures=1)` on `testDistanceDatumTextWinsOverOverlappingCurve`, `midpoint_coin=(0, 0)`, `Vertex2`; class-only rerun **ok**. The volume-gate removal and fitAll-only retry were not enough. The GUI test now also restores a finite ortho height and searches the fitted viewport center for an edge hit when Coin returns the origin sentinel.
+
+Container: `pr52-b-grid-sanitizers-20260914f` (`freecad-ci-deps:24.04-gdb`). Runner/MCP files were not changed.
+
 ## Isolated tests this turn
 
 | Gate | Container | Image | Result |

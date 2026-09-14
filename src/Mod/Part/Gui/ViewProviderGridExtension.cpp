@@ -353,32 +353,6 @@ void GridExtensionP::createGridPart(
     int lineWidth
 )
 {
-    float gridZ = getViewOrientationFactor() * GRID_Z_OFFSET;
-
-    auto* parent = new Gui::SoSkipBoundingGroup();
-    parent->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
-
-    GridRoot->addChild(parent);
-    SoVertexProperty* vts;
-
-    SoTransparencyType* transparencyType = new SoTransparencyType;
-    transparencyType->value = SoTransparencyType::DELAYED_BLEND;
-    parent->addChild(transparencyType);
-    parent->addChild(material);
-
-    SoDrawStyle* DefaultStyle = new SoDrawStyle;
-    DefaultStyle->lineWidth = lineWidth;
-    DefaultStyle->linePattern = pattern;
-    parent->addChild(DefaultStyle);
-
-    SoPickStyle* PickStyle = new SoPickStyle;
-    PickStyle->style = SoPickStyle::UNPICKABLE;
-    parent->addChild(PickStyle);
-
-    SoLineSet* grid = new SoLineSet;
-    vts = new SoVertexProperty;
-    grid->vertexProperty = vts;
-
     Base::Vector3d camCenterOnSketch = getCamCenterInSketchCoordinates();
     const auto plan = GridExtensionInternal::planSketchGrid(
         camMaxDimension,
@@ -386,6 +360,7 @@ void GridExtensionP::createGridPart(
         camCenterOnSketch.x,
         camCenterOnSketch.y
     );
+    Gui::CoinPtr<SoMaterial> materialRef(material);
     if (!plan.valid) {
         if (std::isfinite(computedGridValue) && computedGridValue > 0.0
             && isUsableCameraExtent(camMaxDimension)
@@ -401,16 +376,39 @@ void GridExtensionP::createGridPart(
         return;
     }
 
-    int vlines = plan.vlines;
-    int nlines = plan.nlines;
-    float minX = plan.minX;
-    float minY = plan.minY;
-    float maxX = plan.maxX;
-    float maxY = plan.maxY;
+    const int vlines = plan.vlines;
+    const int nlines = plan.nlines;
+    const int i_offset_x = plan.offsetX;
+    const int i_offset_y = plan.offsetY;
+    const float minX = plan.minX;
+    const float minY = plan.minY;
+    const float maxX = plan.maxX;
+    const float maxY = plan.maxY;
+    const float gridZ = getViewOrientationFactor() * GRID_Z_OFFSET;
 
     isTooManySegmentsNotified = false;
 
-    // set the grid indices
+    Gui::CoinPtr<Gui::SoSkipBoundingGroup> parent(new Gui::SoSkipBoundingGroup());
+    parent->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
+
+    auto* transparencyType = new SoTransparencyType;
+    transparencyType->value = SoTransparencyType::DELAYED_BLEND;
+    parent->addChild(transparencyType);
+    parent->addChild(material);
+
+    auto* defaultStyle = new SoDrawStyle;
+    defaultStyle->lineWidth = lineWidth;
+    defaultStyle->linePattern = pattern;
+    parent->addChild(defaultStyle);
+
+    auto* pickStyle = new SoPickStyle;
+    pickStyle->style = SoPickStyle::UNPICKABLE;
+    parent->addChild(pickStyle);
+
+    Gui::CoinPtr<SoLineSet> grid(new SoLineSet);
+    Gui::CoinPtr<SoVertexProperty> vts(new SoVertexProperty);
+    grid->vertexProperty = vts.get();
+
     grid->numVertices.setNum(nlines);
     auto* vertices = grid->numVertices.startEditing();
     if (GridExtensionInternal::canWriteEditedField(vertices)) {
@@ -420,49 +418,63 @@ void GridExtensionP::createGridPart(
     }
     grid->numVertices.finishEditing();
     if (!GridExtensionInternal::canWriteEditedField(vertices)) {
-        Gui::coinRemoveAllChildren(GridRoot);
         return;
     }
 
-    // set the grid coordinates
     vts->vertex.setNum(2 * nlines);
     SbVec3f* vertex_coords = vts->vertex.startEditing();
     if (!GridExtensionInternal::canWriteEditedField(vertex_coords)) {
         vts->vertex.finishEditing();
-        Gui::coinRemoveAllChildren(GridRoot);
         return;
     }
 
-    // vertical lines
-    int i_offset_x = static_cast<int>(minX / computedGridValue);
     for (int i = 0; i < vlines; i++) {
-        int iStep = (i + i_offset_x);
+        int iStep = 0;
+        if (!GridExtensionInternal::tryAddInt(i, i_offset_x, iStep)) {
+            vts->vertex.finishEditing();
+            return;
+        }
         bool atOrigin = iStep == 0;
         if (!atOrigin
             && (((iStep % numberSubdiv == 0) && divLines)
                 || ((iStep % numberSubdiv != 0) && subDivLines))) {
-            vertex_coords[2 * i].setValue(iStep * computedGridValue, minY, gridZ);
-            vertex_coords[2 * i + 1].setValue(iStep * computedGridValue, maxY, gridZ);
+            vertex_coords[2 * i].setValue(
+                static_cast<float>(iStep * computedGridValue),
+                minY,
+                gridZ
+            );
+            vertex_coords[2 * i + 1].setValue(
+                static_cast<float>(iStep * computedGridValue),
+                maxY,
+                gridZ
+            );
         }
         else {
-            /*the number of vertices is defined before. To know the number of vertices ahead it would
-            require to run the loop once before, which would double computation time. If vertices are
-            not filled then there're visual bugs so there are here filled with dummy values.*/
             vertex_coords[2 * i].setValue(0, 0, 0);
             vertex_coords[2 * i + 1].setValue(0, 0, 0);
         }
     }
 
-    // horizontal lines
-    int i_offset_y = static_cast<int>(minY / computedGridValue) - vlines;
     for (int i = vlines; i < nlines; i++) {
-        int iStep = (i + i_offset_y);
+        int iStep = 0;
+        if (!GridExtensionInternal::tryAddInt(i, i_offset_y, iStep)) {
+            vts->vertex.finishEditing();
+            return;
+        }
         bool atOrigin = iStep == 0;
         if (!atOrigin
             && (((iStep % numberSubdiv == 0) && divLines)
                 || ((iStep % numberSubdiv != 0) && subDivLines))) {
-            vertex_coords[2 * i].setValue(minX, iStep * computedGridValue, gridZ);
-            vertex_coords[2 * i + 1].setValue(maxX, iStep * computedGridValue, gridZ);
+            vertex_coords[2 * i].setValue(
+                minX,
+                static_cast<float>(iStep * computedGridValue),
+                gridZ
+            );
+            vertex_coords[2 * i + 1].setValue(
+                maxX,
+                static_cast<float>(iStep * computedGridValue),
+                gridZ
+            );
         }
         else {
             vertex_coords[2 * i].setValue(0, 0, 0);
@@ -471,8 +483,9 @@ void GridExtensionP::createGridPart(
     }
     vts->vertex.finishEditing();
 
-    parent->addChild(vts);
-    parent->addChild(grid);
+    parent->addChild(vts.get());
+    parent->addChild(grid.get());
+    GridRoot->addChild(parent.get());
 }
 
 Base::Vector3d GridExtensionP::getCamCenterInSketchCoordinates() const

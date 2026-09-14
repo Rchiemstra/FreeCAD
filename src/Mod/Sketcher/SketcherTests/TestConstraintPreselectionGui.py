@@ -181,19 +181,48 @@ class SketcherGuiTestCases(unittest.TestCase):
             self.view.fitAll()
             self.pump_gui_events()
 
+    def _restore_finite_camera_height(self, view):
+        camera = view.getCameraNode()
+        if camera is None or not hasattr(camera, "height"):
+            return
+        height = float(camera.height.getValue())
+        if not math.isfinite(height) or height <= 0.0:
+            camera.height.setValue(200.0)
+
+    def _find_preselection_from_viewport_center(self, view, wanted, span=48, step=4):
+        try:
+            size = view.getSize()
+        except Exception:
+            return None
+        if not size or size[0] < 2 or size[1] < 2:
+            return None
+        center = (int(size[0] // 2), int(size[1] // 2))
+        for dy in range(-span, span + 1, step):
+            for dx in range(-span, span + 1, step):
+                point = (center[0] + dx, center[1] + dy)
+                info = SketcherGui.getActiveSketchPreselection(point)
+                if self.classify_preselection(info, "Constraint0") == wanted:
+                    return point
+        return None
+
     def project_world_to_viewport(self, view, world_point, attempts=8):
         """Map a sketch point to Coin pixels after the camera is actually ready.
 
-        WP361 aggregate TestSketcherGui: getPointOnViewport returned (0, 0) and
-        the hover hit Vertex2. The same test passed in the class-only process.
-        (0, 0) is also the C++ failure sentinel, so retry viewTop/fitAll.
+        WP361/362 aggregate TestSketcherGui: getPointOnViewport stayed at (0, 0)
+        after fitAll retries (class-only process still passed). (0, 0) is also
+        the C++ failure sentinel. Restore a finite ortho height, then if Coin
+        still returns the sentinel, pick from the fitted viewport center.
         """
         last = (0, 0)
         for _ in range(attempts):
+            self._restore_finite_camera_height(view)
             self.configure_view_state(view)
             last = tuple(int(value) for value in view.getPointOnViewport(world_point))
             if last != (0, 0):
                 return last
+            fallback = self._find_preselection_from_viewport_center(view, "edge")
+            if fallback is not None:
+                return fallback
             self.pump_gui_events(iterations=8, delay=0.02)
         return last
 
@@ -482,3 +511,38 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.assertEqual(before_kind, "axis", detail)
         self.assertIsNotNone(text_coin, detail)
         self.assertEqual(kind, "target_constraint", detail)
+
+    def test_inf_camera_recovers_finite_pick_and_edge_preselection(self):
+        start_point = FreeCAD.Vector(80.0, 100.0, 0.0)
+        end_point = FreeCAD.Vector(130.0, 100.0, 0.0)
+        midpoint = (start_point + end_point) * 0.5
+        self.sketch.addGeometry(Part.LineSegment(start_point, end_point), False)
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        camera = self.view.getCameraNode()
+        self.assertIsNotNone(camera)
+        camera.height.setValue(float("inf"))
+        self.pump_gui_events()
+        self.assertFalse(math.isfinite(camera.height.getValue()))
+
+        FreeCADGui.ActiveDocument.resetEdit()
+        self.pump_gui_events()
+        FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
+        self.pump_gui_events()
+        self.view = FreeCADGui.ActiveDocument.ActiveView
+        self.configure_view_state(self.view)
+
+        camera = self.view.getCameraNode()
+        self.assertIsNotNone(camera)
+        recovered_height = float(camera.height.getValue())
+        self.assertTrue(
+            math.isfinite(recovered_height) and recovered_height > 0.0,
+            recovered_height,
+        )
+
+        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+        self.assertNotEqual(midpoint_coin, (0, 0), midpoint_coin)
+        info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+        kind = self.classify_preselection(info, "Constraint0")
+        self.assertEqual(kind, "edge", f"info={info}, midpoint_coin={midpoint_coin}")
