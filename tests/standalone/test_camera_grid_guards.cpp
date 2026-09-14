@@ -13,6 +13,8 @@ int main()
 {
     using Gui::View3DInventorViewerInternal::finiteNormalizedToShortPixel;
     using Gui::View3DInventorViewerInternal::recoverPositiveExtent;
+    using Gui::View3DInventorViewerInternal::recoveredOrthographicHeight;
+    using Gui::View3DInventorViewerInternal::sketchEditFallbackHeight;
     using Gui::View3DInventorViewerInternal::volumeExtentsUsable;
     using PartGui::GridExtensionInternal::canWriteEditedField;
     using PartGui::GridExtensionInternal::planSketchGrid;
@@ -20,6 +22,11 @@ int main()
 
     const float inf = std::numeric_limits<float>::infinity();
     const float nan = std::numeric_limits<float>::quiet_NaN();
+
+    // First invalid numeric state (UBSan, sibling of gdb WP 358):
+    // roundf(Inf * 1024) stays Inf; static_cast<short> was 32767; UBSan did not trap.
+    const float oldScaled = std::roundf(inf * 1024.0F);
+    assert(!std::isfinite(oldScaled));
 
     assert(!volumeExtentsUsable(inf, 1.0F, 1.0F));
     assert(!volumeExtentsUsable(1.0F, inf, 1.0F));
@@ -30,6 +37,14 @@ int main()
     assert(recoverPositiveExtent(40.0F, 200.0F) == 40.0F);
     assert(recoverPositiveExtent(inf, inf) == -1.0F);
     assert(recoverCameraExtent(inf, 10.0F) == 10.0F);
+
+    float restoredHeight = 0.0F;
+    assert(recoveredOrthographicHeight(inf, restoredHeight));
+    assert(restoredHeight == sketchEditFallbackHeight);
+    const auto afterViewObjects = recoverCameraExtent(inf, restoredHeight);
+    const auto recoveredAfterRewrite = planSketchGrid(afterViewObjects, 10.0, 0.0, 0.0);
+    assert(recoveredAfterRewrite.valid);
+    assert(recoveredAfterRewrite.nlines == 2 * recoveredAfterRewrite.vlines);
 
     short pixel = 0;
     assert(!finiteNormalizedToShortPixel(inf, 1024, pixel));

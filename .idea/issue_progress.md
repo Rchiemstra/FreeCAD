@@ -5,69 +5,90 @@ Integrator branch: `fix/wp348-core-late-result-transform`
 PR: https://github.com/Rchiemstra/FreeCAD/pull/52
 Base: `FreeCAD-start`
 
-## Identities (start of this review)
+## Identities
+
+### At review start (origin HEAD)
 
 | Item | Value |
 | --- | --- |
 | Parent HEAD | `562639de15818fa89cbdae2c4a62879ac96b9b32` |
 | MCP submodule pin | `7c9e4aac49f3954a54dd2375b1cb2442353c5420` |
 | MCP message | Accept late_result_transform in the core collaboration dispatch stub. |
-| Woodpecker at review start | pipeline **360** running on `562639de15` |
-| Isolated worktree A | `C:/Users/Rchie/Music/FreeCADModeling/pr52-gui-runner` branch `pr52-gui-runner` |
-| Isolated worktree B | `C:/Users/Rchie/Music/FreeCADModeling/pr52-camera-grid` branch `pr52-camera-grid` |
-| Docker at review start | `docker ps` empty; existing volumes/containers **not** mounted or mutated |
-| Isolation rule | new containers only (`--rm`, unique names); no chair/MCP sockets; no user cfg |
+| Woodpecker | pipeline **360** on `562639de15` (do not push over it) |
 
-## Review vs current diff (`origin/FreeCAD-start...HEAD`)
+### After isolated review/fix (local integrator, not yet pushed)
 
-### Introduced bugs (this PR)
+| Item | Value |
+| --- | --- |
+| Local parent first commit | `0b16f7e75f9ce87c03900b1839dd1478bda14806` Fail closed on GUI-runner false greens and recover a finite sketch grid/camera. |
+| MCP pin (pushed) | `cc32c4fe70ea04627438380e4b4f580a20afc97f` |
+| MCP commits pushed | `690409e6` sync fake; `cc32c4fe` late transform helper |
+| Isolated worktree A | `C:/Users/Rchie/Music/FreeCADModeling/pr52-gui-runner` branch `pr52-gui-runner` (not pushed) |
+| Isolated worktree B | `C:/Users/Rchie/Music/FreeCADModeling/pr52-camera-grid` branch `pr52-camera-grid` (not pushed) |
+| python:3.12-slim | `sha256:25c5b8011a3425a140bf5fa73be0feabd3c0d5b323eecb19dc02437a368ae075` |
+| freecad-ci-deps:24.04-gdb | `sha256:8b1b8755ab2b37fa98f80fad2b340a1e48d549039991880d3d4fbbece4fc185f` |
+| Isolation | new `--rm` containers only; existing FreeCAD/MCP processes, chair volumes, sockets, user cfg **untouched** |
 
-1. **GUI runner still false-greens discovery.** Pipelines **341–343** exited 0 in 7–8s with an empty module list. Current `run_gui_tests.py` still returns 0 when listing exits 0 and parse yields no units, and when no name contains `Gui`. Failed listing is only preserved if parse is also empty.
-2. **`TestSketcherGui` aggregate dropped.** Expansion to 7 class units replaced the registered suite. Pipeline 336’s passing e2e ran the aggregate. A class-only run can miss cross-class state and can false-green if `FreeCAD -t ClassName` completes 0 tests.
-3. **No completed-test gate.** A module that exits 0 without `Ran N tests` (N>0) is treated as success. That is how an unknown split unit or a listing-parse miss stays green.
-4. **Inconsistent finite-volume guards (this PR).** `isUsablePickVolume` rejects non-finite width/height/depth. `ViewProviderSketch::getPickedPointsOnRay` still uses `<= 0` only, so Inf extents still reach `SoRayPickAction`.
-5. **Coin field edit on early return (this PR).** `createGridPart` null-checks `vertex.startEditing()` then `coinRemoveAllChildren` without `finishEditing()`. `numVertices.startEditing()` is still unchecked. gdb pipeline 358: write `-inf` through a null `SbVec3f*`.
-6. **Grid/camera recovery missing.** Inf extent skips drawing (no crash) but does not restore a finite camera/grid. Pipeline 359 then failed real tests, not SIGSEGV — crash-avoidance ≠ valid view.
-7. **MCP sync fake applies replay transform.** `test_native_collaboration_api._dispatch_gui` runs `late_result_transform` inline. Production `dispatch_gui` returns the raw `dispatcher.submit` result; transform is for late/replay (`build_replay_on_complete`). Core-test fakes of the form `lambda callback: callback()` still reject kwargs (`benchmarks/runner.py`, several unit tests).
+## Review vs origin `FreeCAD-start...562639de15`
 
-### Existing hazards (not introduced here; still in the crash path)
+Classified against the **current origin diff**, then re-checked after local fixes.
+
+### Introduced bugs (this PR) — status after local fixes
+
+1. **GUI runner false-green on empty/failed discovery (WP 341–343).** Introduced/retained on this PR. **Fixed:** listing rc preserved; missing `Registered test units:` or empty list → exit 2.
+2. **Missing expected suites still exit 0.** Introduced. **Fixed:** missing any of the 13 WP 336/359 suites → exit 3.
+3. **`TestSketcherGui` aggregate dropped + no completed-test gate.** Introduced by the class split. **Fixed:** aggregate runs first; class units are extras; no `Ran N tests` or N=0 → exit 4.
+4. **Inconsistent finite-volume guards.** Introduced. **Fixed:** `getPickedPointsOnRay` uses `hasUsablePickVolume()` (isfinite + >0), same helper as pick-volume.
+5. **Coin `startEditing()` null / missing `finishEditing()`.** Introduced by Inf grid path. gdb WP 358: `SbVec3f::setValue(this=0x0, x=-inf)`. **Fixed:** plan grid first; skip writes if null; always `finishEditing()`.
+6. **Grid/camera recovery missing.** Inf skip on `4ba2a89ec7` avoided SIGSEGV (WP 359) but did not restore a usable view. **Fixed:** recover ortho height 200 before and after `viewObjects`; recover grid extent from `GridSize*20` / last finite value; plan must yield `nlines>=2`.
+7. **MCP sync fake applied replay transform.** Introduced on the collaboration stub tests. **Fixed:** `synchronous_dispatch_gui` returns `task()` only. Transform lives in `apply_late_result_transform` used by `build_replay_on_complete`.
+
+### Existing hazards (not introduced here)
 
 - Coin `SoRayPickAction` on a degenerate frustum (uninitialized ray unless `COIN_DEBUG`).
-- `short(std::roundf(normalized * pixels))` is UB if `normalized` is Inf/NaN (now mostly gated by pick-volume, not at the conversion).
-- `setCameraType` historically no-op’d a null camera (fixed in this PR; still needs a finite height after create).
+- `short(std::roundf(normalized * pixels))` on Inf/NaN: **captured**, not a trap. Local UBSan: `scaled_finite=0 pixel=32767`. Production now refuses non-finite normalized values.
+- `setCameraType` historically no-op’d a null camera (already created on this PR).
 
 ### Unproven hypotheses (do not treat as fact)
 
-- Coin 4 / pivy #48 is the only reason 336 passed and 350+ crashed. 336 was a different binary (`0cc28873`); not re-run on this revision.
-- Hiding `BaseSketch` in `TestExternalFacePreselection` is a product fix for #28639. Evidence only shows Vertex2 beat Face under vertex-over-face pick priority on pipeline 359.
-- `convertToNURBS` no-op for internal BSplines is required beyond the GUI assertion; no App-level test existed before 562639de15.
+- Coin 4 / pivy #48 is the only reason 336 passed and 350+ crashed. 336 was binary `0cc28873`.
+- Hiding `BaseSketch` in `TestExternalFacePreselection` is the product fix for #28639. WP 359 only showed Vertex2 beat Face.
+- `convertToNURBS` no-op for internal BSplines is required beyond the GUI assertion.
+- Perspective near/far Inf after ortho height restore (not in gdb 358).
 
-## Three demonstrated GUI-runner false-green cases
+## Three demonstrated GUI-runner false-green cases (gate)
 
-| # | Evidence | Required behavior |
-| --- | --- | --- |
-| 1 | WP 341–343, ~7–8s, empty list, exit 0 | Preserve failed discovery (non-zero) |
-| 2 | `if not gui_tests: return 0` | Require expected suites (the 13 modules WP 336/359 actually run) |
-| 3 | Split `TestSketcherGui` + no `Ran N` check | Require completed tests; keep aggregate `TestSketcherGui` |
+Expected suites (13): `GuiDocument`, `TestSpreadsheetWindowGui`, `TestSketcherGui`, `TestPartDesignGui`, `TestPartGui`, `MeshTestsGui`, `TestDraftGui`, `TestArchGui`, `TestTechDrawGui`, `TestImportGui`, `TestOpenSCADGui`, `TestMaterialsGui`, `TestCAMGui`.
+
+| # | Evidence | Required behavior | Isolated test |
+| --- | --- | --- | --- |
+| 1 | WP 341–343, ~7–8s, empty list, exit 0 | Preserve failed discovery (non-zero) | `test_empty_discovery_does_not_return_zero` → 2; `test_failed_discovery_exit_is_preserved` → 17 |
+| 2 | `if not gui_tests: return 0` | Require the 13 suites | `test_missing_suite_does_not_return_zero` → 3 |
+| 3 | Split `TestSketcherGui` + no `Ran N` | Aggregate first; require N≥1 | `test_aggregate_sketcher_runs_before_class_units`; `test_zero_test_module_fails_the_gate` → 4 |
+
+`python -m unittest test_run_gui_tests -v`: **19 tests, OK**.
 
 ## Camera/grid numeric / Coin / recovery
 
-- First invalid state to capture under UBSan: `short(roundf(INFINITY * 1024.f))` and null `SbVec3f::setValue`.
-- Then failing regression on helpers, then production wiring.
-- Recovery: Inf/non-positive camera extent falls back to a finite grid extent so a grid can be planned (not only skipped).
+1. **First invalid state (UBSan, this turn):** `roundf(Inf * 1024)` non-finite; `static_cast<short>` → **32767**; UBSan **did not trap**. Binary: `tests/standalone/ubsan_old_inf_to_short.cpp`.
+2. **First invalid state (gdb WP 358):** null `SbVec3f*` write of `-inf` in `createGridPart` from Inf camera extent / negative `nlines`.
+3. **Recovery regression (header-only, UBSan):** Inf extent → fallback 200 → `planSketchGrid` **valid** `recovered_vlines=30 recovered_nlines=60`. Inf height after a simulated `viewObjects` rewrite recovers again to the same plan.
+4. Production: restore ortho height when pick volume unusable, including **after** `viewObjects`; Inf `getMaxDimension()` (-1) forces a grid rebuild from a finite fallback.
 
 ## Isolated tests this turn
 
-| Gate | Image / command | Result |
-| --- | --- | --- |
-| GUI runner | `python:3.12-slim` `python -m unittest test_run_gui_tests -v` | **19 tests OK** |
-| Inf→short first invalid state | `freecad-ci-deps:24.04-gdb` g++ `-fsanitize=undefined` on old conversion | scaled=Inf, `short` **32767** (no UBSan trap; wrong pixel) |
-| Camera/grid recovery | same image, `tests/standalone/test_camera_grid_guards.cpp` | **ok** `recovered_vlines=30 recovered_nlines=60` |
-| MCP sync fake | `python:3.12-slim` import helper | **ok** (transform not applied) |
+| Gate | Container | Image | Result |
+| --- | --- | --- | --- |
+| GUI runner 19 tests | `pr52-a-gui-runner-20260914` | python:3.12-slim | **OK** |
+| Old Inf→short + recovery | `pr52-b-camera-grid-20260914c` | freecad-ci-deps:24.04-gdb | **pixel=32767**; **recovered_nlines=60** |
+| MCP sync + late transform | `pr52-mcp-sync-20260914` | python:3.12-slim + pip pytest `--noconftest` | **5 passed** |
 
-Containers: `pr52-a-gui-runner-tests`, `pr52-b-camera-grid-guards`, `pr52-b-ubsan-old-file`, `pr52-mcp-sync-python`. No chair volumes, no live MCP sockets.
+No chair volumes, no live MCP sockets, no user cfg mounts.
+
+Gui gtests in `tests/src/Gui/View3DInventorViewer.cpp` were not re-run against a full FreeCAD debug binary this turn (would require a new isolated debug build, not chair incremental). Header-only UBSan covers the numeric/recovery helpers.
 
 ## Woodpecker
 
-- Do **not** merge until `ci/woodpecker/pr/ci` is success for the **pushed** revision that contains these files.
-- Pipeline 360 is `562639de15` (pre-runner/recovery). Treat it as evidence of that revision only.
+- Pipeline **360** is still the gate for `562639de15` (NURBS no-op + face-test change only). Do not push the integrator branch while 360 is running.
+- Do **not** merge until `ci/woodpecker/pr/ci` is **success** for the **exact pushed SHA** that contains these runner/recovery/MCP-pin files.
+- MCP origin is already at `cc32c4fe` (`https://github.com/Rchiemstra/freecad-mcp` branch `fix/wp348-core-late-result-transform`).

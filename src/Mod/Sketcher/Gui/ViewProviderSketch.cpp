@@ -77,6 +77,7 @@
 #include <Gui/Utilities.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Gui/View3DInventorViewerInternal.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/GeoList.h>
@@ -4688,10 +4689,22 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
         "ViewProviderSketch::setEditViewer camera=%p\n",
         static_cast<void*>(camera)
     );
-    if (camera && !viewer->hasUsablePickVolume()) {
-        if (camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
-            static_cast<SoOrthographicCamera*>(camera)->height.setValue(200.0F);
+    auto restoreFiniteOrthographicHeight = [](SoCamera* restoreCamera) {
+        if (!restoreCamera
+            || !restoreCamera->isOfType(SoOrthographicCamera::getClassTypeId())) {
+            return;
         }
+        float recoveredHeight = 0.0F;
+        if (!Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(
+                static_cast<SoOrthographicCamera*>(restoreCamera)->height.getValue(),
+                recoveredHeight
+            )) {
+            return;
+        }
+        static_cast<SoOrthographicCamera*>(restoreCamera)->height.setValue(recoveredHeight);
+    };
+    if (camera && !viewer->hasUsablePickVolume()) {
+        restoreFiniteOrthographicHeight(camera);
     }
     if (camera) {
         SbVec3f curdir;  // current view direction
@@ -4704,6 +4717,10 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
             std::vector<App::SubObjectT> objs;
             objs.emplace_back(getObject(), "");
             viewer->viewObjects(objs);
+        }
+        // viewObjects can rewrite an Inf frustum after the first restore.
+        if (!viewer->hasUsablePickVolume()) {
+            restoreFiniteOrthographicHeight(camera);
         }
     }
     else {

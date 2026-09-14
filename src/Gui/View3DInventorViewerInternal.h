@@ -37,6 +37,15 @@ inline float recoverPositiveExtent(float observed, float fallback)
     return -1.0F;
 }
 
+// Sketch edit uses this when Coin's ortho height is Inf/NaN/<=0 (gdb WP 358).
+constexpr float sketchEditFallbackHeight = 200.0F;
+
+inline bool recoveredOrthographicHeight(float observed, float& out)
+{
+    out = recoverPositiveExtent(observed, sketchEditFallbackHeight);
+    return out > 0.0F;
+}
+
 inline bool finiteNormalizedToShortPixel(float normalized, int pixels, short& out)
 {
     if (pixels <= 0 || !std::isfinite(normalized)) {

@@ -62,6 +62,18 @@ TEST(PickVolume, infExtentRecoversToFiniteFallback)
     EXPECT_FLOAT_EQ(Gui::View3DInventorViewerInternal::recoverPositiveExtent(40.0F, 200.0F), 40.0F);
 }
 
+TEST(PickVolume, infOrthographicHeightRecoversToSketchEditFallback)
+{
+    float recovered = 0.0F;
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(
+        std::numeric_limits<float>::infinity(),
+        recovered
+    ));
+    EXPECT_FLOAT_EQ(recovered, Gui::View3DInventorViewerInternal::sketchEditFallbackHeight);
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(40.0F, recovered));
+    EXPECT_FLOAT_EQ(recovered, 40.0F);
+}
+
 TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)
 {
     EXPECT_NONFATAL_FAILURE(

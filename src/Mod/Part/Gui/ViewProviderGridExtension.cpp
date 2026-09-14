@@ -286,13 +286,22 @@ void GridExtensionP::createGrid(bool cameraUpdate)
 
     bool gridNeedUpdating = cameraDimensionsChanged || cameraCenterMoved;
 
+    const float fallbackExtent = static_cast<float>(
+        std::max(vp->GridSize.getValue() * 20.0, 1.0)
+    );
+    // getMaxDimension maps Inf/NaN to -1. That is not a "no zoom change".
+    if (!isUsableCameraExtent(viewer->getMaxDimension())) {
+        camMaxDimension = GridExtensionInternal::recoverCameraExtent(
+            camMaxDimension,
+            fallbackExtent
+        );
+        gridNeedUpdating = true;
+    }
+
     if (!gridNeedUpdating && cameraUpdate) {
         return;
     }
 
-    const float fallbackExtent = static_cast<float>(
-        std::max(vp->GridSize.getValue() * 20.0, 1.0)
-    );
     camMaxDimension = GridExtensionInternal::recoverCameraExtent(camMaxDimension, fallbackExtent);
     if (!isUsableCameraExtent(camMaxDimension)) {
         return;
