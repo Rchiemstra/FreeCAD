@@ -14,9 +14,9 @@ Base: `FreeCAD-start`
 | Parent HEAD | `562639de15818fa89cbdae2c4a62879ac96b9b32` |
 | MCP submodule pin | `7c9e4aac49f3954a54dd2375b1cb2442353c5420` |
 | MCP message | Accept late_result_transform in the core collaboration dispatch stub. |
-| Woodpecker | pipeline **360** on `562639de15` (do not push over it) |
+| Woodpecker | pipeline **360** **success** on `562639de15` (e2e 19 units / 239 tests; no aggregate TestSketcherGui) |
 
-### After isolated review/fix (local integrator, not yet pushed)
+### After isolated review/fix (local integrator; push after 360)
 
 | Item | Value |
 | --- | --- |
@@ -90,6 +90,8 @@ Gui gtests in `tests/src/Gui/View3DInventorViewer.cpp` were not re-run against a
 
 ## Woodpecker
 
-- Pipeline **360** is still the gate for `562639de15` (NURBS no-op + face-test change only). Do not push the integrator branch while 360 is running.
+- Pipeline **360** finished **success** on `562639de15818fa89cbdae2c4a62879ac96b9b32` (all `ci` steps, including `freecad-e2e`).
+- WP 360 e2e (log has no newlines; parsed `Ran N tests` concatenated): **19 units, 239 tests, 0 FAILED**. No aggregate `TestSketcherGui` unit — the class split replaced it. Per-unit counts: GuiDocument 12, TestSpreadsheetWindowGui 5, SketcherGuiTestCases 5, TestDistanceLabelExtensionGui 6, TestConstraintCommandsGui 16, TestOnViewParameterGui 11, TestSketchPlacementUpdate 4, TestExternalFacePreselection 3, TestSketcherOffsetGui 6, TestPartDesignGui 21, MeshTestsGui 2, TestMaterialsGui 3, TestImportGui 1, TestArchGui 48, TestPartGui 15, TestOpenSCADGui 1, TestDraftGui 38, TestTechDrawGui 5, TestCAMGui 37.
+- 360 does **not** contain the runner fail-closed / camera recovery / MCP pin `cc32c4fe` work. Do not merge 360's SHA as the finished review.
 - Do **not** merge until `ci/woodpecker/pr/ci` is **success** for the **exact pushed SHA** that contains these runner/recovery/MCP-pin files.
 - MCP origin is already at `cc32c4fe` (`https://github.com/Rchiemstra/freecad-mcp` branch `fix/wp348-core-late-result-transform`).
