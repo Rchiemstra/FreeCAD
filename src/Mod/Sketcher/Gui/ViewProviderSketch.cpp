@@ -900,14 +900,7 @@ SoPickedPointList ViewProviderSketch::getPickedPointsOnRay(
     }
 
     SoCamera* camera = viewer->getSoRenderManager()->getCamera();
-    const SbViewportRegion& viewport = viewer->getSoRenderManager()->getViewportRegion();
-    const SbVec2s viewportPixels = viewport.getViewportSizePixels();
-    if (!camera || viewportPixels[0] <= 0 || viewportPixels[1] <= 0) {
-        return picks;
-    }
-
-    const SbViewVolume volume = camera->getViewVolume();
-    if (volume.getWidth() <= 0.0F || volume.getHeight() <= 0.0F || volume.getDepth() <= 0.0F) {
+    if (!camera || !viewer->hasUsablePickVolume()) {
         return picks;
     }
 
@@ -4695,6 +4688,11 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
         "ViewProviderSketch::setEditViewer camera=%p\n",
         static_cast<void*>(camera)
     );
+    if (camera && !viewer->hasUsablePickVolume()) {
+        if (camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
+            static_cast<SoOrthographicCamera*>(camera)->height.setValue(200.0F);
+        }
+    }
     if (camera) {
         SbVec3f curdir;  // current view direction
         camera->orientation.getValue().multVec(SbVec3f(0, 0, -1), curdir);

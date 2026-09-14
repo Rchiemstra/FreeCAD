@@ -53,6 +53,7 @@
 #include <Gui/Inventor/SoFCBoundingBox.h>
 
 #include "ViewProviderGridExtension.h"
+#include "ViewProviderGridExtensionInternal.h"
 
 
 using namespace PartGui;
@@ -289,6 +290,10 @@ void GridExtensionP::createGrid(bool cameraUpdate)
         return;
     }
 
+    const float fallbackExtent = static_cast<float>(
+        std::max(vp->GridSize.getValue() * 20.0, 1.0)
+    );
+    camMaxDimension = GridExtensionInternal::recoverCameraExtent(camMaxDimension, fallbackExtent);
     if (!isUsableCameraExtent(camMaxDimension)) {
         return;
     }
@@ -365,59 +370,55 @@ void GridExtensionP::createGridPart(
     vts = new SoVertexProperty;
     grid->vertexProperty = vts;
 
-    float gridDimension = 1.5 * camMaxDimension;
-    if (!isUsableCameraExtent(gridDimension) || !std::isfinite(computedGridValue)
-        || computedGridValue <= 0.0) {
-        Gui::coinRemoveAllChildren(GridRoot);
-        return;
-    }
-
-    const double vlinesD = static_cast<double>(gridDimension) / computedGridValue;
-    if (!std::isfinite(vlinesD) || vlinesD < 1.0 || vlinesD > 1000.0) {
-        if (std::isfinite(vlinesD) && vlinesD > 1000.0 && !isTooManySegmentsNotified) {
+    Base::Vector3d camCenterOnSketch = getCamCenterInSketchCoordinates();
+    const auto plan = GridExtensionInternal::planSketchGrid(
+        camMaxDimension,
+        computedGridValue,
+        camCenterOnSketch.x,
+        camCenterOnSketch.y
+    );
+    if (!plan.valid) {
+        if (std::isfinite(computedGridValue) && computedGridValue > 0.0
+            && isUsableCameraExtent(camMaxDimension)
+            && (1.5 * camMaxDimension / computedGridValue) > 1000.0
+            && !isTooManySegmentsNotified) {
             Base::Console().warning(
                 "The grid is too dense, so it is being disabled. Consider zooming in or changing "
                 "the grid configuration\n"
             );
             isTooManySegmentsNotified = true;
         }
-
         Gui::coinRemoveAllChildren(GridRoot);
         return;
     }
 
-    int vlines = static_cast<int>(vlinesD);  // total number of vertical lines
-    int nlines = 2 * vlines;                 // total number of lines
+    int vlines = plan.vlines;
+    int nlines = plan.nlines;
+    float minX = plan.minX;
+    float minY = plan.minY;
+    float maxX = plan.maxX;
+    float maxY = plan.maxY;
 
     isTooManySegmentsNotified = false;
 
     // set the grid indices
     grid->numVertices.setNum(nlines);
     auto* vertices = grid->numVertices.startEditing();
-    for (int i = 0; i < nlines; i++) {
-        vertices[i] = 2;
+    if (GridExtensionInternal::canWriteEditedField(vertices)) {
+        for (int i = 0; i < nlines; i++) {
+            vertices[i] = 2;
+        }
     }
     grid->numVertices.finishEditing();
-
-    // set the grid coordinates
-    vts->vertex.setNum(2 * nlines);
-    SbVec3f* vertex_coords = vts->vertex.startEditing();
-    if (!vertex_coords) {
+    if (!GridExtensionInternal::canWriteEditedField(vertices)) {
         Gui::coinRemoveAllChildren(GridRoot);
         return;
     }
 
-    float minX, minY, maxX, maxY;
-    Base::Vector3d camCenterOnSketch = getCamCenterInSketchCoordinates();
-    minX = static_cast<float>(camCenterOnSketch.x);
-    minY = static_cast<float>(camCenterOnSketch.y);
-
-    minX -= (gridDimension / 2);
-    minY -= (gridDimension / 2);
-    maxX = minX + gridDimension;
-    maxY = minY + gridDimension;
-    if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(maxX)
-        || !std::isfinite(maxY)) {
+    // set the grid coordinates
+    vts->vertex.setNum(2 * nlines);
+    SbVec3f* vertex_coords = vts->vertex.startEditing();
+    if (!GridExtensionInternal::canWriteEditedField(vertex_coords)) {
         vts->vertex.finishEditing();
         Gui::coinRemoveAllChildren(GridRoot);
         return;

@@ -37,6 +37,31 @@ TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
     EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 1.0F));
 }
 
+TEST(PickVolume, infNormalizedPixelConversionIsRejected)
+{
+    short pixel = 99;
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::finiteNormalizedToShortPixel(
+        std::numeric_limits<float>::infinity(),
+        1024,
+        pixel
+    ));
+    EXPECT_EQ(pixel, 99);
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::finiteNormalizedToShortPixel(0.5F, 1024, pixel));
+    EXPECT_EQ(pixel, 512);
+}
+
+TEST(PickVolume, infExtentRecoversToFiniteFallback)
+{
+    EXPECT_FLOAT_EQ(
+        Gui::View3DInventorViewerInternal::recoverPositiveExtent(
+            std::numeric_limits<float>::infinity(),
+            200.0F
+        ),
+        200.0F
+    );
+    EXPECT_FLOAT_EQ(Gui::View3DInventorViewerInternal::recoverPositiveExtent(40.0F, 200.0F), 40.0F);
+}
+
 TEST(DetachedNavigationRedraw, dockedViewFailsDetachedRequirementAsExpected)
 {
     EXPECT_NONFATAL_FAILURE(

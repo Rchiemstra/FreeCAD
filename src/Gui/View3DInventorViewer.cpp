@@ -4135,8 +4135,12 @@ SbVec2s View3DInventorViewer::getPointOnViewport(const SbVec3f& pnt) const
     SbVec3f pt(pnt);
     vv.projectToScreen(pt, pt);
 
-    auto xpos = short(std::roundf(pt[0] * sp[0]));  // NOLINT
-    auto ypos = short(std::roundf(pt[1] * sp[1]));  // NOLINT
+    short xpos = 0;
+    short ypos = 0;
+    if (!View3DInventorViewerInternal::finiteNormalizedToShortPixel(pt[0], sp[0], xpos)
+        || !View3DInventorViewerInternal::finiteNormalizedToShortPixel(pt[1], sp[1], ypos)) {
+        return {0, 0};
+    }
 
     return {xpos, ypos};
 }

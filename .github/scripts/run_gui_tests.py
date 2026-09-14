@@ -7,7 +7,7 @@ List registered tests via `FreeCAD -t`, filter for GUI tests (names containing '
 GUI test module using the specified FreeCAD executable.
 
 Usage:
-  run_gui_tests.py [FREECAD_EXEC]
+    run_gui_tests.py [FREECAD_EXEC]
 
 If FREECAD_EXEC is omitted the script falls back to 'FreeCAD' on PATH.
 If FREECAD_EXEC is a directory containing bin/FreeCAD, that binary is used.
@@ -18,11 +18,47 @@ exit code.
 """
 
 from __future__ import annotations
+import re
 import sys
 import subprocess
 import os
 import shutil
+from collections.abc import Callable, Sequence
 from pathlib import Path
+
+
+# Suites Woodpecker pipeline 336 actually completed. Extra registered Gui
+# names are allowed; missing any of these is a discovery miss, not a skip.
+EXPECTED_GUI_SUITES: tuple[str, ...] = (
+    "GuiDocument",
+    "TestSpreadsheetWindowGui",
+    "TestSketcherGui",
+    "TestPartDesignGui",
+    "TestPartGui",
+    "MeshTestsGui",
+    "TestDraftGui",
+    "TestArchGui",
+    "TestTechDrawGui",
+    "TestImportGui",
+    "TestOpenSCADGui",
+    "TestMaterialsGui",
+    "TestCAMGui",
+)
+
+# Diagnostic class units. Never a substitute for the aggregate TestSketcherGui.
+SKETCHER_GUI_CLASS_UNITS: tuple[str, ...] = (
+    "SketcherTests.TestConstraintPreselectionGui.SketcherGuiTestCases",
+    "SketcherTests.TestDistanceLabelExtensionGui.TestDistanceLabelExtensionGui",
+    "SketcherTests.TestConstraintCommandsGui.TestConstraintCommandsGui",
+    "SketcherTests.TestOnViewParameterGui.TestOnViewParameterGui",
+    "SketcherTests.TestPlacementUpdate.TestSketchPlacementUpdate",
+    "SketcherTests.TestExternalFacePreselection.TestExternalFacePreselection",
+    "SketcherTests.TestSketcherOffsetGui.TestSketcherOffsetGui",
+)
+
+_RAN_TESTS = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
+
+RunCommand = Callable[[list[str]], tuple[int, str]]
 
 
 def find_executable(arg: str | None) -> str:
@@ -145,6 +181,144 @@ def parse_registered_tests(output: str) -> list[str]:
     return tests
 
 
+def parse_completed_test_count(output: str) -> int | None:
+    """Return the last unittest ``Ran N test(s)`` count, or None if missing."""
+    matches = list(_RAN_TESTS.finditer(output))
+    if not matches:
+        return None
+    return int(matches[-1].group(1))
+
+
+def units_for_module(mod: str) -> list[str]:
+    """Run the registered module first. Split Sketcher classes only as extras."""
+    if mod == "TestSketcherGui":
+        return [mod, *SKETCHER_GUI_CLASS_UNITS]
+    return [mod]
+
+
+def discover_gui_suites(
+    listing_rc: int,
+    listing_output: str,
+    expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
+) -> tuple[int, list[str], str]:
+    """Return (exit_code, gui_suite_names, error). exit_code 0 means discovery is usable."""
+    if listing_rc != 0:
+        return (
+            1 if listing_rc < 0 else listing_rc,
+            [],
+            f"Test discovery failed with exit code {_format_rc(listing_rc)}.",
+        )
+    if "Registered test units:" not in listing_output:
+        return 2, [], "Test discovery output is missing 'Registered test units:'."
+    tests = parse_registered_tests(listing_output)
+    if not tests:
+        return 2, [], "Test discovery listed no registered units."
+    gui_tests = [t for t in tests if "Gui" in t]
+    missing = [name for name in expected_suites if name not in gui_tests]
+    if missing:
+        return (
+            3,
+            gui_tests,
+            "Expected GUI suites missing from discovery: " + ", ".join(missing) + ".",
+        )
+    if not gui_tests:
+        return 3, [], "No GUI tests found in registered tests."
+    return 0, gui_tests, ""
+
+
+def evaluate_unit_result(rc: int, output: str) -> tuple[int, str]:
+    """Require a completed unittest run, not only a zero child exit."""
+    if rc < 0 or rc == 245:
+        return 1, f"GUI child segfaulted ({_format_rc(rc)})."
+    completed = parse_completed_test_count(output)
+    if completed is None:
+        return 4, "Module produced no 'Ran N tests' summary."
+    if completed < 1:
+        return 4, "Module completed 0 tests."
+    if rc != 0:
+        return rc, f"Module exited with code {_format_rc(rc)}."
+    return 0, ""
+
+
+def _rerun_under_gdb(freecad_exec: str, unit: str, run: RunCommand) -> str:
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return ""
+    _log(f"Re-running {unit} under gdb for a backtrace.", error=True)
+    _, gdb_out = run(
+        [
+            gdb,
+            "-batch",
+            "-return-child-result",
+            "-ex",
+            "set pagination off",
+            "-ex",
+            "run",
+            "-ex",
+            "thread apply all bt 30",
+            "--args",
+            freecad_exec,
+            "-t",
+            unit,
+        ]
+    )
+    return gdb_out
+
+
+def run_gui_modules(
+    freecad_exec: str,
+    *,
+    run: RunCommand = run_and_capture,
+    expected_suites: Sequence[str] = EXPECTED_GUI_SUITES,
+    crash_helper: bool = True,
+) -> int:
+    """Discover GUI suites and run them. Non-zero means the e2e gate failed."""
+    listing_rc, listing_out = run([freecad_exec, "-t"])
+    if listing_rc != 0:
+        _log(
+            f"Warning: listing tests returned exit code {_format_rc(listing_rc)}.",
+            error=True,
+        )
+        _log(listing_out, error=True)
+    disc_rc, gui_tests, disc_err = discover_gui_suites(
+        listing_rc, listing_out, expected_suites
+    )
+    if disc_rc != 0:
+        _log(disc_err, error=True)
+        return disc_rc
+
+    _log("Found GUI test modules:")
+    for t in gui_tests:
+        _log(f"  {t}")
+
+    last_rc = 0
+    for mod in gui_tests:
+        units = units_for_module(mod)
+        if len(units) > 1:
+            _log(
+                f"\nRunning registered suite {mod}, then {len(units) - 1} class units"
+            )
+        for unit in units:
+            _log(f"\nRunning GUI tests for module: {unit}")
+            cmd = [freecad_exec, "-t", unit]
+            rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
+            _log(out)
+            eval_rc, eval_err = evaluate_unit_result(rc, out)
+            if eval_rc != 0:
+                _log(f"Module {unit}: {eval_err}", error=True)
+                last_rc = eval_rc
+                if rc < 0 or rc == 245:
+                    _log(
+                        f"Stopping after {unit}: FreeCAD GUI child segfaulted.",
+                        error=True,
+                    )
+                    gdb_out = _rerun_under_gdb(freecad_exec, unit, run)
+                    if gdb_out:
+                        _log(gdb_out, error=True)
+                    return 1
+    return last_rc
+
+
 def main(argv: list[str]) -> int:
     """Entry point: run GUI test modules registered in the FreeCAD executable.
 
@@ -168,88 +342,7 @@ def main(argv: list[str]) -> int:
         _log(f"Aborting: invalid FreeCAD executable: {freecad_exec}", error=True)
         return 3
 
-    code, out = run_and_capture([freecad_exec, "-t"])
-    if code != 0:
-        _log(
-            f"Warning: listing tests returned exit code {_format_rc(code)}; "
-            "attempting to parse output anyway",
-            error=True,
-        )
-        _log(out, error=True)
-
-    tests = parse_registered_tests(out)
-    if not tests:
-        # A 7-second "success" here is how pipelines 341-343 went green without
-        # running any GUI module. Treat an empty list as a miss unless listing
-        # itself was a clean zero with truly no units (should not happen here).
-        if code != 0:
-            _log("No registered tests found after a failed listing.", error=True)
-            return 1 if code < 0 else code
-        _log("No registered tests found; exiting with success.")
-        return 0
-
-    gui_tests = [t for t in tests if "Gui" in t]
-    if not gui_tests:
-        _log("No GUI tests found in registered tests; nothing to run.")
-        return 0
-
-    _log("Found GUI test modules:")
-    for t in gui_tests:
-        _log(f"  {t}")
-
-    # TestSketcherGui is one FreeCAD -t unit that loads several classes. Split
-    # them so a SIGSEGV names the class and gdb re-runs only that unit.
-    sketcher_gui_units = [
-        "SketcherTests.TestConstraintPreselectionGui.SketcherGuiTestCases",
-        "SketcherTests.TestDistanceLabelExtensionGui.TestDistanceLabelExtensionGui",
-        "SketcherTests.TestConstraintCommandsGui.TestConstraintCommandsGui",
-        "SketcherTests.TestOnViewParameterGui.TestOnViewParameterGui",
-        "SketcherTests.TestPlacementUpdate.TestSketchPlacementUpdate",
-        "SketcherTests.TestExternalFacePreselection.TestExternalFacePreselection",
-        "SketcherTests.TestSketcherOffsetGui.TestSketcherOffsetGui",
-    ]
-
-    last_rc = 0
-    for mod in gui_tests:
-        units = sketcher_gui_units if mod == "TestSketcherGui" else [mod]
-        if len(units) > 1:
-            _log(f"\nExpanding {mod} into {len(units)} GUI units")
-        for unit in units:
-            _log(f"\nRunning GUI tests for module: {unit}")
-            rc, out = run_and_capture(_with_crash_helper([freecad_exec, "-t", unit]))
-            _log(out)
-            if rc != 0:
-                _log(f"Module {unit} exited with code {_format_rc(rc)}", error=True)
-                last_rc = rc
-                if rc < 0 or rc == 245:
-                    _log(
-                        f"Stopping after {unit}: FreeCAD GUI child segfaulted.",
-                        error=True,
-                    )
-                    gdb = shutil.which("gdb")
-                    if gdb:
-                        _log(f"Re-running {unit} under gdb for a backtrace.", error=True)
-                        _, gdb_out = run_and_capture(
-                            [
-                                gdb,
-                                "-batch",
-                                "-return-child-result",
-                                "-ex",
-                                "set pagination off",
-                                "-ex",
-                                "run",
-                                "-ex",
-                                "thread apply all bt 30",
-                                "--args",
-                                freecad_exec,
-                                "-t",
-                                unit,
-                            ]
-                        )
-                        _log(gdb_out, error=True)
-                    return 1
-
-    return last_rc
+    return run_gui_modules(freecad_exec)
 
 
 if __name__ == "__main__":
