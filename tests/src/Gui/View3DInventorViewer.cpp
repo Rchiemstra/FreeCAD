@@ -4,6 +4,7 @@
 #include <gtest/gtest-spi.h>
 
 #include <array>
+#include <limits>
 
 #include <Gui/View3DInventorViewerInternal.h>
 
@@ -25,6 +26,14 @@ TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
     EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 0.0F, 1.0F, 1.0F));
     EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 0.0F, 1.0F));
     EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 0.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
+        true,
+        1024,
+        768,
+        std::numeric_limits<float>::infinity(),
+        1.0F,
+        1.0F
+    ));
     EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 1.0F));
 }
 

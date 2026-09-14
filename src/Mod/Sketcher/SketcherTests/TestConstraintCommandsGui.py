@@ -24,6 +24,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
             Part.LineSegment(App.Vector(50, 45, 0), App.Vector(10, 15, 0)), False
         )
         self.doc.recompute()
+        self.flush_gui(80)
         Gui.activeDocument().setEdit(self.sketch.Name)
         self.view = Gui.activeDocument().activeView()
         self.view.viewTop()

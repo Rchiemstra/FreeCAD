@@ -22,6 +22,7 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <cmath>
 #include <limits>
 
 #include <Inventor/nodes/SoCamera.h>
@@ -68,7 +69,17 @@ namespace PartGui
 namespace
 {
 constexpr float GRID_Z_OFFSET {0.002F};
+
+bool isFiniteVec(const SbVec3f& value)
+{
+    return std::isfinite(value[0]) && std::isfinite(value[1]) && std::isfinite(value[2]);
 }
+
+bool isUsableCameraExtent(float dimension)
+{
+    return std::isfinite(dimension) && dimension > 0.0F;
+}
+}  // namespace
 
 class GridExtensionP
 {
@@ -188,6 +199,9 @@ void GridExtensionP::getClosestGridPoint(double& x, double& y) const
 bool GridExtensionP::checkCameraZoomChange(const Gui::View3DInventorViewer* viewer)
 {
     float newCamMaxDimension = viewer->getMaxDimension();
+    if (!isUsableCameraExtent(newCamMaxDimension)) {
+        return false;
+    }
     if (fabs(newCamMaxDimension - camMaxDimension) > 0) {  // ie if user zoomed.
         camMaxDimension = newCamMaxDimension;
         return true;
@@ -201,6 +215,9 @@ bool GridExtensionP::checkCameraTranslationChange(const Gui::View3DInventorViewe
     // Then we check if user moved by more than 10% of camera dimension (must be after updating
     // camera dimension).
     SbVec3f newCamCenterPointOnFocalPlane = viewer->getFocalPoint();
+    if (!isFiniteVec(newCamCenterPointOnFocalPlane)) {
+        return false;
+    }
 
     if ((camCenterPointOnFocalPlane - newCamCenterPointOnFocalPlane).length()
         > 0.1 * camMaxDimension) {
@@ -219,7 +236,7 @@ void GridExtensionP::computeGridSize(const Gui::View3DInventorViewer* viewer)
         value = std::min(static_cast<float>(value), std::numeric_limits<float>::max());
     };
 
-    if (!vp->GridAuto.getValue()) {
+    if (!vp->GridAuto.getValue() || !isUsableCameraExtent(camMaxDimension)) {
         computedGridValue = vp->GridSize.getValue();
         capGridSize(computedGridValue);
         return;
@@ -258,6 +275,9 @@ void GridExtensionP::createGrid(bool cameraUpdate)
     }
 
     Gui::View3DInventorViewer* viewer = view->getViewer();
+    if (!viewer) {
+        return;
+    }
 
     bool cameraDimensionsChanged = checkCameraZoomChange(viewer);
 
@@ -266,6 +286,10 @@ void GridExtensionP::createGrid(bool cameraUpdate)
     bool gridNeedUpdating = cameraDimensionsChanged || cameraCenterMoved;
 
     if (!gridNeedUpdating && cameraUpdate) {
+        return;
+    }
+
+    if (!isUsableCameraExtent(camMaxDimension)) {
         return;
     }
 
@@ -342,11 +366,15 @@ void GridExtensionP::createGridPart(
     grid->vertexProperty = vts;
 
     float gridDimension = 1.5 * camMaxDimension;
-    int vlines = static_cast<int>(gridDimension / computedGridValue);  // total number of vertical lines
-    int nlines = 2 * vlines;                                           // total number of lines
+    if (!isUsableCameraExtent(gridDimension) || !std::isfinite(computedGridValue)
+        || computedGridValue <= 0.0) {
+        Gui::coinRemoveAllChildren(GridRoot);
+        return;
+    }
 
-    if (nlines > 2000) {
-        if (!isTooManySegmentsNotified) {
+    const double vlinesD = static_cast<double>(gridDimension) / computedGridValue;
+    if (!std::isfinite(vlinesD) || vlinesD < 1.0 || vlinesD > 1000.0) {
+        if (std::isfinite(vlinesD) && vlinesD > 1000.0 && !isTooManySegmentsNotified) {
             Base::Console().warning(
                 "The grid is too dense, so it is being disabled. Consider zooming in or changing "
                 "the grid configuration\n"
@@ -357,9 +385,11 @@ void GridExtensionP::createGridPart(
         Gui::coinRemoveAllChildren(GridRoot);
         return;
     }
-    else {
-        isTooManySegmentsNotified = false;
-    }
+
+    int vlines = static_cast<int>(vlinesD);  // total number of vertical lines
+    int nlines = 2 * vlines;                 // total number of lines
+
+    isTooManySegmentsNotified = false;
 
     // set the grid indices
     grid->numVertices.setNum(nlines);
@@ -372,6 +402,10 @@ void GridExtensionP::createGridPart(
     // set the grid coordinates
     vts->vertex.setNum(2 * nlines);
     SbVec3f* vertex_coords = vts->vertex.startEditing();
+    if (!vertex_coords) {
+        Gui::coinRemoveAllChildren(GridRoot);
+        return;
+    }
 
     float minX, minY, maxX, maxY;
     Base::Vector3d camCenterOnSketch = getCamCenterInSketchCoordinates();
@@ -382,6 +416,12 @@ void GridExtensionP::createGridPart(
     minY -= (gridDimension / 2);
     maxX = minX + gridDimension;
     maxY = minY + gridDimension;
+    if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(maxX)
+        || !std::isfinite(maxY)) {
+        vts->vertex.finishEditing();
+        Gui::coinRemoveAllChildren(GridRoot);
+        return;
+    }
 
     // vertical lines
     int i_offset_x = static_cast<int>(minX / computedGridValue);

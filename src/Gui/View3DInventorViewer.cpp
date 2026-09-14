@@ -3680,6 +3680,18 @@ void View3DInventorViewer::getDimensions(float& fHeight, float& fWidth) const
     else {
         fHeight *= aspectRatio;
     }
+
+    if (!std::isfinite(fHeight) || fHeight <= 0.0F) {
+        fHeight = -1.0F;
+    }
+    if (!std::isfinite(fWidth) || fWidth <= 0.0F) {
+        fWidth = -1.0F;
+    }
+}
+
+bool View3DInventorViewer::hasUsablePickVolume() const
+{
+    return viewerHasUsablePickVolume(this);
 }
 
 void View3DInventorViewer::printDimension() const

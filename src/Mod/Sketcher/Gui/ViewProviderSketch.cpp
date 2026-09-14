@@ -4828,16 +4828,15 @@ void ViewProviderSketch::onCameraChanged(SoCamera* cam)
 
     // Stretch the axes to cover the whole viewport.
     Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(this->getActiveView());
-    if (view && view->getViewer()) {
+    auto* viewer = view ? view->getViewer() : nullptr;
+    if (viewer && viewer->hasUsablePickVolume()) {
         Base::Placement plc = getEditingPlacement();
-        const Base::BoundBox2d vpBBox = view->getViewer()
-                ->getViewportOnXYPlaneOfPlacement(plc);
+        const Base::BoundBox2d vpBBox = viewer->getViewportOnXYPlaneOfPlacement(plc);
         if (vpBBox.IsValid() && vpBBox.Width() > 0.0 && vpBBox.Height() > 0.0) {
             editCoinManager->updateAxesLength(vpBBox);
         }
+        drawGrid(true);
     }
-
-    drawGrid(true);
 }
 
 int ViewProviderSketch::getPreselectPoint() const
