@@ -20,6 +20,7 @@ Base: `FreeCAD-start`
 
 | Item | Value |
 | --- | --- |
+| Local parent HEAD | `a8e82b3a6e3732616f3e640d0a681ae2bb04d39e` Restore a finite sketch camera after viewObjects and pin the replay-only MCP transform. |
 | Local parent first commit | `0b16f7e75f9ce87c03900b1839dd1478bda14806` Fail closed on GUI-runner false greens and recover a finite sketch grid/camera. |
 | MCP pin (pushed) | `cc32c4fe70ea04627438380e4b4f580a20afc97f` |
 | MCP commits pushed | `690409e6` sync fake; `cc32c4fe` late transform helper |
