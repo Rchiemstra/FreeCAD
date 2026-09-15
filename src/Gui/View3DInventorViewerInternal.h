@@ -6,15 +6,21 @@
 namespace Gui::View3DInventorViewerInternal
 {
 
-// Sketch-edit traces: Inf is unusable, and ~1e10 still projects every
-// world point to the viewport centre. Match the observed collapse bound.
 constexpr float minUsablePickExtent = 1.0e-6F;
+
+// Sketch-edit collapsed-camera heuristic only (skip-bbox / 81856 traces).
+// Do not use this for generic viewer picking.
 constexpr float maxUsablePickExtent = 1.0e6F;
 
 inline bool isUsablePickExtent(float extent)
 {
-    return std::isfinite(extent) && extent > minUsablePickExtent
-        && extent < maxUsablePickExtent;
+    return std::isfinite(extent) && extent > minUsablePickExtent;
+}
+
+inline bool isSketchCollapsedCameraExtent(float extent)
+{
+    return !std::isfinite(extent) || extent <= minUsablePickExtent
+        || extent >= maxUsablePickExtent;
 }
 
 inline bool volumeExtentsUsable(float volumeWidth, float volumeHeight, float volumeDepth)
@@ -54,7 +60,7 @@ constexpr float sketchEditFallbackHeight = 200.0F;
 
 inline bool recoveredOrthographicHeight(float observed, float& out)
 {
-    if (isUsablePickExtent(observed)) {
+    if (!isSketchCollapsedCameraExtent(observed)) {
         out = observed;
         return true;
     }
@@ -69,7 +75,7 @@ inline bool recoveredCameraDistances(
     float& focalDist
 )
 {
-    if (!isUsablePickExtent(height)) {
+    if (isSketchCollapsedCameraExtent(height)) {
         height = sketchEditFallbackHeight;
     }
     bool changed = false;

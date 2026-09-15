@@ -101,6 +101,17 @@ public:
      */
     [[nodiscard]] SelectionPart classifySelectionPoint(const SbVec3f& objectPoint) const;
 
+    struct DatumTextMetrics
+    {
+        float imgWidth {0.F};
+        float imgHeight {0.F};
+        int srcw {0};
+        int srch {0};
+    };
+
+    /** Side-effect-free text sizing for pick and bbox (no rasterize / no image field). */
+    [[nodiscard]] DatumTextMetrics measureDatumText(float scale) const;
+
     /* returns the center point of the text of the label */
     SbVec3f getLabelTextCenter();
 
@@ -231,12 +242,6 @@ private:
     SbVec3f getLabelTextCenterArcLength(const SbVec3f&, const SbVec3f&, const SbVec3f&) const;
     bool hasDatumText() const;
     void getDimension(float scale, int& srcw, int& srch);
-    /** Fill imgWidth/imgHeight for picking when GLRender has not run yet.
-     *
-     * Must not notify Inventor fields: a notify from generatePrimitives
-     * re-enters SoRayPickAction (the historical infinite-loop guard).
-     */
-    void ensurePickImageSize(SoState* state);
     DistanceGeometry calculateDistanceGeometry(const SbVec3f* points) const;
     DiameterGeometry calculateDiameterGeometry(const SbVec3f* points) const;
     AngleGeometry calculateAngleGeometry(const SbVec3f* points) const;

@@ -44,7 +44,8 @@ int main()
     float pathologicalHeight = 0.0F;
     assert(recoveredOrthographicHeight(1.0e10F, pathologicalHeight));
     assert(pathologicalHeight == sketchEditFallbackHeight);
-    assert(!volumeExtentsUsable(1.0e10F, 1.0e10F, 1.0F));
+    assert(volumeExtentsUsable(1.1e6F, 1.1e6F, 1.0F));
+    assert(volumeExtentsUsable(1.0e10F, 1.0e10F, 1.0F));
     float nearDist = nan;
     float farDist = inf;
     float focalDist = nan;

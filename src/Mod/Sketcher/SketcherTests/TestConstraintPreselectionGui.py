@@ -134,43 +134,49 @@ class SketcherGuiTestCases(unittest.TestCase):
             int(round(sum_y / target_count)),
         )
 
-    def wait_for_pickable_constraint_probe(
+    @staticmethod
+    def _datum_annotation_probe_points(projected_coin):
+        if projected_coin == (0, 0):
+            return []
+        x, y = projected_coin
+        return [
+            projected_coin,
+            (x - 1, y),
+            (x + 1, y),
+            (x, y - 1),
+            (x, y + 1),
+        ]
+
+    def wait_for_datum_annotation_at_coin(
         self,
         view,
-        seed_world_point,
-        expected_constraint_name,
         projected_coin,
-        span=32,
-        step=2,
+        expected_constraint_name,
         timeout_ms=2000,
     ):
-        """Redraw without changing the camera, then wait until Constraint is pickable.
+        """Redraw without changing the camera, then wait for datum text at the overlap pixel.
 
-        SoDatumLabel::generatePrimitives is a no-op while imgWidth/imgHeight are 0;
-        those are filled only in GLRender. A short pump after addConstraint does not
-        wait for a pickable annotation. Do not fitAll: SoDatumLabel::computeBBox is
-        camera-scale-dependent.
+        Polls only the projected overlap pixel (optional ±1 px rounding). Requires
+        ConstraintKind == DatumAnnotation so dimension-line hits cannot pass.
         """
         found = {"coin": None}
 
-        def constraint_is_pickable():
+        def datum_annotation_is_pickable():
             view.redraw()
-            if projected_coin != (0, 0):
-                info = SketcherGui.getActiveSketchPreselection(projected_coin)
-                if self.classify_preselection(info, expected_constraint_name) == "target_constraint":
-                    found["coin"] = projected_coin
-                    return True
-            found["coin"] = self.find_constraint_probe_viewport_point(
-                view,
-                seed_world_point,
-                expected_constraint_name,
-                span=span,
-                step=step,
-            )
-            return found["coin"] is not None
+            for coin_point in self._datum_annotation_probe_points(projected_coin):
+                info = SketcherGui.getActiveSketchPreselection(coin_point)
+                if info is None:
+                    continue
+                if self.classify_preselection(info, expected_constraint_name) != "target_constraint":
+                    continue
+                if info.get("ConstraintKind") != "DatumAnnotation":
+                    continue
+                found["coin"] = coin_point
+                return True
+            return False
 
         view.redraw()
-        self.wait_until(constraint_is_pickable, timeout_ms=timeout_ms)
+        self.wait_until(datum_annotation_is_pickable, timeout_ms=timeout_ms)
         return found["coin"]
 
     @classmethod
@@ -525,11 +531,10 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        text_coin = self.wait_for_pickable_constraint_probe(
+        text_coin = self.wait_for_datum_annotation_at_coin(
             self.view,
-            midpoint,
+            midpoint_coin,
             self.expected_constraint_name,
-            projected_coin=midpoint_coin,
         )
         after_info = (
             SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
@@ -544,6 +549,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.assertEqual(before_kind, "edge", detail)
         self.assertIsNotNone(text_coin, detail)
         self.assertEqual(after_kind, "target_constraint", detail)
+        self.assertEqual((after_info or {}).get("ConstraintKind"), "DatumAnnotation", detail)
 
     def testAngleDatumTextWinsOverHorizontalAxis(self):
         first_line = self.sketch.addGeometry(
@@ -592,11 +598,10 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.doc.recompute()
         self.pump_gui_events()
 
-        text_coin = self.wait_for_pickable_constraint_probe(
+        text_coin = self.wait_for_datum_annotation_at_coin(
             self.view,
-            text_center,
+            text_center_coin,
             self.expected_constraint_name,
-            projected_coin=text_center_coin,
         )
         info = SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
         kind = self.classify_preselection(info, self.expected_constraint_name)
@@ -609,6 +614,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.assertEqual(before_kind, "axis", detail)
         self.assertIsNotNone(text_coin, detail)
         self.assertEqual(kind, "target_constraint", detail)
+        self.assertEqual((info or {}).get("ConstraintKind"), "DatumAnnotation", detail)
 
     def test_inf_camera_recovers_finite_pick_and_edge_preselection(self):
         start_point = FreeCAD.Vector(80.0, 100.0, 0.0)

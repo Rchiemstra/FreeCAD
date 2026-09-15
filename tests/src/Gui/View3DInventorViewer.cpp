@@ -35,8 +35,18 @@ TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
         1.0F,
         1.0F
     ));
-    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickExtent(1.0e10F));
-    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickExtent(200.0F));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickExtent(1.1e6F));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickExtent(1.0e10F));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
+        true,
+        1024,
+        768,
+        1.1e6F,
+        1.1e6F,
+        1.0F
+    ));
+    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(
         true,
         1024,
         768,
@@ -44,7 +54,7 @@ TEST(PickVolume, rejectsNullCameraAndEmptyFrustum)
         1.0e10F,
         1.0F
     ));
-    EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickExtent(200.0F));
+    EXPECT_FALSE(Gui::View3DInventorViewerInternal::isUsablePickExtent(0.0F));
     EXPECT_TRUE(Gui::View3DInventorViewerInternal::isUsablePickVolume(true, 1024, 768, 1.0F, 1.0F, 1.0F));
 }
 

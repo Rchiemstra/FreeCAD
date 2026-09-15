@@ -4130,14 +4130,12 @@ SbVec2s View3DInventorViewer::getPointOnViewport(const SbVec3f& pnt) const
     if (!camera) {
         return {0, 0};
     }
-    // WP361: do not gate on hasUsablePickVolume() — a false-unusable frustum
-    // still projected the sketch midpoint to a finite pixel, and returning
-    // {0,0} made Vertex2 win at the origin. Inf/NaN stay rejected by
-    // finiteNormalizedToShortPixel. A pathological ortho height (~1e10) is
-    // finite but maps every world point to the viewport centre; refuse that.
+    // WP361: reject only mathematically invalid ortho heights. Large finite
+    // heights remain usable for generic viewport projection; Sketcher edit
+    // recovery applies the collapsed-camera heuristic separately.
     if (camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
         const float height = static_cast<SoOrthographicCamera*>(camera)->height.getValue();
-        if (!View3DInventorViewerInternal::isUsablePickExtent(height)) {
+        if (!std::isfinite(height) || height <= View3DInventorViewerInternal::minUsablePickExtent) {
             return {0, 0};
         }
     }
