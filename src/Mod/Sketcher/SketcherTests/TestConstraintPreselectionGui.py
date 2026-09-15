@@ -287,6 +287,70 @@ class SketcherGuiTestCases(unittest.TestCase):
                         darkest = rgb
         return darkest
 
+    @staticmethod
+    def _artifact_dir():
+        env = os.environ.get("FREECAD_TEST_ARTIFACTS")
+        if env:
+            os.makedirs(env, exist_ok=True)
+            return env
+        return tempfile.mkdtemp(prefix="sketcher-datum-label-")
+
+    @staticmethod
+    def _row_std(values):
+        if not values:
+            return 0.0
+        mean = sum(values) / len(values)
+        return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+    def _viewport_ink_stats(self, image, cx, cy, half_w, half_h, ink_luminance=200):
+        iy = image.height() - cy - 1
+        ink = 0
+        total = 0
+        darkest = None
+        row_ink = []
+        x0 = max(0, cx - half_w)
+        x1 = min(image.width(), cx + half_w + 1)
+        y0 = max(0, iy - half_h)
+        y1 = min(image.height(), iy + half_h + 1)
+        for y in range(y0, y1):
+            row = 0
+            for x in range(x0, x1):
+                color = QtGui.QColor(image.pixel(x, y))
+                rgb = (color.red(), color.green(), color.blue())
+                luminance = self._luminance(rgb)
+                total += 1
+                if darkest is None or luminance < self._luminance(darkest):
+                    darkest = rgb
+                if luminance < ink_luminance:
+                    ink += 1
+                    row += 1
+            row_ink.append(row)
+        crop = image.copy(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+        return {
+            "darkest": darkest,
+            "ink": ink,
+            "total": total,
+            "ratio": (ink / total) if total else 0.0,
+            "row_std": self._row_std(row_ink),
+            "crop": crop,
+            "box": (x0, y0, x1, y1),
+        }
+
+    def _collect_datum_labels(self, view):
+        root = view.getViewer().getSoRenderManager().getSceneGraph()
+        datum_type = coin.SoType.fromName("SoDatumLabel")
+        labels = []
+
+        def visit(node):
+            if node.isOfType(datum_type):
+                labels.append(node)
+            if node.isOfType(coin.SoGroup.getClassTypeId()):
+                for index in range(node.getNumChildren()):
+                    visit(node.getChild(index))
+
+        visit(root)
+        return labels
+
     def _render_darkest_probes(self, view, probes):
         width, height = view.getSize()
         self.pump_gui_events()
@@ -398,6 +462,11 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.sketch.setLabelDistance(c_dist, 0.0)
         self.sketch.setLabelPosition(c_dist, 0.0)
         self.sketch.addConstraint(Sketcher.Constraint("Radius", g_r, 15.0))
+        g_dia = self.sketch.addGeometry(
+            Part.Circle(FreeCAD.Vector(-60, -60, 0), FreeCAD.Vector(0, 0, 1), 10.0),
+            False,
+        )
+        self.sketch.addConstraint(Sketcher.Constraint("Diameter", g_dia, 20.0))
         self.doc.recompute()
         self.pump_gui_events()
         self.configure_view_state(self.view)
@@ -413,23 +482,61 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.assertTrue(inner.isOfType(coin.SoSeparator.getClassTypeId()))
         self.assertEqual(inner.getNumChildren(), 13)
 
+        width, height = self.view.getSize()
+        self.pump_gui_events()
+        self.view.redraw()
+        self.pump_gui_events()
+        artifact_dir = self._artifact_dir()
+        viewport_path = os.path.join(artifact_dir, "viewport_datum_labels.png")
+        self.view.saveImage(viewport_path, width, height, "White")
+        image = QtGui.QImage(viewport_path)
+        self.assertFalse(image.isNull(), viewport_path)
+
         probes = {
-            "distance_text_box": (FreeCAD.Vector(105.0, 100.0, 0.0), 14, 5),
-            "angle_text_box": (FreeCAD.Vector(20.0, 0.0, 0.0), 8, 4),
+            "distance_text_box": (FreeCAD.Vector(105.0, 100.0, 0.0), 24, 10),
+            "angle_text_box": (FreeCAD.Vector(20.0, 0.0, 0.0), 16, 8),
             "radius_dimension_line": (FreeCAD.Vector(-52.0, 60.0, 0.0), 3, 2),
             "sketch_curve_control": (FreeCAD.Vector(80.0, 100.0, 0.0), 4, 4),
         }
-        darkest = self._render_darkest_probes(self.view, probes)
+        viewport_stats = {}
+        darkest = {}
+        for name, (world, half_w, half_h) in probes.items():
+            cx, cy = (int(value) for value in self.view.getPointOnViewport(world))
+            stats = self._viewport_ink_stats(image, cx, cy, half_w, half_h)
+            viewport_stats[name] = {
+                "darkest": stats["darkest"],
+                "ratio": stats["ratio"],
+                "row_std": stats["row_std"],
+                "ink": stats["ink"],
+                "total": stats["total"],
+                "coin": (cx, cy),
+            }
+            darkest[name] = stats["darkest"]
+            stats["crop"].save(os.path.join(artifact_dir, f"crop_{name}.png"))
+
+        label_texts = []
+        for label in self._collect_datum_labels(self.view):
+            try:
+                string_field = label.getField("string")
+                strings = string_field.getValues() if string_field is not None else []
+                if strings:
+                    label_texts.append(str(strings[0]))
+            except Exception:
+                continue
 
         angle_l = self._luminance(darkest["angle_text_box"])
         distance_l = self._luminance(darkest["distance_text_box"])
         radius_rgb = darkest["radius_dimension_line"]
         radius_l = self._luminance(radius_rgb)
         control_l = self._luminance(darkest["sketch_curve_control"])
+        angle_ink = viewport_stats["angle_text_box"]
+        distance_ink = viewport_stats["distance_text_box"]
 
         detail = (
             f"darkest={darkest}, angle_l={angle_l:.1f}, distance_l={distance_l:.1f}, "
-            f"radius_l={radius_l:.1f}, control_l={control_l:.1f}"
+            f"radius_l={radius_l:.1f}, control_l={control_l:.1f}, "
+            f"viewport_stats={viewport_stats}, label_texts={label_texts}, "
+            f"viewport={viewport_path}"
         )
 
         # Broken overlay leak: angle label L~139, radius line rgb~(208,219,217) L~215.
@@ -441,6 +548,20 @@ class SketcherGuiTestCases(unittest.TestCase):
         )
         self.assertFalse(washed_gray, detail)
         self.assertLess(control_l, 120.0, detail)
+
+        # Filled rectangles are dense and uniform. Glyphs are sparse with row variation.
+        self.assertGreater(angle_ink["ratio"], 0.04, detail)
+        self.assertLess(angle_ink["ratio"], 0.70, detail)
+        self.assertGreater(angle_ink["row_std"], 1.0, detail)
+        self.assertGreater(distance_ink["ratio"], 0.04, detail)
+        self.assertLess(distance_ink["ratio"], 0.70, detail)
+        self.assertGreater(distance_ink["row_std"], 1.0, detail)
+        self.assertGreaterEqual(len(label_texts), 4, detail)
+        joined = " ".join(label_texts)
+        self.assertIn("50", joined, detail)
+        self.assertIn("15", joined, detail)
+        self.assertIn("20", joined, detail)
+        self.assertIn("60", joined, detail)
 
         heights = []
         for _ in range(20):
