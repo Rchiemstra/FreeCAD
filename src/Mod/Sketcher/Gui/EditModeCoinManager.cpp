@@ -1843,27 +1843,32 @@ void EditModeCoinManager::createEditModeInventorNodes()
     occludedOverlayRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     occludedOverlayRoot->setName("OccludedOverlayRoot");
     editModeScenegraphNodes.EditRoot->addChild(occludedOverlayRoot);
+    // SoSkipBoundingGroup is an SoGroup and does not push/pop state. Keep the
+    // overlay's GREATER depth test, UNPICKABLE pick style and 0.9 transparency
+    // from leaking into the curves, markers and constraint labels added after it.
+    auto* occludedOverlay = new SoSeparator;
+    occludedOverlayRoot->addChild(occludedOverlay);
 
     auto* overlayPick = new SoPickStyle;
     overlayPick->style = SoPickStyle::UNPICKABLE;
-    occludedOverlayRoot->addChild(overlayPick);
+    occludedOverlay->addChild(overlayPick);
 
     auto* overlayDepth = new SoDepthBuffer;
     overlayDepth->function = SoDepthBuffer::GREATER;
     overlayDepth->write.setValue(false);
-    occludedOverlayRoot->addChild(overlayDepth);
+    occludedOverlay->addChild(overlayDepth);
 
     editModeScenegraphNodes.RootCrossDrawStyleOccluded = new SoDrawStyle;
     editModeScenegraphNodes.RootCrossDrawStyleOccluded->setName("RootCrossDrawStyleOccluded");
     editModeScenegraphNodes.RootCrossDrawStyleOccluded->lineWidth = 2
         * drawingParameters.pixelScalingFactor;
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossDrawStyleOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossDrawStyleOccluded);
 
     // Occluded horizontal axis
     editModeScenegraphNodes.RootCrossHCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossHCoordinateOccluded->setName("RootCrossHCoordinateOccluded");
     editModeScenegraphNodes.RootCrossHCoordinateOccluded->point.setNum(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossHCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossHCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedH = new SoMaterial;
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->setName("RootCrossMaterialsOccludedH");
@@ -1873,18 +1878,18 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedH);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedH);
 
     editModeScenegraphNodes.RootCrossSetOccludedH = new SoLineSet;
     editModeScenegraphNodes.RootCrossSetOccludedH->setName("RootCrossLineSetOccludedH");
     editModeScenegraphNodes.RootCrossSetOccludedH->numVertices.setValue(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossSetOccludedH);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossSetOccludedH);
 
     // Occluded vertical axis
     editModeScenegraphNodes.RootCrossVCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossVCoordinateOccluded->setName("RootCrossVCoordinateOccluded");
     editModeScenegraphNodes.RootCrossVCoordinateOccluded->point.setNum(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossVCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossVCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedV = new SoMaterial;
     editModeScenegraphNodes.RootCrossMaterialsOccludedV->setName("RootCrossMaterialsOccludedV");
@@ -1894,24 +1899,24 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.RootCrossMaterialsOccludedV->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedV);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedV);
 
     editModeScenegraphNodes.RootCrossSetOccludedV = new SoLineSet;
     editModeScenegraphNodes.RootCrossSetOccludedV->setName("RootCrossLineSetOccludedV");
     editModeScenegraphNodes.RootCrossSetOccludedV->numVertices.setValue(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossSetOccludedV);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossSetOccludedV);
 
     // Occluded origin
     editModeScenegraphNodes.OriginPointDrawStyleOccluded = new SoDrawStyle;
     editModeScenegraphNodes.OriginPointDrawStyleOccluded->setName("OriginPointDrawStyleOccluded");
     editModeScenegraphNodes.OriginPointDrawStyleOccluded->pointSize = 8
         * drawingParameters.pixelScalingFactor;
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointDrawStyleOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointDrawStyleOccluded);
 
     editModeScenegraphNodes.OriginPointCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.OriginPointCoordinateOccluded->setName("OriginPointCoordinateOccluded");
     editModeScenegraphNodes.OriginPointCoordinateOccluded->point.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointCoordinateOccluded);
 
     editModeScenegraphNodes.OriginPointMaterialOccluded = new SoMaterial;
     editModeScenegraphNodes.OriginPointMaterialOccluded->setName("OriginPointMaterialOccluded");
@@ -1921,13 +1926,13 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.OriginPointMaterialOccluded->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointMaterialOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointMaterialOccluded);
 
     editModeScenegraphNodes.OriginPointSetOccluded = new SoMarkerSet;
     editModeScenegraphNodes.OriginPointSetOccluded->setName("OriginPointSetOccluded");
     editModeScenegraphNodes.OriginPointSetOccluded->markerIndex
         = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointSetOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointSetOccluded);
 
     // stuff for the EditCurves +++++++++++++++++++++++++++++++++++++++
     SoSeparator* editCurvesRoot = new SoSeparator;

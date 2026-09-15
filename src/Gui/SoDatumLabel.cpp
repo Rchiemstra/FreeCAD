@@ -465,7 +465,6 @@ private:
     std::vector<SbVec3f> computeDistanceBBox() const
     {
         const SoDatumLabel::DatumTextMetrics metrics = label->measureDatumText(scale);
-        const int srcw = metrics.srcw;
         const int srch = metrics.srch;
         const float imgHeight = metrics.imgHeight;
         const float imgWidth = metrics.imgWidth;

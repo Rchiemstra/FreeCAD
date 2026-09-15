@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import math
+import os
+import tempfile
 import time
 import unittest
 
@@ -9,7 +11,8 @@ import FreeCADGui
 import Part
 import Sketcher
 import SketcherGui
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
+from pivy import coin
 
 
 class SketcherGuiTestCases(unittest.TestCase):
@@ -258,6 +261,51 @@ class SketcherGuiTestCases(unittest.TestCase):
             return None
         return float(camera.height.getValue())
 
+    @staticmethod
+    def _luminance(rgb):
+        r, g, b = rgb
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def _find_named_coin_node(self, root, name):
+        search = coin.SoSearchAction()
+        search.setName(coin.SbName(name))
+        search.setInterest(coin.SoSearchAction.FIRST)
+        search.setSearchingAll(True)
+        search.apply(root)
+        path = search.getPath()
+        return path.getTail() if path else None
+
+    def _darkest_pixel_in_box(self, image, cx, cy, half_w, half_h):
+        iy = image.height() - cy - 1
+        darkest = None
+        for y in range(iy - half_h, iy + half_h + 1):
+            for x in range(cx - half_w, cx + half_w + 1):
+                if 0 <= x < image.width() and 0 <= y < image.height():
+                    color = QtGui.QColor(image.pixel(x, y))
+                    rgb = (color.red(), color.green(), color.blue())
+                    if darkest is None or self._luminance(rgb) < self._luminance(darkest):
+                        darkest = rgb
+        return darkest
+
+    def _render_darkest_probes(self, view, probes):
+        width, height = view.getSize()
+        self.pump_gui_events()
+        view.redraw()
+        self.pump_gui_events()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            png_path = handle.name
+        try:
+            view.saveImage(png_path, width, height, "White")
+            image = QtGui.QImage(png_path)
+            darkest = {}
+            for name, (world, half_w, half_h) in probes.items():
+                cx, cy = (int(value) for value in view.getPointOnViewport(world))
+                darkest[name] = self._darkest_pixel_in_box(image, cx, cy, half_w, half_h)
+            return darkest
+        finally:
+            if os.path.exists(png_path):
+                os.remove(png_path)
+
     def _preselection_matches(self, info, wanted, object_name=None):
         if object_name is not None and (not info or info.get("ObjectName") != object_name):
             return False
@@ -320,6 +368,91 @@ class SketcherGuiTestCases(unittest.TestCase):
             self.doc = None
             FreeCAD.closeDocument(document_name)
             self.pump_gui_events()
+
+    def test_occluded_overlay_does_not_wash_out_datum_labels(self):
+        """As-built regression: occluded-axis overlay state must not leak into labels."""
+        t30 = math.tan(math.radians(30.0))
+        g_a1 = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(50, 50 * t30, 0)),
+            False,
+        )
+        g_a2 = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(50, -50 * t30, 0)),
+            False,
+        )
+        g_d = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(80, 100, 0), FreeCAD.Vector(130, 100, 0)),
+            False,
+        )
+        g_r = self.sketch.addGeometry(
+            Part.Circle(FreeCAD.Vector(-60, 60, 0), FreeCAD.Vector(0, 0, 1), 15.0),
+            False,
+        )
+        c_angle = self.sketch.addConstraint(
+            Sketcher.Constraint("Angle", g_a1, 1, g_a2, 1, math.radians(-60.0))
+        )
+        self.sketch.setLabelDistance(c_angle, 10.0)
+        c_dist = self.sketch.addConstraint(
+            Sketcher.Constraint("Distance", g_d, 1, g_d, 2, 50.0)
+        )
+        self.sketch.setLabelDistance(c_dist, 0.0)
+        self.sketch.setLabelPosition(c_dist, 0.0)
+        self.sketch.addConstraint(Sketcher.Constraint("Radius", g_r, 15.0))
+        self.doc.recompute()
+        self.pump_gui_events()
+        self.configure_view_state(self.view)
+
+        root = self.view.getViewer().getSoRenderManager().getSceneGraph()
+        overlay = self._find_named_coin_node(root, "OccludedOverlayRoot")
+        self.assertIsNotNone(overlay, "OccludedOverlayRoot not found in edit scene graph")
+        overlay_type = overlay.getTypeId().getName().getString()
+        self.assertEqual(overlay_type, "SoSkipBoundingGroup")
+        self.assertFalse(overlay.isOfType(coin.SoSeparator.getClassTypeId()))
+        self.assertEqual(overlay.getNumChildren(), 1)
+        inner = overlay.getChild(0)
+        self.assertTrue(inner.isOfType(coin.SoSeparator.getClassTypeId()))
+        self.assertEqual(inner.getNumChildren(), 13)
+
+        probes = {
+            "distance_text_box": (FreeCAD.Vector(105.0, 100.0, 0.0), 14, 5),
+            "angle_text_box": (FreeCAD.Vector(20.0, 0.0, 0.0), 8, 4),
+            "radius_dimension_line": (FreeCAD.Vector(-52.0, 60.0, 0.0), 3, 2),
+            "sketch_curve_control": (FreeCAD.Vector(80.0, 100.0, 0.0), 4, 4),
+        }
+        darkest = self._render_darkest_probes(self.view, probes)
+
+        angle_l = self._luminance(darkest["angle_text_box"])
+        distance_l = self._luminance(darkest["distance_text_box"])
+        radius_rgb = darkest["radius_dimension_line"]
+        radius_l = self._luminance(radius_rgb)
+        control_l = self._luminance(darkest["sketch_curve_control"])
+
+        detail = (
+            f"darkest={darkest}, angle_l={angle_l:.1f}, distance_l={distance_l:.1f}, "
+            f"radius_l={radius_l:.1f}, control_l={control_l:.1f}"
+        )
+
+        # Broken overlay leak: angle label L~139, radius line rgb~(208,219,217) L~215.
+        self.assertLess(angle_l, 120.0, detail)
+        self.assertLess(distance_l, 120.0, detail)
+        self.assertLess(radius_l, 150.0, detail)
+        washed_gray = all(channel > 180 for channel in radius_rgb) and (
+            max(radius_rgb) - min(radius_rgb) < 30
+        )
+        self.assertFalse(washed_gray, detail)
+        self.assertLess(control_l, 120.0, detail)
+
+        heights = []
+        for _ in range(20):
+            self.view.fitAll()
+            self.pump_gui_events()
+            heights.append(self._ortho_camera_height(self.view))
+
+        self.assertTrue(
+            all(height is not None and math.isfinite(height) and height > 0.0 for height in heights),
+            heights,
+        )
+        self.assertEqual(min(heights), max(heights), heights)
 
     def testPointOnObjectPreselectionMatchesTiltedHitArea(self):
         constraint_id, self.probe_point = self.build_issue_25840_sketch(self.sketch)

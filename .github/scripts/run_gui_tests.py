@@ -57,6 +57,9 @@ SKETCHER_GUI_CLASS_UNITS: tuple[str, ...] = (
 )
 
 _RAN_TESTS = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
+# unittest's final status line: "OK", "OK (skipped=2)", "FAILED (failures=1, errors=2)".
+# Anchored to the whole line so diagnostics like "FAILED to load ..." never match.
+_OUTCOME = re.compile(r"^(OK|FAILED|NO TESTS RAN)(?:\s*\(([^)]*)\))?\s*$")
 
 RunCommand = Callable[[list[str]], tuple[int, str]]
 
@@ -226,8 +229,33 @@ def discover_gui_suites(
     return 0, gui_tests, ""
 
 
-def evaluate_unit_result(rc: int, output: str) -> tuple[int, str]:
-    """Require a completed unittest run, not only a zero child exit."""
+def parse_final_outcome(output: str) -> tuple[str | None, dict[str, int]]:
+    """Return the unittest status that follows the last ``Ran N tests`` line.
+
+    ``("OK", {"skipped": 2})`` for ``OK (skipped=2)``; ``(None, {})`` when the
+    last summary has no status line after it (truncated or killed child).
+    """
+    matches = list(_RAN_TESTS.finditer(output))
+    if not matches:
+        return None, {}
+    for line in output[matches[-1].end() :].splitlines():
+        m = _OUTCOME.match(line.strip())
+        if not m:
+            continue
+        counts: dict[str, int] = {}
+        for item in (m.group(2) or "").split(","):
+            key, sep, value = item.partition("=")
+            if sep and value.strip().isdigit():
+                counts[key.strip()] = int(value)
+        return m.group(1), counts
+    return None, {}
+
+
+def evaluate_unit_result(rc: int, output: str, *, mandatory: bool = False) -> tuple[int, str]:
+    """Require a completed, successful unittest run, not only a zero child exit.
+
+    ``mandatory`` suites must also execute at least one test that is not skipped.
+    """
     if rc < 0 or rc == 245:
         return 1, f"GUI child segfaulted ({_format_rc(rc)})."
     completed = parse_completed_test_count(output)
@@ -237,6 +265,13 @@ def evaluate_unit_result(rc: int, output: str) -> tuple[int, str]:
         return 4, "Module completed 0 tests."
     if rc != 0:
         return rc, f"Module exited with code {_format_rc(rc)}."
+    outcome, counts = parse_final_outcome(output)
+    if outcome is None:
+        return 4, f"Module ran {completed} tests but printed no final OK/FAILED outcome."
+    if outcome != "OK":
+        return 1, f"Module reported {outcome} ({', '.join(f'{k}={v}' for k, v in counts.items())})."
+    if mandatory and counts.get("skipped", 0) >= completed:
+        return 4, f"Mandatory suite skipped all {completed} tests."
     return 0, ""
 
 
@@ -303,7 +338,7 @@ def run_gui_modules(
             cmd = [freecad_exec, "-t", unit]
             rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
             _log(out)
-            eval_rc, eval_err = evaluate_unit_result(rc, out)
+            eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in expected_suites)
             if eval_rc != 0:
                 _log(f"Module {unit}: {eval_err}", error=True)
                 last_rc = eval_rc

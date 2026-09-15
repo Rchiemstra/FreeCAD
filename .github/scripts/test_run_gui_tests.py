@@ -8,6 +8,8 @@ zero-test class unit would.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 
 from run_gui_tests import (
@@ -16,6 +18,7 @@ from run_gui_tests import (
     discover_gui_suites,
     evaluate_unit_result,
     parse_completed_test_count,
+    parse_final_outcome,
     parse_registered_tests,
     run_gui_modules,
     units_for_module,
@@ -29,6 +32,28 @@ def _listing(*names: str) -> str:
 def _ran(n: int, ok: bool = True) -> str:
     status = "OK" if ok else "FAILED (failures=1)"
     return f"test_foo ... {'ok' if ok else 'FAIL'}\nRan {n} tests in 0.010s\n{status}\n"
+
+
+def _unittest_output(ran: int, outcome: str | None) -> str:
+    body = "test_a (Mod.TestA) ... ok\n" + "-" * 70 + f"\nRan {ran} tests in 0.412s\n\n"
+    return body + (outcome + "\n" if outcome is not None else "")
+
+
+def _quiet_run_gui_modules(run) -> int:
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return run_gui_modules("FreeCAD", run=run, crash_helper=False)
+
+
+def _fake_freecad(per_unit: dict[str, tuple[int, str]], default=(0, _unittest_output(3, "OK"))):
+    seen: list[str] = []
+
+    def run(cmd: list[str]) -> tuple[int, str]:
+        if cmd[-1] == "-t":
+            return 0, _listing(*FULL_SUITES)
+        seen.append(cmd[-1])
+        return per_unit.get(cmd[-1], default)
+
+    return run, seen
 
 
 FULL_SUITES = EXPECTED_GUI_SUITES
@@ -110,6 +135,101 @@ class CompletedTestsAndAggregate(unittest.TestCase):
         rc, err = evaluate_unit_result(0, _ran(12))
         self.assertEqual(rc, 0)
         self.assertEqual(err, "")
+
+
+class UnitVerdicts(unittest.TestCase):
+    """evaluate_unit_result(rc, output) -- the per-unit gate."""
+
+    def test_exit0_with_failed_outcome_is_rejected(self):
+        rc, _ = evaluate_unit_result(0, _unittest_output(12, "FAILED (failures=1)"))
+        self.assertNotEqual(rc, 0)
+
+    def test_exit0_with_errors_outcome_is_rejected(self):
+        rc, _ = evaluate_unit_result(0, _unittest_output(12, "FAILED (errors=2, skipped=1)"))
+        self.assertNotEqual(rc, 0)
+
+    def test_exit0_positive_count_without_final_outcome_is_rejected(self):
+        rc, _ = evaluate_unit_result(0, _unittest_output(12, None))
+        self.assertNotEqual(rc, 0)
+
+    def test_zero_tests_python312_wording_is_rejected(self):
+        rc, _ = evaluate_unit_result(0, _unittest_output(0, "NO TESTS RAN"))
+        self.assertNotEqual(rc, 0)
+
+    def test_normal_success_is_accepted(self):
+        self.assertEqual(evaluate_unit_result(0, _unittest_output(12, "OK")), (0, ""))
+
+    def test_partial_skip_is_accepted(self):
+        rc, err = evaluate_unit_result(0, _unittest_output(12, "OK (skipped=4)"))
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_diagnostic_text_mentioning_failed_is_not_an_outcome(self):
+        out = (
+            "RPC GUI dispatch FAILED on attempt 1, retrying\n"
+            "Report view: FAILED to load optional icon\n" + _unittest_output(7, "OK")
+        )
+        self.assertEqual(evaluate_unit_result(0, out), (0, ""))
+
+    def test_outcome_must_belong_to_last_summary(self):
+        out = _unittest_output(2, "OK") + _unittest_output(12, None)
+        rc, _ = evaluate_unit_result(0, out)
+        self.assertNotEqual(rc, 0)
+
+    def test_nonzero_exit_with_ok_outcome_is_rejected(self):
+        rc, _ = evaluate_unit_result(1, _unittest_output(12, "OK"))
+        self.assertNotEqual(rc, 0)
+
+    def test_parse_final_outcome_reads_skipped_counts(self):
+        outcome, counts = parse_final_outcome(_unittest_output(12, "OK (skipped=4)"))
+        self.assertEqual(outcome, "OK")
+        self.assertEqual(counts, {"skipped": 4})
+
+
+class GateVerdicts(unittest.TestCase):
+    """run_gui_modules(...) -- the whole e2e gate as freecad-e2e.sh runs it."""
+
+    def test_exit0_failed_outcome_in_mandatory_suite_fails_gate(self):
+        run, _ = _fake_freecad({"TestPartGui": (0, _unittest_output(9, "FAILED (failures=1)"))})
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+
+    def test_exit0_without_final_outcome_fails_gate(self):
+        run, _ = _fake_freecad({"TestDraftGui": (0, _unittest_output(9, None))})
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+
+    def test_every_test_skipped_in_mandatory_suite_fails_gate(self):
+        run, _ = _fake_freecad({"TestCAMGui": (0, _unittest_output(6, "OK (skipped=6)"))})
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+
+    def test_all_skipped_in_non_mandatory_extra_unit_is_allowed(self):
+        run, seen = _fake_freecad(
+            {
+                "SketcherTests.TestOnViewParameterGui.TestOnViewParameterGui": (
+                    0,
+                    _unittest_output(2, "OK (skipped=2)"),
+                )
+            }
+        )
+        self.assertEqual(_quiet_run_gui_modules(run), 0)
+        self.assertIn("SketcherTests.TestOnViewParameterGui.TestOnViewParameterGui", seen)
+
+    def test_partial_skip_in_mandatory_suite_passes_gate(self):
+        run, _ = _fake_freecad({"TestSketcherGui": (0, _unittest_output(40, "OK (skipped=3)"))})
+        self.assertEqual(_quiet_run_gui_modules(run), 0)
+
+    def test_failed_aggregate_rc1_then_passing_classes_fails_gate(self):
+        run, seen = _fake_freecad({"TestSketcherGui": (1, _unittest_output(40, "FAILED (failures=2)"))})
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+        self.assertEqual(seen[seen.index("TestSketcherGui") + 1], SKETCHER_GUI_CLASS_UNITS[0])
+
+    def test_failed_aggregate_exit0_then_passing_classes_fails_gate(self):
+        run, _ = _fake_freecad({"TestSketcherGui": (0, _unittest_output(40, "FAILED (failures=2)"))})
+        self.assertNotEqual(_quiet_run_gui_modules(run), 0)
+
+    def test_normal_successful_run_passes_gate(self):
+        run, seen = _fake_freecad({})
+        self.assertEqual(_quiet_run_gui_modules(run), 0)
+        for suite in FULL_SUITES:
+            self.assertIn(suite, seen)
 
 
 class EndToEndFakeFreeCAD(unittest.TestCase):
