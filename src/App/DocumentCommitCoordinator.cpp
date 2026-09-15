@@ -690,6 +690,7 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
     bool postconditionMutationAttempted = false;
     try {
         const auto postconditionState = capturePostconditionState(_document);
+        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         _document.beginCollaborationPreparedReadOnlyPostconditionAudit();
         try {
             postcondition = operation.checkPostcondition(_document);
@@ -698,8 +699,13 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }
@@ -1126,6 +1132,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool postconditionMutationAttempted = false;
     try {
         const auto postconditionState = capturePostconditionState(_document);
+        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         _document.beginCollaborationPreparedReadOnlyPostconditionAudit();
         try {
             postcondition = operation.checkPostcondition(_document);
@@ -1134,8 +1141,13 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }

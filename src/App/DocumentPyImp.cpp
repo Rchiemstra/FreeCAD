@@ -1631,7 +1631,7 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                                         std::move(mutation),
                                         std::move(nativeCallback),
                                         std::move(options));
-            if (callbackError->captured() && !hasPostcondition
+            if (callbackError->captured()
                 && result.status != DocumentCommitStatus::RollbackFailed) {
                 callbackError->restore();
                 return nullptr;

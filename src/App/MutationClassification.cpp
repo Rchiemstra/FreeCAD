@@ -62,6 +62,14 @@ bool revisionMutationAllowedLocked(
         return true;
     }
     if (readOnlyTargetDepth(admission) != 0) {
+        if (admission.owner == std::this_thread::get_id()
+            && admission.targetRevisionIndex == &index
+            && coordinatorRevisionGrantIndex == &index
+            && coordinatorRevisionGrantDepth != 0) {
+            // Coordinator-owned postcondition checks may inspect or publish
+            // indexed revisions while presentation mutation remains read-only.
+            return true;
+        }
         const_cast<App::Document*>(admission.target)
             ->noteCollaborationReadOnlyMutationAttempt();
         return false;
