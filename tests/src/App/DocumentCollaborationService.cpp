@@ -107,7 +107,7 @@ class DocumentStructuralCompatibilityTestAccess
 public:
     static bool commitCoordinatorTransaction(Document& document)
     {
-        return document.commitCollaborationCommitTransaction();
+        return document.commitCollaborationCommitTransaction(true);
     }
 
     static std::string grantDiagnostic(Document& document)
