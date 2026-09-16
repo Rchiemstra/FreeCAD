@@ -70,7 +70,6 @@ yaml-cpp = "*"
 zlib = "*"
 zstd = "*"
 compiler-rt = ">=18.1.8,<22"
-gmsh = ">=4.13.1,<5"
 blas = { version = "*", build = "openblas*" }
 
 ## Linux Dependencies (x86-64)

@@ -6485,7 +6485,7 @@ void Document::settleRecomputedFeature(DocumentObject& object)
             if (record == d->collaborationDeferredExternalRecomputes.end()) {
                 record = d->collaborationDeferredExternalRecomputes.emplace(
                     d->collaborationDeferredExternalRecomputes.end(),
-                    CollaborationDeferredExternalRecompute {dependentDocument, &dependent});
+                    CollaborationDeferredExternalRecompute {dependentDocument, &dependent, {}});
             }
             if (propertySpecific
                 && std::ranges::find(record->propertyNames, propertyName)
