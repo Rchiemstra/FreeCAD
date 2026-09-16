@@ -753,6 +753,10 @@ public:
         std::vector<std::string>& subElementNames,
         Base::Vector3d& pickedPoint
     );
+    EditModeCoinManager::PreselectionResult getPreselectionResultAtViewportPos(
+        const SbVec2s& pos,
+        const Gui::View3DInventorViewer* viewer
+    ) const;
 
     /** @name Attorneys for collaboration with helper classes */
     //@{
@@ -856,10 +860,6 @@ private:
     /** @name preselection functions */
     //@{
     SoPickedPointList getPickedPointsOnRay(
-        const SbVec2s& pos,
-        const Gui::View3DInventorViewer* viewer
-    ) const;
-    EditModeCoinManager::PreselectionResult getPreselectionResultAtViewportPos(
         const SbVec2s& pos,
         const Gui::View3DInventorViewer* viewer
     ) const;

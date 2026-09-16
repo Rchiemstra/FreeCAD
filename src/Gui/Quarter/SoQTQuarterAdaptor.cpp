@@ -36,6 +36,7 @@
 #include <Inventor/actions/SoGLRenderAction.h>
 #include <Inventor/events/SoEvents.h>
 #include <Inventor/nodes/SoLocateHighlight.h>
+#include <Inventor/nodes/SoGroup.h>
 #include <Inventor/nodes/SoOrthographicCamera.h>
 #include <Inventor/nodes/SoPerspectiveCamera.h>
 #include <Inventor/nodes/SoSeparator.h>
@@ -201,6 +202,18 @@ QWidget* SIM::Coin3D::Quarter::SoQTQuarterAdaptor::getGLWidget() const
 
 void SIM::Coin3D::Quarter::SoQTQuarterAdaptor::setCameraType(SoType type)
 {
+    if (!getSoRenderManager()) {
+        return;
+    }
+
+    const bool wantsPerspective = type.isDerivedFrom(SoPerspectiveCamera::getClassTypeId());
+    const bool wantsOrtho = type.isDerivedFrom(SoOrthographicCamera::getClassTypeId());
+    if (!type.canCreateInstance() || (!wantsPerspective && !wantsOrtho)) {
+        Base::Console().warning("Quarter::setCameraType",
+                                "Only SoPerspectiveCamera and SoOrthographicCamera is supported.");
+        return;
+    }
+
     SoCamera* cam = getSoRenderManager()->getCamera();
     if (cam && !cam->isOfType(SoPerspectiveCamera::getClassTypeId()) &&
                !cam->isOfType(SoOrthographicCamera::getClassTypeId())) {
@@ -209,34 +222,45 @@ void SIM::Coin3D::Quarter::SoQTQuarterAdaptor::setCameraType(SoType type)
         return;
     }
 
-
     SoType perspectivetype = SoPerspectiveCamera::getClassTypeId();
     SbBool oldisperspective = cam ? cam->getTypeId().isDerivedFrom(perspectivetype) : false;
     SbBool newisperspective = type.isDerivedFrom(perspectivetype);
 
-    // Same old, same old..
-    if (oldisperspective == newisperspective) {
+    // Same camera class already installed. Do not treat "no camera" as
+    // already-orthographic: headless CI reaches sketch edit with a null
+    // SoRenderManager camera, and requesting ortho used to no-op here.
+    if (cam && oldisperspective == newisperspective) {
         return;
     }
 
-    SoCamera* currentcam = getSoRenderManager()->getCamera();
     SoCamera* newcamera = static_cast<SoCamera*>(type.createInstance());  // NOLINT
+    if (!newcamera) {
+        return;
+    }
 
     // Transfer and convert values from one camera type to the other.
-    if(newisperspective) {
-        convertOrtho2Perspective(dynamic_cast<SoOrthographicCamera*>(currentcam),
-                                 dynamic_cast<SoPerspectiveCamera*>(newcamera));
-    }
-    else {
-        convertPerspective2Ortho(dynamic_cast<SoPerspectiveCamera*>(currentcam),
-                                 dynamic_cast<SoOrthographicCamera*>(newcamera));
+    if (cam) {
+        if (newisperspective) {
+            convertOrtho2Perspective(dynamic_cast<SoOrthographicCamera*>(cam),
+                                     dynamic_cast<SoPerspectiveCamera*>(newcamera));
+        }
+        else {
+            convertPerspective2Ortho(dynamic_cast<SoPerspectiveCamera*>(cam),
+                                     dynamic_cast<SoOrthographicCamera*>(newcamera));
+        }
     }
 
     getSoRenderManager()->setCamera(newcamera);
-    getSoEventManager()->setCamera(newcamera);
+    if (getSoEventManager()) {
+        getSoEventManager()->setCamera(newcamera);
+    }
 
     //if the superscene has a camera we need to replace it too
     auto superscene = dynamic_cast<SoSeparator*>(getSoRenderManager()->getSceneGraph());
+    if (!superscene) {
+        return;
+    }
+
     SoSearchAction sa;
     sa.setInterest(SoSearchAction::FIRST);
     sa.setType(SoCamera::getClassTypeId());
@@ -246,9 +270,12 @@ void SIM::Coin3D::Quarter::SoQTQuarterAdaptor::setCameraType(SoType type)
         SoNode* node = sa.getPath()->getTail();
         SoGroup* parent = static_cast<SoGroup*>(sa.getPath()->getNodeFromTail(1)); //  NOLINT
 
-        if (node && node->isOfType(SoCamera::getClassTypeId())) {
+        if (node && node->isOfType(SoCamera::getClassTypeId()) && parent) {
             parent->replaceChild(node, newcamera);
         }
+    }
+    else {
+        superscene->insertChild(newcamera, 0);
     }
 }
 
