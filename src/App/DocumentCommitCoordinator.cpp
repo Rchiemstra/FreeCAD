@@ -661,6 +661,7 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
     }
 
     try {
+        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         operation.apply(_document);
     }
     catch (const Base::Exception& exception) {
@@ -690,7 +691,6 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
     bool postconditionMutationAttempted = false;
     try {
         const auto postconditionState = capturePostconditionState(_document);
-        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         _document.beginCollaborationPreparedReadOnlyPostconditionAudit();
         try {
             postcondition = operation.checkPostcondition(_document);
@@ -1026,6 +1026,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
 
     try {
+        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
             if (structuralCompatibility) {
@@ -1132,7 +1133,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     bool postconditionMutationAttempted = false;
     try {
         const auto postconditionState = capturePostconditionState(_document);
-        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         _document.beginCollaborationPreparedReadOnlyPostconditionAudit();
         try {
             postcondition = operation.checkPostcondition(_document);

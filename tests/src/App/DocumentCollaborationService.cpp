@@ -792,11 +792,11 @@ TEST_F(DocumentCollaborationServiceTest,
             [&] {
                 target->Label.setValue("Applied");
                 target->touch();
+                static_cast<void>(_document->collaborationRevisions().publish(
+                    std::vector<DocumentRevisionKey> {wildcard}));
             },
             [&] {
                 inspected = target->Label.getStrValue() == "Applied";
-                static_cast<void>(_document->collaborationRevisions().publish(
-                    std::vector<DocumentRevisionKey> {wildcard}));
                 return inspected;
             });
 
