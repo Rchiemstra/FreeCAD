@@ -43,6 +43,12 @@ public:
         DocumentCommitCoordinator::_postReservationTestHook.store(
             hook, std::memory_order_release);
     }
+
+    static void setPreReservationHook(void (*hook)())
+    {
+        DocumentCommitCoordinator::_preReservationTestHook.store(
+            hook, std::memory_order_release);
+    }
 };
 
 class DocumentCollaborationServiceTestAccess
@@ -785,6 +791,11 @@ TEST_F(DocumentCollaborationServiceTest,
     const auto wildcard = DocumentRevisionKey::unknownModelMutation();
     bool inspected = false;
     CollaborationCompatibilityMutation mutation;
+    auto* document = _document;
+    Internal::DocumentCommitCoordinatorTestAccess::setPreReservationHook(+[document, wildcard] {
+        static_cast<void>(document->collaborationRevisions().publish(
+            std::vector<DocumentRevisionKey> {wildcard}));
+    });
 
     const auto result =
         _document->collaborationService().commitCompatibilityMutationWithPostcondition(
@@ -792,13 +803,12 @@ TEST_F(DocumentCollaborationServiceTest,
             [&] {
                 target->Label.setValue("Applied");
                 target->touch();
-                static_cast<void>(_document->collaborationRevisions().publish(
-                    std::vector<DocumentRevisionKey> {wildcard}));
             },
             [&] {
                 inspected = target->Label.getStrValue() == "Applied";
                 return inspected;
             });
+    Internal::DocumentCommitCoordinatorTestAccess::setPreReservationHook(nullptr);
 
     EXPECT_TRUE(inspected);
     EXPECT_EQ(result.status, DocumentCommitStatus::Conflict);

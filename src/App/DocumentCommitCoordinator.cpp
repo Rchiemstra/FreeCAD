@@ -231,6 +231,8 @@ bool postconditionStateUnchanged(App::Document& document,
 
 std::atomic<App::DocumentCommitCoordinator::PostReservationTestHook>
     App::DocumentCommitCoordinator::_postReservationTestHook {nullptr};
+std::atomic<App::DocumentCommitCoordinator::PreReservationTestHook>
+    App::DocumentCommitCoordinator::_preReservationTestHook {nullptr};
 
 using namespace App;
 
@@ -661,7 +663,6 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
     }
 
     try {
-        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         operation.apply(_document);
     }
     catch (const Base::Exception& exception) {
@@ -1026,7 +1027,6 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
 
     try {
-        CollaborationRevisionMutationGrant revisionGrant(_document.collaborationRevisions());
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
             if (structuralCompatibility) {
@@ -1274,6 +1274,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     try {
         CollaborationRevisionMutationGrant revisionGrant(
             _document.collaborationRevisions());
+        if (const auto hook = _preReservationTestHook.load(std::memory_order_acquire)) {
+            hook();
+        }
         reservation.emplace(_document.collaborationRevisions().reservePublication(
             edit.expectedRevisions(), effects));
     }
