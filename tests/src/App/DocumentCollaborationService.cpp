@@ -32,6 +32,20 @@
 
 using namespace App;
 
+namespace
+{
+
+Document* gPreReservationPublishDocument = nullptr;
+DocumentRevisionKey gPreReservationPublishWildcard;
+
+void publishPreReservationWildcard()
+{
+    static_cast<void>(gPreReservationPublishDocument->collaborationRevisions().publish(
+        std::vector<DocumentRevisionKey> {gPreReservationPublishWildcard}));
+}
+
+}  // namespace
+
 namespace App::Internal
 {
 
@@ -791,11 +805,10 @@ TEST_F(DocumentCollaborationServiceTest,
     const auto wildcard = DocumentRevisionKey::unknownModelMutation();
     bool inspected = false;
     CollaborationCompatibilityMutation mutation;
-    auto* document = _document;
-    Internal::DocumentCommitCoordinatorTestAccess::setPreReservationHook(+[document, wildcard] {
-        static_cast<void>(document->collaborationRevisions().publish(
-            std::vector<DocumentRevisionKey> {wildcard}));
-    });
+    gPreReservationPublishDocument = _document;
+    gPreReservationPublishWildcard = wildcard;
+    Internal::DocumentCommitCoordinatorTestAccess::setPreReservationHook(
+        publishPreReservationWildcard);
 
     const auto result =
         _document->collaborationService().commitCompatibilityMutationWithPostcondition(
