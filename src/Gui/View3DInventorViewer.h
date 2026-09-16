@@ -589,6 +589,7 @@ public:
     void getDimensions(float& fHeight, float& fWidth) const;
     float getMaxDimension() const;
     SbVec3f getFocalPoint() const;
+    bool hasUsablePickVolume() const;
 
     NavigationStyle* navigationStyle() const;
 

@@ -464,20 +464,10 @@ private:
     }
     std::vector<SbVec3f> computeDistanceBBox() const
     {
-        SbVec2s imgsize;
-        int nc {};
-        int srcw = 1;
-        int srch = 1;
-
-        const unsigned char* dataptr = label->image.getValue(imgsize, nc);
-        if (dataptr) {
-            srcw = imgsize[0];
-            srch = imgsize[1];
-        }
-
-        float aspectRatio = (float)srcw / (float)srch;
-        float imgHeight = scale * (float)(srch);
-        float imgWidth = aspectRatio * imgHeight;
+        const SoDatumLabel::DatumTextMetrics metrics = label->measureDatumText(scale);
+        const int srch = metrics.srch;
+        const float imgHeight = metrics.imgHeight;
+        const float imgWidth = metrics.imgWidth;
 
         // get the points stored in the pnt field
         const SbVec3f* points = label->pnts.getValues(0);
@@ -578,20 +568,9 @@ private:
 
     std::vector<SbVec3f> computeAngleBBox() const
     {
-        SbVec2s imgsize;
-        int nc {};
-        int srcw = 1;
-        int srch = 1;
-
-        const unsigned char* dataptr = label->image.getValue(imgsize, nc);
-        if (dataptr) {
-            srcw = imgsize[0];
-            srch = imgsize[1];
-        }
-
-        float aspectRatio = (float)srcw / (float)srch;
-        float imgHeight = scale * (float)(srch);
-        float imgWidth = aspectRatio * imgHeight;
+        const SoDatumLabel::DatumTextMetrics metrics = label->measureDatumText(scale);
+        const float imgHeight = metrics.imgHeight;
+        const float imgWidth = metrics.imgWidth;
 
         // get the points stored in the pnt field
         const SbVec3f* points = label->pnts.getValues(0);
@@ -679,21 +658,9 @@ private:
         // use shared geometry calculation
         SoDatumLabel::ArcLengthGeometry geom = label->calculateArcLengthGeometry(points);
 
-        // get text area for existing text coverage
-        SbVec2s imgsize;
-        int nc {};
-        int srcw = 1;
-        int srch = 1;
-
-        const unsigned char* dataptr = label->image.getValue(imgsize, nc);
-        if (dataptr) {
-            srcw = imgsize[0];
-            srch = imgsize[1];
-        }
-
-        float aspectRatio = (float)srcw / (float)srch;
-        float imgHeight = scale * (float)(srch);
-        float imgWidth = aspectRatio * imgHeight;
+        const SoDatumLabel::DatumTextMetrics metrics = label->measureDatumText(scale);
+        const float imgHeight = metrics.imgHeight;
+        const float imgWidth = metrics.imgWidth;
 
         // text orientation
         SbVec3f dir = (geom.p2 - geom.p1);
@@ -1209,11 +1176,69 @@ void SoDatumLabel::generateArcLengthPrimitives(
     generateArrowSelectionPrimitive(action, geom.pnt4, geom.dirEnd, arrowWidth, arrowLength);
 }
 
+SoDatumLabel::DatumTextMetrics SoDatumLabel::measureDatumText(float scale) const
+{
+    DatumTextMetrics metrics;
+
+    if (datumtype.getValue() == SYMMETRIC) {
+        metrics.imgHeight = scale * 25.0F;
+        metrics.imgWidth = scale * 25.0F;
+        return metrics;
+    }
+
+    const SbString* s = string.getValues(0);
+    const int num = string.getNum();
+    if (num == 0 || s[0].getLength() == 0) {
+        return metrics;
+    }
+
+    QFont font(QString::fromLatin1(name.getValue(), -1), size.getValue());
+    QFontMetrics fm(font);
+    const QString str = QString::fromUtf8(s[0].getString());
+    const int w = Gui::QtTools::horizontalAdvance(fm, str);
+    const int h = fm.height();
+    if (w <= 0 || h <= 0) {
+        return metrics;
+    }
+
+    const float samplingValue = sampling.getValue();
+    metrics.srcw = static_cast<int>(w * samplingValue);
+    metrics.srch = static_cast<int>(h * samplingValue);
+    if (metrics.srcw <= 0 || metrics.srch <= 0) {
+        return {};
+    }
+
+    metrics.imgHeight = scale * static_cast<float>(metrics.srch) / samplingValue;
+    const float aspectRatio = static_cast<float>(metrics.srcw) / static_cast<float>(metrics.srch);
+    metrics.imgWidth = aspectRatio * metrics.imgHeight;
+    return metrics;
+}
+
 void SoDatumLabel::generatePrimitives(SoAction* action)
 {
-    // Initialisation check (needs something more sensible) prevents an infinite loop bug
     constexpr float floatEpsilon = std::numeric_limits<float>::epsilon();
-    if (this->imgHeight <= floatEpsilon || this->imgWidth <= floatEpsilon) {
+
+    SoState* state = action ? action->getState() : nullptr;
+    if (!state) {
+        return;
+    }
+
+    const float scale = getScaleFactor(state);
+    if (!(scale > floatEpsilon) || !std::isfinite(scale)) {
+        return;
+    }
+
+    if (datumtype.getValue() == SYMMETRIC) {
+        imgHeight = scale * 25.0F;
+        imgWidth = scale * 25.0F;
+    }
+    else {
+        const DatumTextMetrics metrics = measureDatumText(scale);
+        imgWidth = metrics.imgWidth;
+        imgHeight = metrics.imgHeight;
+    }
+
+    if (imgHeight <= floatEpsilon || imgWidth <= floatEpsilon) {
         return;
     }
 

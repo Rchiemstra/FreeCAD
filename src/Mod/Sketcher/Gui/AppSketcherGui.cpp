@@ -34,6 +34,10 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/WidgetFactory.h>
 
+#include <Mod/Sketcher/App/GeoEnum.h>
+#include <Mod/Sketcher/App/PropertyConstraintList.h>
+
+#include "EditModeCoinManager.h"
 #include "PropertyConstraintListItem.h"
 #include "SketcherSettings.h"
 #include "SoZoomTranslation.h"
@@ -78,6 +82,7 @@ public:
             "Return the Sketcher edit-mode preselection candidate at viewport coordinates.\n"
             "The tuple uses the same coordinate system as Gui.ActiveDocument.ActiveView"
             ".getPointOnViewport().\n"
+            "ConstraintKind is one of DatumAnnotation, DatumPresentation, Icon, or None.\n"
         );
         initialize("This module is the SketcherGui module.");  // register with Python
     }
@@ -114,14 +119,16 @@ private:
             return Py::None();
         }
 
-        std::vector<std::string> subElementNames;
-        Base::Vector3d pickedPoint;
-        if (!sketchViewProvider->getPreselectionAtViewportPos(
-                SbVec2s(static_cast<short>((long)x), static_cast<short>((long)y)),
-                view->getViewer(),
-                subElementNames,
-                pickedPoint
-            )) {
+        const SbVec2s viewportPos(
+            static_cast<short>((long)x),
+            static_cast<short>((long)y)
+        );
+        const EditModeCoinManager::PreselectionResult preselection
+            = sketchViewProvider->getPreselectionResultAtViewportPos(
+                viewportPos,
+                view->getViewer()
+            );
+        if (!preselection.hasWinner() || !preselection.hasPickedPoint()) {
             return Py::None();
         }
 
@@ -130,11 +137,74 @@ private:
             return Py::None();
         }
 
+        std::vector<std::string> subElementNames;
+        switch (preselection.Kind) {
+            case EditModeCoinManager::PreselectionResult::HitKind::Point:
+                subElementNames.emplace_back("Vertex" + std::to_string(preselection.PointIndex + 1));
+                break;
+            case EditModeCoinManager::PreselectionResult::HitKind::Edge:
+                if (preselection.GeoIndex >= 0) {
+                    subElementNames.emplace_back("Edge" + std::to_string(preselection.GeoIndex + 1));
+                }
+                else {
+                    subElementNames.emplace_back(
+                        "ExternalEdge"
+                        + std::to_string(
+                            -preselection.GeoIndex + Sketcher::GeoEnum::RefExt + 1
+                        )
+                    );
+                }
+                break;
+            case EditModeCoinManager::PreselectionResult::HitKind::Axis:
+                switch (preselection.Cross) {
+                    case EditModeCoinManager::PreselectionResult::Axes::RootPoint:
+                        subElementNames.emplace_back("RootPoint");
+                        break;
+                    case EditModeCoinManager::PreselectionResult::Axes::HorizontalAxis:
+                        subElementNames.emplace_back("H_Axis");
+                        break;
+                    case EditModeCoinManager::PreselectionResult::Axes::VerticalAxis:
+                        subElementNames.emplace_back("V_Axis");
+                        break;
+                    case EditModeCoinManager::PreselectionResult::Axes::None:
+                        break;
+                }
+                break;
+            case EditModeCoinManager::PreselectionResult::HitKind::Constraint:
+                subElementNames.reserve(preselection.ConstrIndices.size());
+                for (int constraintId : preselection.ConstrIndices) {
+                    subElementNames.emplace_back(
+                        Sketcher::PropertyConstraintList::getConstraintName(constraintId)
+                    );
+                }
+                break;
+            case EditModeCoinManager::PreselectionResult::HitKind::None:
+                break;
+        }
+
+        const char* constraintKind = "None";
+        switch (preselection.ConstraintKind) {
+            case EditModeCoinManager::PreselectionResult::ConstraintHitKind::Icon:
+                constraintKind = "Icon";
+                break;
+            case EditModeCoinManager::PreselectionResult::ConstraintHitKind::DatumPresentation:
+                constraintKind = "DatumPresentation";
+                break;
+            case EditModeCoinManager::PreselectionResult::ConstraintHitKind::DatumAnnotation:
+                constraintKind = "DatumAnnotation";
+                break;
+            case EditModeCoinManager::PreselectionResult::ConstraintHitKind::None:
+            default:
+                constraintKind = "None";
+                break;
+        }
+
         Py::List pySubElementNames;
         for (const auto& subElementName : subElementNames) {
             pySubElementNames.append(Py::String(subElementName));
         }
 
+        const Base::Vector3d pickedPoint = preselection.pickedPoint();
         Py::List pyPickedPoints;
         Py::Tuple pyPoint(3);
         pyPoint.setItem(0, Py::Float(pickedPoint.x));
@@ -147,6 +217,7 @@ private:
         result.setItem("ObjectName", Py::String(sketchObject->getNameInDocument()));
         result.setItem("SubElementNames", pySubElementNames);
         result.setItem("PickedPoints", pyPickedPoints);
+        result.setItem("ConstraintKind", Py::String(constraintKind));
         return result;
     }
 };

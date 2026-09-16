@@ -346,9 +346,12 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
-  # core/e2e: gated tag/manual (not PR). Per-marker output files + rm -f so
-  # parallel/sequential runs cannot read a stale or interleaved verdict. The
-  # wrapper writes ci_rc_${MARKER}.txt; the step's LAST command reads it.
+  # core/e2e: runs on tag, manual, and pull_request. The top-level `when`
+  # already limits pull_request to the FreeCAD-start/fix/chore/integrate target
+  # branches, so no branch filter is repeated here. Per-marker output files +
+  # rm -f so parallel/sequential runs cannot read a stale or interleaved
+  # verdict. The wrapper writes ci_rc_${MARKER}.txt; the step's LAST command
+  # reads it.
   - name: freecad-mcp-core-tests
     image: *freecad_ci_mcp_image
     pull: true
@@ -360,6 +363,7 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
+      - event: pull_request
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
@@ -371,5 +375,6 @@ steps:
       MARKER: e2e
     when:
       - event: [tag, manual]
+      - event: pull_request
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
