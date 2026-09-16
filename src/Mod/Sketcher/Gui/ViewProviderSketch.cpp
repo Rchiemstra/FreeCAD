@@ -26,6 +26,7 @@
 #include <boost/core/ignore_unused.hpp>
 #include <Inventor/SbBox3f.h>
 #include <Inventor/SbLine.h>
+#include <Inventor/SbViewVolume.h>
 #include <Inventor/SbTime.h>
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/actions/SoRayPickAction.h>
@@ -34,6 +35,7 @@
 #include <Inventor/events/SoKeyboardEvent.h>
 #include <Inventor/lists/SoPickedPointList.h>
 #include <Inventor/nodes/SoCamera.h>
+#include <Inventor/nodes/SoOrthographicCamera.h>
 #include <Inventor/nodes/SoShapeHints.h>
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoTransform.h>
@@ -75,6 +77,7 @@
 #include <Gui/Utilities.h>
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
+#include <Gui/View3DInventorViewerInternal.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/GeoList.h>
@@ -124,6 +127,37 @@ bool isFiniteVector(const SbVec3f& vector)
 bool isFiniteVector(const Base::Vector3d& vector)
 {
     return std::isfinite(vector.x) && std::isfinite(vector.y) && std::isfinite(vector.z);
+}
+
+void restoreUsableSketchCamera(SoCamera* camera)
+{
+    if (!camera || !camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
+        return;
+    }
+    auto* ortho = static_cast<SoOrthographicCamera*>(camera);
+    float recoveredHeight = 0.0F;
+    if (!Gui::View3DInventorViewerInternal::recoveredOrthographicHeight(
+            ortho->height.getValue(),
+            recoveredHeight
+        )) {
+        return;
+    }
+    if (ortho->height.getValue() != recoveredHeight) {
+        ortho->height.setValue(recoveredHeight);
+    }
+    float nearDist = camera->nearDistance.getValue();
+    float farDist = camera->farDistance.getValue();
+    float focalDist = camera->focalDistance.getValue();
+    if (Gui::View3DInventorViewerInternal::recoveredCameraDistances(
+            recoveredHeight,
+            nearDist,
+            farDist,
+            focalDist
+        )) {
+        camera->nearDistance.setValue(nearDist);
+        camera->farDistance.setValue(farDist);
+        camera->focalDistance.setValue(focalDist);
+    }
 }
 }  // namespace
 
@@ -893,13 +927,18 @@ SoPickedPointList ViewProviderSketch::getPickedPointsOnRay(
 ) const
 {
     SoPickedPointList picks;
-    if (!viewer || !isInEditMode()) {
+    if (!viewer || !isInEditMode() || !viewer->getSoRenderManager()) {
+        return picks;
+    }
+
+    SoCamera* camera = viewer->getSoRenderManager()->getCamera();
+    if (!camera || !viewer->hasUsablePickVolume()) {
         return picks;
     }
 
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(viewer->getSoRenderManager()->getCamera());
+    root->addChild(camera);
 
     auto trans = new SoTransform;
     trans->ref();
@@ -1142,7 +1181,8 @@ bool ViewProviderSketch::getProjectingLine(const SbVec2s& pnt,
     SbViewVolume vol = pCam->getViewVolume();
 
     vol.projectPointToLine(SbVec2f(pX, pY), line);
-    return isFiniteVector(line.getPosition()) && isFiniteVector(line.getDirection());
+    return isFiniteVector(line.getPosition()) && isFiniteVector(line.getDirection())
+        && line.getDirection().sqrLength() > std::numeric_limits<float>::epsilon();
 }
 
 Base::Placement ViewProviderSketch::getEditingPlacement() const
@@ -3565,11 +3605,21 @@ float ViewProviderSketch::getScaleFactor() const
         Gui::Application::Instance->editViewOfNode(editCoinManager->getRootEditNode());
     if (mdi && mdi->isDerivedFrom<Gui::View3DInventor>()) {
         Gui::View3DInventorViewer* viewer = static_cast<Gui::View3DInventor*>(mdi)->getViewer();
+        if (!viewer || !viewer->getSoRenderManager()) {
+            return 1.f;
+        }
         SoCamera* camera = viewer->getSoRenderManager()->getCamera();
-        float scale = camera->getViewVolume(camera->aspectRatio.getValue())
-                          .getWorldToScreenScale(SbVec3f(0.f, 0.f, 0.f), 0.1f)
-            / 3;
-        return scale;
+        if (!camera) {
+            return 1.f;
+        }
+        const SbViewVolume volume = camera->getViewVolume(camera->aspectRatio.getValue());
+        if (volume.getWidth() <= 0.0F || volume.getHeight() <= 0.0F || volume.getDepth() <= 0.0F
+            || !std::isfinite(volume.getWidth()) || !std::isfinite(volume.getHeight())
+            || !std::isfinite(volume.getDepth())) {
+            return 1.f;
+        }
+        float scale = volume.getWorldToScreenScale(SbVec3f(0.f, 0.f, 0.f), 0.1f) / 3;
+        return std::isfinite(scale) && scale > 0.0F ? scale : 1.f;
     }
     else {
         return 1.f;
@@ -4654,17 +4704,50 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
     SbRotation rot((float)tmp[0], (float)tmp[1], (float)tmp[2], (float)tmp[3]);
 
     // Will the sketch be visible from the new position (#0000957)?
-    //
-    SoCamera* camera = viewer->getSoRenderManager()->getCamera();
-    SbVec3f curdir;// current view direction
-    camera->orientation.getValue().multVec(SbVec3f(0, 0, -1), curdir);
-    SbVec3f plnpos = Base::convertTo<SbVec3f>(plm.getPosition());
-    camera->position.setValue(plnpos - camera->focalDistance.getValue() * curdir);
-    viewer->setCameraOrientation(rot);
-    if (getSketchObject()->Geometry.getSize() > 0 || getSketchObject()->ExternalGeometry.getSize() > 0) {
-        std::vector<App::SubObjectT> objs;
-        objs.emplace_back(getObject(), "");
-        viewer->viewObjects(objs);
+    // Headless CI can reach setEdit before SoRenderManager has a camera.
+    // Dereferencing a null camera here is the TestSketcherGui SIGSEGV on
+    // Woodpecker (pipeline 357): crash immediately after entering edit.
+    SoCamera* camera = viewer->getSoRenderManager()
+        ? viewer->getSoRenderManager()->getCamera()
+        : nullptr;
+    if (!camera) {
+        viewer->setCameraType(SoOrthographicCamera::getClassTypeId());
+        camera = viewer->getSoRenderManager()
+            ? viewer->getSoRenderManager()->getCamera()
+            : nullptr;
+    }
+    Base::Console().message(
+        "ViewProviderSketch::setEditViewer camera=%p\n",
+        static_cast<void*>(camera)
+    );
+    auto restoreFiniteOrthographicHeight = [](SoCamera* restoreCamera) {
+        restoreUsableSketchCamera(restoreCamera);
+    };
+    if (camera && !viewer->hasUsablePickVolume()) {
+        restoreFiniteOrthographicHeight(camera);
+    }
+    if (camera) {
+        SbVec3f curdir;  // current view direction
+        camera->orientation.getValue().multVec(SbVec3f(0, 0, -1), curdir);
+        SbVec3f plnpos = Base::convertTo<SbVec3f>(plm.getPosition());
+        camera->position.setValue(plnpos - camera->focalDistance.getValue() * curdir);
+        viewer->setCameraOrientation(rot);
+        if (getSketchObject()->Geometry.getSize() > 0
+            || getSketchObject()->ExternalGeometry.getSize() > 0) {
+            std::vector<App::SubObjectT> objs;
+            objs.emplace_back(getObject(), "");
+            viewer->viewObjects(objs);
+        }
+        // viewObjects can rewrite an Inf frustum after the first restore.
+        if (!viewer->hasUsablePickVolume()) {
+            restoreFiniteOrthographicHeight(camera);
+        }
+    }
+    else {
+        Base::Console().developerWarning(
+            "ViewProviderSketch",
+            "setEditViewer: no camera available; skipping view placement\n"
+        );
     }
 
     viewer->setEditing(true);
@@ -4678,7 +4761,9 @@ void ViewProviderSketch::setEditViewer(Gui::View3DInventorViewer* viewer, int Mo
     auto *camSensorData = new VPRender {this, viewer->getSoRenderManager()};
     cameraSensor.setData(camSensorData);
     cameraSensor.setDeleteCallback(&ViewProviderSketch::camSensDeleteCB, camSensorData);
-    cameraSensor.attach(viewer->getCamera());
+    if (SoCamera* sensorCamera = viewer->getCamera()) {
+        cameraSensor.attach(sensorCamera);
+    }
 
     blockContextMenu = false;
 
@@ -4723,6 +4808,9 @@ void ViewProviderSketch::camSensDeleteCB(void* data, SoSensor *s)
     // to the new camera.
     // This happens i.e. when the user switches the camera type from orthographic to
     // perspective.
+    if (!proxyVPrdr->renderMgr) {
+        return;
+    }
     SoCamera *camera = proxyVPrdr->renderMgr->getCamera();
     if (camera) {
         static_cast<SoNodeSensor *>(s)->attach(camera);
@@ -4732,20 +4820,23 @@ void ViewProviderSketch::camSensDeleteCB(void* data, SoSensor *s)
 void ViewProviderSketch::camSensCB(void* data, SoSensor*)
 {
     VPRender* proxyVPrdr = static_cast<VPRender*>(data);
-    if (!proxyVPrdr)
+    if (!proxyVPrdr || !proxyVPrdr->vp || !proxyVPrdr->renderMgr)
         return;
 
-    auto vp = proxyVPrdr->vp;
     auto cam = proxyVPrdr->renderMgr->getCamera();
 
     if (cam == nullptr)
         Base::Console().developerWarning("ViewProviderSketch", "Camera is nullptr!\n");
     else
-        vp->onCameraChanged(cam);
+        proxyVPrdr->vp->onCameraChanged(cam);
 }
 
 void ViewProviderSketch::onCameraChanged(SoCamera* cam)
 {
+    if (!cam || !editCoinManager) {
+        return;
+    }
+
     auto rotSk = Base::Rotation(getDocument()->getEditingTransform());// sketch orientation
     auto rotc = cam->orientation.getValue().getValue();
     auto rotCam =
@@ -4772,14 +4863,21 @@ void ViewProviderSketch::onCameraChanged(SoCamera* cam)
 
     // Stretch the axes to cover the whole viewport.
     Gui::View3DInventor* view = qobject_cast<Gui::View3DInventor*>(this->getActiveView());
-    if (view) {
-        Base::Placement plc = getEditingPlacement();
-        const Base::BoundBox2d vpBBox = view->getViewer()
-                ->getViewportOnXYPlaneOfPlacement(plc);
-        editCoinManager->updateAxesLength(vpBBox);
+    auto* viewer = view ? view->getViewer() : nullptr;
+    // During an already-open edit the camera can become Inf/~1e10 (fitAll /
+    // viewObjects / leaked shared viewer). setEditViewer is not re-entered.
+    // Restore here so the next pick/assert does not project to the centre.
+    if (viewer && !viewer->hasUsablePickVolume()) {
+        restoreUsableSketchCamera(cam);
     }
-
-    drawGrid(true);
+    if (viewer && viewer->hasUsablePickVolume()) {
+        Base::Placement plc = getEditingPlacement();
+        const Base::BoundBox2d vpBBox = viewer->getViewportOnXYPlaneOfPlacement(plc);
+        if (vpBBox.IsValid() && vpBBox.Width() > 0.0 && vpBBox.Height() > 0.0) {
+            editCoinManager->updateAxesLength(vpBBox);
+        }
+        drawGrid(true);
+    }
 }
 
 int ViewProviderSketch::getPreselectPoint() const

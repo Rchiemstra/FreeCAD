@@ -26,6 +26,7 @@ add_executable(Gui_tests_run
         MainWindow.cpp
         NotificationClipboardTest.cpp
         View3DInventorViewer.cpp
+        SoDatumLabel.cpp
         WindowLayout.cpp
         SelectionTest.cpp
 )
