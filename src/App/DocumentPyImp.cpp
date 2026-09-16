@@ -29,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -134,8 +135,13 @@ Py::Dict saveOutcomeToPy(const DocumentSaveOutcome& outcome)
 
 constexpr const char* PreparedEditCapsuleName = "App.PreparedEdit";
 
-class PythonCompatibilityCallbackFailure final
-{};
+class PythonCompatibilityCallbackFailure final: public std::runtime_error
+{
+public:
+    PythonCompatibilityCallbackFailure()
+        : std::runtime_error("Python compatibility callback failed")
+    {}
+};
 
 class PythonCompatibilityCallbackError final
 {
@@ -165,8 +171,8 @@ public:
     void restore()
     {
         // Cleanup performed by the native coordinator is allowed to execute
-        // Python-backed objects.  Never let a secondary cleanup error replace
-        // the callback/postcondition exception promised by this API.
+        // Python-backed objects. Never let a secondary cleanup error replace
+        // the callback or postcondition exception promised by this API.
         PyErr_Clear();
         PyErr_Restore(std::exchange(_type, nullptr),
                       std::exchange(_value, nullptr),
@@ -1557,6 +1563,7 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
         if (postcondition != Py_None) {
             retainedPostcondition = retainCallable(postcondition);
         }
+        const bool hasPostcondition = static_cast<bool>(retainedPostcondition);
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
@@ -1624,6 +1631,11 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                                         std::move(mutation),
                                         std::move(nativeCallback),
                                         std::move(options));
+            if (callbackError->captured()
+                && result.status != DocumentCommitStatus::RollbackFailed) {
+                callbackError->restore();
+                return nullptr;
+            }
             return Py::new_reference_to(commitResultToPython(result));
         }
         catch (const PythonCompatibilityCallbackFailure&) {

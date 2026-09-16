@@ -1430,6 +1430,18 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutation(
         std::move(mutation), std::move(callback), {});
 }
 
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithPostcondition(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityPostcondition postcondition)
+{
+    CollaborationCompatibilityMutationOptions options;
+    options.postcondition = std::move(postcondition);
+    return commitCompatibilityMutationWithOptions(
+        std::move(mutation), std::move(callback), std::move(options));
+}
+
 DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWithPolicy(
     CollaborationCompatibilityMutation mutation,
     CollaborationCompatibilityCallback callback,
@@ -1477,6 +1489,18 @@ DocumentCollaborationService::commitCompatibilityMutationOnDocumentThread(
 {
     return commitCompatibilityMutationWithOptionsOnDocumentThread(
         std::move(mutation), std::move(callback), {});
+}
+
+DocumentCommitResult
+DocumentCollaborationService::commitCompatibilityMutationWithPostconditionOnDocumentThread(
+    CollaborationCompatibilityMutation mutation,
+    CollaborationCompatibilityCallback callback,
+    CollaborationCompatibilityPostcondition postcondition)
+{
+    CollaborationCompatibilityMutationOptions options;
+    options.postcondition = std::move(postcondition);
+    return commitCompatibilityMutationWithOptionsOnDocumentThread(
+        std::move(mutation), std::move(callback), std::move(options));
 }
 
 DocumentCommitResult

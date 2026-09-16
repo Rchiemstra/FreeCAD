@@ -350,7 +350,8 @@ class Document(PropertyContainer):
         Object creation and removal require the explicit ``structural=True`` scope.
         ``object_name`` selects Gui-parity ObjectModel publication for that object.
         ``recompute=False`` preserves pending recompute work for recovery mutations.
-        The optional postcondition runs once before publication; a false result rolls back.
+        The optional postcondition runs after recompute and before publication;
+        a false result rolls back.
         """
         ...
 

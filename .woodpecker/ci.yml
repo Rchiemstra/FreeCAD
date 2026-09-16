@@ -19,9 +19,8 @@
 #       + clang-format + python3-pip + git. Dockerfile: package/ubuntu/Dockerfile
 #       (build context = package/ubuntu/, so the context is tiny). Used by every
 #       FreeCAD-track BUILD/test step (configure, debug-build, unit, integration,
-#       e2e, release-linux) and as the base for the MCP image. freecad-lint does
-#       NOT use it -- its checks (sync_version + codespell) are pure Python and
-#       run on python:3.12-slim.
+#       e2e, release-linux) and as the base for the MCP image. The early lint and
+#       Pixi lock checks use small public images instead.
 #   127.0.0.1:5001/freecad-ci-mcp:24.04
 #       FROM registry-freecad:5000/freecad-ci-deps:24.04 during kaniko builds + COPY (pyproject.toml
 #       README.md src addon tests) + `pip install -e ".[dev]"`. Same apt
@@ -201,6 +200,15 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-lint.sh
 
+  # Parse the Pixi manifest and verify that its committed lock file is current.
+  # This runs independently of the apt-based build so invalid developer setup
+  # fails before the expensive configure/build/test chain starts.
+  - name: pixi-lock-check
+    image: ghcr.io/prefix-dev/pixi:0.68.1
+    depends_on: []
+    commands:
+      - pixi lock --check
+
   # Image gate. The local registry has a SHORT RETENTION POLICY, and
   # build-images.yml deliberately does not run on pull_request -- so the images
   # can simply be gone with nothing scheduled to republish them. This used to
@@ -244,7 +252,7 @@ steps:
   - name: freecad-configure-debug
     image: &freecad_ci_deps_image 127.0.0.1:5001/freecad-ci-deps:24.04
     pull: true
-    depends_on: [freecad-lint, ci-images-ready]
+    depends_on: [freecad-lint, pixi-lock-check, ci-images-ready]
     environment: *freecad_ccache_env
     volumes: *freecad_ccache_volume
     commands:
@@ -297,7 +305,7 @@ steps:
   # freecad-mcp track
   # ---------------------------------------------------------------------------
 
-  # Fast first check: Python syntax smoke for the MCP package (no install).
+  # Syntax smoke plus the typed Body reference contract and architecture gate.
   - name: freecad-mcp-lint
     image: python:3.12
     depends_on: [all-submodules-check]

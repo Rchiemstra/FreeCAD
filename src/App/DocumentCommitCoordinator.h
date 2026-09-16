@@ -146,6 +146,8 @@ private:
 
     using PostReservationTestHook = void (*)();
     static std::atomic<PostReservationTestHook> _postReservationTestHook;
+    using PreReservationTestHook = void (*)();
+    static std::atomic<PreReservationTestHook> _preReservationTestHook;
 
     Document& _document;
 };

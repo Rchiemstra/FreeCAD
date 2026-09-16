@@ -231,6 +231,8 @@ bool postconditionStateUnchanged(App::Document& document,
 
 std::atomic<App::DocumentCommitCoordinator::PostReservationTestHook>
     App::DocumentCommitCoordinator::_postReservationTestHook {nullptr};
+std::atomic<App::DocumentCommitCoordinator::PreReservationTestHook>
+    App::DocumentCommitCoordinator::_preReservationTestHook {nullptr};
 
 using namespace App;
 
@@ -698,8 +700,13 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }
@@ -1134,8 +1141,13 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }
@@ -1262,6 +1274,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     try {
         CollaborationRevisionMutationGrant revisionGrant(
             _document.collaborationRevisions());
+        if (const auto hook = _preReservationTestHook.load(std::memory_order_acquire)) {
+            hook();
+        }
         reservation.emplace(_document.collaborationRevisions().reservePublication(
             edit.expectedRevisions(), effects));
     }
