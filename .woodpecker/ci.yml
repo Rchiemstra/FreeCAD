@@ -216,7 +216,11 @@ steps:
   #
   # Now: check what is actually there, rebuild only what is missing, verify.
   # When the images are present (the normal case) this costs one HTTP call and
-  # the two build steps are no-ops.
+  # the two build steps are no-ops. Pipeline 417: check saw :24.04, kaniko
+  # no-op'd in 8s, then ~50 min of mcp-lint/units starved this gate and GC
+  # left tags:null. mcp-lint waits for ci-images-ready so verify is not queued
+  # behind those public-image jobs. Re-run this PR pipeline (check rebuilds
+  # missing tags) or manually run build-images.yml on FreeCAD-start.
   - name: ci-images-check
     image: alpine:3.20
     depends_on: []
@@ -231,12 +235,16 @@ steps:
   - name: ci-images-build-deps
     image: &freecad_kaniko_image gcr.io/kaniko-project/executor:debug
     depends_on: [ci-images-check]
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
       - sh ci/woodpecker/ci-images-build.sh deps
 
   - name: ci-images-build-mcp
     image: *freecad_kaniko_image
     depends_on: [ci-images-build-deps]
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
       - sh ci/woodpecker/ci-images-build.sh mcp
 
@@ -306,9 +314,11 @@ steps:
   # ---------------------------------------------------------------------------
 
   # Syntax smoke plus the typed Body reference contract and architecture gate.
+  # Waits for ci-images-ready so the image gate is not starved behind this 21 min
+  # job (pipeline 417: tags GC'd to null while lint/units held the agent).
   - name: freecad-mcp-lint
     image: python:3.12
-    depends_on: [all-submodules-check]
+    depends_on: [all-submodules-check, ci-images-ready]
     commands:
       - sh ci/woodpecker/freecad-mcp-lint.sh
 
@@ -369,7 +379,8 @@ steps:
   # Sketch/part/rest depend only on the previous core shard. Woodpecker 3.16
   # still skips not-yet-started steps once any sibling (e2e) has failed unless
   # `when.status` includes failure. Collab failure still skips these via
-  # depends_on. Do not add e2e to this chain.
+  # depends_on. Do not add e2e to this chain. If images-ready/debug-build never
+  # produced FreeCADCmd, freecad-mcp-freecad-tests.sh skips with exit 0 (no 127).
   - name: freecad-mcp-core-sketch
     image: *freecad_ci_mcp_image
     pull: true

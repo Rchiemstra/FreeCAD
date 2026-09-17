@@ -1,6 +1,17 @@
 #!/bin/sh
 set -e
 
+# Sketch/part/rest use when.status: [success, failure] so a sibling e2e failure
+# does not skip them. That same flag also starts them when ci-images-ready or
+# debug-build never produced FreeCADCmd. Skip cleanly in that case (exit 0).
+# Do not skip when the binary exists -- real test failures must still go red.
+FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
+if [ -n "${CORE_SHARD:-}" ] && [ ! -x "$FC" ]; then
+	echo "[freecad-mcp-freecad-tests] CORE_SHARD=$CORE_SHARD: FreeCADCmd not found at $FC" >&2
+	echo "[freecad-mcp-freecad-tests] images-ready/debug-build did not run; skipping this shard (not a test failure)" >&2
+	exit 0
+fi
+
 cd tools/mcp/freecad-mcp
 pip install --no-build-isolation --no-deps -e .
 rm -f "ci_rc_${MARKER}.txt" "results_${MARKER}.xml"
@@ -23,7 +34,6 @@ if [ -n "${CORE_SHARD:-}" ]; then
 	echo "[freecad-mcp-freecad-tests] CORE_SHARD=$CORE_SHARD PYTEST_ADDOPTS has $(echo "$paths" | wc -w) path(s)"
 fi
 
-FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
 export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 set +e

@@ -39,4 +39,14 @@ echo "CI images are still not available after the rebuild attempt"
 echo "required tags: $required_tags"
 echo "deps tags: ${deps_tags:-<none>}"
 echo "mcp tags:  ${mcp_tags:-<none>}"
+echo
+echo "tags:null means the registry still lists the repo names but every tag was"
+echo "deleted (short retention / GC). ci-images-check can see :24.04 at the start"
+echo "of the pipeline, the kaniko steps then no-op, and this gate runs later."
+echo
+echo "Repair (pick one):"
+echo "  1. Re-run this PR pipeline. ci-images-check will flag the missing tags"
+echo "     and ci-images-build-deps / ci-images-build-mcp will kaniko-push :24.04."
+echo "  2. Manually run the build-images workflow (.woodpecker/build-images.yml)"
+echo "     on FreeCAD-start, then re-run the PR pipeline."
 exit 1

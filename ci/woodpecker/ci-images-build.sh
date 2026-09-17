@@ -11,9 +11,28 @@ set -e
 which="$1"
 [ -n "$which" ] || { echo "usage: ci-images-build.sh <deps|mcp>"; exit 1; }
 
+# Flag files from ci-images-check can lag the registry (workspace cwd, GC).
+# Re-query :24.04 before a no-op so we actually rebuild when tags are null.
+# If this kaniko image has no wget, keep the old flag-only no-op (do not force
+# a 15 minute rebuild on every PR).
 if [ ! -f ".ci-images/$which-missing" ]; then
-  echo "freecad-ci-$which is already in the registry; nothing to build"
-  exit 0
+  wget_bin="$(command -v wget 2>/dev/null || true)"
+  if [ -z "$wget_bin" ] && [ -x /busybox/wget ]; then
+    wget_bin=/busybox/wget
+  fi
+  if [ -z "$wget_bin" ]; then
+    echo "freecad-ci-$which is already in the registry; nothing to build"
+    echo "(wget unavailable; trusting ci-images-check flag)"
+    exit 0
+  fi
+  list_url="${FREECAD_CI_REGISTRY:-http://registry-freecad:5000}/v2/freecad-ci-$which/tags/list"
+  tags="$("$wget_bin" -qO- "$list_url" 2>/dev/null || true)"
+  if echo "$tags" | grep -q '"24.04"'; then
+    echo "freecad-ci-$which is already in the registry; nothing to build"
+    exit 0
+  fi
+  echo "no .ci-images/$which-missing flag, but registry has no 24.04 tag; building"
+  echo "tags: ${tags:-<none>}"
 fi
 
 registry="${FREECAD_CI_REGISTRY_HOST:-registry-freecad:5000}"
