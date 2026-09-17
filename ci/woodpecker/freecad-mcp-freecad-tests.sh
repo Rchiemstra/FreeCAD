@@ -5,6 +5,24 @@ cd tools/mcp/freecad-mcp
 pip install --no-build-isolation --no-deps -e .
 rm -f "ci_rc_${MARKER}.txt" "results_${MARKER}.xml"
 
+# Optional CORE_SHARD=collab|sketch|part|rest restricts pytest -m core to one
+# filename partition via PYTEST_ADDOPTS (pytest.main honours it). Sequential
+# Woodpecker shards then fail fast instead of one ~2.5 h core step.
+if [ -n "${CORE_SHARD:-}" ]; then
+	shard_script="$CI_WORKSPACE/ci/woodpecker/freecad-mcp-core-shards.py"
+	paths=$(python3 "$shard_script" --root "$PWD" --shard "$CORE_SHARD") || {
+		echo "core shard '$CORE_SHARD' produced no paths" >&2
+		exit 1
+	}
+	if [ -n "${PYTEST_ADDOPTS:-}" ]; then
+		PYTEST_ADDOPTS="$PYTEST_ADDOPTS $paths"
+	else
+		PYTEST_ADDOPTS=$paths
+	fi
+	export PYTEST_ADDOPTS
+	echo "[freecad-mcp-freecad-tests] CORE_SHARD=$CORE_SHARD PYTEST_ADDOPTS has $(echo "$paths" | wc -w) path(s)"
+fi
+
 FC="$CI_WORKSPACE/build/debug/bin/FreeCADCmd"
 export LD_LIBRARY_PATH="$CI_WORKSPACE/build/debug/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
