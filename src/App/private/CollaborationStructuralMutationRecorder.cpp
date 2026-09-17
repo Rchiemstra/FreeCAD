@@ -9,6 +9,7 @@
 #include "App/Application.h"
 #include "App/DocumentObject.h"
 #include "App/ExtensionContainer.h"
+#include "App/GroupExtension.h"
 #include "App/PropertyGeo.h"
 #include "App/PropertyLinks.h"
 #include "App/PropertyStandard.h"
@@ -103,6 +104,23 @@ bool isLiveSketchAttachmentStatusMutation(const DocumentObject& object,
     return changed == (1UL << Property::ReadOnly) && name == "Placement"
         && property.getTypeId() == PropertyPlacement::getClassTypeId()
         && object.getPropertyByName(propertyName) == &property;
+}
+
+bool isClaimedByRemovingContainer(const DocumentObject& object)
+{
+    // Body/Part/Group removal sets Remove on the container first, then
+    // unsetupObject() restatuses owned sketches (MapReversed Hidden) while
+    // those children do not yet carry Remove themselves. Treat membership in
+    // a removing group as the same removal-owned grant, without adding a new
+    // enumerated predicate.
+    return std::ranges::any_of(object.getInList(), [&object](const DocumentObject* parent) {
+        if (!parent || !parent->testStatus(ObjectStatus::Remove)
+            || parent->getDocument() != object.getDocument()) {
+            return false;
+        }
+        const auto* group = parent->getExtensionByType<GroupExtension>(true);
+        return group && group->hasObject(&object, true);
+    });
 }
 
 bool isGroundedJointPlacementLockMutation(const DocumentObject& object,
@@ -228,7 +246,8 @@ void CollaborationStructuralMutationRecorder::ensurePropertyStatusMutationAllowe
     // structural transaction snapshot. Do not grant the same authority to a
     // surviving existing object.
     const bool removalOwnedStatus = attachedStructuralObject
-        && object->testStatus(ObjectStatus::Remove);
+        && (object->testStatus(ObjectStatus::Remove)
+            || isClaimedByRemovingContainer(*object));
     const bool liveSketchAttachmentStatus = attachedStructuralObject
         && isLiveSketchAttachmentStatusMutation(*object, property, oldStatus, newStatus);
     const bool groundedJointPlacementLock = attachedStructuralObject

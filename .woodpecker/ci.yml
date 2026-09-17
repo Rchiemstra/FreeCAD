@@ -366,6 +366,10 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
+  # Sketch/part/rest depend only on the previous core shard. Woodpecker 3.16
+  # still skips not-yet-started steps once any sibling (e2e) has failed unless
+  # `when.status` includes failure. Collab failure still skips these via
+  # depends_on. Do not add e2e to this chain.
   - name: freecad-mcp-core-sketch
     image: *freecad_ci_mcp_image
     pull: true
@@ -376,7 +380,9 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
+        status: [success, failure]
       - event: pull_request
+        status: [success, failure]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
@@ -390,7 +396,9 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
+        status: [success, failure]
       - event: pull_request
+        status: [success, failure]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
@@ -404,7 +412,9 @@ steps:
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
+        status: [success, failure]
       - event: pull_request
+        status: [success, failure]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 
