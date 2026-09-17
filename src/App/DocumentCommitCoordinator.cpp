@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <typeinfo>
 #include <unordered_set>
 #include <utility>
 
@@ -144,6 +145,18 @@ void closeRecomputeSelectionUnderLinkGraph(App::Document& document,
         for (auto* neighbour : object->getOutList()) {
             pending.push_back(neighbour);
         }
+    }
+}
+
+bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
+{
+    try {
+        std::unique_ptr<App::DocumentObject> registered(
+            static_cast<App::DocumentObject*>(object.getTypeId().createInstance()));
+        return registered && typeid(*registered) == typeid(object);
+    }
+    catch (...) {
+        return false;
     }
 }
 
@@ -1040,36 +1053,69 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         preexistingObjects.insert(object);
     }
     const auto finishFailedRecompute = [&](DocumentCommitResult result) {
-        std::vector<App::DocumentObject*> retryTargets;
+        // KEEP BOTH. Restore first: a recompute error whose document state
+        // rolls back stays RecomputeFailed. After that restore, a live
+        // FeaturePython execute that still fails is out-of-band proxy state
+        // (RollbackFailed + fence). Probe before unsuppressing publication.
+        std::vector<App::DocumentObject*> liveFailureTargets;
         for (auto* object : _document.getObjects()) {
             if (!object || !preexistingObjects.contains(object)) {
                 continue;
             }
-            if (!object->isValid() || object->mustExecute()) {
-                retryTargets.push_back(object);
+            if (object->isValid() && !object->isTouched() && !object->mustRecompute()) {
+                continue;
             }
+            if (!collaborationRuntimeTypeIsSerializable(*object)) {
+                continue;
+            }
+            liveFailureTargets.push_back(object);
         }
+
+        const auto rollback = rollbackTransaction();
+        if (!rollback.restored) {
+            restoreSuppression();
+            _document.poisonCollaborationCommit(rollback.diagnostic.data());
+            std::string message = "original ";
+            message += documentCommitStatusName(result.status);
+            message += ": ";
+            message += result.message;
+            message += "; rollback failed: ";
+            message += rollback.diagnostic.data();
+            discardNotifications();
+            cleanupRequired = false;
+            return makeResult(DocumentCommitStatus::RollbackFailed,
+                              edit,
+                              std::move(message));
+        }
+
         bool persistent = false;
-        if (!retryTargets.empty()) {
-            bool retryError = false;
+        for (auto* object : liveFailureTargets) {
+            if (!object || object->getDocument() != &_document
+                || !object->isAttachedToDocument()) {
+                persistent = true;
+                break;
+            }
+            const bool restoredClean =
+                object->isValid() && !object->isTouched() && !object->mustRecompute();
+            // Restored C++ document state does not need a live re-execute.
+            // FeaturePython Proxy state is not in the undo stack, so a clean
+            // restore can still fail when the probe stays armed.
+            if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
+                continue;
+            }
             try {
-                auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
-                static_cast<void>(_document.recompute(retryTargets, true, &retryError));
-                persistent = retryError;
+                if (_document._recomputeFeature(object) != 0) {
+                    persistent = true;
+                    break;
+                }
             }
             catch (...) {
                 persistent = true;
-            }
-            if (!persistent) {
-                for (auto* object : retryTargets) {
-                    if (object && !object->isValid()) {
-                        persistent = true;
-                        break;
-                    }
-                }
+                break;
             }
         }
-        result = abortAndRestore(std::move(result));
+
+        restoreSuppression();
         if (persistent) {
             _document.poisonCollaborationCommit(
                 "persistent recompute failure blocked restoration");
@@ -1077,6 +1123,8 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                                 edit,
                                 "persistent recompute failure blocked restoration");
         }
+        discardNotifications();
+        cleanupRequired = false;
         return result;
     };
 
