@@ -355,6 +355,15 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
     }
     auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
     if (recomputeTargets.empty()) {
+        // Undo can leave Enforce/Touch without a touched-object plan. Clearing
+        // that leftover here (publication is still suppressed) keeps a later
+        // Python settle_stable_read_boundary from publishing a follow-up
+        // UnknownModelMutation recompute. This is not a failed restore.
+        try {
+            _document.purgeTouched();
+        }
+        catch (...) {
+        }
         return rollback;
     }
 
@@ -1026,6 +1035,51 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         abortRestoreAndRethrow("unknown failure while opening native transaction");
     }
 
+    std::unordered_set<App::DocumentObject*> preexistingObjects;
+    for (auto* object : _document.getObjects()) {
+        preexistingObjects.insert(object);
+    }
+    const auto finishFailedRecompute = [&](DocumentCommitResult result) {
+        std::vector<App::DocumentObject*> retryTargets;
+        for (auto* object : _document.getObjects()) {
+            if (!object || !preexistingObjects.contains(object)) {
+                continue;
+            }
+            if (!object->isValid() || object->mustExecute()) {
+                retryTargets.push_back(object);
+            }
+        }
+        bool persistent = false;
+        if (!retryTargets.empty()) {
+            bool retryError = false;
+            try {
+                auto derivedRecompute = _document.openCollaborationDerivedRecomputeGrant();
+                static_cast<void>(_document.recompute(retryTargets, true, &retryError));
+                persistent = retryError;
+            }
+            catch (...) {
+                persistent = true;
+            }
+            if (!persistent) {
+                for (auto* object : retryTargets) {
+                    if (object && !object->isValid()) {
+                        persistent = true;
+                        break;
+                    }
+                }
+            }
+        }
+        result = abortAndRestore(std::move(result));
+        if (persistent) {
+            _document.poisonCollaborationCommit(
+                "persistent recompute failure blocked restoration");
+            result = makeResult(DocumentCommitStatus::RollbackFailed,
+                                edit,
+                                "persistent recompute failure blocked restoration");
+        }
+        return result;
+    };
+
     try {
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
@@ -1083,16 +1137,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             }
         }
         catch (const Base::Exception& exception) {
-            return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                              edit,
-                                              stageFailure("document recompute failed",
-                                                           exception.what())));
+            return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                    edit,
+                                                    stageFailure("document recompute failed",
+                                                                 exception.what())));
         }
         catch (const std::exception& exception) {
-            return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                              edit,
-                                              stageFailure("document recompute failed",
-                                                           exception.what())));
+            return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                    edit,
+                                                    stageFailure("document recompute failed",
+                                                                 exception.what())));
         }
         catch (...) {
             abortRestoreAndRethrow("unknown document recompute failure");
@@ -1115,9 +1169,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                 detail << " (" << why << ")";
             }
         }
-        return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                          edit,
-                                          detail.str()));
+        return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                edit,
+                                                detail.str()));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && _document.mustExecute()) {
