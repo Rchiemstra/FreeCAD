@@ -34,13 +34,108 @@ if App.GuiUp:
     import FreeCADGui as Gui
     from PySide import QtGui, QtWidgets
 
+
+_deferred_joint_view_providers = {}
+_deferred_joint_view_provider_observer = None
+
+
+def _deferred_joint_key(joint):
+    document = getattr(joint, "Document", None)
+    name = getattr(joint, "Name", None)
+    if document is None or not name:
+        return None
+    return (document.Name, name)
+
+
+class _DeferredJointViewProviderObserver:
+    def slotCreatedObject(self, view_object):
+        global _deferred_joint_view_provider_observer
+
+        joint = getattr(view_object, "Object", None)
+        key = _deferred_joint_key(joint)
+        pending = _deferred_joint_view_providers.get(key)
+        if key is None or pending is None:
+            return
+        if pending[0] is not joint:
+            _deferred_joint_view_providers.pop(key)
+            if not _deferred_joint_view_providers:
+                Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+                _deferred_joint_view_provider_observer = None
+            return
+        _deferred_joint_view_providers.pop(key)
+        grounded = pending[1]
+
+        try:
+            if grounded:
+                ViewProviderGroundedJoint(view_object)
+            else:
+                ViewProviderJoint(view_object)
+        finally:
+            if not _deferred_joint_view_providers:
+                Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+                _deferred_joint_view_provider_observer = None
+
+    def slotDeletedObject(self, view_object):
+        cancelScheduledJointViewProvider(getattr(view_object, "Object", None))
+
+    def slotDeletedDocument(self, document):
+        global _deferred_joint_view_provider_observer
+
+        document_name = getattr(document, "Name", None)
+        for key in tuple(_deferred_joint_view_providers):
+            if key[0] == document_name:
+                del _deferred_joint_view_providers[key]
+        if not _deferred_joint_view_providers and _deferred_joint_view_provider_observer is not None:
+            Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+            _deferred_joint_view_provider_observer = None
+
+
+def scheduleJointViewProvider(joint, grounded=False):
+    """Attach a provider when native GUI replay creates a delayed ViewObject."""
+    global _deferred_joint_view_provider_observer
+
+    if not App.GuiUp or "Gui" not in globals():
+        return
+
+    if getattr(joint, "ViewObject", None) is not None:
+        if grounded:
+            ViewProviderGroundedJoint(joint.ViewObject)
+        else:
+            ViewProviderJoint(joint.ViewObject)
+        return
+
+    key = _deferred_joint_key(joint)
+    if key is None:
+        return
+    _deferred_joint_view_providers[key] = (joint, bool(grounded))
+    if _deferred_joint_view_provider_observer is None:
+        _deferred_joint_view_provider_observer = _DeferredJointViewProviderObserver()
+        Gui.addDocumentObserver(_deferred_joint_view_provider_observer)
+
+
+def cancelScheduledJointViewProvider(joint):
+    """Discard a deferred provider request for a rolled-back joint."""
+    global _deferred_joint_view_provider_observer
+
+    key = _deferred_joint_key(joint)
+    if key is None:
+        return
+    _deferred_joint_view_providers.pop(key, None)
+    if (
+        not _deferred_joint_view_providers
+        and _deferred_joint_view_provider_observer is not None
+        and "Gui" in globals()
+    ):
+        Gui.removeDocumentObserver(_deferred_joint_view_provider_observer)
+        _deferred_joint_view_provider_observer = None
+
 __title__ = "Assembly Joint object"
 __author__ = "Ondsel"
 __url__ = "https://www.freecad.org"
 
 from pivy import coin
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 
 from SoSwitchMarker import SoSwitchMarker
 
@@ -610,9 +705,10 @@ class Joint:
         if not joint.hasExtension("App::SuppressibleExtensionPython"):
             joint.addExtension("App::SuppressibleExtensionPython")
 
-        if App.GuiUp:
-            if not joint.ViewObject.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
-                joint.ViewObject.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+        view_object = getattr(joint, "ViewObject", None)
+        if App.GuiUp and view_object is not None:
+            if not view_object.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
+                view_object.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
         if hasattr(joint, "Activated"):
             activated = joint.Activated
@@ -814,6 +910,8 @@ class Joint:
             solveIfAllowed(self.getAssembly(joint))
 
     def execute(self, joint):
+        self.ensureViewProvider(joint)
+
         errStr = joint.Label + ": " + QT_TRANSLATE_NOOP("Assembly", "Broken link in: ")
         if (
             hasattr(joint, "Reference1")
@@ -834,6 +932,20 @@ class Joint:
             raise Exception(errStr + "Reference2")
 
         self.updateJCSPlacements(joint)
+
+    def ensureViewProvider(self, joint):
+        """Attach the joint view provider once a deferred GUI object is available."""
+        if not App.GuiUp:
+            return
+
+        view_object = getattr(joint, "ViewObject", None)
+        if view_object is None:
+            return
+
+        if getattr(view_object, "Proxy", None) is None:
+            ViewProviderJoint(view_object)
+        elif not view_object.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
+            view_object.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
     def setJointConnectors(self, joint, refs, solve=True, presolve=True):
         # current selection is a vector of strings like "Assembly.Assembly1.Assembly2.Body.Pad.Edge16" including both what selection return as obj_name and obj_sub
@@ -1118,6 +1230,11 @@ class ViewProviderJoint:
 
     def updateData(self, joint, prop):
         """If a property of the handled feature has changed we have the chance to handle this here"""
+        # The JCS switches are created in attach(); updateData() can fire on a
+        # property change before attach() has run (e.g. during document restore).
+        if not hasattr(self, "switch_JCS1"):
+            return
+
         if prop == "Placement1" and hasattr(joint, "Reference1"):
             self.redrawJointPlacement(self.switch_JCS1, joint.Placement1, joint.Reference1)
 
@@ -1125,6 +1242,11 @@ class ViewProviderJoint:
             self.redrawJointPlacement(self.switch_JCS2, joint.Placement2, joint.Reference2)
 
     def redrawJointPlacements(self, joint):
+        # Called from AssemblyObject::solve(), which can run before attach() has
+        # created the JCS switches (e.g. right after a document restore).
+        if not hasattr(self, "switch_JCS1"):
+            return
+
         if not hasattr(joint, "Reference1") or not hasattr(joint, "Reference2"):
             return
 
@@ -1272,6 +1394,161 @@ class ViewProviderJoint:
 
     def canDelete(self, _obj):
         return True
+
+
+class RigidGroupJoint:
+    def __init__(self, joint, objects_to_rigid_group):
+        joint.Proxy = self
+        self.joint = joint
+
+        joint.addExtension("App::SuppressibleExtensionPython")
+
+        joint.addProperty(
+            "App::PropertyLinkList",
+            "ObjectsToRigidGroup",
+            "RigidGroup",
+            QT_TRANSLATE_NOOP("App::Property", "List of references to components to group together"),
+        )
+        joint.ObjectsToRigidGroup = objects_to_rigid_group
+
+        joint.addProperty(
+            "App::PropertyPlacementList",
+            "RigidPlacements",
+            "RigidGroup",
+            "Relative placements for restore",
+        )
+        joint.setPropertyStatus("RigidPlacements", "Hidden")
+        joint.setPropertyStatus("RigidPlacements", "ReadOnly")
+
+        self._write_rigid_placements(joint, [])
+        self.updateStoredPositions(joint, True)
+
+    def dumps(self):
+        return None
+
+    def loads(self, state):
+        return None
+
+    def getAssembly(self, joint):
+        for obj in joint.InList:
+            if obj.isDerivedFrom("Assembly::AssemblyObject"):
+                return obj
+            elif obj.isDerivedFrom("Assembly::AssemblyLink"):
+                return self.getAssembly(obj)
+        return None
+
+    def _validMembers(self, fp):
+        members = []
+        seen = set()
+
+        for obj in getattr(fp, "ObjectsToRigidGroup", ()) or ():
+            name = getattr(obj, "Name", None)
+
+            if not obj or not name or name in seen:
+                continue
+
+            if not hasattr(obj, "Placement") or obj.getPropertyByName("Placement") is None:
+                continue
+
+            seen.add(name)
+            members.append(obj)
+
+        return members
+
+    def updateStoredPositions(self, fp, force=False):
+        if getattr(self, "_busy", False):
+            return
+
+        if not force and (not hasattr(fp, "Suppressed") or not fp.Suppressed):
+            App.Console.PrintWarning(
+                "Assembly: 'updateStoredPositions' is only available while suppressed.\n"
+            )
+            return
+
+        members = self._validMembers(fp)
+        if len(members) < 2:
+            self._write_rigid_placements(fp, [])
+            App.Console.PrintError("Assembly: Rigid group needs at least 2 valid components.\n")
+            return
+
+        if getattr(fp, "ObjectsToRigidGroup", None) != members:
+            self._busy = True
+            try:
+                fp.ObjectsToRigidGroup = members
+            finally:
+                self._busy = False
+
+        anchor = members[0]
+        anchorPlc = anchor.Placement
+        placements = []
+
+        for member in members:
+            placements.append(anchorPlc.inverse() * member.Placement)
+
+        self._write_rigid_placements(fp, placements)
+
+        App.Console.PrintMessage("Assembly: Rigid group positions updated.\n")
+
+    def _write_rigid_placements(self, fp, placements):
+        self._busy = True
+        try:
+            fp.setPropertyStatus("RigidPlacements", "-ReadOnly")
+            fp.RigidPlacements = placements
+            fp.setPropertyStatus("RigidPlacements", "ReadOnly")
+        finally:
+            self._busy = False
+
+    def restoreFromPlacements(self, fp):
+        members = self._validMembers(fp)
+        placements = getattr(fp, "RigidPlacements", None) or []
+        if len(members) < 2 or len(members) != len(placements):
+            App.Console.PrintWarning("Assembly: Rigid group sync broken, skipping restore.\n")
+            return
+
+        anchor = members[0]
+        anchorPlcNow = anchor.Placement
+        for obj, rel in zip(members, placements):
+            obj.Placement = anchorPlcNow * rel
+
+    def onChanged(self, fp, prop):
+        """Do something when a property has changed"""
+        if getattr(self, "_busy", False):
+            return
+
+        if prop == "ObjectsToRigidGroup":
+            self.updateStoredPositions(fp, True)
+            return
+
+        if prop == "Suppressed" and hasattr(fp, "Suppressed") and not fp.Suppressed:
+            self._busy = True
+            try:
+                self.restoreFromPlacements(fp)
+                assembly = self.getAssembly(fp)
+                if assembly:
+                    solveIfAllowed(assembly)
+            finally:
+                self._busy = False
+
+    def execute(self, fp):
+        """Do something when doing a recomputation, this method is mandatory"""
+        pass
+
+
+class ViewProviderRigidGroupJoint:
+    def __init__(self, vobj):
+        vobj.Proxy = self
+        vobj.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
+
+    def getIcon(self):
+        return ":/icons/Assembly_CreateJointRigidGroup.svg"
+
+    def setupContextMenu(self, vobj, menu):
+        action = menu.addAction(App.Qt.translate("Assembly", "Update Stored Positions"))
+        action.triggered.connect(lambda: self._updateStoredPositions(vobj.Object))
+
+    def _updateStoredPositions(self, obj):
+        if hasattr(obj, "Proxy") and hasattr(obj.Proxy, "updateStoredPositions"):
+            obj.Proxy.updateStoredPositions(obj)
 
 
 ################ Grounded Joint object #################

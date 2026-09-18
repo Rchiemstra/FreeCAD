@@ -140,6 +140,11 @@ public:
     {
         return "AssemblyGui::ViewProviderReviewNoteGroup";
     }
+
+protected:
+    /// When the group's membership/order changes, renumber every child
+    /// ReviewNote's Label to review_note_N (1-based, in group order).
+    void onChanged(const App::Property* prop) override;
 };
 
 }  // namespace Assembly

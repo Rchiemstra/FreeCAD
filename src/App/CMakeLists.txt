@@ -67,6 +67,7 @@ target_include_directories(
     ${CMAKE_BINARY_DIR}/src
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_include_directories(
@@ -83,6 +84,12 @@ set(FreeCADApp_LIBS
     fmt::fmt
 )
 
+if(WIN32)
+    # DocumentFileWriter preserves DACL/protection metadata with
+    # GetSecurityInfo/SetSecurityInfo before exact-handle replacement.
+    list(APPEND FreeCADApp_LIBS advapi32)
+endif()
+
 if(BUILD_TRACY_FRAME_PROFILER)
     list(APPEND FreeCADApp_LIBS TracyClient)
 endif()
@@ -96,6 +103,7 @@ generate_from_py(ApplicationDirectories)
 generate_from_py(DepEdge)
 generate_from_py(Document)
 generate_from_py(DocumentSettings)
+generate_from_py(RecomputeHandle)
 generate_from_py(DocumentObject)
 generate_from_py(Extension)
 generate_from_py(ExtensionContainer)
@@ -116,6 +124,10 @@ generate_from_py(ComplexGeoData)
 generate_from_py(PropertyContainer)
 generate_from_py(Material)
 generate_from_py(MeasureManager)
+generate_module_from_py(
+    FreeCAD
+    FreeCAD_MODULE_GENERATED_SRCS
+)
 
 generate_embed_from_py(FreeCADInit InitScript.h)
 generate_embed_from_py(FreeCADTest TestScript.h)
@@ -132,6 +144,7 @@ SET(FreeCADApp_Pyi_SRCS
     DocumentObjectGroup.pyi
     DocumentObject.pyi
     DocumentSettings.pyi
+    RecomputeHandle.pyi
     GeoFeature.pyi
     GeoFeatureGroupExtension.pyi
     OriginGroupExtension.pyi
@@ -142,6 +155,7 @@ SET(FreeCADApp_Pyi_SRCS
     ComplexGeoData.pyi
     Material.pyi
     MeasureManager.pyi
+    FreeCAD.module.pyi
     StringHasher.pyi
     StringID.pyi
 )
@@ -157,8 +171,10 @@ SET(Document_CPP_SRCS
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
+    DocumentRecomputeCoordinator.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
     MutationClassification.cpp
@@ -184,11 +200,19 @@ SET(Document_CPP_SRCS
     DocumentPyImp.cpp
     DocumentSettings.cpp
     DocumentSettingsPyImp.cpp
+    RecomputeHandle.cpp
+    RecomputeHandlePyImp.cpp
     Expression.cpp
     ExpressionTokenizer.cpp
     FeaturePython.cpp
     FeatureTest.cpp
     GeoFeature.cpp
+    GeometryArchive.cpp
+    GeometryJobManager.cpp
+    GeometryProcessBackend.cpp
+    GeometryWorkerMain.cpp
+    GeometryWorkerOperationRegistry.cpp
+    GenericIsolatedRecompute.cpp
     GeoFeatureGroupExtensionPyImp.cpp
     GeoFeatureGroupExtension.cpp
     ImagePlane.cpp
@@ -228,8 +252,10 @@ SET(Document_HPP_SRCS
     CollaborativeOperationRegistry.h
     CollaborativeSetPropertyOperation.h
     Document.h
+    DocumentFileWriter.h
     DocumentCollaborationService.h
     DocumentCommitCoordinator.h
+    DocumentRecomputeCoordinator.h
     DocumentRevisionIndex.h
     EditSession.h
     MutationClassification.h
@@ -246,6 +272,7 @@ SET(Document_HPP_SRCS
     DocumentObserver.h
     DocumentObserverPython.h
     DocumentSettings.h
+    RecomputeHandle.h
     Expression.h
     ExpressionParser.h
     ExpressionTokenizer.h
@@ -256,6 +283,13 @@ SET(Document_HPP_SRCS
     FeaturePythonPyImp.inl
     FeatureTest.h
     GeoFeature.h
+    GeometryArchive.h
+    GeometryJobManager.h
+    GeometryProcessBackend.h
+    GeometryWorkerMain.h
+    GeometryWorkerOperationRegistry.h
+    GenericIsolatedRecompute.h
+    PreparationPolicy.h
     GeoFeatureGroupExtension.h
     ImagePlane.h
     OriginGroupExtension.h
@@ -327,6 +361,7 @@ SET(FreeCADApp_CPP_SRCS
     ApplicationDirectories.cpp
     ApplicationDirectoriesPyImp.cpp
     ApplicationPy.cpp
+    ${FreeCAD_MODULE_GENERATED_SRCS}
     AutoTransaction.cpp
     Branding.cpp
     ByteArray.cpp
@@ -380,6 +415,7 @@ SET(FreeCADApp_HPP_SRCS
     Services.h
     StringHasher.h
     MainThreadSignal.h
+    MainThreadSignal.cpp
 )
 
 # auto-generate resource file with all available translations
@@ -413,18 +449,22 @@ endif(FREECAD_USE_PCH)
 target_sources(FreeCADApp PRIVATE ${FreeCADApp_SRCS})
 target_link_libraries(FreeCADApp ${FreeCADApp_LIBS})
 
+if(ENABLE_DEVELOPER_TESTS)
+    # Keep DocumentFileWriter private in production while allowing its focused
+    # cross-platform boundary tests to link against the Windows DLL.
+    target_compile_definitions(FreeCADApp PRIVATE FREECAD_DOCUMENTFILEWRITER_TEST_API)
+endif()
+
 if (MSVC)
     target_compile_definitions(FreeCADApp PRIVATE WIN32_LEAN_AND_MEAN)
     target_compile_options(FreeCADApp PRIVATE /wd4251 /wd4273 /wd4275)
 endif()
 
-if (FREECAD_WARN_ERROR)
-    target_compile_warn_error(FreeCADApp)
-endif()
+target_compile_warn_error(FreeCADApp)
 
 add_dependencies(FreeCADApp fc_version)
 
-SET_BIN_DIR(FreeCADApp FreeCADApp)
+SET_BIN_DIR(FreeCADApp)
 
 if(WIN32)
     INSTALL(TARGETS FreeCADApp

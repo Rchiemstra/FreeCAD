@@ -202,6 +202,34 @@ class TestSketcherOffsetGui(unittest.TestCase):
         self.pump(150)
         return view
 
+    def in_view_offset_screen_point(self, view, click_point):
+        """Project an Offset click to Coin pixels used as QPoint.
+
+        After skip-bbox, ViewFit of a small rectangle can leave (0, 12) a few
+        pixels past the Coin height. Keep the same offset ray and step toward
+        the origin until the click is inside the viewport. Do not accept the
+        (0, 0) sentinel and do not walk onto the origin.
+        """
+        viewport = view.graphicsView().viewport()
+        rect = viewport.rect()
+        preferred = QtCore.QPoint(*view.getPointOnScreen(click_point))
+        if preferred != QtCore.QPoint(0, 0) and rect.contains(preferred):
+            return preferred
+
+        origin = FreeCAD.Vector(0.0, 0.0, 0.0)
+        direction = click_point - origin
+        last = preferred
+        for step in range(1, 6):
+            candidate = origin + direction * (1.0 - 0.1 * step)
+            last = QtCore.QPoint(*view.getPointOnScreen(candidate))
+            if last != QtCore.QPoint(0, 0) and rect.contains(last):
+                return last
+
+        self.fail(
+            f"Expected offset click {preferred} from {click_point} to fall "
+            f"inside the sketch viewport {rect}; last candidate {last}"
+        )
+
     def run_offset_from_selection(
         self,
         subelement_names,
@@ -234,7 +262,7 @@ class TestSketcherOffsetGui(unittest.TestCase):
             self.set_offset_checkbox("Chain link", True, fallback_index=2)
 
         viewport = view.graphicsView().viewport()
-        screen_point = QtCore.QPoint(*view.getPointOnScreen(click_point))
+        screen_point = self.in_view_offset_screen_point(view, click_point)
         self.assertTrue(
             viewport.rect().contains(screen_point),
             f"Expected {screen_point} to fall inside the sketch viewport {viewport.rect()}",

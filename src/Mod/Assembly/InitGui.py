@@ -73,7 +73,7 @@ class AssemblyWorkbench(Workbench):
         import CommandCreateSnapshot
         import CommandCreateBom
         import CommandReviewNote
-        import Preferences
+        import AssemblyPreferences as Preferences
 
         FreeCADGui.addLanguagePath(":/translations")
         FreeCADGui.addIconPath(":/icons")
@@ -103,6 +103,7 @@ class AssemblyWorkbench(Workbench):
 
         cmdListJoints = [
             "Assembly_ToggleGrounded",
+            "Assembly_CreateJointRigidGroup",
             "Separator",
             "Assembly_CreateJointFixed",
             "Assembly_CreateJointRevolute",

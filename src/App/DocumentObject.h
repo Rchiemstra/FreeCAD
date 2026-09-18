@@ -337,6 +337,11 @@ public:
     void enforceRecompute(const std::string& propName);
 
     /**
+     * @brief Enforce one recompute while recording several changed input properties.
+     */
+    void enforceRecompute(const std::vector<std::string>& propNames);
+
+    /**
      * @brief Check whether the document object must be recomputed.
      *
      * This means that the 'Enforce' flag is set or that \ref mustExecute()
@@ -375,6 +380,17 @@ public:
     {
         return StatusBits.test(ObjectStatus::Restore);
     }
+
+    /** Check whether a restore in progress may carry pre-migration content.
+     *
+     * Deprecated-property migrations in onDocumentRestored() must be guarded
+     * by this predicate.  It is false when the owning document is being
+     * populated by a same-version state transfer (the isolated recompute
+     * worker's import), where the content was written by this exact program
+     * version from already-migrated state, so re-running a migration would
+     * overwrite live values instead of upgrading stale ones.
+     */
+    bool isRestoringDeprecatedSchema() const;
 
     /// Check whether this document object is being removed.
     bool isRemoving() const
@@ -432,10 +448,7 @@ public:
      * @param[in] pos The status bit to set.
      * @param[in] on The value to set the status bit to.
      */
-    void setStatus(ObjectStatus pos, bool on)
-    {
-        StatusBits.set(size_t(pos), on);
-    }
+    void setStatus(ObjectStatus pos, bool on);
 
     /// Check whether the document object is exporting.
     int isExporting() const;
@@ -1146,7 +1159,24 @@ public:
 
     bool removeDynamicProperty(const char* prop) override;
 
+    bool changeDynamicProperty(const Property* prop,
+                               const char* group,
+                               const char* doc) override;
     bool renameDynamicProperty(Property *prop, const char *name) override;
+
+    /**
+     * @brief Move the dynamic property to a document object.
+     *
+     * @param[in] prop The property to move.
+     * @param[in] targetObj The object to which the property is moved.
+     *
+     * @return a pointer to the moved property if successful; `nullptr` if the
+     * target object is the same as the current one.
+     * @throw Base::NameError If the property already exists in the object.
+     * @throw Base::RuntimeError On various runtime errors, such as when the
+     *   property is locked or the target object is invalid.
+     */
+    virtual Property* moveDynamicProperty(Property* prop, DocumentObject* targetObj);
 
     App::Property* addDynamicProperty(
         std::string_view type,
@@ -1462,6 +1492,11 @@ protected:
     void onPropertyStatusChanged(const Property& prop, unsigned long oldStatus) override;
 
 private:
+    void moveExpressionTargetingProp(Property* prop, Property* newProp,
+                                     DocumentObject* targetObj);
+    void arrangeMoveProperty(Property* toBeMovedProp,
+                             Property* newProp,
+                             DocumentObject* targetObj);
     void printInvalidLinks() const;
     void setTouched(const char* propName);
 

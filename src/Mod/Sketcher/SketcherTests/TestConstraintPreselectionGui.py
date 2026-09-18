@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import math
+import os
+import tempfile
 import time
 import unittest
 
@@ -9,7 +11,8 @@ import FreeCADGui
 import Part
 import Sketcher
 import SketcherGui
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
+from pivy import coin
 
 
 class SketcherGuiTestCases(unittest.TestCase):
@@ -28,6 +31,15 @@ class SketcherGuiTestCases(unittest.TestCase):
             app.processEvents(QtCore.QEventLoop.AllEvents, int(delay * 1000))
             if delay > 0.0:
                 time.sleep(delay)
+
+    def wait_until(self, predicate, timeout_ms=2000, step_ms=50):
+        remaining = timeout_ms
+        while remaining > 0:
+            if predicate():
+                return True
+            self.pump_gui_events(iterations=1, delay=step_ms / 1000.0)
+            remaining -= step_ms
+        return predicate()
 
     @staticmethod
     def build_issue_25840_sketch(sketch):
@@ -65,6 +77,8 @@ class SketcherGuiTestCases(unittest.TestCase):
             return "vertex"
         if any(name.startswith("Edge") for name in names):
             return "edge"
+        if any(name.endswith("_Axis") for name in names):
+            return "axis"
         return "other"
 
     @classmethod
@@ -97,6 +111,9 @@ class SketcherGuiTestCases(unittest.TestCase):
         step=8,
     ):
         center_coin = tuple(int(value) for value in view.getPointOnViewport(seed_world_point))
+        if center_coin == (0, 0):
+            return None
+
         sum_x = 0
         sum_y = 0
         target_count = 0
@@ -120,19 +137,64 @@ class SketcherGuiTestCases(unittest.TestCase):
             int(round(sum_y / target_count)),
         )
 
+    @staticmethod
+    def _datum_annotation_probe_points(projected_coin):
+        if projected_coin == (0, 0):
+            return []
+        x, y = projected_coin
+        return [
+            projected_coin,
+            (x - 1, y),
+            (x + 1, y),
+            (x, y - 1),
+            (x, y + 1),
+        ]
+
+    def wait_for_datum_annotation_at_coin(
+        self,
+        view,
+        projected_coin,
+        expected_constraint_name,
+        timeout_ms=2000,
+    ):
+        """Redraw without changing the camera, then wait for datum text at the overlap pixel.
+
+        Polls only the projected overlap pixel (optional ±1 px rounding). Requires
+        ConstraintKind == DatumAnnotation so dimension-line hits cannot pass.
+        """
+        found = {"coin": None}
+
+        def datum_annotation_is_pickable():
+            view.redraw()
+            for coin_point in self._datum_annotation_probe_points(projected_coin):
+                info = SketcherGui.getActiveSketchPreselection(coin_point)
+                if info is None:
+                    continue
+                if self.classify_preselection(info, expected_constraint_name) != "target_constraint":
+                    continue
+                if info.get("ConstraintKind") != "DatumAnnotation":
+                    continue
+                found["coin"] = coin_point
+                return True
+            return False
+
+        view.redraw()
+        self.wait_until(datum_annotation_is_pickable, timeout_ms=timeout_ms)
+        return found["coin"]
+
     @classmethod
     def configure_view_state(cls, view, tilt=None):
         view.viewTop()
-        cls.pump_gui_events(2)
+        cls.pump_gui_events()
         view.fitAll()
-        cls.pump_gui_events(4)
+        cls.pump_gui_events()
 
         if tilt is not None:
             base_rotation = view.getCameraOrientation()
             view.setCameraOrientation(tilt.multiply(base_rotation))
-            cls.pump_gui_events(3)
+            cls.pump_gui_events()
             view.fitAll()
-            cls.pump_gui_events(4)
+            cls.pump_gui_events()
 
     @staticmethod
     def constraint_share(counts):
@@ -154,29 +216,370 @@ class SketcherGuiTestCases(unittest.TestCase):
 
         FreeCADGui.getMainWindow().show()
         self.pump_gui_events()
+        self.view = FreeCADGui.ActiveDocument.ActiveView
+        if self.view:
+            # Realize a non-zero viewport before setEdit. Woodpecker
+            # TestSketcherGui SIGSEGV'd on first sketch edit (pipelines 354/357).
+            for _ in range(25):
+                try:
+                    size = self.view.getSize()
+                    if size and size[0] > 0 and size[1] > 0:
+                        break
+                except Exception:
+                    pass
+                self.pump_gui_events(iterations=2, delay=0.02)
+            self.view.viewTop()
+            self.pump_gui_events()
+        print("SketchGuiTest: setEdit begin", flush=True)
         FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
-        self.pump_gui_events(6)
+        print("SketchGuiTest: setEdit done", flush=True)
+        self.pump_gui_events()
 
         self.view = FreeCADGui.ActiveDocument.ActiveView
+        if self.view:
+            self.view.viewTop()
+            self.view.fitAll()
+            self.pump_gui_events()
+
+    def _restore_finite_camera_height(self, view):
+        """Cleanup-only: do not call this to make a recovery or projection assertion pass.
+
+        Production Inf-camera recovery lives in ViewProviderSketch::setEditViewer.
+        This helper exists so a poisoned ortho height cannot leak into later
+        classes (WP363 Offset after Inf-camera). It is fixture teardown, not proof.
+        """
+        camera = view.getCameraNode()
+        if camera is None or not hasattr(camera, "height"):
+            return
+        height = float(camera.height.getValue())
+        if not math.isfinite(height) or height <= 0.0:
+            camera.height.setValue(200.0)
+
+    def _ortho_camera_height(self, view):
+        camera = view.getCameraNode()
+        if camera is None or not hasattr(camera, "height"):
+            return None
+        return float(camera.height.getValue())
+
+    @staticmethod
+    def _luminance(rgb):
+        r, g, b = rgb
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def _find_named_coin_node(self, root, name):
+        search = coin.SoSearchAction()
+        search.setName(coin.SbName(name))
+        search.setInterest(coin.SoSearchAction.FIRST)
+        search.setSearchingAll(True)
+        search.apply(root)
+        path = search.getPath()
+        return path.getTail() if path else None
+
+    def _darkest_pixel_in_box(self, image, cx, cy, half_w, half_h):
+        iy = image.height() - cy - 1
+        darkest = None
+        for y in range(iy - half_h, iy + half_h + 1):
+            for x in range(cx - half_w, cx + half_w + 1):
+                if 0 <= x < image.width() and 0 <= y < image.height():
+                    color = QtGui.QColor(image.pixel(x, y))
+                    rgb = (color.red(), color.green(), color.blue())
+                    if darkest is None or self._luminance(rgb) < self._luminance(darkest):
+                        darkest = rgb
+        return darkest
+
+    @staticmethod
+    def _artifact_dir():
+        env = os.environ.get("FREECAD_TEST_ARTIFACTS")
+        if env:
+            os.makedirs(env, exist_ok=True)
+            return env
+        return tempfile.mkdtemp(prefix="sketcher-datum-label-")
+
+    @staticmethod
+    def _row_std(values):
+        if not values:
+            return 0.0
+        mean = sum(values) / len(values)
+        return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+    def _viewport_ink_stats(self, image, cx, cy, half_w, half_h, ink_luminance=200):
+        iy = image.height() - cy - 1
+        ink = 0
+        total = 0
+        darkest = None
+        row_ink = []
+        x0 = max(0, cx - half_w)
+        x1 = min(image.width(), cx + half_w + 1)
+        y0 = max(0, iy - half_h)
+        y1 = min(image.height(), iy + half_h + 1)
+        for y in range(y0, y1):
+            row = 0
+            for x in range(x0, x1):
+                color = QtGui.QColor(image.pixel(x, y))
+                rgb = (color.red(), color.green(), color.blue())
+                luminance = self._luminance(rgb)
+                total += 1
+                if darkest is None or luminance < self._luminance(darkest):
+                    darkest = rgb
+                if luminance < ink_luminance:
+                    ink += 1
+                    row += 1
+            row_ink.append(row)
+        crop = image.copy(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+        return {
+            "darkest": darkest,
+            "ink": ink,
+            "total": total,
+            "ratio": (ink / total) if total else 0.0,
+            "row_std": self._row_std(row_ink),
+            "crop": crop,
+            "box": (x0, y0, x1, y1),
+        }
+
+    def _collect_datum_labels(self, view):
+        root = view.getViewer().getSoRenderManager().getSceneGraph()
+        datum_type = coin.SoType.fromName("SoDatumLabel")
+        labels = []
+
+        def visit(node):
+            if node.isOfType(datum_type):
+                labels.append(node)
+            if node.isOfType(coin.SoGroup.getClassTypeId()):
+                for index in range(node.getNumChildren()):
+                    visit(node.getChild(index))
+
+        visit(root)
+        return labels
+
+    def _render_darkest_probes(self, view, probes):
+        width, height = view.getSize()
+        self.pump_gui_events()
+        view.redraw()
+        self.pump_gui_events()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            png_path = handle.name
+        try:
+            view.saveImage(png_path, width, height, "White")
+            image = QtGui.QImage(png_path)
+            darkest = {}
+            for name, (world, half_w, half_h) in probes.items():
+                cx, cy = (int(value) for value in view.getPointOnViewport(world))
+                darkest[name] = self._darkest_pixel_in_box(image, cx, cy, half_w, half_h)
+            return darkest
+        finally:
+            if os.path.exists(png_path):
+                os.remove(png_path)
+
+    def _preselection_matches(self, info, wanted, object_name=None):
+        if object_name is not None and (not info or info.get("ObjectName") != object_name):
+            return False
+        return self.classify_preselection(info, "Constraint0") == wanted
+
+    def _find_preselection_near_viewport(
+        self,
+        seed_coin,
+        wanted,
+        object_name=None,
+        span=16,
+        step=2,
+    ):
+        """Bounded preselection search around an already-projected seed pixel.
+
+        The seed must be the requested world point's projection, not the
+        viewport centre and not a substitute for a (0, 0) sentinel. The hit
+        must keep the intended object and subelement kind.
+        """
+        if seed_coin == (0, 0):
+            return None
+        for dy in range(-span, span + 1, step):
+            for dx in range(-span, span + 1, step):
+                point = (seed_coin[0] + dx, seed_coin[1] + dy)
+                info = SketcherGui.getActiveSketchPreselection(point)
+                if self._preselection_matches(info, wanted, object_name):
+                    return point
+        return None
+
+    def project_world_to_viewport(self, view, world_point, attempts=8):
+        """Project the requested world point to Coin pixels.
+
+        (0, 0) is the C++ failure sentinel. This helper does not restore camera
+        height, does not call viewTop/fitAll, and does not scan for a nearby
+        edge. An arbitrary edge near the viewport centre is not this point.
+        """
+        last = (0, 0)
+        for _ in range(attempts):
+            last = tuple(int(value) for value in view.getPointOnViewport(world_point))
+            if last != (0, 0):
+                return last
+            self.pump_gui_events(iterations=8, delay=0.02)
+        return last
 
     def tearDown(self):
+        try:
+            if getattr(self, "view", None):
+                # Cleanup after the test body, not part of the recovery proof.
+                self._restore_finite_camera_height(self.view)
+        except Exception:
+            pass
         FreeCADGui.Selection.clearPreselection()
         FreeCADGui.Selection.clearSelection()
         if FreeCADGui.ActiveDocument:
             FreeCADGui.ActiveDocument.resetEdit()
-        self.pump_gui_events(4, 0.01)
+        self.pump_gui_events()
 
         if self.doc is not None:
             document_name = self.doc.Name
             self.doc = None
             FreeCAD.closeDocument(document_name)
-            self.pump_gui_events(4, 0.01)
+            self.pump_gui_events()
+
+    def test_occluded_overlay_does_not_wash_out_datum_labels(self):
+        """As-built regression: occluded-axis overlay state must not leak into labels."""
+        t30 = math.tan(math.radians(30.0))
+        g_a1 = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(50, 50 * t30, 0)),
+            False,
+        )
+        g_a2 = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(50, -50 * t30, 0)),
+            False,
+        )
+        g_d = self.sketch.addGeometry(
+            Part.LineSegment(FreeCAD.Vector(80, 100, 0), FreeCAD.Vector(130, 100, 0)),
+            False,
+        )
+        g_r = self.sketch.addGeometry(
+            Part.Circle(FreeCAD.Vector(-60, 60, 0), FreeCAD.Vector(0, 0, 1), 15.0),
+            False,
+        )
+        c_angle = self.sketch.addConstraint(
+            Sketcher.Constraint("Angle", g_a1, 1, g_a2, 1, math.radians(-60.0))
+        )
+        self.sketch.setLabelDistance(c_angle, 10.0)
+        c_dist = self.sketch.addConstraint(
+            Sketcher.Constraint("Distance", g_d, 1, g_d, 2, 50.0)
+        )
+        self.sketch.setLabelDistance(c_dist, 0.0)
+        self.sketch.setLabelPosition(c_dist, 0.0)
+        self.sketch.addConstraint(Sketcher.Constraint("Radius", g_r, 15.0))
+        g_dia = self.sketch.addGeometry(
+            Part.Circle(FreeCAD.Vector(-60, -60, 0), FreeCAD.Vector(0, 0, 1), 10.0),
+            False,
+        )
+        self.sketch.addConstraint(Sketcher.Constraint("Diameter", g_dia, 20.0))
+        self.doc.recompute()
+        self.pump_gui_events()
+        self.configure_view_state(self.view)
+
+        root = self.view.getViewer().getSoRenderManager().getSceneGraph()
+        overlay = self._find_named_coin_node(root, "OccludedOverlayRoot")
+        self.assertIsNotNone(overlay, "OccludedOverlayRoot not found in edit scene graph")
+        overlay_type = overlay.getTypeId().getName().getString()
+        self.assertEqual(overlay_type, "SoSkipBoundingGroup")
+        self.assertFalse(overlay.isOfType(coin.SoSeparator.getClassTypeId()))
+        self.assertEqual(overlay.getNumChildren(), 1)
+        inner = overlay.getChild(0)
+        self.assertTrue(inner.isOfType(coin.SoSeparator.getClassTypeId()))
+        self.assertEqual(inner.getNumChildren(), 13)
+
+        width, height = self.view.getSize()
+        self.pump_gui_events()
+        self.view.redraw()
+        self.pump_gui_events()
+        artifact_dir = self._artifact_dir()
+        viewport_path = os.path.join(artifact_dir, "viewport_datum_labels.png")
+        self.view.saveImage(viewport_path, width, height, "White")
+        image = QtGui.QImage(viewport_path)
+        self.assertFalse(image.isNull(), viewport_path)
+
+        probes = {
+            "distance_text_box": (FreeCAD.Vector(105.0, 100.0, 0.0), 24, 10),
+            "angle_text_box": (FreeCAD.Vector(20.0, 0.0, 0.0), 16, 8),
+            "radius_dimension_line": (FreeCAD.Vector(-52.0, 60.0, 0.0), 3, 2),
+            "sketch_curve_control": (FreeCAD.Vector(80.0, 100.0, 0.0), 4, 4),
+        }
+        viewport_stats = {}
+        darkest = {}
+        for name, (world, half_w, half_h) in probes.items():
+            cx, cy = (int(value) for value in self.view.getPointOnViewport(world))
+            stats = self._viewport_ink_stats(image, cx, cy, half_w, half_h)
+            viewport_stats[name] = {
+                "darkest": stats["darkest"],
+                "ratio": stats["ratio"],
+                "row_std": stats["row_std"],
+                "ink": stats["ink"],
+                "total": stats["total"],
+                "coin": (cx, cy),
+            }
+            darkest[name] = stats["darkest"]
+            stats["crop"].save(os.path.join(artifact_dir, f"crop_{name}.png"))
+
+        label_texts = []
+        for label in self._collect_datum_labels(self.view):
+            try:
+                string_field = label.getField("string")
+                strings = string_field.getValues() if string_field is not None else []
+                if strings:
+                    label_texts.append(str(strings[0]))
+            except Exception:
+                continue
+
+        angle_l = self._luminance(darkest["angle_text_box"])
+        distance_l = self._luminance(darkest["distance_text_box"])
+        radius_rgb = darkest["radius_dimension_line"]
+        radius_l = self._luminance(radius_rgb)
+        control_l = self._luminance(darkest["sketch_curve_control"])
+        angle_ink = viewport_stats["angle_text_box"]
+        distance_ink = viewport_stats["distance_text_box"]
+
+        detail = (
+            f"darkest={darkest}, angle_l={angle_l:.1f}, distance_l={distance_l:.1f}, "
+            f"radius_l={radius_l:.1f}, control_l={control_l:.1f}, "
+            f"viewport_stats={viewport_stats}, label_texts={label_texts}, "
+            f"viewport={viewport_path}"
+        )
+
+        # Broken overlay leak: angle label L~139, radius line rgb~(208,219,217) L~215.
+        self.assertLess(angle_l, 120.0, detail)
+        self.assertLess(distance_l, 120.0, detail)
+        self.assertLess(radius_l, 150.0, detail)
+        washed_gray = all(channel > 180 for channel in radius_rgb) and (
+            max(radius_rgb) - min(radius_rgb) < 30
+        )
+        self.assertFalse(washed_gray, detail)
+        self.assertLess(control_l, 120.0, detail)
+
+        # Filled rectangles are dense and uniform. Glyphs are sparse with row variation.
+        self.assertGreater(angle_ink["ratio"], 0.04, detail)
+        self.assertLess(angle_ink["ratio"], 0.70, detail)
+        self.assertGreater(angle_ink["row_std"], 1.0, detail)
+        self.assertGreater(distance_ink["ratio"], 0.04, detail)
+        self.assertLess(distance_ink["ratio"], 0.70, detail)
+        self.assertGreater(distance_ink["row_std"], 1.0, detail)
+        self.assertGreaterEqual(len(label_texts), 4, detail)
+        joined = " ".join(label_texts)
+        self.assertIn("50", joined, detail)
+        self.assertIn("15", joined, detail)
+        self.assertIn("20", joined, detail)
+        self.assertIn("60", joined, detail)
+
+        heights = []
+        for _ in range(20):
+            self.view.fitAll()
+            self.pump_gui_events()
+            heights.append(self._ortho_camera_height(self.view))
+
+        self.assertTrue(
+            all(height is not None and math.isfinite(height) and height > 0.0 for height in heights),
+            heights,
+        )
+        self.assertEqual(min(heights), max(heights), heights)
 
     def testPointOnObjectPreselectionMatchesTiltedHitArea(self):
         constraint_id, self.probe_point = self.build_issue_25840_sketch(self.sketch)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
         self.doc.recompute()
-        self.pump_gui_events(6)
+        self.pump_gui_events()
 
         tilt_y = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 2.0)
 
@@ -232,12 +635,15 @@ class SketcherGuiTestCases(unittest.TestCase):
         )
         self.sketch.addGeometry(Part.Point(marker_point), False)
         self.doc.recompute()
-        self.pump_gui_events(6)
+        self.pump_gui_events()
 
         self.configure_view_state(self.view)
-        self.pump_gui_events(8)
-
-        marker_coin = tuple(int(value) for value in self.view.getPointOnViewport(marker_point))
+        marker_coin = self.project_world_to_viewport(self.view, marker_point)
+        self.assertNotEqual(
+            marker_coin,
+            (0, 0),
+            f"expected a usable projection of {marker_point}, not the (0, 0) sentinel",
+        )
 
         vertex_offsets = []
         for dy in range(-12, 13, 2):
@@ -255,7 +661,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.sketch.setLabelPosition(constraint_id, 0.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
         self.doc.recompute()
-        self.pump_gui_events(12)
+        self.pump_gui_events()
 
         marker_info = SketcherGui.getActiveSketchPreselection(marker_coin)
         marker_kind = self.classify_preselection(marker_info, self.expected_constraint_name)
@@ -281,19 +687,22 @@ class SketcherGuiTestCases(unittest.TestCase):
     def testCurveWinsOverOverlappingDistanceDimensionLine(self):
         start_point = FreeCAD.Vector(80.0, 100.0, 0.0)
         end_point = FreeCAD.Vector(130.0, 100.0, 0.0)
-        midpoint = FreeCAD.Vector(105.0, 100.0, 0.0)
+        midpoint = (start_point + end_point) * 0.5
 
         line_id = self.sketch.addGeometry(
             Part.LineSegment(start_point, end_point),
             False,
         )
         self.doc.recompute()
-        self.pump_gui_events(6)
+        self.pump_gui_events()
 
         self.configure_view_state(self.view)
-        self.pump_gui_events(8)
-
-        midpoint_coin = tuple(int(value) for value in self.view.getPointOnViewport(midpoint))
+        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+        self.assertNotEqual(
+            midpoint_coin,
+            (0, 0),
+            f"expected a usable projection of {midpoint}, not the (0, 0) sentinel",
+        )
 
         edge_offsets = []
         for dy in range(-10, 11, 2):
@@ -315,10 +724,10 @@ class SketcherGuiTestCases(unittest.TestCase):
             )
         )
         self.sketch.setLabelDistance(constraint_id, 0.0)
-        self.sketch.setLabelPosition(constraint_id, 0.0)
+        self.sketch.setLabelPosition(constraint_id, 12.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
         self.doc.recompute()
-        self.pump_gui_events(12)
+        self.pump_gui_events()
 
         probe_results = []
         for dx, dy in edge_offsets:
@@ -336,3 +745,205 @@ class SketcherGuiTestCases(unittest.TestCase):
 
         self.assertGreater(len(edge_offsets), 0, detail)
         self.assertEqual(unexpected_probe_results, [], detail)
+
+    def testDistanceDatumTextWinsOverOverlappingCurve(self):
+        start_point = FreeCAD.Vector(80.0, 100.0, 0.0)
+        end_point = FreeCAD.Vector(130.0, 100.0, 0.0)
+        midpoint = (start_point + end_point) * 0.5
+
+        line_id = self.sketch.addGeometry(
+            Part.LineSegment(start_point, end_point),
+            False,
+        )
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        self.configure_view_state(self.view)
+        midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+        self.assertNotEqual(
+            midpoint_coin,
+            (0, 0),
+            f"expected a usable projection of {midpoint}, not the (0, 0) sentinel",
+        )
+
+        before_info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+        before_kind = self.classify_preselection(before_info, "Constraint0")
+
+        constraint_id = self.sketch.addConstraint(
+            Sketcher.Constraint(
+                "Distance",
+                line_id,
+                1,
+                line_id,
+                2,
+                start_point.distanceToPoint(end_point),
+            )
+        )
+        self.sketch.setLabelDistance(constraint_id, 0.0)
+        self.sketch.setLabelPosition(constraint_id, 0.0)
+        self.expected_constraint_name = f"Constraint{constraint_id + 1}"
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        text_coin = self.wait_for_datum_annotation_at_coin(
+            self.view,
+            midpoint_coin,
+            self.expected_constraint_name,
+        )
+        after_info = (
+            SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
+        )
+        after_kind = self.classify_preselection(after_info, self.expected_constraint_name)
+
+        detail = (
+            f"before_info={before_info}, after_info={after_info}, "
+            f"midpoint_coin={midpoint_coin}, text_coin={text_coin}"
+        )
+
+        self.assertEqual(before_kind, "edge", detail)
+        self.assertIsNotNone(text_coin, detail)
+        self.assertEqual(after_kind, "target_constraint", detail)
+        self.assertEqual((after_info or {}).get("ConstraintKind"), "DatumAnnotation", detail)
+
+    def testAngleDatumTextWinsOverHorizontalAxis(self):
+        first_line = self.sketch.addGeometry(
+            Part.LineSegment(
+                FreeCAD.Vector(0.0, 0.0, 0.0),
+                FreeCAD.Vector(50.0, 50.0 * math.tan(math.radians(30.0)), 0.0),
+            ),
+            False,
+        )
+        second_line = self.sketch.addGeometry(
+            Part.LineSegment(
+                FreeCAD.Vector(0.0, 0.0, 0.0),
+                FreeCAD.Vector(50.0, -50.0 * math.tan(math.radians(30.0)), 0.0),
+            ),
+            False,
+        )
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        self.configure_view_state(self.view)
+
+        # The angle bisector is the horizontal axis, so the label text will be centered at
+        # x=20, y=0.
+        text_center = FreeCAD.Vector(20.0, 0.0, 0.0)
+        text_center_coin = self.project_world_to_viewport(self.view, text_center)
+        self.assertNotEqual(
+            text_center_coin,
+            (0, 0),
+            f"expected a usable projection of {text_center}, not the (0, 0) sentinel",
+        )
+        before_info = SketcherGui.getActiveSketchPreselection(text_center_coin)
+        before_kind = self.classify_preselection(before_info, "Constraint0")
+
+        constraint_id = self.sketch.addConstraint(
+            Sketcher.Constraint(
+                "Angle",
+                first_line,
+                1,
+                second_line,
+                1,
+                math.radians(-60.0),
+            )
+        )
+        self.sketch.setLabelDistance(constraint_id, 10.0)
+        self.expected_constraint_name = f"Constraint{constraint_id + 1}"
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        text_coin = self.wait_for_datum_annotation_at_coin(
+            self.view,
+            text_center_coin,
+            self.expected_constraint_name,
+        )
+        info = SketcherGui.getActiveSketchPreselection(text_coin) if text_coin is not None else None
+        kind = self.classify_preselection(info, self.expected_constraint_name)
+
+        detail = (
+            f"before_info={before_info}, before_kind={before_kind}, "
+            f"info={info}, kind={kind}, text_center={text_center}, text_coin={text_coin}"
+        )
+
+        self.assertEqual(before_kind, "axis", detail)
+        self.assertIsNotNone(text_coin, detail)
+        self.assertEqual(kind, "target_constraint", detail)
+        self.assertEqual((info or {}).get("ConstraintKind"), "DatumAnnotation", detail)
+
+    def test_inf_camera_recovers_finite_pick_and_edge_preselection(self):
+        start_point = FreeCAD.Vector(80.0, 100.0, 0.0)
+        end_point = FreeCAD.Vector(130.0, 100.0, 0.0)
+        midpoint = (start_point + end_point) * 0.5
+        self.sketch.addGeometry(Part.LineSegment(start_point, end_point), False)
+        self.doc.recompute()
+        self.pump_gui_events()
+
+        camera = self.view.getCameraNode()
+        self.assertIsNotNone(camera)
+        try:
+            camera.height.setValue(float("inf"))
+            # Observe Inf before the camera sensor recovers it. Do not pump
+            # first — onCameraChanged now restores during an open edit.
+            self.assertFalse(math.isfinite(self._ortho_camera_height(self.view)))
+
+            # Production recovery during an already-open edit. Do not
+            # viewTop/fitAll, do not helper-restore, and do not scan for an
+            # edge first.
+            self.pump_gui_events()
+            self.view = FreeCADGui.ActiveDocument.ActiveView
+
+            recovered_height = self._ortho_camera_height(self.view)
+            self.assertIsNotNone(recovered_height)
+            self.assertTrue(
+                math.isfinite(recovered_height) and recovered_height > 0.0,
+                recovered_height,
+            )
+
+            # Keep setEditViewer recovery: re-poison, observe Inf without
+            # pumping, then resetEdit/setEdit (sensor is detached on unset).
+            camera = self.view.getCameraNode()
+            camera.height.setValue(float("inf"))
+            self.assertFalse(math.isfinite(self._ortho_camera_height(self.view)))
+            FreeCADGui.ActiveDocument.resetEdit()
+            self.pump_gui_events()
+            FreeCADGui.ActiveDocument.setEdit(self.sketch.Name)
+            self.pump_gui_events()
+            self.view = FreeCADGui.ActiveDocument.ActiveView
+
+            recovered_height = self._ortho_camera_height(self.view)
+            self.assertIsNotNone(recovered_height)
+            self.assertTrue(
+                math.isfinite(recovered_height) and recovered_height > 0.0,
+                recovered_height,
+            )
+
+            midpoint_coin = self.project_world_to_viewport(self.view, midpoint)
+            self.assertNotEqual(midpoint_coin, (0, 0), midpoint_coin)
+
+            info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+            if not self._preselection_matches(info, "edge", self.sketch.Name):
+                midpoint_coin = self._find_preselection_near_viewport(
+                    midpoint_coin,
+                    "edge",
+                    object_name=self.sketch.Name,
+                )
+                self.assertIsNotNone(
+                    midpoint_coin,
+                    f"no Edge of {self.sketch.Name} near projected midpoint",
+                )
+                info = SketcherGui.getActiveSketchPreselection(midpoint_coin)
+
+            names = (info or {}).get("SubElementNames") or []
+            detail = f"info={info}, midpoint_coin={midpoint_coin}, height={recovered_height}"
+            self.assertEqual((info or {}).get("ObjectName"), self.sketch.Name, detail)
+            self.assertTrue(any(name.startswith("Edge") for name in names), detail)
+            self.assertEqual(
+                self.classify_preselection(info, "Constraint0"),
+                "edge",
+                detail,
+            )
+        finally:
+            try:
+                self._restore_finite_camera_height(self.view)
+            except Exception:
+                pass

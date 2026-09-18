@@ -62,6 +62,8 @@
 #include <Gui/SpinBox.h>
 #include <Gui/VectorListEditor.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include <Gui/Application.h>
+#include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Document.h>
 
 // NOLINTBEGIN(cppcoreguidelines-pro-*,cppcoreguidelines-prefer-member-initializer)
@@ -595,46 +597,93 @@ void PropertyItem::setPropertyName(const QString& name, const QString& realName)
 
 void PropertyItem::setPropertyValue(const std::string& value)
 {
-    // Construct command for property assignment in one go, in case of any
-    // intermediate changes caused by property change that may potentially
-    // invalidate the current property array.
-    std::ostringstream ss;
-    for (auto prop : propertyItems) {
-        App::PropertyContainer* parent = prop->getContainer();
-        if (!parent || parent->isReadOnly(prop) || prop->testStatus(App::Property::ReadOnly)) {
-            continue;
+    const auto runCompatibilityMutation = [](Gui::Document* guiDoc,
+                                           Gui::CollaborationCompatibilityMutationDeclaration declaration,
+                                           const std::string& command) {
+        const auto outcome = guiDoc->executeCompatibilityMutation(
+            std::move(declaration),
+            [command] { Base::Interpreter().runString(command.c_str()); });
+        if (!outcome.completed()) {
+            Base::Console().error(
+                "PropertyItem::setPropertyValue compatibility mutation failed: %s\n",
+                outcome.diagnostic.c_str());
         }
-
-        if (parent->isDerivedFrom<App::Document>()) {
-            auto doc = static_cast<App::Document*>(parent);
-            ss << "FreeCAD.getDocument('" << doc->getName() << "').";
-        }
-        else if (parent->isDerivedFrom<App::DocumentObject>()) {
-            auto obj = static_cast<App::DocumentObject*>(parent);
-            App::Document* doc = obj->getDocument();
-            ss << "FreeCAD.getDocument('" << doc->getName() << "').getObject('"
-               << obj->getNameInDocument() << "').";
-        }
-        else if (parent->isDerivedFrom<ViewProviderDocumentObject>()) {
-            App::DocumentObject* obj = static_cast<ViewProviderDocumentObject*>(parent)->getObject();
-            App::Document* doc = obj->getDocument();
-            ss << "FreeCADGui.getDocument('" << doc->getName() << "').getObject('"
-               << obj->getNameInDocument() << "').";
-        }
-        else {
-            continue;
-        }
-
-        ss << parent->getPropertyPrefix() << prop->getName() << " = " << value << '\n';
-    }
-
-    std::string cmd = ss.str();
-    if (cmd.empty()) {
-        return;
-    }
+    };
 
     try {
-        Gui::Command::runCommand(Gui::Command::App, cmd.c_str());
+        for (auto prop : propertyItems) {
+            App::PropertyContainer* parent = prop->getContainer();
+            if (!parent || parent->isReadOnly(prop) || prop->testStatus(App::Property::ReadOnly)) {
+                continue;
+            }
+
+            std::ostringstream assignment;
+            assignment << parent->getPropertyPrefix() << prop->getName() << " = " << value;
+            const std::string line = assignment.str();
+            const char* propertyName = prop->getName();
+
+            if (parent->isDerivedFrom<App::Document>()) {
+                auto* doc = static_cast<App::Document*>(parent);
+                std::ostringstream cmd;
+                cmd << "FreeCAD.getDocument('" << doc->getName() << "')." << line << '\n';
+                const std::string command = cmd.str();
+                Gui::Document* guiDoc =
+                    Gui::Application::Instance ? Gui::Application::Instance->getDocument(doc)
+                                               : nullptr;
+                if (!guiDoc) {
+                    Gui::Command::runCommand(Gui::Command::App, command.c_str());
+                    continue;
+                }
+                runCompatibilityMutation(
+                    guiDoc,
+                    {Gui::CollaborationCompatibilityMutationKind::UnknownModel, {}, {}, {}},
+                    command);
+                continue;
+            }
+
+            App::DocumentObject* object = nullptr;
+            if (parent->isDerivedFrom<App::DocumentObject>()) {
+                object = static_cast<App::DocumentObject*>(parent);
+            }
+            else if (parent->isDerivedFrom<ViewProviderDocumentObject>()) {
+                object = static_cast<ViewProviderDocumentObject*>(parent)->getObject();
+            }
+            else {
+                continue;
+            }
+
+            if (!object || !object->getDocument() || !propertyName || *propertyName == '\0') {
+                continue;
+            }
+
+            App::Document* doc = object->getDocument();
+            std::ostringstream cmd;
+            cmd << "FreeCAD.getDocument('" << doc->getName() << "').getObject('"
+                << object->getNameInDocument() << "')." << line << '\n';
+            const std::string command = cmd.str();
+
+            Gui::Document* guiDoc =
+                Gui::Application::Instance ? Gui::Application::Instance->getDocument(doc) : nullptr;
+            if (!guiDoc) {
+                Gui::Command::runCommand(Gui::Command::App, command.c_str());
+                continue;
+            }
+
+            const std::string stableIdentity = doc->collaborationObjectIdentity(*object);
+            const char* objectName = object->getNameInDocument();
+            if (stableIdentity.empty() || !objectName || *objectName == '\0') {
+                Base::Console().error("PropertyItem::setPropertyValue: missing object identity\n");
+                continue;
+            }
+
+            runCompatibilityMutation(
+                guiDoc,
+                {Gui::CollaborationCompatibilityMutationKind::Model,
+                 objectName,
+                 stableIdentity,
+                 propertyName},
+                command);
+        }
     }
     catch (Base::PyException& e) {
         e.reportException();
@@ -1122,7 +1171,8 @@ PropertyFloatItem::PropertyFloatItem() = default;
 QString PropertyFloatItem::toString(const QVariant& prop) const
 {
     double value = prop.toDouble();
-    QString data = QLocale().toString(value, 'f', decimals());
+    // show the actual value, not the 2 decimal UI version
+    QString data = QLocale().toString(value, 'g', highPrec);
 
     if (hasExpression()) {
         data += QStringLiteral("  ( %1 )").arg(QString::fromStdString(getExpressionString()));
@@ -1157,7 +1207,8 @@ QWidget* PropertyFloatItem::createEditor(
 {
     auto sb = new Gui::DoubleSpinBox(parent);
     sb->setFrame(static_cast<bool>(frameOption));
-    sb->setDecimals(decimals());
+    sb->setDecimals(highPrec);  // let users type in the full number, not just 2 decimals. Dont
+                                // truncate what they type.
     QObject::connect(sb, qOverload<double>(&Gui::DoubleSpinBox::valueChanged), method);
 
     if (isBound()) {
@@ -1299,7 +1350,8 @@ PropertyFloatConstraintItem::PropertyFloatConstraintItem() = default;
 QString PropertyFloatConstraintItem::toString(const QVariant& prop) const
 {
     double value = prop.toDouble();
-    return QLocale().toString(value, 'f', decimals());
+    // same as above, show the real value not 2 decimals
+    return QLocale().toString(value, 'g', highPrec);
 }
 
 QVariant PropertyFloatConstraintItem::value(const App::Property* prop) const
@@ -1327,7 +1379,8 @@ QWidget* PropertyFloatConstraintItem::createEditor(
 ) const
 {
     auto sb = new Gui::DoubleSpinBox(parent);
-    sb->setDecimals(decimals());
+    sb->setDecimals(highPrec);  // let users type in the full number, not just 2 decimals. Dont
+                                // truncate what they type.
     sb->setFrame(static_cast<bool>(frameOption));
     QObject::connect(sb, qOverload<double>(&Gui::DoubleSpinBox::valueChanged), method);
 

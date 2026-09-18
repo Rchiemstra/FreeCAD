@@ -11,8 +11,10 @@
 #include <App/CollaborativeOperation.h>
 #include <App/CollaborativeOperationRegistry.h>
 #include <App/Document.h>
+#include <App/GeometryWorkerOperationRegistry.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 
+#include <BRep_Builder.hxx>
 #include <BRepAlgoAPI_BooleanOperation.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -21,6 +23,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepTools_ShapeSet.hxx>
+#include <BRepTools.hxx>
 #include <Bnd_Box.hxx>
 #include <gp_Trsf.hxx>
 #include <Message_ProgressIndicator.hxx>
@@ -44,8 +47,10 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <locale>
@@ -53,6 +58,7 @@
 #include <memory>
 #include <mutex>
 #include <ostream>
+#include <sstream>
 #include <stop_token>
 #include <streambuf>
 #include <stdexcept>
@@ -745,6 +751,8 @@ std::vector<App::DocumentRevisionKey> canonicalKeys(
     return keys;
 }
 
+bool isValidShape(const TopoDS_Shape& shape);
+
 BooleanKind parseKind(const std::string& value)
 {
     if (value == "cut") {
@@ -757,6 +765,116 @@ BooleanKind parseKind(const std::string& value)
         return BooleanKind::Common;
     }
     throw std::invalid_argument("Part Boolean kind must be cut, fuse, or common");
+}
+
+std::vector<std::uint8_t> encodeShape(const TopoDS_Shape& shape)
+{
+    if (!isValidShape(shape)) {
+        throw std::invalid_argument("isolated Part geometry input is null or invalid");
+    }
+    std::ostringstream stream(std::ios::out | std::ios::binary);
+    stream.imbue(std::locale::classic());
+    BRepTools::Write(shape, stream);
+    if (!stream) {
+        throw std::runtime_error("isolated Part geometry BREP encoding failed");
+    }
+    const std::string encoded = stream.str();
+    return {encoded.begin(), encoded.end()};
+}
+
+TopoDS_Shape decodeShape(const App::GeometryArchiveSection& section)
+{
+    try {
+        if (section.bytes.empty()) {
+            throw std::invalid_argument("isolated Part geometry BREP payload is empty");
+        }
+        const std::string encoded(section.bytes.begin(), section.bytes.end());
+        std::istringstream stream(encoded, std::ios::in | std::ios::binary);
+        stream.imbue(std::locale::classic());
+        BRep_Builder builder;
+        TopoDS_Shape shape;
+        BRepTools::Read(shape, stream, builder);
+        if (!stream || !isValidShape(shape)) {
+            throw std::invalid_argument("isolated Part geometry BREP payload is invalid");
+        }
+        stream >> std::ws;
+        if (!stream.eof()) {
+            throw std::invalid_argument(
+                "isolated Part geometry BREP payload has trailing data");
+        }
+        return shape;
+    }
+    catch (const Standard_Failure& failure) {
+        const char* detail = failure.GetMessageString();
+        throw std::invalid_argument(
+            detail && *detail
+                ? std::string("isolated Part geometry BREP payload failed: ") + detail
+                : "isolated Part geometry BREP payload failed");
+    }
+}
+
+void appendDouble(std::vector<std::uint8_t>& target, const double value)
+{
+    static_assert(sizeof(double) == sizeof(std::uint64_t));
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+        target.push_back(static_cast<std::uint8_t>((bits >> shift) & 0xffU));
+    }
+}
+
+double readDouble(const std::vector<std::uint8_t>& source, const std::size_t offset)
+{
+    if (offset > source.size() || source.size() - offset < sizeof(double)) {
+        throw std::invalid_argument("isolated Part Boolean parameters are truncated");
+    }
+    std::uint64_t bits = 0;
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+        bits |= static_cast<std::uint64_t>(source[offset + shift / 8]) << shift;
+    }
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    if (!std::isfinite(value)) {
+        throw std::invalid_argument("isolated Part Boolean parameter is not finite");
+    }
+    return value;
+}
+
+const App::GeometryArchiveSection& requireSection(
+    const App::GeometryArchive& archive,
+    const std::string& name)
+{
+    const auto found = std::ranges::find_if(archive.sections, [&](const auto& section) {
+        return section.name == name;
+    });
+    if (found == archive.sections.end()) {
+        throw std::invalid_argument("isolated Part geometry section is missing: " + name);
+    }
+    return *found;
+}
+
+std::string sectionDigest(const std::vector<App::GeometryArchiveSection>& sections)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    const auto addData = [&hash](const char* data, const std::size_t size) {
+#if QT_VERSION < QT_VERSION_CHECK(6, 3, 0)
+        hash.addData(data, static_cast<int>(size));
+#else
+        hash.addData(QByteArrayView(data, static_cast<qsizetype>(size)));
+#endif
+    };
+    for (const auto& section : sections) {
+        const std::uint64_t nameSize = section.name.size();
+        const std::uint64_t byteSize = section.bytes.size();
+        addData(reinterpret_cast<const char*>(&nameSize), sizeof(nameSize));
+        addData(section.name.data(), section.name.size());
+        addData(reinterpret_cast<const char*>(&byteSize), sizeof(byteSize));
+        if (!section.bytes.empty()) {
+            addData(reinterpret_cast<const char*>(section.bytes.data()),
+                    section.bytes.size());
+        }
+    }
+    return hash.result().toHex().toStdString();
 }
 
 bool isValidShape(const TopoDS_Shape& shape)
@@ -821,6 +939,9 @@ bool hasHazardousInputDependency(const Part::Feature& result,
                                  const Part::Feature& base,
                                  const Part::Feature& tool)
 {
+    if (&result == &base || &result == &tool) {
+        return true;
+    }
     const auto dependents = result.getInListRecursive();
     return std::ranges::any_of(dependents, [&](const auto* dependent) {
         return dependent == static_cast<const App::DocumentObject*>(&base)
@@ -1225,6 +1346,102 @@ private:
     mutable bool _applied {false};
 };
 
+std::uint8_t encodeBooleanKind(const BooleanKind kind)
+{
+    switch (kind) {
+        case BooleanKind::Cut:
+            return 1;
+        case BooleanKind::Fuse:
+            return 2;
+        case BooleanKind::Common:
+            return 3;
+    }
+    throw std::invalid_argument("unsupported isolated Part Boolean kind");
+}
+
+BooleanKind decodeBooleanKind(const std::uint8_t kind)
+{
+    switch (kind) {
+        case 1:
+            return BooleanKind::Cut;
+        case 2:
+            return BooleanKind::Fuse;
+        case 3:
+            return BooleanKind::Common;
+        default:
+            throw std::invalid_argument("isolated Part Boolean kind is invalid");
+    }
+}
+
+App::GeometryArchive executeBooleanArchive(const App::GeometryArchive& input,
+                                           const std::stop_token stopToken)
+{
+    if (input.metadata.operationType != Part::CollaborativeBooleanOperationType
+        || input.sections.size() != 3) {
+        throw std::invalid_argument("isolated Part Boolean request contract is invalid");
+    }
+    const auto& parameters = requireSection(input, "parameters").bytes;
+    if (parameters.size() != 17) {
+        throw std::invalid_argument("isolated Part Boolean parameters are invalid");
+    }
+    const BooleanKind kind = decodeBooleanKind(parameters.front());
+    const double fuzzySetting = readDouble(parameters, 1);
+    const double confusion = readDouble(parameters, 9);
+    if (fuzzySetting < 0.0 || confusion <= 0.0) {
+        throw std::invalid_argument("isolated Part Boolean tolerances are invalid");
+    }
+    const Part::TopoShape base(decodeShape(requireSection(input, "base.brep")));
+    const Part::TopoShape tool(decodeShape(requireSection(input, "tool.brep")));
+    Part::TopoShape result = computeBoolean(kind,
+                                            base,
+                                            tool,
+                                            stopToken,
+                                            fuzzySetting,
+                                            confusion,
+                                            nullptr);
+    if (stopToken.stop_requested()) {
+        throw std::runtime_error("isolated Part Boolean operation was cancelled");
+    }
+    App::GeometryArchive output;
+    output.sections.push_back({"result.brep", encodeShape(result.getShape())});
+    App::GeometryArchiveSection history;
+    App::GeometryArchiveError historyError;
+    history.name = "element-history";
+    if (!App::GeometryArchiveCodec::encodeElementHistory({}, history, historyError)) {
+        throw std::runtime_error(historyError.code + ": " + historyError.message);
+    }
+    output.sections.push_back(std::move(history));
+    return output;
+}
+
+std::unique_ptr<const App::CollaborativeOperation> decodeBooleanResult(
+    const App::GeometryArchive& output,
+    ObjectReference base,
+    ObjectReference tool,
+    ObjectReference result)
+{
+    if (output.metadata.operationType != Part::CollaborativeBooleanOperationType
+        || output.sections.size() != 2) {
+        throw std::invalid_argument("isolated Part Boolean result contract is invalid");
+    }
+    App::GeometryElementHistory history;
+    App::GeometryArchiveError historyError;
+    if (!App::GeometryArchiveCodec::decodeElementHistory(
+            requireSection(output, "element-history"), history, historyError)) {
+        throw std::invalid_argument(historyError.code + ": " + historyError.message);
+    }
+    if (!history.generated.empty() || !history.modified.empty()
+        || !history.deleted.empty()) {
+        throw std::invalid_argument("isolated Part Boolean returned unexpected history");
+    }
+    return std::make_unique<const CollaborativeBooleanOperation>(
+        std::move(base),
+        std::move(tool),
+        std::move(result),
+        Part::TopoShape(decodeShape(requireSection(output, "result.brep"))),
+        nullptr);
+}
+
 App::CollaborativeOperationPreparation prepareBooleanImpl(
     const App::Document& document,
     const App::CollaborativeOperationIntent& intent,
@@ -1355,34 +1572,39 @@ App::CollaborativeOperationPreparation prepareBooleanImpl(
         };
     }
     else {
-        task = [baseReference = std::move(baseReference),
-                toolReference = std::move(toolReference),
-                resultReference = std::move(resultReference),
-                kind,
-                fuzzySetting,
-                confusion,
-                baseSnapshot = std::move(baseSnapshot),
-                toolSnapshot = std::move(toolSnapshot)](std::stop_token stopToken) {
-            if (stopToken.stop_requested()) {
-                throw std::runtime_error("Part Boolean detached preparation was cancelled");
-            }
-            Part::TopoShape computedResult = computeBoolean(kind,
-                                                            baseSnapshot,
-                                                            toolSnapshot,
-                                                            stopToken,
-                                                            fuzzySetting,
-                                                            confusion,
-                                                            nullptr);
-            if (stopToken.stop_requested()) {
-                throw std::runtime_error("Part Boolean detached preparation was cancelled");
-            }
-            return std::make_unique<const CollaborativeBooleanOperation>(
-                baseReference,
-                toolReference,
-                resultReference,
-                std::move(computedResult),
-                nullptr);
-        };
+        App::GeometryArchive input;
+        input.sections = {{"base.brep", encodeShape(baseSnapshot.getShape())},
+                          {"tool.brep", encodeShape(toolSnapshot.getShape())}};
+        std::vector<std::uint8_t> parameters {encodeBooleanKind(kind)};
+        appendDouble(parameters, fuzzySetting);
+        appendDouble(parameters, confusion);
+        input.sections.push_back({"parameters", std::move(parameters)});
+
+        App::GeometryJobRequest request;
+        request.operationType = std::string(Part::CollaborativeBooleanOperationType);
+        request.policy = App::PreparationPolicy::IsolatedProcess;
+        request.coalescingKey = resultReference.identity;
+        request.inputDigest = sectionDigest(input.sections);
+        request.coalescing = App::GeometryJobCoalescing::LatestWins;
+        request.deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+
+        App::CollaborativeOperationPreparation::IsolatedTask isolated {
+            std::move(request),
+            std::move(input),
+            [baseReference = std::move(baseReference),
+             toolReference = std::move(toolReference),
+             resultReference = std::move(resultReference)](
+                const App::GeometryArchive& output) mutable {
+                return decodeBooleanResult(output,
+                                           std::move(baseReference),
+                                           std::move(toolReference),
+                                           std::move(resultReference));
+            },
+            {}};
+        return {std::move(reads),
+                std::move(writes),
+                std::move(effects),
+                std::move(isolated)};
     }
 
     return {std::move(reads),
@@ -1407,6 +1629,9 @@ void Part::ensureCollaborativeBooleanOperationRegistered()
         static_cast<void>(App::Internal::CollaborativeOperationRegistrar::registerAdapter(
             std::string(CollaborativeBooleanOperationType),
             prepareBoolean));
+        App::Internal::GeometryWorkerOperationRegistry::instance().registerOperation(
+            std::string(CollaborativeBooleanOperationType),
+            executeBooleanArchive);
     });
 }
 
@@ -1424,6 +1649,12 @@ Part::Internal::prepareCollaborativeBooleanForTests(
 
 Part::Internal::CollaborativeBooleanDigest
 Part::Internal::collaborativeBooleanShapeDigestForTests(const TopoDS_Shape& shape)
+{
+    return collaborativeGeometryShapeDigest(shape);
+}
+
+Part::Internal::CollaborativeBooleanDigest
+Part::Internal::collaborativeGeometryShapeDigest(const TopoDS_Shape& shape)
 {
     return canonicalShapeDigest(shape);
 }

@@ -122,6 +122,19 @@ public:
     bool hasObject(const TransactionalObject* Obj) const;
 
     /**
+     * @brief Check whether the live object was introduced by this transaction.
+     *
+     * A newly attached object is stored internally as a deletion action because
+     * reversing the transaction removes it.  This query exposes that semantic
+     * state without making callers depend on TransactionObject's private
+     * representation.
+     *
+     * @param[in] Obj The live object to check.
+     * @return true if undoing this transaction removes the object.
+     */
+    bool isObjectNew(const TransactionalObject* Obj) const;
+
+    /**
      * @brief Record renaming a property.
      *
      * @param[in] Obj The object of which the property to rename.
@@ -129,6 +142,21 @@ public:
      * @param[in] oldName The old name of the property.
      */
     void renameProperty(TransactionalObject* Obj, const Property* pcProp, const char* oldName);
+
+    /**
+     * @brief Arrange moving a property.
+     *
+     * @param[in] Obj The object from which the property is moved.
+     * @param[in] pcProp The property that is moved.
+     * @param[in] target The object to which the property is moved.
+     * @param[in] newProp The new property that represents the moved property.
+     */
+    void arrangeMoveProperty(
+        TransactionalObject* Obj,
+        const Property* pcProp,
+        TransactionalObject* target,
+        Property* newProp
+    );
 
     /**
      * @brief Record adding or removing a property from an object.
@@ -160,6 +188,24 @@ public:
      * @param[in] Prop The property that is changed.
      */
     void addObjectChange(const TransactionalObject* Obj, const Property* Prop);
+
+    /**
+     * @brief Fold this transaction's records into an enclosing one.
+     *
+     * Used when a nested transaction finishes and its work must become part of
+     * the transaction that was already open, so the two undo as one step.
+     *
+     * Merging is per property, not per record. The two transactions can
+     * have recorded the same object for different properties, so a record
+     * the parent already holds is merged into rather than dropped: every
+     * property snapshot the parent lacks moves across, and one it already
+     * has is kept, that snapshot being the older one and the state undo
+     * has to restore. Ownership of each moved snapshot moves with it, so
+     * this transaction no longer destroys what the parent now owns.
+     *
+     * @param[in,out] parent The enclosing transaction to fold into.
+     */
+    void mergeInto(Transaction& parent);
 
 private:
     void applyImpl(Document& doc, bool forward, bool propagateErrors);
@@ -239,6 +285,15 @@ public:
     void renameProperty(const Property* pcProp, const char* oldName);
 
     /**
+     * @brief Arrange moving a property.
+     *
+     * @param[in] pcProp The property that is moved.
+     * @param[in] target The object to which the property is moved.
+     * @param[in] newProp The property that represents the moved property.
+     */
+    void arrangeMoveProperty(const Property* pcProp, TransactionalObject* target, Property* newProp);
+
+    /**
      * @brief Add or remove a property from the object.
      *
      * @param[in] prop The property to add or remove.
@@ -268,6 +323,10 @@ protected:
         const Property* propertyOrig = nullptr;
         // for property renaming
         std::string nameOrig;
+        // for property moving
+        Property* propertyTarget = nullptr;
+        TransactionalObject* target = nullptr;
+        PropertyContainer* source = nullptr;
     };
 
     /// A map to maintain the properties of the object.

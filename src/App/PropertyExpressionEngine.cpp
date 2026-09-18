@@ -60,6 +60,8 @@ PropertyExpressionContainer::PropertyExpressionContainer()
             PropertyExpressionContainer::slotRelabelDocument);
         GetApplication().signalRenameDynamicProperty.connect(
             PropertyExpressionContainer::slotRenameDynamicProperty);
+        GetApplication().signalMoveDynamicProperty.connect(
+            PropertyExpressionContainer::slotMoveDynamicProperty);
     }
     _ExprContainers.insert(this);
 }
@@ -95,6 +97,14 @@ void PropertyExpressionContainer::slotRenameDynamicProperty(const App::Property&
     }
 }
 
+void PropertyExpressionContainer::slotMoveDynamicProperty(const App::Property& prop,
+                                                          const App::DocumentObject& targetObj)
+{
+    for (auto container : _ExprContainers) {
+        container->onMoveDynamicProperty(prop, targetObj);
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////
 
 /* The cycle_detector struct is used by the boost graph routines to detect
@@ -126,6 +136,35 @@ struct PropertyExpressionEngine::Private
     std::vector<fastsignals::scoped_connection> conns;
     std::unordered_map<std::string, std::vector<ObjectIdentifier>> propMap;
 
+    static bool shouldEvaluateOnRestore(const Property* prop,
+                                        const std::shared_ptr<Expression>& expression)
+    {
+        if (!prop) {
+            return false;
+        }
+        if (prop->testStatus(App::Property::Transient)
+            || (prop->getType() & App::Prop_Transient)
+            || prop->testStatus(App::Property::EvalOnRestore)) {
+            return true;
+        }
+
+        // Restored dependent documents can contain a cached expression result
+        // while their source document was saved with a newer value.  Such an
+        // expression must be evaluated during restore so Document::afterRestore
+        // touches the owner and the normal recompute reaches derived geometry.
+        auto* target = freecad_cast<DocumentObject*>(prop->getContainer());
+        if (!target || !target->getDocument() || !expression) {
+            return false;
+        }
+        for (const auto& dependency : expression->getDeps()) {
+            auto* source = dependency.first;
+            if (source && source->getDocument() != target->getDocument()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * @brief Build a graph of all expressions in \a exprs.
      * @param exprs Expressions to use in graph
@@ -154,9 +193,8 @@ struct PropertyExpressionEngine::Private
                     || (!is_output && option == ExecuteOutput)) {
                     continue;
                 }
-                if (option == ExecuteOnRestore && !prop->testStatus(Property::Transient)
-                    && !(prop->getType() & Prop_Transient)
-                    && !prop->testStatus(Property::EvalOnRestore)) {
+                if (option == ExecuteOnRestore
+                    && !shouldEvaluateOnRestore(prop, expr.second.expression)) {
                     continue;
                 }
             }
@@ -269,18 +307,30 @@ void PropertyExpressionEngine::hasSetValue()
         return;
     }
 
-    std::map<App::DocumentObject*, bool> deps;
-    std::map<std::pair<std::string, App::DocumentObject*>, bool> propDeps;
-    std::vector<std::string> labels;
     unregisterElementReference();
     UpdateElementReferenceExpressionVisitor<PropertyExpressionEngine> v(*this);
     for (auto& e : expressions) {
         auto expr = e.second.expression;
         if (expr) {
-            expr->getDepObjects(deps, &labels, &propDeps);
             if (!restoring) {
                 expr->visit(v);
             }
+        }
+    }
+    rebuildDependencies();
+
+    PropertyExpressionContainer::hasSetValue();
+}
+
+void PropertyExpressionEngine::rebuildDependencies()
+{
+    std::map<App::DocumentObject*, bool> deps;
+    std::map<std::pair<std::string, App::DocumentObject*>, bool> propDeps;
+    std::vector<std::string> labels;
+    for (auto& e : expressions) {
+        auto expr = e.second.expression;
+        if (expr) {
+            expr->getDepObjects(deps, &labels, &propDeps);
         }
     }
     registerLabelReferences(std::move(labels));
@@ -343,8 +393,6 @@ void PropertyExpressionEngine::hasSetValue()
             }
         }
     }
-
-    PropertyExpressionContainer::hasSetValue();
 }
 
 void PropertyExpressionEngine::updateHiddenReference(const std::string& key)
@@ -565,6 +613,7 @@ void PropertyExpressionEngine::onContainerRestored()
             expr->visit(v);
         }
     }
+    rebuildDependencies();
 }
 
 const boost::any PropertyExpressionEngine::getPathValue(const App::ObjectIdentifier& path) const
@@ -661,9 +710,7 @@ DocumentObjectExecReturn* App::PropertyExpressionEngine::execute(ExecuteOption o
             if (!prop) {
                 continue;
             }
-            if (prop->testStatus(App::Property::Transient)
-                || (prop->getType() & App::Prop_Transient)
-                || prop->testStatus(App::Property::EvalOnRestore)) {
+            if (Private::shouldEvaluateOnRestore(prop, e.second.expression)) {
                 found = true;
                 break;
             }
@@ -1180,6 +1227,18 @@ void PropertyExpressionEngine::onRenameDynamicProperty(const App::Property& prop
 {
     ObjectIdentifier oldNameId = ObjectIdentifier(prop.getContainer(), std::string(oldName));
     ObjectIdentifier newNameId = ObjectIdentifier(prop);
+    const std::map<ObjectIdentifier, ObjectIdentifier> paths = {
+        {oldNameId, newNameId},
+    };
+
+    renameObjectIdentifiers(paths);
+}
+
+void PropertyExpressionEngine::onMoveDynamicProperty(const App::Property& prop,
+                                                     const DocumentObject& targetObj)
+{
+    ObjectIdentifier oldNameId = ObjectIdentifier(prop);
+    ObjectIdentifier newNameId = ObjectIdentifier(&targetObj, std::string(prop.getName()));
     const std::map<ObjectIdentifier, ObjectIdentifier> paths = {
         {oldNameId, newNameId},
     };

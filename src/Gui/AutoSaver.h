@@ -83,13 +83,9 @@ public:
 private:
     void scheduleQueuedRetry(const App::Document& document);
     void slotDocumentBecameStable(const App::Document&);
+    void slotFileChangeStateChanged(const App::Document&);
     using Connection = fastsignals::connection;
-    Connection documentChanged;
-    Connection documentNew;
-    Connection documentDeleted;
-    Connection documentMod;
-    Connection documentUndo;
-    Connection documentRedo;
+    Connection fileChangeState;
     Connection documentStable;
     std::string documentName;
     // True when newer document state still needs a recovery snapshot.

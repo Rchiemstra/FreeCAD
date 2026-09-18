@@ -87,6 +87,12 @@ DocumentObject::DocumentObject()
 
 DocumentObject::~DocumentObject()
 {
+    // A feature's execute() can destroy objects outright -- App::Link rebuilds
+    // its elements that way -- and any deferred notification still naming this
+    // one would be replayed against freed memory.
+    if (_pDoc) {
+        _pDoc->discardCollaborationNotificationsForDestroyedObject(this);
+    }
     if (!PythonObject.is(Py::_None())) {
         Base::PyGILStateLocker lock;
         // Remark: The API of Py::Object has been changed to set whether the wrapper owns the passed
@@ -208,6 +214,7 @@ bool DocumentObject::recomputeFeature(bool recursive)
 
 void DocumentObject::setTouched(const char* name)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     // This function is not a replacement for touch(), it is only
     // used internally for fine-grained document recompute and replaces
     // the coarse grained equivalent of StatusBits.set(ObjectStatus::Touch);
@@ -217,10 +224,8 @@ void DocumentObject::setTouched(const char* name)
 
 void DocumentObject::touch(bool noRecompute)
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
-    if (publish) {
-        enforceAtomicPresentationMutationTarget(_pDoc);
-    }
     if (!noRecompute) {
         StatusBits.set(ObjectStatus::Enforce);
     }
@@ -235,10 +240,8 @@ void DocumentObject::touch(bool noRecompute)
 
 void DocumentObject::purgeTouched()
 {
+    enforceAtomicPresentationMutationTarget(_pDoc);
     const bool publish = _pDoc && !_pDoc->collaborationRevisionPublicationSuppressed(this);
-    if (publish) {
-        enforceAtomicPresentationMutationTarget(_pDoc);
-    }
     StatusBits.reset(ObjectStatus::Touch);
     StatusBits.reset(ObjectStatus::Enforce);
     std::vector<Property*> properties;
@@ -327,10 +330,27 @@ bool DocumentObject::isTouched() const
     return ExpressionEngine.isTouched() || StatusBits.test(ObjectStatus::Touch);
 }
 
+void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
+{
+    if (StatusBits.test(static_cast<size_t>(pos)) == on) {
+        return;
+    }
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    StatusBits.set(static_cast<size_t>(pos), on);
+}
+
 void DocumentObject::enforceRecompute(const std::string& propName)
 {
-    touch(false);
+    enforceAtomicPresentationMutationTarget(_pDoc);
     touchedProps.insert(propName);
+    touch(false);
+}
+
+void DocumentObject::enforceRecompute(const std::vector<std::string>& propNames)
+{
+    enforceAtomicPresentationMutationTarget(_pDoc);
+    touchedProps.insert(propNames.begin(), propNames.end());
+    touch(false);
 }
 
 void DocumentObject::enforceRecompute()
@@ -920,6 +940,40 @@ bool DocumentObject::removeDynamicProperty(const char* name)
     return TransactionalObject::removeDynamicProperty(name);
 }
 
+bool DocumentObject::changeDynamicProperty(const Property* prop,
+                                           const char* group,
+                                           const char* doc)
+{
+    if (_pDoc) {
+        Internal::CollaborationStructuralMutationRecorder::
+            ensurePropertySchemaMutationAllowed(*_pDoc, *this);
+    }
+    const std::string oldGroup = prop && getPropertyGroup(prop) ? getPropertyGroup(prop) : "";
+    const std::string oldDocumentation = prop && getPropertyDocumentation(prop)
+        ? getPropertyDocumentation(prop)
+        : "";
+    const bool changed = TransactionalObject::changeDynamicProperty(prop, group, doc);
+    const bool metadataChanged = prop
+        && (oldGroup != (getPropertyGroup(prop) ? getPropertyGroup(prop) : "")
+            || oldDocumentation
+                != (getPropertyDocumentation(prop) ? getPropertyDocumentation(prop) : ""));
+    if (changed && metadataChanged && _pDoc
+        && Document::dynamicPropertySchemaAffectsPersistence(prop)) {
+        // Existing-object metadata is not represented in Transaction's
+        // property payload and therefore stays sticky.  A transaction-owned
+        // new object is removed as a whole on abort/undo, so its metadata and
+        // dirty evidence share the transaction safely.
+        const bool transactionOwnedNewObject =
+            Internal::CollaborationStructuralMutationRecorder::
+                isTransactionOwnedNewObject(*_pDoc, *this);
+        _pDoc->markFileChange(
+            DocumentFileChange::Model,
+            transactionOwnedNewObject ? DocumentFileChangeOwnership::AutoTransaction
+                                      : DocumentFileChangeOwnership::Sticky);
+    }
+    return changed;
+}
+
 bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
 {
     if (_pDoc) {
@@ -955,6 +1009,137 @@ bool DocumentObject::renameDynamicProperty(Property* prop, const char* name)
     }
 
     return renamed;
+}
+
+void DocumentObject::moveExpressionTargetingProp(Property* prop,
+                                                 Property* newProp,
+                                                 DocumentObject* targetObj)
+{
+    ObjectIdentifier propId = ObjectIdentifier(*prop);
+    ObjectIdentifier newPropId = ObjectIdentifier(*newProp);
+
+    boost::any pathValue = ExpressionEngine.getPathValue(propId);
+    if (pathValue.empty()) {
+        return;
+    }
+
+    auto info = boost::any_cast<PropertyExpressionEngine::ExpressionInfo>(pathValue);
+    std::shared_ptr<Expression> expression = info.expression;
+
+    setExpression(propId, std::shared_ptr<Expression>());
+    targetObj->setExpression(newPropId, expression);
+
+    // force identifiers in the expression to use the document name
+    std::map<ObjectIdentifier, ObjectIdentifier> paths;
+    std::map<ObjectIdentifier, bool> ids = expression->getIdentifiers();
+    for (const auto& [id, _] : ids) {
+        ObjectIdentifier newOne = ObjectIdentifier(id);
+        newOne.setDocumentObjectName(this, true);
+        paths.emplace(id, newOne);
+    }
+    targetObj->ExpressionEngine.renameObjectIdentifiers(paths);
+}
+
+void DocumentObject::arrangeMoveProperty(Property* toBeMovedProp,
+                                         Property* newProp,
+                                         DocumentObject* targetObj)
+{
+    // register the move in the document for transactions
+    auto* objOfToBeMovedProp = freecad_cast<DocumentObject*>(toBeMovedProp->getContainer());
+    if (_pDoc) {
+        _pDoc->arrangeMovePropertyOfObject(this, toBeMovedProp, targetObj, newProp);
+    }
+    if  (targetObj->getDocument() != objOfToBeMovedProp->getDocument()) {
+        // register the move in the target document as well
+        targetObj->_pDoc->arrangeMovePropertyOfObject(targetObj, toBeMovedProp, targetObj, newProp);
+    }
+
+    // Phase 2: Move an expression that targets the current property
+    moveExpressionTargetingProp(toBeMovedProp, newProp, targetObj);
+
+    // do not record the following changes since we are defining a transaction
+    auto guard = targetObj->_pDoc->setDefiningTransaction();
+
+    // Phase 3: Paste the property
+    newProp->Paste(*toBeMovedProp);
+
+    // Phase 4: Rewrite expressions that reference the property to be moved
+    GetApplication().signalMoveDynamicProperty(*toBeMovedProp, *targetObj);
+
+    // The guard goes out of scope which enables recording changes in the
+    // transaction again.
+}
+
+Property* DocumentObject::moveDynamicProperty(Property* prop,
+                                              DocumentObject* targetObj)
+{
+    if (prop == nullptr) {
+        FC_THROWM(Base::RuntimeError, "The property does not exist");
+    }
+
+    const char* propertyName = prop->getName();
+
+    if (targetObj == nullptr) {
+        FC_THROWM(Base::RuntimeError, "The target container does not exist");
+    }
+
+    if (targetObj == this) {
+        FC_THROWM(Base::RuntimeError,
+                  "Cannot move property " << propertyName << " to its own container");
+    }
+
+    if (targetObj->getPropertyByName(propertyName) != nullptr) {
+        FC_THROWM(Base::NameError,
+                  "Property " << targetObj->getFullName() << '.' << propertyName << " already exists");
+    }
+
+    if (!prop->testStatus(App::Property::PropDynamic)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Property " << propertyName << " is not dynamic");
+    }
+
+    if (prop->testStatus(App::Property::LockDynamic)) {
+        FC_THROWM(Base::RuntimeError,
+                 "Property " << propertyName << " is locked");
+    }
+
+    if (!_pDoc || testStatus(ObjectStatus::Destroy)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Object " << getFullName() << " is being destroyed");;
+    }
+
+    if (prop->isDerivedFrom<PropertyLinkBase>()) {
+        clearOutListCache();
+    }
+
+    // Phase 1: Add a new property to the target object
+    Property* newProp =
+        targetObj->dynamicProps.addDynamicProperty(*targetObj,
+                                                   prop->getTypeId().getName(),
+                                                   propertyName,
+                                                   prop->getGroup(),
+                                                   prop->getDocumentation(),
+                                                   prop->getType(),
+                                                   prop->isReadOnly(),
+                                                   prop->testStatus(Property::Hidden));
+
+    if (newProp == nullptr) {
+        FC_THROWM(Base::RuntimeError,
+                  "Failed to move property " << propertyName << " to container "
+                                             << targetObj->getFullName());
+    }
+
+    // Phases 2, 3, and 4
+    arrangeMoveProperty(prop, newProp, targetObj);
+
+    // Phase 5 remove the property from the source object
+    if (!dynamicProps.removeDynamicProperty(propertyName)) {
+        FC_THROWM(Base::RuntimeError,
+                  "Failed to remove property " << propertyName << " from container "
+                                                << prop->getContainer()->getFullName());
+    }
+
+    return newProp;
 }
 
 App::Property* DocumentObject::addDynamicProperty(
@@ -1127,6 +1312,7 @@ void DocumentObject::onChanged(const Property* prop)
 
     if (prop == &Label && _pDoc && oldLabel != Label.getStrValue()) {
         _pDoc->emitCollaborationRelabelObject(*this);
+        oldLabel = Label.getStrValue();
     }
 
     bool fineGrained = GetApplication().isFineGrainedRecomputeEnabled();
@@ -1472,6 +1658,12 @@ void DocumentObject::renameObjectIdentifiers(
     const std::map<ObjectIdentifier, ObjectIdentifier>& paths)
 {
     ExpressionEngine.renameObjectIdentifiers(paths);
+}
+
+bool DocumentObject::isRestoringDeprecatedSchema() const
+{
+    const auto* doc = getDocument();
+    return !doc || !doc->testStatus(Document::CurrentSchemaTransfer);
 }
 
 void DocumentObject::onDocumentRestored()
@@ -1840,9 +2032,33 @@ bool DocumentObject::redirectSubName(std::ostringstream&, DocumentObject*, Docum
 
 void DocumentObject::onPropertyStatusChanged(const Property& prop, unsigned long oldStatus)
 {
-    (void)oldStatus;
     if (!Document::isAnyRestoring() && isAttachedToDocument() && getDocument()) {
-        getDocument()->emitCollaborationChangePropertyEditor(prop);
+        constexpr unsigned long serializedStatusMask =
+            (1UL << Property::ReadOnly) | (1UL << Property::Hidden)
+            | (1UL << Property::Transient) | (1UL << Property::Output)
+            | (1UL << Property::LockDynamic) | (1UL << Property::Ordered)
+            | (1UL << Property::EvalOnRestore) | (1UL << Property::CopyOnChange)
+            | (1UL << Property::UserEdit);
+        const bool serializedDelta = ((oldStatus ^ prop.getStatus()) & serializedStatusMask) != 0;
+        const bool affectsPersistence = serializedDelta
+            && !prop.testStatus(Property::PropNoPersist);
+        if (affectsPersistence) {
+            // Existing-object status changes are not part of Transaction's
+            // property payload and therefore remain sticky. A
+            // transaction-owned new object is removed as a whole on
+            // abort/undo, including its serialized property status.
+            const bool transactionOwnedNewObject =
+                Internal::CollaborationStructuralMutationRecorder::
+                    isTransactionOwnedNewObject(*getDocument(), *this);
+            getDocument()->markFileChange(
+                DocumentFileChange::Model,
+                transactionOwnedNewObject
+                    ? DocumentFileChangeOwnership::AutoTransaction
+                    : DocumentFileChangeOwnership::Sticky);
+        }
+        if (serializedDelta) {
+            getDocument()->emitCollaborationChangePropertyEditor(prop);
+        }
     }
 }
 

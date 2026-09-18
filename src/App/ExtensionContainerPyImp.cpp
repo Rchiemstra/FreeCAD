@@ -24,6 +24,8 @@
 
 #include <sstream>
 
+#include <Base/Interpreter.h>
+
 #include "Application.h"
 #include "Document.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
@@ -215,11 +217,17 @@ PyObject* ExtensionContainerPy::addExtension(PyObject* args)
     }
 
     if (proxy) {
-        PyErr_SetString(
-            PyExc_DeprecationWarning,
-            "Second argument is deprecated. It is ignored and will be removed in future versions. "
-            "The default Python feature proxy is used for extension method overrides.");
-        PyErr_Print();
+        if (!Base::warnDeprecatedPythonApi(
+                "Argument",
+                "App.ExtensionContainer.addExtension(proxy)",
+                Base::PythonApiDeprecation{
+                    .deprecatedIn = "26.3",
+                    .removedIn = "27.2",
+                    .details = "The second argument is ignored. The default Python feature proxy "
+                               "is used for extension method overrides.",
+                })) {
+            return nullptr;
+        }
     }
 
     auto* container = getExtensionContainerPtr();

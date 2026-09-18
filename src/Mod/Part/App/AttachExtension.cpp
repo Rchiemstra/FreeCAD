@@ -528,12 +528,19 @@ bool AttachExtension::extensionHandleChangedPropertyName(
         if (tmp.getTypeId().getName() == TypeName) {
             tmp.setContainer(this->getExtendedContainer());
             tmp.Restore(reader);
-            AttachmentSupport.setValue(tmp.getValue(), tmp.getSubValues());
-            this->MapMode.setValue(Attacher::mmFlatFace);
+            if (tmp.getValue()) {
+                AttachmentSupport.setValue(tmp.getValue(), tmp.getSubValues());
+                this->MapMode.setValue(Attacher::mmFlatFace);
+            }
             return true;
         }
         if (AttachmentSupport.getClassTypeId() == type) {
-            AttachmentSupport.Restore(reader);
+            App::PropertyLinkSubList tmp;
+            tmp.setContainer(this->getExtendedContainer());
+            tmp.Restore(reader);
+            if (!tmp.getValues().empty()) {
+                AttachmentSupport.Paste(tmp);
+            }
             return true;
         }
     }
@@ -746,6 +753,22 @@ void AttachExtension::onExtendedDocumentRestored()
 
         if (_props.attacher->mapMode == mmTangentPlane) {
             handleLegacyTangentPlaneOrientation();
+        }
+
+        // Opening a document re-derives the attached placement here so the
+        // stored value cannot drift from the supports it was mapped to. A
+        // same-version state transfer is not an open: the isolated recompute
+        // worker is importing the caller's archive, which already carries the
+        // placement the caller has, and the worker snapshots its pre-execute
+        // baseline straight after this import. Re-deriving now would put this
+        // recompute's own output into that baseline, the placement the
+        // following execute() computes would compare equal to it, and the
+        // caller would be told nothing changed and keep its stale value.
+        // extensionExecute() re-derives it unconditionally, so skipping here
+        // costs the transfer nothing.
+        const App::Document* document = getExtendedObject()->getDocument();
+        if (document && document->testStatus(App::Document::CurrentSchemaTransfer)) {
+            return;
         }
 
         bool bAttached = positionBySupport();

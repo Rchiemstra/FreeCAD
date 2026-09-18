@@ -57,7 +57,7 @@ set(TestExecutables
 # module.
 
 if(BUILD_GUI)
-    list (APPEND TestExecutables Gui_tests_run)
+    list (APPEND TestExecutables Gui_tests_run GuiShutdown_tests_run)
 endif()
 if(BUILD_ASSEMBLY)
     list (APPEND TestExecutables Assembly_tests_run)
@@ -65,6 +65,9 @@ if(BUILD_ASSEMBLY)
         list (APPEND TestExecutables AssemblyGui_tests_run)
     endif()
 endif(BUILD_ASSEMBLY)
+if(BUILD_CAM)
+    list (APPEND TestExecutables CAM_tests_run)
+endif(BUILD_CAM)
 if(BUILD_MATERIAL)
     list (APPEND TestExecutables Material_tests_run)
 endif(BUILD_MATERIAL)
@@ -127,6 +130,7 @@ if(WIN32)
 endif()
 
 add_subdirectory(src)
+add_subdirectory(filesystem)
 
 include(GoogleTest)
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)

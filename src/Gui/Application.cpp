@@ -49,12 +49,15 @@
 
 #include <QLoggingCategory>
 #include <fmt/format.h>
+#include <cstdint>
 #include <list>
 #include <ranges>
 
 #include <App/Document.h>
+#include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
+#include <App/Property.h>
 #include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Exception.h>
@@ -76,6 +79,7 @@
 #include "CommandActionPy.h"
 #include "CommandPy.h"
 #include "Control.h"
+#include "Dialogs/DlgAbout.h"
 #include "PreferencePages/DlgSettingsCacheDirectory.h"
 #include "DocumentPy.h"
 #include "DocumentRecovery.h"
@@ -83,22 +87,27 @@
 #include "EditorView.h"
 #include "ExpressionBindingPy.h"
 #include "FileDialog.h"
+#include "GraphvizView.h"
 #include "GuiApplication.h"
 #include "GuiInitScript.h"
 #include "GuiTestScript.h"
+#include "ImageView.h"
 #include "InputHintPy.h"
 #include "LinkViewPy.h"
 #include "MainWindow.h"
 #include "Macro.h"
+#include "FreeCADGuiModulePy.h"
 #include "PreferencePackManager.h"
 #include "PythonConsolePy.h"
 #include "MainWindowPy.h"
 #include "MDIViewPy.h"
+#include "MDIViewPyWrap.h"
 #include "MDIViewWithCamera.h"
 #include "Placement.h"
 #include "SoFCDB.h"
 #include "Selection.h"
 #include "SelectionFilterPy.h"
+#include "SelectionModulePy.h"
 #include "SoQtOffscreenRendererPy.h"
 #include "SpaceMouseParameter.h"
 #include "SplitView3DInventor.h"
@@ -233,6 +242,22 @@ struct ApplicationP
         const App::Property* property {nullptr};
         bool beforeChange {false};
         bool delayActions {false};
+        bool propertyStatusChange {false};
+    };
+
+    struct DeferredPresentationStatusMutation
+    {
+        const App::Document* document {nullptr};
+        const App::DocumentObject* object {nullptr};
+        const Gui::ViewProvider* viewProvider {nullptr};
+        const App::Property* property {nullptr};
+        App::DocumentInstanceId documentInstanceId {0};
+        App::DocumentLifecycleEpoch lifecycleEpoch {0};
+        std::string stableObjectIdentity;
+        std::string propertyName;
+        std::int64_t propertyId {0};
+        unsigned long originalStatus {0};
+        bool statusChanged {false};
     };
 
     explicit ApplicationP(bool GUIenabled)
@@ -280,12 +305,15 @@ struct ApplicationP
     bool sharedPresentationNotificationReplay {false};
     bool sharedPresentationStructureMutationBlocked {false};
     bool suppressCurrentSharedPresentationPublication {true};
+    const Gui::ViewProvider* currentStatusNotificationViewProvider {nullptr};
+    const App::Property* currentStatusNotificationProperty {nullptr};
     Application::SharedPresentationNotificationAudit sharedPresentationNotificationAudit;
     std::vector<DeferredPresentationNotification> deferredPresentationNotifications;
+    std::vector<DeferredPresentationStatusMutation> deferredPresentationStatusMutations;
     std::bitset<32> StatusBits;
 };
 
-static PyObject* FreeCADGui_subgraphFromObject(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sSubgraphFromObject(PyObject* /*self*/, PyObject* args)
 {
     PyObject* o;
     if (!PyArg_ParseTuple(args, "O!", &(App::DocumentObjectPy::Type), &o)) {
@@ -349,7 +377,7 @@ static PyObject* FreeCADGui_subgraphFromObject(PyObject* /*self*/, PyObject* arg
     return Py_None;
 }
 
-static PyObject* FreeCADGui_exportSubgraph(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sExportSubgraph(PyObject* /*self*/, PyObject* args)
 {
     const char* format = "VRML";
     PyObject* proxy;
@@ -391,34 +419,13 @@ static PyObject* FreeCADGui_exportSubgraph(PyObject* /*self*/, PyObject* args)
     }
 }
 
-static PyObject* FreeCADGui_getSoDBVersion(PyObject* /*self*/, PyObject* args)
+PyObject* ApplicationPy::sGetSoDBVersion(PyObject* /*self*/, PyObject* args)
 {
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
     return PyUnicode_FromString(SoDB::getVersion());
 }
-
-struct PyMethodDef FreeCADGui_methods[] = {
-    {"subgraphFromObject",
-     FreeCADGui_subgraphFromObject,
-     METH_VARARGS,
-     "subgraphFromObject(object) -> Node\n\n"
-     "Return the Inventor subgraph to an object"},
-    {"exportSubgraph",
-     FreeCADGui_exportSubgraph,
-     METH_VARARGS,
-     "exportSubgraph(Node, File or Buffer, [Format='VRML']) -> None\n\n"
-     "Exports the sub-graph in the requested format"
-     "The format string can be VRML or IV"},
-    {"getSoDBVersion",
-     FreeCADGui_getSoDBVersion,
-     METH_VARARGS,
-     "getSoDBVersion() -> String\n\n"
-     "Return a text string containing the name\n"
-     "of the Coin library and version information"},
-    {nullptr, nullptr, 0, nullptr} /* sentinel */
-};
 
 class MainThreadInvoker final: public QObject
 {
@@ -598,17 +605,6 @@ Application::Application(bool GUIenabled)
         // setting up Python binding
         Base::PyGILStateLocker lock;
 
-        PyDoc_STRVAR(
-            FreeCADGui_doc,
-            "The functions in the FreeCADGui module allow working with GUI documents,\n"
-            "view providers, views, workbenches and much more.\n\n"
-            "The FreeCADGui instance provides a list of references of GUI documents which\n"
-            "can be addressed by a string. These documents contain the view providers for\n"
-            "objects in the associated App document. An App and GUI document can be\n"
-            "accessed with the same name.\n\n"
-            "The FreeCADGui module also provides a set of functions to work with so called\n"
-            "workbenches.");
-
         // if this returns a valid pointer then the 'FreeCADGui' Python module was loaded,
         // otherwise the executable was launched
         PyObject* modules = PyImport_GetModuleDict();
@@ -616,9 +612,9 @@ Application::Application(bool GUIenabled)
         if (!module) {
             static struct PyModuleDef FreeCADGuiModuleDef = {PyModuleDef_HEAD_INIT,
                                                              "FreeCADGui",
-                                                             FreeCADGui_doc,
+                                                             Gui::FreeCADGuiModulePy::moduleDocumentation(),
                                                              -1,
-                                                             ApplicationPy::Methods,
+                                                             Gui::FreeCADGuiModulePy::Methods,
                                                              nullptr,
                                                              nullptr,
                                                              nullptr,
@@ -627,9 +623,10 @@ Application::Application(bool GUIenabled)
 
             PyDict_SetItemString(modules, "FreeCADGui", module);
         }
-        else {
-            // extend the method list
-            PyModule_AddFunctions(module, ApplicationPy::Methods);
+        else if (Gui::FreeCADGuiModulePy::addModuleMethods(module) != 0) {
+            // FreeCADCmd can import a bootstrap-only FreeCADGui module before the GUI app exists;
+            // upgrade it to the full GUI surface now.
+            throw Py::Exception();
         }
         Py::Module(module).setAttr(std::string("ActiveDocument"), Py::None());
         Py::Module(module).setAttr(std::string("HasQtBug_129596"),
@@ -663,14 +660,15 @@ Application::Application(bool GUIenabled)
         // insert Selection module
         static struct PyModuleDef SelectionModuleDef = {PyModuleDef_HEAD_INIT,
                                                         "Selection",
-                                                        "Selection module",
+                                                        Gui::SelectionModulePy::moduleDocumentation(),
                                                         -1,
-                                                        SelectionSingleton::Methods,
+                                                        nullptr,
                                                         nullptr,
                                                         nullptr,
                                                         nullptr,
                                                         nullptr};
         PyObject* pSelectionModule = PyModule_Create(&SelectionModuleDef);
+        Gui::SelectionModulePy::addModuleMethods(pSelectionModule);
         Py_INCREF(pSelectionModule);
         PyModule_AddObject(module, "Selection", pSelectionModule);
 
@@ -721,19 +719,6 @@ Application::Application(bool GUIenabled)
 
     Base::PyGILStateLocker lock;
     PyObject* module = PyImport_AddModule("FreeCADGui");
-    PyMethodDef* meth = FreeCADGui_methods;
-    PyObject* dict = PyModule_GetDict(module);
-    for (; meth->ml_name; meth++) {
-        PyObject* descr;
-        descr = PyCFunction_NewEx(meth, nullptr, nullptr);
-        if (!descr) {
-            break;
-        }
-        if (PyDict_SetItemString(dict, meth->ml_name, descr) != 0) {
-            break;
-        }
-        Py_DECREF(descr);
-    }
 
     SoQtOffscreenRendererPy::init_type();
     Base::Interpreter().addType(SoQtOffscreenRendererPy::type_object(),
@@ -863,7 +848,10 @@ void Application::open(const char* FileName, const char* Module)
                         "User parameter:BaseApp/Preferences/View"
                     );
                     if (hGrp->GetBool("AutoFitToView", true)) {
-                        Command::doCommand(Command::Gui, "Gui.SendMsgToActiveView(\"ViewFit\")");
+                        Command::doCommand(
+                            Command::Gui,
+                            "Gui.getMainWindow().getActiveWindow().sendMessage(\"ViewFit\")"
+                        );
                     }
                 }
             }
@@ -912,9 +900,6 @@ void Application::importFrom(const char* FileName, const char* DocName, const ch
                 checkPartialRestore(doc);
                 checkRestoreError(doc);
                 checkForRecomputes();
-                if (activeDocument()) {
-                    activeDocument()->setModified(false);
-                }
             }
             else {
                 // Open transaction when importing a file
@@ -1354,10 +1339,12 @@ void Application::slotActiveDocument(const App::Document& Doc)
                 Py::Object active(d->activeDocument->getPyObject(), true);
                 Py::Module("FreeCADGui").setAttr(std::string("ActiveDocument"), active);
 
-                auto view = getMainWindow()->activeWindow();
-                if (!view || view->getAppDocument() != &Doc) {
-                    Gui::MDIView* view = d->activeDocument->getActiveView();
-                    getMainWindow()->setActiveWindow(view);
+                if (auto* mainWindow = getMainWindow()) {
+                    auto view = mainWindow->activeWindow();
+                    if (!view || view->getAppDocument() != &Doc) {
+                        Gui::MDIView* activeView = d->activeDocument->getActiveView();
+                        mainWindow->setActiveWindow(activeView);
+                    }
                 }
             }
             else {
@@ -1376,7 +1363,9 @@ void Application::slotActiveDocument(const App::Document& Doc)
         if (!hGrp->GetBool("IgnoreProjectSchema")) {
             int userSchema = Doc.UnitSystem.getValue();
             Base::UnitsApi::setSchema(userSchema);
-            getMainWindow()->setUserSchema(userSchema);
+            if (auto* mainWindow = getMainWindow()) {
+                mainWindow->setUserSchema(userSchema);
+            }
             Application::Instance->onUpdate();
         }
         else {  // set up Unit system default
@@ -1413,6 +1402,8 @@ void Application::beginSharedPresentationNotificationBarrier(
     }
     d->deferredPresentationNotifications.clear();
     d->deferredPresentationNotifications.reserve(64);
+    d->deferredPresentationStatusMutations.clear();
+    d->deferredPresentationStatusMutations.reserve(16);
     d->sharedPresentationNotificationAudit = std::move(audit);
     d->sharedPresentationNotificationAuditViolated = false;
     d->sharedPresentationAppDurable = false;
@@ -1424,6 +1415,12 @@ bool Application::sharedPresentationNotificationAuditViolated() const noexcept
 {
     return d->sharedPresentationNotificationBarrier
         && d->sharedPresentationNotificationAuditViolated;
+}
+
+bool Application::sharedPresentationPropertyStatusRollbackActive() const noexcept
+{
+    return d->sharedPresentationNotificationBarrier
+        && !d->sharedPresentationAppDurable;
 }
 
 void Application::markSharedPresentationAppDurable() noexcept
@@ -1452,12 +1449,23 @@ void Application::finishSharedPresentationNotificationBarrier(bool committed) no
     if (!d->sharedPresentationNotificationBarrier) {
         return;
     }
+    if (!committed) {
+        std::string diagnostic;
+        if (!restoreSharedPresentationPropertyStatuses(diagnostic)) {
+            try {
+                FC_ERR("Shared-presentation status fallback rollback failed: " << diagnostic);
+            }
+            catch (...) {
+            }
+        }
+    }
     d->sharedPresentationNotificationBarrier = false;
     d->sharedPresentationNotificationAudit = {};
     d->sharedPresentationNotificationAuditViolated = false;
     d->sharedPresentationAppDurable = false;
     auto notifications = std::move(d->deferredPresentationNotifications);
     d->deferredPresentationNotifications.clear();
+    d->deferredPresentationStatusMutations.clear();
     if (!committed) {
         d->sharedPresentationStructureMutationBlocked = false;
         return;
@@ -1479,6 +1487,18 @@ void Application::finishSharedPresentationNotificationBarrier(bool committed) no
                 signalBeforeChangeObject(*notification.viewProvider, *notification.property);
             }
             else {
+                const auto* priorViewProvider =
+                    d->currentStatusNotificationViewProvider;
+                const auto* priorProperty = d->currentStatusNotificationProperty;
+                d->currentStatusNotificationViewProvider =
+                    notification.propertyStatusChange ? notification.viewProvider : nullptr;
+                d->currentStatusNotificationProperty =
+                    notification.propertyStatusChange ? notification.property : nullptr;
+                const auto restoreStatusContext = qScopeGuard(
+                    [this, priorViewProvider, priorProperty]() {
+                        d->currentStatusNotificationViewProvider = priorViewProvider;
+                        d->currentStatusNotificationProperty = priorProperty;
+                    });
                 signalChangedObject(*notification.viewProvider, *notification.property);
                 updateActions(notification.delayActions);
             }
@@ -1510,6 +1530,44 @@ void Application::preflightSharedPresentationPropertyMutation(
             throw Base::RuntimeError(
                 "atomic presentation callback attempted an undeclared GUI property mutation");
         }
+
+        // Capture a pointer-free identity and the first pre-mutation status
+        // before Property::setStatusValue() can alter StatusBits. Value-only
+        // mutations leave this candidate unmarked and are never status-restored.
+        if (property.getContainer() == &viewProvider) {
+            const auto* objectView =
+                dynamic_cast<const ViewProviderDocumentObject*>(&viewProvider);
+            const auto* object = objectView ? objectView->getObject() : nullptr;
+            const auto* document = object ? object->getDocument() : nullptr;
+            const char* propertyName = property.getName();
+            if (!document || !object || !document->containsObject(object)
+                || !propertyName || *propertyName == '\0') {
+                d->sharedPresentationNotificationAuditViolated = true;
+                throw Base::RuntimeError(
+                    "atomic presentation status mutation has no stable GUI property identity");
+            }
+            const auto found = std::ranges::find_if(
+                d->deferredPresentationStatusMutations,
+                [&](const ApplicationP::DeferredPresentationStatusMutation& mutation) {
+                    return mutation.viewProvider == &viewProvider
+                        && mutation.property == &property;
+                });
+            if (found == d->deferredPresentationStatusMutations.end()) {
+                const auto identity = document->collaborationIdentity();
+                d->deferredPresentationStatusMutations.push_back(
+                    {document,
+                     object,
+                     &viewProvider,
+                     &property,
+                     identity.instanceId,
+                     identity.lifecycleEpoch,
+                     document->collaborationObjectIdentity(*object),
+                     propertyName,
+                     property.getID(),
+                     property.getStatus(),
+                     false});
+            }
+        }
     }
     catch (const Base::Exception&) {
         d->sharedPresentationNotificationAuditViolated = true;
@@ -1520,6 +1578,104 @@ void Application::preflightSharedPresentationPropertyMutation(
         throw Base::RuntimeError(
             "atomic presentation GUI property audit failed before mutation");
     }
+}
+
+void Application::recordSharedPresentationPropertyStatusMutation(
+    const ViewProvider& viewProvider,
+    const App::Property& property,
+    const unsigned long oldStatus)
+{
+    if (d->sharedPresentationNotificationBarrier
+        && !d->sharedPresentationAppDurable) {
+        const auto found = std::ranges::find_if(
+            d->deferredPresentationStatusMutations,
+            [&](const ApplicationP::DeferredPresentationStatusMutation& mutation) {
+                return mutation.viewProvider == &viewProvider
+                    && mutation.property == &property;
+            });
+        if (found == d->deferredPresentationStatusMutations.end()) {
+            // Preserve pre-mutation state even if a future ViewProvider
+            // bypasses the required preflight path.
+            auto& mutableProperty = const_cast<App::Property&>(property);
+            mutableProperty.StatusBits = decltype(mutableProperty.StatusBits)(oldStatus);
+            d->sharedPresentationNotificationAuditViolated = true;
+            throw Base::RuntimeError(
+                "atomic presentation property status changed without preflight");
+        }
+        found->statusChanged = true;
+    }
+
+}
+
+bool Application::restoreSharedPresentationPropertyStatuses(
+    std::string& diagnostic) noexcept
+{
+    bool restored = true;
+    const auto fail = [&](const char* detail) noexcept {
+        restored = false;
+        try {
+            if (!diagnostic.empty()) {
+                diagnostic += "; ";
+            }
+            diagnostic += detail;
+        }
+        catch (...) {
+        }
+    };
+
+    for (auto it = d->deferredPresentationStatusMutations.rbegin();
+         it != d->deferredPresentationStatusMutations.rend();
+         ++it) {
+        auto& mutation = *it;
+        if (!mutation.statusChanged) {
+            continue;
+        }
+        try {
+            const auto documentEntry = d->documents.find(mutation.document);
+            if (documentEntry == d->documents.end()) {
+                fail("status rollback lost its GUI document");
+                continue;
+            }
+            const auto identity = mutation.document->collaborationIdentity();
+            if (identity.instanceId != mutation.documentInstanceId
+                || identity.lifecycleEpoch != mutation.lifecycleEpoch
+                || identity.state != App::DocumentLifecycleState::Live) {
+                fail("status rollback document identity changed");
+                continue;
+            }
+            if (!mutation.document->containsObject(mutation.object)
+                || mutation.document->collaborationObjectIdentity(*mutation.object)
+                    != mutation.stableObjectIdentity) {
+                fail("status rollback object identity changed");
+                continue;
+            }
+            auto* viewProvider = d->viewproviderMap.getViewProvider(mutation.object);
+            if (viewProvider != mutation.viewProvider) {
+                fail("status rollback ViewProvider identity changed");
+                continue;
+            }
+            auto* property = viewProvider->getPropertyByName(mutation.propertyName.c_str());
+            if (property != mutation.property || property->getContainer() != viewProvider
+                || property->getID() != mutation.propertyId) {
+                fail("status rollback property identity changed");
+                continue;
+            }
+            property->StatusBits = decltype(property->StatusBits)(mutation.originalStatus);
+            if (property->getStatus() != mutation.originalStatus) {
+                fail("status rollback did not restore exact bits");
+                continue;
+            }
+            // Keep the entry armed. The shared coordinator invokes its GUI
+            // rollback before the native App transaction is aborted; that App
+            // rollback may touch the property value again. The enclosing GUI
+            // barrier performs this exact restore once more after native
+            // rollback and only then discards the ledger.
+        }
+        catch (...) {
+            fail("status rollback validation raised an exception");
+        }
+    }
+    return restored;
 }
 
 void Application::notifyBeforeChangeObject(const ViewProvider& vp, const App::Property& prop)
@@ -1557,6 +1713,43 @@ void Application::notifyChangedObject(const ViewProvider& vp,
                                       const App::Property& prop,
                                       bool delayActions)
 {
+    notifyChangedObjectImpl(vp, prop, delayActions, false);
+}
+
+void Application::notifyPropertyStatusChangedObject(const ViewProvider& vp,
+                                                    const App::Property& prop,
+                                                    bool delayActions)
+{
+    notifyChangedObjectImpl(vp, prop, delayActions, true);
+}
+
+bool Application::currentNotificationIsPropertyStatusChange(
+    const ViewProvider& viewProvider,
+    const App::Property& property) const noexcept
+{
+    return d->currentStatusNotificationViewProvider == &viewProvider
+        && d->currentStatusNotificationProperty == &property;
+}
+
+void Application::notifyChangedObjectImpl(const ViewProvider& vp,
+                                          const App::Property& prop,
+                                          const bool delayActions,
+                                          const bool propertyStatusChange)
+{
+    const auto emitChanged = [&]() {
+        const auto* priorViewProvider = d->currentStatusNotificationViewProvider;
+        const auto* priorProperty = d->currentStatusNotificationProperty;
+        d->currentStatusNotificationViewProvider = propertyStatusChange ? &vp : nullptr;
+        d->currentStatusNotificationProperty = propertyStatusChange ? &prop : nullptr;
+        const auto restoreStatusContext = qScopeGuard(
+            [this, priorViewProvider, priorProperty]() {
+                d->currentStatusNotificationViewProvider = priorViewProvider;
+                d->currentStatusNotificationProperty = priorProperty;
+            });
+        signalChangedObject(vp, prop);
+        updateActions(delayActions);
+    };
+
     if (d->sharedPresentationNotificationBarrier) {
         if (d->sharedPresentationAppDurable) {
             const bool priorReplay = d->sharedPresentationNotificationReplay;
@@ -1567,8 +1760,7 @@ void Application::notifyChangedObject(const ViewProvider& vp,
                 d->sharedPresentationNotificationReplay = priorReplay;
                 d->suppressCurrentSharedPresentationPublication = priorSuppression;
             });
-            signalChangedObject(vp, prop);
-            updateActions(delayActions);
+            emitChanged();
             return;
         }
         try {
@@ -1580,7 +1772,8 @@ void Application::notifyChangedObject(const ViewProvider& vp,
         catch (...) {
             d->sharedPresentationNotificationAuditViolated = true;
         }
-        d->deferredPresentationNotifications.push_back({&vp, &prop, false, delayActions});
+        d->deferredPresentationNotifications.push_back(
+            {&vp, &prop, false, delayActions, propertyStatusChange});
         return;
     }
     if (d->sharedPresentationNotificationReplay) {
@@ -1589,12 +1782,10 @@ void Application::notifyChangedObject(const ViewProvider& vp,
         const auto restore = qScopeGuard([this, prior]() {
             d->suppressCurrentSharedPresentationPublication = prior;
         });
-        signalChangedObject(vp, prop);
-        updateActions(delayActions);
+        emitChanged();
         return;
     }
-    signalChangedObject(vp, prop);
-    updateActions(delayActions);
+    emitChanged();
 }
 
 void Application::slotRelabelObject(const ViewProvider& vp)
@@ -2012,7 +2203,9 @@ void Application::updateActive()
 
 void Application::updateActions(bool delay)
 {
-    getMainWindow()->updateActions(delay);
+    if (auto* mainWindow = getMainWindow()) {
+        mainWindow->updateActions(delay);
+    }
 }
 
 void Application::tryClose(QCloseEvent* e)
@@ -2630,6 +2823,7 @@ void Application::initTypes()
     // views
     Gui::BaseView                               ::init();
     Gui::MDIView                                ::init();
+    Gui::MDIViewPyWrap                          ::init();
     Gui::MDIViewWithCamera						::init();
     Gui::View3DInventor                         ::init();
     Gui::AbstractSplitView                      ::init();
@@ -2637,6 +2831,9 @@ void Application::initTypes()
     Gui::TextDocumentEditorView                 ::init();
     Gui::EditorView                             ::init();
     Gui::PythonEditorView                       ::init();
+    Gui::ImageView                              ::init();
+    Gui::GraphvizView                           ::init();
+    Gui::Dialog::LicenseView                    ::init();
     // View Provider
     Gui::ViewProvider                           ::init();
     Gui::ViewProviderExtension                  ::init();
@@ -2753,13 +2950,22 @@ void setAppNameAndIcon()
 {
     const std::map<std::string, std::string>& cfg = App::Application::Config();
 
-    // set application icon and window title
-    auto it = cfg.find("Application");
-    if (it != cfg.end()) {
-        QApplication::setApplicationName(QString::fromUtf8(it->second.c_str()));
+    // set application name and icon and organization name (used by QSettings)
+    auto app = cfg.find("Application");
+    if (app != cfg.end()) {
+        QApplication::setApplicationName(QString::fromUtf8(app->second.c_str()));
     }
     else {
         QApplication::setApplicationName(QString::fromStdString(App::Application::getExecutableName()));
+    }
+    auto vendor = cfg.find("ExeVendor");
+    if (vendor != cfg.end()) {
+        QApplication::setOrganizationName(QString::fromUtf8(vendor->second.c_str()));
+    }
+    else {
+        QApplication::setOrganizationName(
+            QString::fromStdString(App::Application::getExecutableName())
+        );
     }
 #ifndef Q_OS_MACOS
     QApplication::setWindowIcon(
@@ -3292,7 +3498,6 @@ App::Document* Application::reopen(App::Document* doc)
             }
             if (reset) {
                 v.second->getDocument()->purgeTouched();
-                v.second->setModified(false);
             }
         }
     }

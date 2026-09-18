@@ -467,6 +467,46 @@ TEST_F(AutoSaverRecoveryTest, OrdinaryChangesWaitForConfiguredTimer)
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
 }
 
+TEST_F(AutoSaverRecoveryTest, LaterMutationInSameCategorySchedulesAnotherSnapshot)
+{
+    object->Label.setValue("first model mutation");
+    document->recompute();
+    flush();
+    ASSERT_TRUE(QFileInfo(archivePath()).isFile());
+    ASSERT_TRUE(QFileInfo(metadataPath()).isFile());
+
+    removeRecoveryOutputs();
+    object->Label.setValue("second model mutation");
+    document->recompute();
+    flush();
+
+    EXPECT_TRUE(QFileInfo(archivePath()).isFile())
+        << "Model-to-Model mutations must re-arm auto-recovery after a successful snapshot";
+    EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
+}
+
+TEST_F(AutoSaverRecoveryTest, RecoveryOutcomeDoesNotAdvanceCanonicalSavepoint)
+{
+    std::optional<App::DocumentSaveOutcome> recoveryOutcome;
+    auto connection = document->signalSaveOutcome().connect(
+        [&](const App::Document&, const App::DocumentSaveOutcome& outcome) {
+            if (outcome.intent == App::DocumentSaveIntent::Recovery) {
+                recoveryOutcome = outcome;
+            }
+        });
+
+    object->Label.setValue("recovery outcome source");
+    document->recompute();
+    flush();
+    connection.disconnect();
+
+    ASSERT_TRUE(recoveryOutcome.has_value());
+    EXPECT_EQ(recoveryOutcome->disposition, App::DocumentSaveDisposition::CopyWritten);
+    EXPECT_TRUE(recoveryOutcome->fileWritten);
+    EXPECT_TRUE(document->hasPendingFileChanges());
+    EXPECT_FALSE(document->lastCanonicalSaveFailed());
+}
+
 TEST_F(AutoSaverRecoveryTest, AppTransactionDefersAndRetriesAfterStableSignal)
 {
     document->openTransaction("defer recovery write");

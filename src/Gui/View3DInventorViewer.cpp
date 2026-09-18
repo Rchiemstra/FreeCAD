@@ -47,6 +47,7 @@
 
 #include <Inventor/SbBox.h>
 #include <Inventor/sensors/SoTimerSensor.h>
+#include <Inventor/sensors/SoNodeSensor.h>
 #include <Inventor/SoEventManager.h>
 #include <Inventor/SoPickedPoint.h>
 #include <Inventor/actions/SoGetBoundingBoxAction.h>
@@ -132,6 +133,7 @@
 #include "Command.h"
 #include "Document.h"
 #include "GLPainter.h"
+#include "RubberbandOverlay.h"
 #include "Inventor/SoAxisCrossKit.h"
 #include "Inventor/SoFCBackgroundGradient.h"
 #include "Inventor/SoFCBoundingBox.h"
@@ -155,7 +157,6 @@
 #include "SoTouchEvents.h"
 #include "SpaceballEvent.h"
 #include "SpaceMouseParameter.h"
-#include "View3DInventorRiftViewer.h"
 #include "View3DViewerPy.h"
 #include "ViewParams.h"
 #include "ViewProvider.h"
@@ -175,6 +176,11 @@ FC_LOG_LEVEL_INIT("3DViewer", true, true)
 // #define FC_LOGGING_CB
 
 using namespace Gui;
+
+namespace
+{
+bool viewerHasUsablePickVolume(const View3DInventorViewer* viewer);
+}
 
 class View3DInventorViewer::ScopedRenderIntent
 {
@@ -1158,6 +1164,8 @@ void View3DInventorViewer::init()
     this->decorationroot->addChild(decorationBaseColor);
     this->decorationroot->addChild(naviCubeAnnotation);
 
+    rubberbandOverlayRenderer = std::unique_ptr<RubberbandOverlay>(new RubberbandOverlay);
+
     auto threePointLightingSeparator = new SoTransformSeparator;
     threePointLightingSeparator->addChild(lightRotation);
     threePointLightingSeparator->addChild(this->fillLight);
@@ -1337,10 +1345,13 @@ void View3DInventorViewer::init()
     syncNaviCubeVisibility();
 
     updateColors();
+    attachCameraActivitySensor();
 }
 
 View3DInventorViewer::~View3DInventorViewer()
 {
+    rubberbandOverlayRenderer.reset();
+    detachCameraActivitySensor();
     // to prevent following OpenGL error message: "Texture is not valid in the current context.
     // Texture has not been destroyed"
     aboutToDestroyGLContext();
@@ -1728,6 +1739,11 @@ void View3DInventorViewer::resetEditingRoot(bool updateLinks)
 
 SoPickedPoint* View3DInventorViewer::getPointOnRay(const SbVec2s& pos, const ViewProvider* vp) const
 {
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return nullptr;
+    }
+
     SoPath* path {};
     if (vp == editViewProvider && pcEditingRoot->getNumChildren() > 1) {
         path = new SoPath(1);
@@ -1757,7 +1773,7 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(const SbVec2s& pos, const Vie
     // transformation
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(getSoRenderManager()->getCamera());
+    root->addChild(camera);
     root->addChild(trans);
     root->addChild(path->getTail());
 
@@ -1782,6 +1798,11 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(
 {
     // Note: There seems to be a  bug with setRay() which causes SoRayPickAction
     // to fail to get intersections between the ray and a line
+
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return nullptr;
+    }
 
     SoPath* path {};
     if (vp == editViewProvider && pcEditingRoot->getNumChildren() > 1) {
@@ -1812,7 +1833,7 @@ SoPickedPoint* View3DInventorViewer::getPointOnRay(
 
     auto root = new SoSeparator;
     root->ref();
-    root->addChild(getSoRenderManager()->getCamera());
+    root->addChild(camera);
     root->addChild(trans);
     root->addChild(path->getTail());
 
@@ -2042,11 +2063,64 @@ void View3DInventorViewer::setEnabledFPSCounter(bool on)
             fpsCounter = new QLabel(this);
             fpsCounter->setAttribute(Qt::WA_TransparentForMouseEvents);
         }
+        if (!fpsUpdateTimer) {
+            fpsUpdateTimer = new QTimer(this);
+            fpsUpdateTimer->setInterval(250);  // 4 Hz
+            connect(fpsUpdateTimer, &QTimer::timeout, this, &View3DInventorViewer::updateFPSLabel);
+        }
         fpsCounter->show();
+        fpsUpdateTimer->start();
     }
-    else if (fpsCounter) {
-        fpsCounter->hide();
+    else {
+        if (fpsUpdateTimer) {
+            fpsUpdateTimer->stop();
+        }
+        if (fpsCounter) {
+            fpsCounter->hide();
+        }
     }
+}
+
+void View3DInventorViewer::updateFPSLabel()
+{
+    if (!fpsEnabled || !fpsCounter) {
+        return;
+    }
+
+    fpsCounter->setText(
+        QString::fromStdString(
+            fmt::format("{:.1f} ms / {:.1f} fps", framesPerSecond[0], framesPerSecond[1])
+        )
+    );
+
+    // update color from user preference (only when it changes)
+    ParameterGrp::handle hGrpView = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/Preferences/View"
+    );
+
+    unsigned long axisLetterColor = hGrpView->GetUnsigned("AxisLetterColor", 4294902015);  // default
+                                                                                           // yellow
+
+    if (axisLetterColor != previousAxisLetterColor) {
+        previousAxisLetterColor = axisLetterColor;
+        Base::Color c(static_cast<uint32_t>(axisLetterColor));
+        fpsCounter->setStyleSheet(
+            QString::fromLatin1("color: rgb(%1,%2,%3); background: transparent;")
+                .arg(int(c.r * 255))
+                .arg(int(c.g * 255))
+                .arg(int(c.b * 255))
+        );
+    }
+
+    // size must be current before we use width()/height() for positioning
+    fpsCounter->adjustSize();
+
+    // position, bottom left, accounting for left-side overlay widgets
+    ParameterGrp::handle hGrpOverlayL = App::GetApplication().GetParameterGroupByPath(
+        "User parameter:BaseApp/MainWindow/DockWindows/OverlayLeft"
+    );
+    int xOffset = hGrpOverlayL->GetASCII("Widgets", "").empty() ? 10 : fpsCounter->width() + 20;
+    fpsCounter->move(xOffset, height() - fpsCounter->height() - 5);
 }
 
 
@@ -2682,7 +2756,11 @@ SbVec2f View3DInventorViewer::screenCoordsOfPath(SoPath* path) const
 
     // Now, project the object space coordinates of the object
     // into "normalized" screen coordinates.
-    SbViewVolume vol = getSoRenderManager()->getCamera()->getViewVolume();
+    SoCamera* camera = getSoRenderManager()->getCamera();
+    if (!camera || !viewerHasUsablePickVolume(this)) {
+        return {0.0F, 0.0F};
+    }
+    SbViewVolume vol = camera->getViewVolume();
     vol.projectToScreen(imageCoords, imageCoords);
 
     // Translate "normalized" screen coordinates to pixel coords.
@@ -2856,6 +2934,11 @@ std::list<GLGraphicsItem*> View3DInventorViewer::getGraphicsItemsOfType(const Ba
 void View3DInventorViewer::clearGraphicsItems()
 {
     this->graphicsItems.clear();
+}
+
+RubberbandOverlay& View3DInventorViewer::rubberbandOverlay()
+{
+    return *rubberbandOverlayRenderer;
 }
 
 int View3DInventorViewer::getNumSamples()
@@ -3482,37 +3565,7 @@ void View3DInventorViewer::renderScene()
         }
     }
 
-    if (fpsEnabled && fpsCounter) {
-        std::stringstream stream;
-        stream.precision(1);
-        stream.setf(std::ios::fixed | std::ios::showpoint);
-        stream << framesPerSecond[0] << " ms / " << framesPerSecond[1] << " fps";
-
-        ParameterGrp::handle hGrpView = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/View"
-        );
-        unsigned long axisLetterColor = hGrpView->GetUnsigned("AxisLetterColor", 4294902015);
-        if (axisLetterColor != previousAxisLetterColor) {
-            previousAxisLetterColor = axisLetterColor;
-            Base::Color c(static_cast<uint32_t>(axisLetterColor));
-            fpsCounter->setStyleSheet(
-                QString::fromLatin1("color: rgb(%1,%2,%3); background: transparent;")
-                    .arg(int(c.r * 255))
-                    .arg(int(c.g * 255))
-                    .arg(int(c.b * 255))
-            );
-        }
-
-        fpsCounter->setText(QString::fromStdString(stream.str()));
-        fpsCounter->adjustSize();
-
-        ParameterGrp::handle hGrpOverlayL = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/MainWindow/DockWindows/OverlayLeft"
-        );
-        int xOffset = hGrpOverlayL->GetASCII("Widgets", "").empty() ? 10 : fpsCounter->width() + 20;
-        fpsCounter->move(xOffset, height() - fpsCounter->height() - 5);
-    }
-
+    renderRubberbandOverlay();
     // Workaround for inconsistent QT behavior related to handling custom OpenGL widgets that
     // leave non opaque alpha values in final output.
     // On wayland that can cause window to become transparent or blurry trail effect in the
@@ -3538,6 +3591,23 @@ void View3DInventorViewer::renderScene()
 
     glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
     glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+}
+
+void View3DInventorViewer::renderRubberbandOverlay()
+{
+    if (currentRenderIntent() != RenderIntent::LiveInteractive || !rubberbandOverlayRenderer) {
+        return;
+    }
+
+    auto* manager = getSoRenderManager();
+    auto* action = manager ? manager->getGLRenderAction() : nullptr;
+    if (!action) {
+        return;
+    }
+
+    ZoneScopedN("Rubberband overlay");
+    rubberbandOverlayRenderer->prepareGeometry(manager->getViewportRegion(), devicePixelRatio());
+    action->apply(rubberbandOverlayRenderer->sceneRoot());
 }
 
 void View3DInventorViewer::setSeekMode(bool on)
@@ -3610,6 +3680,18 @@ void View3DInventorViewer::getDimensions(float& fHeight, float& fWidth) const
     else {
         fHeight *= aspectRatio;
     }
+
+    if (!std::isfinite(fHeight) || fHeight <= 0.0F) {
+        fHeight = -1.0F;
+    }
+    if (!std::isfinite(fWidth) || fWidth <= 0.0F) {
+        fWidth = -1.0F;
+    }
+}
+
+bool View3DInventorViewer::hasUsablePickVolume() const
+{
+    return viewerHasUsablePickVolume(this);
 }
 
 void View3DInventorViewer::printDimension() const
@@ -3749,9 +3831,47 @@ SbRotation View3DInventorViewer::getCameraOrientation() const
     return cam->orientation.getValue();
 }
 
+namespace
+{
+bool viewerHasUsablePickVolume(const View3DInventorViewer* viewer)
+{
+    if (!viewer || !viewer->getSoRenderManager()) {
+        return false;
+    }
+
+    auto* manager = viewer->getSoRenderManager();
+    SoCamera* camera = manager->getCamera();
+    const SbVec2s pixels = manager->getViewportRegion().getViewportSizePixels();
+    if (!camera) {
+        return View3DInventorViewerInternal::isUsablePickVolume(
+            false,
+            pixels[0],
+            pixels[1],
+            0.0F,
+            0.0F,
+            0.0F
+        );
+    }
+
+    const SbViewVolume volume = camera->getViewVolume();
+    return View3DInventorViewerInternal::isUsablePickVolume(
+        true,
+        pixels[0],
+        pixels[1],
+        volume.getWidth(),
+        volume.getHeight(),
+        volume.getDepth()
+    );
+}
+}  // namespace
+
 SbVec2f View3DInventorViewer::getNormalizedPosition(const SbVec2s& pnt) const
 {
     const SbViewportRegion& vp = this->getSoRenderManager()->getViewportRegion();
+    const SbVec2s pixels = vp.getViewportSizePixels();
+    if (pixels[0] <= 0 || pixels[1] <= 0) {
+        return {0.0F, 0.0F};
+    }
 
     short xpos {};
     short ypos {};
@@ -3786,7 +3906,7 @@ Base::BoundBox2d View3DInventorViewer::getViewportOnXYPlaneOfPlacement(Base::Pla
 
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // Return empty box.
         return Base::BoundBox2d(0, 0, 0, 0);
     }
@@ -3821,6 +3941,9 @@ Base::BoundBox2d View3DInventorViewer::getViewportOnXYPlaneOfPlacement(Base::Pla
 
         SbLine line;
         vol.projectPointToLine(SbVec2f(x, y), line);
+        if (line.getDirection().sqrLength() <= 0.0F) {
+            return;
+        }
 
         SbVec3f pt;
         // Intersection point on the XY plane.
@@ -3855,7 +3978,7 @@ SbVec3f View3DInventorViewer::getPointOnXYPlaneOfPlacement(
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         throw Base::RuntimeError("No camera node found");
     }
 
@@ -3916,7 +4039,7 @@ SbVec3f View3DInventorViewer::getPointOnLine(
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // return invalid point
         return {};
     }
@@ -3936,7 +4059,9 @@ SbVec3f View3DInventorViewer::getPointOnLine(
     SbVec3f pt, ptOnFocalPlaneAndOnLine, ptOnFocalPlane;
     SbPlane focalPlane = vol.getPlane(focalDist);
     vol.projectPointToLine(pnt2d, line);
-    focalPlane.intersect(line, ptOnFocalPlane);
+    if (line.getDirection().sqrLength() <= 0.0F || !focalPlane.intersect(line, ptOnFocalPlane)) {
+        return {};
+    }
 
     // Check if line is orthogonal to the focal plane
     SbVec3f focalPlaneNormal = focalPlane.getNormal();
@@ -3970,7 +4095,7 @@ SbVec3f View3DInventorViewer::getPointOnFocalPlane(const SbVec2s& pnt) const
     SbVec2f pnt2d = getNormalizedPosition(pnt);
     SoCamera* pCam = this->getSoRenderManager()->getCamera();
 
-    if (!pCam) {
+    if (!pCam || !viewerHasUsablePickVolume(this)) {
         // return invalid point
         return {};
     }
@@ -3989,7 +4114,9 @@ SbVec3f View3DInventorViewer::getPointOnFocalPlane(const SbVec2s& pnt) const
     SbVec3f pt;
     SbPlane focalPlane = vol.getPlane(focalDist);
     vol.projectPointToLine(pnt2d, line);
-    focalPlane.intersect(line, pt);
+    if (line.getDirection().sqrLength() <= 0.0F || !focalPlane.intersect(line, pt)) {
+        return {};
+    }
 
     return pt;
 }
@@ -3999,13 +4126,30 @@ SbVec2s View3DInventorViewer::getPointOnViewport(const SbVec3f& pnt) const
     const SbViewportRegion& vp = this->getSoRenderManager()->getViewportRegion();
     float fRatio = vp.getViewportAspectRatio();
     const SbVec2s& sp = vp.getViewportSizePixels();
-    SbViewVolume vv = this->getSoRenderManager()->getCamera()->getViewVolume(fRatio);
+    SoCamera* camera = this->getSoRenderManager()->getCamera();
+    if (!camera) {
+        return {0, 0};
+    }
+    // WP361: reject only mathematically invalid ortho heights. Large finite
+    // heights remain usable for generic viewport projection; Sketcher edit
+    // recovery applies the collapsed-camera heuristic separately.
+    if (camera->isOfType(SoOrthographicCamera::getClassTypeId())) {
+        const float height = static_cast<SoOrthographicCamera*>(camera)->height.getValue();
+        if (!std::isfinite(height) || height <= View3DInventorViewerInternal::minUsablePickExtent) {
+            return {0, 0};
+        }
+    }
+    SbViewVolume vv = camera->getViewVolume(fRatio);
 
     SbVec3f pt(pnt);
     vv.projectToScreen(pt, pt);
 
-    auto xpos = short(std::roundf(pt[0] * sp[0]));  // NOLINT
-    auto ypos = short(std::roundf(pt[1] * sp[1]));  // NOLINT
+    short xpos = 0;
+    short ypos = 0;
+    if (!View3DInventorViewerInternal::finiteNormalizedToShortPixel(pt[0], sp[0], xpos)
+        || !View3DInventorViewerInternal::finiteNormalizedToShortPixel(pt[1], sp[1], ypos)) {
+        return {0, 0};
+    }
 
     return {xpos, ypos};
 }
@@ -4261,9 +4405,48 @@ std::shared_ptr<NavigationAnimation> View3DInventorViewer::setCameraOrientation(
     return navigation->setCameraOrientation(orientation, moveToCenter);
 }
 
+void View3DInventorViewer::attachCameraActivitySensor()
+{
+    auto* camera = getSoRenderManager() ? getSoRenderManager()->getCamera() : nullptr;
+    if (camera == sensedCamera && cameraActivitySensor) {
+        return;
+    }
+    detachCameraActivitySensor();
+    if (!camera) {
+        return;
+    }
+    cameraActivitySensor = new SoNodeSensor(cameraActivitySensorCB, this);
+    cameraActivitySensor->setPriority(10001);
+    cameraActivitySensor->attach(camera);
+    sensedCamera = camera;
+}
+
+void View3DInventorViewer::detachCameraActivitySensor()
+{
+    if (cameraActivitySensor) {
+        cameraActivitySensor->detach();
+        delete cameraActivitySensor;
+        cameraActivitySensor = nullptr;
+    }
+    sensedCamera = nullptr;
+}
+
+void View3DInventorViewer::cameraActivitySensorCB(void* data, SoSensor*)
+{
+    auto* viewer = static_cast<View3DInventorViewer*>(data);
+    if (!viewer) {
+        return;
+    }
+    Q_EMIT viewer->cameraActivity();
+    if (viewer->guiDocument) {
+        viewer->guiDocument->notifyCameraActivity();
+    }
+}
+
 void View3DInventorViewer::setCameraType(SoType type)
 {
     inherited::setCameraType(type);
+    attachCameraActivitySensor();
 
     SoCamera* cam = this->getSoRenderManager()->getCamera();
 
@@ -4283,6 +4466,10 @@ void View3DInventorViewer::setCameraType(SoType type)
     lightRotation->rotation.connectFrom(&cam->orientation);
 
     Q_EMIT cameraChanged();
+    Q_EMIT cameraActivity();
+    if (guiDocument) {
+        guiDocument->notifyCameraActivity();
+    }
 }
 
 bool View3DInventorViewer::setCamera(const char* pCamera)
@@ -4547,26 +4734,6 @@ void View3DInventorViewer::animatedViewAll(const SbBox3f& box, int steps, int ms
         timer.start(Base::clamp<int>(ms, 0, 5000));  // NOLINT
         loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
-}
-
-#if BUILD_VR
-extern View3DInventorRiftViewer* oculusStart(void);
-extern bool oculusUp(void);
-extern void oculusStop(void);
-void oculusSetTestScene(View3DInventorRiftViewer* window);
-#endif
-
-void View3DInventorViewer::viewVR()
-{
-#if BUILD_VR
-    if (oculusUp()) {
-        oculusStop();
-    }
-    else {
-        View3DInventorRiftViewer* riftWin = oculusStart();
-        riftWin->setSceneGraph(pcViewProviderRoot);
-    }
-#endif
 }
 
 void View3DInventorViewer::boxZoom(const SbBox2s& box)

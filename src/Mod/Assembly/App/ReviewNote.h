@@ -124,12 +124,22 @@ public:
     /// Compatibility wrapper when the owner is an AssemblyObject.
     static void revokeAssemblyObserver(AssemblyObject* assembly);
 
+    /// Recompute every ReviewNote Label in `group` to `review_note_N` (1-based,
+    /// in group order). Called when the group's membership/order changes.
+    static void renumberGroup(ReviewNoteGroup* group);
+
 protected:
     void onChanged(const App::Property* prop) override;
 
-    void updateLabelFromText();
+    /// Set this note's Label to `review_note_N` based on its position in its group.
+    /// Independent of LabelText, so editing text never renames the note.
+    void updateReviewNoteLabel();
 
 private:
+    /// Compute this note's `review_note_N` label from its 1-based position among
+    /// ReviewNote children of its group.
+    std::string computeReviewNoteLabel() const;
+
     static const char* JointSideEnums[];
     bool updatingLabel = false;
     bool updatingAttachment = false;

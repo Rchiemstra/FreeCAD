@@ -1061,24 +1061,31 @@ TEST_F(InterferenceScanTest, bodyTipShapeIsCollectedAsSingleLeaf)
         ASSERT_EQ(leaves.size(), 1u) << "diagnostic="
                                      << (leaves.empty() ? "" : leaves[0].diagnostic);
         EXPECT_NE(leaves[0].occurrenceSubName.find("Body"), std::string::npos);
-        // Body::execute bakes Tip geometry into local Body space (strips tip placement),
-        // then assembly path applies Body.Placement.
-        EXPECT_NEAR(leaves[0].worldBoundBox.MinX, 100.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxX, 110.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MinY, 0.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxY, 4.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MinZ, 0.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxZ, 5.0, 1e-4);
+        // Since "PD: Preserve external base feature placement", the internal FeatureBase no
+        // longer bakes the source placement into its geometry. Body::onChanged instead derives
+        // FeatureBase.Placement as body.globalPlacement().inverse() * base.globalPlacement()
+        // when it creates that FeatureBase -- here the body is still at the origin, so the
+        // tip box keeps its own (20, 30, 40). The assembly path then applies Body.Placement
+        // (100, 0, 0) on top, putting the 10x4x5 box at (120, 30, 40).
+        EXPECT_NEAR(leaves[0].worldBoundBox.MinX, 120.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxX, 130.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MinY, 30.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxY, 34.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MinZ, 40.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxZ, 45.0, 1e-4);
 
         auto* other = makeBox(_doc, "OtherTip", Base::Vector3d(0, 0, 0), 2, 2, 2);
         body->BaseFeature.setValue(other);
         _doc->recompute();
         leaves = Assembly::collectInterferenceLeaves(_assembly, false);
         ASSERT_EQ(leaves.size(), 1u);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MinX, 100.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxX, 102.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxY, 2.0, 1e-4);
-        EXPECT_NEAR(leaves[0].worldBoundBox.MaxZ, 2.0, 1e-4);
+        // The FeatureBase already exists, so Body::onChanged only repoints its BaseFeature and
+        // leaves the (20, 30, 40) it derived on creation in place. The new 2x2x2 tip therefore
+        // lands at the same origin as the box it replaced.
+        EXPECT_NEAR(leaves[0].worldBoundBox.MinX, 120.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxX, 122.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxY, 32.0, 1e-4);
+        EXPECT_NEAR(leaves[0].worldBoundBox.MaxZ, 42.0, 1e-4);
     }
     catch (const Base::Exception& exc) {
         FAIL() << "Base::Exception: " << exc.what();

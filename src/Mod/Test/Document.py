@@ -300,6 +300,17 @@ class DocumentBasicCases(unittest.TestCase):
     def testMem(self):
         self.Doc.MemSize
 
+    def testViewObjectWithFreeCADGuiImportedInConsoleMode(self):
+        if FreeCAD.GuiUp:
+            self.skipTest("Console-mode regression test")
+
+        import FreeCADGui
+
+        obj = self.Doc.addObject("App::FeatureTest", "HeadlessViewObject")
+        self.assertIsNotNone(FreeCADGui)
+        self.assertFalse(hasattr(FreeCADGui, "getDocument"))
+        self.assertIsNone(obj.ViewObject)
+
     def testDuplicateLinks(self):
         obj = self.Doc.addObject("App::FeatureTest", "obj")
         grp = self.Doc.addObject("App::DocumentObjectGroup", "group")
@@ -1903,6 +1914,26 @@ class DocumentFileIncludeCases(unittest.TestCase):
         self.assertTrue(os.path.exists(L7.File))
         FreeCAD.closeDocument("Doc2")
 
+    def testBinarySaveRestore(self):
+        payload = bytes((i % 251 for i in range(150000))) + b"\x00FreeCAD\x00restore\x00"
+        source_path = os.path.join(tempfile.gettempdir(), "FileIncludeBinarySource.bin")
+        doc_path = os.path.join(tempfile.gettempdir(), "FileIncludeTests.FCStd")
+
+        with open(source_path, "wb") as file:
+            file.write(payload)
+
+        obj = self.Doc.addObject("App::DocumentObjectFileIncluded", "BinaryFile")
+        obj.File = (source_path, "BinaryPayload.bin")
+        self.Doc.saveAs(doc_path)
+
+        FreeCAD.closeDocument("FileIncludeTests")
+        self.Doc = FreeCAD.open(doc_path)
+        obj = self.Doc.getObject("BinaryFile")
+
+        with open(obj.File, "rb") as file:
+            self.assertEqual(file.read(), payload)
+        self.assertEqual(obj.File.split("/")[-1], "BinaryPayload.bin")
+
     def tearDown(self):
         # closing doc
         FreeCAD.closeDocument("FileIncludeTests")
@@ -2259,10 +2290,21 @@ class DocumentObserverCases(unittest.TestCase):
         SaveName = TempPath + os.sep + "SaveRestoreTests.FCStd"
         self.Doc1 = FreeCAD.newDocument("Observer1")
         self.Doc1.saveAs(SaveName)
-        self.assertEqual(self.Obs.signal.pop(), "DocFinishSave")
-        self.assertEqual(self.Obs.parameter2.pop(), self.Doc1.FileName)
-        self.assertEqual(self.Obs.signal.pop(), "DocStartSave")
-        self.assertEqual(self.Obs.parameter2.pop(), self.Doc1.FileName)
+        # Save-as adopts its new identity only once the write is durable, so
+        # the FileName/Uid/TransientDir/LastModifiedDate changes are announced
+        # after the save reports finishing rather than before it starts. A
+        # failed save-as therefore announces no identity at all, which is what
+        # DocumentCollaborationBoundaryTest asserts in
+        # failedSaveAsEmitsNoProvisionalIdentityOrMetadataPropertyEvents.
+        # Assert the save boundary itself, and let the adoption land wherever
+        # the durability rule puts it.
+        start = self.Obs.signal.index("DocStartSave")
+        finish = self.Obs.signal.index("DocFinishSave")
+        self.assertLess(start, finish)
+        self.assertNotIn("DocChanged", self.Obs.signal[start:finish])
+        # Both save signals report the file they wrote. parameter2 also
+        # collects changed property names, so match on the path itself.
+        self.assertEqual(self.Obs.parameter2.count(self.Doc1.FileName), 2)
         FreeCAD.closeDocument(self.Doc1.Name)
 
     def testDocument(self):

@@ -25,6 +25,8 @@
 #pragma once
 
 #include <boost/signals2.hpp>
+#include <unordered_map>
+#include <vector>
 
 #include <Mod/Assembly/AssemblyGlobal.h>
 
@@ -120,6 +122,21 @@ public:
     );
 
     App::DocumentObjectExecReturn* execute() override;
+
+    /** Assembly solving cannot be reproduced in the isolated worker.
+     *
+     * execute() runs solve(), whose whole product is written onto *other*
+     * objects: ensureIdentityPlacements() normalises member link groups and
+     * setNewPlacements() moves every jointed part. The worker publishes only
+     * the recomputed target's own declared outputs, so a solve that runs in
+     * the detached process converges and is then discarded, leaving the parts
+     * exactly where they were. Recompute on the owner thread instead.
+     */
+    bool canRecomputeOnWorker() const override
+    {
+        return false;
+    }
+
     void onChanged(const App::Property* prop) override;
     void unsetupObject() override;
     /* Solve the assembly. It will update first the joints, solve, update placements of the parts
@@ -137,6 +154,7 @@ public:
     void clearUndo();
 
     void exportAsASMT(std::string fileName);
+    bool requiresRigidSolveForMove(const std::vector<App::DocumentObject*>& movedParts);
 
     Base::Placement getMbdPlacement(std::shared_ptr<MbD::ASMTPart> mbdPart);
     bool validateNewPlacements();
@@ -175,7 +193,8 @@ public:
     std::string handleOneSideOfJoint(
         App::DocumentObject* joint,
         const char* propRefName,
-        const char* propPlcName
+        const char* propPlcName,
+        const std::string& markerName = std::string()
     );
     void getRackPinionMarkers(
         App::DocumentObject* joint,
@@ -192,6 +211,7 @@ public:
 
     std::vector<App::DocumentObject*> getJoints(bool delBadJoints = false, bool subJoints = true);
     std::vector<App::DocumentObject*> getGroundedJoints();
+    std::vector<App::DocumentObject*> getRigidGroups();
     std::vector<App::DocumentObject*> getJointsOfObj(App::DocumentObject* obj);
     std::vector<App::DocumentObject*> getJointsOfPart(App::DocumentObject* part);
     App::DocumentObject* getJointOfPartConnectingToGround(
@@ -199,6 +219,7 @@ public:
         std::string& name,
         const std::vector<App::DocumentObject*>& excludeJoints = {}
     );
+    App::DocumentObject* getJointOfPartForUngroundedDrag(App::DocumentObject* part, std::string& name);
     std::unordered_set<App::DocumentObject*> getGroundedParts();
     std::unordered_set<App::DocumentObject*> fixGroundedParts();
     void fixGroundedPart(App::DocumentObject* obj, Base::Placement& plc, std::string& jointName);
@@ -290,9 +311,19 @@ public:
     fastsignals::signal<void()> signalSolverUpdate;
 
 private:
+    void rebuildRigidClusters();
+    App::DocumentObject* getRigidRepresentative(App::DocumentObject* part) const;
+    const std::vector<App::DocumentObject*>* getRigidMembers(App::DocumentObject* part) const;
+    void syncActiveRigidGroupPlacements();
+    void updateRigidPlacementCache();
+    void prepareMbdForIslandDrag(std::vector<App::DocumentObject*> dragParts);
+
     std::shared_ptr<MbD::ASMTAssembly> mbdAssembly;
 
     std::unordered_map<App::DocumentObject*, MbDPartData> objectPartMap;
+    std::unordered_map<App::DocumentObject*, App::DocumentObject*> rigidRepByPart;
+    std::unordered_map<App::DocumentObject*, std::vector<App::DocumentObject*>> rigidMembersByRep;
+    std::unordered_map<App::DocumentObject*, Base::Placement> rigidPlacementCache;
     std::vector<std::pair<App::DocumentObject*, double>> objMasses;
     std::vector<App::DocumentObject*> draggedParts;
     std::vector<App::DocumentObject*> motions;
@@ -300,6 +331,9 @@ private:
     std::vector<std::pair<App::DocumentObject*, Base::Placement>> previousPositions;
 
     bool bundleFixed;
+
+    // True while solve() is running; breaks the solve()/updateSolveStatus() cycle.
+    bool solveInProgress {false};
 
     int lastDoF;
     bool lastHasConflict;

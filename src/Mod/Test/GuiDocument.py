@@ -22,9 +22,11 @@
 ***************************************************************************/"""
 
 import os
+import tempfile
 import threading
 import time
 import unittest
+import warnings
 import zipfile
 
 import FreeCAD
@@ -43,7 +45,8 @@ class TestGuiDocument(unittest.TestCase):
 
     def tearDown(self):
         # Close the document
-        FreeCAD.closeDocument("TestDoc")
+        if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
+            FreeCAD.closeDocument(self.doc.Name)
 
     def _findAutoSaver(self):
         app = QtWidgets.QApplication.instance()
@@ -94,6 +97,22 @@ class TestGuiDocument(unittest.TestCase):
             if expected_label is not None:
                 document_xml = recovery.read("Document.xml").decode("utf-8", errors="replace")
                 self.assertIn(expected_label, document_xml)
+
+    def _writeArchiveWithoutGuiDocument(self, source_path, target_path):
+        with zipfile.ZipFile(source_path, "r") as source:
+            self.assertIn("Document.xml", source.namelist())
+            self.assertIn("GuiDocument.xml", source.namelist())
+
+            with zipfile.ZipFile(target_path, "w") as target:
+                for item in source.infolist():
+                    if item.filename == "GuiDocument.xml":
+                        continue
+
+                    target.writestr(item, source.read(item.filename))
+
+        with zipfile.ZipFile(target_path, "r") as target:
+            self.assertIn("Document.xml", target.namelist())
+            self.assertNotIn("GuiDocument.xml", target.namelist())
 
     def testGetTreeRootObject(self):
         # Create objects at the root level
@@ -162,34 +181,79 @@ class TestGuiDocument(unittest.TestCase):
         self.assertIsInstance(result["exception"], RuntimeError)
         self.assertIn("main thread", str(result["exception"]).lower())
 
-    def testRefreshFallsBackToSyncForFeaturePython(self):
-        params = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document")
-        old_async = params.GetBool("EnableAsyncRecompute", True)
+    def testRefreshRunsUnoptedFeaturePythonOnTheOwnerThread(self):
+        """An un-opted scripted feature recomputes, on the owner thread.
+
+        A FeaturePython proxy only opts into worker execution when it
+        implements supportsAsyncRecompute(); its execute() otherwise lives in a
+        proxy the archive cannot carry, so a detached process cannot reproduce
+        it. Refusing the job instead would leave the feature permanently
+        touched and invalid -- Draft, Arch, FEM, Assembly's joints and every
+        user macro included -- so the coordinator runs execute() on the owner
+        thread inside its commit boundary.
+
+        What has to hold is that the refresh command does not *block* on it and
+        that the proxy never runs off the main thread, not that the feature is
+        left unrecomputed.
+        """
 
         class RefreshProxy:
             def __init__(self):
                 self.executed_thread_id = None
+                self.execute_count = 0
 
             def execute(self, obj):
+                self.execute_count += 1
                 self.executed_thread_id = threading.get_ident()
                 time.sleep(0.05)
+                obj.Result = 42
 
         proxy = RefreshProxy()
         obj = self.doc.addObject("App::FeaturePython", "PythonFeature")
+        obj.addProperty("App::PropertyInteger", "Result")
+        obj.Result = -1
         obj.Proxy = proxy
         obj.touch()
 
-        try:
-            params.SetBool("EnableAsyncRecompute", True)
+        main_thread_id = threading.get_ident()
+        start = time.monotonic()
+        FreeCADGui.runCommand("Std_Refresh", 0)
+        elapsed = time.monotonic() - start
 
-            start = time.monotonic()
-            FreeCADGui.runCommand("Std_Refresh", 0)
-            elapsed = time.monotonic() - start
-        finally:
-            params.SetBool("EnableAsyncRecompute", old_async)
+        deadline = time.monotonic() + 2.0
+        while "Up-to-date" not in obj.State and time.monotonic() < deadline:
+            FreeCADGui.updateGui()
+            time.sleep(0.005)
 
-        self.assertEqual(proxy.executed_thread_id, threading.get_ident())
-        self.assertGreaterEqual(elapsed, 0.04)
+        # Dispatched, not run inline: the proxy sleeps 50ms and the command
+        # still returns immediately.
+        self.assertLess(elapsed, 0.033)
+        # Executed exactly once, and on the main thread -- a Python proxy must
+        # never be driven from a worker.
+        self.assertEqual(proxy.execute_count, 1)
+        self.assertEqual(proxy.executed_thread_id, main_thread_id)
+        # The recompute actually landed rather than failing the node.
+        self.assertEqual(obj.Result, 42)
+        self.assertIn("Up-to-date", obj.State)
+        self.assertNotIn("Invalid", obj.State)
+        self.assertNotIn("Touched", obj.State)
+
+
+    def testSaveCommandDoesNotUseDeprecatedAPI(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.doc.saveAs(os.path.join(temp_dir, "TestDoc.FCStd"))
+            self.doc.addObject("App::FeaturePython", "ModifiedObject")
+
+            with warnings.catch_warnings(record=True) as caught_warnings:
+                warnings.simplefilter("always", DeprecationWarning)
+                FreeCADGui.runCommand("Std_Save", 0)
+
+            deprecations = [
+                warning
+                for warning in caught_warnings
+                if issubclass(warning.category, DeprecationWarning)
+            ]
+            self.assertEqual(deprecations, [])
 
     def testRecoverySnapshotIncludesGuiDocument(self):
         self.doc.addObject("App::FeaturePython", "RecoveryGuiObject")
@@ -197,6 +261,67 @@ class TestGuiDocument(unittest.TestCase):
         self.assertTrue(FreeCAD.writeRecoverySnapshotToTransientDir(self.doc))
 
         self._assertRecoveryArchiveContains()
+
+    def testRestoreWithoutGuiDocumentFitsViewAndRestoresVisibility(self):
+        try:
+            from pivy import coin  # noqa: F401
+        except ImportError as exc:
+            raise unittest.SkipTest(f"Coin bindings are unavailable: {exc}") from exc
+
+        try:
+            import Part  # noqa: F401
+        except ImportError as exc:
+            raise unittest.SkipTest(f"Part workbench objects are unavailable: {exc}") from exc
+
+        visible_box = self.doc.addObject("Part::Box", "VisibleBox")
+        hidden_cylinder = self.doc.addObject("Part::Cylinder", "HiddenCylinder")
+
+        visible_box.Length = 25
+        visible_box.Width = 20
+        visible_box.Height = 15
+        visible_box.Placement.Base = FreeCAD.Vector(80, 35, 45)
+        visible_box.Visibility = True
+        visible_box.ViewObject.Visibility = True
+
+        hidden_cylinder.Radius = 5
+        hidden_cylinder.Height = 20
+        hidden_cylinder.Placement.Base = FreeCAD.Vector(120, 50, 55)
+        hidden_cylinder.Visibility = False
+        hidden_cylinder.ViewObject.Visibility = False
+
+        self.doc.recompute()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "with_gui_document.FCStd")
+            target_path = os.path.join(temp_dir, "without_gui_document.FCStd")
+
+            self.doc.saveAs(source_path)
+            self._writeArchiveWithoutGuiDocument(source_path, target_path)
+
+            FreeCAD.closeDocument(self.doc.Name)
+            self.doc = None
+
+            restored_doc = FreeCAD.openDocument(target_path)
+            self.doc = restored_doc
+            try:
+                FreeCAD.setActiveDocument(restored_doc.Name)
+
+                view = FreeCADGui.getDocument(restored_doc.Name).ActiveView
+                self.assertIsNotNone(view)
+
+                self.assertTrue(restored_doc.VisibleBox.ViewObject.Visibility)
+                self.assertFalse(restored_doc.HiddenCylinder.Visibility)
+                self.assertFalse(restored_doc.HiddenCylinder.ViewObject.Visibility)
+
+                def cameraIsFitted():
+                    position = view.getCameraNode().position.getValue().getValue()
+                    return sum(abs(component) for component in position) > 10.0
+
+                self.assertTrue(self._processEventsUntil(cameraIsFitted), view.getCamera())
+            finally:
+                if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
+                    FreeCAD.closeDocument(self.doc.Name)
+                self.doc = None
 
     def testAutoSaverFlushWritesRecoverySnapshot(self):
         obj = self.doc.addObject("App::FeaturePython", "AutoSaveGuiObject")
@@ -248,3 +373,74 @@ class TestGuiDocument(unittest.TestCase):
 
         self.assertTrue(self._processEventsUntil(lambda: os.path.exists(self._recoveryArchive())))
         self._assertRecoveryArchiveContains(expected_label="AutoSaveBurst7")
+
+    def testSaveDispatchesToFocusedMacroEditor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+
+            self.doc.saveAs(os.path.join(temp_dir, "TestDoc.FCStd"))
+            doc_path = self.doc.FileName
+
+            macro_path = os.path.join(temp_dir, "test_macro.FCMacro")
+            with open(macro_path, "w", encoding="utf-8") as macro_file:
+                macro_file.write("# original\n")
+
+            FreeCADGui.open(macro_path)
+
+            main_window = FreeCADGui.getMainWindow()
+
+            def active_type_id():
+                view = main_window.getActiveWindow()
+                return view.getTypeId() if view else ""
+
+            self.assertTrue(self._processEventsUntil(lambda: "EditorView" in active_type_id()))
+
+            editor = main_window.getActiveWindow()
+
+            self.assertIn("EditorView", editor.getTypeId())
+
+            text_edits = [
+                widget
+                for widget in main_window.findChildren(QtWidgets.QPlainTextEdit)
+                if widget.toPlainText().startswith("# original")
+            ]
+
+            self.assertEqual(len(text_edits), 1)
+
+            text_edit = text_edits[0]
+
+            def closeEditor():
+                text_edit.document().setModified(False)
+                main_window.removeWindow(editor)
+
+            self.addCleanup(closeEditor)
+
+            text_edit.insertPlainText("# modified\n")
+
+            QtWidgets.QApplication.processEvents(
+                QtCore.QEventLoop.ProcessEventsFlag.AllEvents,
+                50,
+            )
+
+            self.assertTrue(editor.supportMessage("Save"))
+
+            gui_doc = FreeCADGui.getDocument(self.doc.Name)
+
+            self.doc.addObject("App::FeaturePython", "ModifiedObject")
+
+            self.assertTrue(gui_doc.Modified)
+
+            doc_mtime_before = os.stat(doc_path).st_mtime_ns
+
+            FreeCADGui.runCommand("Std_Save", 0)
+
+            with open(macro_path, encoding="utf-8") as macro_file:
+                macro_contents = macro_file.read()
+
+            self.assertIn("# modified", macro_contents)
+            self.assertTrue(gui_doc.Modified)
+
+            doc_mtime_after = os.stat(doc_path).st_mtime_ns
+
+            # Std_Save must reach the focused macro editor, not the active document,
+            # the macro is written and the document is left untouched
+            self.assertEqual(doc_mtime_after, doc_mtime_before)

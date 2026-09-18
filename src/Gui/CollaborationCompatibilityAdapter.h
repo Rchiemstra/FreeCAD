@@ -37,6 +37,7 @@ struct GuiExport CollaborationCompatibilityMutationDeclaration
         CollaborationCompatibilityMutationKind::UnknownModel};
     std::string objectName;
     std::string stableObjectIdentity;
+    std::string propertyName;
 };
 
 enum class CollaborationCompatibilityMutationStatus

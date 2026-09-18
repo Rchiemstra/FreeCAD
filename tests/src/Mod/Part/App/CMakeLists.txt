@@ -6,6 +6,7 @@ add_executable(Part_tests_run
         BRepMesh.cpp
         CollaborativeBooleanOperation.cpp
         CollaborativeBooleanPreparation.cpp
+        CollaborativeSweepFilletOperations.cpp
         FaceMakerBullseye.cpp
         FaceMakerUnified.cpp
         FeatureChamfer.cpp
@@ -25,6 +26,7 @@ add_executable(Part_tests_run
         PartFeature.cpp
         PartFeatures.cpp
         PartTestHelpers.cpp
+        PreviewExtension.cpp
         PropertyTopoShape.cpp
         TopoDS_Shape.cpp
         TopoShape.cpp

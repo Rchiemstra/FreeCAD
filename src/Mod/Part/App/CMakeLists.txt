@@ -87,6 +87,7 @@ generate_from_py(SurfaceOfExtrusion)
 generate_from_py(SurfaceOfRevolution)
 generate_from_py(PartFeature)
 generate_from_py(AttachExtension)
+generate_from_py(PreviewExtension)
 generate_from_py(Part2DObject)
 generate_from_py(AttachEngine)
 generate_from_py(TopoShape)
@@ -168,6 +169,8 @@ generate_from_py(ShapeUpgrade/UnifySameDomain)
 SET(Features_SRCS
     CollaborativeBooleanOperation.cpp
     CollaborativeBooleanOperation.h
+    CollaborativeSweepFilletOperations.cpp
+    CollaborativeSweepFilletOperations.h
     FeaturePartBoolean.cpp
     FeaturePartBoolean.h
     FeaturePartBox.cpp
@@ -214,10 +217,21 @@ SET(Features_SRCS
     FeatureRevolution.h
     FeatureOffset.cpp
     FeatureOffset.h
+    CircularPatternExtension.cpp
+    CircularPatternExtension.h
     LinearPatternExtension.cpp
     LinearPatternExtension.h
+    LinkArray.cpp
+    LinkArray.h
+    LinkArrayCircular.cpp
+    LinkArrayCircular.h
+    LinkArrayLinear.cpp
+    LinkArrayLinear.h
     PolarPatternExtension.cpp
     PolarPatternExtension.h
+    PathPatternExtension.cpp
+    PathPatternExtension.h
+    PatternConstants.h
     OCCTMessagePrinter.cpp
     OCCTMessagePrinter.h
     PartFeatures.cpp
@@ -362,6 +376,8 @@ SET(Python_SRCS
     PartFeaturePyImp.cpp
     AttachExtension.pyi
     AttachExtensionPyImp.cpp
+    PreviewExtension.pyi
+    PreviewExtensionPyImp.cpp
     Part2DObject.pyi
     Part2DObjectPyImp.cpp
     AttachEngine.pyi
@@ -552,6 +568,8 @@ SET(Part_SRCS
     BRepMesh.h
     BRepOffsetAPI_MakeOffsetFix.cpp
     BRepOffsetAPI_MakeOffsetFix.h
+    ShapeAnalysis_FreeBoundsFix.cpp
+    ShapeAnalysis_FreeBoundsFix.h
     BSplineCurveBiArcs.cpp
     BSplineCurveBiArcs.h
     CrossSection.cpp
@@ -644,11 +662,9 @@ if (MSVC)
     target_compile_options(Part PRIVATE /wd4251 /wd4275)
 endif()
 
-if (FREECAD_WARN_ERROR)
-    target_compile_warn_error(Part)
-endif()
+target_compile_warn_error(Part)
 
-SET_BIN_DIR(Part Part /Mod/Part)
+SET_BIN_DIR(Part)
 SET_PYTHON_PREFIX_SUFFIX(Part)
 
 INSTALL(TARGETS Part DESTINATION ${CMAKE_INSTALL_LIBDIR})

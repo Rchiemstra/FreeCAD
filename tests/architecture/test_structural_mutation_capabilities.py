@@ -1,0 +1,173 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Closed enumeration of the propertyStatus mutations that escape Restricted.
+
+``ensurePropertySchemaMutationAllowed`` classifies every propertyStatus change
+made across a collaboration stable boundary.  ``Restricted`` is refused; the
+``Object`` kind is grantable.  Each predicate that promotes a mutation out of
+``Restricted`` widens what an agent commit may do to an object it did not
+create, so the set is enumerated here: adding one has to be a deliberate edit
+to this list, not a quiet addition to a boolean chain.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RECORDER_SOURCE = "src/App/private/CollaborationStructuralMutationRecorder.cpp"
+DOCUMENT_SOURCE = "src/App/Document.cpp"
+JOINT_SOURCE = "src/Mod/Assembly/JointObject.py"
+
+#: Every predicate allowed to promote an add/removeDynamicProperty mutation on
+#: a live, pre-existing object out of ``Restricted``.
+GRANTED_DYNAMIC_PROPERTY_PREDICATES = ("executeOwnedDynamicProperty",)
+
+#: Every predicate allowed to promote a propertyStatus mutation on a live,
+#: pre-existing object out of ``Restricted``.
+GRANTED_LIVE_OBJECT_PREDICATES = (
+    "removalOwnedStatus",
+    "liveSketchAttachmentStatus",
+    "groundedJointPlacementLock",
+    "executeOwnedStatus",
+)
+
+
+def _read(path: str) -> str:
+    return (REPO_ROOT / path).read_text(encoding="utf-8", errors="surrogateescape")
+
+
+def _slice(source: str, start_marker: str, end_marker: str) -> str:
+    """Text from ``start_marker`` up to the following ``end_marker``."""
+    start = source.index(start_marker)
+    return source[start : source.index(end_marker, start + len(start_marker))]
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def test_only_the_enumerated_predicates_escape_restricted() -> None:
+    recorder = _read(RECORDER_SOURCE)
+    selection = _compact(
+        _slice(
+            recorder,
+            "const bool removalOwnedStatus",
+            'std::string mutation = "propertyStatus on ";',
+        )
+    )
+    granted = "||".join(GRANTED_LIVE_OBJECT_PREDICATES)
+    assert f"elseif({granted})" in selection, selection
+    # A new object gets the dynamic-property kind; everything else stays
+    # Restricted, which is the refused kind.
+    assert "kind=Document::CollaborationStructuralMutationKind::Restricted;" in selection
+    assert (
+        "if(newStructuralObject){kind=Document::CollaborationStructuralMutationKind"
+        "::DynamicPropertyOnNewObject;}" in selection
+    )
+    # Each predicate is gated on the object actually being a live structural
+    # object, so a detached or foreign container cannot reach the grant.
+    compact_recorder = _compact(recorder)
+    for predicate in GRANTED_LIVE_OBJECT_PREDICATES:
+        assert f"constbool{predicate}=attachedStructuralObject&&" in compact_recorder
+
+
+def test_execute_owned_status_is_keyed_on_the_executing_object_and_its_own_property() -> None:
+    """A feature's execute() may republish which of its own inputs apply.
+
+    PartDesign's extrude features flip ReadOnly on AlongSketchNormal as the pad
+    type changes.  The coordinator runs execute() on the owner thread inside
+    the commit boundary, so that write is recorded here rather than discarded
+    in a detached worker.  The grant is keyed on the object the coordinator is
+    currently executing touching a property it owns itself -- it must not let
+    an execute() restatus some *other* object.
+    """
+    recorder = _compact(_read(RECORDER_SOURCE))
+    assert (
+        "constboolexecuteOwnedStatus=attachedStructuralObject"
+        "&&object->testStatus(ObjectStatus::Recompute)" in recorder
+    ), recorder
+    # The property must belong to the executing object itself.
+    assert "object->getPropertyByName(statusPropertyName)==&property;" in recorder
+
+
+def test_grounded_joint_lock_matches_exactly_one_bit_on_two_named_properties() -> None:
+    """Assembly grounds a part by making its placement read-only.
+
+    The write lands on the grounded object, not on the joint the commit
+    created, so the new-object grant never covers it.  The capability is
+    therefore keyed on the exact mutation: one bit, two property names, one
+    property type, and a live joint that actually points back at this object.
+    """
+    predicate = _compact(
+        _slice(
+            _read(RECORDER_SOURCE),
+            "bool isGroundedJointPlacementLockMutation(",
+            "void deferOrEmitDynamicExtension(",
+        )
+    )
+    # Exactly the ReadOnly bit, nothing else in the same change.
+    assert "changed!=(1UL<<Property::ReadOnly)" in predicate
+    # Exactly the two properties Assembly locks, at their built-in type.
+    assert 'name!="Placement"&&name!="LinkPlacement"' in predicate
+    assert "property.getTypeId()!=PropertyPlacement::getClassTypeId()" in predicate
+    # The property has to be the object's own member, not a same-named alias.
+    assert "object.getPropertyByName(propertyName)!=&property" in predicate
+    # A live joint in the in-list must point back at this exact object.
+    assert 'joint->getPropertyByName("ObjectToGround")' in predicate
+    assert "rawGround->getTypeId()==PropertyLinkGlobal::getClassTypeId()" in predicate
+    assert "ground->getValue()==&object" in predicate
+    assert "joint->isAttachedToDocument()" in predicate
+
+
+def test_the_capability_matches_what_assembly_actually_writes() -> None:
+    """Freeze the premise: the predicate is useless if grounding changes shape."""
+    joint = _read(JOINT_SOURCE)
+    setter = _slice(joint, "    def setReadOnly(self, joint, value):", "\n\nclass ")
+    assert 'tag = "-ReadOnly"' in setter and 'tag = "ReadOnly"' in setter
+    assert "obj = joint.ObjectToGround" in setter
+    assert 'obj.setPropertyStatus("Placement", tag)' in setter
+    assert 'obj.setPropertyStatus("LinkPlacement", tag)' in setter
+    # The link the predicate keys on is the one the joint declares.
+    assert _compact('"App::PropertyLinkGlobal", "ObjectToGround",') in _compact(joint)
+
+
+def test_only_the_enumerated_predicates_escape_restricted_for_dynamic_properties() -> None:
+    """The same closed enumeration, for adding and removing dynamic properties.
+
+    A feature's execute() publishes caches as dynamic properties --
+    SubShapeBinder's ``Cache_*`` transformation matrices, Arch component link
+    overrides, Report column rebuilds. The coordinator runs execute() on the
+    owner thread inside the commit boundary, so those additions reach the gate
+    rather than being discarded in a detached worker.
+
+    The grant is keyed exactly as the recorder's ``executeOwnedStatus``: the
+    object the coordinator is currently executing, mutating a property of its
+    own. It must not let one feature's execute() restructure another object.
+    """
+    document = _read(DOCUMENT_SOURCE)
+    for guard in (
+        "void Document::ensureCollaborationDynamicPropertyMutationAllowed(",
+        "void Document::ensureCollaborationDynamicPropertyRemovalAllowed(",
+    ):
+        selection = _compact(
+            _slice(document, guard, "ensureCollaborationStructuralMutationAllowed(kind,")
+        )
+        # Restricted is the default and the refused kind.
+        assert "autokind=CollaborationStructuralMutationKind::Restricted;" in selection, guard
+        # A new object keeps its own kind; nothing else may reach Object except
+        # the enumerated predicates.
+        assert (
+            "if(newStructuralObject){kind=CollaborationStructuralMutationKind"
+            "::DynamicPropertyOnNewObject;}" in selection
+        ), guard
+        granted = "||".join(GRANTED_DYNAMIC_PROPERTY_PREDICATES)
+        assert (
+            f"elseif({granted})"
+            "{kind=CollaborationStructuralMutationKind::Object;}" in selection
+        ), guard
+        # Keyed on the object the coordinator is currently executing.
+        assert (
+            "constboolexecuteOwnedDynamicProperty="
+            "object.testStatus(ObjectStatus::Recompute);" in selection
+        ), guard

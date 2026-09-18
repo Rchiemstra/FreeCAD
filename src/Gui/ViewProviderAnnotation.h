@@ -24,6 +24,7 @@
 #pragma once
 
 #include "ViewProviderDocumentObject.h"
+#include <Inventor/SbVec3f.h>
 #include <App/PropertyUnits.h>
 #include <Base/Vector3D.h>
 #include <optional>
@@ -38,6 +39,15 @@ class SoRotationXYZ;
 class SoImage;
 class SoCoordinate3;
 class SoDragger;
+class SoDrawStyle;
+class SoSwitch;
+class SoSensor;
+class SoPickedPoint;
+
+namespace Base
+{
+class Color;
+}
 
 namespace Gui
 {
@@ -118,6 +128,11 @@ protected:
         Base::Vector3d pickOffset;
         Base::Vector3d planePoint;
         Base::Vector3d planeNormal;
+        int startEventX = 0;
+        int startEventY = 0;
+        bool dragAccepted = false;
+        bool moved = false;
+        bool commandOpened = false;
     };
 
     void onChanged(const App::Property* prop) override;
@@ -132,6 +147,9 @@ protected:
     /** Return false to cancel label drag (e.g. clickable @ref hit). */
     virtual bool acceptLabelDragStart(SoDragger* drag, DragState& state);
 
+    /** Called for an accepted press/release that did not cross the drag threshold. */
+    virtual void onLabelClicked(const DragState& state);
+
     /** Called after a completed label drag, before TextPosition is committed.
 
         Subclasses must sync any derived leader/visual properties from
@@ -143,6 +161,13 @@ protected:
     void previewTextPosition(DragState& state, const Base::Vector3d& textPosition);
     /** Update leader polyline for the given text position (override to sync handles). */
     virtual void setLeaderCoords(const Base::Vector3d& textPosition);
+    /** Apply configurable leader appearance to the shared annotation scene graph. */
+    void applyLeaderAppearance(
+        bool visible,
+        const Base::Color& color,
+        float width,
+        unsigned short linePattern
+    );
 
     SoCoordinate3* pCoords;
     SoImage* pImage;
@@ -150,6 +175,8 @@ protected:
     SoBaseColor* pColor;
     SoTranslation* pBaseTranslation;
     TranslateManip* pTextTranslation;
+    SoDrawStyle* pLeaderDrawStyle;
+    SoSwitch* pLeaderSwitch;
     std::optional<DragState> dragState;
 
     /** Last drawn image size in pixels (0 if hidden/empty). */
@@ -162,6 +189,43 @@ private:
     static void dragMotionCallback(void* data, SoDragger* d);
 
     static const char* JustificationEnums[];
+};
+
+/**
+ * @brief The AnnotationBuilder class
+ * This is a helper class to asynchronously add an annotation to the document.
+ */
+class GuiExport AnnotationBuilder
+{
+public:
+    struct Info
+    {
+        std::string text;
+        std::string group = "Annotation";
+        std::string label = "Info";
+    };
+    static void schedule(
+        Gui::ViewProviderDocumentObject* vp,
+        const SoPickedPoint* point,
+        const Info& text
+    );
+
+private:
+    AnnotationBuilder(
+        Gui::ViewProviderDocumentObject* vp,
+        const Info& s,
+        const SbVec3f& p,
+        const SbVec3f& n
+    );
+
+    static void run(void* data, SoSensor* sensor);
+    void show();
+
+private:
+    Gui::ViewProviderDocumentObject* vp;
+    SbVec3f p;
+    SbVec3f n;
+    Info info;
 };
 
 }  // namespace Gui

@@ -33,7 +33,7 @@ if App.GuiUp:
     from PySide.QtGui import QIcon
 
 import UtilsAssembly
-import Preferences
+import AssemblyPreferences as Preferences
 import CommandCreateJoint
 
 __title__ = "Assembly Command Insert Component"
@@ -472,9 +472,7 @@ class TaskAssemblyInsertLink(QtCore.QObject):
         if fixPartPref == 0:  # unset
             msgBox = QtWidgets.QMessageBox()
             msgBox.setWindowTitle("Ground Part?")
-            msgBox.setText(
-                "Do you want to ground the first inserted part automatically?\nYou need at least one grounded part in your assembly."
-            )
+            msgBox.setText("Do you want to ground the first inserted part automatically?")
             msgBox.setIcon(QtWidgets.QMessageBox.Question)
 
             yesButton = msgBox.addButton("Yes", QtWidgets.QMessageBox.YesRole)

@@ -25,18 +25,28 @@ import TestApp
 
 from AssemblyTests.TestCore import TestCore
 from AssemblyTests.TestCommandInsertLink import TestCommandInsertLink
+from AssemblyTests.TestCommandCreateView import TestCommandCreateView
 from AssemblyTests.TestCrossBodyDatumStaleness import TestCrossBodyDatumStaleness
 from AssemblyTests.TestOverlayIconsAndOrigin import TestOverlayIconsAndOrigin
 from AssemblyTests.TestWebotsExport import TestWebotsExport
 from AssemblyTests.TestReviewNotes import TestReviewNotes, TestReviewNotesGui
 from AssemblyTests.TestSimulationExport import TestSimulationExport
+from AssemblyTests.TestPreferencesImport import TestPreferencesImport
+from AssemblyTests.TestReviewNotesIssues import (
+    TestReviewNotesIssues,
+    TestReviewNotesGuiIssues,
+)
 
 # Use the modules so that code checkers don't complain (flake8)
 True if TestCore else False
 True if TestCommandInsertLink else False
+True if TestCommandCreateView else False
 True if TestCrossBodyDatumStaleness else False
 True if TestOverlayIconsAndOrigin else False
 True if TestWebotsExport else False
 True if TestReviewNotes else False
 True if TestReviewNotesGui else False
 True if TestSimulationExport else False
+True if TestPreferencesImport else False
+True if TestReviewNotesIssues else False
+True if TestReviewNotesGuiIssues else False

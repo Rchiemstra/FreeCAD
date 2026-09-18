@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+
 /***************************************************************************
  *   Copyright (c) 2002 Jürgen Riegel <juergen.riegel@web.de>              *
  *                                                                         *
@@ -55,7 +57,10 @@ void PropertyFemMesh::setValuePtr(FemMesh* mesh)
 void PropertyFemMesh::setValue(const FemMesh& sh)
 {
     aboutToSetValue();
-    *_FemMesh = sh;
+    // Replace the kernel instead of assigning in place. Copy() must not share
+    // a mutable FemMesh with the live property, or undo/rollback restores a
+    // pointer to the already-meshed object.
+    _FemMesh = new FemMesh(sh);
     hasSetValue();
 }
 
@@ -118,7 +123,7 @@ void PropertyFemMesh::setPyObject(PyObject* value)
 App::Property* PropertyFemMesh::Copy() const
 {
     PropertyFemMesh* prop = new PropertyFemMesh();
-    prop->_FemMesh = this->_FemMesh;
+    prop->_FemMesh = new FemMesh(*this->_FemMesh);
     return prop;
 }
 

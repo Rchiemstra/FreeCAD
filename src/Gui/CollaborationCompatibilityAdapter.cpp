@@ -64,6 +64,10 @@ std::optional<std::string> CollaborationCompatibilityAdapter::validateDeclaratio
         if (declaration.stableObjectIdentity.empty()) {
             return "model compatibility mutation requires a nonempty stable object identity";
         }
+        if (!declaration.propertyName.empty()
+            && declaration.propertyName.find('\0') != std::string::npos) {
+            return "model compatibility mutation property name cannot contain NUL";
+        }
         return std::nullopt;
     case CollaborationCompatibilityMutationKind::UnknownModel:
         if (!declaration.objectName.empty() || !declaration.stableObjectIdentity.empty()) {

@@ -22,6 +22,7 @@
 
 #include <Inventor/nodes/SoCamera.h>
 #include <algorithm>
+#include <memory>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -29,6 +30,7 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QTextStream>
+#include <QTimer>
 #include <QTreeWidgetItem>
 
 #include <boost/regex.hpp>
@@ -39,6 +41,7 @@
 #include <App/DocumentObject.h>
 #include <App/Expression.h>
 #include <App/GeoFeature.h>
+#include <App/RecomputeHandle.h>
 #include <Base/Exception.h>
 #include <Base/FileInfo.h>
 #include <Base/Stream.h>
@@ -73,6 +76,58 @@ FC_LOG_LEVEL_INIT("Command", false)
 
 using namespace Gui;
 
+DEF_STD_CMD_C(StdCmdOpenGroup)
+
+StdCmdOpenGroup::StdCmdOpenGroup()
+    : Command("Std_OpenGroup")
+{
+    sGroup = "File";
+    sMenuText = QT_TR_NOOP("&Open…");
+    sToolTipText = QT_TR_NOOP("Opens a document or imports files");
+    sWhatsThis = "Std_OpenGroup";
+    sStatusTip = sToolTipText;
+    sPixmap = "document-open";
+    eType = NoTransaction;
+}
+
+/**
+ * Opens the recent file at position \a iMsg in the menu.
+ * If the file does not exist or cannot be loaded this item is removed
+ * from the list.
+ */
+void StdCmdOpenGroup::activated(int iMsg)
+{
+    auto act = qobject_cast<RecentFilesAction*>(_pcAction);
+    if (act) {
+        if (iMsg == 0) {
+            CommandManager& rcCmdMgr = Application::Instance->commandManager();
+            rcCmdMgr.runCommandByName("Std_Open");
+        }
+        else if (iMsg == 1) {
+            return;  // should not happen it's the separator.
+        }
+        else {
+            act->activateFile(iMsg - 2);
+        }
+        _pcAction->setProperty("defaultAction", QVariant(0));
+        _pcAction->setToolTip(QString::fromLatin1(sToolTipText));
+        _pcAction->setStatusTip(QString::fromLatin1(sToolTipText));
+        _pcAction->setIcon(Gui::BitmapFactory().iconFromTheme(sPixmap));
+    }
+}
+
+/**
+ * Creates the QAction object containing the recent files.
+ */
+Action* StdCmdOpenGroup::createAction()
+{
+    auto pcAction = new RecentFilesAction(this, getMainWindow(), true);
+    pcAction->setObjectName(QLatin1String("openGroup"));
+    pcAction->setDropDownMenu(true);
+    pcAction->setIcon(Gui::BitmapFactory().iconFromTheme(sPixmap));
+    applyCommandData(this->className(), pcAction);
+    return pcAction;
+}
 
 //===========================================================================
 // Std_Open
@@ -793,7 +848,10 @@ void StdCmdSave::activated(int iMsg)
         }
     }
 
-    doCommand(Command::Gui, "Gui.SendMsgToActiveView(\"Save\")");
+    if (!getMainWindow()->activeWindow()) {
+        return;
+    }
+    doCommand(Command::Gui, "Gui.getMainWindow().getActiveWindow().sendMessage(\"Save\")");
 }
 
 bool StdCmdSave::isActive()
@@ -822,7 +880,10 @@ StdCmdSaveAs::StdCmdSaveAs()
 void StdCmdSaveAs::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    doCommand(Command::Gui, "Gui.SendMsgToActiveView(\"SaveAs\")");
+    if (!getMainWindow()->activeWindow()) {
+        return;
+    }
+    doCommand(Command::Gui, "Gui.getMainWindow().getActiveWindow().sendMessage(\"SaveAs\")");
 }
 
 bool StdCmdSaveAs::isActive()
@@ -853,7 +914,10 @@ StdCmdSaveCopy::StdCmdSaveCopy()
 void StdCmdSaveCopy::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
-    doCommand(Command::Gui, "Gui.SendMsgToActiveView(\"SaveCopy\")");
+    if (!getMainWindow()->activeWindow()) {
+        return;
+    }
+    doCommand(Command::Gui, "Gui.getMainWindow().getActiveWindow().sendMessage(\"SaveCopy\")");
 }
 
 bool StdCmdSaveCopy::isActive()
@@ -888,6 +952,39 @@ bool StdCmdSaveAll::isActive()
     return (getActiveGuiDocument() ? true : false);
 }
 
+
+//===========================================================================
+// Std_SaveGroup
+//===========================================================================
+class StdCmdSaveGroup: public Gui::GroupCommand
+{
+public:
+    StdCmdSaveGroup()
+        : GroupCommand("Std_SaveGroup")
+    {
+        sGroup = "File";
+        sMenuText = QT_TR_NOOP("Save");
+        sToolTipText = QT_TR_NOOP("Saves the active document");
+        sWhatsThis = "Std_SaveGroup";
+        sPixmap = "document-save";
+        sStatusTip = sToolTipText;
+
+        setCheckable(false);
+        setRememberLast(false);
+
+        addCommand("Std_Save");
+        addCommand("Std_SaveAs");
+        addCommand("Std_SaveCopy");
+        addCommand("Std_SaveAll");
+        addCommand();  // separator
+        addCommand("Std_Export");
+    }
+
+    const char* className() const override
+    {
+        return "StdCmdSaveGroup";
+    }
+};
 
 //===========================================================================
 // Std_Revert
@@ -1744,39 +1841,35 @@ bool shouldProceedAfterDependencyCycle()
         == QMessageBox::Yes;
 }
 
-void handleDocumentRecomputeResult(const std::string& documentName, App::RecomputeFailure failure)
+void scheduleDocumentRecomputePoll(std::shared_ptr<App::RecomputeHandle> handle)
 {
-    if (failure == App::RecomputeFailure::None) {
-        return;
-    }
-
-    if (failure != App::RecomputeFailure::DependencyCycle) {
-        return;
-    }
-
-    App::Document* document = App::GetApplication().getDocument(documentName.c_str());
-    if (!document) {
-        return;
-    }
-
-    if (!shouldProceedAfterDependencyCycle()) {
-        return;
-    }
-
-    // If the user wants to proceed, enqueue another recompute request without
-    // the cycle-check option so the document recomputes like the legacy path.
-    App::RecomputeRequest newRequest = App::RecomputeRequest::fromDocument(*document, /*force=*/true);
-    App::GetApplication().queueRecomputeRequest(newRequest);
+    QTimer::singleShot(5, qApp, [handle = std::move(handle)] {
+        const auto snapshot = handle->status();
+        if (!snapshot.terminal()) {
+            scheduleDocumentRecomputePoll(handle);
+            return;
+        }
+        if (snapshot.state != App::DocumentRecomputeState::Completed) {
+            FC_ERR("Detached document recompute "
+                   << App::documentRecomputeStateName(snapshot.state) << ": "
+                   << (snapshot.diagnostic.empty()
+                           ? "no diagnostic was provided"
+                           : snapshot.diagnostic));
+        }
+    });
 }
 
-void refreshDocumentSynchronously(App::Document& document)
+void submitDocumentRecompute(App::Document& document, const int options)
 {
     try {
-        document.recompute({}, true, nullptr, App::Document::DepNoCycle);
+        auto handle = document.recomputeAsync({}, true, options);
+        scheduleDocumentRecomputePoll(
+            std::shared_ptr<App::RecomputeHandle>(std::move(handle)));
     }
     catch (Base::BadGraphError&) {
-        if (shouldProceedAfterDependencyCycle()) {
-            document.recompute({}, true);
+        if ((options & App::Document::DepNoCycle) != 0
+            && shouldProceedAfterDependencyCycle()) {
+            submitDocumentRecompute(document, 0);
         }
     }
     catch (Base::Exception& exception) {
@@ -1795,27 +1888,7 @@ void StdCmdRefresh::activated([[maybe_unused]] int iMsg)
     App::AutoTransaction trans((eType & NoTransaction) ? 0 : openActiveDocumentCommand("Recompute"));
     auto doc = getActiveGuiDocument()->getDocument();
 
-    App::RecomputeRequest request
-        = App::RecomputeRequest::fromDocument(*doc, true, App::Document::DepNoCycle);
-
-    if (!App::GetApplication().isAsyncRecomputeEnabled()
-        || !App::GetApplication().canRecomputeRequestOnWorker(request)) {
-        refreshDocumentSynchronously(*doc);
-        return;
-    }
-
-    request.callback = [](App::RecomputeRequest& request, App::RecomputeResult& result) {
-        // Handle the result in the UI thread.
-        QMetaObject::invokeMethod(
-            qApp,
-            [documentName = request.documentName, failure = result.failure]() {
-                handleDocumentRecomputeResult(documentName, failure);
-            },
-            Qt::QueuedConnection
-        );
-    };
-
-    App::GetApplication().queueRecomputeRequest(request);
+    submitDocumentRecompute(*doc, App::Document::DepNoCycle);
 }
 
 bool StdCmdRefresh::isActive()
@@ -2369,6 +2442,7 @@ void CreateDocCommands()
 
     rcCmdMgr.addCommand(new StdCmdNew());
     rcCmdMgr.addCommand(new StdCmdOpen());
+    rcCmdMgr.addCommand(new StdCmdOpenGroup());
     rcCmdMgr.addCommand(new StdCmdImport());
     rcCmdMgr.addCommand(new StdCmdExport());
     rcCmdMgr.addCommand(new StdCmdMergeProjects());
@@ -2379,6 +2453,7 @@ void CreateDocCommands()
     rcCmdMgr.addCommand(new StdCmdSaveAs());
     rcCmdMgr.addCommand(new StdCmdSaveCopy());
     rcCmdMgr.addCommand(new StdCmdSaveAll());
+    rcCmdMgr.addCommand(new StdCmdSaveGroup());
     rcCmdMgr.addCommand(new StdCmdRevert());
     rcCmdMgr.addCommand(new StdCmdProjectInfo());
     rcCmdMgr.addCommand(new StdCmdProjectUtil());

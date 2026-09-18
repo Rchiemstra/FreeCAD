@@ -33,6 +33,7 @@
 #include <QPrinterInfo>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
+#include <QStringList>
 
 #include <Base/Interpreter.h>
 #include <App/Document.h>
@@ -174,18 +175,10 @@ void MDIView::onRelabel(Gui::Document* pDoc)
 {
     if (!bIsPassive) {
         // Try to separate document name and view number if there is one
-        QString cap = windowTitle();
-        // Either with dirty flag ...
-        QRegularExpression rx(QLatin1String(R"((\s\:\s\d+\[\*\])$)"));
+        QString cap = baseWindowTitle;
+        QRegularExpression rx(QLatin1String(R"((\s\:\s\d+)$)"));
         QRegularExpressionMatch match;
-        // int pos =
         boost::ignore_unused(cap.lastIndexOf(rx, -1, &match));
-        if (!match.hasMatch()) {
-            // ... or not
-            rx.setPattern(QLatin1String(R"((\s\:\s\d+)$)"));
-            // pos =
-            boost::ignore_unused(cap.lastIndexOf(rx, -1, &match));
-        }
         if (match.hasMatch()) {
             cap = QString::fromUtf8(pDoc->getDocument()->Label.getValue());
             cap += match.captured();
@@ -528,13 +521,20 @@ MDIView* MDIView::changeViewMode(MDIView* view, ViewMode mode)
     MDIView* clone = needsClone ? view->clone() : nullptr;
 
     if (clone) {
+        // Reorder so the clone's activation is the last write, and let queued
+        // activation events process before the old view goes away; otherwise the
+        // second F11 press briefly activates a different tab. Ported from main's
+        // fix to the (now extracted) in-place version of this logic.
         if (mode == Child) {
             getMainWindow()->addWindow(clone);
+            getMainWindow()->setActiveWindow(clone);
+            qApp->processEvents();  // let the close and any queued activation settle
+            view->deleteSelf();
         }
         else {
+            view->deleteSelf();
             clone->setCurrentViewMode(mode);
         }
-        view->deleteSelf();
         return clone;
     }
 
@@ -547,6 +547,15 @@ QString MDIView::buildWindowTitle() const
     QString windowTitle;
     if (auto document = getAppDocument()) {
         windowTitle.append(QString::fromStdString(document->Label.getStrValue()));
+        if (document->lastCanonicalSaveFailed()) {
+            windowTitle.append(tr(" — Save failed"));
+        }
+        else if (document->getFileChangeState() == App::DocumentFileState::NotSaved) {
+            windowTitle.append(tr(" — Not saved"));
+        }
+        else if (document->hasPendingFileChanges()) {
+            windowTitle.append(tr(" — Unsaved"));
+        }
     }
 
     return windowTitle;
@@ -554,9 +563,38 @@ QString MDIView::buildWindowTitle() const
 
 void MDIView::setWindowTitle(const QString& title)
 {
-    QString newerTitle {title};
+    if (title != QMainWindow::windowTitle() || baseWindowTitle.isEmpty()) {
+        baseWindowTitle = title;
+        baseWindowTitle.replace(QStringLiteral("&&"), QStringLiteral("&"));
+        baseWindowTitle.remove(QStringLiteral("[*]"));
+        const QStringList suffixes {
+            tr(" — Unsaved"), tr(" — Not saved"), tr(" — Save failed")};
+        for (const auto& suffix : suffixes) {
+            if (baseWindowTitle.endsWith(suffix)) {
+                baseWindowTitle.chop(suffix.size());
+                break;
+            }
+        }
+    }
+
+    QString newerTitle {baseWindowTitle};
+    if (const auto* document = getAppDocument()) {
+        if (document->lastCanonicalSaveFailed()) {
+            newerTitle.append(tr(" — Save failed"));
+        }
+        else if (document->getFileChangeState() == App::DocumentFileState::NotSaved) {
+            newerTitle.append(tr(" — Not saved"));
+        }
+        else if (document->hasPendingFileChanges()) {
+            newerTitle.append(tr(" — Unsaved"));
+        }
+    }
     newerTitle.replace(QLatin1Char('&'), QStringLiteral("&&"));
     QMainWindow::setWindowTitle(newerTitle);
+    if (const auto* document = getAppDocument()) {
+        const auto path = QString::fromStdString(document->FileName.getStrValue());
+        setToolTip(path.isEmpty() ? tr("Not saved") : path);
+    }
 }
 
 #include "moc_MDIView.cpp"

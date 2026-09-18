@@ -98,10 +98,14 @@ protected:
      * @param[in] oldName The old name of the property.
      */
     virtual void onRenameDynamicProperty(const App::Property& prop, const char* oldName) = 0;
+    virtual void onMoveDynamicProperty(const App::Property& prop,
+                                       const App::DocumentObject& targetObj) = 0;
 
 private:
     static void slotRelabelDocument(const App::Document& doc);
     static void slotRenameDynamicProperty(const App::Property& prop, const char* oldName);
+    static void slotMoveDynamicProperty(const App::Property& prop,
+                                        const App::DocumentObject& targetObj);
 };
 
 
@@ -169,6 +173,8 @@ public:
     void setExpressions(std::map<App::ObjectIdentifier, App::ExpressionPtr>&& exprs) override;
     void onRelabeledDocument(const App::Document& doc) override;
     void onRenameDynamicProperty(const App::Property& prop, const char* oldName) override;
+    void onMoveDynamicProperty(const App::Property& prop,
+                               const App::DocumentObject& targetObj) override;
 
     /// Dummy setValue to satisfy a macro.
     void setValue() {}
@@ -344,6 +350,7 @@ private:
      */
     std::vector<App::ObjectIdentifier> computeEvaluationOrder(ExecuteOption option);
 
+    void rebuildDependencies();
     void slotChangedObject(const App::DocumentObject& obj, const App::Property& prop);
     void slotChangedProperty(const App::DocumentObject& obj, const App::Property& prop);
     void updateHiddenReference(const std::string& key);

@@ -23,6 +23,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -83,10 +84,11 @@ struct ScreenPreselectionPolicy
 struct PreselectionPriority
 {
     static constexpr int None = 0;
-    static constexpr int ConstraintDatumLabel = 100;
+    static constexpr int ConstraintDatumPresentation = 100;
     static constexpr int Axis = 300;
     static constexpr int ConstraintFallback = 350;
     static constexpr int Edge = 400;
+    static constexpr int ConstraintDatumAnnotation = 425;
     static constexpr int ConstraintIcon = 450;
     static constexpr int Point = 500;
 };
@@ -102,8 +104,11 @@ int preselectionPriority(const EditModeCoinManager::PreselectionResult& result)
             if (result.ConstraintKind == Result::ConstraintHitKind::Icon) {
                 return PreselectionPriority::ConstraintIcon;
             }
-            if (result.ConstraintKind == Result::ConstraintHitKind::DatumLabel) {
-                return PreselectionPriority::ConstraintDatumLabel;
+            if (result.ConstraintKind == Result::ConstraintHitKind::DatumPresentation) {
+                return PreselectionPriority::ConstraintDatumPresentation;
+            }
+            if (result.ConstraintKind == Result::ConstraintHitKind::DatumAnnotation) {
+                return PreselectionPriority::ConstraintDatumAnnotation;
             }
             return PreselectionPriority::ConstraintFallback;
         case Result::HitKind::Edge:
@@ -550,6 +555,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updateWidth(drawingParameters.ExternalWidth, param, 2);
          }},
+        {"DimensionalConstraintLineWidth",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateWidth(drawingParameters.DimensionalConstraintLineWidth, param, 2);
+         }},
         {"ExternalDefiningWidth",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updateWidth(drawingParameters.ExternalDefiningWidth, param, 2);
@@ -558,9 +567,17 @@ void EditModeCoinManager::ParameterObserver::initParameters()
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updateWidth(drawingParameters.InformationWidth, param, 1);
          }},
+        {"AxisLineWidth",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updateWidth(drawingParameters.AxisLineWidth, param, 2);
+         }},
         {"EdgePattern",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updatePattern(drawingParameters.CurvePattern, param, 0b1111111111111111);
+         }},
+        {"DimensionalConstraintLinePattern",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updatePattern(drawingParameters.DimensionalConstraintLinePattern, param, 0b1111111111111111);
          }},
         {"ConstructionPattern",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
@@ -581,6 +598,10 @@ void EditModeCoinManager::ParameterObserver::initParameters()
         {"InformationPattern",
          [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
              updatePattern(drawingParameters.InformationPattern, param, 0b1111110011111100);
+         }},
+        {"AxisLinePattern",
+         [this, &drawingParameters = Client.drawingParameters](const std::string& param) {
+             updatePattern(drawingParameters.AxisLinePattern, param, 0b1111111111111111);
          }},
         {"EditedEdgeColor",
          [this, drawingParameters = Client.drawingParameters](const std::string& param) {
@@ -866,28 +887,23 @@ void EditModeCoinManager::ParameterObserver::updateUnit(const std::string& param
     // OnChange.
 }
 
+namespace
+{
+constexpr std::array subscribedParameterGroupPaths = {
+    "User parameter:BaseApp/Preferences/View",
+    "User parameter:BaseApp/Preferences/Mod/Sketcher/General",
+    "User parameter:BaseApp/Preferences/Mod/Sketcher",
+    "User parameter:BaseApp/Preferences/Mod/Sketcher/View",
+    "User parameter:BaseApp/Preferences/Units",
+};
+}  // namespace
+
 void EditModeCoinManager::ParameterObserver::subscribeToParameters()
 {
     try {
-        ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/View"
-        );
-        hGrp->Attach(this);
-
-        ParameterGrp::handle hGrpsk = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Mod/Sketcher/General"
-        );
-        hGrpsk->Attach(this);
-
-        ParameterGrp::handle hGrpskg = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Mod/Sketcher"
-        );
-        hGrpskg->Attach(this);
-
-        ParameterGrp::handle hGrpu = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Units"
-        );
-        hGrpu->Attach(this);
+        for (const char* path : subscribedParameterGroupPaths) {
+            App::GetApplication().GetParameterGroupByPath(path)->Attach(this);
+        }
     }
     catch (const Base::ValueError& e) {  // ensure that if parameter strings are not well-formed,
                                          // the exception is not propagated
@@ -899,25 +915,9 @@ void EditModeCoinManager::ParameterObserver::subscribeToParameters()
 void EditModeCoinManager::ParameterObserver::unsubscribeToParameters()
 {
     try {
-        ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/View"
-        );
-        hGrp->Detach(this);
-
-        ParameterGrp::handle hGrpsk = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Mod/Sketcher/General"
-        );
-        hGrpsk->Detach(this);
-
-        ParameterGrp::handle hGrpskg = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Mod/Sketcher"
-        );
-        hGrpskg->Detach(this);
-
-        ParameterGrp::handle hGrpu = App::GetApplication().GetParameterGroupByPath(
-            "User parameter:BaseApp/Preferences/Units"
-        );
-        hGrpu->Detach(this);
+        for (const char* path : subscribedParameterGroupPaths) {
+            App::GetApplication().GetParameterGroupByPath(path)->Detach(this);
+        }
     }
     catch (const Base::ValueError& e) {  // ensure that if parameter strings are not well-formed,
                                          // the program is not terminated when calling the noexcept
@@ -1041,9 +1041,6 @@ void EditModeCoinManager::drawEdit(const std::vector<Base::Vector2d>& EditCurve,
     editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.setNum(EditCurve.size());
     SbVec3f* verts = editModeScenegraphNodes.EditCurvesCoordinate->point.startEditing();
     int32_t* index = editModeScenegraphNodes.EditCurveSet->numVertices.startEditing();
-    SbColor* color = editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.startEditing();
-
-    setEditDrawStyle(mode);
 
     int i = 0;  // setting up the line set
     for (std::vector<Base::Vector2d>::const_iterator it = EditCurve.begin(); it != EditCurve.end();
@@ -1054,20 +1051,12 @@ void EditModeCoinManager::drawEdit(const std::vector<Base::Vector2d>& EditCurve,
             ViewProviderSketchCoinAttorney::getViewOrientationFactor(viewProvider)
                 * drawingParameters.zEdit
         );
-        switch (mode) {
-            case GeometryCreationMode::Normal:
-                color[i] = drawingParameters.CurveColor;
-                break;
-            case GeometryCreationMode::Construction:
-                color[i] = drawingParameters.CurveDraftColor;
-                break;
-        }
     }
 
     index[0] = EditCurve.size();
     editModeScenegraphNodes.EditCurvesCoordinate->point.finishEditing();
     editModeScenegraphNodes.EditCurveSet->numVertices.finishEditing();
-    editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.finishEditing();
+    updateEditCurveAppearance(mode);
 }
 
 void EditModeCoinManager::drawEdit(
@@ -1086,9 +1075,6 @@ void EditModeCoinManager::drawEdit(
     editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.setNum(ncoords);
     SbVec3f* verts = editModeScenegraphNodes.EditCurvesCoordinate->point.startEditing();
     int32_t* index = editModeScenegraphNodes.EditCurveSet->numVertices.startEditing();
-    SbColor* color = editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.startEditing();
-
-    setEditDrawStyle(mode);
 
     int coordindex = 0;
     int indexindex = 0;
@@ -1100,16 +1086,6 @@ void EditModeCoinManager::drawEdit(
                 ViewProviderSketchCoinAttorney::getViewOrientationFactor(viewProvider)
                     * drawingParameters.zEdit
             );
-
-            switch (mode) {
-                case GeometryCreationMode::Normal:
-                    color[coordindex] = drawingParameters.CurveColor;
-                    break;
-                case GeometryCreationMode::Construction:
-                    color[coordindex] = drawingParameters.CurveDraftColor;
-                    break;
-            }
-
             coordindex++;
         }
         index[indexindex] = v.size();
@@ -1118,7 +1094,23 @@ void EditModeCoinManager::drawEdit(
 
     editModeScenegraphNodes.EditCurvesCoordinate->point.finishEditing();
     editModeScenegraphNodes.EditCurveSet->numVertices.finishEditing();
-    editModeScenegraphNodes.EditCurvesMaterials->diffuseColor.finishEditing();
+    updateEditCurveAppearance(mode);
+}
+
+void EditModeCoinManager::updateEditCurveAppearance(GeometryCreationMode mode)
+{
+    setEditDrawStyle(mode);
+
+    auto& colors = editModeScenegraphNodes.EditCurvesMaterials->diffuseColor;
+    SbColor* values = colors.startEditing();
+    const SbColor& color = mode == GeometryCreationMode::Normal ? drawingParameters.CurveColor
+                                                                : drawingParameters.CurveDraftColor;
+
+    for (int i = 0; i < colors.getNum(); ++i) {
+        values[i] = color;
+    }
+
+    colors.finishEditing();
 }
 
 void EditModeCoinManager::drawLineExtensionAutoConstraintHint(
@@ -1259,8 +1251,11 @@ EditModeCoinManager::PreselectionResult EditModeCoinManager::detectConstraintPre
             case ConstraintResult::HitKind::Icon:
                 target.ConstraintKind = PreselectionResult::ConstraintHitKind::Icon;
                 break;
-            case ConstraintResult::HitKind::DatumLabel:
-                target.ConstraintKind = PreselectionResult::ConstraintHitKind::DatumLabel;
+            case ConstraintResult::HitKind::DatumPresentation:
+                target.ConstraintKind = PreselectionResult::ConstraintHitKind::DatumPresentation;
+                break;
+            case ConstraintResult::HitKind::DatumAnnotation:
+                target.ConstraintKind = PreselectionResult::ConstraintHitKind::DatumAnnotation;
                 break;
             case ConstraintResult::HitKind::None:
                 target.ConstraintKind = PreselectionResult::ConstraintHitKind::None;
@@ -1718,6 +1713,17 @@ void EditModeCoinManager::setConstraintSelectability(bool enabled /* = true */)
     pEditModeConstraintCoinManager->setConstraintSelectability(enabled);
 }
 
+void EditModeCoinManager::setOriginPointMarker(bool hollow)
+{
+    originPointMarkerHollow = hollow;
+    const char* markerName = hollow ? "CIRCLE_LINE" : "CIRCLE_FILLED";
+
+    editModeScenegraphNodes.OriginPointSet->markerIndex
+        = Gui::Inventor::MarkerBitmaps::getMarkerIndex(markerName, drawingParameters.markerSize);
+    editModeScenegraphNodes.OriginPointSetOccluded->markerIndex
+        = Gui::Inventor::MarkerBitmaps::getMarkerIndex(markerName, drawingParameters.markerSize);
+}
+
 
 void EditModeCoinManager::updateGeometryLayersConfiguration()
 {
@@ -1737,7 +1743,15 @@ void EditModeCoinManager::createEditModeInventorNodes()
     pEditModeGeometryCoinManager->createEditModeInventorNodes();
 
     // stuff for the RootCross lines +++++++++++++++++++++++++++++++++++++++
-    SoGroup* crossRoot = new Gui::SoSkipBoundingGroup;
+    // Viewport-sized axes must not feed viewAll/fitAll. Visible axes were
+    // already a SkipBoundingGroup; the default mode is INCLUDE_BBOX, so an
+    // action that does not set EXCLUDE still frames them. Occluded copies
+    // used to live on a plain SoSeparator and did feed fitAll: after
+    // onCameraChanged stretched them to the frustum, the next fitAll locked
+    // (or exploded) the ortho height. Class-only radial then clicked a
+    // ~10-unit circle at height ~8e4 and hit Vertex1.
+    auto* crossRoot = new Gui::SoSkipBoundingGroup;
+    crossRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     editModeScenegraphNodes.pickStyleAxes = new SoPickStyle();
     editModeScenegraphNodes.pickStyleAxes->style = SoPickStyle::SHAPE;
     crossRoot->addChild(editModeScenegraphNodes.pickStyleAxes);
@@ -1789,7 +1803,8 @@ void EditModeCoinManager::createEditModeInventorNodes()
     visibleAxes->addChild(editModeScenegraphNodes.RootCrossVSet);
 
     // stuff for the Origin Point
-    SoGroup* originPointRoot = new Gui::SoSkipBoundingGroup;
+    auto* originPointRoot = new Gui::SoSkipBoundingGroup;
+    originPointRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     originPointRoot->setName("OriginPointRoot_SkipBBox");
     editModeScenegraphNodes.EditRoot->addChild(originPointRoot);
 
@@ -1800,7 +1815,7 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.OriginPointMaterial = new SoMaterial;
     editModeScenegraphNodes.OriginPointMaterial->setName("OriginPointMaterial");
     editModeScenegraphNodes.OriginPointMaterial->transparency.setValue(
-        drawingParameters.axisTransparency
+        drawingParameters.originTransparency
     );
     visibleOrigin->addChild(editModeScenegraphNodes.OriginPointMaterial);
 
@@ -1822,31 +1837,38 @@ void EditModeCoinManager::createEditModeInventorNodes()
         = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
     visibleOrigin->addChild(editModeScenegraphNodes.OriginPointSet);
 
-    // pass for occluded transparency
-    auto* occludedOverlayRoot = new SoSeparator;
+    // pass for occluded transparency. Same world coordinates as the visible
+    // axes (updateAxesLength); exclude from fitAll for the same reason.
+    auto* occludedOverlayRoot = new Gui::SoSkipBoundingGroup;
+    occludedOverlayRoot->mode = Gui::SoSkipBoundingGroup::EXCLUDE_BBOX;
     occludedOverlayRoot->setName("OccludedOverlayRoot");
     editModeScenegraphNodes.EditRoot->addChild(occludedOverlayRoot);
+    // SoSkipBoundingGroup is an SoGroup and does not push/pop state. Keep the
+    // overlay's GREATER depth test, UNPICKABLE pick style and 0.9 transparency
+    // from leaking into the curves, markers and constraint labels added after it.
+    auto* occludedOverlay = new SoSeparator;
+    occludedOverlayRoot->addChild(occludedOverlay);
 
     auto* overlayPick = new SoPickStyle;
     overlayPick->style = SoPickStyle::UNPICKABLE;
-    occludedOverlayRoot->addChild(overlayPick);
+    occludedOverlay->addChild(overlayPick);
 
     auto* overlayDepth = new SoDepthBuffer;
     overlayDepth->function = SoDepthBuffer::GREATER;
     overlayDepth->write.setValue(false);
-    occludedOverlayRoot->addChild(overlayDepth);
+    occludedOverlay->addChild(overlayDepth);
 
     editModeScenegraphNodes.RootCrossDrawStyleOccluded = new SoDrawStyle;
     editModeScenegraphNodes.RootCrossDrawStyleOccluded->setName("RootCrossDrawStyleOccluded");
     editModeScenegraphNodes.RootCrossDrawStyleOccluded->lineWidth = 2
         * drawingParameters.pixelScalingFactor;
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossDrawStyleOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossDrawStyleOccluded);
 
     // Occluded horizontal axis
     editModeScenegraphNodes.RootCrossHCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossHCoordinateOccluded->setName("RootCrossHCoordinateOccluded");
     editModeScenegraphNodes.RootCrossHCoordinateOccluded->point.setNum(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossHCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossHCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedH = new SoMaterial;
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->setName("RootCrossMaterialsOccludedH");
@@ -1856,18 +1878,18 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedH);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedH);
 
     editModeScenegraphNodes.RootCrossSetOccludedH = new SoLineSet;
     editModeScenegraphNodes.RootCrossSetOccludedH->setName("RootCrossLineSetOccludedH");
     editModeScenegraphNodes.RootCrossSetOccludedH->numVertices.setValue(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossSetOccludedH);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossSetOccludedH);
 
     // Occluded vertical axis
     editModeScenegraphNodes.RootCrossVCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossVCoordinateOccluded->setName("RootCrossVCoordinateOccluded");
     editModeScenegraphNodes.RootCrossVCoordinateOccluded->point.setNum(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossVCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossVCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedV = new SoMaterial;
     editModeScenegraphNodes.RootCrossMaterialsOccludedV->setName("RootCrossMaterialsOccludedV");
@@ -1877,24 +1899,24 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.RootCrossMaterialsOccludedV->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedV);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossMaterialsOccludedV);
 
     editModeScenegraphNodes.RootCrossSetOccludedV = new SoLineSet;
     editModeScenegraphNodes.RootCrossSetOccludedV->setName("RootCrossLineSetOccludedV");
     editModeScenegraphNodes.RootCrossSetOccludedV->numVertices.setValue(2);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.RootCrossSetOccludedV);
+    occludedOverlay->addChild(editModeScenegraphNodes.RootCrossSetOccludedV);
 
     // Occluded origin
     editModeScenegraphNodes.OriginPointDrawStyleOccluded = new SoDrawStyle;
     editModeScenegraphNodes.OriginPointDrawStyleOccluded->setName("OriginPointDrawStyleOccluded");
     editModeScenegraphNodes.OriginPointDrawStyleOccluded->pointSize = 8
         * drawingParameters.pixelScalingFactor;
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointDrawStyleOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointDrawStyleOccluded);
 
     editModeScenegraphNodes.OriginPointCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.OriginPointCoordinateOccluded->setName("OriginPointCoordinateOccluded");
     editModeScenegraphNodes.OriginPointCoordinateOccluded->point.set1Value(0, SbVec3f(0.0f, 0.0f, 0.0f));
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointCoordinateOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointCoordinateOccluded);
 
     editModeScenegraphNodes.OriginPointMaterialOccluded = new SoMaterial;
     editModeScenegraphNodes.OriginPointMaterialOccluded->setName("OriginPointMaterialOccluded");
@@ -1904,13 +1926,13 @@ void EditModeCoinManager::createEditModeInventorNodes()
     editModeScenegraphNodes.OriginPointMaterialOccluded->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointMaterialOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointMaterialOccluded);
 
     editModeScenegraphNodes.OriginPointSetOccluded = new SoMarkerSet;
     editModeScenegraphNodes.OriginPointSetOccluded->setName("OriginPointSetOccluded");
     editModeScenegraphNodes.OriginPointSetOccluded->markerIndex
         = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
-    occludedOverlayRoot->addChild(editModeScenegraphNodes.OriginPointSetOccluded);
+    occludedOverlay->addChild(editModeScenegraphNodes.OriginPointSetOccluded);
 
     // stuff for the EditCurves +++++++++++++++++++++++++++++++++++++++
     SoSeparator* editCurvesRoot = new SoSeparator;
@@ -2211,14 +2233,16 @@ void EditModeCoinManager::updateInventorNodeSizes()
 
     editModeScenegraphNodes.OriginPointDrawStyle->pointSize = 8
         * drawingParameters.pixelScalingFactor;
-    editModeScenegraphNodes.OriginPointSet->markerIndex
-        = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
-    editModeScenegraphNodes.OriginPointSetOccluded->markerIndex
-        = Gui::Inventor::MarkerBitmaps::getMarkerIndex("CIRCLE_FILLED", drawingParameters.markerSize);
+    setOriginPointMarker(originPointMarkerHollow);
 
-    editModeScenegraphNodes.RootCrossDrawStyle->lineWidth = 2 * drawingParameters.pixelScalingFactor;
-    editModeScenegraphNodes.RootCrossDrawStyleOccluded->lineWidth = 2
+    editModeScenegraphNodes.RootCrossDrawStyle->lineWidth = drawingParameters.AxisLineWidth
         * drawingParameters.pixelScalingFactor;
+    editModeScenegraphNodes.RootCrossDrawStyleOccluded->lineWidth = drawingParameters.AxisLineWidth
+        * drawingParameters.pixelScalingFactor;
+
+    editModeScenegraphNodes.RootCrossDrawStyle->linePattern = drawingParameters.AxisLinePattern;
+    editModeScenegraphNodes.RootCrossDrawStyleOccluded->linePattern = drawingParameters.AxisLinePattern;
+
     editModeScenegraphNodes.OriginPointDrawStyleOccluded->pointSize = 8
         * drawingParameters.pixelScalingFactor;
     editModeScenegraphNodes.EditCurvesDrawStyle->lineWidth = 3 * drawingParameters.pixelScalingFactor;
@@ -2247,6 +2271,8 @@ void EditModeCoinManager::updateInventorWidths()
         = drawingParameters.ExternalDefiningWidth * drawingParameters.pixelScalingFactor;
     editModeScenegraphNodes.InformationDrawStyle->lineWidth = drawingParameters.InformationWidth
         * drawingParameters.pixelScalingFactor;
+    editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->lineWidth
+        = drawingParameters.ExternalDefiningWidth * drawingParameters.pixelScalingFactor;
 }
 
 void EditModeCoinManager::updateInventorPatterns()
@@ -2259,6 +2285,8 @@ void EditModeCoinManager::updateInventorPatterns()
     editModeScenegraphNodes.CurvesExternalDefiningDrawStyle->linePattern
         = drawingParameters.ExternalDefiningPattern;
     editModeScenegraphNodes.InformationDrawStyle->linePattern = drawingParameters.InformationPattern;
+    editModeScenegraphNodes.RootCrossDrawStyle->linePattern = drawingParameters.AxisLinePattern;
+    editModeScenegraphNodes.RootCrossDrawStyleOccluded->linePattern = drawingParameters.AxisLinePattern;
 }
 
 void EditModeCoinManager::updateInventorColors()
@@ -2272,9 +2300,8 @@ void EditModeCoinManager::updateInventorColors()
         drawingParameters.axisTransparency
     );
     editModeScenegraphNodes.OriginPointMaterial->transparency.setValue(
-        drawingParameters.axisTransparency
+        drawingParameters.originTransparency
     );
-
     editModeScenegraphNodes.RootCrossMaterialsOccludedH->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
@@ -2284,7 +2311,6 @@ void EditModeCoinManager::updateInventorColors()
     editModeScenegraphNodes.OriginPointMaterialOccluded->transparency.setValue(
         drawingParameters.occludedAxisTransparency
     );
-
     editModeScenegraphNodes.textMaterial->diffuseColor = drawingParameters.CursorTextColor;
 }
 

@@ -74,8 +74,11 @@ class ExportImportTest(unittest.TestCase):
 
         sa = coin.SoSearchAction()
         sa.setType(coin.SoMaterialBinding.getClassTypeId())
-        # We need an easier way to access nodes of a display mode
+        # Search every display mode, not just the active one: a link-group
+        # child is rendered through its group, so whether this object's own
+        # mode switch is on depends on when the tree last ran.
         sa.setInterest(coin.SoSearchAction.ALL)
+        sa.setSearchingAll(True)
         sa.apply(feature.ViewObject.RootNode)
         paths = sa.getPaths()
 
@@ -84,8 +87,11 @@ class ExportImportTest(unittest.TestCase):
 
         sa = coin.SoSearchAction()
         sa.setType(coin.SoMaterial.getClassTypeId())
-        # We need an easier way to access nodes of a display mode
+        # Search every display mode, not just the active one: a link-group
+        # child is rendered through its group, so whether this object's own
+        # mode switch is on depends on when the tree last ran.
         sa.setInterest(coin.SoSearchAction.ALL)
+        sa.setSearchingAll(True)
         sa.apply(feature.ViewObject.RootNode)
         paths = sa.getPaths()
 

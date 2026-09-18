@@ -32,6 +32,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cctype>
+#include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <QApplication>
@@ -117,6 +118,7 @@ struct DocumentP
     bool _isModified;
     bool _isTransacting;
     bool _isActive;
+    bool _restoredGuiDocument;
     bool _changeViewTouchDocument;
     bool _editWantsRestore;
     bool _editWantsRestorePrevious;
@@ -129,6 +131,11 @@ struct DocumentP
     std::string _editSubname;
     std::string _editSubElement;
     std::string _workbenchName;  // Name of the workbench acting on this document
+    // Updated only after onRelabel() completes.  A durable Save As outcome can
+    // therefore repair core views if a throwing raw relabel observer starved
+    // Gui::Application's legacy relabel path.
+    std::string appliedIdentityFileName;
+    std::string appliedIdentityLabel;
     Base::Matrix4D _editingTransform;
     View3DInventorViewer* _editingViewer;
     std::set<const App::DocumentObject*> _editObjs;
@@ -151,6 +158,8 @@ struct DocumentP
     Connection connectDelObject;
     Connection connectCngObject;
     Connection connectChangedViewObject;
+    Connection connectFileChangeState;
+    Connection connectSaveOutcome;
     Connection connectRenObject;
     AdvancedConnection connectActObject;
     Connection connectSaveDocument;
@@ -158,7 +167,7 @@ struct DocumentP
     Connection connectStartLoadDocument;
     Connection connectFinishLoadDocument;
     Connection connectShowHidden;
-    Connection connectFinishSaveDocument;
+
     Connection connectFinishRestoreObject;
     Connection connectExportObjects;
     Connection connectImportObjects;
@@ -292,6 +301,14 @@ struct DocumentP
         _editObjs.insert(sobjs.begin(), sobjs.end());
     }
 
+    void resetFailedEditing()
+    {
+        _editViewProvider = nullptr;
+        _editViewProviderParent = nullptr;
+        _editObjs.clear();
+        _editingObject = nullptr;
+    }
+
     bool tryStartEditing(
         ViewProviderDocumentObject* vp,
         App::DocumentObject* obj,
@@ -311,15 +328,35 @@ struct DocumentP
 
     bool tryStartEditing(ViewProviderDocumentObject* svp, App::DocumentObject* sobj, int ModNum)
     {
+        try {
+            return startEditing(svp, sobj, ModNum);
+        }
+        catch (const Base::Exception& e) {
+            resetFailedEditing();
+            FC_ERR("startEditing:" << e.what());
+            return false;
+        }
+        catch (const std::exception& e) {
+            resetFailedEditing();
+            FC_ERR("startEditing:" << e.what());
+            return false;
+        }
+        catch (...) {
+            resetFailedEditing();
+            FC_ERR("startEditing: Unknown C++ exception");
+            return false;
+        }
+    }
+
+    bool startEditing(ViewProviderDocumentObject* svp, App::DocumentObject* sobj, int ModNum)
+    {
         _editingObject = sobj;
         _editMode = ModNum;
         _editViewProvider = svp;  // Used to resolve start editing (find the document in edit from
                                   // within the viewprovider)
         _editViewProvider = svp->startEditing(ModNum);
         if (!_editViewProvider) {
-            _editViewProviderParent = nullptr;
-            _editObjs.clear();
-            _editingObject = nullptr;
+            resetFailedEditing();
             FC_LOG("object '" << sobj->getFullName() << "' refuse to edit");
             return false;
         }
@@ -464,8 +501,11 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->_isModified = false;
     d->_isTransacting = false;
     d->_isActive = false;
+    d->_restoredGuiDocument = false;
     d->_pcAppWnd = app;
     d->_pcDocument = pcDocument;
+    d->appliedIdentityFileName = pcDocument->FileName.getStrValue();
+    d->appliedIdentityLabel = pcDocument->Label.getStrValue();
     d->_editViewProvider = nullptr;
     d->_editViewProviderPrevious = nullptr;
     d->_editingObject = nullptr;
@@ -494,6 +534,12 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectChangedViewObject = app->signalChangedObject.connect(
         std::bind(&Gui::Document::slotChangedViewObject, this, sp::_1, sp::_2)
     );
+    d->connectFileChangeState = pcDocument->signalFileChangeStateChanged().connect(
+        std::bind(&Gui::Document::slotFileChangeStateChanged, this, sp::_1)
+    );
+    d->connectSaveOutcome = pcDocument->signalSaveOutcome().connect(
+        std::bind(&Gui::Document::slotSaveOutcome, this, sp::_1, sp::_2)
+    );
     d->connectRenObject = pcDocument->signalRelabelObject.connect(
         std::bind(&Gui::Document::slotRelabelObject, this, sp::_1)
     );
@@ -514,9 +560,7 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectFinishLoadDocument = App::GetApplication().signalFinishRestoreDocument.connect(
         std::bind(&Gui::Document::slotFinishRestoreDocument, this, sp::_1)
     );
-    d->connectFinishSaveDocument = App::GetApplication().signalFinishSaveDocument.connect(
-        std::bind(&Gui::Document::slotFinishSaveDocument, this, sp::_1, sp::_2)
-    );
+
     d->connectShowHidden = App::GetApplication().signalShowHidden.connect(
         std::bind(&Gui::Document::slotShowHidden, this, sp::_1)
     );
@@ -588,6 +632,8 @@ Document::~Document()
     d->connectNewObject.disconnect();
     d->connectDelObject.disconnect();
     d->connectCngObject.disconnect();
+    d->connectFileChangeState.disconnect();
+    d->connectSaveOutcome.disconnect();
     d->connectChangedViewObject.disconnect();
     d->connectRenObject.disconnect();
     d->connectActObject.disconnect();
@@ -595,7 +641,7 @@ Document::~Document()
     d->connectRestDocument.disconnect();
     d->connectStartLoadDocument.disconnect();
     d->connectFinishLoadDocument.disconnect();
-    d->connectFinishSaveDocument.disconnect();
+
     d->connectShowHidden.disconnect();
     d->connectFinishRestoreObject.disconnect();
     d->connectExportObjects.disconnect();
@@ -644,7 +690,15 @@ bool Document::setEdit(Gui::ViewProvider* p, int ModNum, const char* subname)
         return trySetEdit(p, ModNum, subname);
     }
     catch (const Base::Exception& e) {
-        FC_ERR("" << e.what());
+        FC_ERR("setEdit:" << e.what());
+        return false;
+    }
+    catch (const std::exception& e) {
+        FC_ERR("setEdit:" << e.what());
+        return false;
+    }
+    catch (...) {
+        FC_ERR("setEdit: Unknown C++ exception");
         return false;
     }
 }
@@ -1035,7 +1089,6 @@ void Document::slotNewObject(const App::DocumentObject& Obj)
             }
         }
 
-        setModified(true);
         d->_ViewProviderMap[&Obj] = pcProvider;
         d->_CoinMap[pcProvider->getRoot()] = pcProvider;
         pcProvider->setStatus(Gui::ViewStatus::TouchDocument, d->_changeViewTouchDocument);
@@ -1091,8 +1144,6 @@ void Document::slotNewObject(const App::DocumentObject& Obj)
 
 void Document::slotDeletedObject(const App::DocumentObject& Obj)
 {
-    setModified(true);
-
     // cycling to all views of the document
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (!viewProvider) {
@@ -1181,12 +1232,6 @@ void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Prop
         if (viewProvider->isDerivedFrom<ViewProviderDocumentObject>()) {
             signalChangedObject(static_cast<ViewProviderDocumentObject&>(*viewProvider), Prop);
         }
-    }
-
-    // a property of an object has changed
-    if (!Prop.testStatus(App::Property::NoModify) && !isModified()) {
-        FC_LOG(Prop.getFullName() << " modified");
-        setModified(true);
     }
 
     getMainWindow()->updateActions(true);
@@ -1315,10 +1360,7 @@ void Document::slotSkipRecompute(const App::Document& doc, const std::vector<App
 void Document::slotTouchedObject(const App::DocumentObject& Obj)
 {
     getMainWindow()->updateActions(true);
-    if (!isModified()) {
-        FC_LOG(Obj.getFullName() << " touched");
-        setModified(true);
-    }
+    FC_LOG(Obj.getFullName() << " touched");
 }
 
 void Document::addViewProvider(Gui::ViewProviderDocumentObject* vp)
@@ -1334,22 +1376,91 @@ void Document::addViewProvider(Gui::ViewProviderDocumentObject* vp)
     d->_CoinMap[vp->getRoot()] = vp;
 }
 
-void Document::setModified(bool b)
+void Document::notifyCameraActivity()
 {
-    if (d->_isModified == b) {
+    if (!d->_pcDocument || d->_pcDocument->testStatus(App::Document::Restoring)) {
         return;
     }
-    d->_isModified = b;
+    signalCameraActivity(*this);
+}
+
+void Document::setModified(bool b)
+{
+    d->_pcDocument->setCompatibilityFileModified(
+        b, App::DocumentFileChangeOwnership::Sticky);
+    slotFileChangeStateChanged(*d->_pcDocument);
+}
+
+void Document::slotFileChangeStateChanged(const App::Document& document)
+{
+    if (&document != d->_pcDocument) {
+        return;
+    }
+    const bool modified = document.hasPendingFileChanges()
+        || document.lastCanonicalSaveFailed();
+    const bool modifiedChanged = d->_isModified != modified;
+    d->_isModified = modified;
 
     std::list<MDIView*> mdis = getMDIViews();
     for (auto& mdi : mdis) {
-        mdi->setWindowModified(b);
+        if (modifiedChanged) {
+            mdi->setWindowModified(modified);
+        }
+        mdi->setWindowTitle(mdi->windowTitle());
+    }
+}
+
+void Document::slotSaveOutcome(const App::Document& document,
+                               const App::DocumentSaveOutcome& outcome)
+{
+    if (&document != d->_pcDocument) {
+        return;
+    }
+
+    const bool canonicalWrite = outcome.disposition == App::DocumentSaveDisposition::Written
+        && outcome.intent != App::DocumentSaveIntent::Copy
+        && outcome.intent != App::DocumentSaveIntent::Recovery;
+    const bool durableSaveAsAdoption = outcome.intent == App::DocumentSaveIntent::SaveAs
+        && outcome.disposition == App::DocumentSaveDisposition::Written
+        && outcome.fileWritten && outcome.durabilityVerified;
+    if (durableSaveAsAdoption
+        && (d->appliedIdentityFileName != document.FileName.getStrValue()
+            || d->appliedIdentityLabel != document.Label.getStrValue())) {
+        onRelabel();
+    }
+    if (d->pendingPresentationSave) {
+        const auto status = d->sharedPresentationRevisions.markPersisted(
+            *d->pendingPresentationSave,
+            canonicalWrite ? SharedPresentationSaveDisposition::Succeeded
+                           : SharedPresentationSaveDisposition::Abandoned);
+        d->pendingPresentationSave.reset();
+        if (canonicalWrite && status != SharedPresentationPersistStatus::Marked) {
+            d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
+            FC_ERR("Cannot advance shared-presentation persisted marker after save");
+        }
+    }
+    // The window layout is GUI state, not model content. A change-aware save
+    // that wrote nothing because the model was already persisted still has to
+    // record where the user put the window -- otherwise moving or resizing a
+    // document window and saving silently loses the layout. Only a copy or a
+    // recovery snapshot, which target a path the document does not adopt, are
+    // left alone.
+    const bool persistWindowLayout =
+        (outcome.disposition == App::DocumentSaveDisposition::Written
+         || outcome.disposition == App::DocumentSaveDisposition::Unchanged)
+        && outcome.intent != App::DocumentSaveIntent::Copy
+        && outcome.intent != App::DocumentSaveIntent::Recovery;
+    if (persistWindowLayout) {
+        const auto& savedPath = outcome.targetPath.empty() ? outcome.canonicalPath
+                                                           : outcome.targetPath;
+        WindowLayout::save(*this, savedPath);
     }
 }
 
 bool Document::isModified() const
 {
-    return d->_isModified;
+    return d->_pcDocument->hasPendingFileChanges()
+        || d->_pcDocument->lastCanonicalSaveFailed();
 }
 void Document::setWorkbench(const std::string& name)
 {
@@ -1433,6 +1544,16 @@ App::Document* Document::getDocument() const
 void Document::slotChangedViewObject(const Gui::ViewProvider& viewProvider,
                                      const App::Property& property)
 {
+    const bool propertyStatusChange = Application::Instance
+        && Application::Instance->currentNotificationIsPropertyStatusChange(
+            viewProvider, property);
+    if (property.testStatus(App::Property::PropNoPersist)
+        || (!propertyStatusChange
+            && (property.testStatus(App::Property::NoModify)
+                || property.testStatus(App::Property::Transient)
+                || property.testStatus(App::Property::PropTransient)))) {
+        return;
+    }
     if (d->sharedPresentationPublicationSuppressed
         && (!Application::Instance
             || Application::Instance->suppressCurrentSharedPresentationPublication())) {
@@ -1504,6 +1625,7 @@ CollaborationCompatibilityMutationOutcome Document::executeCompatibilityMutation
                         mutation.scope = App::CollaborationCompatibilityScope::ObjectModel;
                         mutation.objectName = admitted.objectName;
                         mutation.stableObjectIdentity = admitted.stableObjectIdentity;
+                        mutation.propertyName = admitted.propertyName;
                     }
                     else {
                         mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
@@ -1769,6 +1891,68 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
         Application& application;
         bool active {true};
     } notificationBarrier {*Application::Instance};
+
+    // StatusBits are not part of TransactionObject's ordinary value payload.
+    // Always attempt the caller's GUI rollback, then restore every status-only
+    // transition captured by the GUI barrier. Either failure is authoritative.
+    if (callbacks.rollbackGuiMutation) {
+        auto suppliedRollback = std::move(callbacks.rollbackGuiMutation);
+        callbacks.rollbackGuiMutation =
+            [application = Application::Instance,
+             suppliedRollback = std::move(suppliedRollback)]() mutable {
+                SharedPresentationStepResult suppliedResult;
+                std::exception_ptr suppliedException;
+                try {
+                    suppliedResult = suppliedRollback();
+                }
+                catch (...) {
+                    suppliedException = std::current_exception();
+                }
+
+                std::string statusDiagnostic;
+                const bool statusesRestored =
+                    application->restoreSharedPresentationPropertyStatuses(statusDiagnostic);
+                if (!suppliedException && suppliedResult.succeeded && statusesRestored) {
+                    return SharedPresentationStepResult {true, {}};
+                }
+
+                std::string diagnostic;
+                const auto append = [&](std::string_view detail) {
+                    if (detail.empty()) {
+                        return;
+                    }
+                    if (!diagnostic.empty()) {
+                        diagnostic += "; ";
+                    }
+                    diagnostic += detail;
+                };
+                if (suppliedException) {
+                    try {
+                        std::rethrow_exception(suppliedException);
+                    }
+                    catch (const Base::Exception& exception) {
+                        append(std::string("caller GUI rollback raised: ") + exception.what());
+                    }
+                    catch (const std::exception& exception) {
+                        append(std::string("caller GUI rollback raised: ") + exception.what());
+                    }
+                    catch (...) {
+                        append("caller GUI rollback raised an unknown exception");
+                    }
+                }
+                else if (!suppliedResult.succeeded) {
+                    append(suppliedResult.diagnostic.empty()
+                               ? std::string_view("caller GUI rollback reported failure")
+                               : std::string_view(suppliedResult.diagnostic));
+                }
+                if (!statusesRestored) {
+                    append(statusDiagnostic.empty()
+                               ? std::string_view("property status rollback failed")
+                               : std::string_view(statusDiagnostic));
+                }
+                return SharedPresentationStepResult {false, std::move(diagnostic)};
+            };
+    }
 
     auto result = d->sharedPresentationCoordinator.commit(
         d->sharedPresentationRevisions, request, callbacks);
@@ -2583,15 +2767,11 @@ bool Document::save()
                 }
 
                 Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
-                auto gdoc = Application::Instance->getDocument(doc);
-                if (gdoc) {
-                    gdoc->setModified(false);
-                }
             }
         }
         catch (const Base::FileException& e) {
             e.reportException();
-            return askIfSavingFailed(QString::fromUtf8(e.what()));
+            return askIfSavingFailed(QString::fromStdString(e.getTranslatedMessage()));
         }
         catch (const Base::Exception& e) {
             QMessageBox::critical(
@@ -2642,20 +2822,25 @@ bool Document::saveAs()
             Gui::WaitCursor wc;
             std::string escapedstr = Base::Tools::escapedUnicodeFromUtf8(fn.toUtf8());
             escapedstr = Base::Tools::escapeEncodeFilename(escapedstr);
+            // The legacy Python saveAs() deliberately keeps its historical
+            // None-on-false behavior. The GUI needs an authoritative outcome
+            // so a failed Save As cannot fall through as success during close.
             Command::doCommand(
                 Command::Doc,
-                "App.getDocument(\"%s\").saveAs(u\"%s\")",
+                "_save_outcome = App.getDocument(\"%s\").saveAsWithOutcome(u\"%s\", True)\n"
+                "if not _save_outcome['success']:\n"
+                "    raise RuntimeError(_save_outcome.get('message') or "
+                "'The document could not be saved under the requested path')",
                 DocName,
                 escapedstr.c_str()
             );
             // App::Document::saveAs() may modify the passed file name
             fi.setFile(QString::fromUtf8(d->_pcDocument->FileName.getValue()));
-            setModified(false);
             getMainWindow()->appendRecentFile(fi.filePath());
         }
         catch (const Base::FileException& e) {
             e.reportException();
-            return askIfSavingFailed(QString::fromUtf8(e.what()));
+            return askIfSavingFailed(QString::fromUtf8(e.getTranslatedMessage().c_str()));
         }
         catch (const Base::Exception& e) {
             QMessageBox::critical(
@@ -2663,6 +2848,7 @@ bool Document::saveAs()
                 QObject::tr("Saving document failed"),
                 QString::fromLatin1(e.what())
             );
+            return false;
         }
         return true;
     }
@@ -2727,7 +2913,6 @@ void Document::saveAll()
                 Command::doCommand(Command::Doc, "App.getDocument('%s').recompute()", doc->getName());
             }
             Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
-            gdoc->setModified(false);
         }
         catch (const Base::Exception& e) {
             QMessageBox::critical(
@@ -2808,13 +2993,16 @@ void Document::Save(Base::Writer& writer) const
         if (hGrp->GetBool("SaveThumbnail", true)) {
             int size = hGrp->GetInt("ThumbnailSize", 256);
             size = Base::clamp<int>(size, 64, 512);
-            std::list<MDIView*> mdi = getMDIViews();
-
             View3DInventorViewer* view = nullptr;
-            for (const auto& it : mdi) {
-                if (it->isDerivedFrom<View3DInventor>()) {
-                    view = static_cast<View3DInventor*>(it)->getViewer();
-                    break;
+            if (auto* active = freecad_cast<View3DInventor*>(getActiveView())) {
+                view = active->getViewer();
+            }
+            else {
+                for (const auto& it : getMDIViews()) {
+                    if (auto* candidate = freecad_cast<View3DInventor*>(it)) {
+                        view = candidate->getViewer();
+                        break;
+                    }
                 }
             }
 
@@ -2831,6 +3019,7 @@ void Document::Save(Base::Writer& writer) const
  */
 void Document::Restore(Base::XMLReader& reader)
 {
+    d->_restoredGuiDocument = false;
     reader.addFile("GuiDocument.xml", this);
 
     // hide all elements to avoid to update the 3d view when loading data files
@@ -2847,6 +3036,8 @@ void Document::Restore(Base::XMLReader& reader)
  */
 void Document::RestoreDocFile(Base::Reader& reader)
 {
+    d->_restoredGuiDocument = true;
+
     // GuiDocument.xml retains the legacy local-human camera/tree defaults for
     // file compatibility. Actor-scoped PersonalViewContext values are never
     // restored from the shared document and remain transient.
@@ -2934,8 +3125,7 @@ void Document::RestoreDocFile(Base::Reader& reader)
 
     reader.initLocalReader(localreader);
 
-    // reset modified flag
-    setModified(false);
+    slotFileChangeStateChanged(*d->_pcDocument);
 }
 
 void Document::slotStartRestoreDocument(const App::Document& doc)
@@ -2973,8 +3163,14 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
         }
     }
 
-    // reset modified flag
-    setModified(doc.testStatus(App::Document::LinkStampChanged));
+    if (!d->_restoredGuiDocument) {
+        for (auto* mdiView : getMDIViews()) {
+            if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
+                view3D->viewAll();
+                break;
+            }
+        }
+    }
 
     // Loading establishes the durable presentation baseline for this document
     // epoch.  Subsequent ViewProvider publications are dirty until a save
@@ -3000,26 +3196,6 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
         }
         WindowLayout::restore(*guiDocument);
     });
-}
-
-void Document::slotFinishSaveDocument(
-    const App::Document& doc,
-    const std::string& fileName
-)
-{
-    if (d->_pcDocument == &doc) {
-        if (d->pendingPresentationSave) {
-            const auto status = d->sharedPresentationRevisions.markPersisted(
-                *d->pendingPresentationSave,
-                SharedPresentationSaveDisposition::Succeeded);
-            d->pendingPresentationSave.reset();
-            if (status != SharedPresentationPersistStatus::Marked) {
-                d->sharedPresentationRevisions.markInconsistentAfterUnpublishedMutation();
-                FC_ERR("Cannot advance shared-presentation persisted marker after save");
-            }
-        }
-        WindowLayout::save(*this, fileName);
-    }
 }
 
 void Document::slotShowHidden(const App::Document& doc)
@@ -3092,12 +3268,17 @@ void Document::SaveDocFile(Base::Writer& writer) const
     writer.Stream() << writer.ind() << "</ViewProviderData>" << std::endl;
     writer.decInd();  // indentation for 'ViewProviderData Count'
 
-    // save camera settings
-    for (const auto& it : getMDIViews()) {
-        if (auto* viewCamera = freecad_cast<MDIViewWithCamera*>(it)) {
-            const std::string& camera = viewCamera->getCamera();
-            if (saveCameraSettings(camera.c_str())) {
-                break;
+    // Save the active view belonging to this document, with a deterministic fallback.
+    bool cameraSaved = false;
+    if (auto* activeCamera = freecad_cast<MDIViewWithCamera*>(getActiveView())) {
+        cameraSaved = saveCameraSettings(activeCamera->getCamera().c_str());
+    }
+    if (!cameraSaved) {
+        for (const auto& it : getMDIViews()) {
+            if (auto* viewCamera = freecad_cast<MDIViewWithCamera*>(it)) {
+                if (saveCameraSettings(viewCamera->getCamera().c_str())) {
+                    break;
+                }
             }
         }
     }
@@ -3452,6 +3633,8 @@ void Document::onRelabel()
     }
 
     d->connectChangeDocumentBlocker.unblock();
+    d->appliedIdentityFileName = d->_pcDocument->FileName.getStrValue();
+    d->appliedIdentityLabel = d->_pcDocument->Label.getStrValue();
 }
 
 bool Document::isLastView()
@@ -3520,13 +3703,18 @@ bool Document::canClose(bool checkModify, bool checkLink)
                                : QObject::tr(
                                      "Document saving failed. Would you like to cancel the closure?"
                                  ));
-                    int ret = QMessageBox::question(
-                        getActiveView(),
+                    QMessageBox box(
+                        QMessageBox::Warning,
                         QObject::tr("Unable to save document"),
                         text,
                         QMessageBox::Discard | QMessageBox::Cancel,
-                        QMessageBox::Discard
-                    );
+                        getActiveView());
+                    box.setDefaultButton(QMessageBox::Cancel);
+                    box.setEscapeButton(QMessageBox::Cancel);
+                    if (auto* discard = box.button(QMessageBox::Discard)) {
+                        discard->setText(QObject::tr("Close Without Saving"));
+                    }
+                    const int ret = box.exec();
                     if (ret == QMessageBox::Discard) {
                         ok = true;
                     }
@@ -3646,8 +3834,11 @@ bool Document::sendMsgToFirstView(const Base::Type& typeId, const char* pMsg)
 /// Getter for the active view
 MDIView* Document::getActiveView() const
 {
-    // get the main window's active view
-    MDIView* active = getMainWindow()->activeWindow();
+    // A Gui::Document can exist without a MainWindow in headless embedding and
+    // during early/late application lifetime.  Prefer the window's active view
+    // when one exists, but keep the document-local fallback authoritative.
+    auto* mainWindow = getMainWindow();
+    MDIView* active = mainWindow ? mainWindow->activeWindow() : nullptr;
 
     // get all MDI views of the document
     std::list<MDIView*> mdis = getMDIViews();
@@ -3666,7 +3857,6 @@ MDIView* Document::getActiveView() const
     }
 
     // the active view is not part of this document, just use the last view
-    const auto& windows = Gui::getMainWindow()->windows();
     for (auto rit = mdis.rbegin(); rit != mdis.rend(); ++rit) {
         if ((*rit)->isDeleting()) {
             continue;
@@ -3678,7 +3868,8 @@ MDIView* Document::getActiveView() const
         // hidden page has view but not in the list. By right, the view will
         // self delete, but not the case for TechDraw, especially during
         // document restore.
-        if (windows.contains(*rit) || (*rit)->isDerivedFrom<View3DInventor>()) {
+        if (!mainWindow || mainWindow->windows().contains(*rit)
+            || (*rit)->isDerivedFrom<View3DInventor>()) {
             return *rit;
         }
     }
@@ -4140,8 +4331,9 @@ void Document::slotChangePropertyEditor(const App::Document& doc, const App::Pro
 {
     if (getDocument() == &doc) {
         FC_LOG(Prop.getFullName() << " editor changed");
-        setModified(true);
-        getMainWindow()->setUserSchema(doc.UnitSystem.getValue());
+        if (auto* mainWindow = getMainWindow()) {
+            mainWindow->setUserSchema(doc.UnitSystem.getValue());
+        }
     }
 }
 

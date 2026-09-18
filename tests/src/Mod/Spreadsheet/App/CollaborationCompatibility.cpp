@@ -8,15 +8,21 @@
 #include <App/DocumentCommitCoordinator.h>
 #include <App/DocumentObserverPython.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/Expression.h>
 #include <App/FeatureTest.h>
+#include <App/ObjectIdentifier.h>
 #include <App/PropertyStandard.h>
 #include <Base/Interpreter.h>
+#include <Base/Tools.h>
 #include <Mod/Spreadsheet/App/Sheet.h>
 #include <Mod/Spreadsheet/App/Cell.h>
 #include <src/App/InitApplication.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -66,6 +72,27 @@ public:
 
 private:
     Py::Object _observer;
+};
+
+class ScopedTemporaryDirectory final
+{
+public:
+    explicit ScopedTemporaryDirectory(const std::string& prefix)
+        : path(std::filesystem::temp_directory_path()
+               / (prefix
+                  + std::to_string(
+                      std::chrono::steady_clock::now().time_since_epoch().count())))
+    {
+        std::filesystem::create_directories(path);
+    }
+
+    ~ScopedTemporaryDirectory()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+
+    std::filesystem::path path;
 };
 
 class SpreadsheetCollaborationCompatibilityTest: public ::testing::Test
@@ -210,6 +237,53 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
 }
 
 TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       createThenSetCellsReachCleanStableBoundaries)
+{
+    Spreadsheet::Sheet* created = nullptr;
+    App::FeatureTest* dependent = nullptr;
+    App::CollaborationCompatibilityMutation createMutation;
+    createMutation.scope = App::CollaborationCompatibilityScope::Structural;
+    const auto createResult =
+        _document->collaborationService().commitCompatibilityMutation(
+            std::move(createMutation), [&] {
+                created = freecad_cast<Spreadsheet::Sheet*>(
+                    _document->addObject("Spreadsheet::Sheet", "CreatedSheet"));
+                dependent = _document->addObject<App::FeatureTest>("SheetDependent");
+            });
+    ASSERT_EQ(createResult.status, App::DocumentCommitStatus::Committed)
+        << createResult.message;
+    ASSERT_NE(created, nullptr);
+    ASSERT_NE(dependent, nullptr);
+    EXPECT_FALSE(_document->mustExecute());
+
+    App::CollaborationCompatibilityMutation cellsMutation;
+    cellsMutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
+    const auto cellsResult =
+        _document->collaborationService().commitCompatibilityMutation(
+            std::move(cellsMutation), [created, dependent] {
+                created->setCell("A1", "=1+2");
+                created->setCell("B1", "120 mm");
+                created->setAlias(App::CellAddress("B1"), "span");
+                dependent->setExpression(
+                    App::ObjectIdentifier(dependent->QuantityLength),
+                    std::shared_ptr<App::Expression>(
+                        App::Expression::parse(dependent, "CreatedSheet.span")));
+            });
+    ASSERT_EQ(cellsResult.status, App::DocumentCommitStatus::Committed)
+        << cellsResult.message;
+    auto* numeric = created->getPropertyByName("A1");
+    ASSERT_NE(numeric, nullptr);
+    ASSERT_TRUE(numeric->is<App::PropertyInteger>());
+    EXPECT_EQ(static_cast<App::PropertyInteger*>(numeric)->getValue(), 3);
+    EXPECT_NE(created->getPropertyByName("B1"), nullptr);
+    EXPECT_NE(created->getPropertyByName("span"), nullptr);
+    EXPECT_DOUBLE_EQ(dependent->QuantityLength.getValue(), 120.0);
+    EXPECT_FALSE(_document->mustExecute());
+    EXPECT_TRUE(created->isValid());
+    EXPECT_TRUE(dependent->isValid());
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
        recomputeFailureDiscardsTransientSchemaNotifications)
 {
     const auto numericResult = commitCell("A1", "=1+2");
@@ -242,7 +316,8 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
             _failure->ExceptionType.setValue(1);
         });
 
-    EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed);
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed)
+        << result.message;
     EXPECT_EQ(removed, 0);
     EXPECT_EQ(appended, 0);
     EXPECT_EQ(_failure->ExceptionType.getValue(), 0);
@@ -280,6 +355,112 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     const auto poll = _document->collaborationRevisions().pollPublications(_cursor);
     EXPECT_TRUE(poll.events.empty());
     EXPECT_EQ(poll.latestSequence, _cursor.afterSequence);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       crossDocumentDeferredTouchCanCloseItsDependentDuringCommitPublication)
+{
+    ScopedTemporaryDirectory temporary("fc_spreadsheet_collaboration_close_");
+    const auto sourcePath = (temporary.path / "source.FCStd").string();
+    _sheet->setCell("A1", "10 mm");
+    _sheet->setAlias(App::CellAddress("A1"), "Width");
+    ASSERT_TRUE(_document->recompute());
+    ASSERT_TRUE(_document->saveAs(sourcePath.c_str()));
+
+    const auto dependentName = App::GetApplication().getUniqueDocumentName(
+        "spreadsheetCollaborationDependent");
+    auto* dependentDocument = App::GetApplication().newDocument(
+        dependentName.c_str(), "Spreadsheet collaboration dependent");
+    ASSERT_NE(dependentDocument, nullptr);
+    Base::ScopeGuard closeDependent([&] {
+        if (App::GetApplication().getDocument(dependentName.c_str())) {
+            App::GetApplication().closeDocument(dependentName.c_str());
+        }
+    });
+    auto* dependent = dependentDocument->addObject<App::FeatureTest>("Dependent");
+    ASSERT_NE(dependent, nullptr);
+    const auto dependentPath = (temporary.path / "dependent.FCStd").string();
+    ASSERT_TRUE(dependentDocument->saveAs(dependentPath.c_str()));
+    dependent->setExpression(
+        App::ObjectIdentifier(dependent->QuantityLength),
+        std::shared_ptr<App::Expression>(App::Expression::parse(
+            dependent, _documentName + "#Sheet.Width")));
+    ASSERT_TRUE(dependentDocument->recompute());
+    ASSERT_DOUBLE_EQ(dependent->QuantityLength.getValue(), 10.0);
+
+    bool callbackRan = false;
+    fastsignals::scoped_connection touchedConnection;
+    touchedConnection = dependentDocument->signalTouchedObject.connect(
+        [&](const App::DocumentObject& object) {
+            if (&object != dependent) {
+                return;
+            }
+            callbackRan = true;
+            touchedConnection.disconnect();
+            EXPECT_TRUE(App::GetApplication().closeDocument(dependentName.c_str()));
+            dependentDocument = nullptr;
+            dependent = nullptr;
+        });
+
+    const auto result = commitCell("A1", "20 mm");
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
+    EXPECT_TRUE(callbackRan);
+    EXPECT_EQ(App::GetApplication().getDocument(dependentName.c_str()), nullptr);
+}
+
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       failedCommitDiscardsDeferredCrossDocumentTouches)
+{
+    ScopedTemporaryDirectory temporary("fc_spreadsheet_collaboration_rollback_");
+    const auto sourcePath = (temporary.path / "source.FCStd").string();
+    _sheet->setCell("A1", "10 mm");
+    _sheet->setAlias(App::CellAddress("A1"), "Width");
+    ASSERT_TRUE(_document->recompute());
+    ASSERT_TRUE(_document->saveAs(sourcePath.c_str()));
+
+    const auto dependentName = App::GetApplication().getUniqueDocumentName(
+        "spreadsheetCollaborationDependent");
+    auto* dependentDocument = App::GetApplication().newDocument(
+        dependentName.c_str(), "Spreadsheet collaboration dependent");
+    ASSERT_NE(dependentDocument, nullptr);
+    Base::ScopeGuard closeDependent([&] {
+        if (App::GetApplication().getDocument(dependentName.c_str())) {
+            App::GetApplication().closeDocument(dependentName.c_str());
+        }
+    });
+    auto* dependent = dependentDocument->addObject<App::FeatureTest>("Dependent");
+    ASSERT_NE(dependent, nullptr);
+    const auto dependentPath = (temporary.path / "dependent.FCStd").string();
+    ASSERT_TRUE(dependentDocument->saveAs(dependentPath.c_str()));
+    dependent->setExpression(
+        App::ObjectIdentifier(dependent->QuantityLength),
+        std::shared_ptr<App::Expression>(App::Expression::parse(
+            dependent, _documentName + "#Sheet.Width")));
+    ASSERT_TRUE(dependentDocument->recompute());
+    ASSERT_DOUBLE_EQ(dependent->QuantityLength.getValue(), 10.0);
+
+    int touched = 0;
+    fastsignals::scoped_connection touchedConnection =
+        dependentDocument->signalTouchedObject.connect(
+            [&](const App::DocumentObject& object) {
+                if (&object == dependent) {
+                    ++touched;
+                }
+            });
+    App::CollaborationCompatibilityMutation mutation;
+    mutation.scope = App::CollaborationCompatibilityScope::UnknownModel;
+    const auto result = _document->collaborationService().commitCompatibilityMutation(
+        std::move(mutation), [this] {
+            _sheet->setCell("A1", "20 mm");
+            _failure->ExceptionType.setValue(1);
+        });
+
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::RecomputeFailed)
+        << result.message;
+    EXPECT_EQ(touched, 0);
+    EXPECT_FALSE(dependent->isTouched());
+    EXPECT_DOUBLE_EQ(dependent->QuantityLength.getValue(), 10.0);
+    ASSERT_TRUE(App::GetApplication().closeDocument(dependentName.c_str()));
 }
 
 }  // namespace

@@ -80,6 +80,10 @@ void validateAndSortPublicationEffects(
         if (!effect.key.valid()) {
             throw std::invalid_argument("invalid revision key in publication effects");
         }
+        if (effect.revisionDelta == 0) {
+            throw std::invalid_argument(
+                "publication effect revision delta must be greater than zero");
+        }
         if (!seen.insert(effect.key).second) {
             throw std::invalid_argument("duplicate revision key in publication effects");
         }
