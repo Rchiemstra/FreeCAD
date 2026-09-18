@@ -153,7 +153,11 @@ bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
     try {
         std::unique_ptr<App::DocumentObject> registered(
             static_cast<App::DocumentObject*>(object.getTypeId().createInstance()));
-        return registered && typeid(*registered) == typeid(object);
+        if (!registered) {
+            return false;
+        }
+        const App::DocumentObject& registeredRef = *registered;
+        return typeid(registeredRef) == typeid(object);
     }
     catch (...) {
         return false;

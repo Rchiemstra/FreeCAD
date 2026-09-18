@@ -1563,7 +1563,6 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
         if (postcondition != Py_None) {
             retainedPostcondition = retainCallable(postcondition);
         }
-        const bool hasPostcondition = static_cast<bool>(retainedPostcondition);
         auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
         try {
             CollaborationCompatibilityMutation mutation;
