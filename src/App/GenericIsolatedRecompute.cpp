@@ -355,6 +355,25 @@ bool isPartDesignProfilePlacementRecomputeOutput(const App::DocumentObject& obje
         && object.getPropertyByName("Placement") == &property;
 }
 
+bool isPartDesignHelixCoupledParameterRecomputeOutput(
+    const App::DocumentObject& object,
+    const App::Property& property)
+{
+    // Helix::execute() keeps Turns, Height, Pitch, and Growth consistent for
+    // the selected Mode. Those members predate Prop_Output, so without this
+    // declaration a pitch/height helix (or AdditiveHelix gear) fails closed
+    // as an undeclared Turns side effect. Restrict the compatibility
+    // declaration to Helix ancestry and those exact built-in members.
+    const Base::Type helixType = Base::Type::fromName("PartDesign::Helix");
+    if (helixType.isBad() || !object.getTypeId().isDerivedFrom(helixType)) {
+        return false;
+    }
+    return object.getPropertyByName("Turns") == &property
+        || object.getPropertyByName("Height") == &property
+        || object.getPropertyByName("Pitch") == &property
+        || object.getPropertyByName("Growth") == &property;
+}
+
 bool isAttachExtensionPlacementRecomputeOutput(const App::DocumentObject& object,
                                                const App::Property& property)
 {
@@ -544,6 +563,7 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
         || isPartDesignSuppressedShapeRecomputeOutput(object, property)
         || isPartDesignDirectionRecomputeOutput(object, property)
         || isPartDesignProfilePlacementRecomputeOutput(object, property)
+        || isPartDesignHelixCoupledParameterRecomputeOutput(object, property)
         || isAttachExtensionPlacementRecomputeOutput(object, property);
 }
 

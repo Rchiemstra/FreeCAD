@@ -662,6 +662,33 @@ def test_attachment_derived_placement_is_a_declared_recompute_output() -> None:
     assert "MapMode" not in predicate
 
 
+def test_helix_coupled_parameters_are_declared_recompute_outputs() -> None:
+    """Helix::execute() writes Turns/Height/Pitch/Growth for the selected Mode.
+
+    Those members predate Prop_Output.  Without an explicit declaration a
+    pitch/height AdditiveHelix (the helical-gear path) fails closed as an
+    undeclared Turns side effect.  Keep the declaration on Helix ancestry and
+    those exact built-in members so AdditiveHelix and SubtractiveHelix stay in
+    the same compatibility contract.
+    """
+    generic = _read(GENERIC_SOURCE)
+    declared = _compact(_body(generic, "isDeclaredRecomputeOutput"))
+    assert "isPartDesignHelixCoupledParameterRecomputeOutput(object,property)" in declared
+
+    literal = _compact(
+        _body(generic, "isPartDesignHelixCoupledParameterRecomputeOutput", raw=True)
+    )
+    assert 'Base::Type::fromName("PartDesign::Helix")' in literal
+    assert 'object.getPropertyByName("Turns")==&property' in literal
+    assert 'object.getPropertyByName("Height")==&property' in literal
+    assert 'object.getPropertyByName("Pitch")==&property' in literal
+    assert 'object.getPropertyByName("Growth")==&property' in literal
+
+    predicate = _compact(_body(generic, "isPartDesignHelixCoupledParameterRecomputeOutput"))
+    assert "object.getTypeId().isDerivedFrom(helixType)" in predicate
+    assert "Mode" not in predicate
+
+
 def test_state_transfer_import_does_not_pre_derive_the_attached_placement() -> None:
     """The worker snapshots its comparison baseline right after the import.
 
