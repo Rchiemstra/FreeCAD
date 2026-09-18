@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <typeinfo>
 #include <unordered_set>
 #include <utility>
 
@@ -147,6 +148,18 @@ void closeRecomputeSelectionUnderLinkGraph(App::Document& document,
     }
 }
 
+bool collaborationRuntimeTypeIsSerializable(const App::DocumentObject& object)
+{
+    try {
+        std::unique_ptr<App::DocumentObject> registered(
+            static_cast<App::DocumentObject*>(object.getTypeId().createInstance()));
+        return registered && typeid(*registered) == typeid(object);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
 std::vector<App::DocumentObject*> pendingTransactionRecomputeTargets(
     App::Document& document)
 {
@@ -231,6 +244,8 @@ bool postconditionStateUnchanged(App::Document& document,
 
 std::atomic<App::DocumentCommitCoordinator::PostReservationTestHook>
     App::DocumentCommitCoordinator::_postReservationTestHook {nullptr};
+std::atomic<App::DocumentCommitCoordinator::PreReservationTestHook>
+    App::DocumentCommitCoordinator::_preReservationTestHook {nullptr};
 
 using namespace App;
 
@@ -353,6 +368,15 @@ CollaborationRollbackResult DocumentCommitCoordinator::rollbackNativeCommitTrans
     }
     auto recomputeTargets = pendingTransactionRecomputeTargets(_document);
     if (recomputeTargets.empty()) {
+        // Undo can leave Enforce/Touch without a touched-object plan. Clearing
+        // that leftover here (publication is still suppressed) keeps a later
+        // Python settle_stable_read_boundary from publishing a follow-up
+        // UnknownModelMutation recompute. This is not a failed restore.
+        try {
+            _document.purgeTouched();
+        }
+        catch (...) {
+        }
         return rollback;
     }
 
@@ -698,8 +722,13 @@ DocumentCommitCoordinator::commitDerivedRecomputeInActiveTransaction(
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }
@@ -1019,6 +1048,86 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         abortRestoreAndRethrow("unknown failure while opening native transaction");
     }
 
+    std::unordered_set<App::DocumentObject*> preexistingObjects;
+    for (auto* object : _document.getObjects()) {
+        preexistingObjects.insert(object);
+    }
+    const auto finishFailedRecompute = [&](DocumentCommitResult result) {
+        // KEEP BOTH. Restore first: a recompute error whose document state
+        // rolls back stays RecomputeFailed. After that restore, a live
+        // FeaturePython execute that still fails is out-of-band proxy state
+        // (RollbackFailed + fence). Probe before unsuppressing publication.
+        std::vector<App::DocumentObject*> liveFailureTargets;
+        for (auto* object : _document.getObjects()) {
+            if (!object || !preexistingObjects.contains(object)) {
+                continue;
+            }
+            if (object->isValid() && !object->isTouched() && !object->mustRecompute()) {
+                continue;
+            }
+            if (!collaborationRuntimeTypeIsSerializable(*object)) {
+                continue;
+            }
+            liveFailureTargets.push_back(object);
+        }
+
+        const auto rollback = rollbackTransaction();
+        if (!rollback.restored) {
+            restoreSuppression();
+            _document.poisonCollaborationCommit(rollback.diagnostic.data());
+            std::string message = "original ";
+            message += documentCommitStatusName(result.status);
+            message += ": ";
+            message += result.message;
+            message += "; rollback failed: ";
+            message += rollback.diagnostic.data();
+            discardNotifications();
+            cleanupRequired = false;
+            return makeResult(DocumentCommitStatus::RollbackFailed,
+                              edit,
+                              std::move(message));
+        }
+
+        bool persistent = false;
+        for (auto* object : liveFailureTargets) {
+            if (!object || object->getDocument() != &_document
+                || !object->isAttachedToDocument()) {
+                persistent = true;
+                break;
+            }
+            const bool restoredClean =
+                object->isValid() && !object->isTouched() && !object->mustRecompute();
+            // Restored C++ document state does not need a live re-execute.
+            // FeaturePython Proxy state is not in the undo stack, so a clean
+            // restore can still fail when the probe stays armed.
+            if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
+                continue;
+            }
+            try {
+                if (_document._recomputeFeature(object) != 0) {
+                    persistent = true;
+                    break;
+                }
+            }
+            catch (...) {
+                persistent = true;
+                break;
+            }
+        }
+
+        restoreSuppression();
+        if (persistent) {
+            _document.poisonCollaborationCommit(
+                "persistent recompute failure blocked restoration");
+            result = makeResult(DocumentCommitStatus::RollbackFailed,
+                                edit,
+                                "persistent recompute failure blocked restoration");
+        }
+        discardNotifications();
+        cleanupRequired = false;
+        return result;
+    };
+
     try {
         if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Deferred) {
             auto recomputeFence = _document.openCollaborationDeferredRecomputeFence();
@@ -1076,16 +1185,16 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
             }
         }
         catch (const Base::Exception& exception) {
-            return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                              edit,
-                                              stageFailure("document recompute failed",
-                                                           exception.what())));
+            return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                    edit,
+                                                    stageFailure("document recompute failed",
+                                                                 exception.what())));
         }
         catch (const std::exception& exception) {
-            return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                              edit,
-                                              stageFailure("document recompute failed",
-                                                           exception.what())));
+            return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                    edit,
+                                                    stageFailure("document recompute failed",
+                                                                 exception.what())));
         }
         catch (...) {
             abortRestoreAndRethrow("unknown document recompute failure");
@@ -1108,9 +1217,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                 detail << " (" << why << ")";
             }
         }
-        return abortAndRestore(makeResult(DocumentCommitStatus::RecomputeFailed,
-                                          edit,
-                                          detail.str()));
+        return finishFailedRecompute(makeResult(DocumentCommitStatus::RecomputeFailed,
+                                                edit,
+                                                detail.str()));
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && _document.mustExecute()) {
@@ -1134,8 +1243,13 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
                 || !postconditionStateUnchanged(_document, postconditionState);
         }
         catch (...) {
+            postconditionMutationAttempted =
+                postconditionMutationAttempted
+                || _document.collaborationAtomicPresentationAuditViolated();
             _document.endCollaborationPreparedAtomicPresentationAudit();
-            throw;
+            if (!postconditionMutationAttempted) {
+                throw;
+            }
         }
         _document.endCollaborationPreparedAtomicPresentationAudit();
     }
@@ -1262,6 +1376,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     try {
         CollaborationRevisionMutationGrant revisionGrant(
             _document.collaborationRevisions());
+        if (const auto hook = _preReservationTestHook.load(std::memory_order_acquire)) {
+            hook();
+        }
         reservation.emplace(_document.collaborationRevisions().reservePublication(
             edit.expectedRevisions(), effects));
     }

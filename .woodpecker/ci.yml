@@ -216,7 +216,11 @@ steps:
   #
   # Now: check what is actually there, rebuild only what is missing, verify.
   # When the images are present (the normal case) this costs one HTTP call and
-  # the two build steps are no-ops.
+  # the two build steps are no-ops. Pipeline 417: check saw :24.04, kaniko
+  # no-op'd in 8s, then ~50 min of mcp-lint/units starved this gate and GC
+  # left tags:null. mcp-lint waits for ci-images-ready so verify is not queued
+  # behind those public-image jobs. Re-run this PR pipeline (check rebuilds
+  # missing tags) or manually run build-images.yml on FreeCAD-start.
   - name: ci-images-check
     image: alpine:3.20
     depends_on: []
@@ -231,12 +235,16 @@ steps:
   - name: ci-images-build-deps
     image: &freecad_kaniko_image gcr.io/kaniko-project/executor:debug
     depends_on: [ci-images-check]
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
       - sh ci/woodpecker/ci-images-build.sh deps
 
   - name: ci-images-build-mcp
     image: *freecad_kaniko_image
     depends_on: [ci-images-build-deps]
+    environment:
+      FREECAD_CI_REGISTRY: *freecad_registry_internal_url
     commands:
       - sh ci/woodpecker/ci-images-build.sh mcp
 
@@ -305,10 +313,12 @@ steps:
   # freecad-mcp track
   # ---------------------------------------------------------------------------
 
-  # Fast first check: Python syntax smoke for the MCP package (no install).
+  # Syntax smoke plus the typed Body reference contract and architecture gate.
+  # Waits for ci-images-ready so the image gate is not starved behind this 21 min
+  # job (pipeline 417: tags GC'd to null while lint/units held the agent).
   - name: freecad-mcp-lint
     image: python:3.12
-    depends_on: [all-submodules-check]
+    depends_on: [all-submodules-check, ci-images-ready]
     commands:
       - sh ci/woodpecker/freecad-mcp-lint.sh
 
@@ -346,24 +356,76 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
-  # core/e2e: runs on tag, manual, and pull_request. The top-level `when`
-  # already limits pull_request to the FreeCAD-start/fix/chore/integrate target
-  # branches, so no branch filter is repeated here. Per-marker output files +
-  # rm -f so parallel/sequential runs cannot read a stale or interleaved
-  # verdict. The wrapper writes ci_rc_${MARKER}.txt; the step's LAST command
-  # reads it.
-  - name: freecad-mcp-core-tests
+  # core: four sequential shards (collab → sketch → part → rest). One ~2.5 h
+  # MARKER=core step used to stay red until every native test finished. Later
+  # shards depend_on earlier ones, so the first failing group goes red and
+  # skips the rest. e2e stays a sibling of collab (does not wait for core).
+  # CORE_SHARD selects files; pytest marker stays `core` (JUnit verdict files
+  # still named ci_rc_core.txt). Partition: ci/woodpecker/freecad-mcp-core-shards.py
+  - name: freecad-mcp-core-collab
     image: *freecad_ci_mcp_image
     pull: true
     depends_on: [freecad-mcp-load-preflight, freecad-mcp-unit-tests]
     environment:
       MARKER: core
-      # Branch-built FreeCADCmd exposes native collaboration; without this the
-      # core marker still collects those tests and they skip → verdict=1.
+      CORE_SHARD: collab
       FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
     when:
       - event: [tag, manual]
       - event: pull_request
+    commands:
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
+
+  # Sketch/part/rest depend only on the previous core shard. Woodpecker 3.16
+  # still skips not-yet-started steps once any sibling (e2e) has failed unless
+  # `when.status` includes failure. Collab failure still skips these via
+  # depends_on. Do not add e2e to this chain. If images-ready/debug-build never
+  # produced FreeCADCmd, freecad-mcp-freecad-tests.sh skips with exit 0 (no 127).
+  - name: freecad-mcp-core-sketch
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-mcp-core-collab]
+    environment:
+      MARKER: core
+      CORE_SHARD: sketch
+      FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
+    when:
+      - event: [tag, manual]
+        status: [success, failure]
+      - event: pull_request
+        status: [success, failure]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
+
+  - name: freecad-mcp-core-part
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-mcp-core-sketch]
+    environment:
+      MARKER: core
+      CORE_SHARD: part
+      FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
+    when:
+      - event: [tag, manual]
+        status: [success, failure]
+      - event: pull_request
+        status: [success, failure]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
+
+  - name: freecad-mcp-core-rest
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-mcp-core-part]
+    environment:
+      MARKER: core
+      CORE_SHARD: rest
+      FREECAD_MCP_REQUIRE_NATIVE_COLLABORATION: "1"
+    when:
+      - event: [tag, manual]
+        status: [success, failure]
+      - event: pull_request
+        status: [success, failure]
     commands:
       - sh ci/woodpecker/freecad-mcp-freecad-tests.sh
 

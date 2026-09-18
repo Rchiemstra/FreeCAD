@@ -175,6 +175,10 @@ public:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutation(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPostcondition(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityPostcondition postcondition);
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicy(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback,
@@ -265,6 +269,11 @@ private:
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationOnDocumentThread(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback);
+    [[nodiscard]] DocumentCommitResult
+    commitCompatibilityMutationWithPostconditionOnDocumentThread(
+        CollaborationCompatibilityMutation mutation,
+        CollaborationCompatibilityCallback callback,
+        CollaborationCompatibilityPostcondition postcondition);
     [[nodiscard]] DocumentCommitResult commitCompatibilityMutationWithPolicyOnDocumentThread(
         CollaborationCompatibilityMutation mutation,
         CollaborationCompatibilityCallback callback,
