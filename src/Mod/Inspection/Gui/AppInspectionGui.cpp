@@ -29,6 +29,7 @@
 #include <Gui/Application.h>
 
 #include "ViewProviderInspection.h"
+#include "ViewProviderPhotoInspection.h"
 #include "Workbench.h"
 
 
@@ -71,6 +72,8 @@ PyMOD_INIT_FUNC(InspectionGui)
     CreateInspectionCommands();
     InspectionGui::ViewProviderInspection       ::init();
     InspectionGui::ViewProviderInspectionGroup  ::init();
+    InspectionGui::ViewProviderPhotoInspectionSheet::init();
+    InspectionGui::ViewProviderPhotoInspectionResult::init();
     InspectionGui::Workbench                    ::init();
     // clang-format on
 

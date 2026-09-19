@@ -1,0 +1,3389 @@
+{
+  "schemaVersion": "1.0",
+  "catalogVersion": "photo-inspection-plan-1",
+  "tests": [
+    {
+      "id": "PI-GEO-001",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Project a planar face containing lines and full circles.",
+      "oracle": "Canonical frame, outer cycle, holes, feature types, bounds and hash equal the golden.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-002",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Project supported arcs, ellipses and B-splines in outer/inner wires.",
+      "oracle": "Curve parameters and orientation are canonical; sampled evaluator stays within its declared numeric oracle.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-003",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Supply null selection, no face, multiple faces and a non-face subelement.",
+      "oracle": "Each rejects with its distinct stable diagnostic; no draft/object/file exists.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-004",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Supply cylindrical, conical, warped and tolerance-outside-planar faces.",
+      "oracle": "All reject as unsupported, including near-threshold cases on both sides.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-005",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Supply open, self-intersecting, zero-length, degenerate and duplicate-edge wires.",
+      "oracle": "Each pathology is deterministic and fail-closed; no empty geometry is accepted.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-006",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Reverse face normal and every wire/edge orientation.",
+      "oracle": "The canonical physical projection and hash remain equal; source orientation provenance changes only where specified.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "implemented",
+      "implementedBy": [
+        "PhotoInspectionProjectionTest.faceAndWireOrientationDoNotChangeCanonicalHash",
+        "PhotoInspectionCanonicalFrameTest.normalSignDoesNotChangeFrame"
+      ]
+    },
+    {
+      "id": "PI-GEO-007",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Permute edges, wires and OCCT enumeration order.",
+      "oracle": "Canonical bytes and SHA-256 remain byte-identical.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-008",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise axis/origin tie and near-tie geometry at the canonicalization boundary.",
+      "oracle": "Exact documented tie-break wins and is stable across supported platforms.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-009",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Move/rotate a source far from origin and through a link placement.",
+      "oracle": "Frozen physical projection is correct; placement is named once and never double-applied.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-010",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Edit source geometry, placement, subelement, document UUID and object UUID independently.",
+      "oracle": "Existing revision becomes stale/broken with the exact reason, without mutation or document dirtying.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-011",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Rename, reorder, recompute and serialization-round-trip without semantic change.",
+      "oracle": "Revision remains valid and hash-equal; no similar-face heuristic runs.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-012",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Delete source object/document, then restore saved sheet without source.",
+      "oracle": "Sheet remains auditable/read-only and reports missing source; no dangling pointer or crash.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-013",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Cross the 1 µm encoding grid in both directions.",
+      "oracle": "Canonical value changes exactly at the defined boundary; UI never calls this grid “accuracy.”",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-014",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exceed each curve/point/feature/count bound by one and at exact limit.",
+      "oracle": "Exact limit succeeds; limit-plus-one returns `ResourceLimit` before unbounded allocation.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-015",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Compare canonical bytes on Linux, Windows and macOS supported OCCT lanes.",
+      "oracle": "Every declared primitive is identical or the gate narrows support before release.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-GEO-016",
+      "category": "GEO",
+      "phase": 1,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject OCCT exception, standard failure, cancellation and allocation failure.",
+      "oracle": "Stable typed non-pass result; all owned values release; no document mutation.",
+      "requirements": [
+        "photo-inspection/geo"
+      ],
+      "lanes": [
+        "opencv-off",
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-001",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Build A4/A3 portrait/landscape sheets at exact fit and 0.001 mm over.",
+      "oracle": "Exact fit succeeds; over-size rejects; no scale-to-fit factor exists.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-002",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Change tolerances, profile, selected features, media or layout.",
+      "oracle": "New immutable revision and new appropriate hashes; prior object/files remain unchanged.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-003",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Generate the same revision twice under fixed environment.",
+      "oracle": "Canonical scene and semantic PDF/SVG traces are identical.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "implemented",
+      "implementedBy": [
+        "PhotoInspectionSheetTest.buildsDeterministicA4VectorSceneWhenCapabilityExists"
+      ]
+    },
+    {
+      "id": "PI-SHT-004",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Parse SVG page size, `viewBox`, transforms, paths and widths.",
+      "oracle": "All physical units and geometry equal the scene oracle; no raster/external/active content.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-005",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Parse PDF MediaBox, graphics-state transforms, tagged paths and widths.",
+      "oracle": "A4/A3 dimensions and every critical physical coordinate match within writer numeric tolerance.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-006",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Encode a 100.000 mm and 200.000 mm reference in PDF/SVG.",
+      "oracle": "SVG remains exact in mm and PDF equals `length*72/25.4` within tolerance.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-007",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Generate marker IDs 920–927 on OpenCV 4.6 and reviewed current.",
+      "oracle": "Cell grids and dictionary fingerprints match the frozen goldens.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-008",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Generate/decode every legal QR v1 field boundary and maximum 512-byte payload.",
+      "oracle": "Strict bytes round-trip; identity contains no path/URL and never supplies scale.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-009",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Corrupt QR version, UUID/hash, duplicate/unknown key and UTF-8.",
+      "oracle": "Distinct fail-closed identity diagnostic; no local file lookup occurs.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-010",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Verify ink-mask geometry, clearances and overlaps at all page edges.",
+      "oracle": "Printed CAD/marker/reference ink is completely represented by the frozen mask and never clips.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-011",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Apply anisotropic/sheared inverse printer compensation.",
+      "oracle": "Command coordinates compose with profile to the intended physical coordinates; bounds use compensated extremes.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-012",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Force exporter exception, truncated stream, full disk and target collision.",
+      "oracle": "Atomic failure leaves no claimed/partial replacement and no document dirty state.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-013",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Switch locale, decimal separator, timezone, font availability and unit display.",
+      "oracle": "Semantic numeric output/hash is unchanged; human labels remain escaped and legible.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-014",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Rasterize exported files at minimum/recommended DPI.",
+      "oracle": "QR and all required markers detect; this supplementary test cannot satisfy physical-scale conformance.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-015",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Print every supported viewer/driver/media route at 100%, fit, borderless and wrong size.",
+      "oracle": "Only validated 100% routes pass reference measurements; all altered paths become Inconclusive.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SHT-016",
+      "category": "SHT",
+      "phase": 2,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Preview/create/export then undo/redo and close/reopen.",
+      "oracle": "Preview/export never dirties; one create transaction restores exact prior/next immutable revisions.",
+      "requirements": [
+        "photo-inspection/sht"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "vector-parser"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-001",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Parse minimal/complete valid camera profile and canonicalize it.",
+      "oracle": "Exact schema/default behavior, finite matrices, UUID and SHA-256 match goldens.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-002",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise duplicate/unknown fields, unsupported major, NaN/Inf and singular intrinsics.",
+      "oracle": "Strict rejection with field-local diagnostics; no partial profile publication.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-003",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Match exact camera/lens/zoom/focus/image-size/crop/rotation.",
+      "oracle": "Exact configuration accepts; each independently changed field rejects or follows explicitly tested compatibility.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-004",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Calibrate synthetic Brown distortion with known intrinsics.",
+      "oracle": "Recovered parameters/residual/covariance remain within preregistered error bounds.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-005",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Calibrate supported fisheye configuration and misuse it as Brown.",
+      "oracle": "Correct model passes; wrong model is rejected by residual/model checks.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-006",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Use insufficient, clustered, blurred and partial ChArUco observations.",
+      "oracle": "Wizard refuses a decision-capable profile and explains missing coverage/quality.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-007",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Compare legacy/current ChArUco conventions across OpenCV lanes.",
+      "oracle": "Normalized board corners/IDs/profile meaning are equal or explicitly incompatible.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-008",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Parse/canonicalize printer profile including affine, residual field and covariance.",
+      "oracle": "Schema and command-to-physical convention match the golden.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-009",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject +2% X scale, Y scale, shear, rotation and translation independently.",
+      "oracle": "Inverse compensation recovers physical references; sign regression catches any reversed transform.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-010",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Use ideal instead of calibrated marker coordinates in the injected-scale fixture.",
+      "oracle": "Regression proves the incorrect model conceals dimensional error and therefore fails.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-011",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Fit same-sheet span network at full rank, rank deficiency and one outlier.",
+      "oracle": "Valid fit/covariance is recovered; deficient/unstable network becomes Inconclusive.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-012",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Change device, driver, DPI, media, orientation, duplex/borderless and profile age.",
+      "oracle": "Exact mismatch policy and diagnostic fires for each independently.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-013",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Interrupt atomic profile write at every replace stage.",
+      "oracle": "Old or new complete profile survives; never partial JSON or lost last-good profile.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-014",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Load old minor, old supported major and future major profiles.",
+      "oracle": "Compatible reads preserve meaning; explicit copy-on-write migration; future major remains read-only.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-015",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Repeat printer/camera calibration across operators and sessions.",
+      "oracle": "Bias/repeatability/covariance coverage meet the Phase 3 gate or the envelope narrows.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CAL-016",
+      "category": "CAL",
+      "phase": 3,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Attempt uncalibrated or expired evidence in decision mode.",
+      "oracle": "Preview may be allowed as labeled; `Pass` and `Fail` remain impossible.",
+      "requirements": [
+        "photo-inspection/cal"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current"
+      ],
+      "timeoutSeconds": 120,
+      "status": "implemented",
+      "implementedBy": [
+        "PhotoInspectionProfileTest.printerEvidenceControlsDecisionCapability",
+        "PhotoInspectionEngineTest.profileEvidenceGatesOtherwiseCompleteDecision"
+      ]
+    },
+    {
+      "id": "PI-IMG-001",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Decode valid baseline/progressive JPEG and PNG variants within caps.",
+      "oracle": "Orientation/color normalization and immutable byte hash match the fixture.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-002",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Apply all EXIF rotations/mirrors and crop metadata combinations.",
+      "oracle": "Physical corner order is canonical and no transform is applied twice.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-003",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Supply wrong extension, MIME/signature mismatch and unsupported codec.",
+      "oracle": "Preflight rejects before general decode; diagnostic reveals no sensitive path.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-004",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Detect complete marker board over accepted pose grid.",
+      "oracle": "IDs/corners/homography/inliers and physical rectification meet numeric oracle.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-005",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Occlude each marker and distributed marker combinations.",
+      "oracle": "Acceptance follows coverage policy; insufficient distribution is Inconclusive.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-006",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Add duplicate/foreign IDs and corner outliers.",
+      "oracle": "Robust estimator rejects outliers, reports them, and never associates another sheet.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-007",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Sweep blur, motion blur, JPEG artifacts and sampling.",
+      "oracle": "Accepted cases meet error bound; threshold-crossing cases reject monotonically.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-008",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Sweep under/over-exposure, clipping, shadows and gradients.",
+      "oracle": "Quality status follows frozen policy; no low-quality image produces a decision.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-009",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Sweep perspective/obliquity through and beyond the operating envelope.",
+      "oracle": "Accepted homographies meet error bound; beyond-envelope cases reject.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-010",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject lens profile mismatch and unstated digital crop.",
+      "oracle": "Profile/image mismatch or residual gate rejects; never absorbed into part error.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-011",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Rectify A4/A3 at 10, 15, 20 and 25 px/mm under caps.",
+      "oracle": "Pixel-to-mm transform, ROI bounds and accounted allocation equal analytic expectations.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-012",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Render printed CAD/markers/references without a part.",
+      "oracle": "Ink suppression yields no accepted part contour and never a Pass.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-013",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Render nominal part with varied colors/textures/backgrounds.",
+      "oracle": "Detected contour error stays within fixture budget for accepted quality.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-014",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject missing/extra material, contamination and ink spread independently.",
+      "oracle": "Segmentation and sign agree with ground truth; ambiguity becomes Inconclusive.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-015",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Use optional empty-sheet image with independent valid pose/exposure.",
+      "oracle": "Each image rectifies independently and improves/substantiates the declared segmentation result.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-016",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Use empty-sheet image from wrong sheet/profile/media or changed print.",
+      "oracle": "Identity/evidence mismatch rejects; images are never pixel-aligned in camera coordinates.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-017",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Perturb thresholds/morphology within sensitivity neighborhood.",
+      "oracle": "Instability contributes to uncertainty or rejects according to policy.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-018",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Present elevated/chamfered/warped part edges and cast shadows.",
+      "oracle": "Unsupported 3D evidence is flagged/rejected, never described as a correct planar contour.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-019",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Cancel before/after every one of the 28 pipeline stages.",
+      "oracle": "Cancellation p95 meets budget and publishes no cache/result/report.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-IMG-020",
+      "category": "IMG",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run every frozen synthetic fixture on OpenCV floor/current.",
+      "oracle": "Normalized status/decision/measurements agree within declared compatibility tolerances.",
+      "requirements": [
+        "photo-inspection/img"
+      ],
+      "lanes": [
+        "opencv-floor",
+        "opencv-current",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-001",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Compare analytic lines/arcs/ellipses/B-splines at known offsets.",
+      "oracle": "Nearest points and signed deviations meet analytic/numeric error budgets.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-002",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Apply extra/missing material to outer contours and holes.",
+      "oracle": "Sign convention is correct for all winding/orientation combinations.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "implemented",
+      "implementedBy": [
+        "PhotoInspectionComparisonTest.outerCycleSignMeansOutsideIsExcessMaterial",
+        "PhotoInspectionComparisonTest.holeCycleSignMeansSmallerHoleIsExcessMaterial"
+      ]
+    },
+    {
+      "id": "PI-CMP-003",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Move supported circle centers/radii independently.",
+      "oracle": "Diameter, center displacement and contour errors equal ground truth.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-004",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise corners, tangent joins and equidistant nominal segments.",
+      "oracle": "Association is deterministic or explicitly ambiguous; no unstable segment switch.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-005",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Recover exact/noisy/outlier `SE(2)` transforms.",
+      "oracle": "Rotation/translation and covariance meet oracle; bounded RANSAC is deterministic by seed.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-006",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject uniform scale, anisotropic scale, shear and projective error.",
+      "oracle": "Alignment never fits these degrees of freedom; manufacturing/print error remains visible.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-007",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Use symmetric geometry and multiple plausible rigid minima.",
+      "oracle": "Ambiguity/condition gate returns Inconclusive unless explicit datums disambiguate.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-008",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exceed each rotation/translation/iteration bound.",
+      "oracle": "Fit rejects with exact reason and cannot silently clamp into Pass.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-009",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Propagate independent and fully/partially correlated uncertainty components.",
+      "oracle": "Jacobian/covariance result equals analytic calculations and stays positive semidefinite.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-010",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Increase every uncertainty source separately.",
+      "oracle": "Reported local uncertainty never decreases.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-011",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise zero, negative, NaN, infinite and singular uncertainty.",
+      "oracle": "Invalid input is Inconclusive; no arithmetic exception or false precision.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-012",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Test exact Pass guard boundary `abs(e)+U=T`.",
+      "oracle": "Pass follows the documented inclusive boundary.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-013",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Test exact Fail guard boundary `abs(e)-U>T` and equality.",
+      "oracle": "Strict Fail behavior and equality-to-Inconclusive match the rule.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-014",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Test asymmetric lower/upper tolerances and rounding edges.",
+      "oracle": "Unrounded SI values decide; displayed rounding cannot change the decision.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-015",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Combine mandatory Pass/Inconclusive/Fail features.",
+      "oracle": "Fail precedence and part-level aggregation exactly match section 20.4.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-016",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Omit/ambiguate a mandatory feature or quality precondition.",
+      "oracle": "Part is Inconclusive unless another mandatory feature independently proves Fail.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-017",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Compare absolute versus declared-datum rigid modes.",
+      "oracle": "Both before/after transforms and deviations are reported; mode is provenance.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-CMP-018",
+      "category": "CMP",
+      "phase": 5,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run blinded synthetic holdout and physical reference results.",
+      "oracle": "Bias, coverage, false-Pass and subgroup gates meet section 29 without post-hoc oracle changes.",
+      "requirements": [
+        "photo-inspection/cmp"
+      ],
+      "lanes": [
+        "opencv-off",
+        "synthetic"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-001",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Round-trip sheet/result objects with and without OpenCV.",
+      "oracle": "All immutable properties/schema bytes survive; disabled build restores read-only data.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-002",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Load corrupt/unknown-minor/unsupported-major document properties.",
+      "oracle": "Corrupt data fails safely; unknown minor is preserved; unsupported major remains auditable.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-003",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Call every Python boundary with valid and wrong types.",
+      "oracle": "Stable immutable values or typed exceptions-as-results; no `cv::Mat`, GUI or document pointer leaks.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-004",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Serialize JSON/CSV/SVG/PDF twice across locales.",
+      "oracle": "Canonical JSON and semantic derivatives are deterministic, escaped and hash-recorded.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-005",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Start transient analysis and inspect every progress/layer update.",
+      "oracle": "No transaction, document modified flag, source appearance or solver state change.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-006",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Explicitly create/new-revision/save/delete then undo/redo.",
+      "oracle": "Each requested mutation uses exactly one transaction and restores exact state.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-007",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run A, supersede with B, finish B, then finish A late.",
+      "oracle": "A performs zero post-B mutation of UI, model, document, files, cache or busy state.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "implemented",
+      "implementedBy": [
+        "PhotoInspectionSessionTest.newerGenerationRejectsLateOlderResult"
+      ]
+    },
+    {
+      "id": "PI-LIF-008",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Finish A before B and repeat A/B/C with queued progress.",
+      "oracle": "Only current generation affects state; busy/progress settles deterministically.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-009",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Cancel queued, running and completion-racing jobs.",
+      "oracle": "Current run reaches one terminal state; obsolete callbacks are ignored.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-010",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Close/delete source, sheet, object or document during each stage.",
+      "oracle": "No UAF; run cancels/stales; all observers/layers/watchers release.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-011",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Switch active document/workbench and tear down app/panel.",
+      "oracle": "No mutation crosses document/session; attach/detach remains balanced.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-012",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject preparation, launch, OpenCV, OCCT, allocation and unknown exceptions.",
+      "oracle": "Busy clears once; stable sanitized diagnostic; no partial output.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-013",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Force atomic report/profile/image-copy failures.",
+      "oracle": "Rollback preserves prior document/files and leaves no claimed artifact.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-014",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Save default-private result and scan FCStd/report bundle.",
+      "oracle": "No raw/derived image bytes or absolute path appears without explicit opt-in.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-015",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Opt in to bounded image copy/embed with hostile names/symlinks.",
+      "oracle": "Only canonical allowed target is written; size/hash/consent are recorded.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-016",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Replace/discard every 2D layer repeatedly and after exceptions.",
+      "oracle": "Operations are idempotent, bounded and leak-free.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-017",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Change layer colors, visibility, zoom and selection.",
+      "oracle": "Cosmetic changes never invalidate analysis or alter canonical result.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-018",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise command enablement for selections and no-CV builds.",
+      "oracle": "Visible commands provide exact capability/rejection reason; saved results remain accessible.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-019",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Restore documents from every supported prior schema fixture.",
+      "oracle": "Read-old/preserve-old policy holds and migration creates a new explicit revision.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-LIF-020",
+      "category": "LIF",
+      "phase": 4,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run lifecycle suite under offscreen and Xvfb/xcb repeatedly.",
+      "oracle": "Behavior is equivalent; xcb is mandatory and no observer/future/item leak trend appears.",
+      "requirements": [
+        "photo-inspection/lif"
+      ],
+      "lanes": [
+        "gui-fake-engine"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-001",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Fuzz QR strict JSON with the governed corpus for at least 1,000,000 total nightly executions or the approved time budget, whichever is reached first.",
+      "oracle": "No crash/hang/OOB/path access; parser returns bounded stable diagnostics.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-002",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Fuzz camera/printer/report JSON including deep nesting and number extremes.",
+      "oracle": "Caps, duplicate-key and finite-number policy hold under ASan/UBSan.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-003",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Fuzz JPEG/PNG headers, chunks and metadata before decoder.",
+      "oracle": "Bomb/overflow/unsupported cases reject before oversized allocation.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-004",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Fuzz bounded full decoder using minimal codec build.",
+      "oracle": "All exceptions are contained; accounted peak stays within limit.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-005",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Exercise decompression bombs and dimensions/stride/count multiplication overflow.",
+      "oracle": "Checked arithmetic rejects before allocation; no cache/report publication.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-006",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Attempt traversal with `/`, `\\`, drive, UNC, device, ADS and encoded separators.",
+      "oracle": "Every external read/write remains within the explicit allowed root or rejects.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-007",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Attempt symlink/junction/reparse-point escape and target replacement race.",
+      "oracle": "Canonical/open-handle policy prevents escape; operation fails closed.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-008",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inject CSV formulas and SVG/XML/script/entity/external references.",
+      "oracle": "CSV is neutralized; SVG parser/exporter contains no active/external content or XXE.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-009",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Scan logs, telemetry, exceptions, FCStd and reports for secrets/paths/images.",
+      "oracle": "Privacy policy holds in success, failure, timeout and cancellation paths.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-010",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Hit exact and plus-one image/point/feature/report/cache limits.",
+      "oracle": "Exact boundary behavior is deterministic and documented.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-011",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Force memory pressure/concurrent jobs up to and beyond global cap.",
+      "oracle": "Admission control/rejection is bounded; process and current session recover.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-012",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Mutation-test transform, identity, guard-band and strict-parser code.",
+      "oracle": "Required mutation score is met and no critical survivor remains unexplained.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-013",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run sanitizers, static analysis and exception-injection corpus.",
+      "oracle": "Zero unresolved critical/high finding in release scope.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-SEC-014",
+      "category": "SEC",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Re-run frozen corpus after dependency/security update.",
+      "oracle": "Normalized results are compatible or update is blocked with explicit migration decision.",
+      "requirements": [
+        "photo-inspection/sec"
+      ],
+      "lanes": [
+        "sanitizer",
+        "fuzz",
+        "resource-limits"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-001",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Configure/build/test with OpenCV completely absent.",
+      "oracle": "Existing Inspection and restore/view APIs work; CV capabilities are explicitly false.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-002",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Configure floor OpenCV 4.6 plus contrib.",
+      "oracle": "All capability probes and normalized facade contract pass.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-003",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Configure reviewed-current OpenCV.",
+      "oracle": "All capability probes and the same domain goldens pass.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-004",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Remove each required component/symbol/codec in turn.",
+      "oracle": "Configure report names the missing item and disables the complete feature.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-005",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Point `OpenCV_DIR` to incompatible/wrong-major/static-unreviewed trees.",
+      "oracle": "Range/ABI/capability policy rejects or marks non-release exactly as designed.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-006",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Install Linux package/AppImage and run offline in a clean image.",
+      "oracle": "Loader, codecs, QR/ArUco/ChArUco and test data work without build-tree/PATH leakage.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-007",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Install Windows package in a clean VM/container-equivalent lane.",
+      "oracle": "DLL/component inventory and smoke suite pass without developer DLLs.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-008",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Install/sign macOS bundle in clean runner.",
+      "oracle": "dylib/RPATH/signature/component inventory and smoke suite pass.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-009",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Audit shipped licenses, package versions and transitive runtime inventory.",
+      "oracle": "OpenCV/component notices and exact provenance are complete and policy-approved.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-010",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run A4/A3 reference corpus on frozen hardware.",
+      "oracle": "p95 runtime is ≤15/30 s and peak accounted memory is within limits.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-011",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Cancel every long stage on frozen hardware.",
+      "oracle": "p95 acknowledgement/terminal cancellation is ≤2 s with no late publication.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-012",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Repeat deterministic suites with thread counts 1 and N.",
+      "oracle": "Status, hashes and measurements remain identical within declared numeric policy.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-013",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run isolated validator with network, host profile, device and MCP unavailable.",
+      "oracle": "All mandatory labels run; evidence bundle is complete; source mount remains unchanged.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PKG-014",
+      "category": "PKG",
+      "phase": 0,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Deliberately skip/fail one required label or provenance check.",
+      "oracle": "Validator cannot print `ALL_MANDATORY_PASSED`.",
+      "requirements": [
+        "photo-inspection/pkg"
+      ],
+      "lanes": [
+        "installed-artifact"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-001",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Call capabilities and validate/calibrate camera/printer profile endpoints with OpenCV on/off and frozen synthetic data.",
+      "oracle": "Bounded structured result accurately names feature/version/components/reasons; profile/calibration output matches the direct API; no document mutation/lease.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-002",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Create sheet with valid document/object/subelement and idempotency key.",
+      "oracle": "One lease/transaction creates one revision; retry returns the same outcome without duplication.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-003",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Create sheet without/with wrong lease, stale document session or ambiguous face.",
+      "oracle": "Typed rejection; zero document/file mutation.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-004",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Analyze valid local image/profile using a frozen sheet.",
+      "oracle": "Read-only request returns task/request correlation, then immutable result matching direct API golden.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-005",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Supply traversal, symlink escape, disallowed absolute path, URL or oversized upload.",
+      "oracle": "Rejected before FreeCAD/OpenCV access; response/log contains no secret/full path.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-006",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Poll queued/running/completed/failed/expired analysis.",
+      "oracle": "Status maps exactly to existing request lifecycle and retains correlation/progress stage.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-007",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Cancel before execution, during each stage and after completion.",
+      "oracle": "Cooperative terminal state is truthful; no saved result/cache/report from cancelled work.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-008",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Timeout during analysis then complete late.",
+      "oracle": "Recovery/status truth remains available; late completion cannot mutate document or supersede a newer request.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-009",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Start A, supersede with B, finish B, then return A late through MCP.",
+      "oracle": "Generation/idempotency fence produces zero B/document/file mutation from A.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-010",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Get result for wrong session/request/user or expired result.",
+      "oracle": "Authorization/scope rejection reveals no result metadata.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-011",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Save result with valid lease and expected document/sheet hash.",
+      "oracle": "Exactly one persistent object/transaction; structured response returns immutable IDs/hashes.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-012",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Save stale/mismatched/already-saved result or lose lease mid-finalization.",
+      "oracle": "Idempotent typed result or rollback/recovery incident; never duplicate/partial save.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-013",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Export JSON/CSV in FreeCADCmd and JSON/CSV/SVG/PDF in a GUI-capable Xvfb/xcb instance inside the allowed output root.",
+      "oracle": "Atomic bounded files/hashes match direct exporters; headless PDF/SVG returns `CapabilityUnavailable`; no arbitrary target write or raster substitution.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-014",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Send malformed/unknown/oversized nested options and non-finite values.",
+      "oracle": "JSON schema/type/size validation rejects before backend; stable error code.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-015",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Inspect structured/text response compatibility and schema evolution.",
+      "oracle": "Authoritative structured content, readable text, append-only minor behavior and unsupported-major rejection.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-016",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run two document sessions and concurrent analyses.",
+      "oracle": "Leases/generations/results never cross documents; configured global resources remain bounded.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-017",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Scan MCP telemetry/debug logs after success/failure/timeout.",
+      "oracle": "Only hashes, counts, IDs, stage and timing appear; no image bytes/profile secrets/full paths.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-MCP-018",
+      "category": "MCP",
+      "phase": 6,
+      "kind": "automated",
+      "mandatory": true,
+      "stimulus": "Run profile validation/calibration and create→analyze→status/result→save→JSON/CSV export in fresh isolated FreeCADCmd/MCP Docker, then PDF/SVG export in a separate disposable Xvfb/xcb lane, both `--network none`.",
+      "oracle": "Direct-API parity and capability boundaries pass; containers exit cleanly; host FreeCAD/MCP/profile are untouched.",
+      "requirements": [
+        "photo-inspection/mcp"
+      ],
+      "lanes": [
+        "mcp-contract"
+      ],
+      "timeoutSeconds": 120,
+      "status": "planned",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-001",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "A4 horizontal/vertical 100/200 mm references on each supported print path.",
+      "oracle": "Bias/repeatability and scale meet the declared print-path limit.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-002",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "A3 references on each supported path.",
+      "oracle": "Same, including page-position/local residual limit.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-003",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Portrait versus landscape and page quadrant.",
+      "oracle": "Profile model/uncertainty covers observed differences.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-004",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Fit-to-page, wrong media, borderless, duplex and wrong DPI negative controls.",
+      "oracle": "Every case is detected and becomes Inconclusive.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-005",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Warm/cold printer and repeated reprints.",
+      "oracle": "Drift/repeatability is inside profile age/residual policy.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-006",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Paper stock, dry/nominal/humid bands and conditioning time.",
+      "oracle": "Validated envelope is supported; excluded bands reject or widen uncertainty.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-007",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Camera distance and accepted obliquity grid.",
+      "oracle": "Error/coverage meets limits throughout accepted envelope.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-008",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Lighting/exposure/background/material-color grid.",
+      "oracle": "Accepted subgroups meet contour/decision criteria without hidden bias.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-009",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Repeat camera calibration across sessions.",
+      "oracle": "Reproducibility and profile-match gates support claimed validity period.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-010",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Three operators independently set up/capture the same artifacts.",
+      "oracle": "Reproducibility and operator component are covered by uncertainty.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-011",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Small/medium/near-page outer profile artifacts.",
+      "oracle": "Contour median/95th/max error criteria pass.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-012",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Certified circular holes across size/page positions.",
+      "oracle": "Diameter and center error/coverage pass.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-013",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Lines/arcs/concavities/corners and multiple holes.",
+      "oracle": "Feature-specific bias and ambiguity behavior pass.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-014",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Conforming and clearly out-of-tolerance artifacts.",
+      "oracle": "Correct decisions and no false Pass.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-015",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Guard-band challenge artifacts on both sides of each boundary.",
+      "oracle": "Pass/Fail/Inconclusive frequencies agree with uncertainty policy.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-016",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "At least 300 blinded decision challenges.",
+      "oracle": "Zero false Pass; confidence bound and subgroup criteria meet section 29.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-017",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "FDM and resin axis shrinkage specimens.",
+      "oracle": "Known independent ground truth is recovered without scale fitting.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-018",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Hole undersize/offset specimens.",
+      "oracle": "Diameter/center/sign and decisions meet oracle.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-019",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Local warp/elephant-foot/chamfer specimens.",
+      "oracle": "Unsupported/elevated edge is flagged or envelope explicitly validated.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-020",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Empty-reference on/off paired captures.",
+      "oracle": "Benefit/failure modes are quantified; wrong reference rejects.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-021",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Intentional camera/profile mismatch.",
+      "oracle": "No decision; exact mismatch evidence reported.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-022",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Intentional printer/profile/settings mismatch.",
+      "oracle": "No decision; incorrect profile cannot conceal error.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-023",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Marker occlusion/QR damage/contamination negative controls.",
+      "oracle": "Quality/identity gates fail closed at preregistered boundaries.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-024",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Repeated captures without reprinting versus repeated prints.",
+      "oracle": "Camera and printer variance components are separately estimable.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-025",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Frozen holdout rerun by a second analyst/script.",
+      "oracle": "Results and evidence bundle reproduce from hashes and declared versions.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    },
+    {
+      "id": "PI-PHY-026",
+      "category": "PHY",
+      "phase": 6,
+      "kind": "physical",
+      "mandatory": true,
+      "stimulus": "Phase 7/8 new-scope artifact campaign.",
+      "oracle": "No new geometry/3D claim inherits planar evidence; independent gate passes first.",
+      "requirements": [
+        "photo-inspection/phy"
+      ],
+      "lanes": [
+        "physical-lab"
+      ],
+      "timeoutSeconds": 86400,
+      "status": "physical-evidence-required",
+      "implementedBy": []
+    }
+  ]
+}
