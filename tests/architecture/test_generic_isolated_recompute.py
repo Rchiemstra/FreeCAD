@@ -689,6 +689,33 @@ def test_helix_coupled_parameters_are_declared_recompute_outputs() -> None:
     assert "Mode" not in predicate
 
 
+def test_revolved_axis_is_a_declared_recompute_output() -> None:
+    """Revolved::execute() calls updateAxis(), which writes Base and Axis.
+
+    Both members are derived from ReferenceAxis and predate Prop_Output.
+    Without an explicit declaration every Revolution and Groove fails closed
+    as an undeclared Axis side effect (MCP finding D-29).  Keep the
+    declaration on Revolved ancestry and those exact built-in members so
+    ReferenceAxis, the user-owned input, stays immutable in the worker.
+    """
+    revolved = _compact(_body(_read(REVOLVED_SOURCE), "Revolved::updateAxis"))
+    assert "Base.setValue(base);" in revolved
+    assert "Axis.setValue(dir);" in revolved
+
+    generic = _read(GENERIC_SOURCE)
+    declared = _compact(_body(generic, "isDeclaredRecomputeOutput"))
+    assert "isPartDesignRevolvedAxisRecomputeOutput(object,property)" in declared
+
+    literal = _compact(_body(generic, "isPartDesignRevolvedAxisRecomputeOutput", raw=True))
+    assert 'Base::Type::fromName("PartDesign::Revolved")' in literal
+    assert 'object.getPropertyByName("Base")==&property' in literal
+    assert 'object.getPropertyByName("Axis")==&property' in literal
+    assert '"ReferenceAxis"' not in literal
+
+    predicate = _compact(_body(generic, "isPartDesignRevolvedAxisRecomputeOutput"))
+    assert "object.getTypeId().isDerivedFrom(revolvedType)" in predicate
+
+
 def test_state_transfer_import_does_not_pre_derive_the_attached_placement() -> None:
     """The worker snapshots its comparison baseline right after the import.
 
