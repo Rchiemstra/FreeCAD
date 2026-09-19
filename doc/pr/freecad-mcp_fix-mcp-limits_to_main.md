@@ -24,6 +24,8 @@ Fixes from the MCP findings campaign (`doc/HANDOFF-2026-09-19-mcp-findings.md` i
 - `create_object.py`, `policy_runtime.py`: main's helpers (link pre-resolution; string or Document for recompute) with the branch's postcondition.
 - RPC contract snapshot: 3-way merged per key. Only `find_edges` / `find_faces` parameters collided and take main's; the result matches the handler signatures exactly.
 
+The branch also carried 6 unit failures that `main` does not have. They are fixed in `6d816dd`: a public-surface lint issue in `gui_core` and `measure_io_actions`, stale frozen examples for the typed `get_object` and the F-05 build identity, and outdated test counts and fakes.
+
 ## Test plan
 
 - [x] Docker unit suite: 8 failures, exactly the 8 that fail on `main` itself (5 × sweep_pipe, 2 × typed_platform_discovery, 1 × architecture CLI); 12 087 passed
