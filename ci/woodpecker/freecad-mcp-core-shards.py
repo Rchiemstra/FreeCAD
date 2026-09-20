@@ -73,8 +73,23 @@ _PART_PREFIXES = (
     "test_native_preview_attachment",
 )
 
+# Direct native regressions that predate the tests/native naming convention.
+# Keep their marker and this selector coupled: the Python-only unit lane has
+# FreeCAD stubs, while these tests require real OCCT/Origin behavior.
+_EXTRA_CORE_FILE_SHARDS = {
+    "tests/test_link_array_placement_list.py": "part",
+    "tests/test_object_property_postcondition.py": "part",
+    "tests/test_pocket_requires_base_solid.py": "part",
+    "tests/test_find_subshapes_filters.py": "rest",
+    "tests/test_inspect_geometry_subshape.py": "rest",
+    "tests/measure/test_world_shape_real_freecad.py": "rest",
+}
+
 
 def classify(name: str) -> str:
+    for relative, shard in _EXTRA_CORE_FILE_SHARDS.items():
+        if name == Path(relative).name:
+            return shard
     if name in _COLLAB_NAMES:
         return "collab"
     if name.startswith(_SKETCH_PREFIX):
@@ -90,6 +105,15 @@ def core_files(root: Path) -> list[Path]:
     files = list(native)
     if extra.is_file():
         files.append(extra)
+    for relative in _EXTRA_CORE_FILE_SHARDS:
+        path = root / relative
+        if not path.is_file():
+            raise SystemExit(f"required direct-native core test is missing: {path}")
+        if "pytestmark = pytest.mark.core" not in path.read_text(encoding="utf-8"):
+            raise SystemExit(
+                f"direct-native core test lost its core marker: {path}"
+            )
+        files.append(path)
     return files
 
 
