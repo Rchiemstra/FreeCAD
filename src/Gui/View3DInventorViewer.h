@@ -160,6 +160,16 @@ public:
         VectorExport
     };
 
+    /// Declares how a captured image carries transparency.
+    enum class AlphaMode
+    {
+        /// Derive from the background colour: a translucent one is rendered opaque and keyed out.
+        FromBackground,
+        /// Keep the framebuffer's own per-pixel alpha: cleaner edges, but no sorted-transparency
+        /// workaround.
+        PerPixel
+    };
+
     /** @name Render mode
      */
     //@{
@@ -245,8 +255,12 @@ public:
         int height = 0;
         int samples = -1;
         QColor background;
+        AlphaMode alphaMode = AlphaMode::FromBackground;
         RenderIntent intent = RenderIntent::RasterCapture;
         bool includeViewerLighting = true;
+        /// Render through this camera instead of the viewer's own, which is left untouched.
+        /// Must arrive already referenced; the render neither takes nor releases ownership.
+        SoCamera* camera = nullptr;
     };
 
     /** Render the scene into a new image using the requested capture policy. */
@@ -655,11 +669,15 @@ private:
     void recoverFromRenderMemoryException();
     void renderDelayedAnnotations(SoGLRenderAction* glra);
     void renderGLActionScene(const QColor& backgroundColor, SoGLRenderAction* glra);
+    bool renderToFramebuffer(QOpenGLFramebufferObject*);
     bool renderToFramebuffer(
         QOpenGLFramebufferObject*,
-        bool includeViewerLighting = true,
+        const RenderImageOptions& options,
         SoNode* transientOverlayRoot = nullptr
     );
+    /// Assemble a scene root that renders the options' camera over the geometry alone.
+    /// The returned node is unreferenced; the caller owns it.
+    SoSeparator* buildCaptureRoot(const RenderImageOptions& options) const;
     void setCursorRepresentation(int mode);
     void aboutToDestroyGLContext();
     void createStandardCursors();

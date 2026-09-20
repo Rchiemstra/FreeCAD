@@ -408,7 +408,6 @@ void GridExtensionP::createGridPart(
     Gui::CoinPtr<SoLineSet> grid(new SoLineSet);
     Gui::CoinPtr<SoVertexProperty> vts(new SoVertexProperty);
     grid->vertexProperty = vts.get();
-
     grid->numVertices.setNum(nlines);
     auto* vertices = grid->numVertices.startEditing();
     if (GridExtensionInternal::canWriteEditedField(vertices)) {

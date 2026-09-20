@@ -31,6 +31,7 @@ add_executable(App_tests_run
         GenericIsolatedRecompute.cpp
         GeometryJobManager.cpp
         GeometryProcessBackend.cpp
+        QuantityInput.cpp
         ElementMap.cpp
         ElementNamingUtils.cpp
         IndexedName.cpp
