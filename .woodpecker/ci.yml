@@ -5,7 +5,8 @@
 #   * manual, tag                        (any branch; tags ignore branch filter)
 #   * pull_request opened or updated, targeting FreeCAD-start, fix/*, chore/*,
 #     or integrate/* (Woodpecker `branch` matches the PR target branch)
-# `main` is intentionally NOT triggered.
+# `main` is intentionally NOT triggered here; .woodpecker/block-main.yml fails
+# every pull request into main instead.
 #
 # ---------------------------------------------------------------------------
 # CI images (owned by THIS repo, pushed to the LOCAL registry by kaniko as
@@ -180,6 +181,18 @@ steps:
     depends_on: []
     commands:
       - sh ci/woodpecker/all-submodules-check.sh
+
+  # ---------------------------------------------------------------------------
+  # GATE (PRs into FreeCAD-start only): the freecad-mcp pin must already be on
+  # freecad-mcp main -- MCP work reaches FreeCAD-start only after its own PR
+  # merged it to MCP main. Other targets, tags and manual runs skip inside the
+  # script, so this step never filters out a dependent.
+  # ---------------------------------------------------------------------------
+  - name: mcp-pin-on-main
+    image: alpine/git
+    depends_on: [all-submodules-check]
+    commands:
+      - sh ci/woodpecker/mcp-pin-on-main-check.sh
 
   # ---------------------------------------------------------------------------
   # FreeCAD track

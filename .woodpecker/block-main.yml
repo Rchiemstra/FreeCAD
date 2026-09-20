@@ -1,0 +1,23 @@
+# =============================================================================
+# Reject pull requests into main.
+# =============================================================================
+# main mirrors upstream FreeCAD/FreeCAD; work lands on FreeCAD-start (or fix/*,
+# chore/*, integrate/*) through ci.yml. ci.yml does not trigger for main, so this
+# separate workflow gives such a PR a red status instead of none at all.
+
+when:
+  - event: pull_request
+    branch: main
+
+skip_clone: true
+
+labels:
+  backend: docker
+
+steps:
+  - name: reject-pr-to-main
+    image: alpine:3.20
+    commands:
+      - echo "Pull requests into main are not accepted on this fork."
+      - echo "Target FreeCAD-start (or fix/*, chore/*, integrate/*) instead."
+      - exit 1
