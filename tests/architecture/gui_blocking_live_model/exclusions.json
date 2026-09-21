@@ -1,0 +1,35 @@
+{
+  "comment": "False-positive exclusions for the GUI blocking/live-model ingress scanner. Each entry removes a single scanner match that is not a real finding. Every reason must name the specific false-positive class. The validator rejects any exclusion that does not correspond to an actual scanner match (stale) and any finding left unexplained.",
+  "exclusions": [
+    {
+      "path": "src/Gui/Application.h",
+      "line": 167,
+      "category": "live-reference-callback",
+      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler."
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 169,
+      "category": "live-reference-callback",
+      "reason": "Signal member declaration (fastsignals::signal<...> signalBeforeChangeObject), not a live-reference callback binding or handler."
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 171,
+      "category": "live-reference-callback",
+      "reason": "Signal member declaration (fastsignals::signal<...> signalChangedObject), not a live-reference callback binding or handler."
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 134,
+      "category": "live-reference-callback",
+      "reason": "Signal member declaration (fastsignals::signal<...> signalDeletedObject), not a live-reference callback binding or handler."
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 138,
+      "category": "live-reference-callback",
+      "reason": "Signal member declaration (continuation of the fastsignals::signal<...> signalChangedObject declaration), not a live-reference callback binding or handler."
+    }
+  ]
+}

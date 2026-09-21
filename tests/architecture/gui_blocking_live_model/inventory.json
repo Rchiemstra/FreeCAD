@@ -1,0 +1,4973 @@
+{
+  "generator": "tests/architecture/gui_blocking_live_model/scanner.py",
+  "scope": [
+    "src/Gui",
+    "src/Mod/Assembly/Gui",
+    "src/Mod/CAM/Gui",
+    "src/Mod/Fem/Gui",
+    "src/Mod/Import/Gui",
+    "src/Mod/Inspection/Gui",
+    "src/Mod/Material/Gui",
+    "src/Mod/Measure/Gui",
+    "src/Mod/Mesh/Gui",
+    "src/Mod/MeshPart/Gui",
+    "src/Mod/Part/Gui",
+    "src/Mod/PartDesign/Gui",
+    "src/Mod/Points/Gui",
+    "src/Mod/ReverseEngineering/Gui",
+    "src/Mod/Robot/Gui",
+    "src/Mod/Sketcher/Gui",
+    "src/Mod/Spreadsheet/Gui",
+    "src/Mod/Start/Gui",
+    "src/Mod/Surface/Gui",
+    "src/Mod/TechDraw/Gui"
+  ],
+  "categories": [
+    "thread-waits",
+    "blocking-invokes",
+    "process-events-polling",
+    "direct-recompute",
+    "live-app-dereference",
+    "live-reference-callback",
+    "update-data-provider"
+  ],
+  "excluded_count": 5,
+  "findings": [
+    {
+      "path": "src/Gui/Action.cpp",
+      "line": 1258,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 468,
+      "category": "blocking-invokes",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "blocking ? Qt::BlockingQueuedConnection : Qt::QueuedConnection"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 808,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* act = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 812,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();  // an update is needed otherwise the new view isn't shown"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 899,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1002,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(DocName);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1096,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "pDoc->signalDeletedObject.connect(std::bind(&Gui::Application::slotDeletedObject, this, sp::_1));"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1097,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "pDoc->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1098,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::Application::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1176,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* child = App::GetApplication().getDocument(cand.name.c_str());"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1279,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute({}, false, &hasError);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1386,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Application::slotDeletedObject(const ViewProvider& vp)"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1388,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->signalDeletedObject(vp);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1392,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Application::slotChangedObject(const ViewProvider& vp, const App::Property& prop)"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1487,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalBeforeChangeObject(*notification.viewProvider, *notification.property);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1502,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalChangedObject(*notification.viewProvider, *notification.property);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1697,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalBeforeChangeObject(vp, prop);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1706,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalBeforeChangeObject(vp, prop);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1709,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalBeforeChangeObject(vp, prop);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1749,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalChangedObject(vp, prop);"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 2098,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* pDoc = App::GetApplication().getDocument(name);"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 205,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const ViewProvider&);"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 206,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const ViewProvider&, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/ApplicationPy.cpp",
+      "line": 1097,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/ApplicationPy.cpp",
+      "line": 1879,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = Application::Instance->reopen(App::GetApplication().getDocument(name));"
+    },
+    {
+      "path": "src/Gui/Assistant.cpp",
+      "line": 47,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "proc->waitForFinished(3000);"
+    },
+    {
+      "path": "src/Gui/Assistant.cpp",
+      "line": 132,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!proc->waitForFinished(50000)) {"
+    },
+    {
+      "path": "src/Gui/Assistant.cpp",
+      "line": 149,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!proc->waitForFinished(50000)) {"
+    },
+    {
+      "path": "src/Gui/AutoSaver.cpp",
+      "line": 155,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(name.c_str());"
+    },
+    {
+      "path": "src/Gui/AutoSaver.cpp",
+      "line": 226,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto* document = App::GetApplication().getDocument(name.c_str());"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 367,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getDocument(Name);"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 639,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = obj ? obj->getDocument() : App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 653,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 773,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 939,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 1393,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 212,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 251,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 419,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "QString docFilename = QString::fromUtf8(App::GetApplication().getActiveDocument()->getFileName());"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 424,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::GetApplication().getActiveDocument()->Label.getStrValue()"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 680,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 730,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 762,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 843,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (App::Document* doc = App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 1482,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 1560,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 1571,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument() != nullptr;"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 2224,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 2225,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 2327,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(docName.c_str());"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 2415,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/CommandFeat.cpp",
+      "line": 90,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Gui/CommandFeat.cpp",
+      "line": 96,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute(objects, true);"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return !!App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 274,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 279,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 370,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 570,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "recomputes.front()->getDocument()->recompute(recomputes);"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 748,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandLink.cpp",
+      "line": 758,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandStd.cpp",
+      "line": 553,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/CommandStd.cpp",
+      "line": 571,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/CommandStd.cpp",
+      "line": 1036,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::GetApplication().getActiveDocument() != nullptr"
+    },
+    {
+      "path": "src/Gui/CommandStd.cpp",
+      "line": 1043,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandView.cpp",
+      "line": 1267,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandView.cpp",
+      "line": 1319,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandView.cpp",
+      "line": 1361,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandView.cpp",
+      "line": 1403,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Control.cpp",
+      "line": 223,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);"
+    },
+    {
+      "path": "src/Gui/Control.cpp",
+      "line": 239,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 138,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectDelObject = documentIn.signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 139,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Model::slotDeleteObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 141,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectChgObject = documentIn.signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 142,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Model::slotChangeObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 277,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Model::slotDeleteObject(const ViewProviderDocumentObject& VPDObjectIn)"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 308,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Model::slotChangeObject(const ViewProviderDocumentObject& VPDObjectIn, const App::Property& propertyIn)"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.cpp",
+      "line": 1158,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.h",
+      "line": 100,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeleteObject(const Gui::ViewProviderDocumentObject& VPDObjectIn);"
+    },
+    {
+      "path": "src/Gui/DAGView/DAGModel.h",
+      "line": 101,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangeObject("
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgDocumentObject.cpp",
+      "line": 951,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(docName);"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 629,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(nameDoc.toUtf8());"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 698,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 701,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(lastDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 703,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 893,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(docName.toUtf8());"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 975,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(nameDoc.toUtf8());"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgMacroExecuteImp.cpp",
+      "line": 407,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 528,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "d->connectDelObject = pcDocument->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 529,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::Document::slotDeletedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 531,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "d->connectCngObject = pcDocument->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 532,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::Document::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 534,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "d->connectChangedViewObject = app->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 535,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::Document::slotChangedViewObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 602,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "d->connectTouchedObject = pcDocument->signalTouchedObject.connect("
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 603,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::Document::slotTouchedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1145,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Document::slotDeletedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1175,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalDeletedObject(*(static_cast<ViewProviderDocumentObject*>(viewProvider)));"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1197,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1233,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalChangedObject(static_cast<ViewProviderDocumentObject&>(*viewProvider), Prop);"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1327,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (objs.size() > 1 || App::GetApplication().getActiveDocument() != &doc"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1339,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (objs.size() > 1 || App::GetApplication().getActiveDocument() != &doc"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1360,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Document::slotTouchedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1544,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void Document::slotChangedViewObject(const Gui::ViewProvider& viewProvider,"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 103,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 104,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject&, const App::Property&);"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 105,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedViewObject(const Gui::ViewProvider&, const App::Property&);"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 121,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotTouchedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/DocumentModel.cpp",
+      "line": 430,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Doc.signalDeletedObject.connect(std::bind(&DocumentModel::slotDeleteObject, this, sp::_1));"
+    },
+    {
+      "path": "src/Gui/DocumentModel.cpp",
+      "line": 431,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Doc.signalChangedObject.connect(std::bind(&DocumentModel::slotChangeObject, this, sp::_1, sp::_2));"
+    },
+    {
+      "path": "src/Gui/DocumentModel.cpp",
+      "line": 508,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentModel::slotDeleteObject(const Gui::ViewProviderDocumentObject& obj)"
+    },
+    {
+      "path": "src/Gui/DocumentModel.cpp",
+      "line": 529,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentModel::slotChangeObject(const Gui::ViewProviderDocumentObject& obj, const App::Property& Prop)"
+    },
+    {
+      "path": "src/Gui/DocumentModel.h",
+      "line": 69,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeleteObject(const Gui::ViewProviderDocumentObject& obj);"
+    },
+    {
+      "path": "src/Gui/DocumentModel.h",
+      "line": 70,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangeObject(const Gui::ViewProviderDocumentObject& obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 333,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectDocumentDeletedObject = doc->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 433,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectDocumentDeletedObject = doc->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 434,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DocumentObserver::slotDeletedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 436,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectDocumentChangedObject = doc->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 437,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DocumentObserver::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 489,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentObserver::slotDeletedObject(const ViewProviderDocumentObject& /*Obj*/)"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.cpp",
+      "line": 492,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentObserver::slotChangedObject(const ViewProviderDocumentObject& /*Obj*/, const App::Property& /*Prop*/)"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.h",
+      "line": 353,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "virtual void slotDeletedObject(const ViewProviderDocumentObject& Obj);"
+    },
+    {
+      "path": "src/Gui/DocumentObserver.h",
+      "line": 355,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "virtual void slotChangedObject(const ViewProviderDocumentObject& Obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.cpp",
+      "line": 180,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentObserverPython::slotDeletedObject(const Gui::ViewProvider& Obj)"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.cpp",
+      "line": 194,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentObserverPython::slotBeforeChangeObject("
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.cpp",
+      "line": 217,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentObserverPython::slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop)"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.h",
+      "line": 75,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProvider& Obj);"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.h",
+      "line": 77,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotBeforeChangeObject(const Gui::ViewProvider& Obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.h",
+      "line": 79,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/ExpressionBinding.cpp",
+      "line": 112,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "objectdeleted = doc->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/ExpressionCompleter.cpp",
+      "line": 370,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "doc = App::GetApplication().getDocument(currentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/ExpressionCompleter.cpp",
+      "line": 632,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto cdoc = App::GetApplication().getDocument(currentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/FileDialog.cpp",
+      "line": 70,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/FileHandler.cpp",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/FileHandler.cpp",
+      "line": 80,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "doc = App::GetApplication().getDocument(document.c_str());"
+    },
+    {
+      "path": "src/Gui/FileHandler.cpp",
+      "line": 83,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 106,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "unflattenProc.waitForFinished();"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 114,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "unflattenProc.waitForFinished();"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 119,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!dotProc.waitForFinished()) {"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 463,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!flatProc.waitForFinished()) {"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 474,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!dotProc.waitForFinished()) {"
+    },
+    {
+      "path": "src/Gui/MDIView.cpp",
+      "line": 70,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectDelObject = pcDocument->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/MDIView.cpp",
+      "line": 531,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();  // let the close and any queued activation settle"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 267,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 290,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 1965,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();  // flush all pending deferredDelete events"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2067,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* newDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2121,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "checkProcess.waitForFinished();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2451,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "loadUrls(App::GetApplication().getActiveDocument(), data->urls());"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2580,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2605,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2646,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "loadUrls(App::GetApplication().getActiveDocument(), mimeData->urls());"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2651,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/ManualAlignment.cpp",
+      "line": 905,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectDocumentDeletedObject = myDocument->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/ManualAlignment.cpp",
+      "line": 906,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&ManualAlignment::slotDeletedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/ManualAlignment.cpp",
+      "line": 1012,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "myDocument->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/ManualAlignment.cpp",
+      "line": 1261,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ManualAlignment::slotDeletedObject(const Gui::ViewProvider& Obj)"
+    },
+    {
+      "path": "src/Gui/ManualAlignment.h",
+      "line": 235,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProvider& Obj);"
+    },
+    {
+      "path": "src/Gui/NetworkRetriever.cpp",
+      "line": 383,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "proc.waitForFinished();"
+    },
+    {
+      "path": "src/Gui/Placement.cpp",
+      "line": 187,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Placement.cpp",
+      "line": 432,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "document->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/Placement.cpp",
+      "line": 445,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/PreferencePages/DlgSettingsGeneral.cpp",
+      "line": 231,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "else if (App::Document* doc = App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/ProgressBar.cpp",
+      "line": 188,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/ProgressBar.cpp",
+      "line": 275,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/ProgressBar.cpp",
+      "line": 301,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/ProgressDialog.cpp",
+      "line": 189,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/ProgressDialog.cpp",
+      "line": 210,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 108,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectPropData = App::GetApplication().signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 111,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectPropView = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 138,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectDelViewObject = Application::Instance->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 139,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&PropertyView::slotDeletedViewObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 141,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectDelObject = App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 142,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&PropertyView::slotDeletedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 315,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void PropertyView::slotDeletedViewObject(const Gui::ViewProvider& vp)"
+    },
+    {
+      "path": "src/Gui/PropertyView.cpp",
+      "line": 325,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void PropertyView::slotDeletedObject(const App::DocumentObject& obj)"
+    },
+    {
+      "path": "src/Gui/PropertyView.h",
+      "line": 93,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedViewObject(const Gui::ViewProvider&);"
+    },
+    {
+      "path": "src/Gui/PropertyView.h",
+      "line": 94,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/PythonTracing.cpp",
+      "line": 162,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "QGuiApplication::processEvents();"
+    },
+    {
+      "path": "src/Gui/QuantitySpinBox.cpp",
+      "line": 190,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/QuantitySpinBox.cpp",
+      "line": 193,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "doc = App::GetApplication().getDocument(list.front().toLatin1());"
+    },
+    {
+      "path": "src/Gui/Selection/BoxSelection.cpp",
+      "line": 156,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Selection/BoxSelection.cpp",
+      "line": 279,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 582,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto* doc = App::GetApplication().getDocument(changes.pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 1215,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getDocument(pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 1218,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 1818,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(sel.DocName.c_str());"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 2193,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void SelectionSingleton::slotDeletedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 2266,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/Selection/Selection.cpp",
+      "line": 2267,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&Gui::SelectionSingleton::slotDeletedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/Selection/Selection.h",
+      "line": 811,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionObject.cpp",
+      "line": 69,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(DocName.c_str());"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionObject.cpp",
+      "line": 80,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(DocName.c_str());"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 198,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 223,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(Reason.pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 243,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(it.DocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 259,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(sel.DocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 288,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 322,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 541,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(elements[0].toUtf8());"
+    },
+    {
+      "path": "src/Gui/Selection/SelectionView.cpp",
+      "line": 569,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(elements[0].toUtf8());"
+    },
+    {
+      "path": "src/Gui/Selection/SoFCUnifiedSelection.cpp",
+      "line": 531,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(preselectAction->SelChange.pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SoFCUnifiedSelection.cpp",
+      "line": 594,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(selectionAction->SelChange.pDocName);"
+    },
+    {
+      "path": "src/Gui/Selection/SoFCUnifiedSelection.cpp",
+      "line": 700,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(selectionAction->SelChange.pDocName);"
+    },
+    {
+      "path": "src/Gui/SplashScreen.cpp",
+      "line": 316,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "QCoreApplication::processEvents(QEventLoop::AllEvents, TimeSlice);"
+    },
+    {
+      "path": "src/Gui/TaskElementColors.cpp",
+      "line": 225,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "obj->getDocument()->recompute(obj->getInListRecursive());"
+    },
+    {
+      "path": "src/Gui/TaskElementColors.cpp",
+      "line": 385,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "d->connectDelObj = Application::Instance->signalDeletedObject.connect(std::bind"
+    },
+    {
+      "path": "src/Gui/TaskElementColors.cpp",
+      "line": 386,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "(&ElementColors::slotDeleteObject, this, sp::_1));"
+    },
+    {
+      "path": "src/Gui/TaskElementColors.cpp",
+      "line": 450,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ElementColors::slotDeleteObject(const ViewProvider& obj)"
+    },
+    {
+      "path": "src/Gui/TaskElementColors.h",
+      "line": 65,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeleteObject(const ViewProvider&);"
+    },
+    {
+      "path": "src/Gui/TaskTransform.cpp",
+      "line": 1097,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "document->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/TaskTransform.cpp",
+      "line": 1108,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "document->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskAppearance.cpp",
+      "line": 58,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "this->connectChangedObject = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/TaskView/TaskAppearance.cpp",
+      "line": 59,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TaskAppearance::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskAppearance.cpp",
+      "line": 114,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void TaskAppearance::slotChangedObject(const Gui::ViewProvider& obj, const App::Property& prop)"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskAppearance.h",
+      "line": 71,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const Gui::ViewProvider&, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskImage.cpp",
+      "line": 352,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskOrientation.cpp",
+      "line": 76,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskWatcher.cpp",
+      "line": 153,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/TaskView/TaskWatcher.cpp",
+      "line": 179,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return (App::GetApplication().getActiveDocument() && Gui::Selection().size() == 0);"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 688,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectChangedViewObj = Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 689,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotChangedViewObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 902,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto gdoc = Application::Instance->getDocument(App::GetApplication().getActiveDocument());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 1227,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (doc == App::GetApplication().getActiveDocument() && this->skipRecomputeCommand) {"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 1311,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 1483,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2309,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(info.topDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2624,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(info.doc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2641,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(info.topDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2688,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto parentDoc = App::GetApplication().getDocument(info.parentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2959,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(info.doc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2975,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto parentDoc = App::GetApplication().getDocument(info.parentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 2990,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto ownerDoc = App::GetApplication().getDocument(info.ownerDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3239,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "targetInfo.targetDoc->recompute();"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3442,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void TreeWidget::slotChangedViewObject(const Gui::ViewProvider& vp, const App::Property& prop)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3453,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void TreeWidget::slotTouchedObject(const App::DocumentObject& obj)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3568,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getDocument(v.first.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3652,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "docItem->connectChgObject = docItem->document()->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3653,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotChangeObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3655,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "docItem->connectTouchedObject = doc->signalTouchedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3656,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotTouchedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4384,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (linkedDoc->document()->getDocument() != App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4404,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectDelObject = doc->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4405,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotDeleteObject, getTree(), sp::_1)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4408,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectChgObject = doc->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4409,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotChangeObject, getTree(), sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4411,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectTouchedObject = doc->getDocument()->signalTouchedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4412,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&TreeWidget::slotTouchedObject, getTree(), sp::_1)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4432,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "connectRecomputedObj = adoc->signalRecomputedObject.connect("
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4433,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DocumentItem::slotRecomputedObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 4642,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void TreeWidget::slotDeleteObject(const Gui::ViewProviderDocumentObject& view)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 5074,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void TreeWidget::slotChangeObject(const Gui::ViewProviderDocumentObject& view, const App::Property& prop)"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 5461,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void DocumentItem::slotRecomputedObject(const App::DocumentObject& obj)"
+    },
+    {
+      "path": "src/Gui/Tree.h",
+      "line": 248,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangedViewObject(const Gui::ViewProvider&, const App::Property&);"
+    },
+    {
+      "path": "src/Gui/Tree.h",
+      "line": 252,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotDeleteObject(const Gui::ViewProviderDocumentObject&);"
+    },
+    {
+      "path": "src/Gui/Tree.h",
+      "line": 253,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotChangeObject(const Gui::ViewProviderDocumentObject&, const App::Property& prop);"
+    },
+    {
+      "path": "src/Gui/Tree.h",
+      "line": 254,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotTouchedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/Tree.h",
+      "line": 421,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void slotRecomputedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/TreeParams.cpp",
+      "line": 1753,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::GetApplication().setActiveDocument(App::GetApplication().getActiveDocument());"
+    },
+    {
+      "path": "src/Gui/ViewProvider.cpp",
+      "line": 1031,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProvider::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderAnnotation.cpp",
+      "line": 302,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAnnotation::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderAnnotation.cpp",
+      "line": 490,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAnnotationLabel::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderDragger.cpp",
+      "line": 78,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDragger::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderFeaturePython.cpp",
+      "line": 677,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderGeometryObject.cpp",
+      "line": 171,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderGeometryObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderImagePlane.cpp",
+      "line": 353,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderImagePlane::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderInventorObject.cpp",
+      "line": 90,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderInventorObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderLink.cpp",
+      "line": 1555,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "linkOwner->pcLinked->getDocument()->signalChangedObject("
+    },
+    {
+      "path": "src/Gui/ViewProviderLink.cpp",
+      "line": 1568,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "linkOwner->pcLinked->getDocument()->signalChangedObject("
+    },
+    {
+      "path": "src/Gui/ViewProviderLink.cpp",
+      "line": 2204,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderLink::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderLink.cpp",
+      "line": 2591,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "getDocument()->signalChangedObject(*this, ext->_LinkTouched);"
+    },
+    {
+      "path": "src/Gui/ViewProviderPart.cpp",
+      "line": 85,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPart::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderPlacement.cpp",
+      "line": 99,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPlacement::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderVRMLObject.cpp",
+      "line": 213,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderVRMLObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/Workbench.cpp",
+      "line": 371,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!item || !App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Gui/propertyeditor/PropertyEditor.cpp",
+      "line": 422,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Gui/propertyeditor/PropertyEditor.cpp",
+      "line": 446,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
+      "line": 1647,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getDocument(sourceId.substr(0, sep).c_str());"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
+      "line": 2062,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(doc->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
+      "line": 2080,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "connections.push_back(doc->signalDeletedObject.connect([this](const App::DocumentObject& obj) {"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 131,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "m_deletedObjectConn = App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 132,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "std::bind(&ViewProviderAssembly::slotDeletedObject, this, std::placeholders::_1)"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 245,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAssembly::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 264,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(docName.c_str());"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.cpp",
+      "line": 1719,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAssembly::slotDeletedObject(const App::DocumentObject& obj)"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.h",
+      "line": 272,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject& obj);"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp",
+      "line": 488,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderReviewNote::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/AppPathGuiPy.cpp",
+      "line": 189,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "pcDoc = App::GetApplication().getDocument(DocName);"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/AppPathGuiPy.cpp",
+      "line": 192,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "pcDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderArea.cpp",
+      "line": 90,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderArea::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderArea.cpp",
+      "line": 172,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAreaView::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderPath.cpp",
+      "line": 498,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPath::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderPathShape.cpp",
+      "line": 89,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPathShape::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ActiveAnalysisObserver.cpp",
+      "line": 95,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ActiveAnalysisObserver::slotDeletedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ActiveAnalysisObserver.h",
+      "line": 60,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/Command.cpp",
+      "line": 2091,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "auto objFilter = App::GetApplication().getActiveDocument()->getActiveObject();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/Command.cpp",
+      "line": 2660,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "= App::GetApplication().getActiveDocument()->getObjectsOfType<Fem::FemPostPipeline>();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 322,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 511,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 546,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
+      "line": 234,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "m_connection = document->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
+      "line": 264,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
+      "line": 426,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "vp->getObject()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
+      "line": 1018,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "getView()->getObject()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
+      "line": 1190,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraint.cpp",
+      "line": 179,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraint::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.cpp",
+      "line": 67,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintBearing::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintContact.cpp",
+      "line": 62,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintContact::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintDisplacement.cpp",
+      "line": 70,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintDisplacement::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFixed.cpp",
+      "line": 61,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintFixed::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFluidBoundary.cpp",
+      "line": 77,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintFluidBoundary::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintForce.cpp",
+      "line": 67,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintForce::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintGear.cpp",
+      "line": 71,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintGear::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintHeatflux.cpp",
+      "line": 63,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintHeatflux::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintInitialTemperature.cpp",
+      "line": 63,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintInitialTemperature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPlaneRotation.cpp",
+      "line": 65,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintPlaneRotation::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPressure.cpp",
+      "line": 67,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintPressure::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPulley.cpp",
+      "line": 68,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintPulley::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintRigidBody.cpp",
+      "line": 65,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintRigidBody::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintSpring.cpp",
+      "line": 61,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintSpring::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTemperature.cpp",
+      "line": 62,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintTemperature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTransform.cpp",
+      "line": 71,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemConstraintTransform::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemMesh.cpp",
+      "line": 382,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemMesh::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemMeshShapeNetgen.cpp",
+      "line": 85,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemMeshShapeNetgen::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostFilter.cpp",
+      "line": 281,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemPostCalculator::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostFunction.cpp",
+      "line": 75,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemPostFunctionProvider::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostObject.cpp",
+      "line": 799,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemPostObject::updateData(const App::Property* p)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostPipeline.cpp",
+      "line": 56,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFemPostPipeline::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderShapeExtension.cpp",
+      "line": 98,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "m_connection = m_object->getDocument()->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderShapeExtension.cpp",
+      "line": 204,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "that->getExtendedViewProvider()->getDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderShapeExtension.cpp",
+      "line": 216,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "that->getExtendedViewProvider()->getDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 232,
+      "category": "live-app-dereference",
+      "subsystem": "Import",
+      "disposition": "investigate",
+      "evidence": "pcDoc = App::GetApplication().getDocument(DocName);"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 331,
+      "category": "direct-recompute",
+      "subsystem": "Import",
+      "disposition": "migrate",
+      "evidence": "pcDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 348,
+      "category": "direct-recompute",
+      "subsystem": "Import",
+      "disposition": "migrate",
+      "evidence": "pcDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 442,
+      "category": "live-app-dereference",
+      "subsystem": "Import",
+      "disposition": "investigate",
+      "evidence": "pcDoc = App::GetApplication().getDocument(DocName);"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 445,
+      "category": "live-app-dereference",
+      "subsystem": "Import",
+      "disposition": "investigate",
+      "evidence": "pcDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
+      "line": 463,
+      "category": "direct-recompute",
+      "subsystem": "Import",
+      "disposition": "migrate",
+      "evidence": "pcDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/Command.cpp",
+      "line": 64,
+      "category": "live-app-dereference",
+      "subsystem": "Inspection",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/Command.cpp",
+      "line": 105,
+      "category": "live-app-dereference",
+      "subsystem": "Inspection",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/ViewProviderInspection.cpp",
+      "line": 351,
+      "category": "update-data-provider",
+      "subsystem": "Inspection",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderInspection::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/VisualInspection.cpp",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "Inspection",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/VisualInspection.cpp",
+      "line": 284,
+      "category": "direct-recompute",
+      "subsystem": "Inspection",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgDisplayPropertiesImp.cpp",
+      "line": 161,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "d->connectChangedObject = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgDisplayPropertiesImp.cpp",
+      "line": 162,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DlgDisplayPropertiesImp::slotChangedObject, this, sp::_1, sp::_2));"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgDisplayPropertiesImp.cpp",
+      "line": 283,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "void DlgDisplayPropertiesImp::slotChangedObject(const Gui::ViewProvider& obj,"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgDisplayPropertiesImp.h",
+      "line": 88,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const Gui::ViewProvider&, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgInspectAppearance.cpp",
+      "line": 136,
+      "category": "live-app-dereference",
+      "subsystem": "Material",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgInspectMaterial.cpp",
+      "line": 149,
+      "category": "live-app-dereference",
+      "subsystem": "Material",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgMaterialImp.cpp",
+      "line": 108,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "d->connectChangedObject = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgMaterialImp.cpp",
+      "line": 109,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DlgMaterialImp::slotChangedObject, this, sp::_1, sp::_2));"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgMaterialImp.cpp",
+      "line": 154,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "void DlgMaterialImp::slotChangedObject(const Gui::ViewProvider& obj, const App::Property& prop)"
+    },
+    {
+      "path": "src/Mod/Material/Gui/DlgMaterialImp.h",
+      "line": 79,
+      "category": "live-reference-callback",
+      "subsystem": "Material",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const Gui::ViewProvider&, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Mod/Material/Gui/TaskMigrateExternal.cpp",
+      "line": 158,
+      "category": "process-events-polling",
+      "subsystem": "Material",
+      "disposition": "investigate",
+      "evidence": "QCoreApplication::processEvents();"
+    },
+    {
+      "path": "src/Mod/Material/Gui/TaskMigrateExternal.cpp",
+      "line": 187,
+      "category": "process-events-polling",
+      "subsystem": "Material",
+      "disposition": "investigate",
+      "evidence": "QCoreApplication::processEvents();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/Command.cpp",
+      "line": 69,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/Command.cpp",
+      "line": 115,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 147,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "if (App::Document* doc = App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 492,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 546,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1259,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1328,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1346,
+      "category": "direct-recompute",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1363,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1407,
+      "category": "direct-recompute",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMassProperties.cpp",
+      "line": 1477,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMeasure.cpp",
+      "line": 235,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "if (auto* doc = App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMeasure.cpp",
+      "line": 236,
+      "category": "live-reference-callback",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "m_deletedConnection = doc->signalDeletedObject.connect([this](auto&& obj) {"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMeasure.cpp",
+      "line": 292,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/TaskMeasure.cpp",
+      "line": 335,
+      "category": "live-app-dereference",
+      "subsystem": "Measure",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp",
+      "line": 443,
+      "category": "update-data-provider",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeasureBase::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp",
+      "line": 509,
+      "category": "live-reference-callback",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "_mVisibilityChangedConnection = document->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 508,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 540,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 668,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1111,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1153,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1283,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1658,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1762,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* pcDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1808,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* pcDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Command.cpp",
+      "line": 1857,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* pcDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 270,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void DlgEvaluateMeshImp::slotDeletedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 291,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void DlgEvaluateMeshImp::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 520,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 566,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 604,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 692,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 718,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 787,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 812,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 859,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 884,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 931,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 956,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1001,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1026,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1079,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1104,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1165,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1216,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1228,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1238,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1248,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1270,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1280,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1290,
+      "category": "process-events-polling",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "qApp->processEvents();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp",
+      "line": 1302,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.h",
+      "line": 88,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.h",
+      "line": 90,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop) override;"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/DlgRegularSolidImp.cpp",
+      "line": 120,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/MeshEditor.cpp",
+      "line": 507,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "myConnection = App::GetApplication().signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/MeshEditor.cpp",
+      "line": 508,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "std::bind(&MeshFillHole::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/MeshEditor.cpp",
+      "line": 578,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void MeshFillHole::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/MeshEditor.h",
+      "line": 169,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/MeshSelection.cpp",
+      "line": 123,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/RemeshGmsh.cpp",
+      "line": 231,
+      "category": "thread-waits",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "d->gmsh.waitForFinished(1000);"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/Segmentation.cpp",
+      "line": 131,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/SegmentationBestFit.cpp",
+      "line": 517,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.cpp",
+      "line": 492,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMesh::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.cpp",
+      "line": 1649,
+      "category": "live-app-dereference",
+      "subsystem": "Mesh",
+      "disposition": "investigate",
+      "evidence": "auto doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.cpp",
+      "line": 2532,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderIndexedFaceSet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.cpp",
+      "line": 2623,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeshObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.cpp",
+      "line": 241,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeshCurvature::slotChangedObject("
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.cpp",
+      "line": 314,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeshCurvature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.h",
+      "line": 119,
+      "category": "live-reference-callback",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop) override;"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderMeshFaceSet.cpp",
+      "line": 100,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeshFaceSet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderTransform.cpp",
+      "line": 79,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMeshTransform::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/Command.cpp",
+      "line": 340,
+      "category": "live-app-dereference",
+      "subsystem": "MeshPart",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/CrossSections.cpp",
+      "line": 315,
+      "category": "thread-waits",
+      "subsystem": "MeshPart",
+      "disposition": "investigate",
+      "evidence": "future.waitForFinished();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/CurveOnMesh.cpp",
+      "line": 672,
+      "category": "direct-recompute",
+      "subsystem": "MeshPart",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/Tessellation.cpp",
+      "line": 207,
+      "category": "live-app-dereference",
+      "subsystem": "MeshPart",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/Tessellation.cpp",
+      "line": 238,
+      "category": "live-app-dereference",
+      "subsystem": "MeshPart",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/BoxSelection.cpp",
+      "line": 111,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/Command.cpp",
+      "line": 2152,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/Command.cpp",
+      "line": 2559,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "if (source && source->getDocument() != App::GetApplication().getActiveDocument()) {"
+    },
+    {
+      "path": "src/Mod/Part/Gui/Command.cpp",
+      "line": 2597,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* array = App::GetApplication().getActiveDocument()->getActiveObject();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/CommandSimple.cpp",
+      "line": 298,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "auto newObj = App::GetApplication().getActiveDocument()->getActiveObject();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/CommandSimple.cpp",
+      "line": 426,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "auto newObj = App::GetApplication().getActiveDocument()->getActiveObject();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/CrossSections.cpp",
+      "line": 265,
+      "category": "thread-waits",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "future.waitForFinished();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 110,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "this->connectModObject = App::GetApplication().signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 111,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "std::bind(&DlgBooleanOperation::slotChangedObject, this, sp::_1, sp::_2)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 147,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void DlgBooleanOperation::slotChangedObject(const App::DocumentObject& obj, const App::Property& prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 229,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 433,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
+      "line": 504,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "activeDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgBooleanOperation.h",
+      "line": 56,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject&, const App::Property&);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
+      "line": 418,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
+      "line": 501,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getDocument(this->document.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
+      "line": 643,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = App::GetApplication().getActiveDocument()->getObject("
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
+      "line": 692,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(this->document.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 271,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "d->connectApplicationDeletedObject = App::GetApplication().signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 551,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "else if (App::GetApplication().getActiveDocument() == &doc) {"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 593,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 834,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 1045,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
+      "line": 1113,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "activeDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
+      "line": 2296,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
+      "line": 2365,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
+      "line": 167,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "m_partDocument = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
+      "line": 283,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void PartGui::DlgProjectionOnSurface::slotDeletedObject(const App::DocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
+      "line": 1335,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "document->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.h",
+      "line": 144,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const App::DocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
+      "line": 197,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = App::GetApplication().getActiveDocument()->getObject("
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
+      "line": 265,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
+      "line": 378,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
+      "line": 425,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
+      "line": 510,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "activeDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgScale.cpp",
+      "line": 117,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgScale.cpp",
+      "line": 211,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getDocument(m_document.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgScale.cpp",
+      "line": 300,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(m_document.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgScale.cpp",
+      "line": 321,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(m_document.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/Mirroring.cpp",
+      "line": 269,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/Mirroring.cpp",
+      "line": 317,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getDocument("
+    },
+    {
+      "path": "src/Mod/Part/Gui/Mirroring.cpp",
+      "line": 397,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "activeDoc->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
+      "line": 301,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "connectDelObject = guiDocument->signalDeletedObject.connect(bnd1);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 1690,
+      "category": "process-events-polling",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "QCoreApplication::processEvents();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
+      "line": 1723,
+      "category": "process-events-polling",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "QCoreApplication::processEvents();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskFaceAppearances.cpp",
+      "line": 275,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "d->connectDelObj = Gui::Application::Instance->signalDeletedObject.connect("
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskFaceAppearances.cpp",
+      "line": 276,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "std::bind(&FaceAppearances::slotDeleteObject, this, sp::_1)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskFaceAppearances.cpp",
+      "line": 331,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void FaceAppearances::slotDeleteObject(const Gui::ViewProvider& obj)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskFaceAppearances.h",
+      "line": 71,
+      "category": "live-reference-callback",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void slotDeleteObject(const Gui::ViewProvider&);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskLinkArrayParameters.cpp",
+      "line": 754,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskLinkArrayParameters.cpp",
+      "line": 781,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskLoft.cpp",
+      "line": 97,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskLoft.cpp",
+      "line": 216,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskShapeBuilder.cpp",
+      "line": 153,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskShapeBuilder.cpp",
+      "line": 203,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+      "line": 161,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+      "line": 420,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProvider2DObject.cpp",
+      "line": 256,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProvider2DObjectGrid::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProvider2DObject.cpp",
+      "line": 403,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProvider2DObject::updateData(const App::Property* property)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.cpp",
+      "line": 140,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderBoolean::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.cpp",
+      "line": 270,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMultiFuse::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.cpp",
+      "line": 414,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderMultiCommon::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderCompound.cpp",
+      "line": 136,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderCompound::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderCurveNet.cpp",
+      "line": 100,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderCurveNet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
+      "line": 969,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPartExt::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderMirror.cpp",
+      "line": 247,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderFillet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderMirror.cpp",
+      "line": 368,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderChamfer::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderMirror.cpp",
+      "line": 710,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getDocument(docName.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderPython.cpp",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderCustom::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderReference.cpp",
+      "line": 228,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPartReference::updateData(const App::Property*)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderRuledSurface.cpp",
+      "line": 60,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderRuledSurface::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 486,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::GetApplication().getActiveDocument()->getObject(FeatName.c_str())"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
+      "line": 309,
+      "category": "process-events-polling",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "QApplication::processEvents();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+      "line": 155,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void TaskFeatureParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.h",
+      "line": 99,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 264,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::GetApplication().getDocument(documentName.c_str())->getObject(feature.toLatin1().data())"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 363,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 414,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 453,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 465,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 578,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void TaskFeaturePick::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.h",
+      "line": 86,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskHoleParameters.cpp",
+      "line": 1522,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void TaskHoleParameters::Observer::slotChangedObject("
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskHoleParameters.h",
+      "line": 132,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskLoftParameters.cpp",
+      "line": 175,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 149,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void TaskMultiTransformParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 154,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "TaskTransformedParameters::slotDeletedObject(Obj);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.h",
+      "line": 93,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 236,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 255,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 280,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 789,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 814,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 1060,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
+      "line": 927,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
+      "line": 158,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void TaskTransformedParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.h",
+      "line": 143,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProvider.cpp",
+      "line": 108,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProvider::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
+      "line": 105,
+      "category": "live-reference-callback",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "m_ChangedConn = Gui::Application::Instance->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
+      "line": 328,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderBody::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
+      "line": 593,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp",
+      "line": 428,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderBoolean::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp",
+      "line": 199,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDatumCoordinateSystem::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumLine.cpp",
+      "line": 71,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDatumLine::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumPlane.cpp",
+      "line": 90,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDatumPlane::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderHole.cpp",
+      "line": 139,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderHole::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderSketchBased.cpp",
+      "line": 116,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderSketchBased::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Points/Gui/Command.cpp",
+      "line": 353,
+      "category": "live-app-dereference",
+      "subsystem": "Points",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Points/Gui/Command.cpp",
+      "line": 417,
+      "category": "live-app-dereference",
+      "subsystem": "Points",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Points/Gui/ViewProvider.cpp",
+      "line": 430,
+      "category": "update-data-provider",
+      "subsystem": "Points",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderScattered::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Points/Gui/ViewProvider.cpp",
+      "line": 601,
+      "category": "update-data-provider",
+      "subsystem": "Points",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderStructured::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/ReverseEngineering/Gui/Command.cpp",
+      "line": 372,
+      "category": "live-app-dereference",
+      "subsystem": "ReverseEngineering",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/ReverseEngineering/Gui/Command.cpp",
+      "line": 491,
+      "category": "live-app-dereference",
+      "subsystem": "ReverseEngineering",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/ReverseEngineering/Gui/Command.cpp",
+      "line": 514,
+      "category": "direct-recompute",
+      "subsystem": "ReverseEngineering",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/ReverseEngineering/Gui/Command.cpp",
+      "line": 541,
+      "category": "live-app-dereference",
+      "subsystem": "ReverseEngineering",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/ReverseEngineering/Gui/Segmentation.cpp",
+      "line": 138,
+      "category": "live-app-dereference",
+      "subsystem": "ReverseEngineering",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Robot/Gui/ViewProviderRobotObject.cpp",
+      "line": 170,
+      "category": "update-data-provider",
+      "subsystem": "Robot",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderRobotObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Robot/Gui/ViewProviderTrajectory.cpp",
+      "line": 126,
+      "category": "update-data-provider",
+      "subsystem": "Robot",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderTrajectory::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 674,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 864,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 981,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 1276,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
+      "line": 883,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
+      "line": 1243,
+      "category": "live-reference-callback",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "changedSketchView = app->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherElements.cpp",
+      "line": 650,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherElements.cpp",
+      "line": 696,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherElements.cpp",
+      "line": 969,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
+      "line": 213,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
+      "line": 527,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderPython.cpp",
+      "line": 59,
+      "category": "update-data-provider",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderCustom::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
+      "line": 3907,
+      "category": "update-data-provider",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderSketch::updateData(const App::Property* prop) {"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/AppSpreadsheetGui.cpp",
+      "line": 111,
+      "category": "live-app-dereference",
+      "subsystem": "Spreadsheet",
+      "disposition": "investigate",
+      "evidence": "App::Document* pcDoc = App::GetApplication().getDocument(DocName);"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 211,
+      "category": "live-app-dereference",
+      "subsystem": "Spreadsheet",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 989,
+      "category": "live-app-dereference",
+      "subsystem": "Spreadsheet",
+      "disposition": "investigate",
+      "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 713,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "GetApplication().getActiveDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp",
+      "line": 156,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp",
+      "line": 164,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp",
+      "line": 189,
+      "category": "update-data-provider",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderSheet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Start/Gui/StartView.cpp",
+      "line": 339,
+      "category": "live-app-dereference",
+      "subsystem": "Start",
+      "disposition": "investigate",
+      "evidence": "auto* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/Command.cpp",
+      "line": 206,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/Command.cpp",
+      "line": 230,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "std::string docName = App::GetApplication().getActiveDocument()->getName();"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFilling.cpp",
+      "line": 465,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void FillingPanel::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFilling.cpp",
+      "line": 601,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFilling.cpp",
+      "line": 801,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFilling.cpp",
+      "line": 865,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFilling.h",
+      "line": 111,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingEdge.cpp",
+      "line": 305,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void FillingEdgePanel::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingEdge.cpp",
+      "line": 393,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingEdge.cpp",
+      "line": 573,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingEdge.h",
+      "line": 89,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingVertex.cpp",
+      "line": 253,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void FillingVertexPanel::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingVertex.cpp",
+      "line": 380,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskFillingVertex.h",
+      "line": 86,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskGeomFillSurface.cpp",
+      "line": 366,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void GeomFillSurface::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskGeomFillSurface.cpp",
+      "line": 582,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskGeomFillSurface.h",
+      "line": 100,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskSections.cpp",
+      "line": 400,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void SectionsPanel::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskSections.cpp",
+      "line": 538,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskSections.cpp",
+      "line": 563,
+      "category": "live-app-dereference",
+      "subsystem": "Surface",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getDocument(data[0].toByteArray());"
+    },
+    {
+      "path": "src/Mod/Surface/Gui/TaskSections.h",
+      "line": 107,
+      "category": "live-reference-callback",
+      "subsystem": "Surface",
+      "disposition": "migrate",
+      "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandDecorate.cpp",
+      "line": 251,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandDecorate.cpp",
+      "line": 322,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/MDIViewPage.cpp",
+      "line": 150,
+      "category": "live-reference-callback",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "connectDeletedObject = appDoc->signalDeletedObject.connect(bnd);"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/MDIViewPage.cpp",
+      "line": 894,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskGeomHatch.cpp",
+      "line": 170,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "m_source->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskHatch.cpp",
+      "line": 190,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "m_dvp->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskRichAnno.cpp",
+      "line": 855,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "m_annoFeat->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskRichAnno.cpp",
+      "line": 876,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "m_annoFeat->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskSpreadsheetView.cpp",
+      "line": 197,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "m_viewObject->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskSurfaceFinishSymbols.cpp",
+      "line": 92,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::Document *doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp",
+      "line": 52,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderAnnotation::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp",
+      "line": 114,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderBalloon::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderDimension.cpp",
+      "line": 167,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDimension::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderDrawingView.cpp",
+      "line": 246,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderDrawingView::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderGeomHatch.cpp",
+      "line": 115,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderGeomHatch::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderHatch.cpp",
+      "line": 112,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderHatch::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderImage.cpp",
+      "line": 49,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderImage::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderPage.cpp",
+      "line": 154,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderPage::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroup.cpp",
+      "line": 246,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderProjGroup::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroupItem.cpp",
+      "line": 56,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderProjGroupItem::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderRichAnno.cpp",
+      "line": 97,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderRichAnno::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderSymbol.cpp",
+      "line": 53,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderSymbol::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderTemplate.cpp",
+      "line": 83,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderTemplate::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderViewSection.cpp",
+      "line": 117,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void ViewProviderViewSection::updateData(const App::Property* prop)"
+    }
+  ]
+}

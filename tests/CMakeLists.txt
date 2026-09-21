@@ -126,6 +126,16 @@ endif()
 add_subdirectory(src)
 add_subdirectory(filesystem)
 
+add_test(
+    NAME GuiBlockingLiveModelInventory
+    COMMAND
+        "${CMAKE_COMMAND}" -E env
+        "FREECAD_SOURCE_ROOT=${CMAKE_SOURCE_DIR}"
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/architecture/test_gui_blocking_live_model_inventory.py"
+)
+set_tests_properties(GuiBlockingLiveModelInventory PROPERTIES LABELS "Architecture")
+
 include(GoogleTest)
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
 
