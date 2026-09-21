@@ -8,9 +8,9 @@ import unittest
 
 from tests.gui.nonblocking.harness import (
     ACTION_KINDS,
+    DURATION_MS,
     ActionRecord,
     ContractError,
-    DURATION_MS,
     EvidenceRecord,
     ResponsivenessScenario,
 )
@@ -131,7 +131,7 @@ class HarnessTests(unittest.TestCase):
                 outcome="accepted",
             ),
         )
-        with self.assertRaisesRegex(ContractError, "every action must have evidence"):
+        with self.assertRaisesRegex(ContractError, "missing required evidence: latency_sample"):
             ResponsivenessScenario(scenario.actions, evidence).validate()
 
     def test_busy_and_cancellation_evidence_must_be_explicit(self):
@@ -153,10 +153,13 @@ class HarnessTests(unittest.TestCase):
             ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
 
         cancellation_index = next(
-            index for index, item in enumerate(bad) if item.kind == "cancellation"
+            index
+            for index, item in enumerate(scenario.evidence)
+            if item.kind == "cancellation"
         )
         original = scenario.evidence[cancellation_index]
-        bad[cancellation_index] = EvidenceRecord(
+        cancellation_bad = list(scenario.evidence)
+        cancellation_bad[cancellation_index] = EvidenceRecord(
             sequence=original.sequence,
             action_sequence=original.action_sequence,
             at_ms=original.at_ms,
@@ -167,7 +170,7 @@ class HarnessTests(unittest.TestCase):
             cancelled=True,
         )
         with self.assertRaisesRegex(ContractError, "must be marked cancelled"):
-            ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
+            ResponsivenessScenario(scenario.actions, tuple(cancellation_bad)).validate()
 
     def test_thresholds_fail_for_p99_and_maximum(self):
         scenario = _scenario((10,) * 98 + (51, 51))
