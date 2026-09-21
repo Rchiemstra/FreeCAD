@@ -38,9 +38,11 @@ def _scenario(
             outcome=(
                 "busy"
                 if actions[index % len(actions)].kind == "busy_response"
-                else "cancelled"
-                if actions[index % len(actions)].kind == "cancellation"
-                else "accepted"
+                else (
+                    "cancelled"
+                    if actions[index % len(actions)].kind == "cancellation"
+                    else "accepted"
+                )
             ),
             busy=actions[index % len(actions)].kind == "busy_response",
             cancelled=actions[index % len(actions)].kind == "cancellation",
@@ -74,14 +76,10 @@ class HarnessTests(unittest.TestCase):
         scenario = _scenario()
         incomplete = ResponsivenessScenario(
             actions=scenario.actions,
-            evidence=tuple(
-                item for item in scenario.evidence if item.kind != "cancellation"
-            ),
+            evidence=tuple(item for item in scenario.evidence if item.kind != "cancellation"),
         )
 
-        with self.assertRaisesRegex(
-            ContractError, "missing required evidence: cancellation"
-        ):
+        with self.assertRaisesRegex(ContractError, "missing required evidence: cancellation"):
             incomplete.validate()
 
     def test_interval_and_timestamp_order_are_required(self):
@@ -111,8 +109,7 @@ class HarnessTests(unittest.TestCase):
 
         all_zero = ResponsivenessScenario(
             actions=tuple(
-                ActionRecord(item.sequence, item.kind, 0, item.value)
-                for item in scenario.actions
+                ActionRecord(item.sequence, item.kind, 0, item.value) for item in scenario.actions
             ),
             evidence=scenario.evidence,
         )
@@ -137,9 +134,7 @@ class HarnessTests(unittest.TestCase):
     def test_busy_and_cancellation_evidence_must_be_explicit(self):
         scenario = _scenario()
         bad = list(scenario.evidence)
-        busy_index = next(
-            index for index, item in enumerate(bad) if item.kind == "busy_response"
-        )
+        busy_index = next(index for index, item in enumerate(bad) if item.kind == "busy_response")
         original = bad[busy_index]
         bad[busy_index] = EvidenceRecord(
             sequence=original.sequence,
@@ -153,9 +148,7 @@ class HarnessTests(unittest.TestCase):
             ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
 
         cancellation_index = next(
-            index
-            for index, item in enumerate(scenario.evidence)
-            if item.kind == "cancellation"
+            index for index, item in enumerate(scenario.evidence) if item.kind == "cancellation"
         )
         original = scenario.evidence[cancellation_index]
         cancellation_bad = list(scenario.evidence)
@@ -184,7 +177,6 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(result.p99_ms, 50)
         self.assertEqual(result.maximum_ms, 101)
         self.assertFalse(result.passed)
-
 
     def test_serialization_has_deterministic_ordering_and_rejects_bad_links(self):
         scenario = _scenario((11, 7, 9, 12, 13, 14, 15, 16, 17))

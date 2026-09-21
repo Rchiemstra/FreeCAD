@@ -167,9 +167,7 @@ class ResponsivenessScenario:
         evidence_kinds = {item.kind for item in self.evidence}
         missing_evidence = [kind for kind in ACTION_KINDS if kind not in evidence_kinds]
         if missing_evidence:
-            raise ContractError(
-                "missing required evidence: " + ", ".join(missing_evidence)
-            )
+            raise ContractError("missing required evidence: " + ", ".join(missing_evidence))
         if [item.sequence for item in self.actions] != list(range(len(self.actions))):
             raise ContractError("actions must have contiguous deterministic sequence numbers")
         if [item.sequence for item in self.evidence] != list(range(len(self.evidence))):
@@ -177,8 +175,7 @@ class ResponsivenessScenario:
         action_times = [item.at_ms for item in self.actions]
         if action_times[0] != 0 or action_times[-1] != self.duration_ms:
             raise ContractError(
-                "actions must cover the complete interval from 0 to "
-                f"{self.duration_ms} ms"
+                "actions must cover the complete interval from 0 to " f"{self.duration_ms} ms"
             )
         if action_times != sorted(action_times) or len(set(action_times)) != len(action_times):
             raise ContractError("actions must be ordered by strictly increasing at_ms")
@@ -202,11 +199,7 @@ class ResponsivenessScenario:
             if observation.at_ms < action.at_ms or observation.at_ms > self.duration_ms:
                 raise ContractError(f"evidence at_ms must be at most {self.duration_ms}")
             if observation.kind == "busy_response":
-                if (
-                    not observation.busy
-                    or observation.cancelled
-                    or observation.outcome != "busy"
-                ):
+                if not observation.busy or observation.cancelled or observation.outcome != "busy":
                     raise ContractError("busy_response evidence must be marked busy")
             elif observation.kind == "cancellation":
                 if (
