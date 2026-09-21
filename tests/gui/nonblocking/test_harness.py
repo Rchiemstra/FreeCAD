@@ -34,7 +34,7 @@ def _scenario(
             action_sequence=index % len(actions),
             at_ms=actions[index % len(actions)].at_ms,
             kind=actions[index % len(actions)].kind,
-            latency_ms=value,
+            latency_ms=(0 if actions[index % len(actions)].at_ms == DURATION_MS else value),
             outcome=(
                 "busy"
                 if actions[index % len(actions)].kind == "busy_response"
@@ -46,6 +46,8 @@ def _scenario(
             ),
             busy=actions[index % len(actions)].kind == "busy_response",
             cancelled=actions[index % len(actions)].kind == "cancellation",
+            completed_at_ms=actions[index % len(actions)].at_ms
+            + (0 if actions[index % len(actions)].at_ms == DURATION_MS else value),
         )
         for index, value in enumerate(latencies)
     )
@@ -143,6 +145,7 @@ class HarnessTests(unittest.TestCase):
             kind=original.kind,
             latency_ms=original.latency_ms,
             outcome="accepted",
+            completed_at_ms=original.completed_at_ms,
         )
         with self.assertRaisesRegex(ContractError, "must be marked busy"):
             ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
@@ -161,18 +164,19 @@ class HarnessTests(unittest.TestCase):
             outcome="cancelled",
             busy=True,
             cancelled=True,
+            completed_at_ms=original.completed_at_ms,
         )
         with self.assertRaisesRegex(ContractError, "must be marked cancelled"):
             ResponsivenessScenario(scenario.actions, tuple(cancellation_bad)).validate()
 
     def test_thresholds_fail_for_p99_and_maximum(self):
-        scenario = _scenario((10,) * 98 + (51, 51))
+        scenario = _scenario((10,) * 96 + (51, 51) + (10, 10))
         result = scenario.evaluate_thresholds()
         self.assertEqual(result.p99_ms, 51)
         self.assertEqual(result.maximum_ms, 51)
         self.assertFalse(result.passed)
 
-        scenario = _scenario((10,) * 98 + (50, 101))
+        scenario = _scenario((10,) * 96 + (50, 101) + (10, 10))
         result = scenario.evaluate_thresholds()
         self.assertEqual(result.p99_ms, 50)
         self.assertEqual(result.maximum_ms, 101)
@@ -207,3 +211,63 @@ class HarnessTests(unittest.TestCase):
         contradictory["thresholds"]["p99_limit_ms"] = 51
         with self.assertRaisesRegex(ContractError, "thresholds do not match"):
             ResponsivenessScenario.from_dict(contradictory)
+
+        non_strict = json.loads(first)
+        non_strict["thresholds"]["sample_count"] = True
+        with self.assertRaisesRegex(ContractError, "thresholds do not match"):
+            ResponsivenessScenario.from_dict(non_strict)
+
+    def test_completion_timestamp_must_explain_latency(self):
+        scenario = _scenario()
+        original = scenario.evidence[0]
+        inconsistent = (
+            EvidenceRecord(
+                sequence=original.sequence,
+                action_sequence=original.action_sequence,
+                at_ms=original.at_ms,
+                kind=original.kind,
+                latency_ms=original.latency_ms + 1,
+                outcome=original.outcome,
+                busy=original.busy,
+                cancelled=original.cancelled,
+                completed_at_ms=original.completed_at_ms,
+            ),
+        ) + scenario.evidence[1:]
+        with self.assertRaisesRegex(ContractError, "latency_ms must equal"):
+            ResponsivenessScenario(scenario.actions, inconsistent).validate()
+
+        original = scenario.evidence[1]
+        before_observation = (
+            scenario.evidence[:1]
+            + (
+                EvidenceRecord(
+                    sequence=original.sequence,
+                    action_sequence=original.action_sequence,
+                    at_ms=original.at_ms,
+                    kind=original.kind,
+                    latency_ms=0,
+                    outcome=original.outcome,
+                    busy=original.busy,
+                    cancelled=original.cancelled,
+                    completed_at_ms=original.at_ms - 1,
+                ),
+            )
+            + scenario.evidence[2:]
+        )
+        with self.assertRaisesRegex(ContractError, "must not precede observation"):
+            ResponsivenessScenario(scenario.actions, before_observation).validate()
+
+    def test_scenario_rejects_foreign_record_types(self):
+        scenario = _scenario()
+
+        class ForeignAction:
+            kind = "repaint"
+
+        with self.assertRaisesRegex(ContractError, "only ActionRecord"):
+            ResponsivenessScenario((ForeignAction(),) + scenario.actions[1:], scenario.evidence)
+
+        class ForeignEvidence:
+            kind = "repaint"
+
+        with self.assertRaisesRegex(ContractError, "only EvidenceRecord"):
+            ResponsivenessScenario(scenario.actions, (ForeignEvidence(),) + scenario.evidence[1:])

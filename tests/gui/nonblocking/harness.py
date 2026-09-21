@@ -41,7 +41,7 @@ class ContractError(ValueError):
 
 
 def _check_text(name: str, value: object) -> str:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         raise ContractError(f"{name} must be a non-empty string")
     return value
 
@@ -68,7 +68,7 @@ class ActionRecord:
             raise ContractError(f"unsupported action kind: {self.kind!r}")
         if type(self.at_ms) is not int or not 0 <= self.at_ms <= DURATION_MS:
             raise ContractError(f"at_ms must be between 0 and {DURATION_MS}")
-        if not isinstance(self.value, str):
+        if type(self.value) is not str:
             raise ContractError("value must be a string")
 
     def as_dict(self) -> dict[str, object]:
@@ -82,7 +82,13 @@ class ActionRecord:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRecord:
-    """The value-only observation associated with one action."""
+    """The value-only observation and completion associated with one action.
+
+    ``at_ms`` is when the response was observed.  ``completed_at_ms`` is when
+    the requested interaction completed, so latency is measured from the
+    action request rather than from an arbitrary observation timestamp.
+    Both timestamps are in the 30-second scenario interval.
+    """
 
     sequence: int
     action_sequence: int
@@ -92,12 +98,13 @@ class EvidenceRecord:
     outcome: str
     busy: bool = False
     cancelled: bool = False
+    completed_at_ms: int = 0
 
     def __post_init__(self) -> None:
         _check_nonnegative_int("sequence", self.sequence)
         _check_nonnegative_int("action_sequence", self.action_sequence)
-        if type(self.at_ms) is not int or self.at_ms < 0:
-            raise ContractError("at_ms must be a non-negative integer")
+        if type(self.at_ms) is not int or not 0 <= self.at_ms <= DURATION_MS:
+            raise ContractError(f"at_ms must be between 0 and {DURATION_MS}")
         _check_text("kind", self.kind)
         if self.kind not in _ACTION_KIND_SET:
             raise ContractError(f"unsupported evidence kind: {self.kind!r}")
@@ -106,6 +113,8 @@ class EvidenceRecord:
         _check_text("outcome", self.outcome)
         if type(self.busy) is not bool or type(self.cancelled) is not bool:
             raise ContractError("busy and cancelled must be booleans")
+        if type(self.completed_at_ms) is not int or not 0 <= self.completed_at_ms <= DURATION_MS:
+            raise ContractError(f"completed_at_ms must be between 0 and {DURATION_MS}")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -117,6 +126,7 @@ class EvidenceRecord:
             "outcome": self.outcome,
             "busy": self.busy,
             "cancelled": self.cancelled,
+            "completed_at_ms": self.completed_at_ms,
         }
 
 
@@ -142,6 +152,29 @@ class ThresholdResult:
         }
 
 
+def _record_payload(item: object, record_type: type[object]) -> dict[str, Any]:
+    """Require the exact serialized shape before constructing a record."""
+
+    fields = (
+        {"sequence", "kind", "at_ms", "value"}
+        if record_type is ActionRecord
+        else {
+            "sequence",
+            "action_sequence",
+            "at_ms",
+            "kind",
+            "latency_ms",
+            "outcome",
+            "busy",
+            "cancelled",
+            "completed_at_ms",
+        }
+    )
+    if type(item) is not dict or set(item) != fields:
+        raise ContractError("malformed scenario record")
+    return item
+
+
 @dataclass(frozen=True, slots=True)
 class ResponsivenessScenario:
     """A complete, serializable 30-second scenario artifact."""
@@ -154,8 +187,12 @@ class ResponsivenessScenario:
     def __post_init__(self) -> None:
         if type(self.duration_ms) is not int or self.duration_ms != DURATION_MS:
             raise ContractError(f"duration_ms must be exactly {DURATION_MS}")
-        if not isinstance(self.actions, tuple) or not isinstance(self.evidence, tuple):
+        if type(self.actions) is not tuple or type(self.evidence) is not tuple:
             raise ContractError("actions and evidence must be tuples")
+        if any(type(item) is not ActionRecord for item in self.actions):
+            raise ContractError("actions must contain only ActionRecord values")
+        if any(type(item) is not EvidenceRecord for item in self.evidence):
+            raise ContractError("evidence must contain only EvidenceRecord values")
 
     def validate(self) -> None:
         """Validate completeness, ordering, and action/evidence identity."""
@@ -175,7 +212,7 @@ class ResponsivenessScenario:
         action_times = [item.at_ms for item in self.actions]
         if action_times[0] != 0 or action_times[-1] != self.duration_ms:
             raise ContractError(
-                "actions must cover the complete interval from 0 to " f"{self.duration_ms} ms"
+                f"actions must cover the complete interval from 0 to {self.duration_ms} ms"
             )
         if action_times != sorted(action_times) or len(set(action_times)) != len(action_times):
             raise ContractError("actions must be ordered by strictly increasing at_ms")
@@ -197,7 +234,15 @@ class ResponsivenessScenario:
             if observation.kind != action.kind:
                 raise ContractError("evidence kind must match its action kind")
             if observation.at_ms < action.at_ms or observation.at_ms > self.duration_ms:
-                raise ContractError(f"evidence at_ms must be at most {self.duration_ms}")
+                raise ContractError(
+                    f"evidence observation must be between its action and {self.duration_ms} ms"
+                )
+            if observation.completed_at_ms < observation.at_ms:
+                raise ContractError("evidence completion must not precede observation")
+            if observation.completed_at_ms > self.duration_ms:
+                raise ContractError(f"evidence completion must be at most {self.duration_ms}")
+            if observation.latency_ms != observation.completed_at_ms - action.at_ms:
+                raise ContractError("latency_ms must equal completion time minus action time")
             if observation.kind == "busy_response":
                 if not observation.busy or observation.cancelled or observation.outcome != "busy":
                     raise ContractError("busy_response evidence must be marked busy")
@@ -248,11 +293,24 @@ class ResponsivenessScenario:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ResponsivenessScenario:
-        if not isinstance(payload, dict) or payload.get("schema") != cls.schema:
+        if type(payload) is not dict or type(payload.get("schema")) is not str:
             raise ContractError("unsupported or missing scenario schema")
+        if payload.get("schema") != cls.schema:
+            raise ContractError("unsupported or missing scenario schema")
+        if not set(payload).issubset(
+            {"schema", "duration_ms", "actions", "evidence", "thresholds"}
+        ):
+            raise ContractError("scenario has an unexpected field set")
         try:
-            actions = tuple(ActionRecord(**item) for item in payload["actions"])
-            evidence = tuple(EvidenceRecord(**item) for item in payload["evidence"])
+            if type(payload["actions"]) is not list or type(payload["evidence"]) is not list:
+                raise ContractError("actions and evidence must be lists")
+            actions = tuple(
+                ActionRecord(**_record_payload(item, ActionRecord)) for item in payload["actions"]
+            )
+            evidence = tuple(
+                EvidenceRecord(**_record_payload(item, EvidenceRecord))
+                for item in payload["evidence"]
+            )
             scenario = cls(
                 actions=actions,
                 evidence=evidence,
@@ -265,9 +323,14 @@ class ResponsivenessScenario:
             thresholds = payload["thresholds"]
         except KeyError as error:
             raise ContractError("malformed scenario thresholds") from error
-        if not isinstance(thresholds, dict):
+        if type(thresholds) is not dict:
             raise ContractError("malformed scenario thresholds")
-        if thresholds != scenario.evaluate_thresholds().as_dict():
+        expected_thresholds = scenario.evaluate_thresholds().as_dict()
+        if set(thresholds) != set(expected_thresholds) or any(
+            type(thresholds[name]) is not type(expected_thresholds[name])
+            or thresholds[name] != expected_thresholds[name]
+            for name in expected_thresholds
+        ):
             raise ContractError("scenario thresholds do not match its evidence")
         return scenario
 
