@@ -29,9 +29,27 @@ ACTION_KINDS = (
     "cancellation",
 )
 _ACTION_KIND_SET = frozenset(ACTION_KINDS)
-ACTION_SCHEDULE = tuple(
-    (kind, (DURATION_MS * index) // (len(ACTION_KINDS) - 1))
-    for index, kind in enumerate(ACTION_KINDS)
+LATENCY_SAMPLE_COUNT = 100
+# Every response-bearing request is made before the endpoint.  The endpoint is
+# the fixed ``duration_ms`` marker, rather than an action that needs a response.
+_ACTION_SCHEDULE_PREFIX = (
+    ("repaint", 0),
+    ("resize", 2_000),
+    ("navigation", 4_000),
+    ("tree_scroll", 6_000),
+    ("cached_property", 8_000),
+    ("non_model_control", 10_000),
+    ("busy_response", 12_000),
+)
+_LATENCY_SAMPLE_START_MS = 12_100
+_LATENCY_SAMPLE_STEP_MS = 160
+ACTION_SCHEDULE = (
+    _ACTION_SCHEDULE_PREFIX
+    + tuple(
+        ("latency_sample", _LATENCY_SAMPLE_START_MS + index * _LATENCY_SAMPLE_STEP_MS)
+        for index in range(LATENCY_SAMPLE_COUNT)
+    )
+    + (("cancellation", 29_000),)
 )
 _ACTION_SCHEDULE_BY_SEQUENCE = dict(enumerate(ACTION_SCHEDULE))
 _SUCCESSFUL_OUTCOME = {
@@ -220,14 +238,14 @@ class ResponsivenessScenario:
             raise ContractError("actions must have contiguous deterministic sequence numbers")
         if [item.sequence for item in self.evidence] != list(range(len(self.evidence))):
             raise ContractError("evidence must have contiguous deterministic sequence numbers")
-        if len(self.actions) != len(ACTION_KINDS):
-            raise ContractError("actions must contain exactly one canonical action of each kind")
+        if len(self.actions) != len(ACTION_SCHEDULE):
+            raise ContractError("actions must contain the complete canonical action schedule")
         if len(self.evidence) != len(self.actions):
             raise ContractError("evidence must contain exactly one record per action")
         action_times = [item.at_ms for item in self.actions]
-        if action_times[0] != 0 or action_times[-1] != self.duration_ms:
+        if action_times[0] != 0 or action_times[-1] >= self.duration_ms:
             raise ContractError(
-                f"actions must cover the complete interval from 0 to {self.duration_ms} ms"
+                f"actions must start at 0 and finish before the {self.duration_ms} ms endpoint"
             )
         if action_times != sorted(action_times) or len(set(action_times)) != len(action_times):
             raise ContractError("actions must be ordered by strictly increasing at_ms")

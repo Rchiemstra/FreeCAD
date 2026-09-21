@@ -7,9 +7,9 @@ import json
 import unittest
 
 from tests.gui.nonblocking.harness import (
-    ACTION_KINDS,
     ACTION_SCHEDULE,
     DURATION_MS,
+    LATENCY_SAMPLE_COUNT,
     ActionRecord,
     ContractError,
     EvidenceRecord,
@@ -18,24 +18,28 @@ from tests.gui.nonblocking.harness import (
 
 
 def _scenario(
-    latencies: tuple[int, ...] = (12, 18, 25, 14, 16, 19, 20, 22, 24),
+    latencies: tuple[int, ...] | None = None,
 ) -> ResponsivenessScenario:
     actions = tuple(
         ActionRecord(
             sequence=index,
             kind=kind,
-            at_ms=ACTION_SCHEDULE[index][1],
+            at_ms=at_ms,
             value=kind,
         )
-        for index, kind in enumerate(ACTION_KINDS)
+        for index, (kind, at_ms) in enumerate(ACTION_SCHEDULE)
     )
+    if latencies is None:
+        latencies = tuple(12 + (index % 13) for index in range(len(actions)))
+    if len(latencies) != len(actions):
+        raise AssertionError("test latency fixture must cover the complete action schedule")
     evidence = tuple(
         EvidenceRecord(
             sequence=index,
             action_sequence=index,
             at_ms=actions[index].at_ms,
             kind=actions[index].kind,
-            latency_ms=(0 if actions[index].at_ms == DURATION_MS else value),
+            latency_ms=value,
             outcome=(
                 "busy"
                 if actions[index].kind == "busy_response"
@@ -43,8 +47,7 @@ def _scenario(
             ),
             busy=actions[index].kind == "busy_response",
             cancelled=actions[index].kind == "cancellation",
-            completed_at_ms=actions[index].at_ms
-            + (0 if actions[index].at_ms == DURATION_MS else value),
+            completed_at_ms=actions[index].at_ms + value,
         )
         for index, value in enumerate(latencies)
     )
@@ -84,9 +87,12 @@ class HarnessTests(unittest.TestCase):
     def test_interval_and_timestamp_order_are_required(self):
         scenario = _scenario()
         self.assertEqual(scenario.actions[0].at_ms, 0)
-        self.assertEqual(scenario.actions[-1].at_ms, DURATION_MS)
-        latency_index = ACTION_KINDS.index("latency_sample")
-        self.assertLess(scenario.actions[latency_index].at_ms, DURATION_MS)
+        self.assertLess(scenario.actions[-1].at_ms, DURATION_MS)
+        latency_indices = [
+            index for index, item in enumerate(scenario.actions) if item.kind == "latency_sample"
+        ]
+        self.assertEqual(len(latency_indices), LATENCY_SAMPLE_COUNT)
+        self.assertLess(scenario.actions[latency_indices[0]].at_ms, DURATION_MS)
         self.assertEqual(scenario.actions[-1].kind, "cancellation")
 
         out_of_order = ResponsivenessScenario(
@@ -103,7 +109,11 @@ class HarnessTests(unittest.TestCase):
 
         incomplete_interval = ResponsivenessScenario(
             actions=scenario.actions[:-1]
-            + (ActionRecord(8, "latency_sample", DURATION_MS - 1, "latency_sample"),),
+            + (
+                ActionRecord(
+                    len(scenario.actions) - 1, "latency_sample", DURATION_MS - 1, "latency_sample"
+                ),
+            ),
             evidence=scenario.evidence,
         )
         with self.assertRaisesRegex(ContractError, "missing required actions: cancellation"):
@@ -115,8 +125,19 @@ class HarnessTests(unittest.TestCase):
             ),
             evidence=scenario.evidence,
         )
-        with self.assertRaisesRegex(ContractError, "complete interval"):
+        with self.assertRaisesRegex(ContractError, "strictly increasing"):
             all_zero.validate()
+
+    def test_final_cancellation_accepts_nonzero_latency_before_endpoint(self):
+        scenario = _scenario()
+        cancellation = scenario.evidence[-1]
+        self.assertEqual(cancellation.kind, "cancellation")
+        self.assertGreater(cancellation.latency_ms, 0)
+        self.assertEqual(
+            cancellation.completed_at_ms - scenario.actions[-1].at_ms,
+            cancellation.latency_ms,
+        )
+        scenario.validate()
 
     def test_each_scheduled_action_requires_evidence(self):
         scenario = _scenario()
@@ -170,23 +191,25 @@ class HarnessTests(unittest.TestCase):
             ResponsivenessScenario(scenario.actions, tuple(cancellation_bad)).validate()
 
     def test_thresholds_fail_for_p99_and_maximum(self):
-        boundary = _scenario((50,) * 8 + (100,))
+        boundary = _scenario((50,) * (len(ACTION_SCHEDULE) - 1) + (100,))
         self.assertTrue(boundary.evaluate_thresholds().passed)
 
-        scenario = _scenario((10,) * 7 + (51, 10))
+        scenario = _scenario((10,) * (len(ACTION_SCHEDULE) - 2) + (51, 51))
         result = scenario.evaluate_thresholds()
         self.assertEqual(result.p99_ms, 51)
         self.assertEqual(result.maximum_ms, 51)
         self.assertFalse(result.passed)
 
-        scenario = _scenario((10,) * 7 + (101, 10))
+        scenario = _scenario((50,) * (len(ACTION_SCHEDULE) - 1) + (101,))
         result = scenario.evaluate_thresholds()
-        self.assertEqual(result.p99_ms, 101)
+        self.assertEqual(result.p99_ms, 50)
         self.assertEqual(result.maximum_ms, 101)
         self.assertFalse(result.passed)
 
     def test_serialization_has_deterministic_ordering_and_rejects_bad_links(self):
-        scenario = _scenario((11, 7, 9, 12, 13, 14, 15, 16, 17))
+        scenario = _scenario(
+            (11, 7, 9, 12, 13, 14, 15, 16, 17) + (17,) * (len(ACTION_SCHEDULE) - 9)
+        )
         first = scenario.to_json()
         second = ResponsivenessScenario.from_dict(json.loads(first)).to_json()
         self.assertEqual(first, second)
