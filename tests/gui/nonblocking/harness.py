@@ -9,8 +9,8 @@ defines the portable artifact and its fail-closed validation rules.
 from __future__ import annotations
 
 import json
-from math import ceil
 from dataclasses import dataclass
+from math import ceil
 from typing import Any, ClassVar
 
 
@@ -255,7 +255,7 @@ class ResponsivenessScenario:
         return json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ResponsivenessScenario":
+    def from_dict(cls, payload: dict[str, Any]) -> ResponsivenessScenario:
         if not isinstance(payload, dict) or payload.get("schema") != cls.schema:
             raise ContractError("unsupported or missing scenario schema")
         try:
@@ -280,7 +280,7 @@ class ResponsivenessScenario:
         return scenario
 
     @classmethod
-    def from_json(cls, encoded: str) -> "ResponsivenessScenario":
+    def from_json(cls, encoded: str) -> ResponsivenessScenario:
         try:
             payload = json.loads(encoded)
         except (TypeError, json.JSONDecodeError) as error:
