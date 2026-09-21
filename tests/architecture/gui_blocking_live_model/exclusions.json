@@ -30,6 +30,12 @@
       "line": 138,
       "category": "live-reference-callback",
       "reason": "Signal member declaration (continuation of the fastsignals::signal<...> signalChangedObject declaration), not a live-reference callback binding or handler."
+    },
+    {
+      "path": "src/Gui/Quarter/SignalThread.cpp",
+      "line": 71,
+      "category": "thread-waits",
+      "reason": "Worker-thread self-wait inside SignalThread::run(): the QWaitCondition the background thread blocks on while waiting to be triggered. It blocks the SignalThread worker, not the GUI thread, so it is not a GUI-thread blocking wait."
     }
   ]
 }

@@ -4,6 +4,12 @@
     "src/Gui",
     "src/Mod/Assembly/Gui",
     "src/Mod/CAM/Gui",
+    "src/Mod/CAM/Path/Base/Gui",
+    "src/Mod/CAM/Path/Dressup/Gui",
+    "src/Mod/CAM/Path/Main/Gui",
+    "src/Mod/CAM/Path/Op/Gui",
+    "src/Mod/CAM/Path/Post/Gui",
+    "src/Mod/CAM/Path/Tool/Gui",
     "src/Mod/Fem/Gui",
     "src/Mod/Import/Gui",
     "src/Mod/Inspection/Gui",
@@ -31,7 +37,7 @@
     "live-reference-callback",
     "update-data-provider"
   ],
-  "excluded_count": 5,
+  "excluded_count": 6,
   "findings": [
     {
       "path": "src/Gui/Action.cpp",
@@ -112,6 +118,22 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* child = App::GetApplication().getDocument(cand.name.c_str());"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1183,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> openDocs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1245,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
     },
     {
       "path": "src/Gui/Application.cpp",
@@ -256,6 +278,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (!proc->waitForFinished(50000)) {"
+    },
+    {
+      "path": "src/Gui/Assistant.cpp",
+      "line": 169,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!proc->waitForStarted()) {"
     },
     {
       "path": "src/Gui/AutoSaver.cpp",
@@ -427,6 +457,14 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
+      "line": 2232,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
       "line": 2327,
       "category": "live-app-dereference",
       "subsystem": "Gui",
@@ -555,6 +593,14 @@
     },
     {
       "path": "src/Gui/CommandView.cpp",
+      "line": 1129,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/CommandView.cpp",
       "line": 1267,
       "category": "live-app-dereference",
       "subsystem": "Gui",
@@ -584,6 +630,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/CommandWindow.cpp",
+      "line": 156,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return !(getMainWindow()->windows().isEmpty()) || !App::GetApplication().getDocuments().empty();"
     },
     {
       "path": "src/Gui/Control.cpp",
@@ -675,11 +729,27 @@
     },
     {
       "path": "src/Gui/Dialogs/DlgDocumentObject.cpp",
+      "line": 174,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgDocumentObject.cpp",
       "line": 951,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto doc = App::GetApplication().getDocument(docName);"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 177,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
@@ -715,6 +785,14 @@
     },
     {
       "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
+      "line": 818,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgExpressionInput.cpp",
       "line": 893,
       "category": "live-app-dereference",
       "subsystem": "Gui",
@@ -736,6 +814,14 @@
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Gui/Dialogs/DlgPropertyLink.cpp",
+      "line": 241,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "docs = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/Document.cpp",
@@ -866,6 +952,38 @@
       "evidence": "void Document::slotChangedViewObject(const Gui::ViewProvider& viewProvider,"
     },
     {
+      "path": "src/Gui/Document.cpp",
+      "line": 2504,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 2865,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "docs = App::Document::getDependentDocuments(App::GetApplication().getDocuments(), true);"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 2879,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 4062,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
+    },
+    {
       "path": "src/Gui/Document.h",
       "line": 103,
       "category": "live-reference-callback",
@@ -896,6 +1014,14 @@
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void slotTouchedObject(const App::DocumentObject&);"
+    },
+    {
+      "path": "src/Gui/DocumentChangesWidget.cpp",
+      "line": 150,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto* appDocument : App::GetApplication().getDocuments()) {"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",
@@ -1075,11 +1201,35 @@
     },
     {
       "path": "src/Gui/ExpressionCompleter.cpp",
+      "line": 349,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto& docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/ExpressionCompleter.cpp",
       "line": 370,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "doc = App::GetApplication().getDocument(currentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/ExpressionCompleter.cpp",
+      "line": 619,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto& docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/ExpressionCompleter.cpp",
+      "line": 631,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "const auto& docs = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/ExpressionCompleter.cpp",
@@ -1147,6 +1297,38 @@
     },
     {
       "path": "src/Gui/GraphvizView.cpp",
+      "line": 323,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "bool value = flatProc->waitForStarted();"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 326,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!dotProc->waitForStarted()) {"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 448,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!dotProc.waitForStarted()) {"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
+      "line": 458,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (!flatProc.waitForStarted()) {"
+    },
+    {
+      "path": "src/Gui/GraphvizView.cpp",
       "line": 463,
       "category": "thread-waits",
       "subsystem": "Gui",
@@ -1160,6 +1342,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (!dotProc.waitForFinished()) {"
+    },
+    {
+      "path": "src/Gui/GuiApplication.cpp",
+      "line": 328,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return socket.waitForBytesWritten(timeout);"
     },
     {
       "path": "src/Gui/MDIView.cpp",
@@ -1195,11 +1385,27 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
+      "line": 1132,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
       "line": 1965,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "qApp->processEvents();  // flush all pending deferredDelete events"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2064,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (App::GetApplication().getDocuments().empty()) {"
     },
     {
       "path": "src/Gui/MainWindow.cpp",
@@ -1328,6 +1534,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/PreferencePages/DlgSettingsCacheDirectory.cpp",
+      "line": 294,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/PreferencePages/DlgSettingsGeneral.cpp",
@@ -1480,6 +1694,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "doc = App::GetApplication().getDocument(list.front().toLatin1());"
+    },
+    {
+      "path": "src/Gui/Quarter/SensorManager.cpp",
+      "line": 82,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "this->signalthread->wait();"
     },
     {
       "path": "src/Gui/Selection/BoxSelection.cpp",
@@ -1667,11 +1889,27 @@
     },
     {
       "path": "src/Gui/SplashScreen.cpp",
+      "line": 161,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "QWaitCondition().wait(&mutex, 50);"
+    },
+    {
+      "path": "src/Gui/SplashScreen.cpp",
       "line": 316,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "QCoreApplication::processEvents(QEventLoop::AllEvents, TimeSlice);"
+    },
+    {
+      "path": "src/Gui/TaskCommandLink.cpp",
+      "line": 91,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto allDocuments = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/TaskElementColors.cpp",
@@ -1824,6 +2062,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (doc == App::GetApplication().getActiveDocument() && this->skipRecomputeCommand) {"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 1308,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
     },
     {
       "path": "src/Gui/Tree.cpp",
@@ -2114,6 +2360,14 @@
       "evidence": "void ViewProvider::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Gui/ViewProvider.h",
+      "line": 602,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "virtual void updateData(const App::Property*);"
+    },
+    {
       "path": "src/Gui/ViewProviderAnnotation.cpp",
       "line": 302,
       "category": "update-data-provider",
@@ -2130,12 +2384,60 @@
       "evidence": "void ViewProviderAnnotationLabel::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Gui/ViewProviderAnnotation.h",
+      "line": 76,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Gui/ViewProviderAnnotation.h",
+      "line": 119,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Gui/ViewProviderDocumentObject.cpp",
+      "line": 560,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Gui/ViewProviderDocumentObject.cpp",
+      "line": 736,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
+    },
+    {
       "path": "src/Gui/ViewProviderDragger.cpp",
       "line": 78,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void ViewProviderDragger::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderDragger.h",
+      "line": 86,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Gui/ViewProviderExtern.h",
+      "line": 54,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override"
     },
     {
       "path": "src/Gui/ViewProviderFeaturePython.cpp",
@@ -2146,12 +2448,36 @@
       "evidence": "void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Gui/ViewProviderFeaturePython.h",
+      "line": 80,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*);"
+    },
+    {
+      "path": "src/Gui/ViewProviderFeaturePython.h",
+      "line": 363,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override"
+    },
+    {
       "path": "src/Gui/ViewProviderGeometryObject.cpp",
       "line": 171,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void ViewProviderGeometryObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderGeometryObject.h",
+      "line": 72,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Gui/ViewProviderImagePlane.cpp",
@@ -2162,12 +2488,36 @@
       "evidence": "void ViewProviderImagePlane::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Gui/ViewProviderImagePlane.h",
+      "line": 50,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Gui/ViewProviderInventorObject.cpp",
       "line": 90,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void ViewProviderInventorObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderInventorObject.h",
+      "line": 46,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Gui/ViewProviderLink.cpp",
+      "line": 532,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop)"
     },
     {
       "path": "src/Gui/ViewProviderLink.cpp",
@@ -2202,12 +2552,28 @@
       "evidence": "getDocument()->signalChangedObject(*this, ext->_LinkTouched);"
     },
     {
+      "path": "src/Gui/ViewProviderLink.h",
+      "line": 252,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Gui/ViewProviderPart.cpp",
       "line": 85,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void ViewProviderPart::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderPart.h",
+      "line": 76,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Gui/ViewProviderPlacement.cpp",
@@ -2218,12 +2584,28 @@
       "evidence": "void ViewProviderPlacement::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Gui/ViewProviderPlacement.h",
+      "line": 52,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Gui/ViewProviderVRMLObject.cpp",
       "line": 213,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void ViewProviderVRMLObject::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Gui/ViewProviderVRMLObject.h",
+      "line": 48,
+      "category": "update-data-provider",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Gui/Workbench.cpp",
@@ -2315,6 +2697,14 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.h",
+      "line": 121,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderAssembly.h",
       "line": 272,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
@@ -2328,6 +2718,14 @@
       "subsystem": "Assembly",
       "disposition": "migrate",
       "evidence": "void ViewProviderReviewNote::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderReviewNote.h",
+      "line": 92,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/CAM/Gui/AppPathGuiPy.cpp",
@@ -2362,6 +2760,22 @@
       "evidence": "void ViewProviderAreaView::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/CAM/Gui/ViewProviderArea.h",
+      "line": 44,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderArea.h",
+      "line": 67,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/CAM/Gui/ViewProviderPath.cpp",
       "line": 498,
       "category": "update-data-provider",
@@ -2370,12 +2784,2436 @@
       "evidence": "void ViewProviderPath::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/CAM/Gui/ViewProviderPath.h",
+      "line": 80,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/CAM/Gui/ViewProviderPathShape.cpp",
       "line": 89,
       "category": "update-data-provider",
       "subsystem": "CAM",
       "disposition": "migrate",
       "evidence": "void ViewProviderPathShape::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/CAM/Gui/ViewProviderPathShape.h",
+      "line": 40,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/GetPoint.py",
+      "line": 136,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.getObject(snapInfo[\"Object\"])"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 237,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit PropertyBag\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 293,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 296,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 296,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 299,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 301,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 301,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 411,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create PropertyBag\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/PropertyBag.py",
+      "line": 436,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 260,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 260,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 336,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 336,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 369,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit SetupSheet\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 374,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 376,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 376,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 382,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 385,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 385,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 398,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 398,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/Gui/SetupSheet.py",
+      "line": 411,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
+      "line": 77,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Path Array Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
+      "line": 82,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
+      "line": 82,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
+      "line": 86,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create an Array dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
+      "line": 90,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 161,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit AxisMap Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 164,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 166,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 166,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 173,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 173,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 189,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 189,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 276,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 291,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py",
+      "line": 291,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 83,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 83,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 86,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 90,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 104,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 104,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 253,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a Boundary dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 258,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 293,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Path Boundary Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 298,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Boundary.py",
+      "line": 298,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 107,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit Dogbone Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 112,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 114,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 114,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 115,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.s)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 120,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 123,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 123,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 124,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.s)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 125,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 125,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 197,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 197,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 220,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self.s)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 254,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 349,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Dogbone Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 354,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py",
+      "line": 354,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 495,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit Dragknife Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 498,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 500,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 500,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 504,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 507,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 507,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 524,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 524,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 609,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 630,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py",
+      "line": 630,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 876,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Create LeadInOut Dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 881,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "App.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 881,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 902,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Create a DressupLeadInOut\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 903,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py",
+      "line": 909,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 290,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 295,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 295,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 313,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a DressupMirror\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 314,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Mirror.py",
+      "line": 319,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 290,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create PlungeMilling Dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 294,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 295,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 295,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 315,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a DressupPlungeMilling\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 316,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py",
+      "line": 321,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 300,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create RampEntry Dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 305,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 305,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 325,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a DressupRampEntry\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 326,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py",
+      "line": 332,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 60,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit HoldingTags Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 92,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 100,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 104,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 104,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 111,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 111,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 213,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "objs = FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 327,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "objs = FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 516,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 521,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 553,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 567,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a Tag dressup\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 570,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 595,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Tag Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 600,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 600,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 264,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit Z Correction Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 265,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.interpshape = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"InterpolationSurface\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 274,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 276,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 276,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 280,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 281,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.interpshape.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 284,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 284,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 285,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 285,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 292,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 294,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 307,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 307,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 410,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Dress-up\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 423,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py",
+      "line": 423,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
+      "line": 111,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.simulation.simmesh.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
+      "line": 151,
+      "category": "thread-waits",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.SIM.wait()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
+      "line": 153,
+      "category": "thread-waits",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.SIM.wait()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
+      "line": 175,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.simmesh = FreeCAD.ActiveDocument.addObject(\"Mesh::Feature\", \"Camotics\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
+      "line": 233,
+      "category": "thread-waits",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.SIM.wait()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 159,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 160,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 166,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a Fixture Offset\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 182,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 183,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 183,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Inspect.py",
+      "line": 85,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.selectionobj = FreeCAD.ActiveDocument.addObject(\"Path::Feature\", \"selection\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Inspect.py",
+      "line": 164,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.selectionobj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 825,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 944,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 965,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 973,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 974,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if self.deleteOnReject and FreeCAD.ActiveDocument.getObject(self.name):"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 976,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Uncreate Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 978,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 979,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 984,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getObject(self.name),"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 994,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 994,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 1264,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 1816,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "self.obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 1988,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 2042,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 2047,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 2048,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 2057,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobCmd.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "return FreeCAD.ActiveDocument is not None"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobCmd.py",
+      "line": 73,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobCmd.py",
+      "line": 73,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 123,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "current_label = FreeCAD.ActiveDocument.UnitSystem if FreeCAD.ActiveDocument else labels[0]"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 178,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 183,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument.UnitSystem == label:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 186,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.UnitSystem = label"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 187,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/JobDlg.py",
+      "line": 187,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/SanityCmd.py",
+      "line": 72,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "defaultDir = os.path.split(FreeCAD.ActiveDocument.getFileName())[0]"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 116,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "jobList = FreeCAD.ActiveDocument.findObjects(\"Path::FeaturePython\", \"Job.*\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 201,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.cutTool = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"CutTool\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 207,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.cutMaterial = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 210,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.cutMaterialIn = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 217,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.cutMaterial = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 227,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.cutSolid = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"CutDebug\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 233,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 233,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 567,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.cutTool.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 577,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.cutMaterialIn.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 582,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.cutMaterial.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 607,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Simulator.py",
+      "line": 608,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/SimulatorGL.py",
+      "line": 239,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "jobList = FreeCAD.ActiveDocument.findObjects(\"Path::FeaturePython\", \"Job.*\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/SimulatorGL.py",
+      "line": 371,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/SimulatorGL.py",
+      "line": 372,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Array.py",
+      "line": 867,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Array\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Array.py",
+      "line": 885,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Array.py",
+      "line": 886,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Array.py",
+      "line": 886,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 349,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "selected_obj = FreeCAD.ActiveDocument.getObject(obj)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 364,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 364,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 372,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 377,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 381,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(observer)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 948,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "ops = FreeCAD.ActiveDocument.getObjectsByLabel(opLabel)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1055,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1055,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1075,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1075,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1092,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1092,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1432,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"PathOp\", \"AreaOp Operation\"))"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1553,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1559,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1561,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"PathOp\", \"Uncreate AreaOp Operation\"))"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1564,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1567,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1575,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1585,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1585,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1596,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1596,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1627,
+      "category": "live-reference-callback",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1705,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1720,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1736,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create %s\" % res.name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1738,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1745,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1757,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1758,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1758,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1781,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 1782,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 209,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 209,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 342,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 363,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 363,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 375,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 394,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 394,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 401,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "base = FreeCAD.ActiveDocument.getObject(base_name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 420,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 420,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 506,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 506,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 514,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py",
+      "line": 514,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 109,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 110,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 116,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create a Comment in the CNC program\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 129,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 130,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Comment.py",
+      "line": 130,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 99,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 100,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 107,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Copy\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 143,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 144,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Copy.py",
+      "line": 144,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 682,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 683,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 723,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create PathShape\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 725,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 735,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 736,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/PathShape.py",
+      "line": 736,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/SimpleCopy.py",
+      "line": 94,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Simple Copy\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/SimpleCopy.py",
+      "line": 114,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/SimpleCopy.py",
+      "line": 115,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/SimpleCopy.py",
+      "line": 115,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 116,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument is not None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 117,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 123,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Add Optional or Mandatory Stop to the program\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 138,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Stop.py",
+      "line": 138,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Gui/DlgPostProcess.py",
+      "line": 667,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "QtGui.QApplication.processEvents()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 101,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 101,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 167,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 171,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "jobs = [o for o in FreeCAD.ActiveDocument.Objects if o.Name[:3] == \"Job\"]"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 446,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.toolrep.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 447,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 447,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 452,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.toolrep.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 453,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 453,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 475,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 475,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 480,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.toolrep = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"tool\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/FeedsSpeedsDialog.py",
+      "line": 573,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "self.tc.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/UpdateDocumentToolsDlg.py",
+      "line": 336,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/UpdateDocumentToolsDlg.py",
+      "line": 373,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(doc_name)"
     },
     {
       "path": "src/Mod/Fem/Gui/ActiveAnalysisObserver.cpp",
@@ -2482,12 +5320,28 @@
       "evidence": "void ViewProviderFemConstraint::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraint.h",
+      "line": 56,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.cpp",
       "line": 67,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintBearing::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintContact.cpp",
@@ -2498,12 +5352,28 @@
       "evidence": "void ViewProviderFemConstraintContact::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintContact.h",
+      "line": 42,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintDisplacement.cpp",
       "line": 70,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintDisplacement::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintDisplacement.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFixed.cpp",
@@ -2514,12 +5384,28 @@
       "evidence": "void ViewProviderFemConstraintFixed::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFixed.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFluidBoundary.cpp",
       "line": 77,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintFluidBoundary::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintFluidBoundary.h",
+      "line": 44,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintForce.cpp",
@@ -2530,12 +5416,28 @@
       "evidence": "void ViewProviderFemConstraintForce::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintForce.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintGear.cpp",
       "line": 71,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintGear::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintGear.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintHeatflux.cpp",
@@ -2546,12 +5448,28 @@
       "evidence": "void ViewProviderFemConstraintHeatflux::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintHeatflux.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintInitialTemperature.cpp",
       "line": 63,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintInitialTemperature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintInitialTemperature.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPlaneRotation.cpp",
@@ -2562,12 +5480,28 @@
       "evidence": "void ViewProviderFemConstraintPlaneRotation::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPlaneRotation.h",
+      "line": 42,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPressure.cpp",
       "line": 67,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintPressure::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPressure.h",
+      "line": 41,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPulley.cpp",
@@ -2578,12 +5512,28 @@
       "evidence": "void ViewProviderFemConstraintPulley::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintPulley.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintRigidBody.cpp",
       "line": 65,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintRigidBody::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintRigidBody.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintSpring.cpp",
@@ -2594,12 +5544,28 @@
       "evidence": "void ViewProviderFemConstraintSpring::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintSpring.h",
+      "line": 40,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTemperature.cpp",
       "line": 62,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemConstraintTemperature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTemperature.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTransform.cpp",
@@ -2610,12 +5576,28 @@
       "evidence": "void ViewProviderFemConstraintTransform::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemConstraintTransform.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemMesh.cpp",
       "line": 382,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemMesh::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemMesh.h",
+      "line": 87,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemMeshShapeNetgen.cpp",
@@ -2626,12 +5608,28 @@
       "evidence": "void ViewProviderFemMeshShapeNetgen::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemMeshShapeNetgen.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemPostFilter.cpp",
       "line": 281,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemPostCalculator::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostFilter.h",
+      "line": 195,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderFemPostFunction.cpp",
@@ -2642,6 +5640,14 @@
       "evidence": "void ViewProviderFemPostFunctionProvider::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostFunction.h",
+      "line": 56,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemPostObject.cpp",
       "line": 799,
       "category": "update-data-provider",
@@ -2650,12 +5656,28 @@
       "evidence": "void ViewProviderFemPostObject::updateData(const App::Property* p)"
     },
     {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostObject.h",
+      "line": 96,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Fem/Gui/ViewProviderFemPostPipeline.cpp",
       "line": 56,
       "category": "update-data-provider",
       "subsystem": "Fem",
       "disposition": "migrate",
       "evidence": "void ViewProviderFemPostPipeline::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/ViewProviderFemPostPipeline.h",
+      "line": 48,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/Fem/Gui/ViewProviderShapeExtension.cpp",
@@ -2752,6 +5774,14 @@
       "subsystem": "Inspection",
       "disposition": "migrate",
       "evidence": "void ViewProviderInspection::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Inspection/Gui/ViewProviderInspection.h",
+      "line": 73,
+      "category": "update-data-provider",
+      "subsystem": "Inspection",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Inspection/Gui/VisualInspection.cpp",
@@ -3000,6 +6030,14 @@
       "subsystem": "Measure",
       "disposition": "migrate",
       "evidence": "_mVisibilityChangedConnection = document->signalChangedObject.connect("
+    },
+    {
+      "path": "src/Mod/Measure/Gui/ViewProviderMeasureBase.h",
+      "line": 118,
+      "category": "update-data-provider",
+      "subsystem": "Measure",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/Mesh/Gui/Command.cpp",
@@ -3410,6 +6448,30 @@
       "evidence": "void ViewProviderMeshObject::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.h",
+      "line": 147,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.h",
+      "line": 341,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProvider.h",
+      "line": 369,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.cpp",
       "line": 241,
       "category": "live-reference-callback",
@@ -3424,6 +6486,14 @@
       "subsystem": "Mesh",
       "disposition": "migrate",
       "evidence": "void ViewProviderMeshCurvature::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.h",
+      "line": 94,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/Mesh/Gui/ViewProviderCurvature.h",
@@ -3442,6 +6512,14 @@
       "evidence": "void ViewProviderMeshFaceSet::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Mesh/Gui/ViewProviderMeshFaceSet.h",
+      "line": 60,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/Mesh/Gui/ViewProviderTransform.cpp",
       "line": 79,
       "category": "update-data-provider",
@@ -3450,12 +6528,28 @@
       "evidence": "void ViewProviderMeshTransform::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Mesh/Gui/ViewProviderTransform.h",
+      "line": 72,
+      "category": "update-data-provider",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/MeshPart/Gui/Command.cpp",
       "line": 340,
       "category": "live-app-dereference",
       "subsystem": "MeshPart",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/CrossSections.cpp",
+      "line": 90,
+      "category": "update-data-provider",
+      "subsystem": "MeshPart",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override"
     },
     {
       "path": "src/Mod/MeshPart/Gui/CrossSections.cpp",
@@ -3472,6 +6566,14 @@
       "subsystem": "MeshPart",
       "disposition": "migrate",
       "evidence": "doc->recompute();"
+    },
+    {
+      "path": "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py",
+      "line": 39,
+      "category": "live-app-dereference",
+      "subsystem": "MeshPart",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument is None:"
     },
     {
       "path": "src/Mod/MeshPart/Gui/Tessellation.cpp",
@@ -3536,6 +6638,14 @@
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "auto newObj = App::GetApplication().getActiveDocument()->getActiveObject();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/CrossSections.cpp",
+      "line": 90,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override"
     },
     {
       "path": "src/Mod/Part/Gui/CrossSections.cpp",
@@ -3810,6 +6920,14 @@
       "evidence": "App::Document* doc = App::GetApplication().getDocument(m_document.c_str());"
     },
     {
+      "path": "src/Mod/Part/Gui/DlgSettings3DViewPartImp.cpp",
+      "line": 126,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
+    },
+    {
       "path": "src/Mod/Part/Gui/Mirroring.cpp",
       "line": 269,
       "category": "live-app-dereference",
@@ -3970,6 +7088,22 @@
       "evidence": "void ViewProvider2DObject::updateData(const App::Property* property)"
     },
     {
+      "path": "src/Mod/Part/Gui/ViewProvider2DObject.h",
+      "line": 60,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProvider2DObject.h",
+      "line": 93,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProviderBoolean.cpp",
       "line": 140,
       "category": "update-data-provider",
@@ -3994,12 +7128,44 @@
       "evidence": "void ViewProviderMultiCommon::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.h",
+      "line": 49,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.h",
+      "line": 67,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderBoolean.h",
+      "line": 93,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProviderCompound.cpp",
       "line": 136,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void ViewProviderCompound::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderCompound.h",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderCurveNet.cpp",
@@ -4010,12 +7176,28 @@
       "evidence": "void ViewProviderCurveNet::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Part/Gui/ViewProviderCurveNet.h",
+      "line": 65,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
       "line": 969,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void ViewProviderPartExt::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderExt.h",
+      "line": 104,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderMirror.cpp",
@@ -4042,12 +7224,36 @@
       "evidence": "auto* doc = App::GetApplication().getDocument(docName.c_str());"
     },
     {
+      "path": "src/Mod/Part/Gui/ViewProviderMirror.h",
+      "line": 77,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderMirror.h",
+      "line": 99,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProviderPython.cpp",
       "line": 57,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void ViewProviderCustom::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderPython.h",
+      "line": 45,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderReference.cpp",
@@ -4058,12 +7264,28 @@
       "evidence": "void ViewProviderPartReference::updateData(const App::Property*)"
     },
     {
+      "path": "src/Mod/Part/Gui/ViewProviderReference.h",
+      "line": 82,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProviderRuledSurface.cpp",
       "line": 60,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void ViewProviderRuledSurface::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Part/Gui/ViewProviderRuledSurface.h",
+      "line": 48,
+      "category": "update-data-provider",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
@@ -4104,6 +7326,14 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "App::GetApplication().getDocument(documentName.c_str())->getObject(feature.toLatin1().data())"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
+      "line": 288,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto obj = App::GetApplication() .getDocument(documentName.c_str())"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeaturePick.cpp",
@@ -4282,6 +7512,14 @@
       "evidence": "void ViewProvider::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/ViewProvider.h",
+      "line": 104,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
       "line": 105,
       "category": "live-reference-callback",
@@ -4306,12 +7544,28 @@
       "evidence": "doc->recompute();"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.h",
+      "line": 77,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBoolean.cpp",
       "line": 428,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void ViewProviderBoolean::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderBoolean.h",
+      "line": 68,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderDatumCS.cpp",
@@ -4322,12 +7576,28 @@
       "evidence": "void ViewProviderDatumCoordinateSystem::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumCS.h",
+      "line": 56,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/ViewProviderDatumLine.cpp",
       "line": 71,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void ViewProviderDatumLine::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumLine.h",
+      "line": 46,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderDatumPlane.cpp",
@@ -4338,6 +7608,14 @@
       "evidence": "void ViewProviderDatumPlane::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderDatumPlane.h",
+      "line": 44,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/ViewProviderHole.cpp",
       "line": 139,
       "category": "update-data-provider",
@@ -4346,12 +7624,36 @@
       "evidence": "void ViewProviderHole::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderHole.h",
+      "line": 84,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/ViewProviderSketchBased.cpp",
       "line": 116,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void ViewProviderSketchBased::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ViewProviderSketchBased.h",
+      "line": 54,
+      "category": "update-data-provider",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/WorkflowManager.cpp",
+      "line": 48,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
     },
     {
       "path": "src/Mod/Points/Gui/Command.cpp",
@@ -4384,6 +7686,22 @@
       "subsystem": "Points",
       "disposition": "migrate",
       "evidence": "void ViewProviderStructured::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Points/Gui/ViewProvider.h",
+      "line": 140,
+      "category": "update-data-provider",
+      "subsystem": "Points",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Points/Gui/ViewProvider.h",
+      "line": 168,
+      "category": "update-data-provider",
+      "subsystem": "Points",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/ReverseEngineering/Gui/Command.cpp",
@@ -4434,12 +7752,28 @@
       "evidence": "void ViewProviderRobotObject::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Robot/Gui/ViewProviderRobotObject.h",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "Robot",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Robot/Gui/ViewProviderTrajectory.cpp",
       "line": 126,
       "category": "update-data-provider",
       "subsystem": "Robot",
       "disposition": "migrate",
       "evidence": "void ViewProviderTrajectory::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Robot/Gui/ViewProviderTrajectory.h",
+      "line": 55,
+      "category": "update-data-provider",
+      "subsystem": "Robot",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
@@ -4538,12 +7872,28 @@
       "evidence": "void ViewProviderCustom::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderPython.h",
+      "line": 43,
+      "category": "update-data-provider",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp",
       "line": 3907,
       "category": "update-data-provider",
       "subsystem": "Sketcher",
       "disposition": "migrate",
       "evidence": "void ViewProviderSketch::updateData(const App::Property* prop) {"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/ViewProviderSketch.h",
+      "line": 681,
+      "category": "update-data-provider",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/AppSpreadsheetGui.cpp",
@@ -4600,6 +7950,14 @@
       "subsystem": "Spreadsheet",
       "disposition": "migrate",
       "evidence": "void ViewProviderSheet::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.h",
+      "line": 86,
+      "category": "update-data-provider",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/Start/Gui/StartView.cpp",
@@ -4794,6 +8152,30 @@
       "evidence": "getDocument()->recompute();"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/DrawGuiUtil.cpp",
+      "line": 294,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto docs = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/DrawGuiUtil.cpp",
+      "line": 301,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto docsAll = App::GetApplication().getDocuments();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/DrawGuiUtil.cpp",
+      "line": 521,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto docsAll = App::GetApplication().getDocuments();"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/MDIViewPage.cpp",
       "line": 150,
       "category": "live-reference-callback",
@@ -4866,12 +8248,28 @@
       "evidence": "void ViewProviderAnnotation::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderAnnotation.h",
+      "line": 50,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderBalloon.cpp",
       "line": 114,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderBalloon::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderBalloon.h",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderDimension.cpp",
@@ -4882,12 +8280,28 @@
       "evidence": "void ViewProviderDimension::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderDimension.h",
+      "line": 77,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderDrawingView.cpp",
       "line": 246,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderDrawingView::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderDrawingView.h",
+      "line": 74,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderGeomHatch.cpp",
@@ -4898,12 +8312,28 @@
       "evidence": "void ViewProviderGeomHatch::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderGeomHatch.h",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderHatch.cpp",
       "line": 112,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderHatch::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderHatch.h",
+      "line": 58,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderImage.cpp",
@@ -4914,12 +8344,28 @@
       "evidence": "void ViewProviderImage::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderImage.h",
+      "line": 51,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderPage.cpp",
       "line": 154,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderPage::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderPage.h",
+      "line": 104,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroup.cpp",
@@ -4930,12 +8376,28 @@
       "evidence": "void ViewProviderProjGroup::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroup.h",
+      "line": 59,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroupItem.cpp",
       "line": 56,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderProjGroupItem::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderProjGroupItem.h",
+      "line": 51,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderRichAnno.cpp",
@@ -4946,12 +8408,28 @@
       "evidence": "void ViewProviderRichAnno::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderRichAnno.h",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderSymbol.cpp",
       "line": 53,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderSymbol::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderSymbol.h",
+      "line": 52,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property* prop) override;"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderTemplate.cpp",
@@ -4962,12 +8440,28 @@
       "evidence": "void ViewProviderTemplate::updateData(const App::Property* prop)"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderTemplate.h",
+      "line": 54,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/ViewProviderViewSection.cpp",
       "line": 117,
       "category": "update-data-provider",
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void ViewProviderViewSection::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/ViewProviderViewSection.h",
+      "line": 59,
+      "category": "update-data-provider",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "void updateData(const App::Property*) override;"
     }
   ]
 }
