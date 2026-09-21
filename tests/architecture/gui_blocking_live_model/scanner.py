@@ -524,7 +524,7 @@ def iter_source_files(repository_root: Path) -> list[Path]:
         if extra_path.is_file():
             files.append(extra_path)
 
-    result: list[Path] = []
+    unique: dict[str, Path] = {}
     for path in files:
         if not path.is_file():
             continue
@@ -534,8 +534,9 @@ def iter_source_files(repository_root: Path) -> list[Path]:
             continue
         if _is_excluded_file(path.relative_to(repository_root).as_posix()):
             continue
-        result.append(path)
-    return sorted(result)
+        relative = path.relative_to(repository_root).as_posix()
+        unique[relative] = path
+    return [unique[relative] for relative in sorted(unique)]
 
 
 def evidence_for(source: str, source_lines: list[str], start: int, end: int) -> str:
@@ -544,6 +545,17 @@ def evidence_for(source: str, source_lines: list[str], start: int, end: int) -> 
     end_line = source.count("\n", 0, max(start, end - 1))
     parts = [source_lines[line].strip() for line in range(start_line, end_line + 1)]
     return " ".join(parts)
+
+
+def evidence_for_line_map(
+    source_lines: list[str], line_map: list[int], start: int, end: int
+) -> str:
+    """Return normalized source evidence for a decoded-string match span."""
+    start_index = min(start, len(line_map) - 1)
+    end_index = min(max(end - 1, start), len(line_map) - 1)
+    start_line = max(1, min(line_map[start_index], len(source_lines)))
+    end_line = max(start_line, min(line_map[end_index], len(source_lines)))
+    return " ".join(source_lines[line - 1].strip() for line in range(start_line, end_line + 1))
 
 
 def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
@@ -575,7 +587,9 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
                 decoded_masked = mask_py_non_code(decoded)
                 for match in compiled.finditer(decoded_masked):
                     line = line_map[min(match.start(), len(line_map) - 1)]
-                    evidence = source.splitlines()[line - 1].strip()
+                    evidence = evidence_for_line_map(
+                        source_lines, line_map, match.start(), match.end()
+                    )
                     findings.append(
                         Finding(
                             path=relative_path,

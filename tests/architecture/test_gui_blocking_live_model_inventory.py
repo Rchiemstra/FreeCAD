@@ -423,7 +423,12 @@ class RuleRegressionTests(unittest.TestCase):
         self.assertIsNotNone(py.search(scanner.mask_py_non_code(adjacent, expand_do_command=True)))
         multiline_adjacent = 'Gui.doCommand(\n    "FreeCAD."\n    "ActiveDocument.recompute()"\n)'
         multiline_findings = scanner.scan_source(multiline_adjacent, ".py", "snippet.py")
-        self.assertIn("live-app-dereference", {finding.category for finding in multiline_findings})
+        live_finding = next(
+            finding for finding in multiline_findings if finding.category == "live-app-dereference"
+        )
+        self.assertEqual(live_finding.line, 2)
+        self.assertIn('"FreeCAD."', live_finding.evidence)
+        self.assertIn('"ActiveDocument.recompute()"', live_finding.evidence)
         for prefixed in (
             'Gui.doCommand(u"FreeCAD.ActiveDocument.recompute()")',
             'Gui.doCommand(r"FreeCAD.ActiveDocument.recompute()")',
@@ -620,6 +625,13 @@ class RepositoryInventoryTests(unittest.TestCase):
             scanner.scope_entries(REPOSITORY_ROOT),
             "scope must be exact",
         )
+
+    def test_source_file_enumeration_has_no_duplicates(self) -> None:
+        files = [
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in scanner.iter_source_files(REPOSITORY_ROOT)
+        ]
+        self.assertEqual(len(files), len(set(files)))
 
     def test_report_counts_match_inventory(self) -> None:
         problems = report_count_violations(REPORT_PATH.read_text(encoding="utf-8"), self.inventory)
