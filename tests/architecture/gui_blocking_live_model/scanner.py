@@ -41,10 +41,11 @@ REPOSITORY_ROOT = Path(
 class Finding:
     """One candidate or inventoried site."""
 
-    __slots__ = ("path", "line", "category", "subsystem", "disposition", "evidence")
+    __slots__ = ("category", "disposition", "evidence", "line", "path", "subsystem")
 
-    def __init__(self, path: str, line: int, category: str, subsystem: str,
-                 disposition: str, evidence: str) -> None:
+    def __init__(
+        self, path: str, line: int, category: str, subsystem: str, disposition: str, evidence: str
+    ) -> None:
         self.path = path
         self.line = line
         self.category = category
@@ -66,7 +67,7 @@ class Finding:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "Finding":
+    def from_dict(cls, data: dict[str, object]) -> Finding:
         return cls(
             path=str(data["path"]),
             line=int(data["line"]),
@@ -105,7 +106,7 @@ def _raw_literal_end(source: str, start: int) -> int | None:
     delimiter = source[delimiter_start:opening_parenthesis]
     if any(character.isspace() or character in "\\()" for character in delimiter):
         return None
-    terminator = f"){delimiter}\""
+    terminator = f'){delimiter}"'
     terminator_start = source.find(terminator, opening_parenthesis + 1)
     if terminator_start < 0:
         return len(source)
@@ -242,13 +243,10 @@ def load_exclusions() -> list[dict[str, object]]:
     return list(data.get("exclusions", []))
 
 
-def apply_exclusions(
-    findings: list[Finding], exclusions: list[dict[str, object]]
-) -> list[Finding]:
+def apply_exclusions(findings: list[Finding], exclusions: list[dict[str, object]]) -> list[Finding]:
     """Return findings with the excluded (path, line, category) keys removed."""
     excluded = {
-        (str(entry["path"]), int(entry["line"]), str(entry["category"]))
-        for entry in exclusions
+        (str(entry["path"]), int(entry["line"]), str(entry["category"])) for entry in exclusions
     }
     return [finding for finding in findings if finding.key() not in excluded]
 

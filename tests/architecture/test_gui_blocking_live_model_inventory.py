@@ -23,11 +23,9 @@ from pathlib import Path
 _ARCH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ARCH_DIR))
 
-from gui_blocking_live_model import rules, scanner  # noqa: E402
+from gui_blocking_live_model import rules, scanner
 
-REPOSITORY_ROOT = Path(
-    os.environ.get("FREECAD_SOURCE_ROOT", _ARCH_DIR.parents[1])
-).resolve()
+REPOSITORY_ROOT = Path(os.environ.get("FREECAD_SOURCE_ROOT", _ARCH_DIR.parents[1])).resolve()
 
 PACKAGE_DIR = _ARCH_DIR / "gui_blocking_live_model"
 INVENTORY_PATH = PACKAGE_DIR / "inventory.json"
@@ -95,9 +93,7 @@ def entry_violations(
             encoding="utf-8", errors="surrogateescape"
         ).splitlines()
         if line > len(source_lines):
-            problems.append(
-                f"{location}: line {line} exceeds file length {len(source_lines)}"
-            )
+            problems.append(f"{location}: line {line} exceeds file length {len(source_lines)}")
         elif isinstance(evidence, str) and source_lines[line - 1].strip() != evidence:
             problems.append(f"{location}: evidence does not match the source line")
 
@@ -120,9 +116,7 @@ def _exclusion_key(entry: dict) -> tuple:
     return (entry["path"], entry["line"], entry["category"])
 
 
-def exclusion_violations(
-    exclusions: list[dict], category_keys: frozenset[str]
-) -> list[str]:
+def exclusion_violations(exclusions: list[dict], category_keys: frozenset[str]) -> list[str]:
     problems: list[str] = []
     seen: set[tuple] = set()
     for entry in exclusions:
@@ -150,7 +144,7 @@ class MaskingTests(unittest.TestCase):
             "// processEvents()\n"
             "/* ->recompute() */\n"
             'auto a = "App::GetApplication().getDocument(x)";\n'
-            "auto b = R\"tag(waitForFinished() inside raw string)tag\";\n"
+            'auto b = R"tag(waitForFinished() inside raw string)tag";\n'
             "auto c = 'Qt::BlockingQueuedConnection';\n"
             "realCall->recompute();\n"
         )
@@ -192,36 +186,28 @@ class InventoryEntryValidationTests(unittest.TestCase):
     def test_rejects_malformed_entry(self) -> None:
         bad = self._valid_entry()
         bad.pop("subsystem")
-        violations = entry_violations(
-            bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
-        )
+        violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("subsystem" in v for v in violations), violations)
 
     def test_rejects_unknown_category_and_disposition(self) -> None:
         bad = self._valid_entry()
         bad["category"] = "not-a-category"
         bad["disposition"] = "not-a-disposition"
-        violations = entry_violations(
-            bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
-        )
+        violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("category" in v for v in violations), violations)
         self.assertTrue(any("disposition" in v for v in violations), violations)
 
     def test_rejects_nonexistent_path(self) -> None:
         bad = self._valid_entry()
         bad["path"] = "src/Gui/DoesNotExist.cpp"
-        violations = entry_violations(
-            bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
-        )
+        violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("does not exist" in v for v in violations), violations)
 
     def test_rejects_out_of_range_line(self) -> None:
         bad = self._valid_entry()
         bad["path"] = "src/Gui/MainWindow.cpp"
         bad["line"] = 10_000_000
-        violations = entry_violations(
-            bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
-        )
+        violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("exceeds file length" in v for v in violations), violations)
 
     def test_rejects_stale_evidence(self) -> None:
@@ -229,9 +215,7 @@ class InventoryEntryValidationTests(unittest.TestCase):
         bad["path"] = "src/Gui/MainWindow.cpp"
         bad["line"] = 1
         bad["evidence"] = "// not the first line"
-        violations = entry_violations(
-            bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
-        )
+        violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any("evidence" in v for v in violations), violations)
 
 
@@ -267,9 +251,7 @@ class RepositoryInventoryTests(unittest.TestCase):
         problems: list[str] = []
         for entry in findings:
             problems.extend(
-                entry_violations(
-                    entry, REPOSITORY_ROOT, self.category_keys, self.dispositions
-                )
+                entry_violations(entry, REPOSITORY_ROOT, self.category_keys, self.dispositions)
             )
         problems.extend(duplicate_violations(findings))
         self.assertFalse(problems, "\n".join(problems))
@@ -280,9 +262,7 @@ class RepositoryInventoryTests(unittest.TestCase):
         for entry in self.exclusions:
             key = _exclusion_key(entry)
             if key not in scanned_keys:
-                problems.append(
-                    f"stale exclusion {key}: no longer produced by the scanner"
-                )
+                problems.append(f"stale exclusion {key}: no longer produced by the scanner")
         self.assertFalse(problems, "\n".join(problems))
 
     def test_inventory_is_reproducible(self) -> None:
@@ -311,7 +291,9 @@ class RepositoryInventoryTests(unittest.TestCase):
         self.assertFalse(messages, "\n".join(messages))
 
     def test_inventory_metadata_matches_scanner(self) -> None:
-        self.assertEqual(self.inventory["generator"], "tests/architecture/gui_blocking_live_model/scanner.py")
+        self.assertEqual(
+            self.inventory["generator"], "tests/architecture/gui_blocking_live_model/scanner.py"
+        )
         self.assertEqual(self.inventory["categories"], [c.key for c in rules.CATEGORIES])
 
     def test_disposition_defaults_are_applied(self) -> None:
