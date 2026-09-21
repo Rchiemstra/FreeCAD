@@ -4534,7 +4534,6 @@ std::vector<DocumentObject*> Document::importObjects(Base::XMLReader& reader)
     }
 
     reader.readEndElement("Document");
-
     const bool deferImportCompletion = d->collaborationImportDeferralActive;
     if (deferImportCompletion) {
         d->collaborationActiveImportReplay->restoreImportedModelFiles();

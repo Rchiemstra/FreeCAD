@@ -240,7 +240,7 @@ class CAMSanity:
             if os.path.isfile(gcode_file):
                 data["filesize"] = str(os.path.getsize(gcode_file) / 1000)
                 with open(gcode_file) as gcode:
-                    data["linecount"] = str(sum(1 for line in gcode))
+                    data["linecount"] = str(sum(1 for _ in gcode))
             else:
                 data["filesize"] = str(0.0)
                 data["linecount"] = str(0)

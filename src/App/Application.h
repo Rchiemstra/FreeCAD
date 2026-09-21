@@ -109,6 +109,50 @@ struct DocumentInitFlags {
 };
 
 /**
+ * @brief Failure category for async recompute processing.
+ */
+enum class RecomputeFailure
+{
+    None,
+    DependencyCycle,
+    Exception
+};
+
+/// Result returned by processing a recompute request.
+struct AppExport RecomputeResult
+{
+    bool success {true};
+    RecomputeFailure failure {RecomputeFailure::None};
+    std::unique_ptr<Base::Exception> exception;
+};
+
+/// Stable, queueable work item for document or object recompute.
+struct AppExport RecomputeRequest
+{
+    static RecomputeRequest fromDocument(const Document& document, bool force = false, int options = 0);
+    static RecomputeRequest fromDocumentObject(
+        const DocumentObject& documentObject,
+        bool recursive = false
+    );
+
+    Document* resolveDocument() const;
+    DocumentObject* resolveDocumentObject() const;
+
+    // Stable identifiers are queued instead of raw pointers so worker-side
+    // resolution cannot dereference destroyed documents or objects. The
+    // internal document name is assigned once at creation time and does not
+    // change afterwards, so queued requests do not need to track
+    // signalRenameDocument.
+    std::string documentName;
+    std::string documentObjectName;
+    bool force {false};
+    int options {0};
+    bool recursive {false};
+    // Callback to be invoked when recompute is complete.
+    std::function<void(RecomputeRequest&, RecomputeResult&)> callback {};
+};
+
+/**
  * @brief The class that represents the whole application.
  * @ingroup ApplicationGroup
  *
@@ -380,7 +424,13 @@ public:
     bool abortTransaction(int tid);
     //@}
 
+    // Returns if document and object recomputes should be done async.
+    bool isAsyncRecomputeEnabled();
     bool isFineGrainedRecomputeEnabled();
+    bool canRecomputeRequestOnWorker(const RecomputeRequest& req) const;
+
+    // Adds a recompute request to the processing queue.
+    void queueRecomputeRequest(RecomputeRequest req);
 
     // NOLINTBEGIN
     // clang-format off

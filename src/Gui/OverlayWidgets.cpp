@@ -478,16 +478,46 @@ OverlayTabWidget::OverlayTabWidget(QWidget* parent, Qt::DockWidgetArea pos)
 
 OverlayTabWidget::~OverlayTabWidget()
 {
-    // The animator is a child of this widget and animates one of its own
-    // properties, so it observes this object and stops itself when the widget
-    // is destroyed. Stopping emits stateChanged(), which Qt would deliver to
-    // onAnimationStateChanged() -- but by then this destructor body has run and
-    // only the QWidget base remains, so the call asserts on the object type.
-    // Qt severs the connection in ~QObject(), which is too late, so sever it
-    // here while the derived object is still whole.
+    tabBar()->removeEventFilter(this);
+
+    timer.stop();
+    repaintTimer.stop();
+
     if (_animator) {
+        // Stopping emits stateChanged(), which must not reach this object once
+        // its derived destructor has started.
+        disconnect(_animator, nullptr, this, nullptr);
         _animator->stop();
-        _animator->disconnect(this);
+        _animator->setTargetObject(nullptr);
+    }
+
+    switch (dockArea) {
+        case Qt::LeftDockWidgetArea:
+            if (_LeftOverlay == this) {
+                _LeftOverlay = nullptr;
+            }
+            break;
+        case Qt::RightDockWidgetArea:
+            if (_RightOverlay == this) {
+                _RightOverlay = nullptr;
+            }
+            break;
+        case Qt::TopDockWidgetArea:
+            if (_TopOverlay == this) {
+                _TopOverlay = nullptr;
+            }
+            break;
+        case Qt::BottomDockWidgetArea:
+            if (_BottomOverlay == this) {
+                _BottomOverlay = nullptr;
+            }
+            break;
+        default:
+            break;
+    }
+
+    if (_Dragging == this || (_Dragging && isAncestorOf(_Dragging))) {
+        _Dragging = nullptr;
     }
 }
 
@@ -1623,7 +1653,7 @@ bool OverlayTabWidget::getAutoHideRect(QRect& rect) const
     switch (dockArea) {
         case Qt::LeftDockWidgetArea:
         case Qt::RightDockWidgetArea:
-            if (_TopOverlay->isVisible() && _TopOverlay->_state <= State::Normal) {
+            if (_TopOverlay && _TopOverlay->isVisible() && _TopOverlay->_state <= State::Normal) {
                 rect.setTop(std::max(rect.top(), _TopOverlay->rectOverlay.bottom()));
             }
             if (dockArea == Qt::RightDockWidgetArea) {
@@ -1635,7 +1665,7 @@ bool OverlayTabWidget::getAutoHideRect(QRect& rect) const
             break;
         case Qt::TopDockWidgetArea:
         case Qt::BottomDockWidgetArea:
-            if (_LeftOverlay->isVisible() && _LeftOverlay->_state <= State::Normal) {
+            if (_LeftOverlay && _LeftOverlay->isVisible() && _LeftOverlay->_state <= State::Normal) {
                 rect.setLeft(std::max(rect.left(), _LeftOverlay->rectOverlay.right()));
             }
             if (dockArea == Qt::TopDockWidgetArea) {
@@ -1643,7 +1673,8 @@ bool OverlayTabWidget::getAutoHideRect(QRect& rect) const
             }
             else {
                 rect.setTop(rect.top() + std::max(rect.height() - hintWidth, 0));
-                if (_RightOverlay->isVisible() && _RightOverlay->_state <= State::Normal) {
+                if (_RightOverlay && _RightOverlay->isVisible()
+                    && _RightOverlay->_state <= State::Normal) {
                     QPoint offset = getMainWindow()->getMdiArea()->pos();
                     rect.setRight(std::min(rect.right(), _RightOverlay->x() - offset.x()));
                 }

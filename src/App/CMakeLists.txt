@@ -203,6 +203,7 @@ SET(Document_CPP_SRCS
     RecomputeHandle.cpp
     RecomputeHandlePyImp.cpp
     Expression.cpp
+    QuantityInput.cpp
     ExpressionTokenizer.cpp
     FeaturePython.cpp
     FeatureTest.cpp
@@ -275,6 +276,7 @@ SET(Document_HPP_SRCS
     RecomputeHandle.h
     Expression.h
     ExpressionParser.h
+    QuantityInput.h
     ExpressionTokenizer.h
     ExpressionVisitors.h
     FeatureCustom.h

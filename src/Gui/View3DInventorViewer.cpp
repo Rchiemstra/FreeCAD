@@ -3080,7 +3080,7 @@ QImage View3DInventorViewer::grabFramebuffer()
 
 QImage View3DInventorViewer::renderToImage(const RenderImageOptions& options)
 {
-    return renderToImage(options, nullptr);
+    return renderToImage(options, options.camera);
 }
 
 QImage View3DInventorViewer::renderToImage(
@@ -3090,93 +3090,12 @@ QImage View3DInventorViewer::renderToImage(
 )
 {
     auto* renderManager = this->getSoRenderManager();
-    SoCamera* previousManagerCamera = nullptr;
-    SoCamera* previousSceneCamera = nullptr;
-    SoGroup* cameraParent = nullptr;
-    int cameraChildIndex = -1;
-    SoField* previousLightRotationSource = nullptr;
-    bool previousLightRotationConnectionEnabled = false;
-    bool hadPreviousLightRotationSource = false;
-
-    if (cameraOverride) {
-        if (!renderManager) {
-            Base::Console().warning("renderToImage failed because no render manager is available\n");
-            return {};
-        }
-
-        previousManagerCamera = renderManager->getCamera();
-        if (!previousManagerCamera) {
-            Base::Console().warning("renderToImage failed because no camera is available\n");
-            return {};
-        }
-
-        SoNode* superscene = renderManager->getSceneGraph();
-        if (!superscene) {
-            Base::Console().warning("renderToImage failed because no render superscene is available\n");
-            return {};
-        }
-
-        SoSearchAction cameraSearch;
-        cameraSearch.setInterest(SoSearchAction::FIRST);
-        cameraSearch.setNode(previousManagerCamera);
-        cameraSearch.apply(superscene);
-        const SoPath* cameraPath = cameraSearch.getPath();
-        if (!cameraPath || cameraPath->getLength() < 2) {
-            Base::Console().warning(
-                "renderToImage failed because the render superscene has no replaceable camera\n"
-            );
-            return {};
-        }
-
-        previousSceneCamera = static_cast<SoCamera*>(cameraPath->getTail());
-        SoNode* cameraParentNode = cameraPath->getNodeFromTail(1);
-        if (!cameraParentNode->isOfType(SoGroup::getClassTypeId())) {
-            Base::Console().warning(
-                "renderToImage failed because the render camera parent is not a group\n"
-            );
-            return {};
-        }
-        cameraParent = static_cast<SoGroup*>(cameraParentNode);
-        cameraChildIndex = cameraParent->findChild(previousSceneCamera);
-        if (cameraChildIndex < 0) {
-            Base::Console().warning(
-                "renderToImage failed because the render camera has no superscene parent\n"
-            );
-            return {};
-        }
-
-        // The parent replacement may release the superscene's last references.
-        // Retain both old pointers until every piece of viewer state is restored.
-        previousManagerCamera->ref();
-        previousSceneCamera->ref();
-        previousLightRotationConnectionEnabled = lightRotation->rotation.isConnectionEnabled();
-        hadPreviousLightRotationSource =
-            lightRotation->rotation.getConnectedField(previousLightRotationSource);
+    if (!renderManager) {
+        Base::Console().warning("renderToImage failed because no render manager is available\n");
+        return {};
     }
-
-    auto restoreRenderOverrides = qScopeGuard([&]() {
-        if (!cameraOverride) {
-            return;
-        }
-
-        lightRotation->rotation.disconnect();
-        if (hadPreviousLightRotationSource) {
-            lightRotation->rotation.connectFrom(previousLightRotationSource);
-        }
-        lightRotation->rotation.enableConnection(previousLightRotationConnectionEnabled);
-
-        renderManager->setCamera(previousManagerCamera);
-        cameraParent->replaceChild(cameraChildIndex, previousSceneCamera);
-        previousSceneCamera->unref();
-        previousManagerCamera->unref();
-    });
-
-    if (cameraOverride) {
-        cameraParent->replaceChild(cameraChildIndex, cameraOverride);
-        renderManager->setCamera(cameraOverride);
-        lightRotation->rotation.connectFrom(&cameraOverride->orientation);
-        lightRotation->rotation.enableConnection(true);
-    }
+    RenderImageOptions renderOptions = options;
+    renderOptions.camera = cameraOverride;
 
     const SbViewportRegion vp = renderManager->getViewportRegion();
     const SbVec2s size = vp.getViewportSizePixels();
@@ -3209,7 +3128,11 @@ QImage View3DInventorViewer::renderToImage(
     // is to use a certain background color using GL_RGB as texture
     // format and in the output image search for the above color and
     // replaces it with the color requested by the user.
-    fboFormat.setInternalTextureFormat(getInternalTextureFormat());
+    const bool perPixelAlpha = options.alphaMode == AlphaMode::PerPixel;
+    // The InternalTextureFormat preference cannot express "must carry alpha".
+    fboFormat.setInternalTextureFormat(
+        perPixelAlpha ? static_cast<GLenum>(GL_RGBA8) : getInternalTextureFormat()
+    );
 
     QOpenGLFramebufferObject fbo(width, height, fboFormat);
     if (!fbo.isValid()) {
@@ -3223,9 +3146,10 @@ QImage View3DInventorViewer::renderToImage(
     }
 
     constexpr const int maxAlpha = 255;
-    int alpha = maxAlpha;
     QColor opaqueBackground = options.background;
     const bool overrideBackground = opaqueBackground.isValid();
+    const bool keyOutBackground = overrideBackground && opaqueBackground.alpha() < maxAlpha
+        && !perPixelAlpha;
     const QColor previousBackground = backgroundColor();
     const Background previousGradient = getGradientBackground();
     auto restoreBackground = qScopeGuard(
@@ -3238,16 +3162,15 @@ QImage View3DInventorViewer::renderToImage(
     );
 
     if (overrideBackground) {
-        // force an opaque background color
-        alpha = opaqueBackground.alpha();
-        if (alpha < maxAlpha) {
+        if (keyOutBackground) {
+            // force an opaque background color for the keying pass to match against
             opaqueBackground.setRgb(maxAlpha, maxAlpha, maxAlpha);
         }
         setBackgroundColor(opaqueBackground);
         setGradientBackground(Background::NoGradient);
     }
 
-    if (!renderToFramebuffer(&fbo, options.includeViewerLighting, transientOverlayRoot)) {
+    if (!renderToFramebuffer(&fbo, renderOptions, transientOverlayRoot)) {
         return {};
     }
     img = fbo.toImage();
@@ -3256,8 +3179,12 @@ QImage View3DInventorViewer::renderToImage(
         return {};
     }
 
-    // if background color isn't opaque manipulate the image
-    if (alpha < maxAlpha) {
+    if (perPixelAlpha) {
+        // The framebuffer already carries per-pixel alpha, so neither post-pass applies.
+        return img;
+    }
+
+    if (keyOutBackground) {
         QImage image(img.constBits(), img.width(), img.height(), QImage::Format_ARGB32);
         img = image.copy();
         QRgb rgba = options.background.rgba();
@@ -3272,7 +3199,7 @@ QImage View3DInventorViewer::renderToImage(
             }
         }
     }
-    else if (alpha == maxAlpha) {
+    else {
         QImage image(img.width(), img.height(), QImage::Format_RGB32);
         QPainter painter(&image);
         painter.fillRect(image.rect(), Qt::black);
@@ -3284,9 +3211,33 @@ QImage View3DInventorViewer::renderToImage(
     return img;
 }
 
+SoSeparator* View3DInventorViewer::buildCaptureRoot(const RenderImageOptions& options) const
+{
+    // Skipping the render manager's scene graph leaves the placement indicator, the rotation
+    // center and the viewer's own camera out of the capture.
+    auto root = new SoSeparator;
+
+    if (options.includeViewerLighting) {
+        root->addChild(getHeadlight());
+        root->addChild(getBacklight());
+        root->addChild(getFillLight());
+        root->addChild(environment);
+    }
+
+    root->addChild(options.camera);
+    root->addChild(pcViewProviderRoot);
+
+    return root;
+}
+
+bool View3DInventorViewer::renderToFramebuffer(QOpenGLFramebufferObject* fbo)
+{
+    return renderToFramebuffer(fbo, RenderImageOptions {});
+}
+
 bool View3DInventorViewer::renderToFramebuffer(
     QOpenGLFramebufferObject* fbo,
-    bool includeViewerLighting,
+    const RenderImageOptions& options,
     SoNode* transientOverlayRoot
 )
 {
@@ -3324,7 +3275,11 @@ bool View3DInventorViewer::renderToFramebuffer(
     // while creating a new render action has it set to GL_LEQUAL. So, in order to get
     // the exact same result set it explicitly to GL_LESS.
     glDepthFunc(GL_LESS);
-    if (includeViewerLighting) {
+    if (options.camera) {
+        const CoinPtr<SoSeparator> captureRoot(buildCaptureRoot(options));
+        gl.apply(captureRoot);
+    }
+    else if (options.includeViewerLighting) {
         gl.apply(this->getSoRenderManager()->getSceneGraph());
     }
     else {
@@ -3334,7 +3289,15 @@ bool View3DInventorViewer::renderToFramebuffer(
     }
     renderDelayedAnnotations(&gl);
     if (transientOverlayRoot) {
-        gl.apply(transientOverlayRoot);
+        if (options.camera) {
+            const CoinPtr<SoSeparator> overlayRoot(new SoSeparator);
+            overlayRoot->addChild(options.camera);
+            overlayRoot->addChild(transientOverlayRoot);
+            gl.apply(overlayRoot);
+        }
+        else {
+            gl.apply(transientOverlayRoot);
+        }
     }
     gl.apply(this->foregroundroot);
     if (shouldRenderDecorations(currentRenderIntent())) {

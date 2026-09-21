@@ -1165,6 +1165,7 @@ SET(Widget_CPP_SRCS
     NotificationArea.cpp
     PrefWidgets.cpp
     InputField.cpp
+    NumericLocale.cpp
     ProgressBar.cpp
     ProgressDialog.cpp
     QuantitySpinBox.cpp
@@ -1231,14 +1232,16 @@ SET(Params_CPP_SRCS
     ParamHandler.cpp
     ViewParams.cpp
     SpaceMouseParameter.cpp
+    GeneralParameter.cpp
 )
 
 SET(Params_HPP_SRCS
     TreeParams.h
     OverlayParams.h
-    ParamHandler.cpp
+    ParamHandler.h
     ViewParams.h
     SpaceMouseParameter.h
+    GeneralParameter.h
 )
 
 SET(Params_SRCS
@@ -1376,6 +1379,8 @@ SET(FreeCADGui_CPP_SRCS
     StyleParameters/Value.cpp
     StyleParameters/Parser.cpp
     StyleParameters/ParameterManager.cpp
+    StyleParameters/Diagnostics.cpp
+    StyleParameters/ColorShading.cpp
 )
 SET(FreeCADGui_SRCS
     Application.h
@@ -1428,6 +1433,12 @@ SET(FreeCADGui_SRCS
     StyleParameters/Value.h
     StyleParameters/Parser.h
     StyleParameters/ParameterManager.h
+    StyleParameters/Diagnostics.h
+    StyleParameters/Edges.h
+    StyleParameters/Insets.h
+    StyleParameters/Corners.h
+    StyleParameters/Gradient.h
+    StyleParameters/ColorShading.h
 )
 
 SET(FreeCADGui_SRCS

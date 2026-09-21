@@ -29,6 +29,13 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
     def setUp(self):
         super().setUp()
 
+        self.sketcher_tool_params = FreeCAD.ParamGet(
+            "User parameter:BaseApp/Preferences/Mod/Sketcher/Tools"
+        )
+        self.had_ovp_visibility = "OnViewParameterVisibility" in self.sketcher_tool_params.GetInts()
+        self.old_ovp_visibility = self.sketcher_tool_params.GetInt("OnViewParameterVisibility", 1)
+        self.sketcher_tool_params.SetInt("OnViewParameterVisibility", 1)
+
         FreeCADGui.activateWorkbench("SketcherWorkbench")
         self.doc = FreeCAD.newDocument("TestOnViewParameterGui")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
@@ -38,6 +45,17 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
     def tearDown(self):
         try:
             self.save_origin_trace("before_cleanup")
+        finally:
+            super().tearDown()
+
+    def tearDown(self):
+        try:
+            if self.had_ovp_visibility:
+                self.sketcher_tool_params.SetInt(
+                    "OnViewParameterVisibility", self.old_ovp_visibility
+                )
+            else:
+                self.sketcher_tool_params.RemInt("OnViewParameterVisibility")
         finally:
             super().tearDown()
 
@@ -53,6 +71,16 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
     def key_text(self, widget, text):
         for ch in text:
             self.key_click(widget, self.KEYS[ch], ch)
+
+    def active_spinbox(self):
+        widget = QtGui.QApplication.focusWidget()
+        if isinstance(widget, QtGui.QAbstractSpinBox):
+            return widget
+        if isinstance(widget, QtGui.QLineEdit):
+            parent = widget.parent()
+            if isinstance(parent, QtGui.QAbstractSpinBox):
+                return parent
+        return None
 
     def visible_spinboxes(self):
         main_window = FreeCADGui.getMainWindow()
@@ -73,6 +101,9 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
         main_window.activateWindow()
         spinbox.setFocus(QtCore.Qt.OtherFocusReason)
         self.flush_gui()
+
+    def ovp_lock_icon(self, spinbox):
+        return spinbox.findChild(QtGui.QLabel, "onViewParameterLockIcon")
 
     def active_task_dialog(self):
         return FreeCADGui.Control.activeTaskDialog()
@@ -759,7 +790,13 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
             QtCore.QPoint(drawing_point.x() + 100, drawing_point.y() + 80),
         )
         FreeCADGui.runCommand("Sketcher_CreateLine")
-        self.pump(100)
+        self.assertTrue(
+            self.wait_until(
+                lambda: self.origin_marker_is("CIRCLE_LINE"),
+                timeout_ms=3000,
+            ),
+            "Expected the second line tool activation to switch the origin marker appearance",
+        )
         self.move(viewport, drawing_point)
         self.click(viewport, drawing_point)
         self.move(viewport, second_point)
@@ -1033,6 +1070,53 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
             self.sketch.GeometryCount,
             4,
             "Expected the rectangle to be created after accepting both OVPs",
+        )
+
+    def test_clearing_committed_rectangle_ovp_releases_its_lock(self):
+        """A cleared OVP must leave its committed state and resume live geometry input."""
+
+        self.begin_rectangle_with_visible_ovp()
+
+        first_spinbox = self.active_spinbox()
+        self.assertIsNotNone(first_spinbox, "Expected the first rectangle OVP to have focus")
+        self.key_text(first_spinbox, "10")
+        self.key_click(first_spinbox, QtCore.Qt.Key_Tab, "\t")
+
+        lock_icon = self.ovp_lock_icon(first_spinbox)
+        self.assertIsNotNone(lock_icon)
+        self.assertTrue(
+            self.wait_until(lock_icon.isVisible, timeout_ms=1000),
+            "Expected Tab to lock the committed first OVP",
+        )
+
+        first_edit = first_spinbox.findChild(QtGui.QLineEdit)
+        self.assertIsNotNone(first_edit)
+        first_spinbox.setFocus(QtCore.Qt.OtherFocusReason)
+        self.pump(100)
+        self.assertIs(self.active_spinbox(), first_spinbox)
+        first_edit.clear()
+        self.pump(60)
+
+        self.assertTrue(
+            self.wait_until(lambda: not lock_icon.isVisible(), timeout_ms=1000),
+            "Expected clearing the first OVP to release its lock",
+        )
+
+        first_edit.setText("15")
+        self.pump(60)
+        self.key_click(first_spinbox, QtCore.Qt.Key_Tab, "\t")
+
+        self.assertTrue(
+            self.wait_until(
+                lambda: self.active_spinbox() is not None
+                and self.active_spinbox() is not first_spinbox,
+                timeout_ms=1000,
+            ),
+            "Expected a replacement value to recommit the first OVP",
+        )
+        self.assertTrue(
+            self.wait_until(lock_icon.isVisible, timeout_ms=1000),
+            "Expected the replacement value to lock the first OVP again",
         )
 
     def test_rectangle_ovp_escape_resets_tool_without_exiting_sketch(self):
