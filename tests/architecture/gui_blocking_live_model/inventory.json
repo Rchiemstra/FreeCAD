@@ -57,14 +57,66 @@
     "src/Mod/Draft/draftviewproviders",
     "src/Mod/BIM/bimcommands",
     "src/Mod/CAM/PathPythonGui",
+    "src/Mod/Fem/femcommands",
+    "src/Mod/Fem/femguiobjects",
+    "src/Mod/Fem/femguiutils",
+    "src/Mod/Fem/fempreferencepages",
+    "src/Mod/Fem/femtaskpanels",
+    "src/Mod/Fem/femviewprovider",
+    "src/Mod/TechDraw/TechDrawTools",
+    "src/Mod/Points/pointscommands",
+    "src/Mod/PartDesign/WizardShaft",
     "src/Mod/Draft/DraftGui.py",
     "src/Mod/Draft/DraftTools.py",
     "src/Mod/Draft/DxfImportDialog.py",
     "src/Mod/BIM/ArchCoveringGui.py",
     "src/Mod/Draft/draftutils/gui_utils.py",
+    "src/Mod/Draft/draftutils/grid_observer.py",
+    "src/Mod/Draft/draftutils/init_draft_statusbar.py",
+    "src/Mod/Draft/draftutils/init_tools.py",
     "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+    "src/Mod/BIM/nativeifc/ifc_commands.py",
+    "src/Mod/BIM/nativeifc/ifc_observer.py",
+    "src/Mod/BIM/nativeifc/ifc_status.py",
     "src/Mod/Fem/femguiutils/extract_link_view.py",
-    "src/Mod/Robot/MovieTool.py"
+    "src/Mod/Robot/MovieTool.py",
+    "src/Mod/Tux/NavigationIndicatorGui.py",
+    "src/Mod/Tux/PersistentToolbarsGui.py",
+    "src/Mod/Assembly/AssemblyPreferences.py",
+    "src/Mod/Assembly/UtilsAssembly.py",
+    "src/Mod/Assembly/CommandCreateAssembly.py",
+    "src/Mod/Assembly/CommandCreateBom.py",
+    "src/Mod/Assembly/CommandCreateJoint.py",
+    "src/Mod/Assembly/CommandCreateSimulation.py",
+    "src/Mod/Assembly/CommandCreateSnapshot.py",
+    "src/Mod/Assembly/CommandCreateView.py",
+    "src/Mod/Assembly/CommandExportASMT.py",
+    "src/Mod/Assembly/CommandInsertLink.py",
+    "src/Mod/Assembly/CommandInsertNewPart.py",
+    "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandSolveAssembly.py",
+    "src/Mod/Assembly/JointObject.py",
+    "src/Mod/BIM/BimSelect.py",
+    "src/Mod/BIM/BimStatus.py",
+    "src/Mod/CAM/PathCommands.py",
+    "src/Mod/CAM/Path/GuiInit.py",
+    "src/Mod/CAM/Path/Tool/assets/ui/preferences.py",
+    "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+    "src/Mod/CAM/Path/Tool/library/ui/cmd.py",
+    "src/Mod/CAM/Path/Tool/camassets.py",
+    "src/Mod/CAM/Path/Tool/migration/migration.py",
+    "src/Mod/CAM/Path/Preferences.py",
+    "src/Mod/Draft/WorkingPlane.py",
+    "src/Mod/Help/Help.py",
+    "src/Mod/OpenSCAD/OpenSCADCommands.py",
+    "src/Mod/OpenSCAD/OpenSCADUtils.py",
+    "src/Mod/Part/BasicShapes/CommandShapes.py",
+    "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+    "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/InvoluteGearFeature.py",
+    "src/Mod/PartDesign/SprocketFeature.py",
+    "src/Mod/Sketcher/Profiles.py",
+    "src/Mod/Start/StartMigrator.py"
   ],
   "categories": [
     "thread-waits",
@@ -2670,6 +2722,334 @@
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
     },
     {
+      "path": "src/Mod/Assembly/CommandCreateAssembly.py",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "return App.ActiveDocument is not None"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateAssembly.py",
+      "line": 143,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "if Gui.Control.activeDialog() or App.ActiveDocument is None:"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateAssembly.py",
+      "line": 151,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "for obj in App.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateAssembly.py",
+      "line": 158,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateBom.py",
+      "line": 88,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateBom.py",
+      "line": 157,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "self.bomObj.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateBom.py",
+      "line": 331,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "self.bomObj.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 423,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 443,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.doCommand(\"UtilsAssembly.activeAssembly().Document.recompute()\")"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 481,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Toggle grounded\")"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 526,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 561,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Create Rigid Group\")"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateJoint.py",
+      "line": 574,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSimulation.py",
+      "line": 99,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSimulation.py",
+      "line": 279,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSimulation.py",
+      "line": 1121,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "Gui.updateGui()  # Ensure the 3D view is redrawn"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSnapshot.py",
+      "line": 222,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 81,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 340,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 802,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.addObserver(self, Gui.Selection.ResolveMode.NoResolve)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 839,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "App.activeDocument().recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 839,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.activeDocument().recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 854,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 1267,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "Gui.doCommand(f'App.ActiveDocument.removeObject(\"{self.currentStep.Name}\")')"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 1411,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "rootObj = App.getDocument(doc_name).getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 1455,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "self.presel_ref = [App.getDocument(doc_name).getObject(obj_name), [sub_name]]"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandExportASMT.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "document = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandInsertLink.py",
+      "line": 112,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "self.doc = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandInsertLink.py",
+      "line": 422,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "addedObject.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandInsertNewPart.py",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandInsertNewPart.py",
+      "line": 94,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandInsertNewPart.py",
+      "line": 184,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 193,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "suggestions = collect_review_note_at_suggestions(App.ActiveDocument, prefix)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1442,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "Gui.updateGui()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1448,
+      "category": "process-events-polling",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "Gui.updateGui()"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1576,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.addObserver(self, Gui.Selection.ResolveMode.NoResolve)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1627,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.getDocument(doc_name) if doc_name else App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1714,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandReviewNote.py",
+      "line": 1900,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.getDocument(str(document_name)) if document_name else None"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandSolveAssembly.py",
+      "line": 66,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "assembly.recompute(True)"
+    },
+    {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
       "line": 1647,
       "category": "live-app-dereference",
@@ -2806,6 +3186,126 @@
       "evidence": "doc = FreeCAD.ActiveDocument"
     },
     {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 883,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "joint.recompute()"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 1372,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()  # Close the auto-transaction"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 1391,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 1975,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.addObserver(self, Gui.Selection.ResolveMode.NoResolve)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2004,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "self.assembly.recompute(True)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2012,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "self.assembly.recompute(True)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2022,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2024,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2036,
+      "category": "live-reference-callback",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "Gui.Selection.removeObserver(self)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2517,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "rootObj = App.getDocument(doc_name).getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2566,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "rootObj = App.getDocument(doc_name).getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 2590,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "rootObj = App.getDocument(doc_name).getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/UtilsAssembly.py",
+      "line": 263,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "doc = App.getDocument(doc_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/UtilsAssembly.py",
+      "line": 1020,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "rootObj = App.getDocument(doc_name).getObject(obj_name)"
+    },
+    {
+      "path": "src/Mod/Assembly/UtilsAssembly.py",
+      "line": 1427,
+      "category": "direct-recompute",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
       "path": "src/Mod/BIM/ArchCoveringGui.py",
       "line": 623,
       "category": "live-reference-callback",
@@ -2860,6 +3360,94 @@
       "subsystem": "BIM",
       "disposition": "investigate",
       "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 32,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 36,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.Selection.removeSelection(FreeCAD.ActiveDocument.getObject(object))"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 37,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.CyclicSelectionObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 41,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getObject(preselection.Object.Name),"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 44,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 44,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 56,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 71,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.CyclicSelectionObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 76,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(FreeCAD.CyclicSelectionObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 81,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/BimSelect.py",
+      "line": 109,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getObject(object_name), subelement_name"
     },
     {
       "path": "src/Mod/BIM/InitGui.py",
@@ -7246,6 +7834,222 @@
       "evidence": "window = FreeCAD.ActiveDocument.getObject(it.toolTip(0))"
     },
     {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 41,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return ifc_tools.get_project(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 91,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "document = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 99,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "document.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 120,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 153,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 168,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 184,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 192,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 217,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
+      "line": 226,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
+      "line": 54,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
+      "line": 55,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.slotActivateDocument(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(self.docname)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
+      "line": 214,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(self.docname)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
+      "line": 235,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 47,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 148,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"BIM\", \"add property\"))"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 152,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 215,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"BIM\", \"add property set\"))"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 226,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 258,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 336,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 355,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 367,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 411,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 431,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_status.py",
+      "line": 437,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
       "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
       "line": 184,
       "category": "direct-recompute",
@@ -10030,6 +10834,94 @@
       "evidence": "doc = FreeCAD.getDocument(doc_name)"
     },
     {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "return FreeCAD.ActiveDocument is not None"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = toolbit.attach_to_doc(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 138,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "return FreeCAD.ActiveDocument is not None"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 144,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "toolbit.attach_to_doc(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 146,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+      "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/PathCommands.py",
+      "line": 94,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()  # need in some cases to get identical hash codes"
+    },
+    {
+      "path": "src/Mod/CAM/PathCommands.py",
+      "line": 239,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/PathCommands.py",
+      "line": 239,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/PathCommands.py",
+      "line": 271,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "prevOpCopy = FreeCAD.ActiveDocument.copyObject(prevOp, False)"
+    },
+    {
+      "path": "src/Mod/CAM/PathCommands.py",
+      "line": 278,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "opCopy = FreeCAD.ActiveDocument.copyObject(op, False)"
+    },
+    {
       "path": "src/Mod/CAM/PathPythonGui/simple_edit_panel.py",
       "line": 33,
       "category": "live-app-dereference",
@@ -11654,6 +12546,678 @@
       "evidence": "that->getExtendedViewProvider()->getDocument()->getDocument()->recompute();"
     },
     {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Analysis\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 70,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"ObjectsFem.makeAnalysis(FreeCAD.ActiveDocument, 'Analysis')\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FemGui.setActiveAnalysis(FreeCAD.ActiveDocument.ActiveObject)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 72,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 75,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create default solver\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 93,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 95,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 95,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 119,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "overallboundbox = getBoundBoxOfAllDocumentShapes(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 613,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create FemMaterialMechanicalNonlinear\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 622,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 624,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 624,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 667,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Mesh from FEMMesh\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 677,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCAD.ActiveDocument.\" + self.selobj.Name + \".ViewObject.hide()\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 691,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.\" + femmesh.Name + \".ViewObject.hide()\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 692,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 694,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 694,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 721,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Clear FEM mesh\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 724,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCAD.ActiveDocument.\" + self.selobj.Name + \".FemMesh = Fem.FemMesh()\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 726,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 728,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 728,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 741,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"ClearGroups FEM mesh\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 749,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 751,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 751,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 764,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Display FEM mesh info\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 765,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"print(FreeCAD.ActiveDocument.\" + self.selobj.Name + \".FemMesh)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 768,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"mesh_info = str(FreeCAD.ActiveDocument.\" + self.selobj.Name + \".FemMesh)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 773,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 775,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 775,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 792,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create FEM mesh by Gmsh\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 798,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"ObjectsFem.makeMeshGmsh(FreeCAD.ActiveDocument, '\" + mesh_obj_name + \"')\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 805,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.ElementOrder = '2nd'\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 811,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.SecondOrderLinear = False\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 820,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 823,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 855,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create FEM mesh Netgen\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 862,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"ObjectsFem.makeMeshNetgenLegacy(FreeCAD.ActiveDocument, '\" + mesh_obj_name + \"')\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 866,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"ObjectsFem.makeMeshNetgen(FreeCAD.ActiveDocument, '\" + mesh_obj_name + \"')\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 868,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.EndStep = 'OptimizeVolume'\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 875,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.Fineness = 'Moderate'\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 884,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 887,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1071,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Purge FEM results\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1073,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1084,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create SolverCalculiX\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1088,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "f\"{self.cli_name} = ObjectsFem.{self.make_name}(FreeCAD.ActiveDocument)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1161,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1164,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1164,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1241,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem SolverElmer\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1247,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"ObjectsFem.makeSolverElmer(FreeCAD.ActiveDocument)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1250,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1264,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.Selection.addSelection(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1299,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1299,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1314,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem SolverZ88\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1320,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"ObjectsFem.makeSolverZ88(FreeCAD.ActiveDocument)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1323,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FemGui.getActiveAnalysis().addObject(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1330,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(f\"FreeCAD.ActiveDocument.ActiveObject.SolverType = '{solver_type}'\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1331,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(f\"FreeCAD.ActiveDocument.ActiveObject.MatrixMaximum = {maxgs}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1332,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(f\"FreeCAD.ActiveDocument.ActiveObject.VectorMaximum = {maxkoi}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/commands.py",
+      "line": 1336,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.Selection.addSelection(FreeCAD.ActiveDocument.ActiveObject)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 257,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if analysis.Document is FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 304,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 314,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 318,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 332,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 344,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"addedObjDocObj = FreeCAD.ActiveDocument.getObject(addedObj.Name)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 348,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 356,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 360,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 371,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{objtype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 398,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create Fem{filtertype}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 406,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "'FreeCAD.ActiveDocument.ActiveObject.ViewObject.DisplayMode = \"Surface\"'"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 409,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "'FreeCAD.ActiveDocument.ActiveObject.ViewObject.SelectionStyle = \"BoundBox\"'"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 412,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "f\"FreeCAD.ActiveDocument.ActiveObject.ViewObject.NoneFieldColor = {self.selobj.ViewObject.NoneFieldColor}\""
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 422,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.recompute()\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 422,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.ActiveObject.recompute()\")"
+    },
+    {
+      "path": "src/Mod/Fem/femcommands/manager.py",
+      "line": 427,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "\"FreeCADGui.ActiveDocument.setEdit(FreeCAD.ActiveDocument.ActiveObject.Name)\""
+    },
+    {
       "path": "src/Mod/Fem/femguiutils/extract_link_view.py",
       "line": 80,
       "category": "live-app-dereference",
@@ -11756,6 +13320,190 @@
       "subsystem": "Fem",
       "disposition": "investigate",
       "evidence": "FreeCADGui.doCommand(f\"App.ActiveDocument.{self._object.Name}.addObject(extraction)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/post_visualization.py",
+      "line": 117,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/post_visualization.py",
+      "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/post_visualization.py",
+      "line": 157,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(f\"Create {vis.name}\")"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/post_visualization.py",
+      "line": 162,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(f\"obj = {vis.module}.{vis.factory}(FreeCAD.ActiveDocument)\")"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 400,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.sel_server)"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 506,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self.sel_server)"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 510,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.sel_server)"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 617,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.sel_server)"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 625,
+      "category": "live-reference-callback",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self)"
+    },
+    {
+      "path": "src/Mod/Fem/femguiutils/selection_widgets.py",
+      "line": 629,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "selected_object = FreeCAD.getDocument(docName).getObject(objName)  # get the obj objName"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_femlogtaskpanel.py",
+      "line": 354,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "ext_editor_process.waitForFinished(-1)"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_fempostpanel.py",
+      "line": 65,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "self.obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_fempostpanel.py",
+      "line": 69,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument.getBookedTransactionID() == 0:"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_fempostpanel.py",
+      "line": 70,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction("
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_fempostpanel.py",
+      "line": 80,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "self.obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_femtaskpanel.py",
+      "line": 43,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "gui_doc.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/base_femtaskpanel.py",
+      "line": 53,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "gui_doc.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/task_result_mechanical.py",
+      "line": 599,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "self.result_obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/task_result_mechanical.py",
+      "line": 876,
+      "category": "process-events-polling",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/Fem/femtaskpanels/task_result_mechanical.py",
+      "line": 927,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_mesh_gmsh.py",
+      "line": 135,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if FemGui.getActiveAnalysis().Document is FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_mesh_gmsh.py",
+      "line": 285,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "incoming_object.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_mesh_netgen.py",
+      "line": 82,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "if FemGui.getActiveAnalysis().Document is FreeCAD.ActiveDocument:"
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
@@ -12644,6 +14392,374 @@
       "subsystem": "MeshPart",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 114,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "objs=FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 131,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "Overlappingfaces(edgestofaces(edges,None)).makefeatures(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 134,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 134,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 155,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 155,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 185,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 185,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 214,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 214,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 244,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 244,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 265,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 265,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 282,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 282,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 402,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc=FreeCAD.activeDocument() or FreeCAD.newDocument()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 420,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc=FreeCAD.activeDocument()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 516,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "newmeshobj = FreeCAD.activeDocument().addObject('Mesh::Feature',opname) #create a Feature for the result"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 563,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "importCSG.process_ObjectsViaOpenSCAD(FreeCAD.activeDocument(),objList,\"hull\")"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 564,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 564,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 583,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "importCSG.process_ObjectsViaOpenSCAD(FreeCAD.activeDocument(),objList,\"minkowski\")"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 584,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",
+      "line": 584,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADUtils.py",
+      "line": 110,
+      "category": "thread-waits",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "if p1.wait() == 0:"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADUtils.py",
+      "line": 123,
+      "category": "thread-waits",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "p.wait()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADUtils.py",
+      "line": 597,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc = doc or FreeCAD.activeDocument()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
+      "line": 56,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(text)"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
+      "line": 57,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "tube = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Tube\")"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
+      "line": 63,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 92,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 105,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create CompoundFilter\")"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 110,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"f.Base = App.ActiveDocument.\" + sel[0].Name)"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 112,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"f.Stencil = App.ActiveDocument.\" + sel[1].Name)"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 145,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+      "line": 151,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 79,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 90,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Explode\")"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 102,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"input_obj = App.ActiveDocument.\" + obj.Name)"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 106,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 109,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 110,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.doCommand(\"App.ActiveDocument.recompute()\")"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+      "line": 110,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"App.ActiveDocument.recompute()\")"
     },
     {
       "path": "src/Mod/Part/Gui/BoxSelection.cpp",
@@ -13710,6 +15826,182 @@
       "evidence": "for (auto doc : App::GetApplication().getDocuments()) {"
     },
     {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 41,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Part2DObjectPython\", name)"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 70,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create involute gear\")"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 73,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"Gui.activeDocument().setEdit(App.ActiveDocument.ActiveObject.Name,0)\")"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 76,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 358,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 358,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/InvoluteGearFeature.py",
+      "line": 363,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 42,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Part2DObjectPython\", name)"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 74,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Sprocket\")"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 77,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.doCommand(\"Gui.activeDocument().setEdit(App.ActiveDocument.ActiveObject.Name,0)\")"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 80,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 326,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 326,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 330,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.obj.Name)"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 331,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 331,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/SprocketFeature.py",
+      "line": 333,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/PartDesign/WizardShaft/ShaftFeature.py",
+      "line": 150,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "self.Doc.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/WizardShaft/ShaftFeature.py",
+      "line": 153,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "self.Doc.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/WizardShaft/ShaftFeature.py",
+      "line": 172,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "self.Doc.recompute()"
+    },
+    {
+      "path": "src/Mod/PartDesign/WizardShaft/WizardShaft.py",
+      "line": 219,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "WizardShaftDlg = TaskWizardShaft(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/PartDesign/WizardShaft/WizardShaft.py",
+      "line": 231,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "return FreeCAD.ActiveDocument is not None"
+    },
+    {
       "path": "src/Mod/Points/Gui/Command.cpp",
       "line": 353,
       "category": "live-app-dereference",
@@ -13956,6 +16248,38 @@
       "subsystem": "Sketcher",
       "disposition": "migrate",
       "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/Sketcher/Profiles.py",
+      "line": 37,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/Sketcher/Profiles.py",
+      "line": 64,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create hexagon profile\")"
+    },
+    {
+      "path": "src/Mod/Sketcher/Profiles.py",
+      "line": 71,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Sketcher/Profiles.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/AppSpreadsheetGui.cpp",
@@ -14524,6 +16848,470 @@
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "void updateData(const App::Property*) override;"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandAxoLengthDimension.py",
+      "line": 80,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Create axonometric length dimension\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandAxoLengthDimension.py",
+      "line": 134,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "distanceDim.recompute()     # ensure linearPoints has been set"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandAxoLengthDimension.py",
+      "line": 158,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "distanceDim.recompute()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandAxoLengthDimension.py",
+      "line": 162,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandAxoLengthDimension.py",
+      "line": 167,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandFillTemplateFields.py",
+      "line": 65,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandFillTemplateFields.py",
+      "line": 66,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "objs = App.ActiveDocument.findObjects(Type=\"TechDraw::DrawPage\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandHoleShaftFit.py",
+      "line": 82,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandMoveView.py",
+      "line": 82,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandPositionSectionView.py",
+      "line": 107,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandShareView.py",
+      "line": 83,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandVertexCreations.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/CommandVertexCreations.py",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TDToolsMovers.py",
+      "line": 41,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "App.ActiveDocument.recompute()  #update views & dependents if necessary"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TDToolsMovers.py",
+      "line": 41,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.recompute()  #update views & dependents if necessary"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TDToolsUtil.py",
+      "line": 33,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "objs = App.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TDToolsUtil.py",
+      "line": 40,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "objs = App.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskAddOffsetVertex.py",
+      "line": 61,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Add offset vertex\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskAddOffsetVertex.py",
+      "line": 78,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskAddOffsetVertex.py",
+      "line": 84,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "objs = App.ActiveDocument.findObjects(Type=\"TechDraw::DrawPage\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "self.s1.setText(App.ActiveDocument.CreatedBy)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 178,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "longestText, len(App.ActiveDocument.CreatedBy)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 222,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "self.s3.setText(App.ActiveDocument.Label)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 228,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "longestText = max(longestText, len(App.ActiveDocument.Label))"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 245,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "self.s4.setText(App.ActiveDocument.Comment)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 251,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "longestText = max(longestText, len(App.ActiveDocument.Comment))"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 268,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "self.s5.setText(App.ActiveDocument.Company)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 274,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "longestText = max(longestText, len(App.ActiveDocument.Company))"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 291,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "self.s6.setText(App.ActiveDocument.License)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 297,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "longestText = max(longestText, len(App.ActiveDocument.License))"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 322,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.LastModifiedDate,"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 340,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "+ App.ActiveDocument.LastModifiedDate"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 373,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.CreationDate, \"%Y-%m-%dT%H:%M:%SZ\""
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 390,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "+ App.ActiveDocument.LastModifiedDate"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 536,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(transactionName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskFillTemplateFields.py",
+      "line": 543,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskHoleShaftFit.py",
+      "line": 100,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Add hole or shaft fit\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskHoleShaftFit.py",
+      "line": 175,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskHoleShaftFit.py",
+      "line": 178,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 62,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Move view\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 66,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "view = App.ActiveDocument.getObject(self.viewName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "fromPage = App.ActiveDocument.getObject(self.fromPageName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 69,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "toPage = App.ActiveDocument.getObject(self.toPageName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 75,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 89,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "views = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawView\")]"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 112,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "pages = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawPage\")]"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskMoveView.py",
+      "line": 135,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "pages = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawPage\")]"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 62,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.openTransaction(\"Share view\")"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 66,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "view = App.ActiveDocument.getObject(self.viewName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "fromPage = App.ActiveDocument.getObject(self.fromPageName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "toPage = App.ActiveDocument.getObject(self.toPageName)"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 76,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 90,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "views = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawView\")]"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 113,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "pages = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawPage\")]"
+    },
+    {
+      "path": "src/Mod/TechDraw/TechDrawTools/TaskShareView.py",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "pages = [x for x in App.ActiveDocument.Objects if x.isDerivedFrom(\"TechDraw::DrawPage\")]"
     }
   ]
 }

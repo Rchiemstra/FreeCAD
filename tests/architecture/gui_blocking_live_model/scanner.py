@@ -31,6 +31,7 @@ import json
 import os
 import re
 import tokenize
+from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -49,7 +50,13 @@ class Finding:
     __slots__ = ("category", "disposition", "evidence", "line", "path", "subsystem")
 
     def __init__(
-        self, path: str, line: int, category: str, subsystem: str, disposition: str, evidence: str
+        self,
+        path: str,
+        line: int,
+        category: str,
+        subsystem: str,
+        disposition: str,
+        evidence: str,
     ) -> None:
         self.path = path
         self.line = line
@@ -199,22 +206,39 @@ def _token_offset(offsets: list[int], line: int, column: int) -> int:
     return offsets[line - 1] + column
 
 
+@lru_cache(maxsize=4)
+def _all_literal_token_spans(source: str) -> tuple[tuple[int, int], ...]:
+    """Tokenize one source string and return all decoded-string token spans."""
+    offsets = _line_offsets(source)
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        spans: list[tuple[int, int]] = []
+        for token in tokens:
+            if token.type != tokenize.STRING:
+                continue
+            token_start = _token_offset(offsets, token.start[0], token.start[1])
+            token_end = _token_offset(offsets, token.end[0], token.end[1])
+            quote_offset = next(
+                (
+                    index
+                    for index, character in enumerate(source[token_start:token_end])
+                    if character in "\"'"
+                ),
+                0,
+            )
+            spans.append((token_start + quote_offset, token_end))
+        return tuple(spans)
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        return ()
+
+
 def _literal_token_spans(source: str, start: int, end: int) -> list[tuple[int, int]]:
     """Return string-token spans in a source range (including implicit joins)."""
-    segment = source[start:end]
-    offsets = _line_offsets(segment)
-    try:
-        tokens = tokenize.generate_tokens(io.StringIO(segment).readline)
-        return [
-            (
-                start + _token_offset(offsets, token.start[0], token.start[1]),
-                start + _token_offset(offsets, token.end[0], token.end[1]),
-            )
-            for token in tokens
-            if token.type == tokenize.STRING
-        ]
-    except (IndentationError, SyntaxError, tokenize.TokenError):
-        return []
+    return [
+        (quote_start, literal_end)
+        for quote_start, literal_end in _all_literal_token_spans(source)
+        if quote_start >= start and literal_end <= end
+    ]
 
 
 def _string_expression_spans(
@@ -249,6 +273,94 @@ def _string_expression_spans(
             node.left, offsets, source_lines, source
         ) + _string_expression_spans(node.right, offsets, source_lines, source)
     return []
+
+
+def _literal_source(source: str, quote_start: int, end: int) -> str:
+    """Return a literal source span, including any prefix before its quote."""
+    start = quote_start
+    while start and source[start - 1] in "rRuUbBfF":
+        start -= 1
+    return source[start:end]
+
+
+def _decoded_line_map(value: str, source: str, quote_start: int, literal_end: int) -> list[int]:
+    """Map decoded characters to conservative physical source lines.
+
+    Escaped newlines do not consume a repository line, while real newlines in
+    triple-quoted literals do. A source-line escape therefore stays anchored to
+    the literal's line; physical newlines advance the mapping one line at a
+    time. This is intentionally conservative for unusual mixtures of escaped
+    and physical newlines and keeps evidence on a real source line.
+    """
+    line = source.count("\n", 0, quote_start) + 1
+    physical_newlines = source.count("\n", quote_start, literal_end)
+    mapping: list[int] = []
+    for character in value:
+        mapping.append(line)
+        if character == "\n" and physical_newlines:
+            physical_newlines -= 1
+            line += 1
+    return mapping
+
+
+def _decoded_string_expression(
+    node: ast.AST, source: str, offsets: list[int], source_lines: list[str]
+) -> tuple[str, list[int]] | None:
+    """Decode a literal/implicit string expression and its first source line."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _decoded_string_expression(node.left, source, offsets, source_lines)
+        right = _decoded_string_expression(node.right, source, offsets, source_lines)
+        if left is None or right is None:
+            return None
+        return left[0] + right[0], left[1] + right[1]
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return None
+    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+        return None
+    start = _ast_offset(offsets, source_lines, node.lineno, node.col_offset)
+    end = _ast_offset(offsets, source_lines, node.end_lineno, node.end_col_offset)
+    values: list[str] = []
+    literal_spans = _literal_token_spans(source, start, end)
+    if not literal_spans:
+        return None
+    for quote_start, literal_end in literal_spans:
+        try:
+            value = ast.literal_eval(_literal_source(source, quote_start, literal_end))
+        except (SyntaxError, ValueError, TypeError, MemoryError):
+            return None
+        if not isinstance(value, str):
+            return None
+        values.append(value)
+    mapping: list[int] = []
+    for (quote_start, literal_end), value in zip(literal_spans, values):
+        mapping.extend(_decoded_line_map(value, source, quote_start, literal_end))
+    return "".join(values), mapping
+
+
+def _decoded_do_command_literals(source: str) -> list[tuple[str, list[int]]]:
+    """Return decoded command strings and their physical source-line maps."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    offsets = _line_offsets(source)
+    source_lines = source.splitlines()
+    decoded: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        if not isinstance(function, ast.Attribute) or function.attr != "doCommand":
+            continue
+        if not isinstance(function.value, ast.Name) or function.value.id not in {
+            "FreeCADGui",
+            "Gui",
+        }:
+            continue
+        value = _decoded_string_expression(node.args[0], source, offsets, source_lines)
+        if value is not None:
+            decoded.append(value)
+    return decoded
 
 
 def _do_command_string_spans(source: str) -> list[tuple[int, int]]:
@@ -458,7 +570,30 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
                     evidence=evidence,
                 )
             )
-    return findings
+        if suffix == ".py":
+            for decoded, line_map in _decoded_do_command_literals(source):
+                decoded_masked = mask_py_non_code(decoded)
+                for match in compiled.finditer(decoded_masked):
+                    line = line_map[min(match.start(), len(line_map) - 1)]
+                    evidence = source.splitlines()[line - 1].strip()
+                    findings.append(
+                        Finding(
+                            path=relative_path,
+                            line=line,
+                            category=category.key,
+                            subsystem=subsystem,
+                            disposition=category.default_disposition,
+                            evidence=evidence,
+                        )
+                    )
+    unique: list[Finding] = []
+    seen: set[tuple[str, int, str]] = set()
+    for finding in findings:
+        if finding.key() in seen:
+            continue
+        seen.add(finding.key())
+        unique.append(finding)
+    return unique
 
 
 def scan(repository_root: Path) -> list[Finding]:

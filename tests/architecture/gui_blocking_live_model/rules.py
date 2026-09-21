@@ -21,12 +21,11 @@ The inventory covers production GUI source only:
   ``Gui``.
 
 Both C++ (``.cpp``/``.h``/``.hpp``) and Python (``.py``) GUI source are
-scanned. The module-aware additions are intentionally explicit: Draft command,
-task-panel, view-provider, and utility modules; BIM command/covering and native
-IFC view-provider modules; the CAM Python GUI package; FEM GUI extraction
-helpers; and the Robot movie tool. This keeps App-layer helpers, tests, and
-import/export implementations out of scope while making each inclusion
-reviewable and deterministic.
+scanned. The module-aware additions are intentionally explicit and follow the
+Python modules loaded by production workbench entry points: command/task/view
+provider packages, GUI utility modules, and GUI preference pages. This keeps
+App-layer helpers, tests, and import/export implementations out of scope while
+making each inclusion reviewable and deterministic.
 
 One category is C++-only by nature -- ``update-data-provider`` (the
 ``ViewProvider::updateData(const App::Property*)`` interface) -- and carries a
@@ -103,6 +102,19 @@ EXTRA_GUI_DIRS: tuple[str, ...] = (
     "src/Mod/BIM/bimcommands",
     # CAM's Python-only GUI helper package.
     "src/Mod/CAM/PathPythonGui",
+    # FEM GUI packages listed in src/Mod/Fem/CMakeLists.txt.
+    "src/Mod/Fem/femcommands",
+    "src/Mod/Fem/femguiobjects",
+    "src/Mod/Fem/femguiutils",
+    "src/Mod/Fem/fempreferencepages",
+    "src/Mod/Fem/femtaskpanels",
+    "src/Mod/Fem/femviewprovider",
+    # TechDraw's Python command and task-panel package loaded by InitGui.py.
+    "src/Mod/TechDraw/TechDrawTools",
+    # Points command package used by the Points GUI extension.
+    "src/Mod/Points/pointscommands",
+    # Optional PartDesign shaft-wizard task-dialog package.
+    "src/Mod/PartDesign/WizardShaft",
 )
 
 #: Additional top-level GUI modules in module-aware workbenches. These files sit
@@ -119,13 +131,81 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/BIM/ArchCoveringGui.py",
     # Draft GUI utility layer (selection/view helpers, not Draft geometry).
     "src/Mod/Draft/draftutils/gui_utils.py",
+    # Draft GUI startup, grid, and status-bar helpers loaded by InitGui.py.
+    "src/Mod/Draft/draftutils/grid_observer.py",
+    "src/Mod/Draft/draftutils/init_draft_statusbar.py",
+    "src/Mod/Draft/draftutils/init_tools.py",
     # BIM native IFC presentation provider.
     "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+    # BIM native IFC command, observer, and status-bar GUI modules.
+    "src/Mod/BIM/nativeifc/ifc_commands.py",
+    "src/Mod/BIM/nativeifc/ifc_observer.py",
+    "src/Mod/BIM/nativeifc/ifc_status.py",
     # FEM GUI extraction/view helper.
     "src/Mod/Fem/femguiutils/extract_link_view.py",
     # Robot GUI movie export tool.
     "src/Mod/Robot/MovieTool.py",
+    # Tux's optional GUI extensions loaded by its production InitGui.py.
+    "src/Mod/Tux/NavigationIndicatorGui.py",
+    "src/Mod/Tux/PersistentToolbarsGui.py",
+    # Assembly's Python GUI commands and workbench helpers.
+    "src/Mod/Assembly/AssemblyPreferences.py",
+    "src/Mod/Assembly/UtilsAssembly.py",
+    "src/Mod/Assembly/CommandCreateAssembly.py",
+    "src/Mod/Assembly/CommandCreateBom.py",
+    "src/Mod/Assembly/CommandCreateJoint.py",
+    "src/Mod/Assembly/CommandCreateSimulation.py",
+    "src/Mod/Assembly/CommandCreateSnapshot.py",
+    "src/Mod/Assembly/CommandCreateView.py",
+    "src/Mod/Assembly/CommandExportASMT.py",
+    "src/Mod/Assembly/CommandInsertLink.py",
+    "src/Mod/Assembly/CommandInsertNewPart.py",
+    "src/Mod/Assembly/CommandReviewNote.py",
+    "src/Mod/Assembly/CommandSolveAssembly.py",
+    # Joint task and view-provider handlers imported by Assembly commands.
+    "src/Mod/Assembly/JointObject.py",
+    # BIM GUI helpers imported by InitGui.py when the optional modules exist.
+    "src/Mod/BIM/BimSelect.py",
+    "src/Mod/BIM/BimStatus.py",
+    # CAM GUI entry-point helpers loaded outside a directory named Gui.
+    "src/Mod/CAM/PathCommands.py",
+    "src/Mod/CAM/Path/GuiInit.py",
+    "src/Mod/CAM/Path/Tool/assets/ui/preferences.py",
+    "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
+    "src/Mod/CAM/Path/Tool/library/ui/cmd.py",
+    "src/Mod/CAM/Path/Tool/camassets.py",
+    "src/Mod/CAM/Path/Tool/migration/migration.py",
+    "src/Mod/CAM/Path/Preferences.py",
+    # Other production workbench GUI entry-point helpers.
+    "src/Mod/Draft/WorkingPlane.py",
+    "src/Mod/Help/Help.py",
+    "src/Mod/OpenSCAD/OpenSCADCommands.py",
+    "src/Mod/OpenSCAD/OpenSCADUtils.py",
+    "src/Mod/Part/BasicShapes/CommandShapes.py",
+    "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
+    "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
+    "src/Mod/PartDesign/InvoluteGearFeature.py",
+    "src/Mod/PartDesign/SprocketFeature.py",
+    "src/Mod/Sketcher/Profiles.py",
+    "src/Mod/Start/StartMigrator.py",
 )
+
+# Direct local imports from production InitGui.py files that were reviewed and
+# deliberately kept out of the GUI inventory. These are package initializers
+# or App/model utility modules; GUI submodules imported from them are listed in
+# EXTRA_GUI_DIRS/EXTRA_GUI_FILES above. Keeping this manifest explicit prevents
+# a new local InitGui import from silently disappearing from the audit.
+REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
+    "src/Mod/BIM/nativeifc/__init__.py": "dependency-availability helper; GUI nativeifc modules are listed explicitly",
+    "src/Mod/CAM/Path/__init__.py": "CAM App package; its loaded GUI subpackages are already in Gui scope",
+    "src/Mod/CAM/PathScripts/__init__.py": "CAM App compatibility package; no GUI handlers",
+    "src/Mod/Draft/draftutils/__init__.py": "utility package initializer; GUI utility modules are listed explicitly",
+    "src/Mod/Draft/draftutils/params.py": "Draft parameter storage helper with no GUI handlers",
+    "src/Mod/Draft/draftutils/utils.py": "Draft geometry/model utility with no GUI handlers",
+    "src/Mod/CAM/Path/Tool/library/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
+    "src/Mod/CAM/Path/Tool/toolbit/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
+    "src/Mod/PartDesign/__init__.py": "PartDesign App package initializer; GUI modules are listed explicitly",
+}
 
 
 @dataclass(frozen=True)

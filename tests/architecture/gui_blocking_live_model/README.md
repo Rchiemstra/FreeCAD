@@ -28,8 +28,14 @@ The scanner covers production GUI source only:
 * explicit reviewed Python GUI packages/files that do not use a `Gui` directory:
   Draft command/task/view-provider packages plus `draftutils/gui_utils.py`, BIM
   commands/covering plus `nativeifc/ifc_viewproviders.py`, CAM's
-  `PathPythonGui`, FEM's `femguiutils/extract_link_view.py`, and Robot's
-  `MovieTool.py`.
+  `PathPythonGui`, CAM's loaded Path command/preferences helpers, FEM's reviewed
+  command/task/view-provider packages, Assembly command/task handlers, Points'
+  command package, PartDesign's shaft wizard, Tux's optional GUI extensions,
+  BIM native-IFC command/observer/status modules, Draft's GUI startup helpers,
+  and the reviewed direct GUI modules for Robot and other production
+  workbenches. The direct local imports made by every production `InitGui.py`
+  are either in this manifest or listed in `rules.py` with an explicit
+  App/model-layer exclusion rationale.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
@@ -73,11 +79,12 @@ The Python patterns mirror the C++ ones where a Python equivalent exists:
 the `FreeCADGui`/`Gui.updateGui()` wrapper), `direct-recompute` (`.recompute(`),
 `live-app-dereference` (`App`/`FreeCAD.ActiveDocument`, callable
 `activeDocument()`, and `getDocument(`), and
-`live-reference-callback` (`addObserver`/`removeObserver`). Two categories are
-C++-only by nature — `blocking-invokes` (the Qt `BlockingQueuedConnection`
-connection type) and `update-data-provider` (the
-`ViewProvider::updateData(const App::Property*)` interface) — and carry a `None`
-Python pattern to record that explicitly.
+`live-reference-callback` (`addObserver`/`removeObserver`). Only
+`update-data-provider` is C++-only by nature (the
+`ViewProvider::updateData(const App::Property*)` interface) and carries a
+`None` Python pattern. `blocking-invokes` has a Python pattern for the PySide
+`BlockingQueuedConnection` enum as well as its C++ Qt connection-type pattern;
+no Python site currently matches it.
 
 Notes on deliberately narrow rules (these are what keep the false-positive
 surface small):

@@ -21,9 +21,11 @@ the locked Pixi environment alongside the rest of the test suite.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -38,6 +40,7 @@ REPOSITORY_ROOT = Path(os.environ.get("FREECAD_SOURCE_ROOT", _ARCH_DIR.parents[1
 PACKAGE_DIR = _ARCH_DIR / "gui_blocking_live_model"
 INVENTORY_PATH = PACKAGE_DIR / "inventory.json"
 EXCLUSIONS_PATH = PACKAGE_DIR / "exclusions.json"
+REPORT_PATH = PACKAGE_DIR / "REPORT.md"
 
 REQUIRED_ENTRY_FIELDS = frozenset(
     {"path", "line", "category", "subsystem", "disposition", "evidence"}
@@ -61,6 +64,61 @@ def _load_inventory() -> dict:
 
 def _load_exclusions() -> dict:
     return json.loads(EXCLUSIONS_PATH.read_text(encoding="utf-8"))
+
+
+def report_count_violations(report_text: str, payload: dict) -> list[str]:
+    """Compare every machine-derived count printed in REPORT.md with payload."""
+    findings = list(payload["findings"])
+    category_counts = {key: 0 for key in payload["categories"]}
+    subsystem_counts: dict[str, int] = {}
+    language_counts = {"C++": 0, "Python": 0}
+    for finding in findings:
+        category_counts[str(finding["category"])] += 1
+        subsystem = str(finding["subsystem"])
+        subsystem_counts[subsystem] = subsystem_counts.get(subsystem, 0) + 1
+        language_counts["Python" if str(finding["path"]).endswith(".py") else "C++"] += 1
+
+    problems: list[str] = []
+    table_match = re.search(
+        r"## Inventory at a glance(?P<table>.*?)(?:\n## |\Z)", report_text, re.DOTALL
+    )
+    if not table_match:
+        return ["REPORT.md is missing its inventory table"]
+    rows = {
+        category: int(count.replace(",", ""))
+        for category, count in re.findall(
+            r"\| `([^`]+)` \| ([\d,]+) \|", table_match.group("table")
+        )
+    }
+    if rows != category_counts:
+        problems.append(f"category counts {rows} != {category_counts}")
+
+    total_match = re.search(r"\(([\d,]+)\s+findings across seven\s+categories", report_text)
+    if not total_match or int(total_match.group(1).replace(",", "")) != len(findings):
+        problems.append("REPORT total finding count does not match inventory")
+    language_match = re.search(r"spans ([\d,]+) C\+\+ and ([\d,]+) Python\s+findings", report_text)
+    expected_languages = (language_counts["C++"], language_counts["Python"])
+    if (
+        not language_match
+        or tuple(int(value.replace(",", "")) for value in language_match.groups())
+        != expected_languages
+    ):
+        problems.append("REPORT language counts do not match inventory")
+    subsystem_match = re.search(
+        r"Owning subsystems:\n?(?P<subsystems>.*?)(?:\n\n|\Z)", report_text, re.DOTALL
+    )
+    if not subsystem_match:
+        problems.append("REPORT is missing its owning-subsystems counts")
+    else:
+        rows = {
+            name: int(count.replace(",", ""))
+            for name, count in re.findall(
+                r"`([^`]+)`\s*\(([\d,]+)\)", subsystem_match.group("subsystems")
+            )
+        }
+        if rows != subsystem_counts:
+            problems.append(f"subsystem counts {rows} != {subsystem_counts}")
+    return problems
 
 
 def _path_violation(path: object) -> str | None:
@@ -334,6 +392,17 @@ class RuleRegressionTests(unittest.TestCase):
         # update-data-provider is the only C++-only category.
         self.assertIsNone(scanner.compiled_pattern("update-data-provider", "py"))
 
+    def test_python_pattern_none_set_matches_rules_documentation(self) -> None:
+        none_keys = {category.key for category in rules.CATEGORIES if category.py_pattern is None}
+        self.assertEqual(none_keys, {"update-data-provider"})
+        readme = (PACKAGE_DIR / "README.md").read_text(encoding="utf-8")
+        self.assertRegex(readme, r"Only\s+`update-data-provider` is C\+\+-only")
+        self.assertNotIn(
+            "blocking-invokes` (the Qt `BlockingQueuedConnection` connection type) and "
+            "`update-data-provider`",
+            readme,
+        )
+
     def test_do_command_expands_executable_command_strings(self) -> None:
         py = scanner.compiled_pattern("live-app-dereference", "py")
         plain = 'FreeCADGui.doCommand("obj = FreeCAD.ActiveDocument.getObject(name)")'
@@ -352,6 +421,31 @@ class RuleRegressionTests(unittest.TestCase):
         )
         adjacent = 'Gui.doCommand(("FreeCAD." "ActiveDocument.recompute()"))'
         self.assertIsNotNone(py.search(scanner.mask_py_non_code(adjacent, expand_do_command=True)))
+        multiline_adjacent = 'Gui.doCommand(\n    "FreeCAD."\n    "ActiveDocument.recompute()"\n)'
+        multiline_findings = scanner.scan_source(multiline_adjacent, ".py", "snippet.py")
+        self.assertIn("live-app-dereference", {finding.category for finding in multiline_findings})
+        for prefixed in (
+            'Gui.doCommand(u"FreeCAD.ActiveDocument.recompute()")',
+            'Gui.doCommand(r"FreeCAD.ActiveDocument.recompute()")',
+        ):
+            self.assertIsNotNone(
+                py.search(scanner.mask_py_non_code(prefixed, expand_do_command=True))
+            )
+        escaped = 'Gui.doCommand("FreeCAD\\x2eActiveDocument.recompute()")'
+        escaped_findings = scanner.scan_source(escaped, ".py", "snippet.py")
+        self.assertIn("live-app-dereference", {finding.category for finding in escaped_findings})
+        escaped_newline = 'prefix = "ok"\nGui.doCommand("x=1\\nFreeCAD.ActiveDocument.recompute()")'
+        escaped_newline_findings = scanner.scan_source(escaped_newline, ".py", "snippet.py")
+        self.assertIn(
+            (2, "live-app-dereference"),
+            {(finding.line, finding.category) for finding in escaped_newline_findings},
+        )
+        triple = 'Gui.doCommand("""x=1\nFreeCAD.ActiveDocument.recompute()""")'
+        triple_findings = scanner.scan_source(triple, ".py", "snippet.py")
+        self.assertIn(
+            (2, "live-app-dereference"),
+            {(finding.line, finding.category) for finding in triple_findings},
+        )
         nested_fstring = 'Gui.doCommand(f"FreeCAD.ActiveDocument.{name}")'
         self.assertIsNotNone(
             py.search(scanner.mask_py_non_code(nested_fstring, expand_do_command=True))
@@ -370,6 +464,13 @@ class RuleRegressionTests(unittest.TestCase):
         self.assertIsNone(py.search(scanner.mask_py_non_code(variable, expand_do_command=True)))
         nested_call = 'FreeCADGui.doCommand(make_command("FreeCAD.ActiveDocument"))'
         self.assertIsNone(py.search(scanner.mask_py_non_code(nested_call, expand_do_command=True)))
+        for inert_command in (
+            "Gui.doCommand(u\"print(\\'FreeCAD.ActiveDocument\\')\")",
+            "Gui.doCommand(r\"print(\\'FreeCAD.ActiveDocument\\')\")",
+        ):
+            self.assertIsNone(
+                py.search(scanner.mask_py_non_code(inert_command, expand_do_command=True))
+            )
 
 
 class InventoryEntryValidationTests(unittest.TestCase):
@@ -510,12 +611,19 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_inventory_metadata_matches_scanner(self) -> None:
         self.assertEqual(
-            self.inventory["generator"], "tests/architecture/gui_blocking_live_model/scanner.py"
+            self.inventory["generator"],
+            "tests/architecture/gui_blocking_live_model/scanner.py",
         )
         self.assertEqual(self.inventory["categories"], [c.key for c in rules.CATEGORIES])
         self.assertEqual(
-            self.inventory["scope"], scanner.scope_entries(REPOSITORY_ROOT), "scope must be exact"
+            self.inventory["scope"],
+            scanner.scope_entries(REPOSITORY_ROOT),
+            "scope must be exact",
         )
+
+    def test_report_counts_match_inventory(self) -> None:
+        problems = report_count_violations(REPORT_PATH.read_text(encoding="utf-8"), self.inventory)
+        self.assertFalse(problems, "\n".join(problems))
 
     def test_disposition_defaults_are_applied(self) -> None:
         defaults = {c.key: c.default_disposition for c in rules.CATEGORIES}
@@ -560,7 +668,8 @@ class RepositoryInventoryTests(unittest.TestCase):
         self.assertIn(key, {f.key() for f in self.scanned})
         self.assertIn(key, self.excluded_keys)
         self.assertNotIn(
-            key, {(e["path"], e["line"], e["category"]) for e in self.inventory["findings"]}
+            key,
+            {(e["path"], e["line"], e["category"]) for e in self.inventory["findings"]},
         )
 
     def test_test_harness_file_is_excluded(self) -> None:
@@ -629,7 +738,9 @@ class RepositoryInventoryTests(unittest.TestCase):
         ):
             self.assertIn(entry, scope, f"expected GUI scope entry {entry}")
 
-    def test_production_init_gui_and_reviewed_python_scope_entries_present(self) -> None:
+    def test_production_init_gui_and_reviewed_python_scope_entries_present(
+        self,
+    ) -> None:
         scope = scanner.scope_entries(REPOSITORY_ROOT)
         expected_init_gui = {
             path.relative_to(REPOSITORY_ROOT).as_posix()
@@ -647,14 +758,73 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/Robot/InitGui.py",
             "src/Mod/CAM/PathPythonGui",
             "src/Mod/Draft/draftutils/gui_utils.py",
+            "src/Mod/Draft/draftutils/grid_observer.py",
+            "src/Mod/Draft/draftutils/init_draft_statusbar.py",
+            "src/Mod/Draft/draftutils/init_tools.py",
             "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+            "src/Mod/BIM/nativeifc/ifc_commands.py",
+            "src/Mod/BIM/nativeifc/ifc_observer.py",
+            "src/Mod/BIM/nativeifc/ifc_status.py",
             "src/Mod/Fem/femguiutils/extract_link_view.py",
             "src/Mod/Robot/MovieTool.py",
+            "src/Mod/Assembly/CommandCreateAssembly.py",
+            "src/Mod/Assembly/CommandCreateJoint.py",
+            "src/Mod/Assembly/CommandCreateSimulation.py",
+            "src/Mod/Assembly/CommandCreateView.py",
+            "src/Mod/Assembly/JointObject.py",
+            "src/Mod/CAM/PathCommands.py",
+            "src/Mod/MeshPart/Gui",
+            "src/Mod/Points/pointscommands",
+            "src/Mod/PartDesign/WizardShaft",
+            "src/Mod/Tux/NavigationIndicatorGui.py",
+            "src/Mod/Tux/PersistentToolbarsGui.py",
         ):
             self.assertIn(entry, scope, f"expected reviewed GUI scope entry {entry}")
         self.assertNotIn("src/Mod/Test/InitGui.py", scope)
         self.assertNotIn("src/Mod/TemplatePyMod/InitGui.py", scope)
         self.assertFalse(any("Test" in entry for entry in scope))
+
+    def test_init_gui_local_imports_are_scoped_or_explicitly_excluded(self) -> None:
+        """Every resolvable local InitGui import has a reviewed scope decision."""
+        scope_files = {
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in scanner.iter_source_files(REPOSITORY_ROOT)
+        }
+        missing: list[str] = []
+        for init_path in scanner._production_init_gui_files(REPOSITORY_ROOT):
+            workbench_root = init_path.parent
+            tree = ast.parse(init_path.read_text(encoding="utf-8"))
+            modules: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    modules.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    modules.add(node.module)
+                    modules.update(
+                        f"{node.module}.{alias.name}" for alias in node.names if alias.name != "*"
+                    )
+            for module in modules:
+                module_path = Path(*module.split("."))
+                candidates = (
+                    workbench_root / f"{module_path}.py",
+                    workbench_root / module_path / "__init__.py",
+                    REPOSITORY_ROOT / "src" / "Mod" / f"{module_path}.py",
+                    REPOSITORY_ROOT / "src" / "Mod" / module_path / "__init__.py",
+                )
+                for candidate in candidates:
+                    if not candidate.is_file():
+                        continue
+                    relative = candidate.relative_to(REPOSITORY_ROOT).as_posix()
+                    if (
+                        relative not in scope_files
+                        and relative not in rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS
+                    ):
+                        missing.append(relative)
+        self.assertFalse(
+            sorted(set(missing)),
+            "unreviewed local InitGui imports: " + ", ".join(sorted(set(missing))),
+        )
+        self.assertTrue(rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS)
 
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
@@ -676,6 +846,38 @@ class RepositoryInventoryTests(unittest.TestCase):
                 for path in scanner.iter_source_files(REPOSITORY_ROOT)
             ],
         )
+
+    def test_init_gui_loaded_command_and_gui_modules_are_inventoried(self) -> None:
+        scoped_files = {
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in scanner.iter_source_files(REPOSITORY_ROOT)
+        }
+        for path in (
+            "src/Mod/Assembly/CommandCreateAssembly.py",
+            "src/Mod/Assembly/CommandCreateJoint.py",
+            "src/Mod/Assembly/CommandCreateSimulation.py",
+            "src/Mod/Assembly/CommandCreateView.py",
+            "src/Mod/Assembly/JointObject.py",
+            "src/Mod/Fem/femcommands/commands.py",
+            "src/Mod/Fem/femcommands/manager.py",
+            "src/Mod/CAM/PathCommands.py",
+            "src/Mod/BIM/nativeifc/ifc_commands.py",
+            "src/Mod/BIM/nativeifc/ifc_observer.py",
+            "src/Mod/BIM/nativeifc/ifc_status.py",
+            "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py",
+        ):
+            self.assertIn(path, scoped_files, f"expected loaded GUI module {path}")
+        for path in (
+            "src/Mod/Assembly/CommandCreateAssembly.py",
+            "src/Mod/Assembly/CommandCreateJoint.py",
+            "src/Mod/Fem/femcommands/commands.py",
+            "src/Mod/Fem/femcommands/manager.py",
+            "src/Mod/CAM/PathCommands.py",
+        ):
+            self.assertTrue(
+                any(finding.path == path for finding in self.scanned),
+                f"expected representative finding in {path}",
+            )
 
     def test_draft_bim_app_layer_not_in_scope(self) -> None:
         scope = scanner.scope_entries(REPOSITORY_ROOT)
