@@ -1053,6 +1053,29 @@ class ObjectSurface(PathOp.ObjectOp):
                     stock = getattr(self, "stock", None) or self.job.Stock
                     obj.OpFinalDepth = self._rotatedShape(stock.Shape).BoundBox.ZMin
 
+    def _effectiveDepths(self, obj):
+        """Return operation depths, including freshly derived 3+2 defaults.
+
+        ``updateDepths()`` updates ``OpStartDepth`` and ``OpFinalDepth`` after
+        the default user properties' expressions have already been evaluated
+        for this execution. A document recompute makes those expressions
+        current on the next pass, but every first 3+2 strategy path must use
+        the rotated depths now. Only substitute the derived values for the
+        unmodified direct default expressions, leaving explicit and custom
+        expressions under user control.
+        """
+        start_depth = obj.StartDepth.Value
+        final_depth = obj.FinalDepth.Value
+        if getattr(self, "_geom_transform_matrix", None) is None:
+            return start_depth, final_depth
+
+        expressions = dict(obj.ExpressionEngine)
+        if expressions.get("StartDepth") == "OpStartDepth":
+            start_depth = obj.OpStartDepth.Value
+        if expressions.get("FinalDepth") == "OpFinalDepth":
+            final_depth = obj.OpFinalDepth.Value
+        return start_depth, final_depth
+
     # ---- Strategy execution methods ----
 
     def _extractToolParams(self, obj):
@@ -1202,7 +1225,7 @@ class ObjectSurface(PathOp.ObjectOp):
         pattern = obj.CutPattern if hasattr(obj, "CutPattern") else "Line"
         is_adaptive = getattr(obj, "AdaptiveSampling", False)
         sample_interval = obj.SampleInterval.Value
-        final_depth = obj.FinalDepth.Value
+        _, final_depth = self._effectiveDepths(obj)
 
         adaptive_threshold = 0.30  # adaptive_threshold also in /Gui/Surface.py
         is_truly_adaptive = is_adaptive and sample_interval >= adaptive_threshold
@@ -1268,6 +1291,7 @@ class ObjectSurface(PathOp.ObjectOp):
             list: A list of Path.Command objects representing the final G-code.
         """
         all_final_cmds = []
+        start_depth, final_depth = self._effectiveDepths(obj)
 
         is_whole_model_job = not cutting_faces
         sample_interval = obj.SampleInterval.Value
@@ -1335,7 +1359,7 @@ class ObjectSurface(PathOp.ObjectOp):
             # D. Multi-pass operation
             if getattr(obj, "LayerMode", "Single-pass") == "Multi-pass":
                 scan_lines = surface_postprocess.apply_multipass(
-                    scan_lines, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value
+                    scan_lines, start_depth, final_depth, obj.StepDown.Value
                 )
 
             # E. Post-process and generate G-code for this group
@@ -1354,8 +1378,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 horiz_rapid=self.horizRapid,
                 safe_z=obj.SafeHeight.Value,
                 clearance_z=obj.ClearanceHeight.Value,
-                start_z=obj.StartDepth.Value,
-                final_z=obj.FinalDepth.Value,
+                start_z=start_depth,
+                final_z=final_depth,
                 step_down=obj.StepDown.Value,
                 options=options,
             )
@@ -1373,8 +1397,7 @@ class ObjectSurface(PathOp.ObjectOp):
         """
         sample_interval = obj.SampleInterval.Value
         min_sampling = obj.MinSampleInterval.Value
-        min_z = obj.FinalDepth.Value
-        max_z = obj.StartDepth.Value
+        max_z, min_z = self._effectiveDepths(obj)
         depth_offset = obj.DepthOffset.Value
         step_down = obj.StepDown.Value
         cut_climb = obj.CutMode == "Climb"
@@ -1448,6 +1471,8 @@ class ObjectSurface(PathOp.ObjectOp):
         """
         from Path.Base.Generator import surface_zlevel
 
+        start_depth, final_depth = self._effectiveDepths(obj)
+
         # 1. Extract and Validate Tool Parameters
         tool_diam = tool_params.get("diameter", 0.0)
         radius = tool_diam / 2.0
@@ -1499,7 +1524,7 @@ class ObjectSurface(PathOp.ObjectOp):
         height_params = {
             "safe_hght": obj.SafeHeight.Value,
             "clearance_hght": obj.ClearanceHeight.Value,
-            "start_hght": obj.StartDepth.Value,
+            "start_hght": start_depth,
         }
 
         feed_params = {
@@ -1538,8 +1563,8 @@ class ObjectSurface(PathOp.ObjectOp):
         # 5. Depth categorization
         cat_steps = surface_zlevel.categorize_floor_steps(
             shape_copy,
-            obj.StartDepth.Value,
-            obj.FinalDepth.Value,
+            start_depth,
+            final_depth,
             obj.StepDown.Value,
             clear_planar_only,
         )
@@ -1556,7 +1581,7 @@ class ObjectSurface(PathOp.ObjectOp):
             accuracy_val,
             depth_offset,
             wpc,
-            start_z=obj.StartDepth.Value,
+            start_z=start_depth,
         )
 
         # 7. Convert to G-Code
@@ -1697,6 +1722,7 @@ class ObjectSurface(PathOp.ObjectOp):
         is_zlevel = strategy == "ZLevelHybrid"
         # NOTE: Temporarily disable optimization and CPP tessellation for 3+2 axis operations
         is_three_plus_two = getattr(self, "_geom_transform_matrix", None)
+        start_depth, final_depth = self._effectiveDepths(obj)
         use_cpp = True
 
         # Geometry & Generation Requirements
@@ -1721,7 +1747,7 @@ class ObjectSurface(PathOp.ObjectOp):
         if is_waterline:
             # Ensure the OCL cutter shaft is at least as long as the operation 'depth - edge_height'
             # so it cannot pass through vertical walls removed by mesh optimization.
-            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
+            op_depth = start_depth - final_depth
             tool_params["length_offset"] = op_depth + tool_params["edge_height"]
 
         # Geometry preperation
@@ -1834,8 +1860,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 tool_diam=tool_diam,
                 needs_safe_stl=needs_safe_stl,
                 boundary_adjustment=boundary_adjustment,
-                start_depth=obj.StartDepth.Value,
-                final_depth=obj.FinalDepth.Value,
+                start_depth=start_depth,
+                final_depth=final_depth,
                 linear_deflection=obj.LinearDeflection.Value,
                 angular_deflection=obj.AngularDeflection.Value,
                 mesh_simplification=getattr(obj, "MeshSimplification", 1),

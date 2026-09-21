@@ -232,7 +232,12 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     owners = [entry.rsplit(":", 1)[0] for entry in matches]
     assert owners.count(DOCUMENT_SOURCE) == 1, matches
     assert owners.count(GENERIC_SOURCE) == 2, matches
-    assert len(matches) == 3, (
+    # A failed compatibility commit gets one further owner-thread probe after
+    # its native rollback.  This is not a normal recompute ingress: it detects
+    # FeaturePython proxy state that is outside the undo stack before the
+    # coordinator declares the restored document safe again.
+    assert owners.count(COMMIT_SOURCE) == 1, matches
+    assert len(matches) == 4, (
         "_recomputeFeature has an unclassified live caller: " + ", ".join(matches)
     )
 
@@ -310,6 +315,60 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
             "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
         )
     )
+    rollback_probe_source = _compact(
+        _suppress_cpp(
+            _body(
+                commit_source,
+                "DocumentCommitCoordinator::commitOnDocumentThreadWithOptions",
+                raw=True,
+            ),
+            literals=False,
+        )
+    )
+    failed_recompute = rollback_probe_source.find(
+        "constautofinishFailedRecompute=[&](DocumentCommitResultresult){"
+    )
+    failed_recompute_opening = rollback_probe_source.find("{", failed_recompute)
+    failed_recompute_closing = _matching(
+        rollback_probe_source, failed_recompute_opening, "{", "}"
+    )
+    assert failed_recompute >= 0 and failed_recompute_closing is not None
+    failed_recompute_stage = rollback_probe_source[
+        failed_recompute_opening + 1:failed_recompute_closing
+    ]
+    preexisting_filter = failed_recompute_stage.find(
+        "!object||!preexistingObjects.contains(object)"
+    )
+    serializable_filter = failed_recompute_stage.find(
+        "!collaborationRuntimeTypeIsSerializable(*object)", preexisting_filter
+    )
+    rollback_probe = failed_recompute_stage.find(
+        "constautorollback=rollbackTransaction();", serializable_filter
+    )
+    attached_filter = failed_recompute_stage.find(
+        "object->getDocument()!=&_document||!object->isAttachedToDocument()",
+        serializable_filter,
+    )
+    clean_non_proxy = failed_recompute_stage.find(
+        'restoredClean&&object->getPropertyByName("Proxy")==nullptr', attached_filter
+    )
+    rollback_private_call = failed_recompute_stage.find(
+        "_document._recomputeFeature(object)", clean_non_proxy
+    )
+    restore_suppression = failed_recompute_stage.find(
+        "restoreSuppression();", rollback_private_call
+    )
+    assert (
+        0
+        <= preexisting_filter
+        < serializable_filter
+        < rollback_probe
+        < attached_filter
+        < clean_non_proxy
+        < rollback_private_call
+        < restore_suppression
+    )
+
     eager = coordinator.find(
         "if(recomputePolicy==CollaborationCompatibilityRecomputePolicy::Eager){"
     )
@@ -687,6 +746,33 @@ def test_helix_coupled_parameters_are_declared_recompute_outputs() -> None:
     predicate = _compact(_body(generic, "isPartDesignHelixCoupledParameterRecomputeOutput"))
     assert "object.getTypeId().isDerivedFrom(helixType)" in predicate
     assert "Mode" not in predicate
+
+
+def test_revolved_axis_is_a_declared_recompute_output() -> None:
+    """Revolved::execute() calls updateAxis(), which writes Base and Axis.
+
+    Both members are derived from ReferenceAxis and predate Prop_Output.
+    Without an explicit declaration every Revolution and Groove fails closed
+    as an undeclared Axis side effect (MCP finding D-29).  Keep the
+    declaration on Revolved ancestry and those exact built-in members so
+    ReferenceAxis, the user-owned input, stays immutable in the worker.
+    """
+    revolved = _compact(_body(_read(REVOLVED_SOURCE), "Revolved::updateAxis"))
+    assert "Base.setValue(base);" in revolved
+    assert "Axis.setValue(dir);" in revolved
+
+    generic = _read(GENERIC_SOURCE)
+    declared = _compact(_body(generic, "isDeclaredRecomputeOutput"))
+    assert "isPartDesignRevolvedAxisRecomputeOutput(object,property)" in declared
+
+    literal = _compact(_body(generic, "isPartDesignRevolvedAxisRecomputeOutput", raw=True))
+    assert 'Base::Type::fromName("PartDesign::Revolved")' in literal
+    assert 'object.getPropertyByName("Base")==&property' in literal
+    assert 'object.getPropertyByName("Axis")==&property' in literal
+    assert '"ReferenceAxis"' not in literal
+
+    predicate = _compact(_body(generic, "isPartDesignRevolvedAxisRecomputeOutput"))
+    assert "object.getTypeId().isDerivedFrom(revolvedType)" in predicate
 
 
 def test_state_transfer_import_does_not_pre_derive_the_attached_placement() -> None:

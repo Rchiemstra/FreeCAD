@@ -761,3 +761,59 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         self.assertTrue(cut_z, "ZLevelHybrid should produce cutting moves")
         self.assertLess(max(cut_z), 16.0, "Cuts must not use the unrotated Z range (0..30)")
         self.assertLess(min(cut_z), -5.0, "Cuts must descend into the rotated Z range (-15..15)")
+
+    def test52(self):
+        """3+2 ZLevelHybrid preserves explicit user depth expressions.
+
+        The rotated Op* values are derived during execution, after the normal
+        depth expressions have been evaluated.  The first-run fix must use
+        those values only for their direct defaults; user expressions remain
+        the requested machining range.
+        """
+        job = self._createRotatedJob(Part.makeSphere(15, FreeCAD.Vector(25, 0, 15)))
+        op = self._createRotatedOp(job, "ZLevelHybrid")
+        op.BoundBox = "Stock"
+        op.setExpression("StartDepth", "20 mm")
+        op.setExpression("FinalDepth", "-5 mm")
+        self.doc.recompute()
+
+        self.assertAlmostEqual(op.StartDepth.Value, 20.0, places=3)
+        self.assertAlmostEqual(op.FinalDepth.Value, -5.0, places=3)
+        self.assertAlmostEqual(op.OpStartDepth.Value, 16.0, places=3)
+        self.assertAlmostEqual(op.OpFinalDepth.Value, -15.0, places=3)
+
+        cut_z = self._cutValues(op, "Z")
+        self.assertTrue(cut_z, "ZLevelHybrid should produce cutting moves")
+        self.assertAlmostEqual(min(cut_z), -5.0, places=3)
+
+    @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
+    def test53(self):
+        """3+2 SurfaceScan passes rotated defaults to multipass processing."""
+        job = self._createRotatedJob(Part.makeBox(50, 40, 30))
+        op = self._createRotatedOp(job, "SurfaceScan")
+        op.CutPattern = "Line"
+        op.StepOver = 50.0
+        op.SampleInterval = 5.0
+        op.LayerMode = "Multi-pass"
+        op.StepDown = 10.0
+
+        observed_depths = []
+        original_apply_multipass = PathPlanarSurface.surface_postprocess.apply_multipass
+
+        def capture_depths(scan_lines, start_depth, final_depth, step_down):
+            observed_depths.append((start_depth, final_depth, step_down))
+            return original_apply_multipass(scan_lines, start_depth, final_depth, step_down)
+
+        PathPlanarSurface.surface_postprocess.apply_multipass = capture_depths
+        try:
+            self.doc.recompute()
+        finally:
+            PathPlanarSurface.surface_postprocess.apply_multipass = original_apply_multipass
+
+        self.assertAlmostEqual(op.OpStartDepth.Value, 1.0, places=3)
+        self.assertAlmostEqual(op.OpFinalDepth.Value, -40.0, places=3)
+        self.assertEqual(len(observed_depths), 1)
+        start_depth, final_depth, step_down = observed_depths[0]
+        self.assertAlmostEqual(start_depth, 1.0, places=3)
+        self.assertAlmostEqual(final_depth, -40.0, places=3)
+        self.assertAlmostEqual(step_down, op.StepDown.Value, places=3)

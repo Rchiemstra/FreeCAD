@@ -374,6 +374,23 @@ bool isPartDesignHelixCoupledParameterRecomputeOutput(
         || object.getPropertyByName("Growth") == &property;
 }
 
+bool isPartDesignRevolvedAxisRecomputeOutput(const App::DocumentObject& object,
+                                             const App::Property& property)
+{
+    // Revolved::execute() calls updateAxis(), which rewrites Base and Axis
+    // from ReferenceAxis for every Revolution and Groove. Those members
+    // predate Prop_Output, so without this declaration each revolve fails
+    // closed as an undeclared Axis side effect. Restrict the compatibility
+    // declaration to Revolved ancestry and those exact built-in members;
+    // ReferenceAxis stays an immutable input.
+    const Base::Type revolvedType = Base::Type::fromName("PartDesign::Revolved");
+    if (revolvedType.isBad() || !object.getTypeId().isDerivedFrom(revolvedType)) {
+        return false;
+    }
+    return object.getPropertyByName("Base") == &property
+        || object.getPropertyByName("Axis") == &property;
+}
+
 bool isAttachExtensionPlacementRecomputeOutput(const App::DocumentObject& object,
                                                const App::Property& property)
 {
@@ -564,6 +581,7 @@ bool isDeclaredRecomputeOutput(const App::DocumentObject& object,
         || isPartDesignDirectionRecomputeOutput(object, property)
         || isPartDesignProfilePlacementRecomputeOutput(object, property)
         || isPartDesignHelixCoupledParameterRecomputeOutput(object, property)
+        || isPartDesignRevolvedAxisRecomputeOutput(object, property)
         || isAttachExtensionPlacementRecomputeOutput(object, property);
 }
 
