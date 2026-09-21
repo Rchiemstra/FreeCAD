@@ -4,7 +4,6 @@
 from .harness import (
     ACTION_KINDS,
     ACTION_SCHEDULE,
-    ACTION_SCHEDULE,
     DURATION_MS,
     MAX_LATENCY_MS,
     P99_LATENCY_MS,
@@ -17,7 +16,6 @@ from .harness import (
 
 __all__ = [
     "ACTION_KINDS",
-    "ACTION_SCHEDULE",
     "ACTION_SCHEDULE",
     "DURATION_MS",
     "MAX_LATENCY_MS",
