@@ -1345,6 +1345,7 @@ SET(FreeCADGui_CPP_SRCS
     DocumentPyImp.cpp
     DocumentObserver.cpp
     DocumentObserverPython.cpp
+    EventLoopLatencyStats.cpp
     EditableDatumLabel.cpp
     EditableDatumLabelPyImp.cpp
     ExpressionBinding.cpp
@@ -1394,6 +1395,7 @@ SET(FreeCADGui_SRCS
     DocumentModel.h
     DocumentObserver.h
     DocumentObserverPython.h
+    EventLoopLatencyStats.h
     EditableDatumLabel.h
     ExpressionBinding.h
     ExpressionBindingPy.h

@@ -13,6 +13,7 @@ add_executable(Gui_tests_run
         CollaborationDomainIntegration.cpp
         CollaborationResponsiveness.cpp
         CollaborationViewIsolation.cpp
+        EventLoopLatencyStats.cpp
         PersonalViewContext.cpp
         SharedPresentationCoordinator.cpp
         DocumentRecovery.cpp
