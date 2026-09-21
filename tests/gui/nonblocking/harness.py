@@ -166,6 +166,14 @@ class ResponsivenessScenario:
             raise ContractError("actions must have contiguous deterministic sequence numbers")
         if [item.sequence for item in self.evidence] != list(range(len(self.evidence))):
             raise ContractError("evidence must have contiguous deterministic sequence numbers")
+        action_times = [item.at_ms for item in self.actions]
+        if action_times[0] != 0 or action_times[-1] != self.duration_ms:
+            raise ContractError(
+                "actions must cover the complete interval from 0 to "
+                f"{self.duration_ms} ms"
+            )
+        if action_times != sorted(action_times):
+            raise ContractError("actions must be ordered by nondecreasing at_ms")
         by_sequence = {item.sequence: item for item in self.actions}
         if len(by_sequence) != len(self.actions):
             raise ContractError("action sequence numbers must be unique")
