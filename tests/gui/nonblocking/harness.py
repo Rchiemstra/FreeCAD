@@ -25,8 +25,8 @@ ACTION_KINDS = (
     "cached_property",
     "non_model_control",
     "busy_response",
-    "cancellation",
     "latency_sample",
+    "cancellation",
 )
 _ACTION_KIND_SET = frozenset(ACTION_KINDS)
 ACTION_SCHEDULE = tuple(
@@ -34,6 +34,17 @@ ACTION_SCHEDULE = tuple(
     for index, kind in enumerate(ACTION_KINDS)
 )
 _ACTION_SCHEDULE_BY_SEQUENCE = dict(enumerate(ACTION_SCHEDULE))
+_SUCCESSFUL_OUTCOME = {
+    "repaint": "accepted",
+    "resize": "accepted",
+    "navigation": "accepted",
+    "tree_scroll": "accepted",
+    "cached_property": "accepted",
+    "non_model_control": "accepted",
+    "latency_sample": "accepted",
+    "busy_response": "busy",
+    "cancellation": "cancelled",
+}
 
 
 class ContractError(ValueError):
@@ -209,6 +220,10 @@ class ResponsivenessScenario:
             raise ContractError("actions must have contiguous deterministic sequence numbers")
         if [item.sequence for item in self.evidence] != list(range(len(self.evidence))):
             raise ContractError("evidence must have contiguous deterministic sequence numbers")
+        if len(self.actions) != len(ACTION_KINDS):
+            raise ContractError("actions must contain exactly one canonical action of each kind")
+        if len(self.evidence) != len(self.actions):
+            raise ContractError("evidence must contain exactly one record per action")
         action_times = [item.at_ms for item in self.actions]
         if action_times[0] != 0 or action_times[-1] != self.duration_ms:
             raise ContractError(
@@ -225,12 +240,14 @@ class ResponsivenessScenario:
                 action.at_ms,
             ):
                 raise ContractError("actions must match the canonical 30-second schedule")
-        for observation in self.evidence:
+        for sequence, observation in enumerate(self.evidence):
             action = by_sequence.get(observation.action_sequence)
             if action is None:
                 raise ContractError(
                     f"evidence references missing action {observation.action_sequence}"
                 )
+            if observation.sequence != sequence or observation.action_sequence != sequence:
+                raise ContractError("evidence must be a canonical action-order bijection")
             if observation.kind != action.kind:
                 raise ContractError("evidence kind must match its action kind")
             if observation.at_ms < action.at_ms or observation.at_ms > self.duration_ms:
@@ -255,11 +272,11 @@ class ResponsivenessScenario:
                     raise ContractError("cancellation evidence must be marked cancelled")
             elif observation.busy or observation.cancelled:
                 raise ContractError("busy and cancelled flags require their matching action kind")
-        observed_actions = {item.action_sequence for item in self.evidence}
-        if observed_actions != set(by_sequence):
-            raise ContractError("every action must have evidence")
-        if not self.evidence:
-            raise ContractError("scenario must contain evidence")
+            if observation.outcome != _SUCCESSFUL_OUTCOME[observation.kind]:
+                raise ContractError(
+                    f"{observation.kind} evidence must have outcome "
+                    f"{_SUCCESSFUL_OUTCOME[observation.kind]!r}"
+                )
 
     def evaluate_thresholds(self) -> ThresholdResult:
         """Evaluate latency samples using nearest-rank p99, without sorting input."""
@@ -337,10 +354,21 @@ class ResponsivenessScenario:
     @classmethod
     def from_json(cls, encoded: str) -> ResponsivenessScenario:
         try:
-            payload = json.loads(encoded)
-        except (TypeError, json.JSONDecodeError) as error:
+            payload = json.loads(encoded, object_pairs_hook=_reject_duplicate_keys)
+        except (TypeError, json.JSONDecodeError, ContractError) as error:
             raise ContractError("scenario JSON is invalid") from error
         return cls.from_dict(payload)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build JSON objects while rejecting duplicate keys at every nesting level."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ContractError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 __all__ = [

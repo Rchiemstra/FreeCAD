@@ -8,6 +8,7 @@ import unittest
 
 from tests.gui.nonblocking.harness import (
     ACTION_KINDS,
+    ACTION_SCHEDULE,
     DURATION_MS,
     ActionRecord,
     ContractError,
@@ -23,7 +24,7 @@ def _scenario(
         ActionRecord(
             sequence=index,
             kind=kind,
-            at_ms=(DURATION_MS * index) // (len(ACTION_KINDS) - 1),
+            at_ms=ACTION_SCHEDULE[index][1],
             value=kind,
         )
         for index, kind in enumerate(ACTION_KINDS)
@@ -31,23 +32,19 @@ def _scenario(
     evidence = tuple(
         EvidenceRecord(
             sequence=index,
-            action_sequence=index % len(actions),
-            at_ms=actions[index % len(actions)].at_ms,
-            kind=actions[index % len(actions)].kind,
-            latency_ms=(0 if actions[index % len(actions)].at_ms == DURATION_MS else value),
+            action_sequence=index,
+            at_ms=actions[index].at_ms,
+            kind=actions[index].kind,
+            latency_ms=(0 if actions[index].at_ms == DURATION_MS else value),
             outcome=(
                 "busy"
-                if actions[index % len(actions)].kind == "busy_response"
-                else (
-                    "cancelled"
-                    if actions[index % len(actions)].kind == "cancellation"
-                    else "accepted"
-                )
+                if actions[index].kind == "busy_response"
+                else ("cancelled" if actions[index].kind == "cancellation" else "accepted")
             ),
-            busy=actions[index % len(actions)].kind == "busy_response",
-            cancelled=actions[index % len(actions)].kind == "cancellation",
-            completed_at_ms=actions[index % len(actions)].at_ms
-            + (0 if actions[index % len(actions)].at_ms == DURATION_MS else value),
+            busy=actions[index].kind == "busy_response",
+            cancelled=actions[index].kind == "cancellation",
+            completed_at_ms=actions[index].at_ms
+            + (0 if actions[index].at_ms == DURATION_MS else value),
         )
         for index, value in enumerate(latencies)
     )
@@ -88,6 +85,9 @@ class HarnessTests(unittest.TestCase):
         scenario = _scenario()
         self.assertEqual(scenario.actions[0].at_ms, 0)
         self.assertEqual(scenario.actions[-1].at_ms, DURATION_MS)
+        latency_index = ACTION_KINDS.index("latency_sample")
+        self.assertLess(scenario.actions[latency_index].at_ms, DURATION_MS)
+        self.assertEqual(scenario.actions[-1].kind, "cancellation")
 
         out_of_order = ResponsivenessScenario(
             actions=(
@@ -106,7 +106,7 @@ class HarnessTests(unittest.TestCase):
             + (ActionRecord(8, "latency_sample", DURATION_MS - 1, "latency_sample"),),
             evidence=scenario.evidence,
         )
-        with self.assertRaisesRegex(ContractError, "complete interval"):
+        with self.assertRaisesRegex(ContractError, "missing required actions: cancellation"):
             incomplete_interval.validate()
 
         all_zero = ResponsivenessScenario(
@@ -130,7 +130,7 @@ class HarnessTests(unittest.TestCase):
                 outcome="accepted",
             ),
         )
-        with self.assertRaisesRegex(ContractError, "missing required evidence: latency_sample"):
+        with self.assertRaisesRegex(ContractError, "missing required evidence: cancellation"):
             ResponsivenessScenario(scenario.actions, evidence).validate()
 
     def test_busy_and_cancellation_evidence_must_be_explicit(self):
@@ -170,15 +170,18 @@ class HarnessTests(unittest.TestCase):
             ResponsivenessScenario(scenario.actions, tuple(cancellation_bad)).validate()
 
     def test_thresholds_fail_for_p99_and_maximum(self):
-        scenario = _scenario((10,) * 96 + (51, 51) + (10, 10))
+        boundary = _scenario((50,) * 8 + (100,))
+        self.assertTrue(boundary.evaluate_thresholds().passed)
+
+        scenario = _scenario((10,) * 7 + (51, 10))
         result = scenario.evaluate_thresholds()
         self.assertEqual(result.p99_ms, 51)
         self.assertEqual(result.maximum_ms, 51)
         self.assertFalse(result.passed)
 
-        scenario = _scenario((10,) * 96 + (50, 101) + (10, 10))
+        scenario = _scenario((10,) * 7 + (101, 10))
         result = scenario.evaluate_thresholds()
-        self.assertEqual(result.p99_ms, 50)
+        self.assertEqual(result.p99_ms, 101)
         self.assertEqual(result.maximum_ms, 101)
         self.assertFalse(result.passed)
 
@@ -256,6 +259,65 @@ class HarnessTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ContractError, "must not precede observation"):
             ResponsivenessScenario(scenario.actions, before_observation).validate()
+
+    def test_duplicate_and_reordered_evidence_are_rejected(self):
+        scenario = _scenario()
+        original = scenario.evidence[0]
+        duplicate = scenario.evidence[:-1] + (
+            EvidenceRecord(
+                sequence=8,
+                action_sequence=0,
+                at_ms=original.at_ms,
+                kind="cancellation",
+                latency_ms=original.latency_ms,
+                outcome="cancelled",
+                cancelled=True,
+                completed_at_ms=original.completed_at_ms,
+            ),
+        )
+        with self.assertRaisesRegex(
+            ContractError, "deterministic sequence numbers|canonical action-order bijection"
+        ):
+            ResponsivenessScenario(scenario.actions, duplicate).validate()
+
+        reordered = (scenario.evidence[1], scenario.evidence[0]) + scenario.evidence[2:]
+        with self.assertRaisesRegex(
+            ContractError, "deterministic sequence numbers|canonical action-order bijection"
+        ):
+            ResponsivenessScenario(scenario.actions, reordered).validate()
+
+        with self.assertRaisesRegex(
+            ContractError, "deterministic sequence numbers|exactly one record per action"
+        ):
+            ResponsivenessScenario(
+                scenario.actions, scenario.evidence + (scenario.evidence[0],)
+            ).validate()
+
+    def test_ordinary_outcomes_must_be_successful(self):
+        scenario = _scenario()
+        bad = list(scenario.evidence)
+        original = bad[0]
+        bad[0] = EvidenceRecord(
+            sequence=0,
+            action_sequence=0,
+            at_ms=original.at_ms,
+            kind=original.kind,
+            latency_ms=original.latency_ms,
+            outcome="dropped",
+            completed_at_ms=original.completed_at_ms,
+        )
+        with self.assertRaisesRegex(ContractError, "outcome 'accepted'"):
+            ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
+
+    def test_duplicate_json_keys_are_rejected_at_all_levels(self):
+        encoded = _scenario().to_json()
+        duplicate_top_level = encoded[:-1] + ',"schema":"gui-responsiveness.v1"}'
+        with self.assertRaisesRegex(ContractError, "scenario JSON is invalid"):
+            ResponsivenessScenario.from_json(duplicate_top_level)
+
+        nested = encoded.replace('"thresholds":{', '"thresholds":{"passed":true,"passed":true,')
+        with self.assertRaisesRegex(ContractError, "scenario JSON is invalid"):
+            ResponsivenessScenario.from_json(nested)
 
     def test_scenario_rejects_foreign_record_types(self):
         scenario = _scenario()
