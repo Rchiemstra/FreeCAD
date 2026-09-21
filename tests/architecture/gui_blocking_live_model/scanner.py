@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Reproducible scanner for GUI blocking and live-model ingress.
 
-The scanner walks the production GUI source (``src/Gui`` and every ``Gui``
-directory under ``src/Mod``, C++ and Python alike), masks comments and string/
-char/raw literals per language, then applies the category search rules from
-:mod:`rules`. Its output is a deterministically sorted list of findings, each
-recording the repository-relative path, 1-based line, category key, owning
-subsystem, migration disposition, and the matched source line(s) as evidence.
+The scanner walks the production GUI source (``src/Gui``, every ``Gui``
+directory under ``src/Mod``, top-level production ``InitGui.py`` entry points,
+and the reviewed module-aware Python GUI paths in :mod:`rules`), masks comments
+and string/char/raw literals per language, then applies the category search
+rules from :mod:`rules`. Its output is a deterministically sorted list of
+findings, each recording the repository-relative path, 1-based line, category
+key, owning subsystem, migration disposition, and the matched source line(s) as
+evidence.
 
 This module is both importable (used by the validator) and runnable as a
 standalone reproducibility command::
@@ -23,9 +25,12 @@ committed machine-readable snapshot.
 from __future__ import annotations
 
 import argparse
+import ast
+import io
 import json
 import os
 import re
+import tokenize
 from pathlib import Path
 
 try:
@@ -160,15 +165,140 @@ def _triple_quoted_end(source: str, start: int, quote: str) -> int:
     return len(source)
 
 
-def mask_py_non_code(source: str) -> str:
+def _py_string_end(source: str, index: int) -> int:
+    """Return the index one past the Python string literal starting at ``index``.
+
+    ``index`` points at the opening quote; an ``f``/``r``/``b``/``u`` prefix is an
+    inert letter immediately before it. Handles triple-quoted literals and
+    backslash escapes.
+    """
+    char = source[index]
+    if source.startswith(char * 3, index):
+        return _triple_quoted_end(source, index, char)
+    return _quoted_literal_end(source, index)
+
+
+def _line_offsets(source: str) -> list[int]:
+    """Return absolute offsets for the starts of source lines."""
+    offsets = [0]
+    for index, character in enumerate(source):
+        if character == "\n":
+            offsets.append(index + 1)
+    return offsets
+
+
+def _ast_offset(offsets: list[int], source_lines: list[str], line: int, column: int) -> int:
+    """Convert an AST's UTF-8 byte column to a Python string offset."""
+    line_text = source_lines[line - 1]
+    byte_prefix = line_text.encode("utf-8")[:column]
+    return offsets[line - 1] + len(byte_prefix.decode("utf-8", errors="ignore"))
+
+
+def _token_offset(offsets: list[int], line: int, column: int) -> int:
+    """Convert a tokenize character column to an absolute source offset."""
+    return offsets[line - 1] + column
+
+
+def _literal_token_spans(source: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Return string-token spans in a source range (including implicit joins)."""
+    segment = source[start:end]
+    offsets = _line_offsets(segment)
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(segment).readline)
+        return [
+            (
+                start + _token_offset(offsets, token.start[0], token.start[1]),
+                start + _token_offset(offsets, token.end[0], token.end[1]),
+            )
+            for token in tokens
+            if token.type == tokenize.STRING
+        ]
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        return []
+
+
+def _string_expression_spans(
+    node: ast.AST, offsets: list[int], source_lines: list[str], source: str
+) -> list[tuple[int, int]]:
+    """Return executable string-expression spans below a doCommand argument.
+
+    AST ownership is important here: a string in a nested function call is an
+    inert value, while a literal, concatenation, parenthesised literal, or
+    f-string that forms the first command argument is executable later by
+    FreeCAD. The returned spans are subsequently re-masked so nested command
+    strings/comments remain inert.
+    """
+    if isinstance(node, (ast.Constant, ast.JoinedStr)):
+        if isinstance(node, ast.Constant) and not isinstance(node.value, str):
+            return []
+        if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+            return []
+        start = _ast_offset(offsets, source_lines, node.lineno, node.col_offset)
+        end = _ast_offset(offsets, source_lines, node.end_lineno, node.end_col_offset)
+        if isinstance(node, ast.Constant):
+            literal_spans = _literal_token_spans(source, start, end)
+            if literal_spans:
+                return literal_spans
+        # AST ranges include an f/r/b/u prefix, but the masker visits the
+        # opening quote itself. Keep the prefix visible and use the quote range
+        # as the re-masking key.
+        quote_start = next((index for index in range(start, end) if source[index] in "\"'"), start)
+        return [(quote_start, end)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _string_expression_spans(
+            node.left, offsets, source_lines, source
+        ) + _string_expression_spans(node.right, offsets, source_lines, source)
+    return []
+
+
+def _do_command_string_spans(source: str) -> list[tuple[int, int]]:
+    """Return executable string spans passed to FreeCADGui/Gui.doCommand.
+
+    Parsing the source rather than searching raw text prevents comments and
+    inert literals from becoming pseudo-calls. AST ranges also naturally cover
+    parenthesised, concatenated, and nested f-string arguments. A syntax error
+    leaves the source conservatively masked; malformed Python cannot be safely
+    classified as executable command text.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    offsets = _line_offsets(source)
+    source_lines = source.splitlines()
+    spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        if not isinstance(function, ast.Attribute) or function.attr != "doCommand":
+            continue
+        if not isinstance(function.value, ast.Name) or function.value.id not in {
+            "FreeCADGui",
+            "Gui",
+        }:
+            continue
+        spans.extend(_string_expression_spans(node.args[0], offsets, source_lines, source))
+    return spans
+
+
+def mask_py_non_code(source: str, expand_do_command: bool = False) -> str:
     """Replace Python comments and string literals with spaces, keeping newlines.
 
     Handles ``#`` line comments and single-/double-/triple-quoted string literals
     (including ``f``/``r``/``b``/``u`` prefixes, which are inert letters and left
     unmasked). A ``#`` inside a string is consumed by the string handler first, so
     it is never misread as a comment.
+
+    When ``expand_do_command`` is true, a string literal that is a top-level
+    argument of a ``doCommand(...)`` call is re-masked as *code* instead of
+    blanked: its nested string literals and comments are blanked but the code
+    text is left visible, because those strings are compiled and executed at
+    runtime. The expansion preserves length and newline positions, so line
+    numbers stay aligned with the original source.
     """
     masked = list(source)
+    do_command_spans = set(_do_command_string_spans(source)) if expand_do_command else set()
     index = 0
     while index < len(source):
         char = source[index]
@@ -178,11 +308,17 @@ def mask_py_non_code(source: str) -> str:
             _mask_range(masked, source, index, end)
             index = end
         elif char in "\"'":
-            if source.startswith(char * 3, index):
-                end = _triple_quoted_end(source, index, char)
+            triple = source.startswith(char * 3, index)
+            end = _py_string_end(source, index)
+            if (index, end) in do_command_spans:
+                _mask_range(masked, source, index, end)
+                open_len = 3 if triple else 1
+                content = source[index + open_len : end - open_len]
+                re_masked = mask_py_non_code(content, expand_do_command=False)
+                for offset, re_char in enumerate(re_masked):
+                    masked[index + open_len + offset] = re_char
             else:
-                end = _quoted_literal_end(source, index)
-            _mask_range(masked, source, index, end)
+                _mask_range(masked, source, index, end)
             index = end
         else:
             index += 1
@@ -195,7 +331,7 @@ def mask_py_non_code(source: str) -> str:
 def mask_source(source: str, suffix: str) -> str:
     """Mask comments/literals for the source's language based on its suffix."""
     if suffix == ".py":
-        return mask_py_non_code(source)
+        return mask_py_non_code(source, expand_do_command=True)
     return mask_cpp_non_code(source)
 
 
@@ -237,6 +373,18 @@ def _is_excluded_file(relative_path: str) -> bool:
     return relative_path in rules.EXCLUDED_FILES
 
 
+def _production_init_gui_files(repository_root: Path) -> list[Path]:
+    """Return top-level production workbench GUI entry points."""
+    mod_root = repository_root / "src" / "Mod"
+    if not mod_root.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(mod_root.glob("*/InitGui.py"))
+        if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
+    ]
+
+
 def iter_source_files(repository_root: Path) -> list[Path]:
     """Return the sorted list of C++/Python GUI source files in scope."""
     files: list[Path] = []
@@ -251,6 +399,18 @@ def iter_source_files(repository_root: Path) -> list[Path]:
         if workbench in rules.EXCLUDED_WORKBENCHES:
             continue
         files.extend(gui_dir.rglob("*"))
+
+    files.extend(_production_init_gui_files(repository_root))
+
+    for extra_dir in rules.EXTRA_GUI_DIRS:
+        extra_path = repository_root / extra_dir
+        if extra_path.is_dir():
+            files.extend(extra_path.rglob("*"))
+
+    for extra_file in rules.EXTRA_GUI_FILES:
+        extra_path = repository_root / extra_file
+        if extra_path.is_file():
+            files.append(extra_path)
 
     result: list[Path] = []
     for path in files:
@@ -344,17 +504,32 @@ def apply_exclusions(findings: list[Finding], exclusions: list[dict[str, object]
     return [finding for finding in findings if finding.key() not in excluded]
 
 
-def scope_dirs(repository_root: Path) -> list[str]:
-    """Return the sorted, relative GUI directory strings the scanner covers."""
+def scope_entries(repository_root: Path) -> list[str]:
+    """Return the ordered, relative GUI directories/files the scanner covers."""
+    entries: list[str] = []
+    gui_root = repository_root / "src" / "Gui"
+    if gui_root.is_dir():
+        entries.append("src/Gui")
     mod_root = repository_root / "src" / "Mod"
-    if not mod_root.is_dir():
-        return ["src/Gui"]
-    mod_dirs = [
-        f"src/Mod/{path.relative_to(mod_root).as_posix()}"
-        for path in sorted(mod_root.rglob("Gui"))
-        if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
-    ]
-    return ["src/Gui", *mod_dirs]
+    if mod_root.is_dir():
+        entries.extend(
+            f"src/Mod/{path.relative_to(mod_root).as_posix()}"
+            for path in sorted(mod_root.rglob("Gui"))
+            if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
+        )
+    entries.extend(
+        path.relative_to(repository_root).as_posix()
+        for path in _production_init_gui_files(repository_root)
+    )
+    entries.extend(
+        extra_dir for extra_dir in rules.EXTRA_GUI_DIRS if (repository_root / extra_dir).is_dir()
+    )
+    entries.extend(
+        extra_file
+        for extra_file in rules.EXTRA_GUI_FILES
+        if (repository_root / extra_file).is_file()
+    )
+    return entries
 
 
 def build_payload(repository_root: Path) -> dict[str, object]:
@@ -364,7 +539,7 @@ def build_payload(repository_root: Path) -> dict[str, object]:
     curated = apply_exclusions(findings, exclusions)
     return {
         "generator": "tests/architecture/gui_blocking_live_model/scanner.py",
-        "scope": scope_dirs(repository_root),
+        "scope": scope_entries(repository_root),
         "categories": [category.key for category in rules.CATEGORIES],
         "excluded_count": len(exclusions),
         "findings": [finding.to_dict() for finding in curated],

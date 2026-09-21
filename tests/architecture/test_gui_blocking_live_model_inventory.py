@@ -315,6 +315,62 @@ class RuleRegressionTests(unittest.TestCase):
         self.assertIsNone(cpp.search("ViewProviderX::updateData(prop);"))
         self.assertIsNone(cpp.search("bool updateData(const QModelIndex&, const QVariant&, int);"))
 
+    def test_live_app_dereference_covers_active_document_method(self) -> None:
+        py = scanner.compiled_pattern("live-app-dereference", "py")
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code("App.activeDocument()")))
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code("FreeCAD.activeDocument()")))
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code("App.ActiveDocument")))
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code("FreeCAD.ActiveDocument")))
+        self.assertIsNone(py.search(scanner.mask_py_non_code("App.activeDocument")))
+        self.assertIsNone(py.search(scanner.mask_py_non_code("FreeCAD.activeDocument")))
+        # Gui.activeDocument is the GUI-side handle, tracked separately.
+        self.assertIsNone(py.search(scanner.mask_py_non_code("Gui.activeDocument()")))
+
+    def test_blocking_invokes_python_pattern_is_documented_not_none(self) -> None:
+        py = scanner.compiled_pattern("blocking-invokes", "py")
+        self.assertIsNotNone(py)
+        self.assertIsNotNone(py.search("QtCore.Qt.BlockingQueuedConnection"))
+        self.assertIsNotNone(scanner.compiled_pattern("blocking-invokes", "cpp"))
+        # update-data-provider is the only C++-only category.
+        self.assertIsNone(scanner.compiled_pattern("update-data-provider", "py"))
+
+    def test_do_command_expands_executable_command_strings(self) -> None:
+        py = scanner.compiled_pattern("live-app-dereference", "py")
+        plain = 'FreeCADGui.doCommand("obj = FreeCAD.ActiveDocument.getObject(name)")'
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code(plain, expand_do_command=True)))
+        fstring = "FreeCADGui.doCommand(f\"obj = FreeCAD.ActiveDocument.getObject('{name}')\")"
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code(fstring, expand_do_command=True)))
+        gui_alias = 'Gui.doCommand("FreeCAD.ActiveDocument.recompute()")'
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code(gui_alias, expand_do_command=True)))
+        parenthesized = 'Gui.doCommand(("FreeCAD.ActiveDocument"))'
+        self.assertIsNotNone(
+            py.search(scanner.mask_py_non_code(parenthesized, expand_do_command=True))
+        )
+        concatenated = 'Gui.doCommand("FreeCAD." + "ActiveDocument.recompute()")'
+        self.assertIsNotNone(
+            py.search(scanner.mask_py_non_code(concatenated, expand_do_command=True))
+        )
+        adjacent = 'Gui.doCommand(("FreeCAD." "ActiveDocument.recompute()"))'
+        self.assertIsNotNone(py.search(scanner.mask_py_non_code(adjacent, expand_do_command=True)))
+        nested_fstring = 'Gui.doCommand(f"FreeCAD.ActiveDocument.{name}")'
+        self.assertIsNotNone(
+            py.search(scanner.mask_py_non_code(nested_fstring, expand_do_command=True))
+        )
+
+    def test_do_command_does_not_expand_inert_or_nested_literals(self) -> None:
+        py = scanner.compiled_pattern("live-app-dereference", "py")
+        # A non-doCommand string with live-model text is an inert literal.
+        inert = 'log("FreeCAD.ActiveDocument")'
+        self.assertIsNone(py.search(scanner.mask_py_non_code(inert, expand_do_command=True)))
+        # Live-model text inside a nested string of a command string is code-inert.
+        nested = "FreeCADGui.doCommand(\"print('FreeCAD.ActiveDocument')\")"
+        self.assertIsNone(py.search(scanner.mask_py_non_code(nested, expand_do_command=True)))
+        # A doCommand call with a non-literal argument has no command string to expand.
+        variable = "FreeCADGui.doCommand(snippet)"
+        self.assertIsNone(py.search(scanner.mask_py_non_code(variable, expand_do_command=True)))
+        nested_call = 'FreeCADGui.doCommand(make_command("FreeCAD.ActiveDocument"))'
+        self.assertIsNone(py.search(scanner.mask_py_non_code(nested_call, expand_do_command=True)))
+
 
 class InventoryEntryValidationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -458,7 +514,7 @@ class RepositoryInventoryTests(unittest.TestCase):
         )
         self.assertEqual(self.inventory["categories"], [c.key for c in rules.CATEGORIES])
         self.assertEqual(
-            self.inventory["scope"], scanner.scope_dirs(REPOSITORY_ROOT), "scope must be exact"
+            self.inventory["scope"], scanner.scope_entries(REPOSITORY_ROOT), "scope must be exact"
         )
 
     def test_disposition_defaults_are_applied(self) -> None:
@@ -539,6 +595,102 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site(
             "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py", 115, "live-reference-callback"
         )
+
+    def test_python_active_document_method_sites_found(self) -> None:
+        for path, line in (
+            ("src/Mod/CAM/Path/Op/Gui/Custom.py", 126),
+            ("src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py", 327),
+            ("src/Mod/CAM/Path/Post/Gui/DlgPostProcess.py", 1337),
+            ("src/Mod/CAM/Path/Main/Gui/Camotics.py", 86),
+            ("src/Mod/CAM/Path/Main/Gui/Job.py", 1217),
+        ):
+            self._assert_site(path, line, "live-app-dereference")
+
+    def test_draft_gui_scope_sites_found(self) -> None:
+        self._assert_site("src/Mod/Draft/draftguitools/gui_base.py", 87, "live-app-dereference")
+        self._assert_site("src/Mod/Draft/draftguitools/gui_base.py", 95, "live-app-dereference")
+        self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 187, "direct-recompute")
+        self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 197, "direct-recompute")
+
+    def test_do_command_command_string_sites_found(self) -> None:
+        self._assert_site("src/Mod/CAM/Path/Dressup/Gui/AxisMap.py", 283, "live-app-dereference")
+        self._assert_site("src/Mod/CAM/Path/Dressup/Gui/DogboneII.py", 252, "live-app-dereference")
+        self._assert_site("src/Mod/CAM/Path/Main/Gui/Inspect.py", 335, "live-app-dereference")
+
+    def test_draft_bim_scope_entries_present(self) -> None:
+        scope = scanner.scope_entries(REPOSITORY_ROOT)
+        for entry in (
+            "src/Mod/Draft/draftguitools",
+            "src/Mod/Draft/drafttaskpanels",
+            "src/Mod/Draft/draftviewproviders",
+            "src/Mod/BIM/bimcommands",
+            "src/Mod/Draft/DraftGui.py",
+            "src/Mod/BIM/ArchCoveringGui.py",
+        ):
+            self.assertIn(entry, scope, f"expected GUI scope entry {entry}")
+
+    def test_production_init_gui_and_reviewed_python_scope_entries_present(self) -> None:
+        scope = scanner.scope_entries(REPOSITORY_ROOT)
+        expected_init_gui = {
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in (REPOSITORY_ROOT / "src" / "Mod").glob("*/InitGui.py")
+            if path.relative_to(REPOSITORY_ROOT / "src" / "Mod").parts[0]
+            not in rules.EXCLUDED_WORKBENCHES
+        }
+        self.assertTrue(expected_init_gui.issubset(scope))
+        for entry in (
+            "src/Mod/Assembly/InitGui.py",
+            "src/Mod/CAM/InitGui.py",
+            "src/Mod/Draft/InitGui.py",
+            "src/Mod/BIM/InitGui.py",
+            "src/Mod/Fem/InitGui.py",
+            "src/Mod/Robot/InitGui.py",
+            "src/Mod/CAM/PathPythonGui",
+            "src/Mod/Draft/draftutils/gui_utils.py",
+            "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+            "src/Mod/Fem/femguiutils/extract_link_view.py",
+            "src/Mod/Robot/MovieTool.py",
+        ):
+            self.assertIn(entry, scope, f"expected reviewed GUI scope entry {entry}")
+        self.assertNotIn("src/Mod/Test/InitGui.py", scope)
+        self.assertNotIn("src/Mod/TemplatePyMod/InitGui.py", scope)
+        self.assertFalse(any("Test" in entry for entry in scope))
+
+    def test_reviewed_python_gui_sites_found(self) -> None:
+        for path, category in (
+            ("src/Mod/Assembly/InitGui.py", "live-app-dereference"),
+            ("src/Mod/CAM/InitGui.py", "live-app-dereference"),
+            ("src/Mod/Draft/draftutils/gui_utils.py", "live-app-dereference"),
+            ("src/Mod/BIM/nativeifc/ifc_viewproviders.py", "direct-recompute"),
+            ("src/Mod/Fem/femguiutils/extract_link_view.py", "live-app-dereference"),
+        ):
+            findings = [finding for finding in self.scanned if finding.path == path]
+            self.assertTrue(
+                any(finding.category == category for finding in findings),
+                f"expected {category} in {path}: {findings}",
+            )
+        self.assertIn(
+            "src/Mod/Robot/MovieTool.py",
+            [
+                path.relative_to(REPOSITORY_ROOT).as_posix()
+                for path in scanner.iter_source_files(REPOSITORY_ROOT)
+            ],
+        )
+
+    def test_draft_bim_app_layer_not_in_scope(self) -> None:
+        scope = scanner.scope_entries(REPOSITORY_ROOT)
+        for entry in (
+            "src/Mod/Draft/draftmake",
+            "src/Mod/Draft/draftobjects",
+            "src/Mod/Draft/DraftGeomUtils.py",
+            "src/Mod/BIM/geometry",
+        ):
+            self.assertNotIn(entry, scope, f"App-layer path {entry} must stay out of scope")
+
+    def test_draft_app_layer_files_produce_no_findings(self) -> None:
+        for finding in self.scanned:
+            self.assertNotIn("src/Mod/Draft/draftmake/", finding.path, finding.path)
+            self.assertNotIn("src/Mod/Draft/draftobjects/", finding.path, finding.path)
 
     # -- mutation tests ------------------------------------------------------
 

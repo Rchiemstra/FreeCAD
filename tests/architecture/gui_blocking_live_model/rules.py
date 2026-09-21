@@ -11,20 +11,29 @@ Scope
 -----
 The inventory covers production GUI source only:
 
-* ``src/Gui`` (the GUI framework), and
+* ``src/Gui`` (the GUI framework),
 * every ``Gui`` directory under ``src/Mod`` (workbench GUI code), including the
-  nested Python GUI directories such as ``src/Mod/CAM/Path/*/Gui``.
+  nested Python GUI directories such as ``src/Mod/CAM/Path/*/Gui``,
+* every top-level production workbench ``InitGui.py`` (the workbench entry
+  point is GUI code even when the rest of its Python package mixes model and
+  presentation helpers), and
+* an explicit, reviewed set of Python GUI packages/files that are not named
+  ``Gui``.
 
 Both C++ (``.cpp``/``.h``/``.hpp``) and Python (``.py``) GUI source are
-scanned. Python-only workbenches whose GUI code is *not* organised under a
-``Gui`` directory (for example ``src/Mod/Draft`` and ``src/Mod/BIM``, where App
-and GUI Python share the top-level package) are out of scope for this pass: the
-scanner cannot separate their GUI Python from their App Python by directory, so
-they need a module-aware scanner and are tracked as a bounded follow-up task in
-the report. Two categories are C++-only by nature -- ``blocking-invokes`` (the
-Qt ``BlockingQueuedConnection`` connection type) and ``update-data-provider``
-(the ``ViewProvider::updateData(const App::Property*)`` interface) -- and carry
-a ``None`` Python pattern to record that explicitly.
+scanned. The module-aware additions are intentionally explicit: Draft command,
+task-panel, view-provider, and utility modules; BIM command/covering and native
+IFC view-provider modules; the CAM Python GUI package; FEM GUI extraction
+helpers; and the Robot movie tool. This keeps App-layer helpers, tests, and
+import/export implementations out of scope while making each inclusion
+reviewable and deterministic.
+
+One category is C++-only by nature -- ``update-data-provider`` (the
+``ViewProvider::updateData(const App::Property*)`` interface) -- and carries a
+``None`` Python pattern to record that explicitly. ``blocking-invokes`` has
+both a C++ pattern (``Qt::BlockingQueuedConnection``) and a Python pattern (the
+PySide ``BlockingQueuedConnection`` enum); no Python GUI site uses it today, but
+the rule is recorded so any future use is inventoried.
 
 Dispositions
 ------------
@@ -62,7 +71,7 @@ EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({"_TEMPLATE_"})
 #: Workbenches whose GUI directory is test/infrastructure code rather than
 #: production GUI. ``src/Mod/Test/Gui`` hosts the unit-test workbench, not a
 #: shipped workbench surface.
-EXCLUDED_WORKBENCHES: frozenset[str] = frozenset({"Test"})
+EXCLUDED_WORKBENCHES: frozenset[str] = frozenset({"TemplatePyMod", "Test"})
 
 #: Individual test-harness files excluded from the scan. These are compiled into
 #: the GUI library (or importable) but are test infrastructure, not a shipped
@@ -76,6 +85,46 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         # GUI test support module (QtGui test helpers); not production GUI.
         "src/Gui/FreeCADGuiTest.py",
     }
+)
+
+#: Additional GUI directories for the module-aware workbenches whose GUI Python
+#: is not organised under a directory literally named ``Gui``. Each entry is an
+#: explicit, reviewed GUI-only sub-package: its contents are commands, task
+#: panels, or view providers (never App-layer object/geometry code), so scanning
+#: them does not pull App Python into a GUI inventory.
+EXTRA_GUI_DIRS: tuple[str, ...] = (
+    # Draft GUI commands (GuiCommand* tool classes).
+    "src/Mod/Draft/draftguitools",
+    # Draft Qt task panels (TaskPanel* dialogs).
+    "src/Mod/Draft/drafttaskpanels",
+    # Draft view providers (ViewProvider* presentation classes).
+    "src/Mod/Draft/draftviewproviders",
+    # BIM GUI commands (Bim* command classes).
+    "src/Mod/BIM/bimcommands",
+    # CAM's Python-only GUI helper package.
+    "src/Mod/CAM/PathPythonGui",
+)
+
+#: Additional top-level GUI modules in module-aware workbenches. These files sit
+#: beside App-layer modules in the shared top-level package, so they cannot be
+#: selected by directory; each is listed explicitly and reviewed as GUI-only.
+EXTRA_GUI_FILES: tuple[str, ...] = (
+    # Draft's main GUI controller (toolbar, task panel dispatch).
+    "src/Mod/Draft/DraftGui.py",
+    # Draft GUI command definitions (GuiCommand classes).
+    "src/Mod/Draft/DraftTools.py",
+    # Draft DXF import dialog (Qt widget).
+    "src/Mod/Draft/DxfImportDialog.py",
+    # BIM covering task panel / view provider.
+    "src/Mod/BIM/ArchCoveringGui.py",
+    # Draft GUI utility layer (selection/view helpers, not Draft geometry).
+    "src/Mod/Draft/draftutils/gui_utils.py",
+    # BIM native IFC presentation provider.
+    "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+    # FEM GUI extraction/view helper.
+    "src/Mod/Fem/femguiutils/extract_link_view.py",
+    # Robot GUI movie export tool.
+    "src/Mod/Robot/MovieTool.py",
 )
 
 
@@ -176,9 +225,10 @@ CATEGORIES: tuple[Category, ...] = (
             "the committed presentation state. C++: App::GetApplication() document/"
             "object accessors (getActiveDocument, getDocument, getDocuments, "
             "getDocumentOrActive, getDocumentByPath), including the multi-line "
-            "receiver-chain form. Python: App/FreeCAD.ActiveDocument and "
-            "App/FreeCAD.getDocument(). Gui.ActiveDocument (the GUI-side document "
-            "handle) is tracked separately, as is the model-layer src/App core."
+            "receiver-chain form. Python: App/FreeCAD.ActiveDocument (attribute), "
+            "App/FreeCAD.activeDocument() (method), and App/FreeCAD.getDocument(). "
+            "Gui.ActiveDocument (the GUI-side document handle) is tracked "
+            "separately, as is the model-layer src/App core."
         ),
         cpp_pattern=(
             r"App::GetApplication\s*\(\s*\)\s*\.\s*"
@@ -186,7 +236,8 @@ CATEGORIES: tuple[Category, ...] = (
             r"[^\S\n]*\("
         ),
         py_pattern=(
-            r"(?:App|FreeCAD)[^\S\n]*\.[^\S\n]*" r"(?:ActiveDocument\b|getDocument[^\S\n]*\()"
+            r"(?:App|FreeCAD)[^\S\n]*\.[^\S\n]*(?:\+[^\S\n]*)?"
+            r"(?:ActiveDocument\b|activeDocument[^\S\n]*\(|getDocument[^\S\n]*\()"
         ),
         default_disposition="investigate",
     ),

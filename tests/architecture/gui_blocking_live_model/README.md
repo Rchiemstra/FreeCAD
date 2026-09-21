@@ -21,9 +21,15 @@ behavior.
 
 The scanner covers production GUI source only:
 
-* `src/Gui` — the GUI framework, and
+* `src/Gui` — the GUI framework;
 * every `Gui` directory under `src/Mod` — workbench GUI code, including the
-  nested Python GUI directories such as `src/Mod/CAM/Path/*/Gui`.
+  nested Python GUI directories such as `src/Mod/CAM/Path/*/Gui`;
+* every top-level production workbench `InitGui.py`; and
+* explicit reviewed Python GUI packages/files that do not use a `Gui` directory:
+  Draft command/task/view-provider packages plus `draftutils/gui_utils.py`, BIM
+  commands/covering plus `nativeifc/ifc_viewproviders.py`, CAM's
+  `PathPythonGui`, FEM's `femguiutils/extract_link_view.py`, and Robot's
+  `MovieTool.py`.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
@@ -31,13 +37,12 @@ Excluded from scope:
 
 * `src/App` and other model-layer code (this inventory is about *GUI* blocking
   and *live-model ingress from GUI* code);
-* Python workbenches whose GUI code is *not* organised under a `Gui` directory
-  (`AddonManager`, `BIM`, `Draft`, `Help`, `OpenSCAD`, `Plot`, `Show`, `Tux`,
-  `Web`, and the import/export helpers), where App and GUI Python share the
-  top-level package: the directory-based scanner cannot separate their GUI
-  Python from their App Python, so they need a module-aware scanner and are
-  tracked as a bounded follow-up in the report;
-* `src/Mod/Test/Gui` (unit-test workbench, not production GUI);
+* App-layer Python helpers in module-aware workbenches unless they are listed in
+  the reviewed GUI package/file set above;
+* `src/Mod/Test/Gui` and `src/Mod/Test/InitGui.py` (unit-test workbench, not
+  production GUI);
+* `src/Mod/TemplatePyMod/InitGui.py` (template scaffolding, not a shipped
+  workbench);
 * `src/Tools/_TEMPLATE_` (template scaffolding);
 * the GUI test harness `src/Gui/CommandTest.cpp` and test support module
   `src/Gui/FreeCADGuiTest.py` (test infrastructure, not a shipped GUI surface).
@@ -66,7 +71,8 @@ The Python patterns mirror the C++ ones where a Python equivalent exists:
 `thread-waits` (`.waitFor*` and `.wait(`), `blocking-invokes`
 (`BlockingQueuedConnection`), `process-events-polling` (`processEvents(` and
 the `FreeCADGui`/`Gui.updateGui()` wrapper), `direct-recompute` (`.recompute(`),
-`live-app-dereference` (`App`/`FreeCAD.ActiveDocument` and `getDocument(`), and
+`live-app-dereference` (`App`/`FreeCAD.ActiveDocument`, callable
+`activeDocument()`, and `getDocument(`), and
 `live-reference-callback` (`addObserver`/`removeObserver`). Two categories are
 C++-only by nature — `blocking-invokes` (the Qt `BlockingQueuedConnection`
 connection type) and `update-data-provider` (the
@@ -95,7 +101,9 @@ surface small):
 * **live-app-dereference** keys on the `App::GetApplication()` document/object
   accessors (`getActiveDocument`, `getDocument`, `getDocuments`,
   `getDocumentOrActive`, `getDocumentByPath`), including the multi-line
-  receiver-chain form (the regex spans newlines). Broader live-handle patterns
+  receiver-chain form (the regex spans newlines), and the callable
+  `App.activeDocument()` / `FreeCAD.activeDocument()` forms. A bare lower-case
+  `activeDocument` attribute is not a match. Broader live-handle patterns
   such as `Gui::Document::getDocument()` are tracked separately (see the
   report).
 * **live-reference-callback** keys on the document-object state-change
@@ -151,9 +159,11 @@ rejects:
   source fails the test until it is inventoried.
 
 The test also carries focused rule regressions (thread/process/condition waits,
-multiline and `getDocuments` live-model dereferences, inline `updateData`
-overrides, and Python GUI ingress) and mutation tests (subsystem, scope,
-excluded count, ordering, and full-payload drift).
+multiline and `getDocuments` live-model dereferences, callable-vs-attribute
+Python ingress, executable `doCommand` strings including parenthesised,
+concatenated, and f-string forms, and reviewed module-aware GUI paths) and
+mutation tests (subsystem, scope, excluded count, ordering, and full-payload
+drift).
 
 ## Dispositions
 
