@@ -32,9 +32,16 @@ def _scenario(
         EvidenceRecord(
             sequence=index,
             action_sequence=index % len(actions),
+            at_ms=actions[index % len(actions)].at_ms,
             kind=actions[index % len(actions)].kind,
             latency_ms=value,
-            outcome="accepted",
+            outcome=(
+                "busy"
+                if actions[index % len(actions)].kind == "busy_response"
+                else "cancelled"
+                if actions[index % len(actions)].kind == "cancellation"
+                else "accepted"
+            ),
             busy=actions[index % len(actions)].kind == "busy_response",
             cancelled=actions[index % len(actions)].kind == "cancellation",
         )
@@ -91,7 +98,7 @@ class HarnessTests(unittest.TestCase):
             ),
             evidence=scenario.evidence,
         )
-        with self.assertRaisesRegex(ContractError, "ordered by nondecreasing"):
+        with self.assertRaisesRegex(ContractError, "ordered by strictly increasing"):
             out_of_order.validate()
 
         incomplete_interval = ResponsivenessScenario(
@@ -101,6 +108,66 @@ class HarnessTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ContractError, "complete interval"):
             incomplete_interval.validate()
+
+        all_zero = ResponsivenessScenario(
+            actions=tuple(
+                ActionRecord(item.sequence, item.kind, 0, item.value)
+                for item in scenario.actions
+            ),
+            evidence=scenario.evidence,
+        )
+        with self.assertRaisesRegex(ContractError, "complete interval"):
+            all_zero.validate()
+
+    def test_each_scheduled_action_requires_evidence(self):
+        scenario = _scenario()
+        evidence = scenario.evidence[:-1] + (
+            EvidenceRecord(
+                sequence=len(scenario.evidence) - 1,
+                action_sequence=0,
+                at_ms=0,
+                kind="repaint",
+                latency_ms=12,
+                outcome="accepted",
+            ),
+        )
+        with self.assertRaisesRegex(ContractError, "every action must have evidence"):
+            ResponsivenessScenario(scenario.actions, evidence).validate()
+
+    def test_busy_and_cancellation_evidence_must_be_explicit(self):
+        scenario = _scenario()
+        bad = list(scenario.evidence)
+        busy_index = next(
+            index for index, item in enumerate(bad) if item.kind == "busy_response"
+        )
+        original = bad[busy_index]
+        bad[busy_index] = EvidenceRecord(
+            sequence=original.sequence,
+            action_sequence=original.action_sequence,
+            at_ms=original.at_ms,
+            kind=original.kind,
+            latency_ms=original.latency_ms,
+            outcome="accepted",
+        )
+        with self.assertRaisesRegex(ContractError, "must be marked busy"):
+            ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
+
+        cancellation_index = next(
+            index for index, item in enumerate(bad) if item.kind == "cancellation"
+        )
+        original = scenario.evidence[cancellation_index]
+        bad[cancellation_index] = EvidenceRecord(
+            sequence=original.sequence,
+            action_sequence=original.action_sequence,
+            at_ms=original.at_ms,
+            kind=original.kind,
+            latency_ms=original.latency_ms,
+            outcome="cancelled",
+            busy=True,
+            cancelled=True,
+        )
+        with self.assertRaisesRegex(ContractError, "must be marked cancelled"):
+            ResponsivenessScenario(scenario.actions, tuple(bad)).validate()
 
     def test_thresholds_fail_for_p99_and_maximum(self):
         scenario = _scenario((10,) * 98 + (51, 51))
@@ -123,10 +190,25 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertLess(first.index('"actions"'), first.index('"evidence"'))
 
-        bad_evidence = EvidenceRecord(0, 999, "repaint", 1, "accepted")
+        bad_evidence = EvidenceRecord(0, 999, 0, "repaint", 1, "accepted")
         broken = ResponsivenessScenario(
             actions=scenario.actions,
             evidence=(bad_evidence,) + scenario.evidence[1:],
         )
         with self.assertRaisesRegex(ContractError, "references missing action"):
             broken.validate()
+
+        tampered = json.loads(first)
+        tampered["thresholds"]["passed"] = False
+        with self.assertRaisesRegex(ContractError, "thresholds do not match"):
+            ResponsivenessScenario.from_dict(tampered)
+
+        missing = json.loads(first)
+        del missing["thresholds"]
+        with self.assertRaisesRegex(ContractError, "malformed scenario thresholds"):
+            ResponsivenessScenario.from_dict(missing)
+
+        contradictory = json.loads(first)
+        contradictory["thresholds"]["p99_limit_ms"] = 51
+        with self.assertRaisesRegex(ContractError, "thresholds do not match"):
+            ResponsivenessScenario.from_dict(contradictory)

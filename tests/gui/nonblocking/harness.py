@@ -8,9 +8,9 @@ defines the portable artifact and its fail-closed validation rules.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 from math import ceil
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 
@@ -30,6 +30,11 @@ ACTION_KINDS = (
     "latency_sample",
 )
 _ACTION_KIND_SET = frozenset(ACTION_KINDS)
+ACTION_SCHEDULE = tuple(
+    (kind, (DURATION_MS * index) // (len(ACTION_KINDS) - 1))
+    for index, kind in enumerate(ACTION_KINDS)
+)
+_ACTION_SCHEDULE_BY_SEQUENCE = dict(enumerate(ACTION_SCHEDULE))
 
 
 class ContractError(ValueError):
@@ -82,6 +87,7 @@ class EvidenceRecord:
 
     sequence: int
     action_sequence: int
+    at_ms: int
     kind: str
     latency_ms: int
     outcome: str
@@ -91,6 +97,8 @@ class EvidenceRecord:
     def __post_init__(self) -> None:
         _check_nonnegative_int("sequence", self.sequence)
         _check_nonnegative_int("action_sequence", self.action_sequence)
+        if type(self.at_ms) is not int or self.at_ms < 0:
+            raise ContractError("at_ms must be a non-negative integer")
         _check_text("kind", self.kind)
         if self.kind not in _ACTION_KIND_SET:
             raise ContractError(f"unsupported evidence kind: {self.kind!r}")
@@ -104,6 +112,7 @@ class EvidenceRecord:
         return {
             "sequence": self.sequence,
             "action_sequence": self.action_sequence,
+            "at_ms": self.at_ms,
             "kind": self.kind,
             "latency_ms": self.latency_ms,
             "outcome": self.outcome,
@@ -172,11 +181,17 @@ class ResponsivenessScenario:
                 "actions must cover the complete interval from 0 to "
                 f"{self.duration_ms} ms"
             )
-        if action_times != sorted(action_times):
-            raise ContractError("actions must be ordered by nondecreasing at_ms")
+        if action_times != sorted(action_times) or len(set(action_times)) != len(action_times):
+            raise ContractError("actions must be ordered by strictly increasing at_ms")
         by_sequence = {item.sequence: item for item in self.actions}
         if len(by_sequence) != len(self.actions):
             raise ContractError("action sequence numbers must be unique")
+        for action in self.actions:
+            if _ACTION_SCHEDULE_BY_SEQUENCE.get(action.sequence) != (
+                action.kind,
+                action.at_ms,
+            ):
+                raise ContractError("actions must match the canonical 30-second schedule")
         for observation in self.evidence:
             action = by_sequence.get(observation.action_sequence)
             if action is None:
@@ -185,6 +200,27 @@ class ResponsivenessScenario:
                 )
             if observation.kind != action.kind:
                 raise ContractError("evidence kind must match its action kind")
+            if observation.at_ms < action.at_ms or observation.at_ms > self.duration_ms:
+                raise ContractError(f"evidence at_ms must be at most {self.duration_ms}")
+            if observation.kind == "busy_response":
+                if (
+                    not observation.busy
+                    or observation.cancelled
+                    or observation.outcome != "busy"
+                ):
+                    raise ContractError("busy_response evidence must be marked busy")
+            elif observation.kind == "cancellation":
+                if (
+                    not observation.cancelled
+                    or observation.busy
+                    or observation.outcome != "cancelled"
+                ):
+                    raise ContractError("cancellation evidence must be marked cancelled")
+            elif observation.busy or observation.cancelled:
+                raise ContractError("busy and cancelled flags require their matching action kind")
+        observed_actions = {item.action_sequence for item in self.evidence}
+        if observed_actions != set(by_sequence):
+            raise ContractError("every action must have evidence")
         if not self.evidence:
             raise ContractError("scenario must contain evidence")
 
@@ -233,6 +269,14 @@ class ResponsivenessScenario:
         except (KeyError, TypeError) as error:
             raise ContractError("malformed scenario record") from error
         scenario.validate()
+        try:
+            thresholds = payload["thresholds"]
+        except KeyError as error:
+            raise ContractError("malformed scenario thresholds") from error
+        if not isinstance(thresholds, dict):
+            raise ContractError("malformed scenario thresholds")
+        if thresholds != scenario.evaluate_thresholds().as_dict():
+            raise ContractError("scenario thresholds do not match its evidence")
         return scenario
 
     @classmethod
@@ -246,6 +290,7 @@ class ResponsivenessScenario:
 
 __all__ = [
     "ACTION_KINDS",
+    "ACTION_SCHEDULE",
     "DURATION_MS",
     "MAX_LATENCY_MS",
     "P99_LATENCY_MS",
