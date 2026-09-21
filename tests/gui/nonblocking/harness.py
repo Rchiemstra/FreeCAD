@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from math import ceil
 from typing import Any, ClassVar
 
-
 DURATION_MS = 30_000
 P99_LATENCY_MS = 50
 MAX_LATENCY_MS = 100
