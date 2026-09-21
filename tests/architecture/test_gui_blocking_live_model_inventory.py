@@ -112,8 +112,7 @@ def entry_violations(
         expected_subsystem = scanner.subsystem_for(path)
         if subsystem != expected_subsystem:
             problems.append(
-                f"{location}: subsystem {subsystem!r} != {expected_subsystem!r} "
-                f"derived from path"
+                f"{location}: subsystem {subsystem!r} != {expected_subsystem!r} derived from path"
             )
     if not isinstance(disposition, str) or disposition not in dispositions:
         problems.append(f"{location}: unknown disposition {disposition!r}")
