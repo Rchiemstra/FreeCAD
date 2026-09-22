@@ -1629,9 +1629,33 @@ str.join(parts)
                 '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
                 "};\n"
             ),
+            (
+                "constexpr bool Nondependent = []<class U> { return true; }."
+                "operator()<int>() && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+                "};\n"
+            ),
+            (
+                "constexpr bool Spaced = []<class U> { return true; }"
+                ". /*comment*/ template /*comment*/ operator /*comment*/ ()"
+                " < /*comment*/ std::pair<int, std::pair<int, int>> > () && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+                "};\n"
+            ),
+            (
+                "auto long_trivia = []<class T>"
+                + "/*" + "x" * 700 + "*/"
+                + " requires (true) {\n"
+                + '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+                + "};\n"
+            ),
         )
         for index, body in enumerate(sources):
-            source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
+            source = (
+                "#include <utility>\n"
+                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+                + body
+            )
             if shutil.which("g++"):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     snippet = (
@@ -1650,8 +1674,12 @@ str.join(parts)
                 (finding.line, finding.category)
                 for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
             }
-            self.assertNotIn((3, "direct-recompute"), categories)
-            self.assertNotIn((3, "live-app-dereference"), categories)
+            if index == len(sources) - 1:
+                self.assertIn((4, "direct-recompute"), categories)
+                self.assertIn((4, "live-app-dereference"), categories)
+            else:
+                self.assertNotIn((4, "direct-recompute"), categories)
+                self.assertNotIn((4, "live-app-dereference"), categories)
 
     def test_cpp_nested_requires_constraints_keep_lambda_bodies_evaluated(self) -> None:
         source = (

@@ -854,17 +854,36 @@ def _cpp_unevaluated_ranges(
 def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
     """Recognize a trailing function/lambda requires-clause before its body."""
     # Qualifiers and the function declarator are immediately adjacent to the
-    # requires keyword; avoid copying an entire large translation unit for each
-    # requires-expression encountered during the production scan.
-    prefix = masked[max(0, offset - 512) : offset]
+    # requires keyword.  Keep the ordinary path bounded, but recover a generic
+    # lambda head from its own capture introducer: comments between the head
+    # and ``requires`` are legal and must not be cut off by an arbitrary byte
+    # limit.
+    prefix = masked[_cpp_requires_prefix_start(masked, offset) : offset]
     if _cpp_requires_ref_qualifier_is_declarator(prefix):
         return True
-    if _cpp_requires_generic_lambda_template_head_is_clause(prefix):
+    if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset):
         return True
     for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
         if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
             return True
     return False
+
+
+def _cpp_requires_prefix_start(masked: str, offset: int) -> int:
+    """Find the start of the enclosing declaration/statement before ``requires``."""
+    depths = {"}": 0, ")": 0, "]": 0}
+    matching = {"{": "}", "(": ")", "[": "]"}
+    for index in range(offset - 1, -1, -1):
+        character = masked[index]
+        if character in depths:
+            depths[character] += 1
+        elif character in matching:
+            closing = matching[character]
+            if depths[closing]:
+                depths[closing] -= 1
+        elif character == ";" and not any(depths.values()):
+            return index + 1
+    return 0
 
 
 def _cpp_requires_suffix(suffix: str) -> tuple[bool, bool] | None:
@@ -1069,10 +1088,18 @@ def _cpp_requires_lambda_assignment_rhs(
     return not stack
 
 
-def _cpp_requires_generic_lambda_template_head_is_clause(prefix: str) -> bool:
+def _cpp_requires_generic_lambda_template_head_is_clause(source: str, offset: int) -> bool:
     """Recognize an assigned generic lambda with an implicit parameter list."""
-    for assignment in reversed([match.start() for match in re.finditer("=", prefix)]):
-        rhs = prefix[assignment + 1 :]
+    capture = source.rfind("]", 0, offset)
+    if capture < 0:
+        return False
+    opening = source.rfind("[", 0, capture + 1)
+    if opening < 0:
+        return False
+    for assignment in reversed([match.start() for match in re.finditer("=", source[:opening])]):
+        rhs = source[assignment + 1 : offset]
+        if not rhs.lstrip().startswith("["):
+            continue
         if _cpp_requires_lambda_assignment_rhs(rhs, require_generic_template_head=True):
             return True
     return False
@@ -1091,17 +1118,91 @@ def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
 
 
 def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
-    """Reject an invoked generic lambda expression as a function declarator."""
-    # ``declarator`` is already comment-masked.  The ref-qualifier parser sees
-    # the call's ``() &&`` as a member-function suffix, so distinguish the
-    # completed lambda body from a parameterless constrained lambda itself.
-    return bool(
-        re.search(
-            r"\]\s*<.*\}\s*(?:\.\s*template\s+operator\s*\(\)\s*<[^<>]*>)?\s*$",
-            declarator,
-            re.DOTALL,
-        )
-    )
+    """Reject a completed generic-lambda invocation as a function declarator.
+
+    The input ends immediately before the invocation's argument-list opening
+    parenthesis.  Parse the two supported spellings rather than recognizing a
+    loose textual suffix: ``lambda()`` and
+    ``lambda.template operator()<args>()``.  Delimiter matching makes nested
+    explicit template arguments and masked comments unambiguous, while the
+    required lambda capture/template head prevents ref-qualified declarations
+    from being reclassified.
+    """
+    end = len(declarator)
+    while end and declarator[end - 1].isspace():
+        end -= 1
+    if not end:
+        return False
+
+    body_closing = end - 1
+    if declarator[body_closing] != "}":
+        template_closing = body_closing
+        angle_depth = 0
+        while template_closing >= 0:
+            character = declarator[template_closing]
+            if character == ">":
+                angle_depth += 1
+            elif character == "<":
+                angle_depth -= 1
+                if angle_depth == 0:
+                    break
+            template_closing -= 1
+        if template_closing < 0:
+            return False
+        operator_end = template_closing
+        operator_start = declarator.rfind("operator", 0, operator_end)
+        if operator_start < 0:
+            return False
+        before_operator = declarator[:operator_start].rstrip()
+        if not re.search(r"\.\s*(?:template\s*)?$", before_operator):
+            return False
+        operator_text = declarator[operator_start:template_closing]
+        if not re.fullmatch(r"operator\s*\(\)\s*", operator_text):
+            return False
+        body_prefix = re.sub(r"\.\s*(?:template\s*)?$", "", before_operator).rstrip()
+        body_closing = len(body_prefix) - 1
+        if body_closing < 0 or declarator[body_closing] != "}":
+            return False
+    body_opening = body_closing
+    brace_depth = 0
+    while body_opening >= 0:
+        character = declarator[body_opening]
+        if character == "}":
+            brace_depth += 1
+        elif character == "{":
+            brace_depth -= 1
+            if brace_depth == 0:
+                break
+        body_opening -= 1
+    if body_opening < 0:
+        return False
+
+    head = declarator[:body_opening]
+    capture_closing = head.rfind("]")
+    if capture_closing < 0:
+        return False
+    capture_opening = head.rfind("[", 0, capture_closing + 1)
+    if capture_opening < 0:
+        return False
+    template_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
+    if template_opening >= len(head) or head[template_opening] != "<":
+        return False
+    template_depth = 0
+    template_closing = None
+    for index in range(template_opening, len(head)):
+        if head[index] == "<":
+            template_depth += 1
+        elif head[index] == ">":
+            template_depth -= 1
+            if template_depth == 0:
+                template_closing = index
+                break
+    if template_closing is None:
+        return False
+    remainder = head[template_closing + 1 :].strip()
+    if remainder and not remainder.startswith("requires"):
+        return False
+    return _cpp_requires_lambda_assignment_rhs(head[capture_opening:])
 
 
 def _cpp_offset_in_ranges(offset: int, ranges: list[tuple[int, int]]) -> bool:
