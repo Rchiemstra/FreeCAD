@@ -1,6 +1,6 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (2,658 findings across seven
+This report summarizes the reproducible inventory (2,745 findings across seven
 categories, snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
@@ -8,18 +8,18 @@ candidates. It proposes work only; no production behavior is changed here.
 
 | Category | Findings | Disposition | Summary |
 | --- | ---: | --- | --- |
-| `live-app-dereference` | 1,610 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach. |
+| `live-app-dereference` | 1,690 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach. |
 | `live-reference-callback` | 234 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
 | `update-data-provider` | 236 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
-| `direct-recompute` | 478 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs. |
+| `direct-recompute` | 485 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs. |
 | `process-events-polling` | 58 | investigate | Manual event-loop pumping. |
 | `thread-waits` | 41 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
 | `blocking-invokes` | 1 | migrate | Single `Qt::BlockingQueuedConnection` dispatch hook. |
 
-The snapshot spans 753 C++ and 1,905 Python findings. Owning subsystems:
-`BIM` (904), `CAM` (486), `Gui` (326), `Fem` (206), `Draft` (154), `Part`
+The snapshot spans 753 C++ and 1,992 Python findings. Owning subsystems:
+`BIM` (913), `CAM` (488), `Gui` (326), `Fem` (212), `Draft` (223), `Part`
 (111), `TechDraw` (99), `Assembly` (79), `PartDesign` (68), `Mesh` (62),
-`OpenSCAD` (49), `Surface` (21), `Sketcher` (19), `Measure` (18), `Material`
+`OpenSCAD` (50), `Surface` (21), `Sketcher` (19), `Measure` (18), `Material`
 (12), `Spreadsheet` (8), `MeshPart` (7), `Import` (6), `Inspection` (6),
 `Points` (6), `ReverseEngineering` (5), `Robot` (5), and `Start` (1).
 
@@ -96,8 +96,8 @@ separate App-side follow-up.
 
 * The scanner covers `src/Gui`, `src/Mod/*/Gui`, production workbench
   `InitGui.py` files, and the reviewed module-aware Python GUI paths listed in
-  the README and `rules.py`. Direct local InitGui imports are either included
-  or named in the explicit reviewed-exclusion manifest. Unreviewed App/test
-  helpers and the `src/App` model core remain out of scope.
+  the README and `rules.py`. Direct local InitGui imports and transitive GUI
+  imports are either included or named in explicit per-file reviewed manifests.
+  Unreviewed App/test helpers and the `src/App` model core remain out of scope.
 * Dispositions are category-level defaults; per-site reclassification belongs
   to the triage candidates above.

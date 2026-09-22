@@ -58,6 +58,110 @@ def _scan_file(repository_root: Path, relative_path: str) -> list[scanner.Findin
     return _scan_cache[key]
 
 
+def _executable_gui_hook_lines(source: str) -> list[int]:
+    """Return AST lines containing direct executable GUI integration hooks."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    lines: set[int] = set()
+    gui_attributes = {
+        "GuiUp",
+        "ViewObject",
+        "Selection",
+        "activeView",
+        "showDialog",
+        "addSelection",
+        "removeSelection",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+            if any(
+                name == "FreeCADGui"
+                or name.startswith(("PySide", "draftutils.gui_utils", "draftviewproviders"))
+                for name in names
+            ):
+                lines.add(node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if (
+                module == "FreeCADGui"
+                or module.startswith(("PySide", "draftutils.gui_utils", "draftviewproviders"))
+                or module == "FreeCAD"
+                and any(alias.name == "Gui" for alias in node.names)
+            ):
+                lines.add(node.lineno)
+        elif (
+            isinstance(node, ast.Name)
+            and node.id in {"FreeCADGui", "Gui"}
+            or isinstance(node, ast.Attribute)
+            and node.attr in gui_attributes
+        ):
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def _nonliteral_dynamic_import_lines(source: str) -> list[int]:
+    """Return lines calling import_module with a runtime-selected argument."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        function = node.func
+        import_module_call = (
+            isinstance(function, ast.Name) and function.id == "import_module"
+        ) or (
+            isinstance(function, ast.Attribute)
+            and function.attr == "import_module"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "importlib"
+        )
+        if import_module_call and not isinstance(node.args[0], ast.Constant):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def dynamic_import_manifest_violations(
+    manifest: dict[str, tuple[str, ...]], repository_root: Path
+) -> list[str]:
+    """Validate deterministic source/pattern entries in the dynamic manifest."""
+    problems: list[str] = []
+    for source, patterns in manifest.items():
+        source_path = repository_root / source
+        if not source_path.is_file():
+            problems.append(f"dynamic source does not exist: {source}")
+            continue
+        lines = _nonliteral_dynamic_import_lines(
+            source_path.read_text(encoding="utf-8", errors="surrogateescape")
+        )
+        if not lines:
+            problems.append(f"dynamic source has no nonliteral import_module call: {source}")
+        if not patterns:
+            problems.append(f"dynamic source has no target patterns: {source}")
+        for pattern in patterns:
+            path = Path(pattern)
+            windows_path = PureWindowsPath(pattern)
+            if (
+                not pattern
+                or path.is_absolute()
+                or windows_path.drive
+                or windows_path.root
+                or "\\" in pattern
+                or ".." in path.parts
+            ):
+                problems.append(f"unsafe dynamic target pattern: {source}: {pattern!r}")
+                continue
+            matches = sorted(repository_root.glob(pattern))
+            if not matches or any(not match.is_file() for match in matches):
+                problems.append(f"dynamic target pattern has no files: {source}: {pattern}")
+    return problems
+
+
 def _load_inventory() -> dict:
     return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
 
@@ -1035,11 +1139,20 @@ class RepositoryInventoryTests(unittest.TestCase):
             for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/ArchStructure.py")
         }
         self.assertIn("src/Mod/BIM/ArchComponent.py", bim_targets)
-        self.assertIn(
+        arch_targets = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/Arch.py")
+        }
+        self.assertIn("src/Mod/BIM/ArchCovering.py", arch_targets)
+        self.assertNotIn(
             "src/Mod/BIM/ArchWindowPresets.py",
             {
-                target.relative_to(REPOSITORY_ROOT).as_posix()
-                for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/Arch.py")
+                alias.name.split(".")[-1]
+                for node in ast.walk(
+                    ast.parse((REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text())
+                )
+                if isinstance(node, ast.Import)
+                for alias in node.names
             },
         )
         cam_targets = {
@@ -1088,6 +1201,88 @@ class RepositoryInventoryTests(unittest.TestCase):
             "unreviewed transitive GUI imports: " + ", ".join(sorted(missing)),
         )
 
+    def test_transitive_exclusions_have_no_executable_gui_hooks(self) -> None:
+        for relative in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS:
+            source = (REPOSITORY_ROOT / relative).read_text(
+                encoding="utf-8", errors="surrogateescape"
+            )
+            self.assertEqual(
+                _executable_gui_hook_lines(source),
+                [],
+                f"GUI hook hidden by exclusion {relative}",
+            )
+
+    def test_gui_hook_classifier_ignores_comments_and_docstrings(self) -> None:
+        inert = '"""FreeCADGui ViewObject GuiUp"""\n# FreeCADGui\nvalue = "GuiUp"\n'
+        self.assertEqual(_executable_gui_hook_lines(inert), [])
+        self.assertEqual(_executable_gui_hook_lines("if App.GuiUp:\n    pass\n"), [1])
+        self.assertEqual(
+            _executable_gui_hook_lines("from FreeCAD import Gui\nGui.activeView()\n"), [1, 2]
+        )
+
+    def test_dynamic_import_manifest_is_existing_and_nonliteral(self) -> None:
+        problems = dynamic_import_manifest_violations(
+            rules.REVIEWED_DYNAMIC_IMPORT_TARGETS, REPOSITORY_ROOT
+        )
+        self.assertFalse(problems, "\n".join(problems))
+
+    def test_dynamic_import_policy_sources_are_existing_and_nonliteral(self) -> None:
+        for manifest in (
+            rules.REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES,
+            rules.REVIEWED_DYNAMIC_IMPORT_SCOPED_PACKAGES,
+        ):
+            for relative in manifest:
+                source_path = REPOSITORY_ROOT / relative
+                self.assertTrue(source_path.is_file(), relative)
+                source = source_path.read_text(encoding="utf-8", errors="surrogateescape")
+                self.assertTrue(_nonliteral_dynamic_import_lines(source), relative)
+
+    def test_dynamic_import_manifest_mutations_are_rejected(self) -> None:
+        missing_source = dict(rules.REVIEWED_DYNAMIC_IMPORT_TARGETS)
+        missing_source["src/Mod/BIM/missing.py"] = ("src/Mod/BIM/*.py",)
+        self.assertTrue(dynamic_import_manifest_violations(missing_source, REPOSITORY_ROOT))
+        missing_target = dict(rules.REVIEWED_DYNAMIC_IMPORT_TARGETS)
+        missing_target["src/Mod/BIM/Arch.py"] = ("src/Mod/BIM/does-not-exist/*.py",)
+        self.assertTrue(dynamic_import_manifest_violations(missing_target, REPOSITORY_ROOT))
+        unsafe_target = dict(rules.REVIEWED_DYNAMIC_IMPORT_TARGETS)
+        unsafe_target["src/Mod/BIM/Arch.py"] = ("C:/outside/*.py",)
+        self.assertTrue(dynamic_import_manifest_violations(unsafe_target, REPOSITORY_ROOT))
+
+    def test_scoped_python_dynamic_imports_have_reviewed_policy(self) -> None:
+        policy = {
+            *rules.REVIEWED_DYNAMIC_IMPORT_TARGETS,
+            *rules.REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES,
+            *rules.REVIEWED_DYNAMIC_IMPORT_SCOPED_PACKAGES,
+        }
+        unreviewed: list[str] = []
+        for path in scanner.iter_source_files(REPOSITORY_ROOT):
+            if path.suffix != ".py":
+                continue
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            source = path.read_text(encoding="utf-8", errors="surrogateescape")
+            if _nonliteral_dynamic_import_lines(source) and relative not in policy:
+                unreviewed.append(relative)
+        self.assertFalse(unreviewed, "unreviewed dynamic imports: " + ", ".join(unreviewed))
+
+    def test_dynamic_only_targets_are_not_static_imports(self) -> None:
+        arch_source = ast.parse((REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text())
+        arch_imports = {
+            alias.name.split(".")[-1]
+            for node in ast.walk(arch_source)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        self.assertNotIn("ArchCovering", arch_imports)
+        arch_targets = {
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in REPOSITORY_ROOT.glob("src/Mod/BIM/Arch*.py")
+        }
+        self.assertIn("src/Mod/BIM/ArchCovering.py", arch_targets)
+        cam_source = ast.parse((REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py").read_text())
+        cam_text = ast.unparse(cam_source)
+        self.assertNotIn("Path.Op.Gui.Adaptive", cam_text)
+        self.assertTrue((REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Adaptive.py").is_file())
+
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
             ("src/Mod/Assembly/InitGui.py", "live-app-dereference"),
@@ -1108,6 +1303,23 @@ class RepositoryInventoryTests(unittest.TestCase):
                 for path in scanner.iter_source_files(REPOSITORY_ROOT)
             ],
         )
+        for path, category in (
+            ("src/Mod/BIM/ArchCovering.py", "live-app-dereference"),
+            ("src/Mod/BIM/ArchVRM.py", "live-app-dereference"),
+            ("src/Mod/BIM/importers/importIFCmulticore.py", "direct-recompute"),
+            ("src/Mod/CAM/Path/Post/UtilsExport.py", "live-app-dereference"),
+            ("src/Mod/Draft/draftmake/make_array.py", "live-app-dereference"),
+            ("src/Mod/Draft/draftmake/make_shapestring.py", "direct-recompute"),
+            ("src/Mod/Fem/femresult/resulttools.py", "direct-recompute"),
+            ("src/Mod/OpenSCAD/OpenSCAD2Dgeom.py", "live-app-dereference"),
+        ):
+            self.assertTrue(
+                any(
+                    finding.path == path and finding.category == category
+                    for finding in self.scanned
+                ),
+                f"expected promoted GUI finding in {path}",
+            )
 
     def test_init_gui_loaded_command_and_gui_modules_are_inventoried(self) -> None:
         scoped_files = {
@@ -1130,14 +1342,22 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/BIM/ArchStructure.py",
             "src/Mod/BIM/ArchWindowPresets.py",
             "src/Mod/BIM/ArchNesting.py",
+            "src/Mod/BIM/ArchCovering.py",
+            "src/Mod/BIM/ArchVRM.py",
+            "src/Mod/BIM/importers/importIFCmulticore.py",
             "src/Mod/BIM/nativeifc/ifc_tree.py",
             "src/Mod/CAM/Path/Post/Command.py",
             "src/Mod/CAM/Path/Post/Utils.py",
+            "src/Mod/CAM/Path/Post/UtilsExport.py",
             "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
             "src/Mod/CAM/Path/Op/Adaptive.py",
             "src/Mod/Fem/femsolver/elmer/equations/equation.py",
             "src/Mod/Fem/femsolver/run.py",
             "src/Mod/OpenSCAD/replaceobj.py",
+            "src/Mod/Fem/femresult/resulttools.py",
+            "src/Mod/OpenSCAD/OpenSCAD2Dgeom.py",
+            "src/Mod/Draft/draftmake/make_array.py",
+            "src/Mod/Draft/draftmake/make_shapestring.py",
             "src/Mod/CAM/Path/Dressup/Utils.py",
             "src/Mod/Part/CompoundTools/CompoundFilter.py",
             "src/Mod/CAM/Path/Tool/library/ui/cmd.py",

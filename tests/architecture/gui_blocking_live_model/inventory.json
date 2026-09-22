@@ -138,12 +138,15 @@
     "src/Mod/BIM/ArchWindow.py",
     "src/Mod/BIM/ArchWindowPresets.py",
     "src/Mod/BIM/ArchCutPlane.py",
+    "src/Mod/BIM/ArchCovering.py",
     "src/Mod/BIM/ArchNesting.py",
     "src/Mod/BIM/ArchSql.py",
+    "src/Mod/BIM/ArchVRM.py",
     "src/Mod/BIM/importers/exportIFC.py",
     "src/Mod/BIM/importers/importDAE.py",
     "src/Mod/BIM/importers/importIFC.py",
     "src/Mod/BIM/importers/importIFCHelper.py",
+    "src/Mod/BIM/importers/importIFCmulticore.py",
     "src/Mod/BIM/nativeifc/ifc_import.py",
     "src/Mod/BIM/nativeifc/ifc_objects.py",
     "src/Mod/BIM/nativeifc/ifc_tools.py",
@@ -193,14 +196,45 @@
     "src/Mod/CAM/Path/Op/Waterline.py",
     "src/Mod/CAM/Path/Post/Command.py",
     "src/Mod/CAM/Path/Post/Utils.py",
+    "src/Mod/CAM/Path/Post/UtilsExport.py",
     "src/Mod/CAM/Path/Tool/shape/doc.py",
     "src/Mod/CAM/PathScripts/PathUtils.py",
     "src/Mod/Draft/draftfunctions/mirror.py",
+    "src/Mod/Draft/draftfunctions/cut.py",
+    "src/Mod/Draft/draftfunctions/downgrade.py",
+    "src/Mod/Draft/draftfunctions/draftify.py",
+    "src/Mod/Draft/draftfunctions/extrude.py",
+    "src/Mod/Draft/draftfunctions/fuse.py",
+    "src/Mod/Draft/draftfunctions/heal.py",
+    "src/Mod/Draft/draftfunctions/offset.py",
+    "src/Mod/Draft/draftfunctions/upgrade.py",
     "src/Mod/Draft/draftmake/make_clone.py",
+    "src/Mod/Draft/draftmake/make_array.py",
+    "src/Mod/Draft/draftmake/make_bezcurve.py",
+    "src/Mod/Draft/draftmake/make_block.py",
+    "src/Mod/Draft/draftmake/make_bspline.py",
+    "src/Mod/Draft/draftmake/make_circle.py",
+    "src/Mod/Draft/draftmake/make_circulararray.py",
+    "src/Mod/Draft/draftmake/make_copy.py",
+    "src/Mod/Draft/draftmake/make_dimension.py",
+    "src/Mod/Draft/draftmake/make_ellipse.py",
+    "src/Mod/Draft/draftmake/make_facebinder.py",
     "src/Mod/Draft/draftmake/make_fillet.py",
     "src/Mod/Draft/draftmake/make_hatch.py",
     "src/Mod/Draft/draftmake/make_label.py",
+    "src/Mod/Draft/draftmake/make_layer.py",
     "src/Mod/Draft/draftmake/make_point.py",
+    "src/Mod/Draft/draftmake/make_patharray.py",
+    "src/Mod/Draft/draftmake/make_pointarray.py",
+    "src/Mod/Draft/draftmake/make_polararray.py",
+    "src/Mod/Draft/draftmake/make_polygon.py",
+    "src/Mod/Draft/draftmake/make_rectangle.py",
+    "src/Mod/Draft/draftmake/make_shape2dview.py",
+    "src/Mod/Draft/draftmake/make_shapestring.py",
+    "src/Mod/Draft/draftmake/make_sketch.py",
+    "src/Mod/Draft/draftmake/make_text.py",
+    "src/Mod/Draft/draftmake/make_wire.py",
+    "src/Mod/Draft/draftmake/make_wpproxy.py",
     "src/Mod/Draft/draftutils/todo.py",
     "src/Mod/Draft/importSVG.py",
     "src/Mod/Fem/femmesh/gmshtools.py",
@@ -214,7 +248,9 @@
     "src/Mod/Fem/femtools/ccxtools.py",
     "src/Mod/Fem/femtools/objecttools.py",
     "src/Mod/Fem/feminout/importCcxFrdResults.py",
+    "src/Mod/Fem/femresult/resulttools.py",
     "src/Mod/OpenSCAD/importCSG.py",
+    "src/Mod/OpenSCAD/OpenSCAD2Dgeom.py",
     "src/Mod/OpenSCAD/replaceobj.py",
     "src/Mod/Part/CompoundTools/CompoundFilter.py",
     "src/Mod/Draft/WorkingPlane.py",
@@ -4291,6 +4327,14 @@
       "evidence": "FreeCADGui.Selection.addObserver(FreeCAD.ArchObserver)"
     },
     {
+      "path": "src/Mod/BIM/ArchCovering.py",
+      "line": 418,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(doc_name)"
+    },
+    {
       "path": "src/Mod/BIM/ArchCoveringGui.py",
       "line": 149,
       "category": "update-data-provider",
@@ -5401,6 +5445,14 @@
       "subsystem": "BIM",
       "disposition": "investigate",
       "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchVRM.py",
+      "line": 165,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "l = FreeCAD.ActiveDocument.addObject(\"App::AnnotationLabel\", \"facelabel\")"
     },
     {
       "path": "src/Mod/BIM/ArchWall.py",
@@ -10307,6 +10359,62 @@
       "evidence": "obj = FreeCAD.ActiveDocument.addObject(appset[\"FreeCADType\"], appset[\"FreeCADName\"])"
     },
     {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 92,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 125,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "annotation, FreeCAD.ActiveDocument, ifcscale, preferences"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 134,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 134,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 141,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 315,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "d = FreeCAD.ActiveDocument.Meta"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCmulticore.py",
+      "line": 317,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.Meta = d"
+    },
+    {
       "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
       "line": 41,
       "category": "live-app-dereference",
@@ -14051,6 +14159,22 @@
       "evidence": "outputpath, _ = os.path.split(FreeCAD.ActiveDocument.getFileName())"
     },
     {
+      "path": "src/Mod/CAM/Path/Post/UtilsExport.py",
+      "line": 106,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/UtilsExport.py",
+      "line": 107,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "cam_file = os.path.basename(FreeCAD.ActiveDocument.FileName)"
+    },
+    {
       "path": "src/Mod/CAM/Path/Tool/Controller.py",
       "line": 130,
       "category": "direct-recompute",
@@ -14683,12 +14807,180 @@
       "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
+      "path": "src/Mod/Draft/draftfunctions/cut.py",
+      "line": 59,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.activeDocument():"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/cut.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.activeDocument().addObject(\"Part::Cut\", \"Cut\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/downgrade.py",
+      "line": 316,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/draftify.py",
+      "line": 79,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "nobj = App.ActiveDocument.addObject(\"Part::Feature\", obj.Name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/draftify.py",
+      "line": 87,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/extrude.py",
+      "line": 52,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/extrude.py",
+      "line": 55,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Extrusion\", \"Extrusion\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/fuse.py",
+      "line": 50,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/fuse.py",
+      "line": 63,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", \"Fusion\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/fuse.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Feature\", \"Fusion\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/fuse.py",
+      "line": 74,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Fuse\", \"Fusion\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/heal.py",
+      "line": 61,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "objlist = App.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/heal.py",
+      "line": 115,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.removeObject(n)"
+    },
+    {
       "path": "src/Mod/Draft/draftfunctions/mirror.py",
       "line": 102,
       "category": "live-app-dereference",
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "mir = App.ActiveDocument.addObject(\"Part::Mirroring\", \"Mirror\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 152,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 175,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 188,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 197,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 225,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", \"Offset\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/offset.py",
+      "line": 263,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.removeObject(delete)"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/upgrade.py",
+      "line": 423,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = App.ActiveDocument"
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_base.py",
@@ -15403,6 +15695,86 @@
       "evidence": "self.doc.recompute()"
     },
     {
+      "path": "src/Mod/Draft/draftmake/make_array.py",
+      "line": 83,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_bezcurve.py",
+      "line": 73,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_bezcurve.py",
+      "line": 87,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", fname)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_block.py",
+      "line": 53,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_block.py",
+      "line": 56,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", \"Block\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_bspline.py",
+      "line": 70,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_bspline.py",
+      "line": 100,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", fname)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_circle.py",
+      "line": 104,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_circle.py",
+      "line": 116,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_circulararray.py",
+      "line": 133,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, base_object = utils.find_object(base_object, doc=App.activeDocument())"
+    },
+    {
       "path": "src/Mod/Draft/draftmake/make_clone.py",
       "line": 123,
       "category": "live-app-dereference",
@@ -15417,6 +15789,126 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "cl = App.ActiveDocument.addObject(\"Part::FeaturePython\", \"Clone\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_copy.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_copy.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", _name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_copy.py",
+      "line": 74,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.copyObject(obj, True)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_copy.py",
+      "line": 76,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.copyObject(obj)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 128,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 132,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "new_obj = App.ActiveDocument.addObject(\"App::FeaturePython\", \"Dimension\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 264,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 353,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 481,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 602,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_dimension.py",
+      "line": 648,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "new_obj = App.ActiveDocument.addObject(\"App::FeaturePython\", \"Dimension\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_ellipse.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_ellipse.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Ellipse\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_facebinder.py",
+      "line": 55,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_facebinder.py",
+      "line": 60,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "fb = App.ActiveDocument.addObject(\"Part::FeaturePython\", name)"
     },
     {
       "path": "src/Mod/Draft/draftmake/make_fillet.py",
@@ -15451,6 +15943,38 @@
       "evidence": "found, doc = utils.find_doc(App.activeDocument())"
     },
     {
+      "path": "src/Mod/Draft/draftmake/make_layer.py",
+      "line": 54,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_layer.py",
+      "line": 144,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_patharray.py",
+      "line": 177,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_patharray.py",
+      "line": 326,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
       "path": "src/Mod/Draft/draftmake/make_point.py",
       "line": 69,
       "category": "live-app-dereference",
@@ -15465,6 +15989,158 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_pointarray.py",
+      "line": 90,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_polararray.py",
+      "line": 109,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, base_object = utils.find_object(base_object, doc=App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_polygon.py",
+      "line": 66,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_polygon.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Polygon\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_rectangle.py",
+      "line": 67,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_rectangle.py",
+      "line": 83,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Rectangle\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_shape2dview.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_shape2dview.py",
+      "line": 61,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Shape2DView\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_shapestring.py",
+      "line": 53,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_shapestring.py",
+      "line": 57,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"ShapeString\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_shapestring.py",
+      "line": 71,
+      "category": "direct-recompute",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_sketch.py",
+      "line": 86,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_sketch.py",
+      "line": 150,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "nobj = App.ActiveDocument.addObject(\"Sketcher::SketchObject\", name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_text.py",
+      "line": 93,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_text.py",
+      "line": 176,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_wire.py",
+      "line": 71,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_wire.py",
+      "line": 111,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", fname)"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_wpproxy.py",
+      "line": 51,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_wpproxy.py",
+      "line": 52,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"App::FeaturePython\", \"WPProxy\")"
     },
     {
       "path": "src/Mod/Draft/drafttaskpanels/task_scale.py",
@@ -17235,6 +17911,54 @@
       "evidence": "p.waitForFinished()"
     },
     {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 54,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 60,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 66,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 83,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 89,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femresult/resulttools.py",
+      "line": 477,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "MatMechNon = FreeCAD.ActiveDocument.getObject(\"MaterialMechanicalNonlinear\")"
+    },
+    {
       "path": "src/Mod/Fem/femsolver/calculix/calculixtools.py",
       "line": 370,
       "category": "thread-waits",
@@ -18369,6 +19093,14 @@
       "subsystem": "MeshPart",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCAD2Dgeom.py",
+      "line": 444,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc = doc or FreeCAD.activeDocument()"
     },
     {
       "path": "src/Mod/OpenSCAD/OpenSCADCommands.py",

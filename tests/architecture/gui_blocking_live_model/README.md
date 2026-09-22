@@ -36,18 +36,23 @@ The scanner covers production GUI source only:
   and the reviewed direct GUI modules for Robot and other production
   workbenches. The manifest also follows qualifying transitive GUI imports,
   including CAM tool-library UI, BIM view providers, Assembly GUI helpers,
-  OpenSCAD providers, and BasicShapes view providers. The direct local imports
-  made by every production `InitGui.py` and the reviewed transitive imports are
-  either in this manifest or listed in `rules.py` with an explicit App/model-
-  layer exclusion rationale. The transitive closure has the same explicit
-  treatment for imported CAM operation, BIM IFC/IO, Draft geometry, FEM solver,
-  and OpenSCAD import helpers; these model/IO modules are excluded by path while
-  their GUI callers remain in scope.
+  OpenSCAD providers, and BasicShapes view providers. GUI-bearing Draft
+  constructors/functions, CAM export helpers, FEM result presentation, and
+  OpenSCAD presentation helpers are included even when their filenames do not
+  contain `Gui`. The direct local imports made by every production `InitGui.py`
+  and the reviewed transitive imports are either in this manifest or listed in
+  `rules.py` with an explicit per-file App/model-layer exclusion rationale.
+  The transitive closure has the same explicit treatment for imported CAM
+  operation, BIM IFC/IO, Draft geometry, FEM solver, and OpenSCAD import
+  helpers; executable GUI hooks in these modules are AST-checked and promoted,
+  while only model/IO-only modules remain excluded.
 
 Dynamic `importlib.import_module` sites are handled by deterministic reviewed
 patterns in `rules.py`: the BIM `Arch*.py` family and CAM operation GUI pages.
-The validator expands those repository-local patterns without executing runtime
-module selection.
+The validator requires each manifest source and target pattern to remain
+present, expands those repository-local patterns without executing runtime
+module selection, and requires every other nonliteral import in scanned Python
+to have an explicit external-boundary or already-scoped-package policy.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
