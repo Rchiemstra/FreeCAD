@@ -1073,6 +1073,46 @@ str.join(parts)
             {10},
         )
 
+    def test_cpp_global_command_after_expression_keywords_is_not_contextual(self) -> None:
+        source = (
+            "namespace Other::Gui {\n"
+            "void command() {\n"
+            "return :: /*comment*/ Gui::Command::doCommand(\n"
+            '    :: /*comment*/ Gui::Command::Doc, "App.ActiveDocument.recompute()"\n'
+            ");\n"
+            "}\n"
+            "}\n"
+            "namespace Other::Gui {\n"
+            "void contextual() {\n"
+            "Other /*comment*/ :: Gui::Command::doCommand(\n"
+            '    Gui::Command::Doc, "App.ActiveDocument.recompute()"\n'
+            ");\n"
+            "}\n"
+            "}\n"
+        )
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertIn((4, "direct-recompute"), categories)
+        self.assertIn((4, "live-app-dereference"), categories)
+        self.assertNotIn((10, "direct-recompute"), categories)
+
+    def test_cpp_global_command_after_return_with_spaced_scope_is_found(self) -> None:
+        source = (
+            "namespace Other::Gui { void f(){ return :: Gui::Command::doCommand("
+            ':: Gui::Command::Doc, "App.ActiveDocument.recompute()"); } }\n'
+            "namespace Other::Gui { void g(){ Other :: Gui::Command::doCommand("
+            'Gui::Command::Doc, "App.ActiveDocument.recompute()"); } }\n'
+        )
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertIn((1, "direct-recompute"), categories)
+        self.assertIn((1, "live-app-dereference"), categories)
+        self.assertNotIn((2, "direct-recompute"), categories)
+
     def test_cpp_command_extraction_rejects_dynamic_and_member_expressions(self) -> None:
         source = (
             'other.doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
