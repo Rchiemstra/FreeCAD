@@ -857,36 +857,93 @@ def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
     # requires keyword; avoid copying an entire large translation unit for each
     # requires-expression encountered during the production scan.
     prefix = masked[max(0, offset - 512) : offset]
-    qualifiers = (
-        r"(?:(?:const|volatile|override|final|mutable|constexpr|consteval)\b|"
-        r"noexcept(?:\s*\([^)]*\))?|\[\[[^]]*\]\])*"
-    )
-    if re.search(rf"\)\s*{qualifiers}\s*->\s*[^;{{}}]+$", prefix):
+    if _cpp_requires_ref_qualifier_is_declarator(prefix):
         return True
-    if re.search(rf"\)\s*{qualifiers}\s*$", prefix):
-        return True
-    if not re.search(rf"\)\s*{qualifiers}\s*&&?\s*$", prefix):
-        return False
-    return _cpp_requires_ref_qualifier_is_declarator(prefix)
+    for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
+        if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
+            return True
+    return False
 
 
-def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
-    close = prefix.rfind(")")
-    if close < 0:
-        return False
-    depth = 0
-    opening = None
-    for index in range(close, -1, -1):
-        if prefix[index] == ")":
-            depth += 1
-        elif prefix[index] == "(":
-            depth -= 1
-            if depth == 0:
-                opening = index
-                break
-    if opening is None:
-        return False
-    declarator = prefix[:opening].rstrip()
+def _cpp_requires_suffix(suffix: str) -> tuple[bool, bool] | None:
+    """Parse function declarator suffixes immediately before ``requires``."""
+    index = 0
+    phase = 0
+    has_ref_qualifier = False
+    end = len(suffix)
+    while True:
+        index = _skip_cpp_trivia(suffix, index, end)
+        if index == end:
+            return has_ref_qualifier, False
+        if suffix.startswith("[[", index):
+            if phase > 1:
+                return None
+            closing = suffix.find("]]", index + 2)
+            if closing < 0:
+                return None
+            phase = 1
+            index = closing + 2
+            continue
+        qualifier = re.match(
+            r"(?:const|volatile|override|final|mutable|constexpr|consteval|static)\b",
+            suffix[index:],
+        )
+        if qualifier is not None:
+            if phase != 0 or has_ref_qualifier:
+                return None
+            index += qualifier.end()
+            continue
+        if suffix.startswith("&&", index) or suffix.startswith("&", index):
+            if phase != 0 or has_ref_qualifier:
+                return None
+            has_ref_qualifier = True
+            index += 2 if suffix.startswith("&&", index) else 1
+            continue
+        exception = re.match(r"(?:noexcept|throw)\b", suffix[index:])
+        if exception is not None:
+            if phase > 1:
+                return None
+            phase = 1
+            index += exception.end()
+            index = _skip_cpp_trivia(suffix, index, end)
+            if index < end and suffix[index] == "(":
+                closing = _cpp_call_end(suffix, index)
+                if closing is None:
+                    return None
+                index = closing + 1
+            continue
+        if suffix.startswith("->", index):
+            if phase > 1 or not suffix[index + 2 :].strip():
+                return None
+            return has_ref_qualifier, True
+        return None
+
+
+def _cpp_requires_declarator_candidates(prefix: str) -> list[tuple[int, bool]]:
+    candidates: list[tuple[int, bool]] = []
+    for closing in range(len(prefix) - 1, -1, -1):
+        if prefix[closing] != ")":
+            continue
+        depth = 0
+        opening = None
+        for index in range(closing, -1, -1):
+            if prefix[index] == ")":
+                depth += 1
+            elif prefix[index] == "(":
+                depth -= 1
+                if depth == 0:
+                    opening = index
+                    break
+        if opening is None:
+            continue
+        parsed_suffix = _cpp_requires_suffix(prefix[closing + 1 :])
+        if parsed_suffix is not None:
+            candidates.append((opening, parsed_suffix[0]))
+    return candidates
+
+
+def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
+    declarator = declarator.rstrip()
     boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
     declarator = declarator[boundary + 1 :]
     angle_depth = 0
@@ -897,7 +954,9 @@ def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
             angle_depth -= 1
         elif character == "=" and angle_depth == 0:
             operator_start = declarator.rfind("operator", 0, index)
-            if operator_start < 0 or not re.fullmatch(
+            if operator_start < 0 and "[" not in declarator:
+                return False
+            if operator_start >= 0 and not re.fullmatch(
                 r"\s*[^A-Za-z0-9_]*",
                 declarator[operator_start + len("operator") : index],
             ):
@@ -914,6 +973,13 @@ def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
             r"(?:^|\s)[A-Za-z_]\w*(?:::\w+)*(?:\s*[&*]+)?(?:\s*<[^<>]*>)?\s+[A-Za-z_]\w*(?:\s*<[^<>]*>)?\s*$",
             declarator,
         )
+    )
+
+
+def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
+    return any(
+        has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening])
+        for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix)
     )
 
 
