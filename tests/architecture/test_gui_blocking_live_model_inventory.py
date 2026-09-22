@@ -111,6 +111,31 @@ def _dotted_name(node: ast.AST) -> str | None:
     return None
 
 
+def _imported_module_candidates(source: str) -> set[str]:
+    """Return normalized module and imported-target names from Python imports."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return set()
+    candidates: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                candidates.add(alias.name)
+                if alias.asname:
+                    candidates.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level + (node.module or "")
+            if prefix:
+                candidates.add(prefix)
+            for alias in node.names:
+                target = f"{prefix}.{alias.name}" if prefix else f".{alias.name}"
+                candidates.add(target)
+                if alias.asname:
+                    candidates.add(f"{prefix}.{alias.asname}")
+    return candidates
+
+
 def _static_string_expression(node: ast.AST, constants: set[str]) -> bool:
     if isinstance(node, ast.Name) and node.id in constants:
         return True
@@ -163,10 +188,29 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
                         module_from_spec_names.add(bound)
                 elif node.module == "builtins" and alias.name == "__import__":
                     builtin_import_names.add(bound)
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name) and _static_string_expression(node.value, set()):
+    assignment_nodes = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+        ),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    for node in assignment_nodes:
+        if isinstance(node, ast.Assign):
+            targets = [target for target in node.targets if isinstance(target, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target] if isinstance(node.target, ast.Name) else []
+            value = node.value
+        else:
+            targets = [node.target] if isinstance(node.target, ast.Name) else []
+            value = None
+        for target in targets:
+            if value is not None and _static_string_expression(value, constants):
                 constants.add(target.id)
+            else:
+                constants.discard(target.id)
 
     known_import_module_calls = import_module_names | {
         f"{module}.import_module" for module in importlib_modules
@@ -195,6 +239,7 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
         ):
             if value in known:
                 aliases.add(target.id)
+                known.add(target.id)
                 break
 
     def keyword_or_positional(call: ast.Call, keyword: str, index: int) -> ast.AST | None:
@@ -1401,6 +1446,38 @@ spec.loader.exec_module(module)
         )
         self.assertEqual(_nonliteral_runtime_loader_lines('import_module("literal")'), [])
 
+    def test_runtime_loader_classifier_handles_assignment_aliases(self) -> None:
+        source = """
+import builtins
+import importlib
+load = importlib.import_module
+load_builtin = builtins.__import__
+make_spec = importlib.util.spec_from_file_location
+make_module = importlib.util.module_from_spec
+load(runtime_name)
+load_builtin(runtime_name)
+spec = make_spec(runtime_name, location)
+make_module(spec)
+"""
+        self.assertEqual(
+            [kind for _line, kind in _runtime_loader_calls(source)],
+            [
+                "import_module",
+                "__import__",
+                "spec_from_file_location",
+                "module_from_spec",
+            ],
+        )
+
+    def test_runtime_loader_constants_are_invalidated_by_rebinding(self) -> None:
+        source = """
+import importlib
+name = "fixed"
+name = runtime_name
+importlib.import_module(name)
+"""
+        self.assertEqual([kind for _line, kind in _runtime_loader_calls(source)], ["import_module"])
+
     def test_runtime_loader_policy_mutations_reject_bad_sources(self) -> None:
         manifests = (
             ("target", rules.REVIEWED_DYNAMIC_IMPORT_TARGETS),
@@ -1455,30 +1532,29 @@ spec.loader.exec_module(module)
         self.assertFalse(unreviewed, "unreviewed dynamic imports: " + ", ".join(unreviewed))
 
     def test_dynamic_only_targets_are_not_static_imports(self) -> None:
-        arch_source = ast.parse((REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text())
-        arch_imports: set[str] = set()
-        for node in ast.walk(arch_source):
-            if isinstance(node, ast.Import):
-                arch_imports.update(alias.name.split(".")[-1] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                arch_imports.update(alias.name for alias in node.names)
+        arch_imports = _imported_module_candidates(
+            (REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text()
+        )
         self.assertNotIn("ArchCovering", arch_imports)
         arch_targets = {
             path.relative_to(REPOSITORY_ROOT).as_posix()
             for path in REPOSITORY_ROOT.glob("src/Mod/BIM/Arch*.py")
         }
         self.assertIn("src/Mod/BIM/ArchCovering.py", arch_targets)
-        cam_source = ast.parse((REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py").read_text())
-        cam_imports: set[str] = set()
-        for node in ast.walk(cam_source):
-            if isinstance(node, ast.Import):
-                cam_imports.update(alias.name.split(".")[-1] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                cam_imports.update(alias.name for alias in node.names)
+        cam_imports = _imported_module_candidates(
+            (REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py").read_text()
+        )
         self.assertNotIn("Adaptive", cam_imports)
-        cam_text = ast.unparse(cam_source)
-        self.assertNotIn("Path.Op.Gui.Adaptive", cam_text)
         self.assertTrue((REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Adaptive.py").is_file())
+
+    def test_imported_module_candidates_include_relative_modules(self) -> None:
+        candidates = _imported_module_candidates(
+            "from .ArchCovering import X\nfrom .Adaptive import X as AdaptiveX\n"
+        )
+        self.assertIn(".ArchCovering", candidates)
+        self.assertIn(".ArchCovering.X", candidates)
+        self.assertIn(".Adaptive", candidates)
+        self.assertIn(".Adaptive.X", candidates)
 
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
