@@ -44,6 +44,11 @@ The scanner covers production GUI source only:
   and OpenSCAD import helpers; these model/IO modules are excluded by path while
   their GUI callers remain in scope.
 
+Dynamic `importlib.import_module` sites are handled by deterministic reviewed
+patterns in `rules.py`: the BIM `Arch*.py` family and CAM operation GUI pages.
+The validator expands those repository-local patterns without executing runtime
+module selection.
+
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
 Excluded from scope:
@@ -81,7 +86,8 @@ matched source line(s) as `evidence`.
 | `update-data-provider` | `\bupdateData[^\S\n]*\([^\S\n]*const[^\S\n]+App::Property` | `migrate` |
 
 The Python patterns mirror the C++ ones where a Python equivalent exists:
-`thread-waits` (`.waitFor*` including local-socket `.waitForConnected(` and `.wait(`), `blocking-invokes`
+`thread-waits` (`.waitFor*` including local-socket `.waitForConnected(`, `.wait(`,
+and AST-classified joins on thread/task/process-like receivers), `blocking-invokes`
 (`BlockingQueuedConnection`), `process-events-polling` (`processEvents(` and
 the `FreeCADGui`/`Gui.updateGui()` wrapper), `direct-recompute` (`.recompute(`),
 `live-app-dereference` (`App`/`FreeCAD.ActiveDocument`, callable
@@ -102,7 +108,7 @@ surface small):
   and `std::thread::detach`. It captures blocking waits on helper processes and
   futures (`waitForFinished`), `QThreadPool::waitForDone`, `waitForStarted`,
   `waitForBytesWritten`, `waitForConnected` on local sockets, `QThread::wait`,
-  `pthread_join`, and the instance
+  `pthread_join`, Python worker/task/process `.join()` calls, and the instance
   member wait (`thread->wait()` and `QWaitCondition().wait(...)`). The one
   worker-side self-wait (the `SignalThread` background thread blocking on its
   own condition) is excluded individually in `exclusions.json` because it does

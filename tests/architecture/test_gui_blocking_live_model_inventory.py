@@ -358,6 +358,26 @@ class RuleRegressionTests(unittest.TestCase):
             py.search(scanner.mask_py_non_code("socket.waitForConnected(timeout)")),
             "QLocalSocket waitForConnected",
         )
+        for source in (
+            '".".join(parts)',
+            "Path(directory).joinpath(name)",
+            '"".join(parts)',
+        ):
+            self.assertEqual(scanner._python_thread_join_matches(source), [], source)
+        self.assertEqual(
+            scanner._python_thread_join_matches("machine.join()"),
+            [(1, "machine.join()")],
+        )
+
+    def test_thread_wait_structural_python_join_covers_workers(self) -> None:
+        source = """\
+machine = createMachine()
+machine.join()
+task.join()
+str.join(parts)
+"""
+        matches = scanner._python_thread_join_matches(source)
+        self.assertEqual(matches, [(2, "machine.join()"), (3, "task.join()")])
 
     def test_live_app_dereference_covers_multiline_and_getDocuments(self) -> None:
         cpp = scanner.compiled_pattern("live-app-dereference", "cpp")
@@ -788,6 +808,11 @@ class RepositoryInventoryTests(unittest.TestCase):
     def test_python_thread_wait_found(self) -> None:
         self._assert_site("src/Mod/CAM/Path/Main/Gui/Camotics.py", 151, "thread-waits")
 
+    def test_python_thread_join_waits_found(self) -> None:
+        self._assert_site("src/Mod/Fem/femsolver/run.py", 193, "thread-waits")
+        self._assert_site("src/Mod/Fem/femsolver/run.py", 435, "thread-waits")
+        self._assert_site("src/Mod/Fem/femsolver/task.py", 143, "thread-waits")
+
     def test_python_live_dereference_found(self) -> None:
         self._assert_site("src/Mod/CAM/Path/Base/Gui/GetPoint.py", 136, "live-app-dereference")
 
@@ -985,6 +1010,9 @@ class RepositoryInventoryTests(unittest.TestCase):
                             for candidate in candidates(base / name)
                             if candidate.is_file()
                         )
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            for pattern in rules.REVIEWED_DYNAMIC_IMPORT_TARGETS.get(relative, ()):
+                targets.extend(sorted(REPOSITORY_ROOT.glob(pattern)))
             return targets
 
         def is_qualifying_gui_module(path: Path) -> bool:
@@ -1007,6 +1035,13 @@ class RepositoryInventoryTests(unittest.TestCase):
             for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/ArchStructure.py")
         }
         self.assertIn("src/Mod/BIM/ArchComponent.py", bim_targets)
+        self.assertIn(
+            "src/Mod/BIM/ArchWindowPresets.py",
+            {
+                target.relative_to(REPOSITORY_ROOT).as_posix()
+                for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/Arch.py")
+            },
+        )
         cam_targets = {
             target.relative_to(REPOSITORY_ROOT).as_posix()
             for target in import_targets(
@@ -1021,10 +1056,24 @@ class RepositoryInventoryTests(unittest.TestCase):
             )
         }
         self.assertIn("src/Mod/CAM/Path/Tool/library/ui/editor.py", relative_cam_targets)
+        self.assertIn(
+            "src/Mod/CAM/Path/Op/Gui/Adaptive.py",
+            {
+                target.relative_to(REPOSITORY_ROOT).as_posix()
+                for target in import_targets(REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py")
+            },
+        )
         self.assertIsInstance(import_targets(REPOSITORY_ROOT / "src/Gui/TreeParams.py"), list)
-        self.assertIn("src/Mod/CAM/Path/Base/PropertyBag.py", exclusions)
+        self.assertNotIn("src/Mod/CAM/Path/Base/PropertyBag.py", exclusions)
         for relative in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS:
             self.assertTrue((REPOSITORY_ROOT / relative).is_file(), relative)
+        for relative in (
+            "src/Mod/CAM/Path/Post/Command.py",
+            "src/Mod/BIM/ArchNesting.py",
+            "src/Mod/Fem/femsolver/run.py",
+            "src/Mod/Fem/femsolver/task.py",
+        ):
+            self.assertNotIn(relative, exclusions)
         while queue:
             current = queue.pop()
             for target in import_targets(current):
@@ -1080,6 +1129,17 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/BIM/ArchBuildingPart.py",
             "src/Mod/BIM/ArchStructure.py",
             "src/Mod/BIM/ArchWindowPresets.py",
+            "src/Mod/BIM/ArchNesting.py",
+            "src/Mod/BIM/nativeifc/ifc_tree.py",
+            "src/Mod/CAM/Path/Post/Command.py",
+            "src/Mod/CAM/Path/Post/Utils.py",
+            "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+            "src/Mod/CAM/Path/Op/Adaptive.py",
+            "src/Mod/Fem/femsolver/elmer/equations/equation.py",
+            "src/Mod/Fem/femsolver/run.py",
+            "src/Mod/OpenSCAD/replaceobj.py",
+            "src/Mod/CAM/Path/Dressup/Utils.py",
+            "src/Mod/Part/CompoundTools/CompoundFilter.py",
             "src/Mod/CAM/Path/Tool/library/ui/cmd.py",
             "src/Mod/CAM/Machine/ui/mtconnect_import_dialog.py",
             "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py",
@@ -1133,9 +1193,13 @@ class RepositoryInventoryTests(unittest.TestCase):
             self.assertNotIn(entry, scope, f"App-layer path {entry} must stay out of scope")
 
     def test_draft_app_layer_files_produce_no_findings(self) -> None:
-        for finding in self.scanned:
-            self.assertNotIn("src/Mod/Draft/draftmake/", finding.path, finding.path)
-            self.assertNotIn("src/Mod/Draft/draftobjects/", finding.path, finding.path)
+        excluded = {
+            path
+            for path in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS
+            if path.startswith("src/Mod/Draft/")
+        }
+        for path in excluded:
+            self.assertFalse(any(finding.path == path for finding in self.scanned), path)
 
     # -- mutation tests ------------------------------------------------------
 

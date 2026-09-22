@@ -422,6 +422,75 @@ def _python_update_data_provider_matches(source: str, relative_path: str) -> lis
     return matches
 
 
+def _python_thread_join_matches(source: str) -> list[tuple[int, str]]:
+    """Return structural Python ``join()`` waits on thread-like receivers.
+
+    A bare ``.join()`` regex would classify string, path, and collection joins.
+    The receiver-name/type hints below intentionally cover worker abstractions
+    used by GUI-facing solver code while leaving ordinary ``str.join`` and
+    ``os.path.join`` calls inert.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    source_lines = source.splitlines()
+    receiver_names = {
+        "machine",
+        "process",
+        "proc",
+        "task",
+        "thread",
+        "worker",
+        "future",
+        "executor",
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call):
+            continue
+        function = value.func
+        if isinstance(function, ast.Name):
+            function_name = function.id
+        elif isinstance(function, ast.Attribute):
+            function_name = function.attr
+        else:
+            function_name = ""
+        if not any(
+            hint in function_name.lower()
+            for hint in ("machine", "process", "thread", "task", "worker", "future")
+        ):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        receiver_names.update(
+            target.id.lower() for target in targets if isinstance(target, ast.Name)
+        )
+    matches: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "join" or node.args or node.keywords:
+            continue
+        receiver = node.func.value
+        if isinstance(receiver, ast.Name):
+            receiver_name = receiver.id
+        elif isinstance(receiver, ast.Attribute):
+            receiver_name = receiver.attr
+        else:
+            receiver_name = ""
+        receiver_lower = receiver_name.lower()
+        if receiver_lower not in receiver_names and not any(
+            receiver_lower.endswith(suffix)
+            for suffix in ("thread", "task", "process", "worker", "future")
+        ):
+            continue
+        if node.lineno <= len(source_lines):
+            matches.append((node.lineno, source_lines[node.lineno - 1].strip()))
+    return matches
+
+
 def _do_command_string_spans(source: str) -> list[tuple[int, int]]:
     """Return executable string spans passed to FreeCADGui/Gui.doCommand.
 
@@ -627,6 +696,7 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
     provider_matches = (
         _python_update_data_provider_matches(source, relative_path) if suffix == ".py" else []
     )
+    thread_join_matches = _python_thread_join_matches(source) if suffix == ".py" else []
     for category in rules.CATEGORIES:
         if category.key == "update-data-provider" and suffix == ".py":
             for line, evidence in provider_matches:
@@ -641,6 +711,18 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
                     )
                 )
             continue
+        if category.key == "thread-waits" and suffix == ".py":
+            for line, evidence in thread_join_matches:
+                findings.append(
+                    Finding(
+                        path=relative_path,
+                        line=line,
+                        category=category.key,
+                        subsystem=subsystem,
+                        disposition=category.default_disposition,
+                        evidence=evidence,
+                    )
+                )
         compiled = _COMPILED[(category.key, language)]
         if compiled is None:
             continue

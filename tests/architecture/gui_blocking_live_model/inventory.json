@@ -137,6 +137,17 @@
     "src/Mod/BIM/ArchWall.py",
     "src/Mod/BIM/ArchWindow.py",
     "src/Mod/BIM/ArchWindowPresets.py",
+    "src/Mod/BIM/ArchCutPlane.py",
+    "src/Mod/BIM/ArchNesting.py",
+    "src/Mod/BIM/ArchSql.py",
+    "src/Mod/BIM/importers/exportIFC.py",
+    "src/Mod/BIM/importers/importDAE.py",
+    "src/Mod/BIM/importers/importIFC.py",
+    "src/Mod/BIM/importers/importIFCHelper.py",
+    "src/Mod/BIM/nativeifc/ifc_import.py",
+    "src/Mod/BIM/nativeifc/ifc_objects.py",
+    "src/Mod/BIM/nativeifc/ifc_tools.py",
+    "src/Mod/BIM/nativeifc/ifc_tree.py",
     "src/Mod/BIM/ArchCommands.py",
     "src/Mod/CAM/PathCommands.py",
     "src/Mod/CAM/Path/GuiInit.py",
@@ -148,6 +159,64 @@
     "src/Mod/CAM/Path/Preferences.py",
     "src/Mod/CAM/PathScripts/PathUtilsGui.py",
     "src/Mod/CAM/Path/Tool/Controller.py",
+    "src/Mod/CAM/Path/Base/PropertyBag.py",
+    "src/Mod/CAM/Path/Base/SetupSheet.py",
+    "src/Mod/CAM/Path/Dressup/Array.py",
+    "src/Mod/CAM/Path/Dressup/Boundary.py",
+    "src/Mod/CAM/Path/Dressup/DogboneII.py",
+    "src/Mod/CAM/Path/Dressup/Tags.py",
+    "src/Mod/CAM/Path/Dressup/Utils.py",
+    "src/Mod/CAM/Path/Main/Job.py",
+    "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+    "src/Mod/CAM/Path/Main/Stock.py",
+    "src/Mod/CAM/Path/Op/Adaptive.py",
+    "src/Mod/CAM/Path/Op/Base.py",
+    "src/Mod/CAM/Path/Op/Custom.py",
+    "src/Mod/CAM/Path/Op/Deburr.py",
+    "src/Mod/CAM/Path/Op/Drilling.py",
+    "src/Mod/CAM/Path/Op/Engrave.py",
+    "src/Mod/CAM/Path/Op/Flute.py",
+    "src/Mod/CAM/Path/Op/Helix.py",
+    "src/Mod/CAM/Path/Op/MillFace.py",
+    "src/Mod/CAM/Path/Op/MillFacing.py",
+    "src/Mod/CAM/Path/Op/PlanarSurface.py",
+    "src/Mod/CAM/Path/Op/Pocket.py",
+    "src/Mod/CAM/Path/Op/PocketShape.py",
+    "src/Mod/CAM/Path/Op/Probe.py",
+    "src/Mod/CAM/Path/Op/Profile.py",
+    "src/Mod/CAM/Path/Op/RotarySurface.py",
+    "src/Mod/CAM/Path/Op/Slot.py",
+    "src/Mod/CAM/Path/Op/Surface.py",
+    "src/Mod/CAM/Path/Op/Tapping.py",
+    "src/Mod/CAM/Path/Op/ThreadMilling.py",
+    "src/Mod/CAM/Path/Op/Vcarve.py",
+    "src/Mod/CAM/Path/Op/Waterline.py",
+    "src/Mod/CAM/Path/Post/Command.py",
+    "src/Mod/CAM/Path/Post/Utils.py",
+    "src/Mod/CAM/Path/Tool/shape/doc.py",
+    "src/Mod/CAM/PathScripts/PathUtils.py",
+    "src/Mod/Draft/draftfunctions/mirror.py",
+    "src/Mod/Draft/draftmake/make_clone.py",
+    "src/Mod/Draft/draftmake/make_fillet.py",
+    "src/Mod/Draft/draftmake/make_hatch.py",
+    "src/Mod/Draft/draftmake/make_label.py",
+    "src/Mod/Draft/draftmake/make_point.py",
+    "src/Mod/Draft/draftutils/todo.py",
+    "src/Mod/Draft/importSVG.py",
+    "src/Mod/Fem/femmesh/gmshtools.py",
+    "src/Mod/Fem/femmesh/netgentools.py",
+    "src/Mod/Fem/femsolver/calculix/calculixtools.py",
+    "src/Mod/Fem/femsolver/elmer/elmertools.py",
+    "src/Mod/Fem/femsolver/elmer/equations/equation.py",
+    "src/Mod/Fem/femsolver/run.py",
+    "src/Mod/Fem/femsolver/task.py",
+    "src/Mod/Fem/femsolver/z88/z88tools.py",
+    "src/Mod/Fem/femtools/ccxtools.py",
+    "src/Mod/Fem/femtools/objecttools.py",
+    "src/Mod/Fem/feminout/importCcxFrdResults.py",
+    "src/Mod/OpenSCAD/importCSG.py",
+    "src/Mod/OpenSCAD/replaceobj.py",
+    "src/Mod/Part/CompoundTools/CompoundFilter.py",
     "src/Mod/Draft/WorkingPlane.py",
     "src/Mod/Help/Help.py",
     "src/Mod/OpenSCAD/OpenSCADCommands.py",
@@ -4294,6 +4363,22 @@
       "evidence": "def updateData(self, obj, prop):"
     },
     {
+      "path": "src/Mod/BIM/ArchCutPlane.py",
+      "line": 154,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"CutVolume\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCutPlane.py",
+      "line": 164,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "cutObj = FreeCAD.ActiveDocument.addObject(\"Part::Cut\", \"CutPlane\")"
+    },
+    {
       "path": "src/Mod/BIM/ArchEquipment.py",
       "line": 226,
       "category": "update-data-provider",
@@ -4496,6 +4581,38 @@
     {
       "path": "src/Mod/BIM/ArchMaterial.py",
       "line": 1049,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchNesting.py",
+      "line": 117,
+      "category": "process-events-polling",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "QtGui.QApplication.processEvents()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchNesting.py",
+      "line": 652,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "o = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"Nest\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchNesting.py",
+      "line": 656,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchNesting.py",
+      "line": 656,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -4980,6 +5097,78 @@
       "subsystem": "BIM",
       "disposition": "migrate",
       "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 188,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objects_by_name = {o.Name: o for o in FreeCAD.ActiveDocument.Objects}"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 198,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objects_by_label = {o.Label: o for o in FreeCAD.ActiveDocument.Objects}"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 202,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objects_by_label = {o.Label: o for o in FreeCAD.ActiveDocument.Objects}"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 804,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "headers, rows = self.args.execute(FreeCAD.ActiveDocument.Objects)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 823,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objects_by_name = {o.Name: o for o in FreeCAD.ActiveDocument.Objects}"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 824,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objects_by_label = {o.Label: o for o in FreeCAD.ActiveDocument.Objects}"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 915,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "headers, rows = substatement.execute(FreeCAD.ActiveDocument.Objects)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 1674,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "found_objects = FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSql.py",
+      "line": 2514,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
     },
     {
       "path": "src/Mod/BIM/ArchStairs.py",
@@ -9854,6 +10043,270 @@
       "evidence": "window = FreeCAD.ActiveDocument.getObject(it.toolTip(0))"
     },
     {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 299,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "owner = FreeCAD.ActiveDocument.CreatedBy"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 313,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "template = template.replace(\"$company\", FreeCAD.ActiveDocument.Company)"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 581,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "group = [FreeCAD.ActiveDocument.getObject(n[:-1]) for n in obj.getSubObjects()]"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1316,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "Draft.getType(FreeCAD.ActiveDocument.getObject(k))"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1320,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "elif Draft.getType(FreeCAD.ActiveDocument.getObject(k)) == \"BuildingPart\":"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1322,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getObject(k).IfcType"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1488,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if Draft.getType(FreeCAD.ActiveDocument.getObject(c)) in [\"Group\", \"VisGroup\"]:"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1510,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "name = FreeCAD.ActiveDocument.getObject(g[0]).Label"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1522,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "go = FreeCAD.ActiveDocument.getObject(g[0])"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1653,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/exportIFC.py",
+      "line": 1653,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 120,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = doc"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 130,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 133,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = doc"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 140,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.activeDocument()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 217,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "author = FreeCAD.ActiveDocument.CreatedBy"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importDAE.py",
+      "line": 219,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "author = FreeCAD.ActiveDocument.CreatedBy.encode(\"utf8\")"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 199,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 203,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = doc"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 722,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 981,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1031,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1035,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1089,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1095,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1185,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1222,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1227,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1236,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1280,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1434,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFC.py",
+      "line": 1453,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/importers/importIFCHelper.py",
+      "line": 1015,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(appset[\"FreeCADType\"], appset[\"FreeCADName\"])"
+    },
+    {
       "path": "src/Mod/BIM/nativeifc/ifc_commands.py",
       "line": 41,
       "category": "live-app-dereference",
@@ -9932,6 +10385,46 @@
       "subsystem": "BIM",
       "disposition": "investigate",
       "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_import.py",
+      "line": 81,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "document = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_import.py",
+      "line": 102,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "document.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_objects.py",
+      "line": 144,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_objects.py",
+      "line": 149,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_objects.py",
+      "line": 391,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "o.recompute()"
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_observer.py",
@@ -10068,6 +10561,38 @@
       "subsystem": "BIM",
       "disposition": "migrate",
       "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
+      "line": 1392,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "layer = FreeCAD.ActiveDocument.getObject(autogroup)"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
+      "line": 1473,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "tempobj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
+      "line": 1811,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_tree.py",
+      "line": 129,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "obj.Document.recompute()"
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
@@ -10476,6 +11001,54 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Create Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/PropertyBag.py",
+      "line": 180,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/SetupSheet.py",
+      "line": 234,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Base/SetupSheet.py",
+      "line": 438,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Array.py",
+      "line": 400,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Boundary.py",
+      "line": 396,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/DogboneII.py",
+      "line": 504,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Array.py",
@@ -11574,6 +12147,46 @@
       "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
+      "path": "src/Mod/CAM/Path/Dressup/Tags.py",
+      "line": 74,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Sphere\", label)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Tags.py",
+      "line": 84,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Cylinder\", label)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Tags.py",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Cone\", label)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Tags.py",
+      "line": 1368,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Utils.py",
+      "line": 33,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument and FreeCAD.GuiUp:"
+    },
+    {
       "path": "src/Mod/CAM/Path/Main/Gui/Camotics.py",
       "line": 86,
       "category": "live-app-dereference",
@@ -12068,6 +12681,254 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 96,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.Document.recompute()  # necessary to create the clone shape"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 308,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "ops = FreeCAD.ActiveDocument.addObject(\"App::DocumentObjectGroup\", \"Operations\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 352,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "model = FreeCAD.ActiveDocument.addObject(\"App::DocumentObjectGroup\", \"Model\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 382,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "toolTable = FreeCAD.ActiveDocument.addObject(\"App::DocumentObjectGroup\", \"Tools\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 484,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "ops = FreeCAD.ActiveDocument.addObject(\"Path::FeatureCompoundPython\", \"Operations\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 489,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 752,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 919,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "[obj for obj in FreeCAD.ActiveDocument.Objects if cls.isBaseCandidate(obj)],"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 931,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 934,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for job in FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 946,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "models.append(FreeCAD.ActiveDocument.getObject(baseName))"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Job.py",
+      "line": 949,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+      "line": 137,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+      "line": 197,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+      "line": 207,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Stock.py",
+      "line": 431,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stock\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Stock.py",
+      "line": 455,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stock\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Stock.py",
+      "line": 481,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stock\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Adaptive.py",
+      "line": 131,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Adaptive.py",
+      "line": 359,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Adaptive.py",
+      "line": 544,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Adaptive.py",
+      "line": 2001,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Base.py",
+      "line": 476,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Base.py",
+      "line": 537,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Base.py",
+      "line": 1163,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Custom.py",
+      "line": 174,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "doc_path = os.path.dirname(FreeCAD.ActiveDocument.FileName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Custom.py",
+      "line": 267,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Deburr.py",
+      "line": 483,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Drilling.py",
+      "line": 747,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Engrave.py",
+      "line": 319,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Flute.py",
+      "line": 2320,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
     },
     {
       "path": "src/Mod/CAM/Path/Op/Gui/Array.py",
@@ -12758,6 +13619,406 @@
       "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
+      "path": "src/Mod/CAM/Path/Op/Helix.py",
+      "line": 1000,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/MillFace.py",
+      "line": 384,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/MillFacing.py",
+      "line": 667,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/PlanarSurface.py",
+      "line": 1931,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 342,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"topEdgeFace\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 343,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "highFace = FreeCAD.ActiveDocument.ActiveObject"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 383,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"bottomEdgeFace\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 384,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "lowFace = FreeCAD.ActiveDocument.ActiveObject"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 479,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getObject(rn).purgeTouched()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Pocket.py",
+      "line": 896,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/PocketShape.py",
+      "line": 379,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Probe.py",
+      "line": 189,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 435,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if hasattr(FreeCAD.ActiveDocument, grpNm):"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 436,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "for go in FreeCAD.ActiveDocument.getObject(grpNm).Group:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 437,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(go.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 438,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(grpNm)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 439,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.tmpGrp = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 1420,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "newDocObj = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"tmp_\" + objName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Profile.py",
+      "line": 1435,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/RotarySurface.py",
+      "line": 724,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Slot.py",
+      "line": 511,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.tmpGrp = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Slot.py",
+      "line": 574,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Slot.py",
+      "line": 1688,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "do = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"tmp_\" + objName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Slot.py",
+      "line": 1705,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 750,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FCAD = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 1013,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction("
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 1016,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 1017,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 1973,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "self.basePlacement = FreeCAD.ActiveDocument.getObject(base.Name).Placement"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 2552,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "do = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"tmp_\" + objName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Surface.py",
+      "line": 2569,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Tapping.py",
+      "line": 317,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/ThreadMilling.py",
+      "line": 566,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Vcarve.py",
+      "line": 766,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "vPart = FreeCAD.activeDocument().addObject(\"App::Part\", f\"{obj.Name}-VoronoiDebugMedial\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Vcarve.py",
+      "line": 793,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "vPart = FreeCAD.activeDocument().addObject(\"App::Part\", f\"{obj.Name}-VoronoiDebugEdge\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Vcarve.py",
+      "line": 814,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Waterline.py",
+      "line": 767,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FCAD = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Waterline.py",
+      "line": 2453,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "do = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"tmp_\" + objName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Waterline.py",
+      "line": 2467,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 222,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Post Process the Selected Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 223,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 226,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Post Process the Selected Job\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 239,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 244,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 253,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 259,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 283,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 344,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 369,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Post Process the Selected operations\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Command.py",
+      "line": 380,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "baseOp = FreeCAD.ActiveDocument.getObject(selection[0].Base[0])"
+    },
+    {
       "path": "src/Mod/CAM/Path/Post/Gui/DlgPostProcess.py",
       "line": 667,
       "category": "process-events-polling",
@@ -12772,6 +14033,22 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "current = os.path.dirname(FreeCAD.activeDocument().FileName)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Utils.py",
+      "line": 88,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "filename = FreeCAD.ActiveDocument.Label"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Post/Utils.py",
+      "line": 91,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "outputpath, _ = os.path.split(FreeCAD.ActiveDocument.getFileName())"
     },
     {
       "path": "src/Mod/CAM/Path/Tool/Controller.py",
@@ -13020,6 +14297,14 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/shape/doc.py",
+      "line": 142,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "doc_name = FreeCAD.ActiveDocument.Name if FreeCAD.ActiveDocument else None"
     },
     {
       "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
@@ -13310,6 +14595,14 @@
       "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
+      "path": "src/Mod/CAM/PathScripts/PathUtils.py",
+      "line": 397,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "removalshape = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", \"Envelope\")"
+    },
+    {
       "path": "src/Mod/Draft/DraftGui.py",
       "line": 1858,
       "category": "live-app-dereference",
@@ -13388,6 +14681,14 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/Draft/draftfunctions/mirror.py",
+      "line": 102,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "mir = App.ActiveDocument.addObject(\"Part::Mirroring\", \"Mirror\")"
     },
     {
       "path": "src/Mod/Draft/draftguitools/gui_base.py",
@@ -14102,6 +15403,70 @@
       "evidence": "self.doc.recompute()"
     },
     {
+      "path": "src/Mod/Draft/draftmake/make_clone.py",
+      "line": 123,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "cl = App.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Clone2D\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_clone.py",
+      "line": 140,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "cl = App.ActiveDocument.addObject(\"Part::FeaturePython\", \"Clone\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_fillet.py",
+      "line": 124,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = App.activeDocument()"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_hatch.py",
+      "line": 75,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_hatch.py",
+      "line": 79,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Hatch\")"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_label.py",
+      "line": 199,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "found, doc = utils.find_doc(App.activeDocument())"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_point.py",
+      "line": 69,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if not App.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Draft/draftmake/make_point.py",
+      "line": 73,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "obj = App.ActiveDocument.addObject(\"Part::FeaturePython\", name)"
+    },
+    {
       "path": "src/Mod/Draft/drafttaskpanels/task_scale.py",
       "line": 256,
       "category": "direct-recompute",
@@ -14196,6 +15561,22 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/todo.py",
+      "line": 164,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.activeDocument().openTransaction(name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/todo.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.activeDocument().commitTransaction()"
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_base.py",
@@ -14420,6 +15801,38 @@
       "subsystem": "Draft",
       "disposition": "migrate",
       "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/importSVG.py",
+      "line": 1269,
+      "category": "direct-recompute",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/Draft/importSVG.py",
+      "line": 1293,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/Draft/importSVG.py",
+      "line": 1296,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = doc"
+    },
+    {
+      "path": "src/Mod/Draft/importSVG.py",
+      "line": 1308,
+      "category": "direct-recompute",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
     },
     {
       "path": "src/Mod/Fem/Gui/ActiveAnalysisObserver.cpp",
@@ -15766,6 +17179,150 @@
       "evidence": "selected_object = FreeCAD.getDocument(docName).getObject(objName)  # get the obj objName"
     },
     {
+      "path": "src/Mod/Fem/feminout/importCcxFrdResults.py",
+      "line": 55,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/Fem/feminout/importCcxFrdResults.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = doc"
+    },
+    {
+      "path": "src/Mod/Fem/feminout/importCcxFrdResults.py",
+      "line": 101,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "pipeline_obj.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/feminout/importCcxFrdResults.py",
+      "line": 122,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Fem/feminout/importCcxFrdResults.py",
+      "line": 309,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femmesh/gmshtools.py",
+      "line": 255,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "process.waitForFinished()"
+    },
+    {
+      "path": "src/Mod/Fem/femmesh/netgentools.py",
+      "line": 432,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "p.waitForFinished()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/calculix/calculixtools.py",
+      "line": 370,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "p.waitForFinished()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/elmer/elmertools.py",
+      "line": 71,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "p.waitForFinished(-1)"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/elmer/elmertools.py",
+      "line": 77,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "p.waitForFinished(-1)"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/elmer/elmertools.py",
+      "line": 275,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "p.waitForFinished()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/elmer/equations/equation.py",
+      "line": 136,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "doc.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/run.py",
+      "line": 193,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "machine.join()  # wait for the machine to finish."
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/run.py",
+      "line": 239,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "obj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/run.py",
+      "line": 435,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "task.join()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/task.py",
+      "line": 139,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "self._thread.join()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/task.py",
+      "line": 143,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "self._thread.join()"
+    },
+    {
+      "path": "src/Mod/Fem/femsolver/z88/z88tools.py",
+      "line": 109,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "prepare_process.waitForFinished(-1)"
+    },
+    {
       "path": "src/Mod/Fem/femtaskpanels/base_femlogtaskpanel.py",
       "line": 354,
       "category": "thread-waits",
@@ -15844,6 +17401,30 @@
       "subsystem": "Fem",
       "disposition": "investigate",
       "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/Fem/femtools/ccxtools.py",
+      "line": 191,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "for m in FreeCAD.activeDocument().Objects:"
+    },
+    {
+      "path": "src/Mod/Fem/femtools/ccxtools.py",
+      "line": 755,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "self.analysis.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/Fem/femtools/objecttools.py",
+      "line": 92,
+      "category": "thread-waits",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "return self.process.waitForFinished(-1)"
     },
     {
       "path": "src/Mod/Fem/femviewprovider/view_base_fempostvisualization.py",
@@ -17030,6 +18611,158 @@
       "evidence": "doc = doc or FreeCAD.activeDocument()"
     },
     {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 105,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "for root_object in FreeCAD.ActiveDocument.RootObjects:"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 138,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(docname)"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 185,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 443,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "newobj.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 453,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 476,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "p[6][0].recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 478,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 854,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 856,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument = docSVG"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 871,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 876,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument=doc"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1022,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "part.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1024,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1209,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "mycircle = FreeCAD.ActiveDocument.addObject(\"Part::Part2DObjectPython\",'circle')"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1214,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1214,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1216,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "mycircle = FreeCAD.ActiveDocument.addObject(\"Part::Part2DObjectPython\",'polygon')"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/importCSG.py",
+      "line": 1362,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/replaceobj.py",
+      "line": 78,
+      "category": "direct-recompute",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "parent.Document.recompute()"
+    },
+    {
       "path": "src/Mod/Part/BasicShapes/CommandShapes.py",
       "line": 56,
       "category": "live-app-dereference",
@@ -17108,6 +18841,14 @@
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "document.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/CompoundTools/CompoundFilter.py",
+      "line": 39,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "into_group = FreeCAD.ActiveDocument"
     },
     {
       "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",
