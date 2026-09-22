@@ -1115,6 +1115,39 @@ str.join(parts)
             {3, 12, 15, 18, 21},
         )
 
+    def test_cpp_requires_expression_logical_operator_and_pointer_return_clause(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "template<class T> constexpr bool predicate() { return true; }\n"
+            "template<class T> concept Logical = predicate<T>() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "recompute()");\n'
+            "};\n"
+            "template<class T>\n"
+            "auto pointer_clause(T value) -> T* requires (sizeof(T)>0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "    return nullptr;\n"
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_clause_tokens.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {8},
+        )
+
     def test_cpp_sizeof_unparenthesized_unary_operands_stop_at_evaluated_boundary(self) -> None:
         source = (
             "namespace Gui {\n"
@@ -1152,6 +1185,36 @@ str.join(parts)
         self.assertEqual(
             {line for line, category in categories if category == "direct-recompute"},
             {15},
+        )
+
+    def test_cpp_sizeof_unary_operands_consume_transparent_parentheses_and_casts(self) -> None:
+        source = (
+            "struct Result {};\n"
+            "namespace Gui { Result* cmdAppDocument(void*, const char*); }\n"
+            "void sized() {\n"
+            '    auto parenthesized = sizeof *(::Gui::cmdAppDocument(nullptr, "recompute()"));\n'
+            '    auto casted = sizeof static_cast<Result*>(::Gui::cmdAppDocument(nullptr, "recompute()"));\n'
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_sizeof_transparent.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {6},
         )
 
     def test_cpp_gui_wrappers_reject_type_alias_and_local_gui_shadows(self) -> None:
@@ -1252,6 +1315,77 @@ str.join(parts)
         self.assertEqual(
             {line for line, category in categories if category == "direct-recompute"},
             {3, 12, 19},
+        )
+
+    def test_cpp_generic_lambda_and_constrained_template_gui_shadow_lifetimes(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "auto generic = []<class Gui>() {\n"
+            '    Gui::cmdAppDocument(nullptr, "recompute()");\n'
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            'void after_generic() { Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); }\n'
+            "template<class Gui> requires requires { typename Gui::value_type; }\n"
+            "void constrained() {\n"
+            '    Gui::cmdAppDocument(nullptr, "recompute()");\n'
+            '    ::Gui::cmdAppDocument(nullptr, "recompute()");\n'
+            "}\n"
+            'void after_constrained() { Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); }\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_template_shadow_lifetimes.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {4, 6, 10, 12},
+        )
+
+    def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            "struct Command { enum Type { Doc }; static void doCommand(Type, const char*); };\n"
+            "}\n"
+            "namespace Foreign {\n"
+            "struct Command { enum Type { Doc }; static void doCommand(Type, const char*); };\n"
+            "}\n"
+            "namespace Scope {\n"
+            "namespace Gui = Foreign;\n"
+            "using Gui::Command;\n"
+            'void local() { Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()"); }\n'
+            "}\n"
+            "using Gui::Command;\n"
+            'void global() { Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()"); }\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_using_alias.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {13},
         )
 
     def test_cpp_template_gui_forward_declaration_does_not_leak_a_shadow(self) -> None:

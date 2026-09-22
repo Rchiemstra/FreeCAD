@@ -494,10 +494,19 @@ def _cpp_gui_using_is_global(
     namespace_ranges: list[tuple[int, int, str]],
     namespace_context: str | None,
     namespace_identities: dict[str, int] | None = None,
+    gui_shadows: list[tuple[int, tuple[int, int] | None, str | None, int | None]] | None = None,
 ) -> bool:
     declaration = masked[match.start() : match.end()]
     if re.search(r"\busing\s+(?:namespace\s+)?\s*::", declaration):
         return True
+    if not _cpp_gui_name_is_global(
+        namespace_context,
+        namespace_ranges,
+        match.start(),
+        namespace_identities,
+        gui_shadows,
+    ):
+        return False
     if namespace_context is None:
         return True
     parts = namespace_context.split("::")
@@ -515,12 +524,18 @@ def _cpp_gui_using_declarations(
     brace_ranges: list[tuple[int, int]],
     namespace_ranges: list[tuple[int, int, str]],
     namespace_identities: dict[str, int],
+    gui_shadows: list[tuple[int, tuple[int, int] | None, str | None, int | None]] | None = None,
 ) -> list[tuple[int, str | None, tuple[int, int] | None]]:
     declarations: list[tuple[int, str | None, tuple[int, int] | None]] = []
     for match in _CPP_GUI_USING_PATTERN.finditer(masked):
         namespace_context = _cpp_namespace_at(namespace_ranges, match.start())
         if not _cpp_gui_using_is_global(
-            masked, match, namespace_ranges, namespace_context, namespace_identities
+            masked,
+            match,
+            namespace_ranges,
+            namespace_context,
+            namespace_identities,
+            gui_shadows,
         ):
             continue
         declarations.append(
@@ -531,6 +546,27 @@ def _cpp_gui_using_declarations(
             )
         )
     return declarations
+
+
+def _cpp_template_shadow_body_opening(
+    masked: str, parameter_closing: int, closing_by_opening: dict[int, int]
+) -> int | None:
+    search_start = parameter_closing + 1
+    while True:
+        body_opening = masked.find("{", search_start)
+        declaration_end = masked.find(";", search_start)
+        if body_opening < 0 or (declaration_end >= 0 and declaration_end < body_opening):
+            return None
+        requires_matches = list(re.finditer(r"\brequires\b", masked[search_start:body_opening]))
+        if requires_matches:
+            requires_offset = search_start + requires_matches[-1].start()
+            if not _cpp_requires_is_clause(masked, requires_offset):
+                body_closing = closing_by_opening.get(body_opening)
+                if body_closing is None:
+                    return None
+                search_start = body_closing + 1
+                continue
+        return body_opening
 
 
 def _cpp_gui_shadow_declarations(
@@ -564,8 +600,7 @@ def _cpp_gui_shadow_declarations(
     for match in re.finditer(r"\bnamespace\s+Gui\s*=", masked):
         add_shadow(match.start())
 
-    for match in re.finditer(r"\btemplate\s*<", masked):
-        opening = masked.find("<", match.start(), match.end())
+    def add_template_shadow(offset: int, opening: int) -> None:
         depth = 0
         closing = None
         for index in range(opening, len(masked)):
@@ -579,13 +614,15 @@ def _cpp_gui_shadow_declarations(
         if closing is None or not re.search(
             r"\b(?:typename|class)\s+Gui\b", masked[opening + 1 : closing]
         ):
-            continue
-        body_opening = masked.find("{", closing + 1)
-        declaration_end = masked.find(";", closing + 1)
-        if body_opening < 0 or (declaration_end >= 0 and declaration_end < body_opening):
-            body_opening = None
+            return
+        body_opening = _cpp_template_shadow_body_opening(masked, closing, closing_by_opening)
         if body_opening is not None:
-            add_shadow(match.start(), closing_by_opening.get(body_opening))
+            add_shadow(offset, closing_by_opening.get(body_opening))
+
+    for match in re.finditer(r"\btemplate\s*<", masked):
+        add_template_shadow(match.start(), masked.find("<", match.start(), match.end()))
+    for match in re.finditer(r"\]\s*<", masked):
+        add_template_shadow(match.start(), masked.find("<", match.start(), match.end()))
 
     shadows.sort(key=lambda item: item[0])
     return shadows
@@ -640,6 +677,66 @@ def _cpp_member_access_before(masked: str, offset: int) -> bool:
     return bool(re.search(r"(?:\.|->)\s*$", masked[:offset]))
 
 
+def _cpp_sizeof_wrapper_operand_end(
+    masked: str, start: int, wrapper_call: re.Pattern[str]
+) -> int | None:
+    index = _skip_cpp_trivia(masked, start, len(masked))
+    for prefix in ("++", "--", "*", "+", "-", "!", "~", "&"):
+        if masked.startswith(prefix, index):
+            return _cpp_sizeof_wrapper_operand_end(masked, index + len(prefix), wrapper_call)
+    index = _skip_cpp_trivia(masked, index, len(masked))
+    wrapper_match = wrapper_call.match(masked, index)
+    if wrapper_match is not None:
+        opening = masked.find("(", index, wrapper_match.end())
+        closing = _cpp_call_end(masked, opening)
+        return None if closing is None else closing + 1
+    cast_match = re.match(
+        r"(?:static_cast|const_cast|reinterpret_cast|dynamic_cast)\s*<", masked[index:]
+    )
+    if cast_match is not None:
+        angle_opening = index + cast_match.end() - 1
+        angle_depth = 0
+        angle_closing = None
+        for angle_index in range(angle_opening, len(masked)):
+            if masked[angle_index] == "<":
+                angle_depth += 1
+            elif masked[angle_index] == ">":
+                angle_depth -= 1
+                if angle_depth == 0:
+                    angle_closing = angle_index
+                    break
+        if angle_closing is None:
+            return None
+        cast_opening = _skip_cpp_trivia(masked, angle_closing + 1, len(masked))
+        if cast_opening >= len(masked) or masked[cast_opening] != "(":
+            return None
+        cast_closing = _cpp_call_end(masked, cast_opening)
+        if cast_closing is None:
+            return None
+        inner_end = _cpp_sizeof_wrapper_operand_end(masked, cast_opening + 1, wrapper_call)
+        if (
+            inner_end is not None
+            and _skip_cpp_trivia(masked, inner_end, cast_closing) == cast_closing
+        ):
+            return cast_closing + 1
+        return None
+    if index >= len(masked) or masked[index] != "(":
+        return None
+    outer_closing = _cpp_call_end(masked, index)
+    if outer_closing is None:
+        return None
+    inner_end = _cpp_sizeof_wrapper_operand_end(masked, index + 1, wrapper_call)
+    if (
+        inner_end is not None
+        and _skip_cpp_trivia(masked, inner_end, outer_closing) == outer_closing
+    ):
+        return outer_closing + 1
+    cast = masked[index + 1 : outer_closing].strip()
+    if re.fullmatch(r"(?:const\s+)?[A-Za-z_]\w*(?:\s*[A-Za-z_]\w*)?(?:\s*[&*])?", cast):
+        return _cpp_sizeof_wrapper_operand_end(masked, outer_closing + 1, wrapper_call)
+    return None
+
+
 def _cpp_unevaluated_ranges(
     masked: str, brace_ranges: list[tuple[int, int]]
 ) -> list[tuple[int, int]]:
@@ -661,32 +758,12 @@ def _cpp_unevaluated_ranges(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
     wrapper_call = re.compile(rf"(?:::)?\s*(?:{wrapper_names})\s*\(")
-    unary_prefixes = ("++", "--", "*", "+", "-", "!", "~", "&")
 
     for match in re.finditer(r"\b(?:alignof|sizeof)\b(?!\s*\()", masked):
         operand_start = _skip_cpp_trivia(masked, match.end(), len(masked))
-        wrapper_operand_start = operand_start
-        while True:
-            wrapper_operand_start = _skip_cpp_trivia(masked, wrapper_operand_start, len(masked))
-            prefix = next(
-                (
-                    prefix
-                    for prefix in unary_prefixes
-                    if masked.startswith(prefix, wrapper_operand_start)
-                ),
-                None,
-            )
-            if prefix is None:
-                break
-            wrapper_operand_start += len(prefix)
-        wrapper_operand_start = _skip_cpp_trivia(masked, wrapper_operand_start, len(masked))
-        wrapper_match = wrapper_call.match(masked, wrapper_operand_start)
-        if wrapper_match is None:
-            continue
-        opening = masked.find("(", wrapper_operand_start, wrapper_match.end())
-        closing = _cpp_call_end(masked, opening)
-        if closing is not None:
-            ranges.append((operand_start, closing + 1))
+        operand_end = _cpp_sizeof_wrapper_operand_end(masked, operand_start, wrapper_call)
+        if operand_end is not None:
+            ranges.append((operand_start, operand_end))
 
     closing_by_opening = dict(brace_ranges)
     for match in re.finditer(r"\brequires\b", masked):
@@ -714,10 +791,52 @@ def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
     # requires keyword; avoid copying an entire large translation unit for each
     # requires-expression encountered during the production scan.
     prefix = masked[max(0, offset - 512) : offset]
+    qualifiers = (
+        r"(?:(?:const|volatile|override|final|mutable|constexpr|consteval)\b|"
+        r"noexcept(?:\s*\([^)]*\))?|\[\[[^]]*\]\])*"
+    )
+    if re.search(rf"\)\s*{qualifiers}\s*->\s*[^;{{}}]+$", prefix):
+        return True
+    if re.search(rf"\)\s*{qualifiers}\s*$", prefix):
+        return True
+    if not re.search(rf"\)\s*{qualifiers}\s*&&?\s*$", prefix):
+        return False
+    return _cpp_requires_ref_qualifier_is_declarator(prefix)
+
+
+def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
+    close = prefix.rfind(")")
+    if close < 0:
+        return False
+    depth = 0
+    opening = None
+    for index in range(close, -1, -1):
+        if prefix[index] == ")":
+            depth += 1
+        elif prefix[index] == "(":
+            depth -= 1
+            if depth == 0:
+                opening = index
+                break
+    if opening is None:
+        return False
+    declarator = prefix[:opening].rstrip()
+    boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
+    declarator = declarator[boundary + 1 :]
+    angle_depth = 0
+    for character in declarator:
+        if character == "<":
+            angle_depth += 1
+        elif character == ">" and angle_depth:
+            angle_depth -= 1
+        elif character == "=" and angle_depth == 0:
+            return False
+    if re.search(r"\b(?:auto|void|bool|char|short|int|long|float|double|template)\b", declarator):
+        return True
     return bool(
         re.search(
-            r"\)\s*(?:(?:const|volatile|override|final|mutable|constexpr|consteval)\b|&&?|noexcept(?:\s*\([^)]*\))?|->\s*[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^;{}]*>)?|\[\[[^]]*\]\])*\s*$",
-            prefix,
+            r"(?:^|\s)[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^<>]*>)?\s+[A-Za-z_]\w*(?:\s*<[^<>]*>)?\s*$",
+            declarator,
         )
     )
 
@@ -735,7 +854,11 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     namespace_identities = _cpp_namespace_identities(namespace_ranges)
     gui_shadows = _cpp_gui_shadow_declarations(masked, brace_ranges, namespace_ranges)
     using_declarations = _cpp_gui_using_declarations(
-        masked, brace_ranges, namespace_ranges, namespace_identities
+        masked,
+        brace_ranges,
+        namespace_ranges,
+        namespace_identities,
+        gui_shadows,
     )
     names = "|".join(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
