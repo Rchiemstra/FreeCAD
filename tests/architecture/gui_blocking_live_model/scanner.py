@@ -946,15 +946,21 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     declarator = declarator.rstrip()
     boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
     declarator = declarator[boundary + 1 :]
-    angle_depth = 0
+    angle_depth = bracket_depth = 0
     for index, character in enumerate(declarator):
         if character == "<":
             angle_depth += 1
         elif character == ">" and angle_depth:
             angle_depth -= 1
-        elif character == "=" and angle_depth == 0:
+        elif character == "[":
+            bracket_depth += 1
+        elif character == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif character == "=" and angle_depth == 0 and bracket_depth == 0:
             operator_start = declarator.rfind("operator", 0, index)
-            if operator_start < 0 and "[" not in declarator:
+            if operator_start < 0 and not _cpp_requires_lambda_assignment_rhs(
+                declarator[index + 1 :]
+            ):
                 return False
             if operator_start >= 0 and not re.fullmatch(
                 r"\s*[^A-Za-z0-9_]*",
@@ -974,6 +980,40 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
             declarator,
         )
     )
+
+
+def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
+    index = _skip_cpp_trivia(rhs, 0, len(rhs))
+    if index >= len(rhs) or rhs[index] != "[":
+        return False
+    bracket_depth = 0
+    closing = None
+    for bracket_index in range(index, len(rhs)):
+        if rhs[bracket_index] == "[":
+            bracket_depth += 1
+        elif rhs[bracket_index] == "]":
+            bracket_depth -= 1
+            if bracket_depth == 0:
+                closing = bracket_index
+                break
+    if closing is None:
+        return False
+    index = _skip_cpp_trivia(rhs, closing + 1, len(rhs))
+    if index < len(rhs) and rhs[index] == "<":
+        angle_depth = 0
+        template_closing = None
+        for angle_index in range(index, len(rhs)):
+            if rhs[angle_index] == "<":
+                angle_depth += 1
+            elif rhs[angle_index] == ">" and angle_depth:
+                angle_depth -= 1
+                if angle_depth == 0:
+                    template_closing = angle_index
+                    break
+        if template_closing is None:
+            return False
+        index = template_closing + 1
+    return _skip_cpp_trivia(rhs, index, len(rhs)) == len(rhs)
 
 
 def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:

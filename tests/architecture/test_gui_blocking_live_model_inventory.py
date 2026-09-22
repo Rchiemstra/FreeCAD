@@ -1497,6 +1497,42 @@ str.join(parts)
             {14, 18, 22, 26},
         )
 
+    def test_cpp_requires_clause_distinguishes_lambda_assignment_from_subscript(self) -> None:
+        source = (
+            "#include <array>\n"
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "constexpr bool predicate() { return true; }\n"
+            "constexpr auto callbacks = std::array{&predicate};\n"
+            "auto assigned = []<class T>() requires (true) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "constexpr bool invoked = []() { return true; }() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "template<class T> concept C = callbacks[0]() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_lambda_subscript.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {6},
+        )
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"
