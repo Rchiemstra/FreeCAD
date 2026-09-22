@@ -57,7 +57,8 @@ BIM `Arch*.py` family and CAM operation GUI pages; external-boundary policies
 cover user/plugin-selected BIM modules and CAM postprocessor files. The
 validator requires each manifest source and target pattern to remain present,
 expands repository-local patterns without executing runtime module selection,
-and requires every other runtime loader in scanned Python to have an explicit
+and requires every other runtime loader in scanned Python, including modules
+reached through the reviewed GUI import closure, to have an explicit
 external-boundary or already-scoped-package policy.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.

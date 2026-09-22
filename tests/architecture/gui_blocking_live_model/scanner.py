@@ -323,9 +323,73 @@ def _cpp_call_argument_ranges(masked: str, opening: int, closing: int) -> list[t
     return ranges
 
 
+def _cpp_namespace_ranges(masked: str) -> list[tuple[int, int, str]]:
+    """Return named namespace brace ranges in masked C++ source."""
+    ranges: list[tuple[int, int, str]] = []
+    declaration = re.compile(r"\bnamespace\s+([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\{")
+    for match in declaration.finditer(masked):
+        opening = masked.find("{", match.start(), match.end())
+        depth = 0
+        closing = len(masked)
+        for index in range(opening, len(masked)):
+            if masked[index] == "{":
+                depth += 1
+            elif masked[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        name = re.sub(r"\s*::\s*", "::", match.group(1))
+        ranges.append((opening, closing, name))
+    return ranges
+
+
+def _cpp_namespace_at(namespace_ranges: list[tuple[int, int, str]], offset: int) -> str | None:
+    active = sorted(
+        (opening, name) for opening, closing, name in namespace_ranges if opening < offset < closing
+    )
+    return "::".join(name for _opening, name in active) if active else None
+
+
+def _cpp_brace_ranges(masked: str) -> list[tuple[int, int]]:
+    """Return balanced C++ brace ranges in already-masked source."""
+    stack: list[int] = []
+    ranges: list[tuple[int, int]] = []
+    for index, character in enumerate(masked):
+        if character == "{":
+            stack.append(index)
+        elif character == "}" and stack:
+            ranges.append((stack.pop(), index))
+    return ranges
+
+
+def _cpp_innermost_brace(
+    brace_ranges: list[tuple[int, int]], offset: int
+) -> tuple[int, int] | None:
+    enclosing = [
+        (opening, closing) for opening, closing in brace_ranges if opening < offset < closing
+    ]
+    return min(enclosing, key=lambda item: item[1] - item[0], default=None)
+
+
+def _cpp_has_gui_using(masked: str, offset: int, brace_ranges: list[tuple[int, int]]) -> bool:
+    using_pattern = re.compile(r"\busing\s+(?:(?:namespace\s+)?Gui|Gui\s*::\s*Command)\s*;")
+    call_scope = _cpp_innermost_brace(brace_ranges, offset)
+    for match in using_pattern.finditer(masked, 0, offset):
+        using_scope = _cpp_innermost_brace(brace_ranges, match.start())
+        if using_scope is None or (
+            using_scope[0] < offset < using_scope[1]
+            and (call_scope is None or using_scope[0] <= call_scope[0])
+        ):
+            return True
+    return False
+
+
 def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     """Decode literals passed to known executable GUI command wrappers."""
     masked = mask_cpp_non_code(source)
+    namespace_ranges = _cpp_namespace_ranges(masked)
+    brace_ranges = _cpp_brace_ranges(masked)
     names = "|".join(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
@@ -351,6 +415,12 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
         elif function_name.startswith("Command::"):
             namespace = re.search(r"([A-Za-z_]\w*)\s*::\s*$", preceding)
             if namespace and namespace.group(1) != "Gui":
+                continue
+            context = _cpp_namespace_at(namespace_ranges, match.start())
+            if context is not None:
+                if context.split("::", 1)[0] != "Gui":
+                    continue
+            elif not _cpp_has_gui_using(masked, match.start(), brace_ranges):
                 continue
         argument_index = next(
             index for name, index in _CPP_COMMAND_ARGUMENTS if function_name.endswith(name)

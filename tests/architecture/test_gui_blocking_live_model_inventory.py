@@ -875,16 +875,71 @@ str.join(parts)
 
     def test_cpp_decoded_commands_use_python_patterns_and_mask_nested_code(self) -> None:
         source = (
+            "using namespace Gui;\n"
             'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
             'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
             'Command::doCommand(Command::Doc, "print(\\"App.ActiveDocument.recompute()\\")");\n'
         )
         findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
         categories = {(finding.line, finding.category) for finding in findings}
-        self.assertIn((1, "live-app-dereference"), categories)
-        self.assertIn((1, "direct-recompute"), categories)
-        self.assertIn((2, "process-events-polling"), categories)
-        self.assertNotIn((3, "direct-recompute"), categories)
+        self.assertIn((2, "live-app-dereference"), categories)
+        self.assertIn((2, "direct-recompute"), categories)
+        self.assertIn((3, "process-events-polling"), categories)
+        self.assertNotIn((4, "direct-recompute"), categories)
+
+    def test_cpp_command_namespace_context_rejects_foreign_blocks(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace Other {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace Gui {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "}\n"
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        self.assertIn(
+            (2, "direct-recompute"),
+            {(finding.line, finding.category) for finding in findings},
+        )
+        self.assertNotIn(
+            (5, "direct-recompute"),
+            {(finding.line, finding.category) for finding in findings},
+        )
+        self.assertNotIn(
+            (7, "direct-recompute"),
+            {(finding.line, finding.category) for finding in findings},
+        )
+
+        nested_and_using = (
+            "{\n"
+            "using namespace Gui;\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace GuiExtra {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        nested_findings = scanner.scan_source(nested_and_using, ".cpp", "src/Gui/Snippet.cpp")
+        nested_categories = {(finding.line, finding.category) for finding in nested_findings}
+        self.assertIn((3, "direct-recompute"), nested_categories)
+        self.assertNotIn((5, "direct-recompute"), nested_categories)
+        self.assertNotIn((7, "direct-recompute"), nested_categories)
+
+        using_declaration = (
+            "using Gui::Command;\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+        )
+        self.assertIn(
+            (2, "direct-recompute"),
+            {
+                (finding.line, finding.category)
+                for finding in scanner.scan_source(using_declaration, ".cpp", "src/Gui/Snippet.cpp")
+            },
+        )
 
     def test_cpp_command_extraction_rejects_dynamic_and_member_expressions(self) -> None:
         source = (
@@ -1518,6 +1573,20 @@ class RepositoryInventoryTests(unittest.TestCase):
                 for target in import_targets(REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py")
             },
         )
+        processor_path = REPOSITORY_ROOT / "src/Mod/CAM/Path/Post/Processor.py"
+        processor_relative = processor_path.relative_to(REPOSITORY_ROOT).as_posix()
+        command_targets = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in import_targets(REPOSITORY_ROOT / "src/Mod/CAM/Path/Post/Command.py")
+        }
+        self.assertIn(processor_relative, command_targets)
+        self.assertTrue(_nonliteral_runtime_loader_lines(processor_path.read_text()))
+        dynamic_policy = {
+            *rules.REVIEWED_DYNAMIC_IMPORT_TARGETS,
+            *rules.REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES,
+            *rules.REVIEWED_DYNAMIC_IMPORT_SCOPED_PACKAGES,
+        }
+        self.assertIn(processor_relative, dynamic_policy)
         self.assertIsInstance(import_targets(REPOSITORY_ROOT / "src/Gui/TreeParams.py"), list)
         self.assertNotIn("src/Mod/CAM/Path/Base/PropertyBag.py", exclusions)
         for relative in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS:
@@ -1541,6 +1610,25 @@ class RepositoryInventoryTests(unittest.TestCase):
         self.assertFalse(
             sorted(missing),
             "unreviewed transitive GUI imports: " + ", ".join(sorted(missing)),
+        )
+        reachable_dynamic = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in seen
+            if target.suffix == ".py"
+            and _nonliteral_runtime_loader_lines(
+                target.read_text(encoding="utf-8", errors="surrogateescape")
+            )
+        }
+        self.assertFalse(
+            reachable_dynamic - dynamic_policy,
+            "unreviewed reachable dynamic imports: "
+            + ", ".join(sorted(reachable_dynamic - dynamic_policy)),
+        )
+        # Mutation guard: removing the Processor policy must expose the exact
+        # reachable loader rather than silently passing because it has no GUI
+        # inventory finding of its own.
+        self.assertIn(
+            processor_relative, reachable_dynamic - (dynamic_policy - {processor_relative})
         )
 
     def test_reviewed_exclusions_have_no_executable_gui_hooks(self) -> None:

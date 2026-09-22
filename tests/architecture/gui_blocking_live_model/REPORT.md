@@ -102,7 +102,8 @@ separate App-side follow-up.
   Runtime-selected loaders are either expanded through deterministic local
   patterns or recorded under explicit external/already-scoped policies;
   only direct literal expressions are ignored, while indirect names remain
-  conservatively runtime-selected. Unreviewed App/test helpers and the
+  conservatively runtime-selected; this policy also covers loaders in modules
+  reached through the reviewed GUI import closure. Unreviewed App/test helpers and the
   `src/App` model core remain out of scope.
 * Dispositions are category-level defaults; per-site reclassification belongs
   to the triage candidates above.

@@ -406,6 +406,7 @@ REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES: dict[str, str] = {
     "src/Mod/BIM/ArchRebar.py": "RebarShape object property supplies the optional edit-dialog module",
     "src/Mod/BIM/importers/importIFCHelper.py": "IFC property metadata supplies optional App/GUI module names",
     "src/Mod/CAM/Path/Preferences.py": "user-selected postprocessor file path is loaded at runtime",
+    "src/Mod/CAM/Path/Post/Processor.py": "user-selected postprocessor modules are loaded from arbitrary filesystem paths",
 }
 
 # Dynamic callbacks whose candidate package is already conservatively scoped.
