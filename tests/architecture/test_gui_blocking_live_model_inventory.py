@@ -941,6 +941,54 @@ str.join(parts)
             },
         )
 
+    def test_cpp_command_namespace_resolution_covers_global_and_using_lookup(self) -> None:
+        source = (
+            '::Gui::Command::doCommand(::Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            '::Gui::Command::runCommand(::Gui::Command::Gui, "Gui.updateGui()");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace Gui {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace Nested {\n"
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            "}\n"
+            "}\n"
+            "namespace Other {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace Gui {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "using Gui::Command;\n"
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace GuiExtra {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "using namespace ::Gui;\n"
+            "namespace OtherInherited {\n"
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            "}\n"
+            "namespace Another {\n"
+            "using ::Gui::Command;\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        categories = {(finding.line, finding.category) for finding in findings}
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {1, 3, 5, 18, 29},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "process-events-polling"},
+            {2, 7, 17, 25},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "live-app-dereference"},
+            {1, 3, 5, 18, 29},
+        )
+
     def test_cpp_command_extraction_rejects_dynamic_and_member_expressions(self) -> None:
         source = (
             'other.doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'

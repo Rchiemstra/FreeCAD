@@ -64,12 +64,13 @@ external-boundary or already-scoped-package policy.
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
 For C++, executable command-string literals are decoded only for the known
-`Gui::Command`/in-namespace `Command`, `Gui::cmd*`, and `FCMD_*` wrappers or
-macros. Only direct or adjacent ordinary/raw literals (including a direct
-format-string literal with later format arguments) are decoded. Ordinary or
-raw literals passed to unrelated functions, comments, member/foreign-namespace
-calls, stream/concatenation expressions, and runtime-generated command text
-remain excluded. Decoded payloads are treated as Python source, so nested
+globally resolving `Gui::Command`, in-namespace or using-resolved `Command`,
+`Gui::cmd*`, and `FCMD_*` wrappers or macros. Only direct or adjacent
+ordinary/raw literals (including a direct format-string literal with later
+format arguments) are decoded. Ordinary or raw literals passed to unrelated
+functions, comments, member/contextually foreign-namespace calls,
+stream/concatenation expressions, and runtime-generated command text remain
+excluded. Decoded payloads are treated as Python source, so nested
 Python comments/literals are masked and runtime format substitutions are not
 expanded.
 

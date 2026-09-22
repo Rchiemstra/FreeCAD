@@ -351,6 +351,13 @@ def _cpp_namespace_at(namespace_ranges: list[tuple[int, int, str]], offset: int)
     return "::".join(name for _opening, name in active) if active else None
 
 
+def _cpp_gui_name_is_global(context: str | None) -> bool:
+    if context is None:
+        return True
+    parts = context.split("::")
+    return parts[0] == "Gui" or "Gui" not in parts[1:]
+
+
 def _cpp_brace_ranges(masked: str) -> list[tuple[int, int]]:
     """Return balanced C++ brace ranges in already-masked source."""
     stack: list[int] = []
@@ -373,7 +380,9 @@ def _cpp_innermost_brace(
 
 
 def _cpp_has_gui_using(masked: str, offset: int, brace_ranges: list[tuple[int, int]]) -> bool:
-    using_pattern = re.compile(r"\busing\s+(?:(?:namespace\s+)?Gui|Gui\s*::\s*Command)\s*;")
+    using_pattern = re.compile(
+        r"\busing\s+(?:(?:namespace\s+)?(?:::)?\s*Gui|(?:::)?\s*Gui\s*::\s*Command)\s*;"
+    )
     call_scope = _cpp_innermost_brace(brace_ranges, offset)
     for match in using_pattern.finditer(masked, 0, offset):
         using_scope = _cpp_innermost_brace(brace_ranges, match.start())
@@ -385,6 +394,14 @@ def _cpp_has_gui_using(masked: str, offset: int, brace_ranges: list[tuple[int, i
     return False
 
 
+def _cpp_qualifier_before(masked: str, offset: int) -> str | None:
+    qualifier = re.search(r"((?:[A-Za-z_]\w*\s*::\s*)+)\s*$", masked[:offset])
+    if not qualifier:
+        return None
+    normalized = re.sub(r"\s*::\s*", "::", qualifier.group(1)).strip()
+    return normalized.removesuffix("::")
+
+
 def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     """Decode literals passed to known executable GUI command wrappers."""
     masked = mask_cpp_non_code(source)
@@ -393,7 +410,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     names = "|".join(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
-    pattern = re.compile(rf"(?<![\w:])(?:{names})\s*\(")
+    pattern = re.compile(rf"(?<![\w:])(?:::)?(?:{names})\s*\(")
     decoded: list[tuple[str, list[int]]] = []
     for match in pattern.finditer(masked):
         opening = masked.find("(", match.start(), match.end())
@@ -404,26 +421,32 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             continue
         raw_function_name = match.group(0).split("(", 1)[0].strip()
         function_name = re.sub(r"\s*::\s*", "::", raw_function_name)
-        preceding = masked[: match.start()]
-        if "::" not in function_name:
-            if re.search(r"(?:\.|->|::)\s*$", preceding):
+        globally_qualified = function_name.startswith("::")
+        lookup_name = function_name.removeprefix("::")
+        qualifier = _cpp_qualifier_before(masked, match.start())
+        context = _cpp_namespace_at(namespace_ranges, match.start())
+        if "::" not in lookup_name:
+            if re.search(r"(?:\.|->|::)\s*$", masked[: match.start()]):
                 continue
-        elif function_name.startswith("Gui::"):
-            namespace = re.search(r"([A-Za-z_]\w*)\s*::\s*$", preceding)
-            if namespace:
+        elif lookup_name.startswith("Gui::Command"):
+            if qualifier is not None:
                 continue
-        elif function_name.startswith("Command::"):
-            namespace = re.search(r"([A-Za-z_]\w*)\s*::\s*$", preceding)
-            if namespace and namespace.group(1) != "Gui":
+            if not globally_qualified and not _cpp_gui_name_is_global(context):
                 continue
-            context = _cpp_namespace_at(namespace_ranges, match.start())
-            if context is not None:
-                if context.split("::", 1)[0] != "Gui":
+        elif lookup_name.startswith("Command::"):
+            if globally_qualified or (qualifier is not None and qualifier != "Gui"):
+                continue
+            if qualifier == "Gui":
+                if context is not None and context.split("::", 1)[0] != "Gui":
                     continue
-            elif not _cpp_has_gui_using(masked, match.start(), brace_ranges):
+            elif (context is None or context.split("::", 1)[0] != "Gui") and not _cpp_has_gui_using(
+                masked, match.start(), brace_ranges
+            ):
                 continue
+        if globally_qualified and not lookup_name.startswith("Gui::Command"):
+            continue
         argument_index = next(
-            index for name, index in _CPP_COMMAND_ARGUMENTS if function_name.endswith(name)
+            index for name, index in _CPP_COMMAND_ARGUMENTS if lookup_name.endswith(name)
         )
         arguments = _cpp_call_argument_ranges(masked, opening, closing)
         if argument_index >= len(arguments):
@@ -439,7 +462,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             values.append(value)
             line_map.extend(_decoded_line_map(value, source, literal_start, literal_end))
         if values:
-            prefix = _CPP_COMMAND_PREFIXES.get(function_name, "")
+            prefix = _CPP_COMMAND_PREFIXES.get(lookup_name, "")
             payload = "".join(values)
             if not payload:
                 continue
