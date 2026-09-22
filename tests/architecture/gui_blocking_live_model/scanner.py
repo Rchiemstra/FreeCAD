@@ -952,7 +952,10 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     # otherwise discard that valid lambda RHS along with its constraint body.
     assignments = [match.start() for match in re.finditer("=", declarator)]
     for assignment in reversed(assignments):
-        if _cpp_requires_lambda_assignment_rhs(declarator[assignment + 1 :]):
+        assignment_rhs = declarator[assignment + 1 :]
+        if ".template operator" in assignment_rhs:
+            return False
+        if _cpp_requires_lambda_assignment_rhs(assignment_rhs):
             return True
     boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
     declarator = declarator[boundary + 1 :]
@@ -1030,6 +1033,11 @@ def _cpp_requires_lambda_assignment_rhs(
         index = template_closing + 1
     if require_generic_template_head and not has_template_head:
         return False
+    if require_generic_template_head:
+        # This shortcut is only for the requires keyword immediately after a
+        # parameterless generic lambda's template head.  Do not reinterpret a
+        # template-head constraint, lambda body, or invocation as that clause.
+        return not rhs[index:].strip()
     index = _skip_cpp_trivia(rhs, index, len(rhs))
     if index == len(rhs):
         return True

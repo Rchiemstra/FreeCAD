@@ -1613,6 +1613,33 @@ str.join(parts)
         }
         self.assertIn((3, "direct-recompute"), categories)
 
+    def test_cpp_generic_lambda_template_head_constraint_invocation_keeps_requires_body_evaluated(
+        self,
+    ) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "template<class T> concept C = []<class U> requires(true) { return true; }."
+            "template operator()<int>() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_generic_lambda_requires_invocation.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertNotIn((3, "direct-recompute"), categories)
+
     def test_cpp_nested_requires_constraints_keep_lambda_bodies_evaluated(self) -> None:
         source = (
             "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
