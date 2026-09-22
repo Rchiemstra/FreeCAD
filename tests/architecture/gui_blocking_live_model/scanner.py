@@ -1079,9 +1079,28 @@ def _cpp_requires_generic_lambda_template_head_is_clause(prefix: str) -> bool:
 
 
 def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
-    return any(
-        has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening])
-        for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix)
+    for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
+        if not has_ref_qualifier:
+            continue
+        declarator = prefix[:opening]
+        if _cpp_requires_generic_lambda_invocation_prefix(declarator):
+            continue
+        if _cpp_requires_declarator_is_declarator(declarator):
+            return True
+    return False
+
+
+def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
+    """Reject an invoked generic lambda expression as a function declarator."""
+    # ``declarator`` is already comment-masked.  The ref-qualifier parser sees
+    # the call's ``() &&`` as a member-function suffix, so distinguish the
+    # completed lambda body from a parameterless constrained lambda itself.
+    return bool(
+        re.search(
+            r"\]\s*<.*\}\s*(?:\.\s*template\s+operator\s*\(\)\s*<[^<>]*>)?\s*$",
+            declarator,
+            re.DOTALL,
+        )
     )
 
 
