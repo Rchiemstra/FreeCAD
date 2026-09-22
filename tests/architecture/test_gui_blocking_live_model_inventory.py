@@ -1563,6 +1563,48 @@ str.join(parts)
             {3},
         )
 
+    def test_cpp_nested_requires_constraints_keep_lambda_bodies_evaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "struct X { void foo(); };\n"
+            "auto nested = []<class T> requires requires(T t) { t.foo(); } (T) "
+            "requires (true) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "auto logical = []<class T> requires (requires(T t) { t.foo(); } && true) (T) "
+            "requires (true) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_nested_requires_constraint.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {4, 7},
+        )
+
+    def test_cpp_nested_requires_constraint_rejects_unbalanced_and_top_level_semicolon(
+        self,
+    ) -> None:
+        for rhs in (
+            "[]<class T> requires requires(T t) { t.foo(); (T) requires (true)",
+            "[]<class T> requires requires(T t) { t.foo(); } ; (T) requires (true)",
+        ):
+            self.assertFalse(scanner._cpp_requires_lambda_assignment_rhs(rhs), rhs)
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"

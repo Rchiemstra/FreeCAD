@@ -944,6 +944,15 @@ def _cpp_requires_declarator_candidates(prefix: str) -> list[tuple[int, bool]]:
 
 def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     declarator = declarator.rstrip()
+    # A requires-expression in a generic lambda's template head may contain a
+    # semicolon and braces before the parameter list.  Check that assignment
+    # before trimming ordinary statement/body prefixes below, which would
+    # otherwise discard that valid lambda RHS along with its constraint body.
+    assignment = declarator.rfind("=")
+    if assignment >= 0:
+        operator_start = declarator.rfind("operator", 0, assignment)
+        if operator_start < 0 and _cpp_requires_lambda_assignment_rhs(declarator[assignment + 1 :]):
+            return True
     boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
     declarator = declarator[boundary + 1 :]
     angle_depth = bracket_depth = 0
@@ -1024,22 +1033,24 @@ def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
     # parameter list and trailing lambda requires-clause are handled by the
     # caller's declarator candidates.
     constraint = rhs[index + len("requires") :].strip()
-    if not constraint or any(character in constraint for character in "{};"):
+    if not constraint:
         return False
-    depths = {"(": 0, "[": 0}
-    closing = {
+    openings = "([{"
+    matching = {
         ")": "(",
         "]": "[",
+        "}": "{",
     }
+    stack: list[str] = []
     for character in constraint:
-        if character in depths:
-            depths[character] += 1
-        elif character in closing:
-            opening = closing[character]
-            depths[opening] -= 1
-            if depths[opening] < 0:
+        if character in openings:
+            stack.append(character)
+        elif character in matching:
+            if not stack or stack.pop() != matching[character]:
                 return False
-    return not any(depths.values())
+        elif character == ";" and "{" not in stack:
+            return False
+    return not stack
 
 
 def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
