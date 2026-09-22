@@ -102,28 +102,137 @@ def _executable_gui_hook_lines(source: str) -> list[int]:
     return sorted(lines)
 
 
-def _nonliteral_dynamic_import_lines(source: str) -> list[int]:
-    """Return lines calling import_module with a runtime-selected argument."""
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else None
+    return None
+
+
+def _static_string_expression(node: ast.AST, constants: set[str]) -> bool:
+    if isinstance(node, ast.Name) and node.id in constants:
+        return True
+    try:
+        value = ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError):
+        return isinstance(node, ast.JoinedStr) and all(
+            isinstance(part, ast.Constant) for part in node.values
+        )
+    return isinstance(value, str)
+
+
+def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
+    """Return runtime-selected import/load calls and their loader kind."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, TypeError, MemoryError):
         return []
-    lines: list[int] = []
+
+    importlib_modules = {"importlib"}
+    importlib_util_modules = {"importlib.util"}
+    import_module_names = {"import_module"}
+    builtin_modules = {"builtins"}
+    builtin_import_names = {"__import__"}
+    spec_names = {"spec_from_file_location"}
+    module_from_spec_names = {"module_from_spec"}
+    constants: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if alias.name == "importlib":
+                    importlib_modules.add(bound)
+                    importlib_util_modules.add(f"{bound}.util")
+                elif alias.name == "importlib.util":
+                    importlib_util_modules.add(bound)
+                elif alias.name == "builtins":
+                    builtin_modules.add(bound)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if node.module == "importlib" and alias.name == "import_module":
+                    import_module_names.add(bound)
+                elif node.module == "importlib" and alias.name == "util":
+                    importlib_util_modules.add(bound)
+                elif node.module == "importlib.util":
+                    if alias.name == "spec_from_file_location":
+                        spec_names.add(bound)
+                    elif alias.name == "module_from_spec":
+                        module_from_spec_names.add(bound)
+                elif node.module == "builtins" and alias.name == "__import__":
+                    builtin_import_names.add(bound)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and _static_string_expression(node.value, set()):
+                constants.add(target.id)
+
+    known_import_module_calls = import_module_names | {
+        f"{module}.import_module" for module in importlib_modules
+    }
+    known_spec_calls = spec_names | {
+        f"{module}.spec_from_file_location" for module in importlib_util_modules
+    }
+    known_module_from_spec_calls = module_from_spec_names | {
+        f"{module}.module_from_spec" for module in importlib_util_modules
+    }
+    known_builtin_import_calls = builtin_import_names | {
+        f"{module}.__import__" for module in builtin_modules
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        function = node.func
-        import_module_call = (
-            isinstance(function, ast.Name) and function.id == "import_module"
-        ) or (
-            isinstance(function, ast.Attribute)
-            and function.attr == "import_module"
-            and isinstance(function.value, ast.Name)
-            and function.value.id == "importlib"
-        )
-        if import_module_call and not isinstance(node.args[0], ast.Constant):
-            lines.append(node.lineno)
-    return sorted(lines)
+        target = node.targets[0]
+        value = _dotted_name(node.value)
+        if not isinstance(target, ast.Name) or value is None:
+            continue
+        for aliases, known in (
+            (import_module_names, known_import_module_calls),
+            (spec_names, known_spec_calls),
+            (module_from_spec_names, known_module_from_spec_calls),
+            (builtin_import_names, known_builtin_import_calls),
+        ):
+            if value in known:
+                aliases.add(target.id)
+                break
+
+    def keyword_or_positional(call: ast.Call, keyword: str, index: int) -> ast.AST | None:
+        for item in call.keywords:
+            if item.arg == keyword:
+                return item.value
+        return call.args[index] if len(call.args) > index else None
+
+    calls: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = _dotted_name(node.func)
+        if function in known_import_module_calls:
+            name = keyword_or_positional(node, "name", 0)
+            if name is not None and not _static_string_expression(name, constants):
+                calls.append((node.lineno, "import_module"))
+        elif function in known_builtin_import_calls:
+            name = keyword_or_positional(node, "name", 0)
+            if name is not None and not _static_string_expression(name, constants):
+                calls.append((node.lineno, "__import__"))
+        elif function in known_spec_calls:
+            name = keyword_or_positional(node, "name", 0)
+            location = keyword_or_positional(node, "location", 1)
+            if any(
+                value is not None and not _static_string_expression(value, constants)
+                for value in (name, location)
+            ):
+                calls.append((node.lineno, "spec_from_file_location"))
+        elif function in known_module_from_spec_calls:
+            calls.append((node.lineno, "module_from_spec"))
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "exec_module":
+            calls.append((node.lineno, "exec_module"))
+    return sorted(calls)
+
+
+def _nonliteral_runtime_loader_lines(source: str) -> list[int]:
+    return [line for line, _kind in _runtime_loader_calls(source)]
 
 
 def dynamic_import_manifest_violations(
@@ -132,11 +241,15 @@ def dynamic_import_manifest_violations(
     """Validate deterministic source/pattern entries in the dynamic manifest."""
     problems: list[str] = []
     for source, patterns in manifest.items():
+        source_problem = _path_violation(source)
+        if source_problem:
+            problems.append(f"unsafe dynamic source path: {source!r}: {source_problem}")
+            continue
         source_path = repository_root / source
         if not source_path.is_file():
             problems.append(f"dynamic source does not exist: {source}")
             continue
-        lines = _nonliteral_dynamic_import_lines(
+        lines = _nonliteral_runtime_loader_lines(
             source_path.read_text(encoding="utf-8", errors="surrogateescape")
         )
         if not lines:
@@ -159,6 +272,25 @@ def dynamic_import_manifest_violations(
             matches = sorted(repository_root.glob(pattern))
             if not matches or any(not match.is_file() for match in matches):
                 problems.append(f"dynamic target pattern has no files: {source}: {pattern}")
+    return problems
+
+
+def dynamic_import_source_violations(manifest: dict[str, str], repository_root: Path) -> list[str]:
+    """Validate source keys and loader semantics for a runtime policy map."""
+    problems: list[str] = []
+    for source in manifest:
+        source_problem = _path_violation(source)
+        if source_problem:
+            problems.append(f"unsafe dynamic source path: {source!r}: {source_problem}")
+            continue
+        source_path = repository_root / source
+        if not source_path.is_file():
+            problems.append(f"dynamic source does not exist: {source}")
+            continue
+        if not _nonliteral_runtime_loader_lines(
+            source_path.read_text(encoding="utf-8", errors="surrogateescape")
+        ):
+            problems.append(f"dynamic source has no runtime loader call: {source}")
     return problems
 
 
@@ -989,6 +1121,8 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/Draft/draftutils/grid_observer.py",
             "src/Mod/Draft/draftutils/init_draft_statusbar.py",
             "src/Mod/Draft/draftutils/init_tools.py",
+            "src/Mod/Draft/draftutils/params.py",
+            "src/Mod/Draft/draftutils/utils.py",
             "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
             "src/Mod/BIM/nativeifc/ifc_commands.py",
             "src/Mod/BIM/nativeifc/ifc_observer.py",
@@ -1201,8 +1335,12 @@ class RepositoryInventoryTests(unittest.TestCase):
             "unreviewed transitive GUI imports: " + ", ".join(sorted(missing)),
         )
 
-    def test_transitive_exclusions_have_no_executable_gui_hooks(self) -> None:
-        for relative in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS:
+    def test_reviewed_exclusions_have_no_executable_gui_hooks(self) -> None:
+        exclusions = {
+            **rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS,
+            **rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS,
+        }
+        for relative in exclusions:
             source = (REPOSITORY_ROOT / relative).read_text(
                 encoding="utf-8", errors="surrogateescape"
             )
@@ -1231,11 +1369,63 @@ class RepositoryInventoryTests(unittest.TestCase):
             rules.REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES,
             rules.REVIEWED_DYNAMIC_IMPORT_SCOPED_PACKAGES,
         ):
-            for relative in manifest:
-                source_path = REPOSITORY_ROOT / relative
-                self.assertTrue(source_path.is_file(), relative)
-                source = source_path.read_text(encoding="utf-8", errors="surrogateescape")
-                self.assertTrue(_nonliteral_dynamic_import_lines(source), relative)
+            problems = dynamic_import_source_violations(manifest, REPOSITORY_ROOT)
+            self.assertFalse(problems, "\n".join(problems))
+
+    def test_runtime_loader_classifier_handles_aliases_keywords_and_constants(self) -> None:
+        source = """
+import builtins as bi
+import importlib as il
+from importlib import import_module as load
+from importlib.util import spec_from_file_location as make_spec
+fixed = "fixed"
+il.import_module("literal")
+load(name=fixed)
+bi.__import__(name="literal")
+module = il.import_module(name)
+loaded = load(name=module_name)
+spec = il.util.spec_from_file_location(name="post", location=path)
+module_from_spec(spec)
+spec.loader.exec_module(module)
+"""
+        calls = _runtime_loader_calls(source)
+        self.assertEqual(
+            [kind for _line, kind in calls],
+            [
+                "import_module",
+                "import_module",
+                "spec_from_file_location",
+                "module_from_spec",
+                "exec_module",
+            ],
+        )
+        self.assertEqual(_nonliteral_runtime_loader_lines('import_module("literal")'), [])
+
+    def test_runtime_loader_policy_mutations_reject_bad_sources(self) -> None:
+        manifests = (
+            ("target", rules.REVIEWED_DYNAMIC_IMPORT_TARGETS),
+            ("external", rules.REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES),
+            ("scoped", rules.REVIEWED_DYNAMIC_IMPORT_SCOPED_PACKAGES),
+        )
+        bad_sources = (
+            "src/Mod/BIM/../../Gui/FreeCADGuiInit.py",
+            "/src/Gui/FreeCADGuiInit.py",
+            "C:/src/Gui/FreeCADGuiInit.py",
+            "src\\Gui\\FreeCADGuiInit.py",
+            " src/Gui/FreeCADGuiInit.py",
+            "src/Mod/BIM/missing.py",
+            "src/Mod/BIM/ArchStructure.py",
+        )
+        for kind, manifest in manifests:
+            for bad_source in bad_sources:
+                mutated = dict(manifest)
+                sample = next(iter(manifest.values()))
+                mutated[bad_source] = sample
+                if kind == "target":
+                    problems = dynamic_import_manifest_violations(mutated, REPOSITORY_ROOT)
+                else:
+                    problems = dynamic_import_source_violations(mutated, REPOSITORY_ROOT)
+                self.assertTrue(problems, f"{kind}: {bad_source}")
 
     def test_dynamic_import_manifest_mutations_are_rejected(self) -> None:
         missing_source = dict(rules.REVIEWED_DYNAMIC_IMPORT_TARGETS)
@@ -1260,7 +1450,7 @@ class RepositoryInventoryTests(unittest.TestCase):
                 continue
             relative = path.relative_to(REPOSITORY_ROOT).as_posix()
             source = path.read_text(encoding="utf-8", errors="surrogateescape")
-            if _nonliteral_dynamic_import_lines(source) and relative not in policy:
+            if _nonliteral_runtime_loader_lines(source) and relative not in policy:
                 unreviewed.append(relative)
         self.assertFalse(unreviewed, "unreviewed dynamic imports: " + ", ".join(unreviewed))
 
@@ -1297,6 +1487,8 @@ class RepositoryInventoryTests(unittest.TestCase):
             ("src/Mod/Draft/draftutils/gui_utils.py", "live-app-dereference"),
             ("src/Mod/BIM/nativeifc/ifc_viewproviders.py", "direct-recompute"),
             ("src/Mod/Fem/femguiutils/extract_link_view.py", "live-app-dereference"),
+            ("src/Mod/Draft/draftutils/params.py", "live-app-dereference"),
+            ("src/Mod/Draft/draftutils/utils.py", "live-app-dereference"),
         ):
             findings = [finding for finding in self.scanned if finding.path == path]
             self.assertTrue(

@@ -309,6 +309,10 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Draft/draftmake/make_text.py",
     "src/Mod/Draft/draftmake/make_wire.py",
     "src/Mod/Draft/draftmake/make_wpproxy.py",
+    # Draft parameter and geometry helpers contain executable GUI gates and
+    # view-provider setup despite living in the shared draftutils package.
+    "src/Mod/Draft/draftutils/params.py",
+    "src/Mod/Draft/draftutils/utils.py",
     "src/Mod/Draft/draftutils/todo.py",
     "src/Mod/Draft/importSVG.py",
     "src/Mod/Fem/femmesh/gmshtools.py",
@@ -355,8 +359,6 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
     "src/Mod/CAM/Path/__init__.py": "CAM App package; its loaded GUI subpackages are already in Gui scope",
     "src/Mod/CAM/PathScripts/__init__.py": "CAM App compatibility package; no GUI handlers",
     "src/Mod/Draft/draftutils/__init__.py": "utility package initializer; GUI utility modules are listed explicitly",
-    "src/Mod/Draft/draftutils/params.py": "Draft parameter storage helper with no GUI handlers",
-    "src/Mod/Draft/draftutils/utils.py": "Draft geometry/model utility with no GUI handlers",
     "src/Mod/CAM/Path/Tool/library/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/CAM/Path/Tool/toolbit/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/PartDesign/__init__.py": "PartDesign App package initializer; GUI modules are listed explicitly",
@@ -380,9 +382,10 @@ REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
     "src/Mod/PartDesign/fcsprocket/fcsprocket.py": "PartDesign model helper; GUI caller is inventoried",
 }
 
-# Dynamic imports whose runtime value is a persisted/plugin-selected module
-# name. The closure validator expands these deterministic repository-local
-# patterns instead of attempting to execute application code.
+# Runtime-selected loaders whose values are persisted/plugin-selected module
+# names or paths. The closure validator expands deterministic repository-local
+# patterns instead of executing application code; external boundaries below
+# document user/plugin-selected loaders that cannot be resolved statically.
 REVIEWED_DYNAMIC_IMPORT_TARGETS: dict[str, tuple[str, ...]] = {
     "src/Mod/BIM/Arch.py": ("src/Mod/BIM/Arch*.py",),
     "src/Mod/CAM/Path/Op/Gui/Base.py": ("src/Mod/CAM/Path/Op/Gui/*.py",),
@@ -394,7 +397,9 @@ REVIEWED_DYNAMIC_IMPORT_TARGETS: dict[str, tuple[str, ...]] = {
 REVIEWED_DYNAMIC_IMPORT_EXTERNAL_SOURCES: dict[str, str] = {
     "src/Gui/FreeCADGuiInit.py": "extension workbench name supplied by the installed module registry",
     "src/Mod/BIM/bimcommands/BimPreflight.py": "user Preflight directory or IFC metadata supplies module names",
+    "src/Mod/BIM/ArchRebar.py": "RebarShape object property supplies the optional edit-dialog module",
     "src/Mod/BIM/importers/importIFCHelper.py": "IFC property metadata supplies optional App/GUI module names",
+    "src/Mod/CAM/Path/Preferences.py": "user-selected postprocessor file path is loaded at runtime",
 }
 
 # Dynamic callbacks whose candidate package is already conservatively scoped.

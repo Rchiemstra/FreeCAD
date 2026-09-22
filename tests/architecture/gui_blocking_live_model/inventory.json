@@ -235,6 +235,8 @@
     "src/Mod/Draft/draftmake/make_text.py",
     "src/Mod/Draft/draftmake/make_wire.py",
     "src/Mod/Draft/draftmake/make_wpproxy.py",
+    "src/Mod/Draft/draftutils/params.py",
+    "src/Mod/Draft/draftutils/utils.py",
     "src/Mod/Draft/draftutils/todo.py",
     "src/Mod/Draft/importSVG.py",
     "src/Mod/Fem/femmesh/gmshtools.py",
@@ -16239,6 +16241,30 @@
       "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
     },
     {
+      "path": "src/Mod/Draft/draftutils/params.py",
+      "line": 134,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "return App.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/params.py",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "return App.getDocument(doc)"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/params.py",
+      "line": 226,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "if App.ActiveDocument is None:"
+    },
+    {
       "path": "src/Mod/Draft/draftutils/todo.py",
       "line": 164,
       "category": "live-app-dereference",
@@ -16253,6 +16279,38 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "App.activeDocument().commitTransaction()"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/utils.py",
+      "line": 614,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "App.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/utils.py",
+      "line": 615,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "newobj = App.ActiveDocument.addObject(\"Part::Feature\", name)"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/utils.py",
+      "line": 1090,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = App.activeDocument()"
+    },
+    {
+      "path": "src/Mod/Draft/draftutils/utils.py",
+      "line": 1096,
+      "category": "live-app-dereference",
+      "subsystem": "Draft",
+      "disposition": "investigate",
+      "evidence": "doc = App.getDocument(doc)"
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_base.py",

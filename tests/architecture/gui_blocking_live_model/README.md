@@ -26,7 +26,8 @@ The scanner covers production GUI source only:
   nested Python GUI directories such as `src/Mod/CAM/Path/*/Gui`;
 * every top-level production workbench `InitGui.py`; and
 * explicit reviewed Python GUI packages/files that do not use a `Gui` directory:
-  Draft command/task/view-provider packages plus `draftutils/gui_utils.py`, BIM
+  Draft command/task/view-provider packages plus the GUI-bearing `draftutils`
+  parameter/utility modules and `gui_utils.py`, BIM
   commands/covering plus `nativeifc/ifc_viewproviders.py`, CAM's
   `PathPythonGui`, CAM's loaded Path and Machine UI command/preferences helpers, FEM's reviewed
   command/task/view-provider packages, Assembly command/task handlers, Points'
@@ -47,12 +48,16 @@ The scanner covers production GUI source only:
   helpers; executable GUI hooks in these modules are AST-checked and promoted,
   while only model/IO-only modules remain excluded.
 
-Dynamic `importlib.import_module` sites are handled by deterministic reviewed
-patterns in `rules.py`: the BIM `Arch*.py` family and CAM operation GUI pages.
-The validator requires each manifest source and target pattern to remain
-present, expands those repository-local patterns without executing runtime
-module selection, and requires every other nonliteral import in scanned Python
-to have an explicit external-boundary or already-scoped-package policy.
+Runtime-selected loaders (`importlib.import_module`, `__import__`, and
+`importlib.util.spec_from_file_location`/`exec_module`) are classified by an
+AST detector that resolves import aliases and keyword arguments while ignoring
+literal module names. Deterministic reviewed patterns in `rules.py` cover the
+BIM `Arch*.py` family and CAM operation GUI pages; external-boundary policies
+cover user/plugin-selected BIM modules and CAM postprocessor files. The
+validator requires each manifest source and target pattern to remain present,
+expands repository-local patterns without executing runtime module selection,
+and requires every other runtime loader in scanned Python to have an explicit
+external-boundary or already-scoped-package policy.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
