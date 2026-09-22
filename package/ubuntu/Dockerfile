@@ -13,11 +13,13 @@
 # build/debug FreeCAD tree -- same apt Qt6/OCCT/libpython3.12).
 #
 # Build context is THIS directory (package/ubuntu/), so the COPY path below is
-# relative to it and the context stays tiny (just install-apt-packages.sh). Built
+# relative to it and the context stays tiny (just the install script and Neon
+# archive keyring). Built
 # and pushed to the local registry by .woodpecker/build-images.yml (kaniko):
 #   image: 127.0.0.1:5001/freecad-ci-deps:24.04
-# Rebuild when install-apt-packages.sh changes (trigger the build-images workflow
-# manually) or on a weekly cron for an apt security refresh.
+# Rebuild when install-apt-packages.sh or neon-archive-keyring.asc changes
+# (trigger the build-images workflow manually) or on a weekly cron for an apt
+# security refresh.
 # For a local build: docker build -t 192.168.2.23:5001/freecad-ci-deps:24.04 package/ubuntu/
 
 FROM ubuntu:24.04
@@ -34,9 +36,10 @@ RUN apt-get update \
 
 # Run the upstream apt-deps script (build context is this dir, so the COPY path
 # is relative to package/ubuntu/).
-COPY install-apt-packages.sh /tmp/install-apt-packages.sh
+COPY install-apt-packages.sh neon-archive-keyring.asc /tmp/
 RUN /tmp/install-apt-packages.sh \
     && rm -f /tmp/install-apt-packages.sh \
+              /tmp/neon-archive-keyring.asc \
     && rm -rf /var/lib/apt/lists/*
 
 # Extra tools the CI steps need that the apt script does not pull in:
