@@ -1633,6 +1633,34 @@ str.join(parts)
             {3},
         )
 
+    def test_cpp_nested_requires_lambda_assignment_ignores_prior_operator_token(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "struct X { void foo(); };\n"
+            "bool operator==(X, X);\n"
+            "auto nested = []<class T> requires requires(T t) { t.foo(); } (T) "
+            'requires (true) { ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); };\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_nested_requires_prior_operator.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {4},
+        )
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"
