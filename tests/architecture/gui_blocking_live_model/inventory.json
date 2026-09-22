@@ -586,6 +586,14 @@
     },
     {
       "path": "src/Gui/Command.cpp",
+      "line": 1044,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "doCommand(App, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
       "line": 1393,
       "category": "direct-recompute",
       "subsystem": "Gui",
@@ -679,6 +687,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "return App::GetApplication().getActiveDocument() != nullptr;"
+    },
+    {
+      "path": "src/Gui/CommandDoc.cpp",
+      "line": 1760,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "FCMD_DOC_CMD(doc, \"recompute()\");"
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
@@ -1511,6 +1527,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Gui/FileHandler.cpp",
+      "line": 181,
+      "category": "direct-recompute",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
     },
     {
       "path": "src/Gui/GraphvizView.cpp",
@@ -16625,6 +16649,78 @@
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
     },
     {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 570,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 579,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 590,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 599,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskCreateElementSet.cpp",
+      "line": 863,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp",
+      "line": 120,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp",
+      "line": 143,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskFemConstraint.cpp",
+      "line": 252,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskFemConstraintInitialTemperature.cpp",
+      "line": 111,
+      "category": "direct-recompute",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
       "path": "src/Mod/Fem/Gui/TaskPostBoxes.cpp",
       "line": 234,
       "category": "live-reference-callback",
@@ -18913,6 +19009,14 @@
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
     },
     {
+      "path": "src/Mod/Mesh/Gui/DlgRegularSolidImp.cpp",
+      "line": 207,
+      "category": "direct-recompute",
+      "subsystem": "Mesh",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
       "path": "src/Mod/Mesh/Gui/MeshEditor.cpp",
       "line": 507,
       "category": "live-reference-callback",
@@ -19954,11 +20058,27 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
+      "line": 136,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
       "line": 2296,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
+      "line": 2316,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
     },
     {
       "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
@@ -20113,6 +20233,22 @@
       "evidence": "connectDelObject = guiDocument->signalDeletedObject.connect(bnd1);"
     },
     {
+      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
+      "line": 1637,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppObject(obj, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
+      "line": 1670,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"%s.recompute()\", doc.getAppDocumentPython().c_str());"
+    },
+    {
       "path": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
       "line": 1690,
       "category": "process-events-polling",
@@ -20193,6 +20329,14 @@
       "evidence": "doc->getDocument()->recompute();"
     },
     {
+      "path": "src/Mod/Part/Gui/TaskOffset.cpp",
+      "line": 216,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
       "path": "src/Mod/Part/Gui/TaskShapeBuilder.cpp",
       "line": 153,
       "category": "live-app-dereference",
@@ -20223,6 +20367,14 @@
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "doc->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskThickness.cpp",
+      "line": 285,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
     },
     {
       "path": "src/Mod/Part/Gui/ViewProvider2DObject.cpp",
@@ -20442,6 +20594,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 180,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "\"App.activeDocument().recompute()\""
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
       "line": 486,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
@@ -20457,12 +20617,44 @@
       "evidence": "QApplication::processEvents();"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
+      "line": 450,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
       "line": 155,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void TaskFeatureParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+      "line": 214,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(feature, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+      "line": 229,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(feature->getDocument(), \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
+      "line": 317,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(document, \"recompute()\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.h",
@@ -20610,6 +20802,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 611,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(pipe, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
       "line": 789,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
@@ -20639,6 +20839,38 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
+      "line": 1099,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
+      "line": 1221,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 431,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(vp->getObject(), \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 460,
+      "category": "direct-recompute",
+      "subsystem": "PartDesign",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
@@ -21114,11 +21346,43 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 262,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");// recompute the sketch placement based"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 393,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 674,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 840,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 849,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
@@ -21138,11 +21402,35 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 1061,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 1276,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/Command.cpp",
+      "line": 1404,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "doCommand(Doc, \"App.activeDocument().recompute()\");"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
+      "line": 143,
+      "category": "direct-recompute",
+      "subsystem": "Sketcher",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.getDocument('%s').recompute()\", document.c_str());"
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
@@ -21274,6 +21562,22 @@
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 96,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 153,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
       "line": 211,
       "category": "live-app-dereference",
       "subsystem": "Spreadsheet",
@@ -21282,11 +21586,179 @@
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 322,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 380,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 438,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 496,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 554,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 612,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 698,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 784,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
+      "line": 870,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Command.cpp",
       "line": 989,
       "category": "live-app-dereference",
       "subsystem": "Spreadsheet",
       "disposition": "investigate",
       "evidence": "return App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgBindSheet.cpp",
+      "line": 275,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgBindSheet.cpp",
+      "line": 305,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgSheetConf.cpp",
+      "line": 277,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppObjectArgs(obj, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgSheetConf.cpp",
+      "line": 357,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgSheetConf.cpp",
+      "line": 424,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/PropertiesDialog.cpp",
+      "line": 464,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetModel.cpp",
+      "line": 630,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 335,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 349,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 362,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 376,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
+      "line": 594,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/SheetTableView.cpp",
@@ -21313,6 +21785,22 @@
       "evidence": "doc->recompute();"
     },
     {
+      "path": "src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp",
+      "line": 185,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp",
+      "line": 443,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::cmdAppDocument(sheet->getDocument(), \"recompute()\");"
+    },
+    {
       "path": "src/Mod/Spreadsheet/Gui/ViewProviderSpreadsheet.cpp",
       "line": 189,
       "category": "update-data-provider",
@@ -21327,6 +21815,38 @@
       "subsystem": "Spreadsheet",
       "disposition": "migrate",
       "evidence": "void updateData(const App::Property* prop) override;"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Workbench.cpp",
+      "line": 179,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Workbench.cpp",
+      "line": 216,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Workbench.cpp",
+      "line": 256,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/Workbench.cpp",
+      "line": 293,
+      "category": "direct-recompute",
+      "subsystem": "Spreadsheet",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
     },
     {
       "path": "src/Mod/Start/Gui/StartView.cpp",
@@ -21505,6 +22025,22 @@
       "evidence": "void slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj) override;"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/Command.cpp",
+      "line": 538,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "doCommand(Doc, \"App.activeDocument().%s.recompute()\", FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/Command.cpp",
+      "line": 1177,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "doCommand(Doc, \"App.activeDocument().%s.Anchor.recompute()\", multiViewName.c_str());"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/CommandDecorate.cpp",
       "line": 251,
       "category": "direct-recompute",
@@ -21561,6 +22097,30 @@
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
     },
     {
+      "path": "src/Mod/TechDraw/Gui/TaskCenterLine.cpp",
+      "line": 569,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().recompute()\");"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskCosVertex.cpp",
+      "line": 338,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().recompute()\");"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskDetail.cpp",
+      "line": 612,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().recompute()\");"
+    },
+    {
       "path": "src/Mod/TechDraw/Gui/TaskGeomHatch.cpp",
       "line": 170,
       "category": "direct-recompute",
@@ -21575,6 +22135,14 @@
       "subsystem": "TechDraw",
       "disposition": "migrate",
       "evidence": "m_dvp->getDocument()->recompute();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskLeaderLine.cpp",
+      "line": 861,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().recompute()\");"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskRichAnno.cpp",
@@ -21607,6 +22175,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "App::Document *doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskWeldingSymbol.cpp",
+      "line": 592,
+      "category": "direct-recompute",
+      "subsystem": "TechDraw",
+      "disposition": "migrate",
+      "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().recompute()\");"
     },
     {
       "path": "src/Mod/TechDraw/Gui/ViewProviderAnnotation.cpp",

@@ -20,6 +20,11 @@ standalone reproducibility command::
 
 The ``--write`` flag writes ``inventory.json`` next to this module, which is the
 committed machine-readable snapshot.
+
+C++ command strings are additionally decoded only when they are literal
+arguments to the known executable GUI command wrappers and ``FCMD_*`` macros.
+Arbitrary C++ strings and unrelated calls remain masked; runtime substitutions
+are not expanded.
 """
 
 from __future__ import annotations
@@ -157,6 +162,188 @@ def mask_cpp_non_code(source: str) -> str:
     assert len(result) == len(source)
     assert result.count("\n") == source.count("\n")
     return result
+
+
+_CPP_COMMAND_ARGUMENTS: tuple[tuple[str, int], ...] = (
+    ("Gui::Command::doCommand", 1),
+    ("Gui::Command::runCommand", 1),
+    ("Gui::cmdAppDocument", 1),
+    ("Gui::cmdGuiDocument", 1),
+    ("Gui::cmdAppObject", 1),
+    ("Gui::cmdGuiObject", 1),
+    ("Gui::cmdAppDocumentArgs", 1),
+    ("Gui::cmdAppObjectArgs", 1),
+    ("Gui::cmdGuiObjectArgs", 1),
+    ("Gui::doCommandT", 1),
+    ("doCommand", 1),
+    ("runCommand", 1),
+    ("cmdAppDocument", 1),
+    ("cmdGuiDocument", 1),
+    ("cmdAppObject", 1),
+    ("cmdGuiObject", 1),
+    ("cmdAppDocumentArgs", 1),
+    ("cmdAppObjectArgs", 1),
+    ("cmdGuiObjectArgs", 1),
+    ("doCommandT", 1),
+    ("_FCMD_DOC_CMD", 2),
+    ("FCMD_DOC_CMD", 1),
+    ("_FCMD_OBJ_DOC_CMD", 2),
+    ("FCMD_OBJ_DOC_CMD", 1),
+    ("FCMD_VOBJ_DOC_CMD", 1),
+    ("_FCMD_OBJ_CMD", 3),
+    ("FCMD_OBJ_CMD", 1),
+    ("FCMD_VOBJ_CMD", 1),
+    ("FCMD_OBJ_CMD2", 0),
+    ("FCMD_VOBJ_CMD2", 0),
+)
+
+_CPP_COMMAND_PREFIXES: dict[str, str] = {
+    "Gui::cmdAppDocument": "App.getDocument().",
+    "cmdAppDocument": "App.getDocument().",
+    "Gui::cmdAppDocumentArgs": "App.getDocument().",
+    "cmdAppDocumentArgs": "App.getDocument().",
+    "Gui::cmdGuiDocument": "Gui.getDocument().",
+    "cmdGuiDocument": "Gui.getDocument().",
+    "Gui::cmdAppObject": "App.getDocument().getObject().",
+    "cmdAppObject": "App.getDocument().getObject().",
+    "Gui::cmdAppObjectArgs": "App.getDocument().getObject().",
+    "cmdAppObjectArgs": "App.getDocument().getObject().",
+    "Gui::cmdGuiObject": "Gui.getDocument().getObject().",
+    "cmdGuiObject": "Gui.getDocument().getObject().",
+    "Gui::cmdGuiObjectArgs": "Gui.getDocument().getObject().",
+    "cmdGuiObjectArgs": "Gui.getDocument().getObject().",
+    "_FCMD_DOC_CMD": "App.getDocument().",
+    "FCMD_DOC_CMD": "App.getDocument().",
+    "_FCMD_OBJ_DOC_CMD": "App.getDocument().",
+    "FCMD_OBJ_DOC_CMD": "App.getDocument().",
+    "FCMD_VOBJ_DOC_CMD": "Gui.getDocument().",
+    "_FCMD_OBJ_CMD": "App.getDocument().getObject().",
+    "FCMD_OBJ_CMD": "App.getDocument().getObject().",
+    "FCMD_VOBJ_CMD": "Gui.getDocument().getObject().",
+    "FCMD_OBJ_CMD2": "App.getDocument().getObject().",
+    "FCMD_VOBJ_CMD2": "Gui.getDocument().getObject().",
+}
+
+
+def _cpp_string_literal_spans(source: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Return ordinary/raw C++ string spans while ignoring comments/chars."""
+    spans: list[tuple[int, int]] = []
+    index = start
+    while index < end:
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2, end)
+            index = end if newline < 0 else newline
+            continue
+        if source.startswith("/*", index):
+            closing = source.find("*/", index + 2, end)
+            index = end if closing < 0 else closing + 2
+            continue
+        if source.startswith('R"', index):
+            literal_end = _raw_literal_end(source, index)
+            if literal_end is not None:
+                literal_end = min(literal_end, end)
+                spans.append((index, literal_end))
+                index = literal_end
+                continue
+        if source[index] == "'":
+            index = min(_quoted_literal_end(source, index), end)
+            continue
+        if source[index] == '"':
+            literal_end = min(_quoted_literal_end(source, index), end)
+            spans.append((index, literal_end))
+            index = literal_end
+            continue
+        index += 1
+    return spans
+
+
+def _decode_cpp_string(source: str, start: int, end: int) -> str | None:
+    if source.startswith('R"', start):
+        delimiter_start = start + 2
+        opening_parenthesis = source.find("(", delimiter_start, end)
+        if opening_parenthesis < 0:
+            return None
+        delimiter = source[delimiter_start:opening_parenthesis]
+        return source[opening_parenthesis + 1 : end - len(delimiter) - 2]
+    quote_start = source.find('"', start, end)
+    if quote_start < 0 or end <= quote_start + 1:
+        return None
+    literal = source[quote_start:end]
+    try:
+        value = ast.literal_eval(literal)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        try:
+            value = bytes(literal[1:-1], "utf-8").decode("unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return None
+    return value if isinstance(value, str) else None
+
+
+def _cpp_call_end(masked: str, opening: int) -> int | None:
+    depth = 0
+    for index in range(opening, len(masked)):
+        if masked[index] == "(":
+            depth += 1
+        elif masked[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _cpp_call_argument_ranges(masked: str, opening: int, closing: int) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    start = opening + 1
+    depth = {"(": 0, "[": 0, "{": 0}
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index in range(opening + 1, closing):
+        character = masked[index]
+        if character in depth:
+            depth[character] += 1
+        elif character in pairs:
+            depth[pairs[character]] -= 1
+        elif character == "," and not any(depth.values()):
+            ranges.append((start, index))
+            start = index + 1
+    if start < closing or masked[opening + 1 : closing].strip():
+        ranges.append((start, closing))
+    return ranges
+
+
+def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
+    """Decode literals passed to known executable GUI command wrappers."""
+    masked = mask_cpp_non_code(source)
+    names = "|".join(re.escape(name) for name, _index in _CPP_COMMAND_ARGUMENTS)
+    pattern = re.compile(rf"(?<![\w:])(?:{names})\s*\(")
+    decoded: list[tuple[str, list[int]]] = []
+    for match in pattern.finditer(masked):
+        opening = masked.find("(", match.start(), match.end())
+        if opening < 0:
+            continue
+        closing = _cpp_call_end(masked, opening)
+        if closing is None:
+            continue
+        function_name = match.group(0).split("(", 1)[0].strip()
+        argument_index = next(
+            index for name, index in _CPP_COMMAND_ARGUMENTS if function_name.endswith(name)
+        )
+        arguments = _cpp_call_argument_ranges(masked, opening, closing)
+        if argument_index >= len(arguments):
+            continue
+        literal_spans = _cpp_string_literal_spans(source, *arguments[argument_index])
+        values: list[str] = []
+        line_map: list[int] = []
+        for literal_start, literal_end in literal_spans:
+            value = _decode_cpp_string(source, literal_start, literal_end)
+            if value is None:
+                values = []
+                break
+            values.append(value)
+            line_map.extend(_decoded_line_map(value, source, literal_start, literal_end))
+        if values:
+            prefix = _CPP_COMMAND_PREFIXES.get(function_name, "")
+            decoded.append((prefix + "".join(values), [line_map[0]] * len(prefix) + line_map))
+    return decoded
 
 
 def _triple_quoted_end(source: str, start: int, quote: str) -> int:
@@ -690,6 +877,9 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
     """Scan one in-memory source string and return its findings (unsorted)."""
     masked = mask_source(source, suffix)
     source_lines = source.splitlines()
+    decoded_command_literals = (
+        _decoded_cpp_command_literals(source) if suffix in rules.CPP_SUFFIXES else []
+    )
     subsystem = subsystem_for(relative_path)
     language = _language_for(suffix)
     findings: list[Finding] = []
@@ -740,23 +930,24 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
                 )
             )
         if suffix == ".py":
-            for decoded, line_map in _decoded_do_command_literals(source):
-                decoded_masked = mask_py_non_code(decoded)
-                for match in compiled.finditer(decoded_masked):
-                    line = line_map[min(match.start(), len(line_map) - 1)]
-                    evidence = evidence_for_line_map(
-                        source_lines, line_map, match.start(), match.end()
+            decoded_literals = _decoded_do_command_literals(source)
+        else:
+            decoded_literals = decoded_command_literals
+        for decoded, line_map in decoded_literals:
+            decoded_masked = mask_py_non_code(decoded) if suffix == ".py" else decoded
+            for match in compiled.finditer(decoded_masked):
+                line = line_map[min(match.start(), len(line_map) - 1)]
+                evidence = evidence_for_line_map(source_lines, line_map, match.start(), match.end())
+                findings.append(
+                    Finding(
+                        path=relative_path,
+                        line=line,
+                        category=category.key,
+                        subsystem=subsystem,
+                        disposition=category.default_disposition,
+                        evidence=evidence,
                     )
-                    findings.append(
-                        Finding(
-                            path=relative_path,
-                            line=line,
-                            category=category.key,
-                            subsystem=subsystem,
-                            disposition=category.default_disposition,
-                            evidence=evidence,
-                        )
-                    )
+                )
     unique: list[Finding] = []
     seen: set[tuple[str, int, str]] = set()
     for finding in findings:

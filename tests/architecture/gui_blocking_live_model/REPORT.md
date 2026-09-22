@@ -1,6 +1,6 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (2,752 findings across seven
+This report summarizes the reproducible inventory (2,824 findings across seven
 categories, snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
@@ -11,17 +11,17 @@ candidates. It proposes work only; no production behavior is changed here.
 | `live-app-dereference` | 1,697 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach. |
 | `live-reference-callback` | 234 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
 | `update-data-provider` | 236 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
-| `direct-recompute` | 485 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs. |
+| `direct-recompute` | 557 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs, including executable literals passed to known C++ GUI command wrappers/macros. |
 | `process-events-polling` | 58 | investigate | Manual event-loop pumping. |
 | `thread-waits` | 41 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
 | `blocking-invokes` | 1 | migrate | Single `Qt::BlockingQueuedConnection` dispatch hook. |
 
-The snapshot spans 753 C++ and 1,999 Python findings. Owning subsystems:
-`BIM` (913), `CAM` (488), `Gui` (326), `Fem` (212), `Draft` (230), `Part`
-(111), `TechDraw` (99), `Assembly` (79), `PartDesign` (68), `Mesh` (62),
-`OpenSCAD` (50), `Surface` (21), `Sketcher` (19), `Measure` (18), `Material`
-(12), `Spreadsheet` (8), `MeshPart` (7), `Import` (6), `Inspection` (6),
-`Points` (6), `ReverseEngineering` (5), `Robot` (5), and `Start` (1).
+The snapshot spans 825 C++ and 1,999 Python findings. Owning subsystems:
+`BIM` (913), `CAM` (488), `Gui` (329), `Fem` (221), `Draft` (230), `Part`
+(117), `TechDraw` (106), `Assembly` (79), `PartDesign` (78), `Mesh` (63),
+`OpenSCAD` (50), `Spreadsheet` (37), `Sketcher` (26), `Surface` (21),
+`Measure` (18), `Material` (12), `MeshPart` (7), `Import` (6), `Inspection`
+(6), `Points` (6), `ReverseEngineering` (5), `Robot` (5), and `Start` (1).
 
 ## Bounded follow-up task candidates
 
@@ -105,3 +105,6 @@ separate App-side follow-up.
   `src/App` model core remain out of scope.
 * Dispositions are category-level defaults; per-site reclassification belongs
   to the triage candidates above.
+* C++ command-string extraction is deliberately limited to literal arguments of
+  known executable GUI wrappers/macros. Arbitrary strings and runtime-generated
+  command text are not decoded.

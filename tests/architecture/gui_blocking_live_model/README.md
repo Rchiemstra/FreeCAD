@@ -62,6 +62,12 @@ external-boundary or already-scoped-package policy.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
+For C++, executable command-string literals are decoded only for the known
+`Gui::Command`/`Gui::cmd*` wrappers and `FCMD_*` command macros. Ordinary or
+raw literals passed to unrelated functions, comments, and runtime-generated
+command text remain excluded; literal concatenation is supported and runtime
+format substitutions are not expanded.
+
 Excluded from scope:
 
 * `src/App` and other model-layer code (this inventory is about *GUI* blocking

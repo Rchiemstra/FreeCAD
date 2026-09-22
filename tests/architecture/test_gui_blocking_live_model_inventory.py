@@ -219,6 +219,10 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
                 known.add(target.id)
                 break
 
+    def has_unpacked_keywords(call: ast.Call) -> bool:
+        """Return whether ``**kwargs`` can supply an unknown loader argument."""
+        return any(item.arg is None for item in call.keywords)
+
     def keyword_or_positional(call: ast.Call, keyword: str, index: int) -> ast.AST | None:
         for item in call.keywords:
             if item.arg == keyword:
@@ -231,14 +235,37 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
             continue
         function = _dotted_name(node.func)
         if function in known_import_module_calls:
+            if has_unpacked_keywords(node):
+                calls.append((node.lineno, "import_module"))
+                continue
             name = keyword_or_positional(node, "name", 0)
-            if name is not None and not _static_string_expression(name):
+            package = keyword_or_positional(node, "package", 1)
+            nonliteral_name = name is not None and not _static_string_expression(name)
+            relative_package = False
+            if name is not None and _static_string_expression(name):
+                try:
+                    name_value = ast.literal_eval(name)
+                except (ValueError, TypeError, SyntaxError, MemoryError):
+                    name_value = None
+                relative_package = (
+                    isinstance(name_value, str)
+                    and name_value.startswith(".")
+                    and package is not None
+                    and not _static_string_expression(package)
+                )
+            if nonliteral_name or relative_package:
                 calls.append((node.lineno, "import_module"))
         elif function in known_builtin_import_calls:
+            if has_unpacked_keywords(node):
+                calls.append((node.lineno, "__import__"))
+                continue
             name = keyword_or_positional(node, "name", 0)
             if name is not None and not _static_string_expression(name):
                 calls.append((node.lineno, "__import__"))
         elif function in known_spec_calls:
+            if has_unpacked_keywords(node):
+                calls.append((node.lineno, "spec_from_file_location"))
+                continue
             name = keyword_or_positional(node, "name", 0)
             location = keyword_or_positional(node, "location", 1)
             if any(
@@ -813,6 +840,63 @@ str.join(parts)
                 py.search(scanner.mask_py_non_code(inert_command, expand_do_command=True))
             )
 
+    def test_cpp_gui_command_wrappers_expand_executable_literals(self) -> None:
+        source = (
+            'Gui::cmdAppDocument(doc, "recompute()");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument."\n'
+            '    "recompute()");\n'
+            'FCMD_DOC_CMD(doc, R"tag(recompute())tag");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, "%s.recompute()", name);\n'
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        direct = [finding for finding in findings if finding.category == "direct-recompute"]
+        self.assertEqual([finding.line for finding in direct], [1, 2, 4, 5])
+        self.assertIn('"recompute()"', direct[0].evidence)
+        self.assertIn('"App.ActiveDocument."', direct[1].evidence)
+        self.assertIn('"recompute()"', direct[1].evidence)
+        self.assertIn('R"tag(recompute())tag"', direct[2].evidence)
+        self.assertIn('"%s.recompute()"', direct[3].evidence)
+
+    def test_cpp_gui_command_extraction_ignores_inert_and_unrelated_strings(self) -> None:
+        source = (
+            '// Gui::cmdAppDocument(doc, "recompute()");\n'
+            'const char *inert = "App.ActiveDocument.recompute()";\n'
+            'unrelated(doc, "App.ActiveDocument.recompute()");\n'
+            "Gui::cmdAppDocument(doc, runtime_command);\n"
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        self.assertEqual(
+            [finding for finding in findings if finding.category == "direct-recompute"], []
+        )
+
+    def test_runtime_loader_detects_unpacked_and_relative_package_arguments(self) -> None:
+        source = """
+import builtins
+import importlib
+from importlib.util import spec_from_file_location
+kwargs = runtime_kwargs
+runtime_package = get_package()
+importlib.import_module(**kwargs)
+builtins.__import__(**kwargs)
+spec_from_file_location(**kwargs)
+importlib.import_module('.relative', package=runtime_package)
+importlib.import_module('.relative', package='fixed.package')
+importlib.import_module('literal', **kwargs)
+"""
+        self.assertEqual(
+            [kind for _line, kind in _runtime_loader_calls(source)],
+            [
+                "import_module",
+                "__import__",
+                "spec_from_file_location",
+                "import_module",
+                "import_module",
+            ],
+        )
+        self.assertEqual(
+            _runtime_loader_calls("importlib.import_module('.relative', package='pkg')"), []
+        )
+
 
 class InventoryEntryValidationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1060,6 +1144,16 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_getDocuments_live_dereference_found(self) -> None:
         self._assert_site("src/Gui/CommandDoc.cpp", 2232, "live-app-dereference")
+
+    def test_cpp_gui_command_wrapper_sites_found(self) -> None:
+        for path, lines in (
+            ("src/Gui/FileHandler.cpp", (181,)),
+            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", (120, 143)),
+            ("src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp", (214, 229, 317)),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", (443,)),
+        ):
+            for line in lines:
+                self._assert_site(path, line, "direct-recompute")
 
     def test_inline_updateData_override_found(self) -> None:
         self._assert_site("src/Gui/ViewProviderAnnotation.h", 76, "update-data-provider")
