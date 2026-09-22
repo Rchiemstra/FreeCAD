@@ -100,7 +100,8 @@ separate App-side follow-up.
   imports are either included or named in explicit per-file reviewed manifests.
   Runtime-selected loaders are either expanded through deterministic local
   patterns or recorded under explicit external/already-scoped policies;
-  literal imports are not treated as dynamic. Unreviewed App/test helpers and
-  the `src/App` model core remain out of scope.
+  only direct literal expressions are ignored, while indirect names remain
+  conservatively runtime-selected. Unreviewed App/test helpers and the
+  `src/App` model core remain out of scope.
 * Dispositions are category-level defaults; per-site reclassification belongs
   to the triage candidates above.

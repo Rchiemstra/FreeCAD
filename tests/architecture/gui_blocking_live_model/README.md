@@ -51,7 +51,8 @@ The scanner covers production GUI source only:
 Runtime-selected loaders (`importlib.import_module`, `__import__`, and
 `importlib.util.spec_from_file_location`/`exec_module`) are classified by an
 AST detector that resolves import aliases and keyword arguments while ignoring
-literal module names. Deterministic reviewed patterns in `rules.py` cover the
+literals passed directly at the call site; indirect names are conservatively
+treated as runtime-selected. Deterministic reviewed patterns in `rules.py` cover the
 BIM `Arch*.py` family and CAM operation GUI pages; external-boundary policies
 cover user/plugin-selected BIM modules and CAM postprocessor files. The
 validator requires each manifest source and target pattern to remain present,

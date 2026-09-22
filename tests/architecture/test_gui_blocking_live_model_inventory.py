@@ -122,8 +122,6 @@ def _imported_module_candidates(source: str) -> set[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 candidates.add(alias.name)
-                if alias.asname:
-                    candidates.add(alias.asname)
         elif isinstance(node, ast.ImportFrom):
             prefix = "." * node.level + (node.module or "")
             if prefix:
@@ -131,8 +129,6 @@ def _imported_module_candidates(source: str) -> set[str]:
             for alias in node.names:
                 target = f"{prefix}.{alias.name}" if prefix else f".{alias.name}"
                 candidates.add(target)
-                if alias.asname:
-                    candidates.add(f"{prefix}.{alias.asname}")
     return candidates
 
 
@@ -144,9 +140,7 @@ def _imports_module(source: str, target: str) -> bool:
     )
 
 
-def _static_string_expression(node: ast.AST, constants: set[str]) -> bool:
-    if isinstance(node, ast.Name) and node.id in constants:
-        return True
+def _static_string_expression(node: ast.AST) -> bool:
     try:
         value = ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError):
@@ -170,7 +164,6 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
     builtin_import_names = {"__import__"}
     spec_names = {"spec_from_file_location"}
     module_from_spec_names = {"module_from_spec"}
-    constants: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -196,30 +189,6 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
                         module_from_spec_names.add(bound)
                 elif node.module == "builtins" and alias.name == "__import__":
                     builtin_import_names.add(bound)
-    assignment_nodes = sorted(
-        (
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-        ),
-        key=lambda node: (node.lineno, node.col_offset),
-    )
-    for node in assignment_nodes:
-        if isinstance(node, ast.Assign):
-            targets = [target for target in node.targets if isinstance(target, ast.Name)]
-            value = node.value
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target] if isinstance(node.target, ast.Name) else []
-            value = node.value
-        else:
-            targets = [node.target] if isinstance(node.target, ast.Name) else []
-            value = None
-        for target in targets:
-            if value is not None and _static_string_expression(value, constants):
-                constants.add(target.id)
-            else:
-                constants.discard(target.id)
-
     known_import_module_calls = import_module_names | {
         f"{module}.import_module" for module in importlib_modules
     }
@@ -263,17 +232,17 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
         function = _dotted_name(node.func)
         if function in known_import_module_calls:
             name = keyword_or_positional(node, "name", 0)
-            if name is not None and not _static_string_expression(name, constants):
+            if name is not None and not _static_string_expression(name):
                 calls.append((node.lineno, "import_module"))
         elif function in known_builtin_import_calls:
             name = keyword_or_positional(node, "name", 0)
-            if name is not None and not _static_string_expression(name, constants):
+            if name is not None and not _static_string_expression(name):
                 calls.append((node.lineno, "__import__"))
         elif function in known_spec_calls:
             name = keyword_or_positional(node, "name", 0)
             location = keyword_or_positional(node, "location", 1)
             if any(
-                value is not None and not _static_string_expression(value, constants)
+                value is not None and not _static_string_expression(value)
                 for value in (name, location)
             ):
                 calls.append((node.lineno, "spec_from_file_location"))
@@ -419,6 +388,7 @@ def _path_violation(path: object) -> str | None:
         or "\\" in path
         or PureWindowsPath(path).drive
         or PureWindowsPath(path).root
+        or any(character.isspace() for character in path)
         or path != path.strip()
         or path != Path(path).as_posix()
     ):
@@ -1447,12 +1417,15 @@ spec.loader.exec_module(module)
             [
                 "import_module",
                 "import_module",
+                "import_module",
                 "spec_from_file_location",
                 "module_from_spec",
                 "exec_module",
             ],
         )
         self.assertEqual(_nonliteral_runtime_loader_lines('import_module("literal")'), [])
+        self.assertEqual(_nonliteral_runtime_loader_lines('import_module("a" "b")'), [])
+        self.assertEqual(_nonliteral_runtime_loader_lines('import_module(f"literal")'), [])
 
     def test_runtime_loader_classifier_handles_assignment_aliases(self) -> None:
         source = """
@@ -1486,6 +1459,18 @@ importlib.import_module(name)
 """
         self.assertEqual([kind for _line, kind in _runtime_loader_calls(source)], ["import_module"])
 
+    def test_runtime_loader_names_are_always_runtime_at_call_site(self) -> None:
+        sources = (
+            'import importlib\nname = "fixed"\nimportlib.import_module(name)\n',
+            'import importlib\nname = "fixed"\ndef load():\n    importlib.import_module(name)\n',
+            'import importlib\nif condition:\n    name = "fixed"\nimportlib.import_module(name)\n',
+            'import importlib\nname = "fixed"\ndef load(name):\n    importlib.import_module(name)\n',
+        )
+        for source in sources:
+            self.assertEqual(
+                [kind for _line, kind in _runtime_loader_calls(source)], ["import_module"]
+            )
+
     def test_runtime_loader_policy_mutations_reject_bad_sources(self) -> None:
         manifests = (
             ("target", rules.REVIEWED_DYNAMIC_IMPORT_TARGETS),
@@ -1498,6 +1483,10 @@ importlib.import_module(name)
             "C:/src/Gui/FreeCADGuiInit.py",
             "src\\Gui\\FreeCADGuiInit.py",
             " src/Gui/FreeCADGuiInit.py",
+            "src/Gui/Free CADGuiInit.py",
+            "src/Gui/Free\tCADGuiInit.py",
+            "src/Gui/Free\nCADGuiInit.py",
+            "src/Gui/Free\u00a0CADGuiInit.py",
             "src/Mod/BIM/missing.py",
             "src/Mod/BIM/ArchStructure.py",
         )
@@ -1567,9 +1556,15 @@ importlib.import_module(name)
             ("from .ArchCovering import X\n", "ArchCovering"),
             ("from Path.Op.Gui.Adaptive import X\n", "Adaptive"),
             ("from Path.Op.Gui import Adaptive\n", "Adaptive"),
+            ("import Path.Op.Gui.Adaptive as AdaptiveAlias\n", "Adaptive"),
         ):
             self.assertTrue(_imports_module(source, target), source)
-        self.assertFalse(_imports_module("from Path.Op.Gui import AdaptiveExtra\n", "Adaptive"))
+        for source in (
+            "from Path.Op.Gui import AdaptiveExtra as Adaptive\n",
+            "import Path.Op.Gui.AdaptiveExtra as Adaptive\n",
+            "from Path.Op.Gui import AdaptiveExtra\n",
+        ):
+            self.assertFalse(_imports_module(source, "Adaptive"), source)
 
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
