@@ -1013,7 +1013,33 @@ def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
         if template_closing is None:
             return False
         index = template_closing + 1
-    return _skip_cpp_trivia(rhs, index, len(rhs)) == len(rhs)
+    index = _skip_cpp_trivia(rhs, index, len(rhs))
+    if index == len(rhs):
+        return True
+    if not re.match(r"requires\b", rhs[index:]):
+        return False
+
+    # A generic lambda may constrain its template head before the parameter
+    # list.  This deliberately only checks the small prefix needed here; the
+    # parameter list and trailing lambda requires-clause are handled by the
+    # caller's declarator candidates.
+    constraint = rhs[index + len("requires") :].strip()
+    if not constraint or any(character in constraint for character in "{};"):
+        return False
+    depths = {"(": 0, "[": 0}
+    closing = {
+        ")": "(",
+        "]": "[",
+    }
+    for character in constraint:
+        if character in depths:
+            depths[character] += 1
+        elif character in closing:
+            opening = closing[character]
+            depths[opening] -= 1
+            if depths[opening] < 0:
+                return False
+    return not any(depths.values())
 
 
 def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
