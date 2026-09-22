@@ -1563,6 +1563,56 @@ str.join(parts)
             {3},
         )
 
+    def test_cpp_generic_lambda_requires_clause_without_parameter_list(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "auto constrained = []<class T> requires (true) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_generic_lambda_requires.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertIn((3, "direct-recompute"), categories)
+
+    def test_cpp_generic_lambda_nested_init_capture_requires_clause_without_parameter_list(
+        self,
+    ) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "int arr[1]{};\n"
+            "auto constrained = [p = arr[0]]<class T> requires (true) { "
+            '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); };\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_generic_lambda_nested_capture.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertIn((3, "direct-recompute"), categories)
+
     def test_cpp_nested_requires_constraints_keep_lambda_bodies_evaluated(self) -> None:
         source = (
             "namespace Gui { void cmdAppDocument(void*, const char*); }\n"

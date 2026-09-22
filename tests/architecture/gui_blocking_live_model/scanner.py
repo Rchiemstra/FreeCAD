@@ -859,6 +859,8 @@ def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
     prefix = masked[max(0, offset - 512) : offset]
     if _cpp_requires_ref_qualifier_is_declarator(prefix):
         return True
+    if _cpp_requires_generic_lambda_template_head_is_clause(prefix):
+        return True
     for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
         if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
             return True
@@ -990,7 +992,10 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     )
 
 
-def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
+def _cpp_requires_lambda_assignment_rhs(
+    rhs: str, *, require_generic_template_head: bool = False
+) -> bool:
+    """Recognize a lambda assignment RHS, optionally requiring a generic head."""
     index = _skip_cpp_trivia(rhs, 0, len(rhs))
     if index >= len(rhs) or rhs[index] != "[":
         return False
@@ -1007,7 +1012,9 @@ def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
     if closing is None:
         return False
     index = _skip_cpp_trivia(rhs, closing + 1, len(rhs))
+    has_template_head = False
     if index < len(rhs) and rhs[index] == "<":
+        has_template_head = True
         angle_depth = 0
         template_closing = None
         for angle_index in range(index, len(rhs)):
@@ -1021,6 +1028,8 @@ def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
         if template_closing is None:
             return False
         index = template_closing + 1
+    if require_generic_template_head and not has_template_head:
+        return False
     index = _skip_cpp_trivia(rhs, index, len(rhs))
     if index == len(rhs):
         return True
@@ -1050,6 +1059,15 @@ def _cpp_requires_lambda_assignment_rhs(rhs: str) -> bool:
         elif character == ";" and "{" not in stack:
             return False
     return not stack
+
+
+def _cpp_requires_generic_lambda_template_head_is_clause(prefix: str) -> bool:
+    """Recognize an assigned generic lambda with an implicit parameter list."""
+    for assignment in reversed([match.start() for match in re.finditer("=", prefix)]):
+        rhs = prefix[assignment + 1 :]
+        if _cpp_requires_lambda_assignment_rhs(rhs, require_generic_template_head=True):
+            return True
+    return False
 
 
 def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
