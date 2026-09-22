@@ -948,8 +948,8 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     # semicolon and braces before the parameter list.  Check that assignment
     # before trimming ordinary statement/body prefixes below, which would
     # otherwise discard that valid lambda RHS along with its constraint body.
-    assignment = declarator.rfind("=")
-    if assignment >= 0:
+    assignments = [match.start() for match in re.finditer("=", declarator)]
+    for assignment in reversed(assignments):
         operator_start = declarator.rfind("operator", 0, assignment)
         if operator_start < 0 and _cpp_requires_lambda_assignment_rhs(declarator[assignment + 1 :]):
             return True

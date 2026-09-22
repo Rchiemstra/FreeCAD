@@ -1605,6 +1605,34 @@ str.join(parts)
         ):
             self.assertFalse(scanner._cpp_requires_lambda_assignment_rhs(rhs), rhs)
 
+    def test_cpp_nested_requires_constraint_equality_keeps_lambda_body_evaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "struct X { int value; };\n"
+            "auto nested_eq = []<class T> requires requires(T t) { "
+            "requires sizeof(T) == sizeof(X); } (T) requires (true) { "
+            '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); };\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_nested_requires_equality.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {3},
+        )
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"
