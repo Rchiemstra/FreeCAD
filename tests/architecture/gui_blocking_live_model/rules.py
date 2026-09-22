@@ -35,10 +35,11 @@ has both a C++ pattern (``Qt::BlockingQueuedConnection``) and a Python pattern
 (the PySide ``BlockingQueuedConnection`` enum); no Python GUI site uses it
 today, but the rule is recorded so any future use is inventoried.
 
-The scanner separately decodes literal command strings only when they are
-arguments to known executable GUI command wrappers or ``FCMD_*`` macros;
-arbitrary C++ literals remain masked and runtime format substitutions are not
-expanded.
+The scanner separately decodes direct or adjacent literal command strings only
+when they are arguments to known executable ``Gui::Command``/``Command``,
+``Gui::cmd*``, or ``FCMD_*`` wrappers/macros. Decoded payloads use the Python
+patterns with Python masking; arbitrary C++ literals, stream/concatenation
+expressions, and runtime format substitutions remain masked.
 
 Dispositions
 ------------

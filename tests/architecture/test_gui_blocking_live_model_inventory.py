@@ -873,6 +873,31 @@ str.join(parts)
             [finding for finding in findings if finding.category == "direct-recompute"], []
         )
 
+    def test_cpp_decoded_commands_use_python_patterns_and_mask_nested_code(self) -> None:
+        source = (
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            'Command::doCommand(Command::Doc, "print(\\"App.ActiveDocument.recompute()\\")");\n'
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        categories = {(finding.line, finding.category) for finding in findings}
+        self.assertIn((1, "live-app-dereference"), categories)
+        self.assertIn((1, "direct-recompute"), categories)
+        self.assertIn((2, "process-events-polling"), categories)
+        self.assertNotIn((3, "direct-recompute"), categories)
+
+    def test_cpp_command_extraction_rejects_dynamic_and_member_expressions(self) -> None:
+        source = (
+            'other.doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            'other->runCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            'make_command("App.ActiveDocument.recompute()");\n'
+            'prefix + "App.ActiveDocument.recompute()";\n'
+            'Command::doCommand(Command::Doc, "App." + "ActiveDocument.recompute()");\n'
+            'Gui::cmdAppDocument(doc, "");\n'
+        )
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        self.assertNotIn("direct-recompute", {finding.category for finding in findings})
+
     def test_cpp_command_extraction_handles_empty_literals_and_spaced_qualifiers(self) -> None:
         empty = scanner.scan_source(
             'Gui::Command::doCommand(Gui::Command::Doc, "");\n'
@@ -904,6 +929,13 @@ str.join(parts)
             "src/Gui/Snippet.cpp",
         )
         self.assertNotIn("direct-recompute", {finding.category for finding in near_miss})
+        nested_near_miss = scanner.scan_source(
+            "Other /*comment*/ :: Gui /*comment*/ :: Command :: doCommand("
+            'Gui::Command::Doc, "App.ActiveDocument.recompute()");\n',
+            ".cpp",
+            "src/Gui/Snippet.cpp",
+        )
+        self.assertNotIn("direct-recompute", {finding.category for finding in nested_near_miss})
 
     def test_runtime_loader_detects_unpacked_and_relative_package_arguments(self) -> None:
         source = """
@@ -1192,6 +1224,17 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_getDocuments_live_dereference_found(self) -> None:
         self._assert_site("src/Gui/CommandDoc.cpp", 2232, "live-app-dereference")
+
+    def test_decoded_cpp_command_payload_sites_found(self) -> None:
+        for path, line, category in (
+            ("src/Gui/CommandDoc.cpp", 1020, "live-app-dereference"),
+            ("src/Mod/CAM/Gui/Command.cpp", 123, "live-app-dereference"),
+            ("src/Gui/Document.cpp", 2764, "live-app-dereference"),
+            ("src/Gui/Document.cpp", 2764, "direct-recompute"),
+            ("src/Gui/Document.cpp", 2913, "live-app-dereference"),
+            ("src/Gui/Document.cpp", 2913, "direct-recompute"),
+        ):
+            self._assert_site(path, line, category)
 
     def test_cpp_gui_command_wrapper_sites_found(self) -> None:
         for path, lines in (

@@ -21,10 +21,11 @@ standalone reproducibility command::
 The ``--write`` flag writes ``inventory.json`` next to this module, which is the
 committed machine-readable snapshot.
 
-C++ command strings are additionally decoded only when they are literal
-arguments to the known executable GUI command wrappers and ``FCMD_*`` macros.
-Arbitrary C++ strings and unrelated calls remain masked; runtime substitutions
-are not expanded.
+C++ command strings are additionally decoded only when they are direct or
+adjacent literal arguments to known executable GUI command wrappers/macros.
+Their decoded payloads use Python patterns and masking; arbitrary C++ strings,
+member/foreign-namespace calls, stream expressions, and runtime substitutions
+remain masked.
 """
 
 from __future__ import annotations
@@ -175,6 +176,8 @@ _CPP_COMMAND_ARGUMENTS: tuple[tuple[str, int], ...] = (
     ("Gui::cmdAppObjectArgs", 1),
     ("Gui::cmdGuiObjectArgs", 1),
     ("Gui::doCommandT", 1),
+    ("Command::doCommand", 1),
+    ("Command::runCommand", 1),
     ("doCommand", 1),
     ("runCommand", 1),
     ("cmdAppDocument", 1),
@@ -225,35 +228,45 @@ _CPP_COMMAND_PREFIXES: dict[str, str] = {
 }
 
 
-def _cpp_string_literal_spans(source: str, start: int, end: int) -> list[tuple[int, int]]:
-    """Return ordinary/raw C++ string spans while ignoring comments/chars."""
-    spans: list[tuple[int, int]] = []
-    index = start
+def _skip_cpp_trivia(source: str, index: int, end: int) -> int:
     while index < end:
-        if source.startswith("//", index):
+        if source[index].isspace():
+            index += 1
+        elif source.startswith("//", index):
             newline = source.find("\n", index + 2, end)
             index = end if newline < 0 else newline
-            continue
-        if source.startswith("/*", index):
+        elif source.startswith("/*", index):
             closing = source.find("*/", index + 2, end)
-            index = end if closing < 0 else closing + 2
-            continue
-        if source.startswith('R"', index):
-            literal_end = _raw_literal_end(source, index)
-            if literal_end is not None:
-                literal_end = min(literal_end, end)
-                spans.append((index, literal_end))
-                index = literal_end
-                continue
-        if source[index] == "'":
-            index = min(_quoted_literal_end(source, index), end)
-            continue
-        if source[index] == '"':
-            literal_end = min(_quoted_literal_end(source, index), end)
-            spans.append((index, literal_end))
-            index = literal_end
-            continue
-        index += 1
+            if closing < 0:
+                return end
+            index = closing + 2
+        else:
+            break
+    return index
+
+
+def _cpp_string_literal_spans(source: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Return spans only when the complete expression is adjacent string literals."""
+    spans: list[tuple[int, int]] = []
+    index = _skip_cpp_trivia(source, start, end)
+    prefixes = ("u8R", "uR", "UR", "LR", "R", "u8", "u", "U", "L", "")
+    while index < end:
+        prefix = next(
+            (candidate for candidate in prefixes if source.startswith(candidate + '"', index)),
+            None,
+        )
+        if prefix is None:
+            return []
+        quote_start = index + len(prefix)
+        literal_start = quote_start - 1 if prefix.endswith("R") else quote_start
+        if prefix.endswith("R"):
+            literal_end = _raw_literal_end(source, literal_start)
+        else:
+            literal_end = _quoted_literal_end(source, quote_start)
+        if literal_end is None or literal_end > end:
+            return []
+        spans.append((literal_start, literal_end))
+        index = _skip_cpp_trivia(source, literal_end, end)
     return spans
 
 
@@ -327,8 +340,18 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             continue
         raw_function_name = match.group(0).split("(", 1)[0].strip()
         function_name = re.sub(r"\s*::\s*", "::", raw_function_name)
-        if "::" not in function_name and re.search(r"::\s*$", masked[: match.start()]):
-            continue
+        preceding = masked[: match.start()]
+        if "::" not in function_name:
+            if re.search(r"(?:\.|->|::)\s*$", preceding):
+                continue
+        elif function_name.startswith("Gui::"):
+            namespace = re.search(r"([A-Za-z_]\w*)\s*::\s*$", preceding)
+            if namespace:
+                continue
+        elif function_name.startswith("Command::"):
+            namespace = re.search(r"([A-Za-z_]\w*)\s*::\s*$", preceding)
+            if namespace and namespace.group(1) != "Gui":
+                continue
         argument_index = next(
             index for name, index in _CPP_COMMAND_ARGUMENTS if function_name.endswith(name)
         )
@@ -347,7 +370,10 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             line_map.extend(_decoded_line_map(value, source, literal_start, literal_end))
         if values:
             prefix = _CPP_COMMAND_PREFIXES.get(function_name, "")
-            command = prefix + "".join(values)
+            payload = "".join(values)
+            if not payload:
+                continue
+            command = prefix + payload
             if not command:
                 continue
             if not line_map:
@@ -944,11 +970,15 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
             )
         if suffix == ".py":
             decoded_literals = _decoded_do_command_literals(source)
+            decoded_compiled = compiled
         else:
             decoded_literals = decoded_command_literals
+            decoded_compiled = _COMPILED[(category.key, "py")]
+        if decoded_compiled is None:
+            continue
         for decoded, line_map in decoded_literals:
-            decoded_masked = mask_py_non_code(decoded) if suffix == ".py" else decoded
-            for match in compiled.finditer(decoded_masked):
+            decoded_masked = mask_py_non_code(decoded)
+            for match in decoded_compiled.finditer(decoded_masked):
                 line = line_map[min(match.start(), len(line_map) - 1)]
                 evidence = evidence_for_line_map(source_lines, line_map, match.start(), match.end())
                 findings.append(
