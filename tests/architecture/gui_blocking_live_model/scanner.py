@@ -226,6 +226,10 @@ _CPP_COMMAND_PREFIXES: dict[str, str] = {
     "FCMD_OBJ_CMD2": "App.getDocument().getObject().",
     "FCMD_VOBJ_CMD2": "Gui.getDocument().getObject().",
 }
+_CPP_GUI_WRAPPER_NAMES = frozenset(
+    name for name, _index in _CPP_COMMAND_ARGUMENTS if name.startswith("Gui::")
+)
+_CPP_ANONYMOUS_NAMESPACE = "<anonymous>"
 
 _CPP_GUI_USING_PATTERN = re.compile(
     r"\busing\s+(?:(?:namespace\s+)?(?:::)?\s*Gui|(?:::)?\s*Gui\s*::\s*Command)\s*;"
@@ -345,16 +349,20 @@ def _cpp_call_argument_ranges(masked: str, opening: int, closing: int) -> list[t
 def _cpp_namespace_ranges(
     masked: str, brace_ranges: list[tuple[int, int]] | None = None
 ) -> list[tuple[int, int, str]]:
-    """Return named namespace brace ranges in masked C++ source."""
+    """Return namespace brace ranges, including anonymous namespaces."""
     if brace_ranges is None:
         brace_ranges = _cpp_brace_ranges(masked)
     closing_by_opening = dict(brace_ranges)
     ranges: list[tuple[int, int, str]] = []
-    declaration = re.compile(r"\bnamespace\s+([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\{")
+    declaration = re.compile(r"\bnamespace(?:\s+([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*))?\s*\{")
     for match in declaration.finditer(masked):
         opening = masked.find("{", match.start(), match.end())
         closing = closing_by_opening.get(opening, len(masked))
-        name = re.sub(r"\s*::\s*", "::", match.group(1))
+        name = (
+            _CPP_ANONYMOUS_NAMESPACE
+            if match.group(1) is None
+            else re.sub(r"\s*::\s*", "::", match.group(1))
+        )
         ranges.append((opening, closing, name))
     return ranges
 
@@ -544,8 +552,16 @@ def _cpp_qualifier_before(masked: str, offset: int) -> str | None:
 
 
 def _cpp_global_prefix_is_qualified(masked: str, offset: int) -> bool:
-    previous = re.search(r"([A-Za-z_]\w*)\s*$", masked[:offset])
+    prefix = masked[:offset].rstrip()
+    if prefix.endswith(("::", ".", "->")):
+        return True
+    previous = re.search(r"([A-Za-z_]\w*)$", prefix)
     return bool(previous and previous.group(1) not in _CPP_GLOBAL_PREFIX_KEYWORDS)
+
+
+def _cpp_member_access_before(masked: str, offset: int) -> bool:
+    """Return whether a qualified call is selected through an object member."""
+    return bool(re.search(r"(?:\.|->)\s*$", masked[:offset]))
 
 
 def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
@@ -577,10 +593,12 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
         context = _cpp_namespace_at(namespace_ranges, match.start())
         if globally_qualified and _cpp_global_prefix_is_qualified(masked, match.start()):
             continue
+        if _cpp_member_access_before(masked, match.start()):
+            continue
         if "::" not in lookup_name:
             if re.search(r"(?:\.|->|::)\s*$", masked[: match.start()]):
                 continue
-        elif lookup_name.startswith("Gui::Command"):
+        elif lookup_name in _CPP_GUI_WRAPPER_NAMES:
             if qualifier is not None:
                 continue
             if not globally_qualified and not _cpp_gui_name_is_global(
@@ -600,7 +618,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
                 using_declarations,
             ):
                 continue
-        if globally_qualified and not lookup_name.startswith("Gui::Command"):
+        if globally_qualified and lookup_name not in _CPP_GUI_WRAPPER_NAMES:
             continue
         argument_index = next(
             index for name, index in _CPP_COMMAND_ARGUMENTS if lookup_name.endswith(name)

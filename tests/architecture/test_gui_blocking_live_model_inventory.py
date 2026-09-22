@@ -26,7 +26,10 @@ import copy
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path, PureWindowsPath
 
@@ -860,6 +863,109 @@ str.join(parts)
         self.assertIn('"recompute()"', direct[1].evidence)
         self.assertIn('R"tag(recompute())tag"', direct[2].evidence)
         self.assertIn('"%s.recompute()"', direct[3].evidence)
+
+    def test_cpp_gui_wrappers_resolve_global_local_member_and_anonymous_names(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            "struct Command { enum Type { Doc }; "
+            "static void doCommand(Type, const char*); };\n"
+            "void cmdAppDocument(void*, const char*);\n"
+            "}\n"
+            "namespace Other { namespace Gui { "
+            "void cmdAppDocument(void*, const char*); } }\n"
+            "struct Holder : ::Gui::Command {};\n"
+            "void sample(void* doc) {\n"
+            "    :: /*comment*/ Gui::cmdAppDocument(doc, "
+            '"App.ActiveDocument.recompute()");\n'
+            "    Other::Gui::cmdAppDocument(doc, "
+            '"App.ActiveDocument.recompute()");\n'
+            "    Holder h;\n"
+            "    h.Gui::Command::doCommand(Gui::Command::Doc, "
+            '"App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace { namespace Gui { "
+            "void cmdAppDocument(void*, const char*); }\n"
+            "void anonymous_sample(void* doc) {\n"
+            '    Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "    :: /*comment*/ Gui::cmdAppDocument(doc, "
+            '"App.ActiveDocument.recompute()");\n'
+            "}}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_wrapper_resolution.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++17", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertIn((8, "direct-recompute"), categories)
+        self.assertIn((8, "live-app-dereference"), categories)
+        self.assertNotIn((9, "direct-recompute"), categories)
+        self.assertNotIn((11, "direct-recompute"), categories)
+        self.assertNotIn((15, "direct-recompute"), categories)
+        self.assertIn((16, "direct-recompute"), categories)
+        self.assertIn((16, "live-app-dereference"), categories)
+
+    def test_cpp_gui_qualified_wrappers_all_decode_explicit_global_calls(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            "struct Command { static void doCommand(...); "
+            "static void runCommand(...); };\n"
+            "void cmdAppDocument(...);\n"
+            "void cmdGuiDocument(...);\n"
+            "void cmdAppObject(...);\n"
+            "void cmdGuiObject(...);\n"
+            "void cmdAppDocumentArgs(...);\n"
+            "void cmdAppObjectArgs(...);\n"
+            "void cmdGuiObjectArgs(...);\n"
+            "void doCommandT(...);\n"
+            "}\n"
+            "void sample(void* doc) {\n"
+            "    :: /*comment*/ Gui::Command::doCommand(0, "
+            '"App.ActiveDocument.recompute()");\n'
+            '    ::Gui::Command::runCommand(0, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdGuiDocument(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppObject(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdGuiObject(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppDocumentArgs(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppObjectArgs(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdGuiObjectArgs(doc, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::doCommandT(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_qualified_wrappers.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++17", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        expected_lines = set(range(13, 23))
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            expected_lines,
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "live-app-dereference"},
+            expected_lines,
+        )
 
     def test_cpp_gui_command_extraction_ignores_inert_and_unrelated_strings(self) -> None:
         source = (
