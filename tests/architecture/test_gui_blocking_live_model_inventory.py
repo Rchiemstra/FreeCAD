@@ -32,6 +32,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path, PureWindowsPath
+from unittest import mock
 
 _ARCH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ARCH_DIR))
@@ -1708,6 +1709,56 @@ str.join(parts)
             else:
                 self.assertNotIn((4, "direct-recompute"), categories)
                 self.assertNotIn((4, "live-app-dereference"), categories)
+
+    def test_cpp_generic_lambda_invocation_suffixes_are_not_requires_clauses(self) -> None:
+        sources = (
+            (
+                "template<class T> concept Direct = []<class U>() -> bool { return true; }() && "
+                "requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+            (
+                "template<class T> concept Explicit = []<class U>() mutable noexcept -> bool { "
+                "return true; }.template operator()<int>() && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+        )
+        for index, body in enumerate(sources):
+            source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
+            if shutil.which("g++"):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    snippet = Path(temporary_directory) / f"gui_lambda_suffix_{index}.cpp"
+                    snippet.write_text(source, encoding="utf-8")
+                    result = subprocess.run(
+                        ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            categories = {
+                finding.category
+                for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+            }
+            self.assertNotIn("direct-recompute", categories)
+            self.assertNotIn("live-app-dereference", categories)
+
+    def test_cpp_requires_generic_lambda_assignment_search_is_declaration_bounded(self) -> None:
+        source = "\n".join(
+            f"auto value{index} = []<class T>() requires (true) {{ return true; }};"
+            for index in range(80)
+        )
+        observed_lengths: list[int] = []
+        original = scanner._cpp_requires_lambda_assignment_rhs
+
+        def record_rhs(rhs: str, *, require_generic_template_head: bool = False) -> bool:
+            observed_lengths.append(len(rhs))
+            return original(rhs, require_generic_template_head=require_generic_template_head)
+
+        with mock.patch.object(scanner, "_cpp_requires_lambda_assignment_rhs", record_rhs):
+            self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+        self.assertTrue(observed_lengths)
+        self.assertLess(max(observed_lengths), 100)
 
     def test_cpp_nested_requires_constraints_keep_lambda_bodies_evaluated(self) -> None:
         source = (

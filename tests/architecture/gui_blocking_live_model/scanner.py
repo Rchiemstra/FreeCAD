@@ -858,12 +858,22 @@ def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
     # lambda head from its own capture introducer: comments between the head
     # and ``requires`` are legal and must not be cut off by an arbitrary byte
     # limit.
-    prefix = masked[_cpp_requires_prefix_start(masked, offset) : offset]
+    prefix_start = _cpp_requires_prefix_start(masked, offset)
+    prefix = masked[prefix_start:offset]
     if _cpp_requires_ref_qualifier_is_declarator(prefix):
         return True
-    if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset):
+    if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset, prefix_start):
         return True
     for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
+        declarator = prefix[:opening]
+        if _cpp_requires_generic_lambda_invocation_prefix(declarator):
+            continue
+        if (
+            _cpp_requires_generic_lambda_parameter_prefix(declarator)
+            and re.search(r"}\s*(?:\(|\.)", prefix[opening:])
+            and "requires requires" not in prefix[opening:]
+        ):
+            continue
         if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
             return True
     return False
@@ -1102,7 +1112,9 @@ def _cpp_requires_matching_opening(
     return None
 
 
-def _cpp_requires_generic_lambda_template_head_is_clause(source: str, offset: int) -> bool:
+def _cpp_requires_generic_lambda_template_head_is_clause(
+    source: str, offset: int, declaration_start: int = 0
+) -> bool:
     """Recognize an assigned generic lambda with an implicit parameter list."""
     capture = source.rfind("]", 0, offset)
     if capture < 0:
@@ -1110,7 +1122,10 @@ def _cpp_requires_generic_lambda_template_head_is_clause(source: str, offset: in
     opening = _cpp_requires_matching_opening(source, capture, "[", "]")
     if opening is None:
         return False
-    for assignment in reversed([match.start() for match in re.finditer("=", source[:opening])]):
+    for assignment in reversed(
+        [match.start() for match in re.finditer("=", source[declaration_start:opening])]
+    ):
+        assignment += declaration_start
         rhs = source[assignment + 1 : offset]
         if not rhs.lstrip().startswith("["):
             continue
@@ -1213,10 +1228,65 @@ def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
                 break
     if template_closing is None:
         return False
-    remainder = head[template_closing + 1 :].strip()
-    if remainder and not remainder.startswith("requires"):
+    return _cpp_requires_generic_lambda_head(head[capture_opening:])
+
+
+def _cpp_requires_generic_lambda_parameter_prefix(declarator: str) -> bool:
+    """Reject a generic lambda's template/parameter prefix as a declaration."""
+    assignment = declarator.rfind("=")
+    if assignment < 0:
         return False
-    return _cpp_requires_lambda_assignment_rhs(head[capture_opening:])
+    return _cpp_requires_generic_lambda_head(declarator[assignment + 1 :])
+
+
+def _cpp_requires_generic_lambda_head(head: str) -> bool:
+    """Recognize a generic lambda head, including its declarator suffixes."""
+    index = _skip_cpp_trivia(head, 0, len(head))
+    if index >= len(head) or head[index] != "[":
+        return False
+    capture = head.rfind("]")
+    if capture < 0:
+        return False
+    capture_opening = _cpp_requires_matching_opening(head, capture, "[", "]")
+    if capture_opening is None:
+        return False
+    template_opening = _skip_cpp_trivia(head, capture + 1, len(head))
+    if template_opening >= len(head) or head[template_opening] != "<":
+        return False
+    angle_depth = 0
+    template_closing = None
+    for index in range(template_opening, len(head)):
+        if head[index] == "<":
+            angle_depth += 1
+        elif head[index] == ">":
+            angle_depth -= 1
+            if angle_depth == 0:
+                template_closing = index
+                break
+    if template_closing is None:
+        return False
+
+    suffix = head[template_closing + 1 :]
+    stripped = suffix.lstrip()
+    if re.fullmatch(r"requires\s+requires\s*\([^{}]*\)\s*", stripped):
+        return False
+    if stripped and not re.match(
+        r"(?:\(|requires\b|mutable\b|constexpr\b|consteval\b|static\b|"
+        r"noexcept\b|throw\b|\[\[|->)",
+        stripped,
+    ):
+        return False
+    stack: list[str] = []
+    matching = {")": "(", "]": "[", "}": "{"}
+    for character in suffix:
+        if character in "([{":
+            stack.append(character)
+        elif character in matching:
+            if not stack or stack.pop() != matching[character]:
+                return False
+        elif character == ";" and not stack:
+            return False
+    return not stack
 
 
 def _cpp_offset_in_ranges(offset: int, ranges: list[tuple[int, int]]) -> bool:
