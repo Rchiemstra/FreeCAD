@@ -377,7 +377,23 @@ def _cpp_gui_name_is_global(
     namespace_ranges: list[tuple[int, int, str]] | None = None,
     offset: int | None = None,
     namespace_identities: dict[str, int] | None = None,
+    gui_shadows: list[tuple[int, tuple[int, int] | None, str | None, int | None]] | None = None,
 ) -> bool:
+    if offset is not None and gui_shadows is not None:
+        for declaration, scope, namespace_scope, lifetime_end in gui_shadows:
+            if declaration >= offset or (lifetime_end is not None and offset >= lifetime_end):
+                continue
+            if namespace_scope is not None:
+                if namespace_scope and (
+                    context is None
+                    or not (
+                        context == namespace_scope or context.startswith(namespace_scope + "::")
+                    )
+                ):
+                    continue
+                return False
+            if scope is not None and scope[0] < offset < scope[1]:
+                return False
     if context is None:
         return True
     parts = context.split("::")
@@ -517,6 +533,64 @@ def _cpp_gui_using_declarations(
     return declarations
 
 
+def _cpp_gui_shadow_declarations(
+    masked: str,
+    brace_ranges: list[tuple[int, int]],
+    namespace_ranges: list[tuple[int, int, str]],
+) -> list[tuple[int, tuple[int, int] | None, str | None, int | None]]:
+    """Return ordered lexical declarations which hide the global ``Gui`` namespace."""
+    shadows: list[tuple[int, tuple[int, int] | None, str | None, int | None]] = []
+    closing_by_opening = dict(brace_ranges)
+
+    def add_shadow(offset: int, lifetime_end: int | None = None) -> None:
+        namespace_scope = _cpp_namespace_scope(namespace_ranges, brace_ranges, offset)
+        scope = _cpp_innermost_brace(brace_ranges, offset)
+        if namespace_scope is not None and scope is not None:
+            active = [
+                opening
+                for opening, closing, _name in namespace_ranges
+                if opening < offset < closing
+            ]
+            if active and scope[0] == active[-1]:
+                scope = None
+        shadows.append((offset, scope, namespace_scope, lifetime_end))
+
+    for match in re.finditer(r"\b(?:struct|class|union)\s+Gui\b(?=\s*(?:[:{;]))", masked):
+        add_shadow(match.start())
+    for match in re.finditer(r"\busing\s+Gui\s*=", masked):
+        add_shadow(match.start())
+    for match in re.finditer(r"\btypedef\b[^;{}]*\bGui\b\s*(?=;)", masked):
+        add_shadow(match.start())
+    for match in re.finditer(r"\bnamespace\s+Gui\s*=", masked):
+        add_shadow(match.start())
+
+    for match in re.finditer(r"\btemplate\s*<", masked):
+        opening = masked.find("<", match.start(), match.end())
+        depth = 0
+        closing = None
+        for index in range(opening, len(masked)):
+            if masked[index] == "<":
+                depth += 1
+            elif masked[index] == ">":
+                depth -= 1
+                if depth == 0:
+                    closing = index
+                    break
+        if closing is None or not re.search(
+            r"\b(?:typename|class)\s+Gui\b", masked[opening + 1 : closing]
+        ):
+            continue
+        body_opening = masked.find("{", closing + 1)
+        declaration_end = masked.find(";", closing + 1)
+        if body_opening < 0 or (declaration_end >= 0 and declaration_end < body_opening):
+            body_opening = None
+        if body_opening is not None:
+            add_shadow(match.start(), closing_by_opening.get(body_opening))
+
+    shadows.sort(key=lambda item: item[0])
+    return shadows
+
+
 def _cpp_has_gui_using(
     offset: int,
     brace_ranges: list[tuple[int, int]],
@@ -587,12 +661,29 @@ def _cpp_unevaluated_ranges(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
     wrapper_call = re.compile(rf"(?:::)?\s*(?:{wrapper_names})\s*\(")
+    unary_prefixes = ("++", "--", "*", "+", "-", "!", "~", "&")
+
     for match in re.finditer(r"\b(?:alignof|sizeof)\b(?!\s*\()", masked):
         operand_start = _skip_cpp_trivia(masked, match.end(), len(masked))
-        wrapper_match = wrapper_call.match(masked, operand_start)
+        wrapper_operand_start = operand_start
+        while True:
+            wrapper_operand_start = _skip_cpp_trivia(masked, wrapper_operand_start, len(masked))
+            prefix = next(
+                (
+                    prefix
+                    for prefix in unary_prefixes
+                    if masked.startswith(prefix, wrapper_operand_start)
+                ),
+                None,
+            )
+            if prefix is None:
+                break
+            wrapper_operand_start += len(prefix)
+        wrapper_operand_start = _skip_cpp_trivia(masked, wrapper_operand_start, len(masked))
+        wrapper_match = wrapper_call.match(masked, wrapper_operand_start)
         if wrapper_match is None:
             continue
-        opening = masked.find("(", operand_start, wrapper_match.end())
+        opening = masked.find("(", wrapper_operand_start, wrapper_match.end())
         closing = _cpp_call_end(masked, opening)
         if closing is not None:
             ranges.append((operand_start, closing + 1))
@@ -606,11 +697,29 @@ def _cpp_unevaluated_ranges(
                 continue
             ranges.append((index, closing + 1))
             index = _skip_cpp_trivia(masked, closing + 1, len(masked))
-        if index < len(masked) and masked[index] == "{":
+        if (
+            index < len(masked)
+            and masked[index] == "{"
+            and not _cpp_requires_is_clause(masked, match.start())
+        ):
             closing = closing_by_opening.get(index)
             if closing is not None:
                 ranges.append((index, closing + 1))
     return ranges
+
+
+def _cpp_requires_is_clause(masked: str, offset: int) -> bool:
+    """Recognize a trailing function/lambda requires-clause before its body."""
+    # Qualifiers and the function declarator are immediately adjacent to the
+    # requires keyword; avoid copying an entire large translation unit for each
+    # requires-expression encountered during the production scan.
+    prefix = masked[max(0, offset - 512) : offset]
+    return bool(
+        re.search(
+            r"\)\s*(?:(?:const|volatile|override|final|mutable|constexpr|consteval)\b|&&?|noexcept(?:\s*\([^)]*\))?|->\s*[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^;{}]*>)?|\[\[[^]]*\]\])*\s*$",
+            prefix,
+        )
+    )
 
 
 def _cpp_offset_in_ranges(offset: int, ranges: list[tuple[int, int]]) -> bool:
@@ -624,6 +733,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     unevaluated_ranges = _cpp_unevaluated_ranges(masked, brace_ranges)
     namespace_ranges = _cpp_namespace_ranges(masked, brace_ranges)
     namespace_identities = _cpp_namespace_identities(namespace_ranges)
+    gui_shadows = _cpp_gui_shadow_declarations(masked, brace_ranges, namespace_ranges)
     using_declarations = _cpp_gui_using_declarations(
         masked, brace_ranges, namespace_ranges, namespace_identities
     )
@@ -658,7 +768,11 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             if qualifier is not None:
                 continue
             if not globally_qualified and not _cpp_gui_name_is_global(
-                context, namespace_ranges, match.start(), namespace_identities
+                context,
+                namespace_ranges,
+                match.start(),
+                namespace_identities,
+                gui_shadows,
             ):
                 continue
         elif lookup_name.startswith("Command::"):
