@@ -1352,6 +1352,49 @@ str.join(parts)
             {4, 6, 10, 12},
         )
 
+    def test_cpp_constrained_gui_template_parameters_shadow_only_parameter_scopes(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "template<class T> concept Type = true;\n"
+            "template<Type Gui> void constrained() {\n"
+            '    Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "auto constrained_lambda = []<Type Gui>() {\n"
+            '    Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "void after_constrained() {\n"
+            '    Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace External { struct Gui {}; }\n"
+            "namespace DefaultScope {\n"
+            "template<class T = External::Gui> void defaulted() {\n"
+            '    Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_constrained_template_parameter.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {5, 9, 12, 17, 18},
+        )
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"

@@ -569,6 +569,74 @@ def _cpp_template_shadow_body_opening(
         return body_opening
 
 
+def _cpp_template_parameter_has_gui(masked: str, opening: int, closing: int) -> bool:
+    parameters = masked[opening + 1 : closing]
+    segments: list[str] = []
+    start = 0
+    angle_depth = paren_depth = bracket_depth = brace_depth = 0
+    for index, character in enumerate(parameters):
+        if character == "<":
+            angle_depth += 1
+        elif character == ">" and angle_depth:
+            angle_depth -= 1
+        elif character == "(":
+            paren_depth += 1
+        elif character == ")" and paren_depth:
+            paren_depth -= 1
+        elif character == "[":
+            bracket_depth += 1
+        elif character == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif character == "{":
+            brace_depth += 1
+        elif character == "}" and brace_depth:
+            brace_depth -= 1
+        elif character == "," and not any((angle_depth, paren_depth, bracket_depth, brace_depth)):
+            segments.append(parameters[start:index])
+            start = index + 1
+    segments.append(parameters[start:])
+
+    for segment in segments:
+        angle_depth = paren_depth = bracket_depth = brace_depth = 0
+        declaration_end = len(segment)
+        for index, character in enumerate(segment):
+            if character == "<":
+                angle_depth += 1
+            elif character == ">" and angle_depth:
+                angle_depth -= 1
+            elif character == "(":
+                paren_depth += 1
+            elif character == ")" and paren_depth:
+                paren_depth -= 1
+            elif character == "[":
+                bracket_depth += 1
+            elif character == "]" and bracket_depth:
+                bracket_depth -= 1
+            elif character == "{":
+                brace_depth += 1
+            elif character == "}" and brace_depth:
+                brace_depth -= 1
+            elif character == "=" and not any(
+                (angle_depth, paren_depth, bracket_depth, brace_depth)
+            ):
+                declaration_end = index
+                break
+        declaration = segment[:declaration_end]
+        names: list[str] = []
+        angle_depth = paren_depth = bracket_depth = brace_depth = 0
+        for token in re.finditer(r"[A-Za-z_]\w*", declaration):
+            before = declaration[: token.start()]
+            angle_depth = before.count("<") - before.count(">")
+            paren_depth = before.count("(") - before.count(")")
+            bracket_depth = before.count("[") - before.count("]")
+            brace_depth = before.count("{") - before.count("}")
+            if not any((angle_depth, paren_depth, bracket_depth, brace_depth)):
+                names.append(token.group())
+        if names and names[-1] == "Gui":
+            return True
+    return False
+
+
 def _cpp_gui_shadow_declarations(
     masked: str,
     brace_ranges: list[tuple[int, int]],
@@ -611,9 +679,7 @@ def _cpp_gui_shadow_declarations(
                 if depth == 0:
                     closing = index
                     break
-        if closing is None or not re.search(
-            r"\b(?:typename|class)\s+Gui\b", masked[opening + 1 : closing]
-        ):
+        if closing is None or not _cpp_template_parameter_has_gui(masked, opening, closing):
             return
         body_opening = _cpp_template_shadow_body_opening(masked, closing, closing_by_opening)
         if body_opening is not None:
