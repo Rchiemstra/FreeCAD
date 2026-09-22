@@ -957,8 +957,10 @@ str.join(parts)
             "namespace Gui {\n"
             'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
             'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            '::Gui::Command::doCommand(::Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
             "}\n"
             "using Gui::Command;\n"
+            "using ::Gui::Command;\n"
             'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
             'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
             "}\n"
@@ -978,15 +980,97 @@ str.join(parts)
         categories = {(finding.line, finding.category) for finding in findings}
         self.assertEqual(
             {line for line, category in categories if category == "direct-recompute"},
-            {1, 3, 5, 18, 29},
+            {1, 3, 5, 15, 31},
         )
         self.assertEqual(
             {line for line, category in categories if category == "process-events-polling"},
-            {2, 7, 17, 25},
+            {2, 7, 19, 27},
         )
         self.assertEqual(
             {line for line, category in categories if category == "live-app-dereference"},
-            {1, 3, 5, 18, 29},
+            {1, 3, 5, 15, 31},
+        )
+
+    def test_cpp_namespace_scope_using_survives_reopening_and_respects_order(self) -> None:
+        source = (
+            "namespace Reopened {\n"
+            "using ::Gui::Command;\n"
+            "}\n"
+            "namespace Reopened {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "namespace Nested {\n"
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            "}\n"
+            "}\n"
+            "namespace ReopenedSibling {\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace Directive {\n"
+            "using namespace ::Gui;\n"
+            "}\n"
+            "namespace Directive {\n"
+            'Command::runCommand(Command::Gui, "Gui.updateGui()");\n'
+            "}\n"
+            "namespace OrderBefore {\n"
+            "using Gui::Command;\n"
+            "}\n"
+            "namespace OrderBefore {\n"
+            "namespace Gui {}\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "namespace OrderAfter {\n"
+            "namespace Gui {}\n"
+            "using Gui::Command;\n"
+            'Command::doCommand(Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {5, 24},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "process-events-polling"},
+            {7, 17},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "live-app-dereference"},
+            {5, 24},
+        )
+
+    def test_cpp_local_gui_namespace_shadows_unqualified_global_gui(self) -> None:
+        source = (
+            "namespace Other {\n"
+            "namespace Gui {}\n"
+            "namespace Nested {\n"
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            ':: /*comment*/ Gui::Command::runCommand(::Gui::Command::Gui, "Gui.updateGui()");\n'
+            "}\n"
+            "}\n"
+            "namespace OtherLater {\n"
+            "namespace Nested {\n"
+            'Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "}\n"
+        )
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {10},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "process-events-polling"},
+            {5},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "live-app-dereference"},
+            {10},
         )
 
     def test_cpp_command_extraction_rejects_dynamic_and_member_expressions(self) -> None:

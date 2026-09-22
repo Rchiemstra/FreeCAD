@@ -351,11 +351,26 @@ def _cpp_namespace_at(namespace_ranges: list[tuple[int, int, str]], offset: int)
     return "::".join(name for _opening, name in active) if active else None
 
 
-def _cpp_gui_name_is_global(context: str | None) -> bool:
+def _cpp_gui_name_is_global(
+    context: str | None,
+    namespace_ranges: list[tuple[int, int, str]] | None = None,
+    offset: int | None = None,
+    namespace_identities: dict[str, int] | None = None,
+) -> bool:
     if context is None:
         return True
     parts = context.split("::")
-    return parts[0] == "Gui" or "Gui" not in parts[1:]
+    if parts[0] == "Gui" or "Gui" in parts[1:]:
+        return parts[0] == "Gui"
+    if namespace_ranges is None or offset is None:
+        return True
+    for length in range(len(parts), 0, -1):
+        candidate = "::".join((*parts[:length], "Gui"))
+        if _cpp_namespace_declared_before(
+            namespace_ranges, candidate, offset, namespace_identities
+        ):
+            return False
+    return True
 
 
 def _cpp_brace_ranges(masked: str) -> list[tuple[int, int]]:
@@ -379,13 +394,113 @@ def _cpp_innermost_brace(
     return min(enclosing, key=lambda item: item[1] - item[0], default=None)
 
 
-def _cpp_has_gui_using(masked: str, offset: int, brace_ranges: list[tuple[int, int]]) -> bool:
+def _cpp_namespace_scope(
+    namespace_ranges: list[tuple[int, int, str]],
+    brace_ranges: list[tuple[int, int]],
+    offset: int,
+) -> str | None:
+    context = _cpp_namespace_at(namespace_ranges, offset)
+    if context is None:
+        return "" if _cpp_innermost_brace(brace_ranges, offset) is None else None
+    active = sorted(
+        (opening, closing)
+        for opening, closing, _name in namespace_ranges
+        if opening < offset < closing
+    )
+    innermost_brace = _cpp_innermost_brace(brace_ranges, offset)
+    if not active or innermost_brace is None or innermost_brace[0] != active[-1][0]:
+        return None
+    return context
+
+
+def _cpp_namespace_declared_before(
+    namespace_ranges: list[tuple[int, int, str]],
+    context: str,
+    offset: int,
+    namespace_identities: dict[str, int] | None = None,
+) -> bool:
+    if namespace_identities is not None:
+        return namespace_identities.get(context, offset) < offset
+    for opening, _closing, name in namespace_ranges:
+        if opening >= offset:
+            continue
+        parents = sorted(
+            (parent_opening, parent_name)
+            for parent_opening, parent_closing, parent_name in namespace_ranges
+            if parent_opening < opening < parent_closing
+        )
+        identity = "::".join((*[parent_name for _opening, parent_name in parents], name))
+        if identity == context:
+            return True
+    return False
+
+
+def _cpp_namespace_identities(
+    namespace_ranges: list[tuple[int, int, str]],
+) -> dict[str, int]:
+    identities: dict[str, int] = {}
+    for opening, _closing, name in namespace_ranges:
+        parents = sorted(
+            (parent_opening, parent_name)
+            for parent_opening, parent_closing, parent_name in namespace_ranges
+            if parent_opening < opening < parent_closing
+        )
+        identity = "::".join((*[parent_name for _opening, parent_name in parents], name))
+        identities.setdefault(identity, opening)
+    return identities
+
+
+def _cpp_gui_using_is_global(
+    masked: str,
+    match: re.Match[str],
+    namespace_ranges: list[tuple[int, int, str]],
+    namespace_context: str | None,
+    namespace_identities: dict[str, int] | None = None,
+) -> bool:
+    declaration = masked[match.start() : match.end()]
+    if re.search(r"\busing\s+(?:namespace\s+)?\s*::", declaration):
+        return True
+    if namespace_context is None:
+        return True
+    parts = namespace_context.split("::")
+    for length in range(len(parts), 0, -1):
+        candidate = "::".join((*parts[:length], "Gui"))
+        if _cpp_namespace_declared_before(
+            namespace_ranges, candidate, match.start(), namespace_identities
+        ):
+            return False
+    return True
+
+
+def _cpp_has_gui_using(
+    masked: str,
+    offset: int,
+    brace_ranges: list[tuple[int, int]],
+    namespace_ranges: list[tuple[int, int, str]],
+    namespace_identities: dict[str, int] | None = None,
+) -> bool:
     using_pattern = re.compile(
         r"\busing\s+(?:(?:namespace\s+)?(?:::)?\s*Gui|(?:::)?\s*Gui\s*::\s*Command)\s*;"
     )
     call_scope = _cpp_innermost_brace(brace_ranges, offset)
+    call_namespace = _cpp_namespace_at(namespace_ranges, offset)
     for match in using_pattern.finditer(masked, 0, offset):
+        using_namespace = _cpp_namespace_at(namespace_ranges, match.start())
+        if not _cpp_gui_using_is_global(
+            masked, match, namespace_ranges, using_namespace, namespace_identities
+        ):
+            continue
         using_scope = _cpp_innermost_brace(brace_ranges, match.start())
+        namespace_scope = _cpp_namespace_scope(namespace_ranges, brace_ranges, match.start())
+        if namespace_scope is not None:
+            if namespace_scope and not (
+                call_namespace == namespace_scope
+                or (call_namespace or "").startswith(namespace_scope + "::")
+            ):
+                continue
+            if not namespace_scope:
+                return True
+            return True
         if using_scope is None or (
             using_scope[0] < offset < using_scope[1]
             and (call_scope is None or using_scope[0] <= call_scope[0])
@@ -406,11 +521,12 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     """Decode literals passed to known executable GUI command wrappers."""
     masked = mask_cpp_non_code(source)
     namespace_ranges = _cpp_namespace_ranges(masked)
+    namespace_identities = _cpp_namespace_identities(namespace_ranges)
     brace_ranges = _cpp_brace_ranges(masked)
     names = "|".join(
         re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
     )
-    pattern = re.compile(rf"(?<![\w:])(?:::)?(?:{names})\s*\(")
+    pattern = re.compile(rf"(?<![\w:])(?:::)?\s*(?:{names})\s*\(")
     decoded: list[tuple[str, list[int]]] = []
     for match in pattern.finditer(masked):
         opening = masked.find("(", match.start(), match.end())
@@ -425,13 +541,17 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
         lookup_name = function_name.removeprefix("::")
         qualifier = _cpp_qualifier_before(masked, match.start())
         context = _cpp_namespace_at(namespace_ranges, match.start())
+        if globally_qualified and re.search(r"[A-Za-z_]\w*\s*$", masked[: match.start()]):
+            continue
         if "::" not in lookup_name:
             if re.search(r"(?:\.|->|::)\s*$", masked[: match.start()]):
                 continue
         elif lookup_name.startswith("Gui::Command"):
             if qualifier is not None:
                 continue
-            if not globally_qualified and not _cpp_gui_name_is_global(context):
+            if not globally_qualified and not _cpp_gui_name_is_global(
+                context, namespace_ranges, match.start(), namespace_identities
+            ):
                 continue
         elif lookup_name.startswith("Command::"):
             if globally_qualified or (qualifier is not None and qualifier != "Gui"):
@@ -440,7 +560,7 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
                 if context is not None and context.split("::", 1)[0] != "Gui":
                     continue
             elif (context is None or context.split("::", 1)[0] != "Gui") and not _cpp_has_gui_using(
-                masked, match.start(), brace_ranges
+                masked, match.start(), brace_ranges, namespace_ranges, namespace_identities
             ):
                 continue
         if globally_qualified and not lookup_name.startswith("Gui::Command"):
