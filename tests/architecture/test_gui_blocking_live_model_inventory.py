@@ -1395,6 +1395,56 @@ str.join(parts)
             {5, 9, 12, 17, 18},
         )
 
+    def test_cpp_requires_clause_operator_names_keep_evaluated_bodies(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "struct Widget {};\n"
+            "template<class T> constexpr bool predicate() { return true; }\n"
+            "template<class T> concept Logical = predicate<T>() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "template<class T> constexpr bool returned() {\n"
+            "    return predicate<T>() && requires {\n"
+            '        ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "    };\n"
+            "}\n"
+            "template<class T> struct P {\n"
+            "    Widget* pointer(T) && requires (sizeof(T)>0) {\n"
+            '        ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "        return nullptr;\n"
+            "    }\n"
+            "};\n"
+            "template<class T> struct S {\n"
+            "    auto operator==(T) && requires (sizeof(T)>0) {\n"
+            '        ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "        return true;\n"
+            "    }\n"
+            "    S& operator=(T) && requires (sizeof(T)>0) {\n"
+            '        ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "        return *this;\n"
+            "    }\n"
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_operator_names.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {14, 20, 24},
+        )
+
     def test_cpp_using_command_through_local_gui_alias_is_not_global(self) -> None:
         source = (
             "namespace Gui {\n"

@@ -890,18 +890,28 @@ def _cpp_requires_ref_qualifier_is_declarator(prefix: str) -> bool:
     boundary = max(declarator.rfind(";"), declarator.rfind("{"), declarator.rfind("}"))
     declarator = declarator[boundary + 1 :]
     angle_depth = 0
-    for character in declarator:
+    for index, character in enumerate(declarator):
         if character == "<":
             angle_depth += 1
         elif character == ">" and angle_depth:
             angle_depth -= 1
         elif character == "=" and angle_depth == 0:
-            return False
-    if re.search(r"\b(?:auto|void|bool|char|short|int|long|float|double|template)\b", declarator):
+            operator_start = declarator.rfind("operator", 0, index)
+            if operator_start < 0 or not re.fullmatch(
+                r"\s*[^A-Za-z0-9_]*",
+                declarator[operator_start + len("operator") : index],
+            ):
+                return False
+    if re.search(r"\b(?:return|co_return|throw|static_assert)\b", declarator):
+        return False
+    if re.search(
+        r"\b(?:auto|void|bool|char|short|int|long|float|double|template|operator)\b",
+        declarator,
+    ):
         return True
     return bool(
         re.search(
-            r"(?:^|\s)[A-Za-z_]\w*(?:::\w+)*(?:\s*<[^<>]*>)?\s+[A-Za-z_]\w*(?:\s*<[^<>]*>)?\s*$",
+            r"(?:^|\s)[A-Za-z_]\w*(?:::\w+)*(?:\s*[&*]+)?(?:\s*<[^<>]*>)?\s+[A-Za-z_]\w*(?:\s*<[^<>]*>)?\s*$",
             declarator,
         )
     )
