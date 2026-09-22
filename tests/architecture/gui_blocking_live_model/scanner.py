@@ -1088,13 +1088,27 @@ def _cpp_requires_lambda_assignment_rhs(
     return not stack
 
 
+def _cpp_requires_matching_opening(
+    source: str, closing: int, opening_character: str, closing_character: str
+) -> int | None:
+    depth = 0
+    for index in range(closing, -1, -1):
+        if source[index] == closing_character:
+            depth += 1
+        elif source[index] == opening_character:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def _cpp_requires_generic_lambda_template_head_is_clause(source: str, offset: int) -> bool:
     """Recognize an assigned generic lambda with an implicit parameter list."""
     capture = source.rfind("]", 0, offset)
     if capture < 0:
         return False
-    opening = source.rfind("[", 0, capture + 1)
-    if opening < 0:
+    opening = _cpp_requires_matching_opening(source, capture, "[", "]")
+    if opening is None:
         return False
     for assignment in reversed([match.start() for match in re.finditer("=", source[:opening])]):
         rhs = source[assignment + 1 : offset]
@@ -1181,8 +1195,8 @@ def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
     capture_closing = head.rfind("]")
     if capture_closing < 0:
         return False
-    capture_opening = head.rfind("[", 0, capture_closing + 1)
-    if capture_opening < 0:
+    capture_opening = _cpp_requires_matching_opening(head, capture_closing, "[", "]")
+    if capture_opening is None:
         return False
     template_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
     if template_opening >= len(head) or head[template_opening] != "<":

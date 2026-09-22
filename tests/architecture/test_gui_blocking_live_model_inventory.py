@@ -1593,7 +1593,7 @@ str.join(parts)
         source = (
             "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
             "int arr[1]{};\n"
-            "auto constrained = [p = arr[0]]<class T> requires (true) { "
+            "auto constrained = [p = arr[0]]<class T = int> requires (true) { "
             '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); };\n'
         )
         if shutil.which("g++"):
@@ -1612,6 +1612,33 @@ str.join(parts)
             for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
         }
         self.assertIn((3, "direct-recompute"), categories)
+
+    def test_cpp_nested_capture_invocation_requires_body_is_not_misclassified(self) -> None:
+        source = (
+            "#include <utility>\n"
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "void f() { int arr[1]{}; bool C = [p=arr[0]]<class U>{ return true; }.\n"
+            "template operator()<std::pair<int, std::pair<int,int>>>() && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}; (void)C; }\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_nested_capture_invocation.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            finding.category
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertNotIn("direct-recompute", categories)
+        self.assertNotIn("live-app-dereference", categories)
 
     def test_cpp_generic_lambda_invocations_keep_requires_bodies_evaluated(
         self,
@@ -1644,7 +1671,9 @@ str.join(parts)
             ),
             (
                 "auto long_trivia = []<class T>"
-                + "/*" + "x" * 700 + "*/"
+                + "/*"
+                + "x" * 700
+                + "*/"
                 + " requires (true) {\n"
                 + '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
                 + "};\n"
@@ -1653,8 +1682,7 @@ str.join(parts)
         for index, body in enumerate(sources):
             source = (
                 "#include <utility>\n"
-                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
-                + body
+                "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
             )
             if shutil.which("g++"):
                 with tempfile.TemporaryDirectory() as temporary_directory:
