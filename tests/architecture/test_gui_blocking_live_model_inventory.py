@@ -914,6 +914,46 @@ str.join(parts)
         self.assertIn((16, "direct-recompute"), categories)
         self.assertIn((16, "live-app-dereference"), categories)
 
+    def test_cpp_gui_wrappers_resolve_nested_named_and_anonymous_shadowing(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            "void cmdAppDocument(void*, const char*);\n"
+            "namespace Nested {\n"
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "void named(void* doc) {\n"
+            '    Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            '    :: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "}\n"
+            "namespace {\n"
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "void anonymous(void* doc) {\n"
+            '    Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            '    :: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "}\n"
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_nested_shadowing.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++17", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertNotIn((6, "direct-recompute"), categories)
+        self.assertIn((7, "direct-recompute"), categories)
+        self.assertNotIn((13, "direct-recompute"), categories)
+        self.assertIn((14, "direct-recompute"), categories)
+
     def test_cpp_gui_qualified_wrappers_all_decode_explicit_global_calls(self) -> None:
         source = (
             "namespace Gui {\n"
@@ -965,6 +1005,69 @@ str.join(parts)
         self.assertEqual(
             {line for line, category in categories if category == "live-app-dereference"},
             expected_lines,
+        )
+
+    def test_cpp_gui_wrappers_skip_unevaluated_operands_but_keep_evaluated_calls(self) -> None:
+        source = (
+            "namespace Gui {\n"
+            "struct Result { virtual ~Result() = default; };\n"
+            "Result& cmdAppDocument(void*, const char*) noexcept;\n"
+            "}\n"
+            "using Declared = decltype((:: /*comment*/ Gui::cmdAppDocument(\n"
+            '    nullptr, "App.ActiveDocument.recompute()")));\n'
+            "bool no_throw(void* doc) {\n"
+            '    return noexcept(:: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()"));\n'
+            "}\n"
+            "auto sized = sizeof((:: /*comment*/ Gui::cmdAppDocument(\n"
+            '    nullptr, "App.ActiveDocument.recompute()")));\n'
+            'auto directly_sized = sizeof :: /*comment*/ Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "template <typename T> concept HasCommand = requires(T value) {\n"
+            '    :: /*comment*/ Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "Gui::Result& returned(void* doc) {\n"
+            '    return :: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "void thrown(void* doc) {\n"
+            '    throw :: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "struct Task { struct promise_type {\n"
+            "    Task get_return_object();\n"
+            "    std::suspend_never initial_suspend() noexcept;\n"
+            "    std::suspend_never final_suspend() noexcept;\n"
+            "    void unhandled_exception();\n"
+            "    void return_value(Gui::Result&);\n"
+            "}; };\n"
+            "Task co_returned(void* doc) {\n"
+            '    co_return :: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+            "const std::type_info& identified(void* doc) {\n"
+            '    return typeid(:: /*comment*/ Gui::cmdAppDocument(doc, "App.ActiveDocument.recompute()"));\n'
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_unevaluated_operands.cpp"
+                snippet.write_text(
+                    "#include <coroutine>\n#include <typeinfo>\n" + source, encoding="utf-8"
+                )
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            {line for line, category in categories if category == "direct-recompute"},
+            {17, 20, 30, 33},
+        )
+        self.assertEqual(
+            {line for line, category in categories if category == "live-app-dereference"},
+            {17, 20, 30, 33},
         )
 
     def test_cpp_gui_command_extraction_ignores_inert_and_unrelated_strings(self) -> None:

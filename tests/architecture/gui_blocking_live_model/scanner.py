@@ -381,8 +381,8 @@ def _cpp_gui_name_is_global(
     if context is None:
         return True
     parts = context.split("::")
-    if parts[0] == "Gui" or "Gui" in parts[1:]:
-        return parts[0] == "Gui"
+    if "Gui" in parts[1:]:
+        return False
     if namespace_ranges is None or offset is None:
         return True
     for length in range(len(parts), 0, -1):
@@ -391,6 +391,8 @@ def _cpp_gui_name_is_global(
             namespace_ranges, candidate, offset, namespace_identities
         ):
             return False
+    # Once nearer candidates have been checked, lookup may still resolve the
+    # global namespace Gui (including from unrelated namespace contexts).
     return True
 
 
@@ -564,10 +566,62 @@ def _cpp_member_access_before(masked: str, offset: int) -> bool:
     return bool(re.search(r"(?:\.|->)\s*$", masked[:offset]))
 
 
+def _cpp_unevaluated_ranges(
+    masked: str, brace_ranges: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Return source ranges whose expressions are not evaluated at runtime.
+
+    The ranges are deliberately limited to standard unevaluated operands. In
+    particular, ``typeid`` is omitted because a polymorphic glvalue operand
+    may be evaluated, while ``return``/``throw``/``co_return`` remain ordinary
+    evaluated expressions.
+    """
+    ranges: list[tuple[int, int]] = []
+    for match in re.finditer(r"\b(?:alignof|decltype|noexcept|sizeof)\s*\(", masked):
+        opening = masked.find("(", match.start(), match.end())
+        closing = _cpp_call_end(masked, opening)
+        if closing is not None:
+            ranges.append((opening, closing + 1))
+
+    wrapper_names = "|".join(
+        re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
+    )
+    wrapper_call = re.compile(rf"(?:::)?\s*(?:{wrapper_names})\s*\(")
+    for match in re.finditer(r"\b(?:alignof|sizeof)\b(?!\s*\()", masked):
+        operand_start = _skip_cpp_trivia(masked, match.end(), len(masked))
+        wrapper_match = wrapper_call.match(masked, operand_start)
+        if wrapper_match is None:
+            continue
+        opening = masked.find("(", operand_start, wrapper_match.end())
+        closing = _cpp_call_end(masked, opening)
+        if closing is not None:
+            ranges.append((operand_start, closing + 1))
+
+    closing_by_opening = dict(brace_ranges)
+    for match in re.finditer(r"\brequires\b", masked):
+        index = _skip_cpp_trivia(masked, match.end(), len(masked))
+        if index < len(masked) and masked[index] == "(":
+            closing = _cpp_call_end(masked, index)
+            if closing is None:
+                continue
+            ranges.append((index, closing + 1))
+            index = _skip_cpp_trivia(masked, closing + 1, len(masked))
+        if index < len(masked) and masked[index] == "{":
+            closing = closing_by_opening.get(index)
+            if closing is not None:
+                ranges.append((index, closing + 1))
+    return ranges
+
+
+def _cpp_offset_in_ranges(offset: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(start <= offset < end for start, end in ranges)
+
+
 def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     """Decode literals passed to known executable GUI command wrappers."""
     masked = mask_cpp_non_code(source)
     brace_ranges = _cpp_brace_ranges(masked)
+    unevaluated_ranges = _cpp_unevaluated_ranges(masked, brace_ranges)
     namespace_ranges = _cpp_namespace_ranges(masked, brace_ranges)
     namespace_identities = _cpp_namespace_identities(namespace_ranges)
     using_declarations = _cpp_gui_using_declarations(
@@ -579,6 +633,8 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     pattern = re.compile(rf"(?<![\w:])(?:::)?\s*(?:{names})\s*\(")
     decoded: list[tuple[str, list[int]]] = []
     for match in pattern.finditer(masked):
+        if _cpp_offset_in_ranges(match.start(), unevaluated_ranges):
+            continue
         opening = masked.find("(", match.start(), match.end())
         if opening < 0:
             continue
