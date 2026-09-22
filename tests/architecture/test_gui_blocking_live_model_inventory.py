@@ -28,7 +28,7 @@ import os
 import re
 import sys
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 _ARCH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ARCH_DIR))
@@ -128,6 +128,8 @@ def _path_violation(path: object) -> str | None:
     if (
         path.startswith("/")
         or "\\" in path
+        or PureWindowsPath(path).drive
+        or PureWindowsPath(path).root
         or path != path.strip()
         or path != Path(path).as_posix()
     ):
@@ -333,6 +335,7 @@ class RuleRegressionTests(unittest.TestCase):
             "pool->waitForDone();",
             "proc->waitForStarted();",
             "socket.waitForBytesWritten(timeout);",
+            "socket.waitForConnected(timeout);",
             "thread->wait();",
             "QWaitCondition().wait(&mutex, 50);",
             "pthread_join(handle, nullptr);",
@@ -351,6 +354,10 @@ class RuleRegressionTests(unittest.TestCase):
         # Python .join() is a string/path join, never a thread wait.
         self.assertIsNone(py.search(scanner.mask_py_non_code('",".join(parts)')), "str.join")
         self.assertIsNotNone(py.search(scanner.mask_py_non_code("proc.wait()")), "subprocess wait")
+        self.assertIsNotNone(
+            py.search(scanner.mask_py_non_code("socket.waitForConnected(timeout)")),
+            "QLocalSocket waitForConnected",
+        )
 
     def test_live_app_dereference_covers_multiline_and_getDocuments(self) -> None:
         cpp = scanner.compiled_pattern("live-app-dereference", "cpp")
@@ -595,12 +602,25 @@ class InventoryEntryValidationTests(unittest.TestCase):
             "src//Gui/MainWindow.cpp",
             "src/Gui//MainWindow.cpp",
             "src/./Gui/MainWindow.cpp",
+            "C:/absolute/MainWindow.cpp",
+            r"C:\absolute\MainWindow.cpp",
         ):
             bad = self._valid_entry()
             bad["path"] = path
             violations = entry_violations(
                 bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
             )
+            self.assertTrue(any("clean repository-relative" in v for v in violations), path)
+
+    def test_rejects_drive_qualified_exclusion_paths(self) -> None:
+        for path in ("C:/absolute/MainWindow.cpp", r"C:\absolute\MainWindow.cpp"):
+            exclusion = {
+                "path": path,
+                "line": 1,
+                "category": "thread-waits",
+                "reason": "test",
+            }
+            violations = exclusion_violations([exclusion], frozenset(rules.CATEGORY_BY_KEY))
             self.assertTrue(any("clean repository-relative" in v for v in violations), path)
 
     def test_rejects_wrong_subsystem(self) -> None:
@@ -734,6 +754,10 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_thread_wait_bytes_written_found(self) -> None:
         self._assert_site("src/Gui/GuiApplication.cpp", 328, "thread-waits")
+
+    def test_thread_wait_connected_found(self) -> None:
+        for line in (238, 301):
+            self._assert_site("src/Gui/GuiApplication.cpp", line, "thread-waits")
 
     def test_thread_wait_condition_wait_found(self) -> None:
         self._assert_site("src/Gui/SplashScreen.cpp", 161, "thread-waits")
@@ -968,14 +992,10 @@ class RepositoryInventoryTests(unittest.TestCase):
             if relative in scope_files or relative in exclusions or path.suffix != ".py":
                 return False
             source = path.read_text(encoding="utf-8", errors="surrogateescape")
-            if scanner._python_update_data_provider_matches(source, relative):
-                return True
-            has_gui_marker = bool(
-                re.search(
-                    r"\b(?:FreeCADGui|Gui|PySide|QtCore|QtGui)\b|updateGui|addCommand", source
-                )
-            )
-            return has_gui_marker and bool(scanner.scan_source(source, path.suffix, relative))
+            # The scanner is the source of truth for qualifying sites. Do not
+            # let a module escape merely because it lacks a GUI-named symbol;
+            # explicit App/model exclusions above keep the closure narrow.
+            return bool(scanner.scan_source(source, path.suffix, relative))
 
         queue = [
             path for path in scanner.iter_source_files(REPOSITORY_ROOT) if path.suffix == ".py"
@@ -1059,6 +1079,7 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/BIM/nativeifc/ifc_status.py",
             "src/Mod/BIM/ArchBuildingPart.py",
             "src/Mod/BIM/ArchStructure.py",
+            "src/Mod/BIM/ArchWindowPresets.py",
             "src/Mod/CAM/Path/Tool/library/ui/cmd.py",
             "src/Mod/CAM/Machine/ui/mtconnect_import_dialog.py",
             "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py",
@@ -1091,6 +1112,7 @@ class RepositoryInventoryTests(unittest.TestCase):
             ("src/Mod/CAM/Path/Tool/library/ui/dock.py", "direct-recompute"),
             ("src/Mod/BIM/ArchBuildingPart.py", "direct-recompute"),
             ("src/Mod/BIM/ArchStructure.py", "direct-recompute"),
+            ("src/Mod/BIM/ArchWindowPresets.py", "direct-recompute"),
         ):
             self.assertTrue(
                 any(

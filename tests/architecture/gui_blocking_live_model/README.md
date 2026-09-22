@@ -31,7 +31,8 @@ The scanner covers production GUI source only:
   `PathPythonGui`, CAM's loaded Path and Machine UI command/preferences helpers, FEM's reviewed
   command/task/view-provider packages, Assembly command/task handlers, Points'
   command package, PartDesign's shaft wizard, Tux's optional GUI extensions,
-  BIM native-IFC command/observer/status modules, Draft's GUI startup helpers,
+  BIM native-IFC command/observer/status modules and the ArchWindowPresets
+  helper reached by Window commands, Draft's GUI startup helpers,
   and the reviewed direct GUI modules for Robot and other production
   workbenches. The manifest also follows qualifying transitive GUI imports,
   including CAM tool-library UI, BIM view providers, Assembly GUI helpers,
@@ -71,7 +72,7 @@ matched source line(s) as `evidence`.
 
 | Category | Search rule (C++ regex) | Default disposition |
 | --- | --- | --- |
-| `thread-waits` | `\b(?:waitForFinished\|waitForDone\|waitForStarted\|waitForBytesWritten)[^\S\n]*\( \| QThread::wait[^\S\n]*\( \| pthread_join[^\S\n]*\( \| (?:->\|\.)wait[^\S\n]*\(` | `investigate` |
+| `thread-waits` | `\b(?:waitForFinished\|waitForDone\|waitForStarted\|waitForBytesWritten\|waitForConnected)[^\S\n]*\( \| QThread::wait[^\S\n]*\( \| pthread_join[^\S\n]*\( \| (?:->\|\.)wait[^\S\n]*\(` | `investigate` |
 | `blocking-invokes` | `Qt[^\S\n]*::[^\S\n]*BlockingQueuedConnection` | `migrate` |
 | `process-events-polling` | `\bprocessEvents[^\S\n]*\(` | `investigate` |
 | `direct-recompute` | `(?:\.\|->)recompute[^\S\n]*\(` | `migrate` |
@@ -80,7 +81,7 @@ matched source line(s) as `evidence`.
 | `update-data-provider` | `\bupdateData[^\S\n]*\([^\S\n]*const[^\S\n]+App::Property` | `migrate` |
 
 The Python patterns mirror the C++ ones where a Python equivalent exists:
-`thread-waits` (`.waitFor*` and `.wait(`), `blocking-invokes`
+`thread-waits` (`.waitFor*` including local-socket `.waitForConnected(` and `.wait(`), `blocking-invokes`
 (`BlockingQueuedConnection`), `process-events-polling` (`processEvents(` and
 the `FreeCADGui`/`Gui.updateGui()` wrapper), `direct-recompute` (`.recompute(`),
 `live-app-dereference` (`App`/`FreeCAD.ActiveDocument`, callable
@@ -100,7 +101,8 @@ surface small):
 * **thread-waits** excludes `QStringList::join`/`QString::join` (string joins)
   and `std::thread::detach`. It captures blocking waits on helper processes and
   futures (`waitForFinished`), `QThreadPool::waitForDone`, `waitForStarted`,
-  `waitForBytesWritten`, `QThread::wait`, `pthread_join`, and the instance
+  `waitForBytesWritten`, `waitForConnected` on local sockets, `QThread::wait`,
+  `pthread_join`, and the instance
   member wait (`thread->wait()` and `QWaitCondition().wait(...)`). The one
   worker-side self-wait (the `SignalThread` background thread blocking on its
   own condition) is excluded individually in `exclusions.json` because it does

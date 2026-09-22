@@ -209,6 +209,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/BIM/ArchTruss.py",
     "src/Mod/BIM/ArchWall.py",
     "src/Mod/BIM/ArchWindow.py",
+    "src/Mod/BIM/ArchWindowPresets.py",
     "src/Mod/BIM/ArchCommands.py",
     # CAM GUI entry-point helpers loaded outside a directory named Gui.
     "src/Mod/CAM/PathCommands.py",
@@ -264,12 +265,16 @@ REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
     path: "transitive App/model/IO helper; GUI caller is inventoried"
     for path in (
         "src/Mod/BIM/ArchCutPlane.py",
+        "src/Mod/BIM/ArchCovering.py",
         "src/Mod/BIM/ArchNesting.py",
         "src/Mod/BIM/ArchSql.py",
+        "src/Mod/BIM/ArchVRM.py",
         "src/Mod/BIM/importers/exportIFC.py",
         "src/Mod/BIM/importers/importDAE.py",
         "src/Mod/BIM/importers/importIFC.py",
         "src/Mod/BIM/importers/importIFCHelper.py",
+        "src/Mod/BIM/importers/exportIFCHelper.py",
+        "src/Mod/BIM/importers/importIFCmulticore.py",
         "src/Mod/BIM/nativeifc/ifc_import.py",
         "src/Mod/BIM/nativeifc/ifc_objects.py",
         "src/Mod/BIM/nativeifc/ifc_tools.py",
@@ -306,18 +311,55 @@ REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
         "src/Mod/CAM/Path/Op/ThreadMilling.py",
         "src/Mod/CAM/Path/Op/Vcarve.py",
         "src/Mod/CAM/Path/Op/Waterline.py",
+        "src/Mod/CAM/Path/Op/SurfaceSupport.py",
         "src/Mod/CAM/Path/Post/Command.py",
         "src/Mod/CAM/Path/Post/Utils.py",
+        "src/Mod/CAM/Path/Post/UtilsExport.py",
         "src/Mod/CAM/Path/Tool/shape/doc.py",
+        "src/Mod/CAM/Path/Tool/shape/models/base.py",
         "src/Mod/CAM/Path/Tool/toolbit/util.py",
         "src/Mod/CAM/PathScripts/PathUtils.py",
         "src/Mod/Draft/draftfunctions/mirror.py",
+        "src/Mod/Draft/draftfunctions/cut.py",
+        "src/Mod/Draft/draftfunctions/downgrade.py",
+        "src/Mod/Draft/draftfunctions/draftify.py",
+        "src/Mod/Draft/draftfunctions/extrude.py",
+        "src/Mod/Draft/draftfunctions/fuse.py",
+        "src/Mod/Draft/draftfunctions/heal.py",
+        "src/Mod/Draft/draftfunctions/join.py",
+        "src/Mod/Draft/draftfunctions/offset.py",
+        "src/Mod/Draft/draftfunctions/upgrade.py",
         "src/Mod/Draft/draftmake/make_clone.py",
         "src/Mod/Draft/draftmake/make_fillet.py",
         "src/Mod/Draft/draftmake/make_hatch.py",
         "src/Mod/Draft/draftmake/make_label.py",
         "src/Mod/Draft/draftmake/make_point.py",
+        "src/Mod/Draft/draftmake/make_arc_3points.py",
+        "src/Mod/Draft/draftmake/make_array.py",
+        "src/Mod/Draft/draftmake/make_bezcurve.py",
+        "src/Mod/Draft/draftmake/make_block.py",
+        "src/Mod/Draft/draftmake/make_bspline.py",
+        "src/Mod/Draft/draftmake/make_circle.py",
+        "src/Mod/Draft/draftmake/make_circulararray.py",
+        "src/Mod/Draft/draftmake/make_copy.py",
+        "src/Mod/Draft/draftmake/make_dimension.py",
+        "src/Mod/Draft/draftmake/make_ellipse.py",
+        "src/Mod/Draft/draftmake/make_facebinder.py",
+        "src/Mod/Draft/draftmake/make_layer.py",
+        "src/Mod/Draft/draftmake/make_orthoarray.py",
+        "src/Mod/Draft/draftmake/make_patharray.py",
+        "src/Mod/Draft/draftmake/make_pointarray.py",
+        "src/Mod/Draft/draftmake/make_polararray.py",
+        "src/Mod/Draft/draftmake/make_polygon.py",
+        "src/Mod/Draft/draftmake/make_rectangle.py",
+        "src/Mod/Draft/draftmake/make_shape2dview.py",
+        "src/Mod/Draft/draftmake/make_shapestring.py",
+        "src/Mod/Draft/draftmake/make_sketch.py",
+        "src/Mod/Draft/draftmake/make_text.py",
+        "src/Mod/Draft/draftmake/make_wire.py",
+        "src/Mod/Draft/draftmake/make_wpproxy.py",
         "src/Mod/Draft/draftutils/todo.py",
+        "src/Mod/Draft/draftutils/groups.py",
         "src/Mod/Draft/importSVG.py",
         "src/Mod/Fem/femmesh/gmshtools.py",
         "src/Mod/Fem/femmesh/netgentools.py",
@@ -328,8 +370,16 @@ REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
         "src/Mod/Fem/femsolver/z88/z88tools.py",
         "src/Mod/Fem/femtools/ccxtools.py",
         "src/Mod/Fem/femtools/objecttools.py",
+        "src/Mod/Fem/feminout/importCcxDatResults.py",
+        "src/Mod/Fem/feminout/importCcxFrdResults.py",
+        "src/Mod/Fem/femresult/resulttools.py",
+        "src/Mod/Fem/femsolver/mystran/tasks.py",
         "src/Mod/OpenSCAD/importCSG.py",
         "src/Mod/OpenSCAD/replaceobj.py",
+        "src/Mod/OpenSCAD/OpenSCAD2Dgeom.py",
+        "src/Mod/Part/CompoundTools/CompoundFilter.py",
+        "src/Mod/PartDesign/fcgear/fcgear.py",
+        "src/Mod/PartDesign/fcsprocket/fcsprocket.py",
     )
 }
 
@@ -360,20 +410,21 @@ CATEGORIES: tuple[Category, ...] = (
             "Synchronous waits for a worker thread, helper process, condition "
             "variable, or future to finish while the GUI thread is blocked. "
             "C++: QProcess/QFuture/QThreadPool waitForFinished, waitForDone, "
-            "waitForStarted and waitForBytesWritten; QThread::wait; pthread_join; "
+            "waitForStarted, waitForBytesWritten, and QLocalSocket waitForConnected; "
+            "QThread::wait; pthread_join; "
             "and the instance member wait (thread->wait() and QWaitCondition().wait). "
             "Python: the same QProcess/QThread waitFor* family and instance .wait() "
             "(e.g. subprocess/QThread.wait). String joins (QString::join, str.join, "
             "os.path.join) and std::thread::detach are explicitly not matches."
         ),
         cpp_pattern=(
-            r"\b(?:waitForFinished|waitForDone|waitForStarted|waitForBytesWritten)[^\S\n]*\(|"
+            r"\b(?:waitForFinished|waitForDone|waitForStarted|waitForBytesWritten|waitForConnected)[^\S\n]*\(|"
             r"QThread[^\S\n]*::[^\S\n]*wait[^\S\n]*\(|"
             r"pthread_join[^\S\n]*\(|"
             r"(?:->|\.)wait[^\S\n]*\("
         ),
         py_pattern=(
-            r"\.(?:waitForFinished|waitForDone|waitForStarted|waitForBytesWritten)[^\S\n]*\(|"
+            r"\.(?:waitForFinished|waitForDone|waitForStarted|waitForBytesWritten|waitForConnected)[^\S\n]*\(|"
             r"\.wait[^\S\n]*\("
         ),
         default_disposition="investigate",

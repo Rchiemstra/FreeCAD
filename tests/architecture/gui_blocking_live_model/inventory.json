@@ -136,6 +136,7 @@
     "src/Mod/BIM/ArchTruss.py",
     "src/Mod/BIM/ArchWall.py",
     "src/Mod/BIM/ArchWindow.py",
+    "src/Mod/BIM/ArchWindowPresets.py",
     "src/Mod/BIM/ArchCommands.py",
     "src/Mod/CAM/PathCommands.py",
     "src/Mod/CAM/Path/GuiInit.py",
@@ -1475,6 +1476,22 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (!dotProc.waitForFinished()) {"
+    },
+    {
+      "path": "src/Gui/GuiApplication.cpp",
+      "line": 238,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (socket.waitForConnected(1000)) {"
+    },
+    {
+      "path": "src/Gui/GuiApplication.cpp",
+      "line": 301,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "connected = socket.waitForConnected(timeout / 2);"
     },
     {
       "path": "src/Gui/GuiApplication.cpp",
@@ -5295,6 +5312,70 @@
     {
       "path": "src/Mod/BIM/ArchWindow.py",
       "line": 1690,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 50,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 79,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "s = FreeCAD.ActiveDocument.addObject(\"Sketcher::SketchObject\", \"Sketch\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 550,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 550,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 554,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 554,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 566,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindowPresets.py",
+      "line": 566,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
