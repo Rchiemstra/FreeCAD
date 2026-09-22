@@ -306,7 +306,33 @@ def _decoded_line_map(value: str, source: str, quote_start: int, literal_end: in
 def _decoded_string_expression(
     node: ast.AST, source: str, offsets: list[int], source_lines: list[str]
 ) -> tuple[str, list[int]] | None:
-    """Decode a literal/implicit string expression and its first source line."""
+    """Decode a literal/implicit string expression and its source-line map."""
+    if isinstance(node, ast.JoinedStr):
+        if not node.values:
+            return None
+        start = _ast_offset(offsets, source_lines, node.lineno, node.col_offset)
+        end = _ast_offset(offsets, source_lines, node.end_lineno, node.end_col_offset)
+        # Python 3.12 exposes f-strings as FSTRING_* tokens rather than a
+        # STRING token, so token-based discovery is not available here. The
+        # literal segments are already decoded by the AST. Unknown formatted
+        # values become a NUL separator so a regex cannot bridge an
+        # interpolation (for example ``FreeCAD{doc}.ActiveDocument``).
+        decoded_parts: list[str] = []
+        line_map: list[int] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                segment_start = _ast_offset(offsets, source_lines, value.lineno, value.col_offset)
+                segment_end = _ast_offset(
+                    offsets, source_lines, value.end_lineno, value.end_col_offset
+                )
+                decoded_parts.append(value.value)
+                line_map.extend(_decoded_line_map(value.value, source, segment_start, segment_end))
+            elif isinstance(value, ast.FormattedValue):
+                decoded_parts.append("\x00")
+                line_map.append(value.lineno)
+            else:
+                return None
+        return "".join(decoded_parts), line_map
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left = _decoded_string_expression(node.left, source, offsets, source_lines)
         right = _decoded_string_expression(node.right, source, offsets, source_lines)
@@ -345,7 +371,7 @@ def _decoded_do_command_literals(source: str) -> list[tuple[str, list[int]]]:
         return []
     offsets = _line_offsets(source)
     source_lines = source.splitlines()
-    decoded: list[tuple[str, int]] = []
+    decoded: list[tuple[str, list[int]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not node.args:
             continue
@@ -361,6 +387,39 @@ def _decoded_do_command_literals(source: str) -> list[tuple[str, list[int]]]:
         if value is not None:
             decoded.append(value)
     return decoded
+
+
+def _python_update_data_provider_matches(source: str, relative_path: str) -> list[tuple[int, str]]:
+    """Return AST-classified Python ViewProvider ``updateData`` methods.
+
+    Generic Qt model callbacks commonly use the same method name with
+    ``topLeft``/``bottomRight`` parameters. Provider classification therefore
+    requires a provider-named class or a reviewed provider module path instead
+    of treating every ``def updateData`` as a presentation callback.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        return []
+    path_lower = relative_path.lower()
+    provider_path = "viewprovider" in path_lower or "viewproviders" in path_lower
+    matches: list[tuple[int, str]] = []
+    source_lines = source.splitlines()
+    for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        class_lower = class_node.name.lower()
+        provider_class = class_lower.startswith(
+            ("viewprovider", "_viewprovider", "vp")
+        ) or class_lower.endswith("viewprovider")
+        if not (provider_class or provider_path):
+            continue
+        for method in class_node.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if method.name != "updateData":
+                continue
+            if method.lineno <= len(source_lines):
+                matches.append((method.lineno, source_lines[method.lineno - 1].strip()))
+    return matches
 
 
 def _do_command_string_spans(source: str) -> list[tuple[int, int]]:
@@ -565,7 +624,23 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
     subsystem = subsystem_for(relative_path)
     language = _language_for(suffix)
     findings: list[Finding] = []
+    provider_matches = (
+        _python_update_data_provider_matches(source, relative_path) if suffix == ".py" else []
+    )
     for category in rules.CATEGORIES:
+        if category.key == "update-data-provider" and suffix == ".py":
+            for line, evidence in provider_matches:
+                findings.append(
+                    Finding(
+                        path=relative_path,
+                        line=line,
+                        category=category.key,
+                        subsystem=subsystem,
+                        disposition=category.default_disposition,
+                        evidence=evidence,
+                    )
+                )
+            continue
         compiled = _COMPILED[(category.key, language)]
         if compiled is None:
             continue

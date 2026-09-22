@@ -27,12 +27,13 @@ provider packages, GUI utility modules, and GUI preference pages. This keeps
 App-layer helpers, tests, and import/export implementations out of scope while
 making each inclusion reviewable and deterministic.
 
-One category is C++-only by nature -- ``update-data-provider`` (the
-``ViewProvider::updateData(const App::Property*)`` interface) -- and carries a
-``None`` Python pattern to record that explicitly. ``blocking-invokes`` has
-both a C++ pattern (``Qt::BlockingQueuedConnection``) and a Python pattern (the
-PySide ``BlockingQueuedConnection`` enum); no Python GUI site uses it today, but
-the rule is recorded so any future use is inventoried.
+The ``update-data-provider`` rule uses its C++ signature pattern and a
+provider-aware Python AST classifier for ``ViewProvider.updateData`` callbacks;
+the Python side intentionally has no regex pattern because generic Qt model
+``updateData(topLeft, bottomRight)`` methods are not providers. ``blocking-invokes``
+has both a C++ pattern (``Qt::BlockingQueuedConnection``) and a Python pattern
+(the PySide ``BlockingQueuedConnection`` enum); no Python GUI site uses it
+today, but the rule is recorded so any future use is inventoried.
 
 Dispositions
 ------------
@@ -102,6 +103,14 @@ EXTRA_GUI_DIRS: tuple[str, ...] = (
     "src/Mod/BIM/bimcommands",
     # CAM's Python-only GUI helper package.
     "src/Mod/CAM/PathPythonGui",
+    # CAM tool-library and tool-bit UI packages reached through loaded commands.
+    "src/Mod/CAM/Path/Tool/library/ui",
+    "src/Mod/CAM/Path/Tool/toolbit/ui",
+    "src/Mod/CAM/Path/Tool/assets/ui",
+    "src/Mod/CAM/Path/Tool/docobject/ui",
+    "src/Mod/CAM/Path/Tool/shape/ui",
+    # CAM machine/MTConnect task dialogs reached from machine commands.
+    "src/Mod/CAM/Machine/ui",
     # FEM GUI packages listed in src/Mod/Fem/CMakeLists.txt.
     "src/Mod/Fem/femcommands",
     "src/Mod/Fem/femguiobjects",
@@ -164,9 +173,43 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Assembly/CommandSolveAssembly.py",
     # Joint task and view-provider handlers imported by Assembly commands.
     "src/Mod/Assembly/JointObject.py",
+    "src/Mod/Assembly/SoSwitchMarker.py",
     # BIM GUI helpers imported by InitGui.py when the optional modules exist.
     "src/Mod/BIM/BimSelect.py",
     "src/Mod/BIM/BimStatus.py",
+    # BIM view-provider modules reached from command and native-IFC paths.
+    "src/Mod/BIM/ArchAxis.py",
+    "src/Mod/BIM/ArchAxisSystem.py",
+    "src/Mod/BIM/Arch.py",
+    "src/Mod/BIM/ArchBuilding.py",
+    "src/Mod/BIM/ArchBuildingPart.py",
+    "src/Mod/BIM/ArchComponent.py",
+    "src/Mod/BIM/ArchCurtainWall.py",
+    "src/Mod/BIM/ArchEquipment.py",
+    "src/Mod/BIM/ArchFence.py",
+    "src/Mod/BIM/ArchFloor.py",
+    "src/Mod/BIM/ArchFrame.py",
+    "src/Mod/BIM/ArchGrid.py",
+    "src/Mod/BIM/ArchMaterial.py",
+    "src/Mod/BIM/ArchPanel.py",
+    "src/Mod/BIM/ArchPipe.py",
+    "src/Mod/BIM/ArchPrecast.py",
+    "src/Mod/BIM/ArchProfile.py",
+    "src/Mod/BIM/ArchProject.py",
+    "src/Mod/BIM/ArchReport.py",
+    "src/Mod/BIM/ArchRebar.py",
+    "src/Mod/BIM/ArchReference.py",
+    "src/Mod/BIM/ArchRoof.py",
+    "src/Mod/BIM/ArchSchedule.py",
+    "src/Mod/BIM/ArchSectionPlane.py",
+    "src/Mod/BIM/ArchSite.py",
+    "src/Mod/BIM/ArchSpace.py",
+    "src/Mod/BIM/ArchStairs.py",
+    "src/Mod/BIM/ArchStructure.py",
+    "src/Mod/BIM/ArchTruss.py",
+    "src/Mod/BIM/ArchWall.py",
+    "src/Mod/BIM/ArchWindow.py",
+    "src/Mod/BIM/ArchCommands.py",
     # CAM GUI entry-point helpers loaded outside a directory named Gui.
     "src/Mod/CAM/PathCommands.py",
     "src/Mod/CAM/Path/GuiInit.py",
@@ -176,6 +219,8 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/CAM/Path/Tool/camassets.py",
     "src/Mod/CAM/Path/Tool/migration/migration.py",
     "src/Mod/CAM/Path/Preferences.py",
+    "src/Mod/CAM/PathScripts/PathUtilsGui.py",
+    "src/Mod/CAM/Path/Tool/Controller.py",
     # Other production workbench GUI entry-point helpers.
     "src/Mod/Draft/WorkingPlane.py",
     "src/Mod/Help/Help.py",
@@ -186,6 +231,10 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
+    # OpenSCAD's provider module is loaded by OpenSCADCommands.
+    "src/Mod/OpenSCAD/OpenSCADFeatures.py",
+    # BasicShapes' view-provider helpers are loaded by its command module.
+    "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Start/StartMigrator.py",
 )
@@ -205,6 +254,83 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
     "src/Mod/CAM/Path/Tool/library/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/CAM/Path/Tool/toolbit/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/PartDesign/__init__.py": "PartDesign App package initializer; GUI modules are listed explicitly",
+}
+
+# Local modules reached transitively from GUI commands but intentionally kept
+# out of the presentation inventory. These are model/IO/solver helpers whose
+# GUI caller is already inventoried; keeping the paths explicit prevents an
+# App-layer closure from becoming an accidental broad scan.
+REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
+    path: "transitive App/model/IO helper; GUI caller is inventoried"
+    for path in (
+        "src/Mod/BIM/ArchCutPlane.py",
+        "src/Mod/BIM/ArchNesting.py",
+        "src/Mod/BIM/ArchSql.py",
+        "src/Mod/BIM/importers/exportIFC.py",
+        "src/Mod/BIM/importers/importDAE.py",
+        "src/Mod/BIM/importers/importIFC.py",
+        "src/Mod/BIM/importers/importIFCHelper.py",
+        "src/Mod/BIM/nativeifc/ifc_import.py",
+        "src/Mod/BIM/nativeifc/ifc_objects.py",
+        "src/Mod/BIM/nativeifc/ifc_tools.py",
+        "src/Mod/BIM/nativeifc/ifc_tree.py",
+        "src/Mod/CAM/Path/Base/PropertyBag.py",
+        "src/Mod/CAM/Path/Base/SetupSheet.py",
+        "src/Mod/CAM/Path/Dressup/Array.py",
+        "src/Mod/CAM/Path/Dressup/Boundary.py",
+        "src/Mod/CAM/Path/Dressup/DogboneII.py",
+        "src/Mod/CAM/Path/Dressup/Tags.py",
+        "src/Mod/CAM/Path/Dressup/Utils.py",
+        "src/Mod/CAM/Path/Main/Job.py",
+        "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
+        "src/Mod/CAM/Path/Main/Stock.py",
+        "src/Mod/CAM/Path/Op/Adaptive.py",
+        "src/Mod/CAM/Path/Op/Base.py",
+        "src/Mod/CAM/Path/Op/Custom.py",
+        "src/Mod/CAM/Path/Op/Deburr.py",
+        "src/Mod/CAM/Path/Op/Drilling.py",
+        "src/Mod/CAM/Path/Op/Engrave.py",
+        "src/Mod/CAM/Path/Op/Flute.py",
+        "src/Mod/CAM/Path/Op/Helix.py",
+        "src/Mod/CAM/Path/Op/MillFace.py",
+        "src/Mod/CAM/Path/Op/MillFacing.py",
+        "src/Mod/CAM/Path/Op/PlanarSurface.py",
+        "src/Mod/CAM/Path/Op/Pocket.py",
+        "src/Mod/CAM/Path/Op/PocketShape.py",
+        "src/Mod/CAM/Path/Op/Probe.py",
+        "src/Mod/CAM/Path/Op/Profile.py",
+        "src/Mod/CAM/Path/Op/RotarySurface.py",
+        "src/Mod/CAM/Path/Op/Slot.py",
+        "src/Mod/CAM/Path/Op/Surface.py",
+        "src/Mod/CAM/Path/Op/Tapping.py",
+        "src/Mod/CAM/Path/Op/ThreadMilling.py",
+        "src/Mod/CAM/Path/Op/Vcarve.py",
+        "src/Mod/CAM/Path/Op/Waterline.py",
+        "src/Mod/CAM/Path/Post/Command.py",
+        "src/Mod/CAM/Path/Post/Utils.py",
+        "src/Mod/CAM/Path/Tool/shape/doc.py",
+        "src/Mod/CAM/Path/Tool/toolbit/util.py",
+        "src/Mod/CAM/PathScripts/PathUtils.py",
+        "src/Mod/Draft/draftfunctions/mirror.py",
+        "src/Mod/Draft/draftmake/make_clone.py",
+        "src/Mod/Draft/draftmake/make_fillet.py",
+        "src/Mod/Draft/draftmake/make_hatch.py",
+        "src/Mod/Draft/draftmake/make_label.py",
+        "src/Mod/Draft/draftmake/make_point.py",
+        "src/Mod/Draft/draftutils/todo.py",
+        "src/Mod/Draft/importSVG.py",
+        "src/Mod/Fem/femmesh/gmshtools.py",
+        "src/Mod/Fem/femmesh/netgentools.py",
+        "src/Mod/Fem/femsolver/calculix/calculixtools.py",
+        "src/Mod/Fem/femsolver/elmer/elmertools.py",
+        "src/Mod/Fem/femsolver/elmer/equations/equation.py",
+        "src/Mod/Fem/femsolver/run.py",
+        "src/Mod/Fem/femsolver/z88/z88tools.py",
+        "src/Mod/Fem/femtools/ccxtools.py",
+        "src/Mod/Fem/femtools/objecttools.py",
+        "src/Mod/OpenSCAD/importCSG.py",
+        "src/Mod/OpenSCAD/replaceobj.py",
+    )
 }
 
 
@@ -356,7 +482,10 @@ CATEGORIES: tuple[Category, ...] = (
             "adapters that consume committed state. Anchoring on the concrete "
             "signature means base-class delegation calls (``X::updateData(prop)``) "
             "and the unrelated QAbstractItemModel-style PropertyItem::updateData() "
-            "are not matched. Python has no equivalent interface (None pattern)."
+            "are not matched. Python uses the scanner's provider-aware AST classifier "
+            "for methods named updateData on ViewProvider classes or reviewed provider "
+            "modules; its regex pattern is intentionally None so generic Qt model "
+            "callbacks remain excluded."
         ),
         cpp_pattern=r"\bupdateData[^\S\n]*\([^\S\n]*const[^\S\n]+App::Property",
         py_pattern=None,

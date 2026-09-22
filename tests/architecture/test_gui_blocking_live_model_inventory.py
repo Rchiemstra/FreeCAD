@@ -125,7 +125,12 @@ def _path_violation(path: object) -> str | None:
     """Return a violation message for an unclean path, or None when clean."""
     if not isinstance(path, str) or not path:
         return "must be a non-empty string"
-    if path.startswith("/") or "\\" in path or path != path.strip():
+    if (
+        path.startswith("/")
+        or "\\" in path
+        or path != path.strip()
+        or path != Path(path).as_posix()
+    ):
         return "must be a clean repository-relative path"
     if any(part == ".." for part in Path(path).parts):
         return "must not contain '..' path components"
@@ -389,18 +394,34 @@ class RuleRegressionTests(unittest.TestCase):
         self.assertIsNotNone(py)
         self.assertIsNotNone(py.search("QtCore.Qt.BlockingQueuedConnection"))
         self.assertIsNotNone(scanner.compiled_pattern("blocking-invokes", "cpp"))
-        # update-data-provider is the only C++-only category.
+        # update-data-provider uses AST classification on Python.
         self.assertIsNone(scanner.compiled_pattern("update-data-provider", "py"))
 
     def test_python_pattern_none_set_matches_rules_documentation(self) -> None:
         none_keys = {category.key for category in rules.CATEGORIES if category.py_pattern is None}
         self.assertEqual(none_keys, {"update-data-provider"})
         readme = (PACKAGE_DIR / "README.md").read_text(encoding="utf-8")
-        self.assertRegex(readme, r"Only\s+`update-data-provider` is C\+\+-only")
+        self.assertRegex(readme, r"`update-data-provider` Python side uses an AST classifier")
         self.assertNotIn(
             "blocking-invokes` (the Qt `BlockingQueuedConnection` connection type) and "
             "`update-data-provider`",
             readme,
+        )
+
+    def test_python_update_data_provider_classifier_excludes_qt_models(self) -> None:
+        provider = "class ViewProviderThing:\n    def updateData(self, obj, prop):\n        pass\n"
+        model = "class Model:\n    def updateData(self, topLeft, bottomRight):\n        pass\n"
+        provider_findings = scanner.scan_source(provider, ".py", "snippet.py")
+        model_findings = scanner.scan_source(
+            model, ".py", "src/Mod/CAM/Path/Base/Gui/PropertyBag.py"
+        )
+        self.assertIn(
+            (2, "update-data-provider"),
+            {(finding.line, finding.category) for finding in provider_findings},
+        )
+        self.assertNotIn(
+            (2, "update-data-provider"),
+            {(finding.line, finding.category) for finding in model_findings},
         )
 
     def test_do_command_expands_executable_command_strings(self) -> None:
@@ -439,6 +460,35 @@ class RuleRegressionTests(unittest.TestCase):
         escaped = 'Gui.doCommand("FreeCAD\\x2eActiveDocument.recompute()")'
         escaped_findings = scanner.scan_source(escaped, ".py", "snippet.py")
         self.assertIn("live-app-dereference", {finding.category for finding in escaped_findings})
+        escaped_fstring = 'Gui.doCommand(f"FreeCAD\\x2eActiveDocument.recompute()")'
+        escaped_fstring_findings = scanner.scan_source(escaped_fstring, ".py", "snippet.py")
+        escaped_fstring_categories = {finding.category for finding in escaped_fstring_findings}
+        self.assertIn("live-app-dereference", escaped_fstring_categories)
+        self.assertIn("direct-recompute", escaped_fstring_categories)
+        self.assertTrue(
+            any(
+                finding.category == "live-app-dereference"
+                and finding.line == 1
+                and "ActiveDocument" in finding.evidence
+                for finding in escaped_fstring_findings
+            )
+        )
+        interpolated_fstring = "Gui.doCommand(f\"FreeCAD\\x2eActiveDocument.getObject('{name}')\")"
+        interpolated_findings = scanner.scan_source(interpolated_fstring, ".py", "snippet.py")
+        self.assertIn(
+            "live-app-dereference", {finding.category for finding in interpolated_findings}
+        )
+        self.assertTrue(
+            all(finding.line == 1 for finding in interpolated_findings), interpolated_findings
+        )
+        separated_interpolation = 'Gui.doCommand(f"FreeCAD{name}.ActiveDocument")'
+        self.assertNotIn(
+            "live-app-dereference",
+            {
+                finding.category
+                for finding in scanner.scan_source(separated_interpolation, ".py", "snippet.py")
+            },
+        )
         escaped_newline = 'prefix = "ok"\nGui.doCommand("x=1\\nFreeCAD.ActiveDocument.recompute()")'
         escaped_newline_findings = scanner.scan_source(escaped_newline, ".py", "snippet.py")
         self.assertIn(
@@ -539,6 +589,19 @@ class InventoryEntryValidationTests(unittest.TestCase):
         bad["path"] = "../Gui/MainWindow.cpp"
         violations = entry_violations(bad, REPOSITORY_ROOT, self.category_keys, self.dispositions)
         self.assertTrue(any(".." in v for v in violations), violations)
+
+    def test_rejects_noncanonical_path_separators_and_dot_components(self) -> None:
+        for path in (
+            "src//Gui/MainWindow.cpp",
+            "src/Gui//MainWindow.cpp",
+            "src/./Gui/MainWindow.cpp",
+        ):
+            bad = self._valid_entry()
+            bad["path"] = path
+            violations = entry_violations(
+                bad, REPOSITORY_ROOT, self.category_keys, self.dispositions
+            )
+            self.assertTrue(any("clean repository-relative" in v for v in violations), path)
 
     def test_rejects_wrong_subsystem(self) -> None:
         bad = self._valid_entry()
@@ -838,6 +901,124 @@ class RepositoryInventoryTests(unittest.TestCase):
         )
         self.assertTrue(rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS)
 
+    def test_transitive_gui_imports_are_scoped_or_reviewed(self) -> None:
+        """GUI-bearing local imports cannot silently escape the reviewed closure."""
+        scope_files = {
+            path.relative_to(REPOSITORY_ROOT).as_posix()
+            for path in scanner.iter_source_files(REPOSITORY_ROOT)
+        }
+        exclusions = {
+            **rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS,
+            **rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS,
+        }
+        mod_root = REPOSITORY_ROOT / "src" / "Mod"
+
+        def candidates(base: Path) -> list[Path]:
+            return [base.with_suffix(".py"), base / "__init__.py"]
+
+        def import_targets(path: Path) -> list[Path]:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                return []
+            targets: list[Path] = []
+            try:
+                workbench_root = mod_root / path.relative_to(mod_root).parts[0]
+            except ValueError:
+                # Framework Python under src/Gui has no workbench package;
+                # relative imports still resolve from its own directory.
+                workbench_root = path.parent
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                    bases = [
+                        root / Path(*name.split("."))
+                        for name in names
+                        for root in (workbench_root, mod_root)
+                    ]
+                    imported_names: list[str] = []
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        base = path.parent
+                        for _ in range(node.level - 1):
+                            base = base.parent
+                        if node.module:
+                            base = base / Path(*node.module.split("."))
+                        bases = [base]
+                    else:
+                        module_path = Path(*node.module.split(".")) if node.module else Path()
+                        bases = [workbench_root / module_path, mod_root / module_path]
+                    imported_names = [alias.name for alias in node.names if alias.name != "*"]
+                else:
+                    continue
+                for base in bases:
+                    targets.extend(
+                        candidate for candidate in candidates(base) if candidate.is_file()
+                    )
+                    for name in imported_names:
+                        targets.extend(
+                            candidate
+                            for candidate in candidates(base / name)
+                            if candidate.is_file()
+                        )
+            return targets
+
+        def is_qualifying_gui_module(path: Path) -> bool:
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            if relative in scope_files or relative in exclusions or path.suffix != ".py":
+                return False
+            source = path.read_text(encoding="utf-8", errors="surrogateescape")
+            if scanner._python_update_data_provider_matches(source, relative):
+                return True
+            has_gui_marker = bool(
+                re.search(
+                    r"\b(?:FreeCADGui|Gui|PySide|QtCore|QtGui)\b|updateGui|addCommand", source
+                )
+            )
+            return has_gui_marker and bool(scanner.scan_source(source, path.suffix, relative))
+
+        queue = [
+            path for path in scanner.iter_source_files(REPOSITORY_ROOT) if path.suffix == ".py"
+        ]
+        seen: set[Path] = set(queue)
+        missing: set[str] = set()
+        bim_targets = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in import_targets(REPOSITORY_ROOT / "src/Mod/BIM/ArchStructure.py")
+        }
+        self.assertIn("src/Mod/BIM/ArchComponent.py", bim_targets)
+        cam_targets = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in import_targets(
+                REPOSITORY_ROOT / "src/Mod/CAM/Path/Tool/library/ui/cmd.py"
+            )
+        }
+        self.assertIn("src/Mod/CAM/Path/Tool/library/ui/dock.py", cam_targets)
+        relative_cam_targets = {
+            target.relative_to(REPOSITORY_ROOT).as_posix()
+            for target in import_targets(
+                REPOSITORY_ROOT / "src/Mod/CAM/Path/Tool/library/ui/dock.py"
+            )
+        }
+        self.assertIn("src/Mod/CAM/Path/Tool/library/ui/editor.py", relative_cam_targets)
+        self.assertIsInstance(import_targets(REPOSITORY_ROOT / "src/Gui/TreeParams.py"), list)
+        self.assertIn("src/Mod/CAM/Path/Base/PropertyBag.py", exclusions)
+        for relative in rules.REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS:
+            self.assertTrue((REPOSITORY_ROOT / relative).is_file(), relative)
+        while queue:
+            current = queue.pop()
+            for target in import_targets(current):
+                relative = target.relative_to(REPOSITORY_ROOT).as_posix()
+                if is_qualifying_gui_module(target):
+                    missing.add(relative)
+                if target not in seen:
+                    seen.add(target)
+                    queue.append(target)
+        self.assertFalse(
+            sorted(missing),
+            "unreviewed transitive GUI imports: " + ", ".join(sorted(missing)),
+        )
+
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
             ("src/Mod/Assembly/InitGui.py", "live-app-dereference"),
@@ -876,6 +1057,10 @@ class RepositoryInventoryTests(unittest.TestCase):
             "src/Mod/BIM/nativeifc/ifc_commands.py",
             "src/Mod/BIM/nativeifc/ifc_observer.py",
             "src/Mod/BIM/nativeifc/ifc_status.py",
+            "src/Mod/BIM/ArchBuildingPart.py",
+            "src/Mod/BIM/ArchStructure.py",
+            "src/Mod/CAM/Path/Tool/library/ui/cmd.py",
+            "src/Mod/CAM/Machine/ui/mtconnect_import_dialog.py",
             "src/Mod/MeshPart/Gui/MeshFlatteningCommand.py",
         ):
             self.assertIn(path, scoped_files, f"expected loaded GUI module {path}")
@@ -889,6 +1074,30 @@ class RepositoryInventoryTests(unittest.TestCase):
             self.assertTrue(
                 any(finding.path == path for finding in self.scanned),
                 f"expected representative finding in {path}",
+            )
+
+    def test_python_provider_update_data_sites_are_inventoried(self) -> None:
+        for path, line in (
+            ("src/Mod/Draft/draftviewproviders/view_base.py", 191),
+            ("src/Mod/Fem/femviewprovider/view_mesh_shape.py", 57),
+            ("src/Mod/BIM/nativeifc/ifc_viewproviders.py", 66),
+            ("src/Mod/BIM/ArchBuildingPart.py", 917),
+            ("src/Mod/BIM/ArchStructure.py", 1505),
+        ):
+            self._assert_site(path, line, "update-data-provider")
+
+    def test_transitive_gui_representative_sites_are_inventoried(self) -> None:
+        for path, category in (
+            ("src/Mod/CAM/Path/Tool/library/ui/dock.py", "direct-recompute"),
+            ("src/Mod/BIM/ArchBuildingPart.py", "direct-recompute"),
+            ("src/Mod/BIM/ArchStructure.py", "direct-recompute"),
+        ):
+            self.assertTrue(
+                any(
+                    finding.path == path and finding.category == category
+                    for finding in self.scanned
+                ),
+                f"expected representative transitive finding in {path}",
             )
 
     def test_draft_bim_app_layer_not_in_scope(self) -> None:

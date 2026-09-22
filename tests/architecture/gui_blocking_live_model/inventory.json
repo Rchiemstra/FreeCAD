@@ -57,6 +57,12 @@
     "src/Mod/Draft/draftviewproviders",
     "src/Mod/BIM/bimcommands",
     "src/Mod/CAM/PathPythonGui",
+    "src/Mod/CAM/Path/Tool/library/ui",
+    "src/Mod/CAM/Path/Tool/toolbit/ui",
+    "src/Mod/CAM/Path/Tool/assets/ui",
+    "src/Mod/CAM/Path/Tool/docobject/ui",
+    "src/Mod/CAM/Path/Tool/shape/ui",
+    "src/Mod/CAM/Machine/ui",
     "src/Mod/Fem/femcommands",
     "src/Mod/Fem/femguiobjects",
     "src/Mod/Fem/femguiutils",
@@ -96,8 +102,41 @@
     "src/Mod/Assembly/CommandReviewNote.py",
     "src/Mod/Assembly/CommandSolveAssembly.py",
     "src/Mod/Assembly/JointObject.py",
+    "src/Mod/Assembly/SoSwitchMarker.py",
     "src/Mod/BIM/BimSelect.py",
     "src/Mod/BIM/BimStatus.py",
+    "src/Mod/BIM/ArchAxis.py",
+    "src/Mod/BIM/ArchAxisSystem.py",
+    "src/Mod/BIM/Arch.py",
+    "src/Mod/BIM/ArchBuilding.py",
+    "src/Mod/BIM/ArchBuildingPart.py",
+    "src/Mod/BIM/ArchComponent.py",
+    "src/Mod/BIM/ArchCurtainWall.py",
+    "src/Mod/BIM/ArchEquipment.py",
+    "src/Mod/BIM/ArchFence.py",
+    "src/Mod/BIM/ArchFloor.py",
+    "src/Mod/BIM/ArchFrame.py",
+    "src/Mod/BIM/ArchGrid.py",
+    "src/Mod/BIM/ArchMaterial.py",
+    "src/Mod/BIM/ArchPanel.py",
+    "src/Mod/BIM/ArchPipe.py",
+    "src/Mod/BIM/ArchPrecast.py",
+    "src/Mod/BIM/ArchProfile.py",
+    "src/Mod/BIM/ArchProject.py",
+    "src/Mod/BIM/ArchReport.py",
+    "src/Mod/BIM/ArchRebar.py",
+    "src/Mod/BIM/ArchReference.py",
+    "src/Mod/BIM/ArchRoof.py",
+    "src/Mod/BIM/ArchSchedule.py",
+    "src/Mod/BIM/ArchSectionPlane.py",
+    "src/Mod/BIM/ArchSite.py",
+    "src/Mod/BIM/ArchSpace.py",
+    "src/Mod/BIM/ArchStairs.py",
+    "src/Mod/BIM/ArchStructure.py",
+    "src/Mod/BIM/ArchTruss.py",
+    "src/Mod/BIM/ArchWall.py",
+    "src/Mod/BIM/ArchWindow.py",
+    "src/Mod/BIM/ArchCommands.py",
     "src/Mod/CAM/PathCommands.py",
     "src/Mod/CAM/Path/GuiInit.py",
     "src/Mod/CAM/Path/Tool/assets/ui/preferences.py",
@@ -106,6 +145,8 @@
     "src/Mod/CAM/Path/Tool/camassets.py",
     "src/Mod/CAM/Path/Tool/migration/migration.py",
     "src/Mod/CAM/Path/Preferences.py",
+    "src/Mod/CAM/PathScripts/PathUtilsGui.py",
+    "src/Mod/CAM/Path/Tool/Controller.py",
     "src/Mod/Draft/WorkingPlane.py",
     "src/Mod/Help/Help.py",
     "src/Mod/OpenSCAD/OpenSCADCommands.py",
@@ -115,6 +156,8 @@
     "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py",
     "src/Mod/PartDesign/InvoluteGearFeature.py",
     "src/Mod/PartDesign/SprocketFeature.py",
+    "src/Mod/OpenSCAD/OpenSCADFeatures.py",
+    "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Start/StartMigrator.py"
   ],
@@ -2843,11 +2886,27 @@
     },
     {
       "path": "src/Mod/Assembly/CommandCreateSimulation.py",
+      "line": 229,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, feaPy, prop):"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSimulation.py",
       "line": 279,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
       "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateSimulation.py",
+      "line": 381,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, feaPy, prop):"
     },
     {
       "path": "src/Mod/Assembly/CommandCreateSimulation.py",
@@ -2875,11 +2934,27 @@
     },
     {
       "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 288,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, joint, prop):"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
       "line": 340,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
       "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/CommandCreateView.py",
+      "line": 663,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, stepObj, prop):"
     },
     {
       "path": "src/Mod/Assembly/CommandCreateView.py",
@@ -3195,6 +3270,14 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
+      "line": 1231,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, joint, prop):"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
       "line": 1372,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
@@ -3208,6 +3291,14 @@
       "subsystem": "Assembly",
       "disposition": "investigate",
       "evidence": "dialog.setDocumentName(App.ActiveDocument.Name)"
+    },
+    {
+      "path": "src/Mod/Assembly/JointObject.py",
+      "line": 1749,
+      "category": "update-data-provider",
+      "subsystem": "Assembly",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, fp, prop):"
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
@@ -3306,6 +3397,822 @@
       "evidence": "doc.recompute()"
     },
     {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 97,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 100,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Axis\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 116,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 116,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 140,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::FeaturePython\", \"AxisSystem\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 146,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 170,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::GeometryPython\", \"BuildingPart\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 306,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objset = FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 339,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "todo.ToDo.delay(FreeCAD.ActiveDocument.removeObject, n)"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 513,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 513,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 593,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 618,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 860,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 863,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::Part2DObjectPython\", \"Profile\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1052,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "rebar.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1477,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1507,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "stair = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1516,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "stair = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1553,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1568,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "stair.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1573,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1812,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "newSk = FreeCAD.ActiveDocument.addObject(\"Sketcher::SketchObject\", \"WallTrace\")"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1856,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(n)"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1857,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 1857,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2092,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if baseobj and Draft.getType(baseobj) == \"Window\" and FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2319,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2361,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2373,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(objectType, internalName)"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2506,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2608,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2643,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/Arch.py",
+      "line": 2643,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxis.py",
+      "line": 565,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxis.py",
+      "line": 988,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxis.py",
+      "line": 988,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxis.py",
+      "line": 992,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxis.py",
+      "line": 992,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxisSystem.py",
+      "line": 190,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxisSystem.py",
+      "line": 322,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "o = FreeCAD.ActiveDocument.getObject(str(it.toolTip(0)))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxisSystem.py",
+      "line": 331,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchAxisSystem.py",
+      "line": 331,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 209,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 212,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::DocumentObjectGroupPython\", \"Building\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 238,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 281,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"Arch\", \"Create Building\"))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 286,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 287,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuilding.py",
+      "line": 287,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 514,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 514,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 917,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1266,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1266,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1298,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1298,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1308,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchBuildingPart.py",
+      "line": 1308,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 310,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 313,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Component\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 325,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(baseobj.Name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 395,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(basename)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 397,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "newobj = FreeCAD.ActiveDocument.addObject(\"Mesh::Feature\", basename)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 693,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 694,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "newobj = FreeCAD.ActiveDocument.addObject(\"Part::Feature\", name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 743,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 754,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 782,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(o.Name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 783,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 783,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1085,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(label)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1086,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.SurveyObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1093,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(FreeCAD.SurveyObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1102,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(label)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1116,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.SurveyObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1142,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "anno = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1195,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "anno = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1378,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(label)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1379,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.SurveyObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1562,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1562,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1607,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1607,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1718,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1722,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "ifc_container = FreeCAD.ActiveDocument.addObject("
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1727,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "ifc_spreadsheet = FreeCAD.ActiveDocument.addObject(\"Spreadsheet::Sheet\", \"IfcProperties\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCommands.py",
+      "line": 1747,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(ifc_spreadsheet)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 1636,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2102,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.ArchObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2116,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.ArchObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2142,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(FreeCAD.ArchObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2243,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2385,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "self.obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2398,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "element_to_remove = FreeCAD.ActiveDocument.getObject(str(element_selected.toolTip(0)))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2408,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "self.obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2418,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2418,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2447,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.getObject(str(wid.toolTip(0)))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchComponent.py",
+      "line": 2456,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(FreeCAD.ArchObserver)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCoveringGui.py",
+      "line": 149,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
       "path": "src/Mod/BIM/ArchCoveringGui.py",
       "line": 623,
       "category": "live-reference-callback",
@@ -3360,6 +4267,1038 @@
       "subsystem": "BIM",
       "disposition": "investigate",
       "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchCurtainWall.py",
+      "line": 766,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchEquipment.py",
+      "line": 226,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFence.py",
+      "line": 330,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 91,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 94,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"App::DocumentObjectGroupPython\", \"Floor\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 187,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(translate(\"Arch\", \"Create Floor\"))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 192,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 193,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchFloor.py",
+      "line": 193,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchGrid.py",
+      "line": 660,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchGrid.py",
+      "line": 660,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 154,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(tod.Name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 159,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(tod.Name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 171,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 171,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 412,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 446,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 568,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 614,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 614,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 693,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 821,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 945,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 1024,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for m in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 1049,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchMaterial.py",
+      "line": 1049,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPanel.py",
+      "line": 605,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPanel.py",
+      "line": 1003,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPanel.py",
+      "line": 1395,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPipe.py",
+      "line": 195,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "and FreeCAD.ActiveDocument.getProgramVersion().split()[0] < \"1.1\""
+    },
+    {
+      "path": "src/Mod/BIM/ArchPipe.py",
+      "line": 199,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPipe.py",
+      "line": 199,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1763,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Beam\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1773,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Pillar\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1785,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Panel\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1794,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Slab\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1806,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Beam\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1814,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Stairs\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchPrecast.py",
+      "line": 1824,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Part::FeaturePython\", \"Precast\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchProfile.py",
+      "line": 779,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchProfile.py",
+      "line": 779,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchRebar.py",
+      "line": 612,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 638,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 743,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 743,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 956,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 956,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 964,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "QtCore.QTimer.singleShot(0, FreeCAD.ActiveDocument.recompute)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 972,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReference.py",
+      "line": 972,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 548,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 554,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "sheet = FreeCAD.ActiveDocument.addObject(\"Spreadsheet::Sheet\", \"ReportResult\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 565,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.docObserver = _ArchReportDocObserver(FreeCAD.ActiveDocument, obj)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 747,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "sp.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 1924,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 1926,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 2138,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchReport.py",
+      "line": 2138,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchRoof.py",
+      "line": 1061,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchRoof.py",
+      "line": 1061,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchRoof.py",
+      "line": 1065,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchRoof.py",
+      "line": 1065,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 230,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 235,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.spreadsheet = FreeCAD.ActiveDocument.addObject(\"Spreadsheet::Sheet\", \"Result\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 249,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(sp.Name)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 254,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.docObserver = _ArchScheduleDocObserver(FreeCAD.ActiveDocument, obj)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 286,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "sp.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 290,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "o.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 334,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objs = [FreeCAD.ActiveDocument.getObject(o) for o in objs]"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 337,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if hasattr(getattr(FreeCAD.ActiveDocument, \"Proxy\", None), \"ifcfile\"):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 338,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "ifcfile = FreeCAD.ActiveDocument.Proxy.ifcfile"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 339,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "objs = FreeCAD.ActiveDocument.Objects"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 1085,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edited Schedule\")"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 1095,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 1096,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSchedule.py",
+      "line": 1096,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 279,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "material = FreeCAD.ActiveDocument.getObject(o)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1428,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1740,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "comp = FreeCAD.ActiveDocument.getObject(str(it.toolTip(0)))"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1784,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1784,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1789,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSectionPlane.py",
+      "line": 1789,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSite.py",
+      "line": 1705,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSite.py",
+      "line": 2351,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "ray_object.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchSpace.py",
+      "line": 724,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStairs.py",
+      "line": 603,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStairs.py",
+      "line": 628,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStairs.py",
+      "line": 877,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 113,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction("
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 134,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "\"structure = Arch.makeStructure(FreeCAD.ActiveDocument.\" + base.Name + \")\""
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 137,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "\"structure.Tool = (FreeCAD.ActiveDocument.\""
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 145,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 146,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 174,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 182,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction("
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 202,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 203,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 203,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 219,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 234,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "self.doc = FreeCAD.ActiveDocument"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 251,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "\"obj = Arch.makeStructure(FreeCAD.ActiveDocument.\" + obj.Name + \")\""
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 256,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "self.doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 420,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "self.doc.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1339,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "if FreeCAD.ActiveDocument.Restoring:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1505,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1722,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self.observer)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1725,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.observer)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1772,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.addObserver(self.observer)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1775,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.observer)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1838,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "for obj in FreeCAD.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1899,
+      "category": "live-reference-callback",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCADGui.Selection.removeObserver(self.observer)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 1914,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.getDocument(docName).getObject(objName)"
+    },
+    {
+      "path": "src/Mod/BIM/ArchStructure.py",
+      "line": 2075,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 449,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.getProgramVersion() < \"0.22\""
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 1905,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "self.obj.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 1985,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 2130,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 2130,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 2133,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWall.py",
+      "line": 2133,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 93,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.getDocument(attr[0])"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 900,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 1173,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 1173,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 1690,
+      "category": "direct-recompute",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/ArchWindow.py",
+      "line": 1690,
+      "category": "live-app-dereference",
+      "subsystem": "BIM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
       "path": "src/Mod/BIM/BimSelect.py",
@@ -8051,6 +9990,14 @@
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+      "line": 66,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
       "line": 184,
       "category": "direct-recompute",
       "subsystem": "BIM",
@@ -8144,6 +10091,14 @@
       "subsystem": "BIM",
       "disposition": "migrate",
       "evidence": "self.Object.Document.recompute()"
+    },
+    {
+      "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
+      "line": 557,
+      "category": "update-data-provider",
+      "subsystem": "BIM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_viewproviders.py",
@@ -9291,6 +11246,14 @@
     },
     {
       "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
+      "line": 483,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, propName):"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Dressup/Gui/Tags.py",
       "line": 516,
       "category": "live-reference-callback",
       "subsystem": "CAM",
@@ -9579,6 +11542,14 @@
     },
     {
       "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
+      "line": 137,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, vobj, prop):  # optional"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Fixture.py",
       "line": 159,
       "category": "live-app-dereference",
       "subsystem": "CAM",
@@ -9648,6 +11619,14 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "FreeCADGui.doCommand(f\"obj = FreeCAD.ActiveDocument.getObject('{selection[0].Name}')\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
+      "line": 308,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/CAM/Path/Main/Gui/Job.py",
@@ -10048,6 +12027,14 @@
       "subsystem": "CAM",
       "disposition": "investigate",
       "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
+      "line": 297,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/CAM/Path/Op/Gui/Base.py",
@@ -10706,6 +12693,54 @@
       "evidence": "current = os.path.dirname(FreeCAD.activeDocument().FileName)"
     },
     {
+      "path": "src/Mod/CAM/Path/Tool/Controller.py",
+      "line": 130,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "opTc.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Controller.py",
+      "line": 323,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Controller.py",
+      "line": 478,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "obj = FreeCAD.ActiveDocument.addObject(\"Path::FeaturePython\", name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Controller.py",
+      "line": 492,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "tool = toolbit.attach_to_doc(doc=FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Controller.py",
+      "line": 532,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
+      "line": 88,
+      "category": "update-data-provider",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, vobj, prop):"
+    },
+    {
       "path": "src/Mod/CAM/Path/Tool/Gui/Controller.py",
       "line": 101,
       "category": "direct-recompute",
@@ -10834,6 +12869,78 @@
       "evidence": "doc = FreeCAD.getDocument(doc_name)"
     },
     {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 125,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "if not FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 127,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "return len([1 for j in FreeCAD.ActiveDocument.Objects if j.Name[:3] == \"Job\"]) >= 1"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 206,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "toolbit.attach_to_doc(FreeCAD.ActiveDocument)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 252,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 277,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 277,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 278,
+      "category": "process-events-polling",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCADGui.updateGui()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 281,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/library/ui/dock.py",
+      "line": 281,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
       "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
       "line": 58,
       "category": "live-app-dereference",
@@ -10876,6 +12983,94 @@
     {
       "path": "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py",
       "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/editor.py",
+      "line": 171,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "elif FreeCAD.ActiveDocument is None:"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 46,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Edit ToolBit\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 51,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.abortTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 56,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.openTransaction(\"Uncreate ToolBit\")"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 57,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.removeObject(self.obj.Name)"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 58,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 59,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 59,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 64,
+      "category": "live-app-dereference",
+      "subsystem": "CAM",
+      "disposition": "investigate",
+      "evidence": "FreeCAD.ActiveDocument.commitTransaction()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 68,
+      "category": "direct-recompute",
+      "subsystem": "CAM",
+      "disposition": "migrate",
+      "evidence": "FreeCAD.ActiveDocument.recompute()"
+    },
+    {
+      "path": "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py",
+      "line": 68,
       "category": "live-app-dereference",
       "subsystem": "CAM",
       "disposition": "investigate",
@@ -11922,6 +14117,62 @@
       "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
     },
     {
+      "path": "src/Mod/Draft/draftviewproviders/view_base.py",
+      "line": 191,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_base.py",
+      "line": 592,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_dimension.py",
+      "line": 324,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_dimension.py",
+      "line": 901,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_draft_annotation.py",
+      "line": 194,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_draftlink.py",
+      "line": 59,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_label.py",
+      "line": 209,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
       "path": "src/Mod/Draft/draftviewproviders/view_label.py",
       "line": 354,
       "category": "direct-recompute",
@@ -11944,6 +14195,14 @@
       "subsystem": "Draft",
       "disposition": "migrate",
       "evidence": "obj.recompute()"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_layer.py",
+      "line": 206,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_layer.py",
@@ -12011,6 +14270,14 @@
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_text.py",
+      "line": 108,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_text.py",
       "line": 197,
       "category": "live-app-dereference",
       "subsystem": "Draft",
@@ -12035,6 +14302,14 @@
     },
     {
       "path": "src/Mod/Draft/draftviewproviders/view_wire.py",
+      "line": 112,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_wire.py",
       "line": 207,
       "category": "live-app-dereference",
       "subsystem": "Draft",
@@ -12056,6 +14331,14 @@
       "subsystem": "Draft",
       "disposition": "investigate",
       "evidence": "for o in App.ActiveDocument.Objects:"
+    },
+    {
+      "path": "src/Mod/Draft/draftviewproviders/view_wpproxy.py",
+      "line": 193,
+      "category": "update-data-provider",
+      "subsystem": "Draft",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/Fem/Gui/ActiveAnalysisObserver.cpp",
@@ -13482,6 +15765,30 @@
       "evidence": "for o in FreeCAD.ActiveDocument.Objects:"
     },
     {
+      "path": "src/Mod/Fem/femviewprovider/view_base_fempostvisualization.py",
+      "line": 89,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_constraint_currentdensity.py",
+      "line": 58,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_mesh_gmsh.py",
+      "line": 72,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
+    },
+    {
       "path": "src/Mod/Fem/femviewprovider/view_mesh_gmsh.py",
       "line": 135,
       "category": "live-app-dereference",
@@ -13504,6 +15811,14 @@
       "subsystem": "Fem",
       "disposition": "investigate",
       "evidence": "if FemGui.getActiveAnalysis().Document is FreeCAD.ActiveDocument:"
+    },
+    {
+      "path": "src/Mod/Fem/femviewprovider/view_mesh_shape.py",
+      "line": 57,
+      "category": "update-data-provider",
+      "subsystem": "Fem",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, obj, prop):"
     },
     {
       "path": "src/Mod/Import/Gui/AppImportGuiPy.cpp",
@@ -14594,6 +16909,22 @@
       "evidence": "FreeCAD.ActiveDocument.recompute()"
     },
     {
+      "path": "src/Mod/OpenSCAD/OpenSCADFeatures.py",
+      "line": 48,
+      "category": "update-data-provider",
+      "subsystem": "OpenSCAD",
+      "disposition": "migrate",
+      "evidence": "def updateData(self, fp, prop):"
+    },
+    {
+      "path": "src/Mod/OpenSCAD/OpenSCADFeatures.py",
+      "line": 68,
+      "category": "live-app-dereference",
+      "subsystem": "OpenSCAD",
+      "disposition": "investigate",
+      "evidence": "doc = FreeCAD.ActiveDocument #crap"
+    },
+    {
       "path": "src/Mod/OpenSCAD/OpenSCADUtils.py",
       "line": 110,
       "category": "thread-waits",
@@ -14656,6 +16987,46 @@
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "return not FreeCAD.ActiveDocument is None"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
+      "line": 108,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "object.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
+      "line": 113,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "object.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
+      "line": 118,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "object.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
+      "line": 127,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "document.recompute()"
+    },
+    {
+      "path": "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
+      "line": 135,
+      "category": "direct-recompute",
+      "subsystem": "Part",
+      "disposition": "migrate",
+      "evidence": "document.recompute()"
     },
     {
       "path": "src/Mod/Part/CompoundTools/_CommandCompoundFilter.py",

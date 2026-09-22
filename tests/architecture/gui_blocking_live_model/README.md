@@ -28,14 +28,20 @@ The scanner covers production GUI source only:
 * explicit reviewed Python GUI packages/files that do not use a `Gui` directory:
   Draft command/task/view-provider packages plus `draftutils/gui_utils.py`, BIM
   commands/covering plus `nativeifc/ifc_viewproviders.py`, CAM's
-  `PathPythonGui`, CAM's loaded Path command/preferences helpers, FEM's reviewed
+  `PathPythonGui`, CAM's loaded Path and Machine UI command/preferences helpers, FEM's reviewed
   command/task/view-provider packages, Assembly command/task handlers, Points'
   command package, PartDesign's shaft wizard, Tux's optional GUI extensions,
   BIM native-IFC command/observer/status modules, Draft's GUI startup helpers,
   and the reviewed direct GUI modules for Robot and other production
-  workbenches. The direct local imports made by every production `InitGui.py`
-  are either in this manifest or listed in `rules.py` with an explicit
-  App/model-layer exclusion rationale.
+  workbenches. The manifest also follows qualifying transitive GUI imports,
+  including CAM tool-library UI, BIM view providers, Assembly GUI helpers,
+  OpenSCAD providers, and BasicShapes view providers. The direct local imports
+  made by every production `InitGui.py` and the reviewed transitive imports are
+  either in this manifest or listed in `rules.py` with an explicit App/model-
+  layer exclusion rationale. The transitive closure has the same explicit
+  treatment for imported CAM operation, BIM IFC/IO, Draft geometry, FEM solver,
+  and OpenSCAD import helpers; these model/IO modules are excluded by path while
+  their GUI callers remain in scope.
 
 Both C++ (`.cpp`/`.h`/`.hpp`) and Python (`.py`) GUI source are scanned.
 
@@ -79,10 +85,12 @@ The Python patterns mirror the C++ ones where a Python equivalent exists:
 the `FreeCADGui`/`Gui.updateGui()` wrapper), `direct-recompute` (`.recompute(`),
 `live-app-dereference` (`App`/`FreeCAD.ActiveDocument`, callable
 `activeDocument()`, and `getDocument(`), and
-`live-reference-callback` (`addObserver`/`removeObserver`). Only
-`update-data-provider` is C++-only by nature (the
-`ViewProvider::updateData(const App::Property*)` interface) and carries a
-`None` Python pattern. `blocking-invokes` has a Python pattern for the PySide
+`live-reference-callback` (`addObserver`/`removeObserver`). The
+`update-data-provider` Python side uses an AST classifier for methods named
+`updateData` on provider-named classes or reviewed provider modules; generic
+Qt model callbacks such as `updateData(topLeft, bottomRight)` are excluded.
+Its regex pattern is intentionally `None` because classification is structural.
+`blocking-invokes` has a Python pattern for the PySide
 `BlockingQueuedConnection` enum as well as its C++ Qt connection-type pattern;
 no Python site currently matches it.
 

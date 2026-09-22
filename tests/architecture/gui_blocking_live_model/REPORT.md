@@ -1,6 +1,6 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (2,148 findings across seven
+This report summarizes the reproducible inventory (2,439 findings across seven
 categories, snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
@@ -8,18 +8,18 @@ candidates. It proposes work only; no production behavior is changed here.
 
 | Category | Findings | Disposition | Summary |
 | --- | ---: | --- | --- |
-| `live-app-dereference` | 1,294 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach. |
-| `live-reference-callback` | 221 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
-| `update-data-provider` | 187 | migrate | `ViewProvider::updateData` overrides (qualified and inline). |
-| `direct-recompute` | 369 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs. |
-| `process-events-polling` | 49 | investigate | Manual event-loop pumping. |
+| `live-app-dereference` | 1,458 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach. |
+| `live-reference-callback` | 234 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
+| `update-data-provider` | 236 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
+| `direct-recompute` | 432 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs. |
+| `process-events-polling` | 51 | investigate | Manual event-loop pumping. |
 | `thread-waits` | 27 | investigate | Blocking `waitFor*()`/`wait()` on processes, futures, conditions, and threads. |
 | `blocking-invokes` | 1 | migrate | Single `Qt::BlockingQueuedConnection` dispatch hook. |
 
-The snapshot spans 751 C++ and 1,397 Python findings. Owning subsystems:
-`BIM` (606), `CAM` (360), `Gui` (324), `Fem` (181), `Draft` (128), `Part`
-(105), `TechDraw` (99), `Assembly` (73), `PartDesign` (68), `Mesh` (62),
-`OpenSCAD` (28), `Surface` (21), `Sketcher` (19), `Measure` (18), `Material`
+The snapshot spans 751 C++ and 1,688 Python findings. Owning subsystems:
+`BIM` (839), `CAM` (390), `Gui` (324), `Fem` (185), `Draft` (139), `Part`
+(110), `TechDraw` (99), `Assembly` (79), `PartDesign` (68), `Mesh` (62),
+`OpenSCAD` (30), `Surface` (21), `Sketcher` (19), `Measure` (18), `Material`
 (12), `Spreadsheet` (8), `MeshPart` (7), `Import` (6), `Inspection` (6),
 `Points` (6), `ReverseEngineering` (5), `Robot` (5), and `Start` (1).
 
@@ -49,8 +49,9 @@ execution lane` work item; the inventory provides the exact call-site list to
 drive it.
 
 ### 4. Migrate `updateData` providers in bounded batches (`Part`, `Fem`, …)
-The `update-data-provider` findings (qualified definitions plus the inline
-`void updateData(const App::Property*) override` declarations) are the concrete
+The `update-data-provider` findings (qualified definitions, inline
+`void updateData(const App::Property*) override` declarations, and provider-aware
+Python `ViewProvider.updateData` callbacks) are the concrete
 provider list for the existing `Extract immutable Part render-buffer
 preparation` / `Migrate Part view providers to bounded presentation adapters`
 work items. Batch by workbench: `Part` (largest), then `Fem`, `Mesh`,
