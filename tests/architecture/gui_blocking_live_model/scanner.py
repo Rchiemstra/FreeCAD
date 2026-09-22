@@ -313,7 +313,9 @@ def _cpp_call_argument_ranges(masked: str, opening: int, closing: int) -> list[t
 def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
     """Decode literals passed to known executable GUI command wrappers."""
     masked = mask_cpp_non_code(source)
-    names = "|".join(re.escape(name) for name, _index in _CPP_COMMAND_ARGUMENTS)
+    names = "|".join(
+        re.escape(name).replace(r"::", r"\s*::\s*") for name, _index in _CPP_COMMAND_ARGUMENTS
+    )
     pattern = re.compile(rf"(?<![\w:])(?:{names})\s*\(")
     decoded: list[tuple[str, list[int]]] = []
     for match in pattern.finditer(masked):
@@ -323,7 +325,10 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
         closing = _cpp_call_end(masked, opening)
         if closing is None:
             continue
-        function_name = match.group(0).split("(", 1)[0].strip()
+        raw_function_name = match.group(0).split("(", 1)[0].strip()
+        function_name = re.sub(r"\s*::\s*", "::", raw_function_name)
+        if "::" not in function_name and re.search(r"::\s*$", masked[: match.start()]):
+            continue
         argument_index = next(
             index for name, index in _CPP_COMMAND_ARGUMENTS if function_name.endswith(name)
         )
@@ -342,7 +347,15 @@ def _decoded_cpp_command_literals(source: str) -> list[tuple[str, list[int]]]:
             line_map.extend(_decoded_line_map(value, source, literal_start, literal_end))
         if values:
             prefix = _CPP_COMMAND_PREFIXES.get(function_name, "")
-            decoded.append((prefix + "".join(values), [line_map[0]] * len(prefix) + line_map))
+            command = prefix + "".join(values)
+            if not command:
+                continue
+            if not line_map:
+                anchor = source.count("\n", 0, literal_spans[0][0]) + 1
+                prefix_map = [anchor] * len(prefix)
+            else:
+                prefix_map = [line_map[0]] * len(prefix)
+            decoded.append((command, prefix_map + line_map))
     return decoded
 
 

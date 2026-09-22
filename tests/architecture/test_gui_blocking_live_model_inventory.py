@@ -141,13 +141,20 @@ def _imports_module(source: str, target: str) -> bool:
 
 
 def _static_string_expression(node: ast.AST) -> bool:
+    return _static_string_value(node) is not None
+
+
+def _static_string_value(node: ast.AST) -> str | None:
+    """Return a value for a literal-only string expression, if available."""
     try:
         value = ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError):
-        return isinstance(node, ast.JoinedStr) and all(
-            isinstance(part, ast.Constant) for part in node.values
-        )
-    return isinstance(value, str)
+        if isinstance(node, ast.JoinedStr) and all(
+            isinstance(part, ast.Constant) and isinstance(part.value, str) for part in node.values
+        ):
+            return "".join(part.value for part in node.values)
+        return None
+    return value if isinstance(value, str) else None
 
 
 def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
@@ -242,13 +249,10 @@ def _runtime_loader_calls(source: str) -> list[tuple[int, str]]:
             package = keyword_or_positional(node, "package", 1)
             nonliteral_name = name is not None and not _static_string_expression(name)
             relative_package = False
-            if name is not None and _static_string_expression(name):
-                try:
-                    name_value = ast.literal_eval(name)
-                except (ValueError, TypeError, SyntaxError, MemoryError):
-                    name_value = None
+            if name is not None:
+                name_value = _static_string_value(name)
                 relative_package = (
-                    isinstance(name_value, str)
+                    name_value is not None
                     and name_value.startswith(".")
                     and package is not None
                     and not _static_string_expression(package)
@@ -869,6 +873,38 @@ str.join(parts)
             [finding for finding in findings if finding.category == "direct-recompute"], []
         )
 
+    def test_cpp_command_extraction_handles_empty_literals_and_spaced_qualifiers(self) -> None:
+        empty = scanner.scan_source(
+            'Gui::Command::doCommand(Gui::Command::Doc, "");\n'
+            'Gui::Command::doCommand(Gui::Command::Doc, R"tag()tag");\n',
+            ".cpp",
+            "src/Gui/Snippet.cpp",
+        )
+        self.assertEqual(
+            [finding for finding in empty if finding.category == "direct-recompute"], []
+        )
+        for command, line_map in scanner._decoded_cpp_command_literals(
+            'Gui::cmdAppDocument(doc, "");'
+        ):
+            self.assertEqual(len(command), len(line_map))
+        spaced = scanner.scan_source(
+            "Gui /*comment*/ :: Command /*comment*/ :: doCommand("
+            'Gui::Command::Doc, "App.ActiveDocument.recompute()");\n',
+            ".cpp",
+            "src/Gui/Snippet.cpp",
+        )
+        self.assertIn(
+            (1, "direct-recompute"),
+            {(finding.line, finding.category) for finding in spaced},
+        )
+        near_miss = scanner.scan_source(
+            "Other /*comment*/ :: Command :: doCommand("
+            'Gui::Command::Doc, "App.ActiveDocument.recompute()");\n',
+            ".cpp",
+            "src/Gui/Snippet.cpp",
+        )
+        self.assertNotIn("direct-recompute", {finding.category for finding in near_miss})
+
     def test_runtime_loader_detects_unpacked_and_relative_package_arguments(self) -> None:
         source = """
 import builtins
@@ -895,6 +931,18 @@ importlib.import_module('literal', **kwargs)
         )
         self.assertEqual(
             _runtime_loader_calls("importlib.import_module('.relative', package='pkg')"), []
+        )
+        self.assertEqual(
+            [
+                kind
+                for _line, kind in _runtime_loader_calls(
+                    "importlib.import_module(f'.relative', package=runtime_package)"
+                )
+            ],
+            ["import_module"],
+        )
+        self.assertEqual(
+            _runtime_loader_calls("importlib.import_module(f'.relative', package='pkg')"), []
         )
 
 
