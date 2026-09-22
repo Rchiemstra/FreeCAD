@@ -136,6 +136,14 @@ def _imported_module_candidates(source: str) -> set[str]:
     return candidates
 
 
+def _imports_module(source: str, target: str) -> bool:
+    """Return whether imports contain an exact module-segment target."""
+    return any(
+        target in candidate.lstrip(".").split(".")
+        for candidate in _imported_module_candidates(source)
+    )
+
+
 def _static_string_expression(node: ast.AST, constants: set[str]) -> bool:
     if isinstance(node, ast.Name) and node.id in constants:
         return True
@@ -1532,19 +1540,15 @@ importlib.import_module(name)
         self.assertFalse(unreviewed, "unreviewed dynamic imports: " + ", ".join(unreviewed))
 
     def test_dynamic_only_targets_are_not_static_imports(self) -> None:
-        arch_imports = _imported_module_candidates(
-            (REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text()
-        )
-        self.assertNotIn("ArchCovering", arch_imports)
+        arch_source = (REPOSITORY_ROOT / "src/Mod/BIM/Arch.py").read_text()
+        self.assertFalse(_imports_module(arch_source, "ArchCovering"))
         arch_targets = {
             path.relative_to(REPOSITORY_ROOT).as_posix()
             for path in REPOSITORY_ROOT.glob("src/Mod/BIM/Arch*.py")
         }
         self.assertIn("src/Mod/BIM/ArchCovering.py", arch_targets)
-        cam_imports = _imported_module_candidates(
-            (REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py").read_text()
-        )
-        self.assertNotIn("Adaptive", cam_imports)
+        cam_source = (REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Base.py").read_text()
+        self.assertFalse(_imports_module(cam_source, "Adaptive"))
         self.assertTrue((REPOSITORY_ROOT / "src/Mod/CAM/Path/Op/Gui/Adaptive.py").is_file())
 
     def test_imported_module_candidates_include_relative_modules(self) -> None:
@@ -1555,6 +1559,17 @@ importlib.import_module(name)
         self.assertIn(".ArchCovering.X", candidates)
         self.assertIn(".Adaptive", candidates)
         self.assertIn(".Adaptive.X", candidates)
+
+    def test_imports_module_matches_dotted_relative_and_from_forms(self) -> None:
+        for source, target in (
+            ("import ArchCovering\n", "ArchCovering"),
+            ("import BIM.ArchCovering\n", "ArchCovering"),
+            ("from .ArchCovering import X\n", "ArchCovering"),
+            ("from Path.Op.Gui.Adaptive import X\n", "Adaptive"),
+            ("from Path.Op.Gui import Adaptive\n", "Adaptive"),
+        ):
+            self.assertTrue(_imports_module(source, target), source)
+        self.assertFalse(_imports_module("from Path.Op.Gui import AdaptiveExtra\n", "Adaptive"))
 
     def test_reviewed_python_gui_sites_found(self) -> None:
         for path, category in (
