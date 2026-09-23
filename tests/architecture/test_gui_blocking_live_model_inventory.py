@@ -2113,9 +2113,15 @@ str.join(parts)
             ),
             (
                 "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
-                "void f() { ([](auto x) requires (true) { "
+                "void f() { (([](auto x) requires (true) { "
                 '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); '
-                "})(0); }\n"
+                "}))(0); }\n"
+            ),
+            (
+                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+                "void f() { (((([](auto x) requires (true) { "
+                '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); '
+                "}))))(0); }\n"
             ),
         )
         for index, source in enumerate(sources):

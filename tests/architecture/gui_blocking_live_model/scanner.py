@@ -914,7 +914,7 @@ def _cpp_requires_is_clause(
     if _cpp_requires_generic_lambda_invocation_expression(prefix):
         return False
     if body_closing is not None and _cpp_requires_generic_lambda_immediate_invocation(
-        masked, prefix, body_closing
+        masked, prefix, body_closing, prefix_start
     ):
         return True
     if _cpp_requires_ref_qualifier_is_declarator(prefix):
@@ -939,7 +939,7 @@ def _cpp_requires_is_clause(
 
 
 def _cpp_requires_generic_lambda_immediate_invocation(
-    masked: str, prefix: str, body_closing: int
+    masked: str, prefix: str, body_closing: int, prefix_start: int = 0
 ) -> bool:
     """Recognize an evaluated generic lambda body called at the expression site."""
     lambda_start = None
@@ -958,9 +958,33 @@ def _cpp_requires_generic_lambda_immediate_invocation(
         return False
     if masked[index] == "(":
         return _cpp_call_end(masked, index) is not None
-    if masked[index] != ")":
+
+    # Parentheses between the lambda body and its call are transparent only
+    # when they structurally close the contiguous wrappers immediately before
+    # the lambda capture.  Counting arbitrary ``)`` punctuation here would
+    # classify unrelated expressions as immediate invocations.
+    wrapper_openings: list[int] = []
+    opening = lambda_start - 1
+    while opening >= 0 and prefix[opening].isspace():
+        opening -= 1
+    while opening >= 0 and prefix[opening] == "(":
+        wrapper_openings.append(prefix_start + opening)
+        opening -= 1
+        while opening >= 0 and prefix[opening].isspace():
+            opening -= 1
+    if not wrapper_openings or masked[index] != ")":
         return False
-    invocation_opening = _skip_cpp_trivia(masked, index + 1, len(masked))
+    closing_count = 0
+    while index < len(masked) and masked[index] == ")":
+        if (
+            closing_count >= len(wrapper_openings)
+            or _cpp_requires_matching_opening(masked, index, "(", ")")
+            != wrapper_openings[closing_count]
+        ):
+            return False
+        closing_count += 1
+        index = _skip_cpp_trivia(masked, index + 1, len(masked))
+    invocation_opening = index
     return (
         invocation_opening < len(masked)
         and masked[invocation_opening] == "("
