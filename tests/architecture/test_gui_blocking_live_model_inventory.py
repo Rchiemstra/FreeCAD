@@ -1743,6 +1743,59 @@ str.join(parts)
             self.assertNotIn("direct-recompute", categories)
             self.assertNotIn("live-app-dereference", categories)
 
+    def test_cpp_generic_lambda_invocations_with_full_heads_are_unevaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "int values[1]{};\n"
+            "template<class T> concept Direct = "
+            "[value = values[0]]<class U = int>(int unused [[maybe_unused]]) -> bool "
+            "{ return true; }(0) && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "template<class T> concept Explicit = "
+            "[value = values[0]]<class U = int>(int unused [[maybe_unused]]) -> bool "
+            "{ return true; }.template operator()<int>(0) && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "template<class T> void trailing(T) requires (sizeof(T) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_lambda_full_heads.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            finding.category
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(categories, {"direct-recompute", "live-app-dereference"})
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        self.assertEqual({finding.line for finding in findings}, {10})
+
+    def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
+        clauses = " && ".join("requires { typename T::type; }" for _ in range(400))
+        source = f"template<class T> concept Chained = {clauses};\n"
+        with (
+            mock.patch.object(
+                scanner, "_cpp_requires_prefix_starts", wraps=scanner._cpp_requires_prefix_starts
+            ) as boundary_pass,
+            mock.patch.object(
+                scanner,
+                "_cpp_requires_prefix_start",
+                side_effect=AssertionError("unexpected fallback boundary scan"),
+            ),
+        ):
+            self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+        self.assertEqual(boundary_pass.call_count, 1)
+
     def test_cpp_requires_generic_lambda_assignment_search_is_declaration_bounded(self) -> None:
         source = "\n".join(
             f"auto value{index} = []<class T>() requires (true) {{ return true; }};"
