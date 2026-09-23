@@ -1782,7 +1782,7 @@ str.join(parts)
 
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
         clauses = " && ".join("requires { typename T::type; }" for _ in range(400))
-        source = f"template<class T> concept Chained = {clauses};\n"
+        source = f"namespace N {{\ntemplate<class T> concept Chained = {clauses};\n}}\n"
         with (
             mock.patch.object(
                 scanner, "_cpp_requires_prefix_starts", wraps=scanner._cpp_requires_prefix_starts

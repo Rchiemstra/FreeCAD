@@ -903,22 +903,27 @@ def _cpp_requires_prefix_start(masked: str, offset: int) -> int:
 def _cpp_requires_prefix_starts(masked: str) -> dict[int, int]:
     """Return statement starts for every ``requires`` keyword in one pass."""
     starts: dict[int, int] = {}
-    stack: list[str] = []
+    stack: list[tuple[str, int, int]] = []
     matching = {"(": ")", "[": "]", "{": "}"}
     statement_start = 0
     for index, character in enumerate(masked):
         if character in matching:
-            stack.append(matching[character])
-        elif stack and character == stack[-1]:
-            stack.pop()
-        elif character == ";" and not stack:
-            statement_start = index + 1
-        elif not stack and masked.startswith("requires", index):
+            inherited_start = stack[-1][1] if stack else statement_start
+            stack.append((matching[character], inherited_start, inherited_start))
+        elif stack and character == stack[-1][0]:
+            _closing, _current_start, parent_start = stack.pop()
+            statement_start = stack[-1][1] if stack else parent_start
+        elif character == ";":
+            if stack:
+                stack[-1] = (stack[-1][0], index + 1, stack[-1][2])
+            else:
+                statement_start = index + 1
+        elif masked.startswith("requires", index):
             before = masked[index - 1] if index else " "
             after_index = index + len("requires")
             after = masked[after_index] if after_index < len(masked) else " "
             if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
-                starts[index] = statement_start
+                starts[index] = stack[-1][1] if stack else statement_start
     return starts
 
 
