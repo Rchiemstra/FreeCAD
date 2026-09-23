@@ -850,6 +850,7 @@ def _cpp_unevaluated_ranges(
                 match.start(),
                 prefix_starts.get(match.start()),
                 parenthesis_body_endings,
+                closing_by_opening.get(index),
             )
         ):
             closing = closing_by_opening.get(index)
@@ -863,6 +864,7 @@ def _cpp_requires_is_clause(
     offset: int,
     prefix_start: int | None = None,
     parenthesis_body_endings: dict[int, bool] | None = None,
+    body_closing: int | None = None,
 ) -> bool:
     """Recognize a trailing function/lambda requires-clause before its body."""
     # A requires-expression may be one operand of a logical constraint.  When
@@ -911,6 +913,10 @@ def _cpp_requires_is_clause(
     prefix = masked[prefix_start:offset]
     if _cpp_requires_generic_lambda_invocation_expression(prefix):
         return False
+    if body_closing is not None and _cpp_requires_generic_lambda_immediate_invocation(
+        masked, prefix, body_closing
+    ):
+        return True
     if _cpp_requires_ref_qualifier_is_declarator(prefix):
         return True
     if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset, prefix_start):
@@ -931,6 +937,28 @@ def _cpp_requires_is_clause(
         if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
             return True
     return False
+
+
+def _cpp_requires_generic_lambda_immediate_invocation(
+    masked: str, prefix: str, body_closing: int
+) -> bool:
+    """Recognize an evaluated generic lambda body called at the expression site."""
+    lambda_start = prefix.rfind("[")
+    if lambda_start < 0 or not _cpp_requires_lambda_head_is_implicit(prefix[lambda_start:]):
+        return False
+    index = _skip_cpp_trivia(masked, body_closing + 1, len(masked))
+    if index >= len(masked):
+        return False
+    if masked[index] == "(":
+        return _cpp_call_end(masked, index) is not None
+    if masked[index] != ")":
+        return False
+    invocation_opening = _skip_cpp_trivia(masked, index + 1, len(masked))
+    return (
+        invocation_opening < len(masked)
+        and masked[invocation_opening] == "("
+        and _cpp_call_end(masked, invocation_opening) is not None
+    )
 
 
 def _cpp_requires_left_operand_ends_in_body(
