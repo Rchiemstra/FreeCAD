@@ -860,12 +860,16 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
     index = offset
     while index and masked[index - 1].isspace():
         index -= 1
+    while index and masked[index - 1] == "(":
+        index -= 1
+        while index and masked[index - 1].isspace():
+            index -= 1
     for operator in ("&&", "||"):
         operator_start = index - len(operator)
         if operator_start >= 0 and masked[operator_start:index] == operator:
             while operator_start and masked[operator_start - 1].isspace():
                 operator_start -= 1
-            if operator_start and masked[operator_start - 1] == "}":
+            if _cpp_requires_left_operand_ends_in_body(masked, operator_start):
                 return False
     for operator in ("and", "or"):
         operator_start = index - len(operator)
@@ -880,7 +884,7 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
         ):
             while operator_start and masked[operator_start - 1].isspace():
                 operator_start -= 1
-            if operator_start and masked[operator_start - 1] == "}":
+            if _cpp_requires_left_operand_ends_in_body(masked, operator_start):
                 return False
     # Qualifiers and the function declarator are immediately adjacent to the
     # requires keyword.  Keep the ordinary path bounded, but recover a generic
@@ -909,6 +913,32 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
         if not has_ref_qualifier and _cpp_requires_declarator_is_declarator(prefix[:opening]):
             return True
     return False
+
+
+def _cpp_requires_left_operand_ends_in_body(masked: str, operator_start: int) -> bool:
+    """Recognize a completed requires-expression before a logical operator.
+
+    This is deliberately a local look-behind.  Parentheses around a completed
+    requires-expression are transparent, but the enclosing statement is never
+    rescanned, which keeps a same-statement chain linear.
+    """
+    index = operator_start - 1
+    while index >= 0 and masked[index].isspace():
+        index -= 1
+    while index >= 0 and masked[index] == ")":
+        closing = index
+        opening = _cpp_requires_matching_opening(masked, closing, "(", ")")
+        if opening is None:
+            return False
+        index = closing - 1
+        while index >= 0 and masked[index].isspace():
+            index -= 1
+        if index >= 0 and masked[index] == "}":
+            return True
+        index = opening - 1
+        while index >= 0 and masked[index].isspace():
+            index -= 1
+    return index >= 0 and masked[index] == "}"
 
 
 def _cpp_requires_prefix_start(masked: str, offset: int) -> int:
@@ -1042,6 +1072,10 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     for assignment in reversed(assignments):
         assignment_rhs = declarator[assignment + 1 :]
         if ".template operator" in assignment_rhs:
+            return False
+        if _cpp_requires_generic_lambda_head(
+            assignment_rhs
+        ) and _cpp_requires_lambda_head_is_implicit(assignment_rhs):
             return False
         if _cpp_requires_lambda_assignment_rhs(assignment_rhs):
             return True
@@ -1262,14 +1296,15 @@ def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
             template_closing -= 1
         if template_closing < 0:
             return False
-        operator_end = template_closing
+        operator_template_opening = template_closing
+        operator_end = operator_template_opening
         operator_start = declarator.rfind("operator", 0, operator_end)
         if operator_start < 0:
             return False
         before_operator = declarator[:operator_start].rstrip()
         if not re.search(r"\.\s*(?:template\s*)?$", before_operator):
             return False
-        operator_text = declarator[operator_start:template_closing]
+        operator_text = declarator[operator_start:operator_template_opening]
         if not re.fullmatch(r"operator\s*\(\)\s*", operator_text):
             return False
         body_prefix = re.sub(r"\.\s*(?:template\s*)?$", "", before_operator).rstrip()
@@ -1290,37 +1325,10 @@ def _cpp_requires_generic_lambda_invocation_prefix(declarator: str) -> bool:
     if body_opening < 0:
         return False
 
-    head = declarator[:body_opening]
-    capture_opening = capture_closing = None
-    for candidate in range(len(head)):
-        if head[candidate] != "[":
-            continue
-        capture = _cpp_requires_lambda_capture(head, candidate)
-        if capture is None:
-            continue
-        candidate_closing = capture[1]
-        template_opening = _skip_cpp_trivia(head, candidate_closing + 1, len(head))
-        if template_opening < len(head) and head[template_opening] == "<":
-            capture_opening, capture_closing = candidate, candidate_closing
-            break
-    if capture_opening is None or capture_closing is None:
+    lambda_start = declarator.find("[")
+    if lambda_start < 0:
         return False
-    template_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
-    if template_opening >= len(head) or head[template_opening] != "<":
-        return False
-    template_depth = 0
-    template_closing = None
-    for index in range(template_opening, len(head)):
-        if head[index] == "<":
-            template_depth += 1
-        elif head[index] == ">":
-            template_depth -= 1
-            if template_depth == 0:
-                template_closing = index
-                break
-    if template_closing is None:
-        return False
-    return _cpp_requires_generic_lambda_head(head[capture_opening:])
+    return _cpp_requires_generic_lambda_head(declarator[lambda_start:body_opening])
 
 
 def _cpp_requires_generic_lambda_parameter_prefix(declarator: str) -> bool:
@@ -1329,6 +1337,71 @@ def _cpp_requires_generic_lambda_parameter_prefix(declarator: str) -> bool:
         _cpp_requires_generic_lambda_head(declarator[assignment + 1 :])
         for assignment in (match.start() for match in re.finditer("=", declarator))
     )
+
+
+def _cpp_requires_lambda_parameter_list(source: str, opening: int) -> tuple[int, bool] | None:
+    """Return a balanced lambda parameter list and whether it contains ``auto``."""
+    if opening >= len(source) or source[opening] != "(":
+        return None
+    depth = 0
+    closing = None
+    for index in range(opening, len(source)):
+        character = source[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        return None
+
+    parameters = source[opening + 1 : closing]
+    segments: list[str] = []
+    start = 0
+    depths = {"<": 0, "(": 0, "[": 0, "{": 0}
+    matching = {
+        ">": "<",
+        ")": "(",
+        "]": "[",
+        "}": "{",
+    }
+    for index, character in enumerate(parameters):
+        if character in depths:
+            depths[character] += 1
+        elif character in matching and depths[matching[character]]:
+            depths[matching[character]] -= 1
+        elif character == "," and not any(depths.values()):
+            segments.append(parameters[start:index])
+            start = index + 1
+    segments.append(parameters[start:])
+
+    for segment in segments:
+        depths = {"<": 0, "(": 0, "[": 0, "{": 0}
+        declaration_end = len(segment)
+        for index, character in enumerate(segment):
+            if character in depths:
+                depths[character] += 1
+            elif character in matching and depths[matching[character]]:
+                depths[matching[character]] -= 1
+            elif character == "=" and not any(depths.values()):
+                declaration_end = index
+                break
+        declaration = segment[:declaration_end]
+        if re.search(r"(?<![A-Za-z0-9_])auto(?![A-Za-z0-9_])", declaration):
+            return closing, True
+    return closing, False
+
+
+def _cpp_requires_lambda_head_is_implicit(head: str) -> bool:
+    index = _skip_cpp_trivia(head, 0, len(head))
+    capture = _cpp_requires_lambda_capture(head, index)
+    if capture is None:
+        return False
+    parameter_opening = _skip_cpp_trivia(head, capture[1] + 1, len(head))
+    parameter_list = _cpp_requires_lambda_parameter_list(head, parameter_opening)
+    return parameter_list is not None and parameter_list[1]
 
 
 def _cpp_requires_generic_lambda_head(head: str) -> bool:
@@ -1340,23 +1413,29 @@ def _cpp_requires_generic_lambda_head(head: str) -> bool:
     if capture is None:
         return False
     _capture_opening, capture_closing = capture
-    template_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
-    if template_opening >= len(head) or head[template_opening] != "<":
-        return False
-    angle_depth = 0
-    template_closing = None
-    for index in range(template_opening, len(head)):
-        if head[index] == "<":
-            angle_depth += 1
-        elif head[index] == ">":
-            angle_depth -= 1
-            if angle_depth == 0:
-                template_closing = index
-                break
-    if template_closing is None:
-        return False
-
-    suffix = head[template_closing + 1 :]
+    parameter_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
+    if parameter_opening < len(head) and head[parameter_opening] == "(":
+        parameter_list = _cpp_requires_lambda_parameter_list(head, parameter_opening)
+        if parameter_list is None or not parameter_list[1]:
+            return False
+        suffix = head[parameter_list[0] + 1 :]
+    else:
+        template_opening = parameter_opening
+        if template_opening >= len(head) or head[template_opening] != "<":
+            return False
+        angle_depth = 0
+        template_closing = None
+        for index in range(template_opening, len(head)):
+            if head[index] == "<":
+                angle_depth += 1
+            elif head[index] == ">":
+                angle_depth -= 1
+                if angle_depth == 0:
+                    template_closing = index
+                    break
+        if template_closing is None:
+            return False
+        suffix = head[template_closing + 1 :]
     stripped = suffix.lstrip()
     if re.fullmatch(r"requires\s+requires\s*\([^{}]*\)\s*", stripped):
         return False

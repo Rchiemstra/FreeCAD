@@ -1780,6 +1780,40 @@ str.join(parts)
         findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
         self.assertEqual({finding.line for finding in findings}, {10})
 
+    def test_cpp_implicit_generic_lambda_invocations_are_unevaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "template<class T> concept Direct = [] (auto value) -> bool { return value == 0; }(0)"
+            " && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "template<class T> concept Explicit = [] (auto value) -> bool { return value == 0; }."
+            "template operator()<int>(0) && requires {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto assigned = [](auto value) requires requires { sizeof(value); } {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_implicit_generic_lambda.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertNotIn((3, "direct-recompute"), categories)
+        self.assertNotIn((3, "live-app-dereference"), categories)
+        self.assertNotIn((6, "direct-recompute"), categories)
+        self.assertNotIn((6, "live-app-dereference"), categories)
+        self.assertIn((9, "direct-recompute"), categories)
+        self.assertIn((9, "live-app-dereference"), categories)
+
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
         for operator in (" && ", "&&"):
             clauses = operator.join("requires { typename T::type; }" for _ in range(400))
@@ -1814,6 +1848,35 @@ str.join(parts)
             self.assertEqual(boundary_pass.call_count, 1)
             # Only the enclosing and first nested requires-expressions reach
             # the expensive classifiers; later operands must not enter either path.
+            self.assertEqual(invocation_classifier.call_count, 2)
+            self.assertEqual(declarator_classifier.call_count, 4)
+
+    def test_cpp_requires_prefix_boundaries_unwrap_parenthesized_operands(self) -> None:
+        for operator in (" && ", "&&"):
+            expression = operator.join("(requires { typename T::type; })" for _ in range(160))
+            source = (
+                "namespace N {\n"
+                f"template<class T> concept Chained = requires {{ requires ({expression}); }};\n"
+                "}\n"
+            )
+            with (
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_prefix_start",
+                    side_effect=AssertionError("unexpected fallback boundary scan"),
+                ),
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_generic_lambda_invocation_expression",
+                    wraps=scanner._cpp_requires_generic_lambda_invocation_expression,
+                ) as invocation_classifier,
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_declarator_candidates",
+                    wraps=scanner._cpp_requires_declarator_candidates,
+                ) as declarator_classifier,
+            ):
+                self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
             self.assertEqual(invocation_classifier.call_count, 2)
             self.assertEqual(declarator_classifier.call_count, 4)
 
