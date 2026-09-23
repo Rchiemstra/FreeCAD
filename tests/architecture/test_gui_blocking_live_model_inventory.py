@@ -1614,6 +1614,73 @@ str.join(parts)
         }
         self.assertIn((3, "direct-recompute"), categories)
 
+    def test_cpp_generic_lambda_non_type_default_uses_structural_template_angles(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "auto constrained = []<int N = (sizeof(int) > 0 && sizeof(int) < 8)>(auto value) "
+            "requires (value >= 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_lambda_relational_default.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        self.assertEqual(
+            categories,
+            {(3, "direct-recompute"), (3, "live-app-dereference")},
+        )
+
+    def test_cpp_implicit_constrained_lambda_assignment_bodies_stay_evaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "auto attributed = [] [[maybe_unused]] (auto value) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "};\n"
+            "auto parenthesized = ([](auto value) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "});\n"
+            "auto immediate = [](auto value) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "    return 0;\n"
+            "}(0);\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_implicit_constrained_lambda.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        expected = {
+            (3, "direct-recompute"),
+            (3, "live-app-dereference"),
+            (6, "direct-recompute"),
+            (6, "live-app-dereference"),
+            (9, "direct-recompute"),
+            (9, "live-app-dereference"),
+        }
+        self.assertEqual(categories, expected)
+
     def test_cpp_nested_capture_invocation_requires_body_is_not_misclassified(self) -> None:
         source = (
             "#include <utility>\n"
@@ -1883,6 +1950,39 @@ str.join(parts)
                     self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
                 self.assertEqual(invocation_classifier.call_count, 2)
                 self.assertEqual(declarator_classifier.call_count, 4)
+
+    def test_cpp_parenthesized_left_associated_requires_chain_is_forward_linear(self) -> None:
+        for operator in (" && ", "&&"):
+            operands = (
+                "(" + operator.join("(requires { typename T::type; })" for _ in range(120)) + ")"
+            )
+            source = f"template<class T> concept Chained = {operands};\n"
+            if shutil.which("g++"):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    snippet = Path(temporary_directory) / "gui_requires_left_associated.cpp"
+                    snippet.write_text(source, encoding="utf-8")
+                    result = subprocess.run(
+                        ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            with (
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_matching_opening",
+                    wraps=scanner._cpp_requires_matching_opening,
+                ) as reverse_match,
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_parenthesis_body_endings",
+                    wraps=scanner._cpp_requires_parenthesis_body_endings,
+                ) as forward_cache,
+            ):
+                self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+            self.assertEqual(reverse_match.call_count, 0)
+            self.assertEqual(forward_cache.call_count, 1)
 
     def test_cpp_requires_generic_lambda_assignment_search_is_declaration_bounded(self) -> None:
         source = "\n".join(

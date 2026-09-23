@@ -833,6 +833,7 @@ def _cpp_unevaluated_ranges(
 
     closing_by_opening = dict(brace_ranges)
     prefix_starts = _cpp_requires_prefix_starts(masked)
+    parenthesis_body_endings = _cpp_requires_parenthesis_body_endings(masked)
     for match in re.finditer(r"\brequires\b", masked):
         index = _skip_cpp_trivia(masked, match.end(), len(masked))
         if index < len(masked) and masked[index] == "(":
@@ -844,7 +845,12 @@ def _cpp_unevaluated_ranges(
         if (
             index < len(masked)
             and masked[index] == "{"
-            and not _cpp_requires_is_clause(masked, match.start(), prefix_starts.get(match.start()))
+            and not _cpp_requires_is_clause(
+                masked,
+                match.start(),
+                prefix_starts.get(match.start()),
+                parenthesis_body_endings,
+            )
         ):
             closing = closing_by_opening.get(index)
             if closing is not None:
@@ -852,7 +858,12 @@ def _cpp_unevaluated_ranges(
     return ranges
 
 
-def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None = None) -> bool:
+def _cpp_requires_is_clause(
+    masked: str,
+    offset: int,
+    prefix_start: int | None = None,
+    parenthesis_body_endings: dict[int, bool] | None = None,
+) -> bool:
     """Recognize a trailing function/lambda requires-clause before its body."""
     # A requires-expression may be one operand of a logical constraint.  When
     # the preceding operand ends in a body, this local boundary is sufficient
@@ -869,7 +880,9 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
         if operator_start >= 0 and masked[operator_start:index] == operator:
             while operator_start and masked[operator_start - 1].isspace():
                 operator_start -= 1
-            if _cpp_requires_left_operand_ends_in_body(masked, operator_start):
+            if _cpp_requires_left_operand_ends_in_body(
+                masked, operator_start, parenthesis_body_endings
+            ):
                 return False
     for operator in ("and", "or"):
         operator_start = index - len(operator)
@@ -884,7 +897,9 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
         ):
             while operator_start and masked[operator_start - 1].isspace():
                 operator_start -= 1
-            if _cpp_requires_left_operand_ends_in_body(masked, operator_start):
+            if _cpp_requires_left_operand_ends_in_body(
+                masked, operator_start, parenthesis_body_endings
+            ):
                 return False
     # Qualifiers and the function declarator are immediately adjacent to the
     # requires keyword.  Keep the ordinary path bounded, but recover a generic
@@ -900,6 +915,9 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
         return True
     if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset, prefix_start):
         return True
+    for assignment in (match.start() for match in re.finditer("=", prefix)):
+        if _cpp_requires_lambda_head_is_implicit(prefix[assignment + 1 :]):
+            return True
     for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
         declarator = prefix[:opening]
         if _cpp_requires_generic_lambda_invocation_prefix(declarator):
@@ -915,7 +933,9 @@ def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None =
     return False
 
 
-def _cpp_requires_left_operand_ends_in_body(masked: str, operator_start: int) -> bool:
+def _cpp_requires_left_operand_ends_in_body(
+    masked: str, operator_start: int, parenthesis_body_endings: dict[int, bool] | None = None
+) -> bool:
     """Recognize a completed requires-expression before a logical operator.
 
     This is deliberately a local look-behind.  Parentheses around a completed
@@ -925,20 +945,32 @@ def _cpp_requires_left_operand_ends_in_body(masked: str, operator_start: int) ->
     index = operator_start - 1
     while index >= 0 and masked[index].isspace():
         index -= 1
-    while index >= 0 and masked[index] == ")":
-        closing = index
-        opening = _cpp_requires_matching_opening(masked, closing, "(", ")")
-        if opening is None:
-            return False
-        index = closing - 1
-        while index >= 0 and masked[index].isspace():
-            index -= 1
-        if index >= 0 and masked[index] == "}":
-            return True
-        if index >= 0 and masked[index] == ")":
-            continue
-        return False
+    if parenthesis_body_endings is None:
+        parenthesis_body_endings = _cpp_requires_parenthesis_body_endings(masked)
+    if index >= 0 and masked[index] == ")":
+        return parenthesis_body_endings.get(index, False)
     return index >= 0 and masked[index] == "}"
+
+
+def _cpp_requires_parenthesis_body_endings(masked: str) -> dict[int, bool]:
+    """Cache whether each parenthesized expression ends in a requires body."""
+    stack: list[int] = []
+    endings: dict[int, bool] = {}
+    for index, character in enumerate(masked):
+        if character == "(":
+            stack.append(index)
+        elif character == ")" and stack:
+            opening = stack.pop()
+            end = index - 1
+            while end > opening and masked[end].isspace():
+                end -= 1
+            if end > opening and masked[end] == "}":
+                endings[index] = True
+            elif end > opening and masked[end] == ")":
+                endings[index] = endings.get(end, False)
+            else:
+                endings[index] = False
+    return endings
 
 
 def _cpp_requires_prefix_start(masked: str, offset: int) -> int:
@@ -1073,6 +1105,8 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
         assignment_rhs = declarator[assignment + 1 :]
         if ".template operator" in assignment_rhs:
             return False
+        if _cpp_requires_lambda_head_is_implicit(assignment_rhs):
+            return True
         if _cpp_requires_generic_lambda_head(
             assignment_rhs
         ) and _cpp_requires_lambda_head_is_implicit(assignment_rhs):
@@ -1132,16 +1166,7 @@ def _cpp_requires_lambda_assignment_rhs(
     has_template_head = False
     if index < len(rhs) and rhs[index] == "<":
         has_template_head = True
-        angle_depth = 0
-        template_closing = None
-        for angle_index in range(index, len(rhs)):
-            if rhs[angle_index] == "<":
-                angle_depth += 1
-            elif rhs[angle_index] == ">" and angle_depth:
-                angle_depth -= 1
-                if angle_depth == 0:
-                    template_closing = angle_index
-                    break
+        template_closing = _cpp_requires_template_head_closing(rhs, index)
         if template_closing is None:
             return False
         index = template_closing + 1
@@ -1193,6 +1218,31 @@ def _cpp_requires_matching_opening(
         elif source[index] == opening_character:
             depth -= 1
             if depth == 0:
+                return index
+    return None
+
+
+def _cpp_requires_template_head_closing(source: str, opening: int) -> int | None:
+    """Find a template-head ``>`` while ignoring operators in nested delimiters."""
+    angle_depth = 0
+    delimiters: list[str] = []
+    matching = {
+        ")": "(",
+        "]": "[",
+        "}": "{",
+    }
+    for index in range(opening, len(source)):
+        character = source[index]
+        if character in "([{":
+            delimiters.append(character)
+        elif character in matching:
+            if not delimiters or delimiters.pop() != matching[character]:
+                return None
+        elif not delimiters and character == "<":
+            angle_depth += 1
+        elif not delimiters and character == ">" and angle_depth:
+            angle_depth -= 1
+            if angle_depth == 0:
                 return index
     return None
 
@@ -1396,10 +1446,17 @@ def _cpp_requires_lambda_parameter_list(source: str, opening: int) -> tuple[int,
 
 def _cpp_requires_lambda_head_is_implicit(head: str) -> bool:
     index = _skip_cpp_trivia(head, 0, len(head))
+    while index < len(head) and head[index] == "(":
+        index = _skip_cpp_trivia(head, index + 1, len(head))
     capture = _cpp_requires_lambda_capture(head, index)
     if capture is None:
         return False
     parameter_opening = _skip_cpp_trivia(head, capture[1] + 1, len(head))
+    while head.startswith("[[", parameter_opening):
+        attribute_closing = head.find("]]", parameter_opening + 2)
+        if attribute_closing < 0:
+            return False
+        parameter_opening = _skip_cpp_trivia(head, attribute_closing + 2, len(head))
     parameter_list = _cpp_requires_lambda_parameter_list(head, parameter_opening)
     return parameter_list is not None and parameter_list[1]
 
@@ -1423,16 +1480,7 @@ def _cpp_requires_generic_lambda_head(head: str) -> bool:
         template_opening = parameter_opening
         if template_opening >= len(head) or head[template_opening] != "<":
             return False
-        angle_depth = 0
-        template_closing = None
-        for index in range(template_opening, len(head)):
-            if head[index] == "<":
-                angle_depth += 1
-            elif head[index] == ">":
-                angle_depth -= 1
-                if angle_depth == 0:
-                    template_closing = index
-                    break
+        template_closing = _cpp_requires_template_head_closing(head, template_opening)
         if template_closing is None:
             return False
         suffix = head[template_closing + 1 :]
