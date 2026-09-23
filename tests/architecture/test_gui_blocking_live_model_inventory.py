@@ -2043,6 +2043,30 @@ str.join(parts)
             sum(len(call.args[0]) for call in pair_pass.call_args_list), 4 * len(source)
         )
 
+    def test_cpp_requires_wrapped_direct_invocations_allow_trivia(self) -> None:
+        expressions = (
+            "([](auto x){return true;}) (0)",
+            "([](auto x){return true;}) /* gap */ (0)",
+            "(( /* before lambda */ [](auto x){return true;} ))   (0)",
+        )
+        source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + "\n".join(
+            f"template<class T> concept C{index} = {expression} && requires {{ "
+            '::Gui::cmdAppDocument(nullptr, /* real GUI call */ "App.ActiveDocument.recompute()"); };'
+            for index, expression in enumerate(expressions)
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_wrapped_trivia.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp"), [])
+
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
         for operator in (" && ", "&&"):
             clauses = operator.join("requires { typename T::type; }" for _ in range(400))

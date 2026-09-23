@@ -1434,8 +1434,11 @@ def _cpp_requires_generic_lambda_invocation_expression(prefix: str) -> bool:
         # A balanced wrapper may surround the lambda before a direct call:
         # ``([](auto) { ... })(value)``.  Unwrap only pairs ending at the
         # invocation prefix so unrelated closing punctuation cannot qualify.
-        if invocation_prefix.endswith(")"):
-            wrapper_closing = len(invocation_prefix) - 1
+        invocation_end = len(invocation_prefix)
+        while invocation_end and invocation_prefix[invocation_end - 1].isspace():
+            invocation_end -= 1
+        if invocation_end and invocation_prefix[invocation_end - 1] == ")":
+            wrapper_closing = invocation_end - 1
             wrapper_opening = closing_pairs.get(wrapper_closing)
             if wrapper_opening is not None:
                 invocation_prefix = _cpp_requires_unwrap_parenthesis_chain(
