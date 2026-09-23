@@ -1969,7 +1969,8 @@ str.join(parts)
             ),
             (
                 "template<class T> concept C = ([](auto x){return true;})."
-                "template operator()<int>(0) && requires { GUI cmd; };\n"
+                "template operator()<int>(0) && requires { "
+                '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
             ),
             (
                 "template<class T> concept C = ([] [[maybe_unused]] (auto x){return true;})(0) "
@@ -1977,15 +1978,12 @@ str.join(parts)
             ),
             (
                 "template<class T> concept C = ([] [[maybe_unused]] (auto x){return true;})."
-                "template operator()<int>(0) && requires { GUI cmd; };\n"
+                "template operator()<int>(0) && requires { "
+                '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
             ),
         )
         for index, body in enumerate(bodies):
-            source = (
-                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
-                "#define GUI\n"
-                "int cmd;\n" + body
-            )
+            source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
             if shutil.which("g++"):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     snippet = Path(temporary_directory) / f"gui_requires_negative_{index}.cpp"
@@ -1998,6 +1996,52 @@ str.join(parts)
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp"), [], index)
+
+    def test_cpp_requires_wrapped_invocations_use_linear_structural_matching(self) -> None:
+        depth = 400
+        wrappers = "(" * depth
+        closings = ")" * depth
+        direct = (
+            f"template<class T> concept Direct = {wrappers}[](auto x)"
+            "{ return true; }"
+            f"{closings}(0) && requires {{ "
+            '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
+        )
+        explicit = (
+            f"template<class T> concept Explicit = {wrappers}[](auto x)"
+            "{ return true; }"
+            f"{closings}.template operator()<int>(0) && requires {{ "
+            '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
+        )
+        source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + direct + explicit
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_wrapped_linear.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        with (
+            mock.patch.object(
+                scanner,
+                "_cpp_requires_parenthesis_pairs",
+                wraps=scanner._cpp_requires_parenthesis_pairs,
+            ) as pair_pass,
+            mock.patch.object(
+                scanner,
+                "_cpp_requires_matching_opening",
+                wraps=scanner._cpp_requires_matching_opening,
+            ) as reverse_match,
+        ):
+            self.assertEqual(scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp"), [])
+        self.assertEqual(reverse_match.call_count, 0)
+        self.assertLessEqual(
+            sum(len(call.args[0]) for call in pair_pass.call_args_list), 4 * len(source)
+        )
 
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
         for operator in (" && ", "&&"):

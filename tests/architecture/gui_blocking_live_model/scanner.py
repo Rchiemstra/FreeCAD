@@ -1315,6 +1315,18 @@ def _cpp_requires_matching_opening(
     return None
 
 
+def _cpp_requires_parenthesis_pairs(source: str) -> dict[int, int]:
+    """Return balanced parenthesis pairs using one forward structural pass."""
+    openings: list[int] = []
+    pairs: dict[int, int] = {}
+    for index, character in enumerate(source):
+        if character == "(":
+            openings.append(index)
+        elif character == ")" and openings:
+            pairs[openings.pop()] = index
+    return pairs
+
+
 def _cpp_requires_template_head_closing(source: str, opening: int) -> int | None:
     """Find a template-head ``>`` using its legal following continuation.
 
@@ -1388,48 +1400,52 @@ def _cpp_requires_lambda_capture(source: str, opening: int) -> tuple[int, int] |
 
 def _cpp_requires_generic_lambda_invocation_expression(prefix: str) -> bool:
     """Return whether a prefix ends in a lambda invocation before ``&&``/``||``."""
+    parenthesis_pairs = _cpp_requires_parenthesis_pairs(prefix)
+    closing_pairs = {closing: opening for opening, closing in parenthesis_pairs.items()}
     for closing in range(len(prefix) - 1, -1, -1):
         if prefix[closing] != ")":
             continue
-        opening = _cpp_requires_matching_opening(prefix, closing, "(", ")")
+        opening = closing_pairs.get(closing)
         if opening is None:
             continue
         if not re.fullmatch(r"\s*(?:&&|\|\|)\s*", prefix[closing + 1 :]):
             continue
         invocation_prefix = prefix[:opening]
-        # Remove a transparent wrapper before an explicit operator call too:
-        # ``([](auto) { ... }).template operator()<T>(value)``.
-        while True:
-            wrapper = re.search(r"\)\s*\.\s*(?:template\b)?", invocation_prefix)
-            if wrapper is None:
-                break
-            wrapper_closing = wrapper.start()
-            wrapper_opening = _cpp_requires_matching_opening(
-                invocation_prefix, wrapper_closing, "(", ")"
-            )
-            if wrapper_opening is None:
-                break
-            invocation_prefix = (
-                invocation_prefix[:wrapper_opening]
-                + invocation_prefix[wrapper_opening + 1 : wrapper_closing]
-                + invocation_prefix[wrapper_closing + 1 :]
-            )
+        # Remove transparent wrappers before an explicit operator call too:
+        # ``(([](auto) { ... })).template operator()<T>(value)``.  The pair
+        # map makes this structural work linear in the original prefix rather
+        # than rescanning a shrinking prefix once per wrapper.
+        explicit_wrapper = re.search(
+            r"(?P<closing>\))\s*\.\s*(?:template\b)?\s*operator\s*\(\)",
+            invocation_prefix,
+        )
+        if explicit_wrapper is not None:
+            wrapper_closing = explicit_wrapper.start("closing")
+            wrapper_opening = closing_pairs.get(wrapper_closing)
+            if wrapper_opening is not None:
+                invocation_prefix = _cpp_requires_unwrap_parenthesis_chain(
+                    prefix,
+                    wrapper_opening,
+                    wrapper_closing,
+                    closing_pairs,
+                )
         if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
             return True
         # A balanced wrapper may surround the lambda before a direct call:
         # ``([](auto) { ... })(value)``.  Unwrap only pairs ending at the
         # invocation prefix so unrelated closing punctuation cannot qualify.
-        while invocation_prefix.endswith(")"):
-            wrapper_opening = _cpp_requires_matching_opening(
-                invocation_prefix, len(invocation_prefix) - 1, "(", ")"
-            )
-            if wrapper_opening is None:
-                break
-            invocation_prefix = (
-                invocation_prefix[:wrapper_opening] + invocation_prefix[wrapper_opening + 1 : -1]
-            )
-            if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
-                return True
+        if invocation_prefix.endswith(")"):
+            wrapper_closing = len(invocation_prefix) - 1
+            wrapper_opening = closing_pairs.get(wrapper_closing)
+            if wrapper_opening is not None:
+                invocation_prefix = _cpp_requires_unwrap_parenthesis_chain(
+                    prefix,
+                    wrapper_opening,
+                    wrapper_closing,
+                    closing_pairs,
+                )
+                if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
+                    return True
         while invocation_prefix.startswith("("):
             invocation_prefix = invocation_prefix[1:].lstrip()
         if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
@@ -1439,6 +1455,26 @@ def _cpp_requires_generic_lambda_invocation_expression(prefix: str) -> bool:
         ):
             return True
     return False
+
+
+def _cpp_requires_unwrap_parenthesis_chain(
+    source: str,
+    opening: int,
+    closing: int,
+    closing_pairs: dict[int, int],
+) -> str:
+    """Return the innermost operand of a contiguous parenthesis wrapper chain."""
+    while True:
+        end = closing
+        while end > opening and source[end - 1].isspace():
+            end -= 1
+        if end <= opening or source[end - 1] != ")":
+            return source[opening + 1 : closing]
+        nested_closing = end - 1
+        nested_opening = closing_pairs.get(nested_closing)
+        if nested_opening is None or nested_opening <= opening:
+            return source[opening + 1 : closing]
+        opening, closing = nested_opening, nested_closing
 
 
 def _cpp_requires_generic_lambda_template_head_is_clause(
