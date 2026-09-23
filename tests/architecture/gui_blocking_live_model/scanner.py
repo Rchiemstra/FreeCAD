@@ -1397,6 +1397,39 @@ def _cpp_requires_generic_lambda_invocation_expression(prefix: str) -> bool:
         if not re.fullmatch(r"\s*(?:&&|\|\|)\s*", prefix[closing + 1 :]):
             continue
         invocation_prefix = prefix[:opening]
+        # Remove a transparent wrapper before an explicit operator call too:
+        # ``([](auto) { ... }).template operator()<T>(value)``.
+        while True:
+            wrapper = re.search(r"\)\s*\.\s*(?:template\b)?", invocation_prefix)
+            if wrapper is None:
+                break
+            wrapper_closing = wrapper.start()
+            wrapper_opening = _cpp_requires_matching_opening(
+                invocation_prefix, wrapper_closing, "(", ")"
+            )
+            if wrapper_opening is None:
+                break
+            invocation_prefix = (
+                invocation_prefix[:wrapper_opening]
+                + invocation_prefix[wrapper_opening + 1 : wrapper_closing]
+                + invocation_prefix[wrapper_closing + 1 :]
+            )
+        if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
+            return True
+        # A balanced wrapper may surround the lambda before a direct call:
+        # ``([](auto) { ... })(value)``.  Unwrap only pairs ending at the
+        # invocation prefix so unrelated closing punctuation cannot qualify.
+        while invocation_prefix.endswith(")"):
+            wrapper_opening = _cpp_requires_matching_opening(
+                invocation_prefix, len(invocation_prefix) - 1, "(", ")"
+            )
+            if wrapper_opening is None:
+                break
+            invocation_prefix = (
+                invocation_prefix[:wrapper_opening] + invocation_prefix[wrapper_opening + 1 : -1]
+            )
+            if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
+                return True
         while invocation_prefix.startswith("("):
             invocation_prefix = invocation_prefix[1:].lstrip()
         if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):

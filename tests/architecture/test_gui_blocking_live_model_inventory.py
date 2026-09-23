@@ -1964,29 +1964,28 @@ str.join(parts)
                 "} {};\n"
             ),
             (
-                "template<class T> concept Direct = ([](auto value) { return value == 0; }(0))"
-                " && requires {\n"
-                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+                "template<class T> concept C = ([](auto x){return true;})(0) && requires { "
+                '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
             ),
             (
-                "template<class T> concept Explicit = ([](auto value) { return value == 0; }."
-                "template operator()<int>(0)) && requires {\n"
-                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+                "template<class T> concept C = ([](auto x){return true;})."
+                "template operator()<int>(0) && requires { GUI cmd; };\n"
             ),
             (
-                "template<class T> concept AttributeDirect = "
-                "([] [[maybe_unused]] (auto value) { return value == 0; }(0)) && requires {\n"
-                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+                "template<class T> concept C = ([] [[maybe_unused]] (auto x){return true;})(0) "
+                '&& requires { ::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
             ),
             (
-                "template<class T> concept AttributeExplicit = "
-                "([] [[maybe_unused]] (auto value) { return value == 0; }."
-                "template operator()<int>(0)) && requires {\n"
-                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+                "template<class T> concept C = ([] [[maybe_unused]] (auto x){return true;})."
+                "template operator()<int>(0) && requires { GUI cmd; };\n"
             ),
         )
         for index, body in enumerate(bodies):
-            source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
+            source = (
+                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+                "#define GUI\n"
+                "int cmd;\n" + body
+            )
             if shutil.which("g++"):
                 with tempfile.TemporaryDirectory() as temporary_directory:
                     snippet = Path(temporary_directory) / f"gui_requires_negative_{index}.cpp"
