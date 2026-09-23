@@ -1642,6 +1642,44 @@ str.join(parts)
             {(3, "direct-recompute"), (3, "live-app-dereference")},
         )
 
+    def test_cpp_generic_lambda_non_type_operator_defaults_keep_bodies_evaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "auto less = []<int N = 0 < 1>(auto value) requires (value >= 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto less_equal = []<int N = 0 <= 1>(auto value) requires (value >= 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto shift = []<int N = 1 << 1>(auto value) requires (value >= 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto nested = []<class T = std::pair<int, std::pair<int, int>>>(auto value) "
+            "requires (value >= 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_lambda_operator_defaults.cpp"
+                snippet.write_text("#include <utility>\n" + source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        categories = {
+            (finding.line, finding.category)
+            for finding in scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        }
+        expected_lines = {3, 6, 9, 12}
+        self.assertEqual(
+            categories,
+            {
+                (line, category)
+                for line in expected_lines
+                for category in ("direct-recompute", "live-app-dereference")
+            },
+        )
+
     def test_cpp_implicit_constrained_lambda_assignment_bodies_stay_evaluated(self) -> None:
         source = (
             "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
@@ -1680,6 +1718,42 @@ str.join(parts)
             (9, "live-app-dereference"),
         }
         self.assertEqual(categories, expected)
+
+    def test_cpp_implicit_constrained_lambda_structural_heads_keep_bodies_evaluated(self) -> None:
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "int values[1]{};\n"
+            "auto front = [] [[maybe_unused]] (auto value) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto parameter = [] (auto value [[maybe_unused]]) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto capture = [value = values[0]] (auto unused) requires (sizeof(unused) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            "auto wrapped = ((([](auto value) requires (sizeof(value) > 0) {\n"
+            '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+            "    return value;\n}(0))));\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_implicit_lambda_structural.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        findings = scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp")
+        expected_lines = {4, 7, 10, 13}
+        self.assertEqual(
+            {(finding.line, finding.category) for finding in findings},
+            {
+                (line, category)
+                for line in expected_lines
+                for category in ("direct-recompute", "live-app-dereference")
+            },
+        )
 
     def test_cpp_nested_capture_invocation_requires_body_is_not_misclassified(self) -> None:
         source = (
@@ -1880,6 +1954,51 @@ str.join(parts)
         self.assertNotIn((6, "live-app-dereference"), categories)
         self.assertIn((9, "direct-recompute"), categories)
         self.assertIn((9, "live-app-dereference"), categories)
+
+    def test_cpp_requires_clause_rejects_structurally_completed_implicit_invocations(self) -> None:
+        bodies = (
+            (
+                "auto assigned = [](auto value) requires requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n'
+                "    sizeof(value);\n"
+                "} {};\n"
+            ),
+            (
+                "template<class T> concept Direct = ([](auto value) { return value == 0; }(0))"
+                " && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+            (
+                "template<class T> concept Explicit = ([](auto value) { return value == 0; }."
+                "template operator()<int>(0)) && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+            (
+                "template<class T> concept AttributeDirect = "
+                "([] [[maybe_unused]] (auto value) { return value == 0; }(0)) && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+            (
+                "template<class T> concept AttributeExplicit = "
+                "([] [[maybe_unused]] (auto value) { return value == 0; }."
+                "template operator()<int>(0)) && requires {\n"
+                '    ::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()");\n};\n'
+            ),
+        )
+        for index, body in enumerate(bodies):
+            source = "namespace Gui { void cmdAppDocument(void*, const char*); }\n" + body
+            if shutil.which("g++"):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    snippet = Path(temporary_directory) / f"gui_requires_negative_{index}.cpp"
+                    snippet.write_text(source, encoding="utf-8")
+                    result = subprocess.run(
+                        ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(scanner.scan_source(source, ".cpp", "src/Gui/Snippet.cpp"), [], index)
 
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
         for operator in (" && ", "&&"):

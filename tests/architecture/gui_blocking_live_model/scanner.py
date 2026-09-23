@@ -921,13 +921,12 @@ def _cpp_requires_is_clause(
         return True
     if _cpp_requires_generic_lambda_template_head_is_clause(masked, offset, prefix_start):
         return True
-    for assignment in (match.start() for match in re.finditer("=", prefix)):
-        if _cpp_requires_lambda_head_is_implicit(prefix[assignment + 1 :]):
-            return True
     for opening, has_ref_qualifier in _cpp_requires_declarator_candidates(prefix):
         declarator = prefix[:opening]
         if _cpp_requires_generic_lambda_invocation_prefix(declarator):
             continue
+        if _cpp_requires_implicit_lambda_declarator(prefix, opening):
+            return True
         if (
             _cpp_requires_generic_lambda_parameter_prefix(declarator)
             and re.search(r"}\s*(?:\(|\.)", prefix[opening:])
@@ -943,8 +942,16 @@ def _cpp_requires_generic_lambda_immediate_invocation(
     masked: str, prefix: str, body_closing: int
 ) -> bool:
     """Recognize an evaluated generic lambda body called at the expression site."""
-    lambda_start = prefix.rfind("[")
-    if lambda_start < 0 or not _cpp_requires_lambda_head_is_implicit(prefix[lambda_start:]):
+    lambda_start = None
+    for candidate in range(len(prefix)):
+        if prefix[candidate] != "[":
+            continue
+        capture = _cpp_requires_lambda_capture(prefix, candidate)
+        if capture is None or not _cpp_requires_lambda_head_is_implicit(prefix[candidate:]):
+            continue
+        lambda_start = candidate
+        break
+    if lambda_start is None:
         return False
     index = _skip_cpp_trivia(masked, body_closing + 1, len(masked))
     if index >= len(masked):
@@ -1179,6 +1186,40 @@ def _cpp_requires_declarator_is_declarator(declarator: str) -> bool:
     )
 
 
+def _cpp_requires_implicit_lambda_declarator(prefix: str, parameter_opening: int) -> bool:
+    """Recognize an assigned implicit lambda at a parsed parameter list.
+
+    The parameter list is already a declarator candidate, so only inspect
+    assignments before that candidate.  This avoids the old prefix-wide
+    shortcut, which interpreted ``=`` inside unrelated expressions (and
+    ``==``) as a lambda assignment.
+    """
+    declarator = prefix[:parameter_opening]
+    for assignment in _cpp_requires_top_level_assignments(declarator):
+        rhs = declarator[assignment + 1 :] + prefix[parameter_opening:]
+        if _cpp_requires_lambda_head_is_implicit(rhs):
+            return True
+    return False
+
+
+def _cpp_requires_top_level_assignments(source: str) -> list[int]:
+    assignments: list[int] = []
+    depths = {"<": 0, "(": 0, "[": 0, "{": 0}
+    matching = {">": "<", ")": "(", "]": "[", "}": "{"}
+    for index, character in enumerate(source):
+        if character in depths:
+            depths[character] += 1
+        elif character in matching and depths[matching[character]]:
+            depths[matching[character]] -= 1
+        elif (
+            character == "="
+            and not any(depths.values())
+            and not (source.startswith("==", index) or (index and source[index - 1] in "=!<>"))
+        ):
+            assignments.append(index)
+    return assignments
+
+
 def _cpp_requires_lambda_assignment_rhs(
     rhs: str, *, require_generic_template_head: bool = False
 ) -> bool:
@@ -1251,8 +1292,15 @@ def _cpp_requires_matching_opening(
 
 
 def _cpp_requires_template_head_closing(source: str, opening: int) -> int | None:
-    """Find a template-head ``>`` while ignoring operators in nested delimiters."""
-    angle_depth = 0
+    """Find a template-head ``>`` using its legal following continuation.
+
+    ``<`` and ``>`` are ambiguous inside a template head: non-type defaults
+    may contain relational and shift operators.  Rather than treating every
+    angle as a template delimiter, try structurally balanced candidates and
+    accept only one followed by a valid lambda-head continuation.  This also
+    makes an inner ``>`` in nested template arguments fail closed because its
+    following token is another angle, not a continuation.
+    """
     delimiters: list[str] = []
     matching = {
         ")": "(",
@@ -1266,13 +1314,37 @@ def _cpp_requires_template_head_closing(source: str, opening: int) -> int | None
         elif character in matching:
             if not delimiters or delimiters.pop() != matching[character]:
                 return None
-        elif not delimiters and character == "<":
-            angle_depth += 1
-        elif not delimiters and character == ">" and angle_depth:
-            angle_depth -= 1
-            if angle_depth == 0:
+        elif not delimiters and character == ">":
+            continuation = source[index + 1 :].lstrip()
+            if not continuation or _cpp_requires_template_continuation_is_valid(source, index + 1):
                 return index
     return None
+
+
+def _cpp_requires_template_continuation_is_valid(source: str, start: int) -> bool:
+    continuation_start = _skip_cpp_trivia(source, start, len(source))
+    continuation = source[continuation_start:]
+    if not re.match(
+        r"(?:\(|requires\b|mutable\b|constexpr\b|consteval\b|static\b|"
+        r"noexcept\b|throw\b|\[\[|->)",
+        continuation,
+    ):
+        return False
+    if source[continuation_start] != "(":
+        return True
+    parameter_list = _cpp_requires_lambda_parameter_list(source, continuation_start)
+    if parameter_list is None:
+        return False
+    suffix = source[parameter_list[0] + 1 :].lstrip()
+    return (
+        not suffix
+        or re.match(
+            r"(?:requires\b|mutable\b|constexpr\b|consteval\b|static\b|"
+            r"noexcept\b|throw\b|\[\[|->|\{)",
+            suffix,
+        )
+        is not None
+    )
 
 
 def _cpp_requires_lambda_capture(source: str, opening: int) -> tuple[int, int] | None:
@@ -1300,7 +1372,14 @@ def _cpp_requires_generic_lambda_invocation_expression(prefix: str) -> bool:
             continue
         if not re.fullmatch(r"\s*(?:&&|\|\|)\s*", prefix[closing + 1 :]):
             continue
-        if _cpp_requires_generic_lambda_invocation_prefix(prefix[:opening]):
+        invocation_prefix = prefix[:opening]
+        while invocation_prefix.startswith("("):
+            invocation_prefix = invocation_prefix[1:].lstrip()
+        if _cpp_requires_generic_lambda_invocation_prefix(invocation_prefix):
+            return True
+        if _cpp_requires_generic_lambda_invocation_expression(
+            prefix[opening + 1 : closing] + " && "
+        ):
             return True
     return False
 
@@ -1499,6 +1578,11 @@ def _cpp_requires_generic_lambda_head(head: str) -> bool:
         return False
     _capture_opening, capture_closing = capture
     parameter_opening = _skip_cpp_trivia(head, capture_closing + 1, len(head))
+    while head.startswith("[[", parameter_opening):
+        attribute_closing = head.find("]]", parameter_opening + 2)
+        if attribute_closing < 0:
+            return False
+        parameter_opening = _skip_cpp_trivia(head, attribute_closing + 2, len(head))
     if parameter_opening < len(head) and head[parameter_opening] == "(":
         parameter_list = _cpp_requires_lambda_parameter_list(head, parameter_opening)
         if parameter_list is None or not parameter_list[1]:
