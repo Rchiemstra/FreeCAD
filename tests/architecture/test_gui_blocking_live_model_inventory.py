@@ -2043,6 +2043,75 @@ str.join(parts)
             sum(len(call.args[0]) for call in pair_pass.call_args_list), 4 * len(source)
         )
 
+    def test_cpp_requires_deep_wrapped_invocation_is_iterative(self) -> None:
+        def make_source(depth: int) -> str:
+            return (
+                "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+                f"constexpr bool id(bool value) {{ return value; }}\n"
+                f"template<class T> concept C = {'id(' * depth}"
+                "[](auto x){return true;}(0)"
+                f"{')' * depth} && requires {{ "
+                '::Gui::cmdAppDocument(nullptr,"App.ActiveDocument.recompute()"); };\n'
+            )
+
+        source = make_source(1000)
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_deep_wrapped.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+
+        source = make_source(200)
+        with mock.patch.object(
+            scanner,
+            "_cpp_requires_parenthesis_pairs",
+            wraps=scanner._cpp_requires_parenthesis_pairs,
+        ) as pair_pass:
+            self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+        self.assertLessEqual(pair_pass.call_count, 4)
+        self.assertLessEqual(
+            sum(len(call.args[0]) for call in pair_pass.call_args_list), 4 * len(source)
+        )
+
+    def test_cpp_requires_deep_wrapped_immediate_lambda_reuses_pairs(self) -> None:
+        depth = 400
+        source = (
+            "namespace Gui { void cmdAppDocument(void*, const char*); }\n"
+            "void f() { "
+            f"{'(' * depth}[](auto x) requires (true) {{ "
+            '::Gui::cmdAppDocument(nullptr, "App.ActiveDocument.recompute()"); '
+            f"}}{')' * depth}(0); }}\n"
+        )
+        if shutil.which("g++"):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                snippet = Path(temporary_directory) / "gui_requires_deep_immediate.cpp"
+                snippet.write_text(source, encoding="utf-8")
+                result = subprocess.run(
+                    ["g++", "-std=c++20", "-pedantic-errors", "-fsyntax-only", str(snippet)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        with mock.patch.object(
+            scanner,
+            "_cpp_requires_matching_opening",
+            wraps=scanner._cpp_requires_matching_opening,
+        ) as reverse_match:
+            findings = scanner.scan_source(source, ".cpp", "snippet.cpp")
+        self.assertEqual(
+            {(finding.line, finding.category) for finding in findings},
+            {(2, "direct-recompute"), (2, "live-app-dereference")},
+        )
+        self.assertEqual(reverse_match.call_count, 0)
+
     def test_cpp_requires_wrapped_direct_invocations_allow_trivia(self) -> None:
         expressions = (
             "([](auto x){return true;}) (0)",
