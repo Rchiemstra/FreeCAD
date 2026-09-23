@@ -1852,33 +1852,37 @@ str.join(parts)
             self.assertEqual(declarator_classifier.call_count, 4)
 
     def test_cpp_requires_prefix_boundaries_unwrap_parenthesized_operands(self) -> None:
-        for operator in (" && ", "&&"):
-            expression = operator.join("(requires { typename T::type; })" for _ in range(160))
-            source = (
-                "namespace N {\n"
-                f"template<class T> concept Chained = requires {{ requires ({expression}); }};\n"
-                "}\n"
-            )
-            with (
-                mock.patch.object(
-                    scanner,
-                    "_cpp_requires_prefix_start",
-                    side_effect=AssertionError("unexpected fallback boundary scan"),
-                ),
-                mock.patch.object(
-                    scanner,
-                    "_cpp_requires_generic_lambda_invocation_expression",
-                    wraps=scanner._cpp_requires_generic_lambda_invocation_expression,
-                ) as invocation_classifier,
-                mock.patch.object(
-                    scanner,
-                    "_cpp_requires_declarator_candidates",
-                    wraps=scanner._cpp_requires_declarator_candidates,
-                ) as declarator_classifier,
-            ):
-                self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
-            self.assertEqual(invocation_classifier.call_count, 2)
-            self.assertEqual(declarator_classifier.call_count, 4)
+        for depth in (1, 2, 3):
+            wrappers = "(" * depth, ")" * depth
+            for operator in (" && ", "&&"):
+                expression = operator.join(
+                    f"{wrappers[0]}requires {{ typename T::type; }}{wrappers[1]}" for _ in range(80)
+                )
+                source = (
+                    "namespace N {\n"
+                    f"template<class T> concept Chained = requires {{ requires ({expression}); }};\n"
+                    "}\n"
+                )
+                with (
+                    mock.patch.object(
+                        scanner,
+                        "_cpp_requires_prefix_start",
+                        side_effect=AssertionError("unexpected fallback boundary scan"),
+                    ),
+                    mock.patch.object(
+                        scanner,
+                        "_cpp_requires_generic_lambda_invocation_expression",
+                        wraps=scanner._cpp_requires_generic_lambda_invocation_expression,
+                    ) as invocation_classifier,
+                    mock.patch.object(
+                        scanner,
+                        "_cpp_requires_declarator_candidates",
+                        wraps=scanner._cpp_requires_declarator_candidates,
+                    ) as declarator_classifier,
+                ):
+                    self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+                self.assertEqual(invocation_classifier.call_count, 2)
+                self.assertEqual(declarator_classifier.call_count, 4)
 
     def test_cpp_requires_generic_lambda_assignment_search_is_declaration_bounded(self) -> None:
         source = "\n".join(

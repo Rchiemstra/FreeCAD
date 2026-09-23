@@ -935,9 +935,9 @@ def _cpp_requires_left_operand_ends_in_body(masked: str, operator_start: int) ->
             index -= 1
         if index >= 0 and masked[index] == "}":
             return True
-        index = opening - 1
-        while index >= 0 and masked[index].isspace():
-            index -= 1
+        if index >= 0 and masked[index] == ")":
+            continue
+        return False
     return index >= 0 and masked[index] == "}"
 
 
