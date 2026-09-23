@@ -854,6 +854,34 @@ def _cpp_unevaluated_ranges(
 
 def _cpp_requires_is_clause(masked: str, offset: int, prefix_start: int | None = None) -> bool:
     """Recognize a trailing function/lambda requires-clause before its body."""
+    # A requires-expression may be one operand of a logical constraint.  When
+    # the preceding operand ends in a body, this local boundary is sufficient
+    # to rule out a declarator; avoid rescanning the whole growing prefix.
+    index = offset
+    while index and masked[index - 1].isspace():
+        index -= 1
+    for operator in ("&&", "||"):
+        operator_start = index - len(operator)
+        if operator_start >= 0 and masked[operator_start:index] == operator:
+            while operator_start and masked[operator_start - 1].isspace():
+                operator_start -= 1
+            if operator_start and masked[operator_start - 1] == "}":
+                return False
+    for operator in ("and", "or"):
+        operator_start = index - len(operator)
+        if (
+            operator_start >= 0
+            and masked[operator_start:index] == operator
+            and (
+                operator_start == 0
+                or not (masked[operator_start - 1].isalnum() or masked[operator_start - 1] == "_")
+            )
+            and (index == len(masked) or not (masked[index].isalnum() or masked[index] == "_"))
+        ):
+            while operator_start and masked[operator_start - 1].isspace():
+                operator_start -= 1
+            if operator_start and masked[operator_start - 1] == "}":
+                return False
     # Qualifiers and the function declarator are immediately adjacent to the
     # requires keyword.  Keep the ordinary path bounded, but recover a generic
     # lambda head from its own capture introducer: comments between the head

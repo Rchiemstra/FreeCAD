@@ -1781,20 +1781,41 @@ str.join(parts)
         self.assertEqual({finding.line for finding in findings}, {10})
 
     def test_cpp_requires_prefix_boundaries_use_one_forward_pass(self) -> None:
-        clauses = " && ".join("requires { typename T::type; }" for _ in range(400))
-        source = f"namespace N {{\ntemplate<class T> concept Chained = {clauses};\n}}\n"
-        with (
-            mock.patch.object(
-                scanner, "_cpp_requires_prefix_starts", wraps=scanner._cpp_requires_prefix_starts
-            ) as boundary_pass,
-            mock.patch.object(
-                scanner,
-                "_cpp_requires_prefix_start",
-                side_effect=AssertionError("unexpected fallback boundary scan"),
-            ),
-        ):
-            self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
-        self.assertEqual(boundary_pass.call_count, 1)
+        for operator in (" && ", "&&"):
+            clauses = operator.join("requires { typename T::type; }" for _ in range(400))
+            source = (
+                "namespace N {\n"
+                f"template<class T> concept Chained = requires {{ requires ({clauses}); }};\n"
+                "}\n"
+            )
+            with (
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_prefix_starts",
+                    wraps=scanner._cpp_requires_prefix_starts,
+                ) as boundary_pass,
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_prefix_start",
+                    side_effect=AssertionError("unexpected fallback boundary scan"),
+                ),
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_generic_lambda_invocation_expression",
+                    wraps=scanner._cpp_requires_generic_lambda_invocation_expression,
+                ) as invocation_classifier,
+                mock.patch.object(
+                    scanner,
+                    "_cpp_requires_declarator_candidates",
+                    wraps=scanner._cpp_requires_declarator_candidates,
+                ) as declarator_classifier,
+            ):
+                self.assertEqual(scanner.scan_source(source, ".cpp", "snippet.cpp"), [])
+            self.assertEqual(boundary_pass.call_count, 1)
+            # Only the enclosing and first nested requires-expressions reach
+            # the expensive classifiers; later operands must not enter either path.
+            self.assertEqual(invocation_classifier.call_count, 2)
+            self.assertEqual(declarator_classifier.call_count, 4)
 
     def test_cpp_requires_generic_lambda_assignment_search_is_declaration_bounded(self) -> None:
         source = "\n".join(
