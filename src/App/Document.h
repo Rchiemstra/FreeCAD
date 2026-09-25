@@ -50,6 +50,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace Base
 {
@@ -1710,6 +1711,7 @@ public:
     friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class DocumentExecutionLane;
     friend class RecomputeHandle;
     friend class Gui::Document;
     friend class Gui::MergeDocuments;

@@ -103,16 +103,6 @@ DocumentCommandState mapRecomputeState(DocumentRecomputeState state)
 
 }  // namespace
 
-struct DocumentExecutionLane::ActiveCommand
-{
-    DocumentCommandId id {0};
-    DocumentCommand command;
-    DocumentCommandSnapshot snapshot;
-    std::optional<DocumentRecomputeId> recomputeId;
-    std::atomic<bool> cancelRequested {false};
-    std::uint64_t lastProgressEpochMilliseconds {0};
-};
-
 std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::create(
     Document& document,
     DocumentRevisionIdentityBinding identity)
@@ -581,10 +571,7 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             }
             for (const auto& propertyValue : command.command.edit->propertyValues) {
                 DocumentObject* object = nullptr;
-                if (!propertyValue.objectName.empty()) {
-                    object = _document.getObject(propertyValue.objectName.c_str());
-                }
-                if (!object && !propertyValue.stableObjectIdentity.empty()) {
+                if (!propertyValue.stableObjectIdentity.empty()) {
                     for (auto* candidate : _document.getObjects()) {
                         try {
                             if (_document.collaborationObjectIdentity(*candidate)

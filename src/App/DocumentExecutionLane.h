@@ -3,6 +3,7 @@
 
 #include "DocumentCommand.h"
 #include "DocumentCommandHandle.h"
+#include "DocumentExecutionTelemetry.h"
 #include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
 #include "DocumentRevisionIndex.h"
@@ -20,6 +21,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -83,16 +85,19 @@ public:
             return std::forward<Fn>(fn)();
         }
 
-        std::promise<Result> promise;
-        auto future = promise.get_future();
+        // std::function requires a copyable target; share the promise and
+        // callable so the queued lambda is copy-constructible.
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
         {
             std::lock_guard lock(_mutex);
-            _dispatchQueue.push_back([promise = std::move(promise), fn = std::forward<Fn>(fn)]() mutable {
+            _dispatchQueue.push_back([promise, sharedFn]() {
                 try {
-                    promise.set_value(fn());
+                    promise->set_value((*sharedFn)());
                 }
                 catch (...) {
-                    promise.set_exception(std::current_exception());
+                    promise->set_exception(std::current_exception());
                 }
             });
             _workAvailable.notify_one();
@@ -108,7 +113,42 @@ public:
 private:
     friend struct DocumentHandle::State;
 
-    struct ActiveCommand;
+    /** In-flight command; complete before use in std::optional. */
+    struct ActiveCommand
+    {
+        DocumentCommandId id {0};
+        DocumentCommand command;
+        DocumentCommandSnapshot snapshot;
+        std::optional<DocumentRecomputeId> recomputeId;
+        std::atomic<bool> cancelRequested {false};
+        std::uint64_t lastProgressEpochMilliseconds {0};
+
+        ActiveCommand() = default;
+        ActiveCommand(const ActiveCommand&) = delete;
+        ActiveCommand& operator=(const ActiveCommand&) = delete;
+        ActiveCommand(ActiveCommand&& other) noexcept
+            : id(other.id)
+            , command(std::move(other.command))
+            , snapshot(std::move(other.snapshot))
+            , recomputeId(std::move(other.recomputeId))
+            , cancelRequested(other.cancelRequested.load(std::memory_order_relaxed))
+            , lastProgressEpochMilliseconds(other.lastProgressEpochMilliseconds)
+        {}
+        ActiveCommand& operator=(ActiveCommand&& other) noexcept
+        {
+            if (this != &other) {
+                id = other.id;
+                command = std::move(other.command);
+                snapshot = std::move(other.snapshot);
+                recomputeId = std::move(other.recomputeId);
+                cancelRequested.store(
+                    other.cancelRequested.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
+                lastProgressEpochMilliseconds = other.lastProgressEpochMilliseconds;
+            }
+            return *this;
+        }
+    };
 
     DocumentExecutionLane(Document& document, DocumentRevisionIdentityBinding identity);
 

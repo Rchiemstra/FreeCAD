@@ -142,6 +142,7 @@ public:
 
 private:
     friend class RecomputeHandle;
+    friend class DocumentExecutionLane;
 
     struct Job;
 
