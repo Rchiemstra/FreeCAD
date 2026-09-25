@@ -17,6 +17,8 @@
 namespace App
 {
 
+class DocumentExecutionTelemetry;
+
 namespace Internal
 {
 /** Test-only access for resetting the process-wide telemetry singleton. */
@@ -215,7 +217,7 @@ public:
 
     void recordGuiEventLoopLatency(double milliseconds);
 
-    [[nodiscard]] DocumentExecutionTelemetryCollector&
+    [[nodiscard]] std::shared_ptr<DocumentExecutionTelemetryCollector>
     document(DocumentInstanceId documentInstanceId, DocumentLifecycleEpoch lifecycleEpoch);
 
     void removeDocument(DocumentInstanceId documentInstanceId);
