@@ -35,7 +35,6 @@
 #include <utility>
 #include <vector>
 
-#include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentCommand.h"
@@ -91,18 +90,27 @@ void appendEditTarget(DocumentCommandEditPayload& payload,
     payload.targets.push_back(std::move(target));
 }
 
+[[nodiscard]] bool isCompletePropertyValue(const DocumentCommandPropertyValue& value) noexcept
+{
+    return !value.stableObjectIdentity.empty() && !value.propertyName.empty()
+        && !value.copiedValue.empty();
+}
+
+[[nodiscard]] bool isCompletePropertyPayload(
+    const std::vector<DocumentCommandPropertyValue>& values) noexcept
+{
+    return !values.empty()
+        && std::ranges::all_of(values, isCompletePropertyValue);
+}
+
 std::optional<std::vector<DocumentCommandPropertyValue>>
 encodePreparedEditPropertyValues(const PreparedEdit& edit)
 {
-    const bool needsPropertyPayload =
-        edit.operationType() == std::string(CollaborativeSetPropertyOperationType)
-        || std::ranges::any_of(edit.writeSet(), [](const DocumentRevisionKey& key) {
-               return key.kind == DocumentRevisionKind::ObjectProperty;
-           });
-    if (needsPropertyPayload) {
-        return std::nullopt;
-    }
-    return std::vector<DocumentCommandPropertyValue> {};
+    static_cast<void>(edit);
+    // PreparedEdit exposes revision metadata only. DocumentCommand cannot
+    // carry a CollaborativeOperation, so async submission requires copied
+    // property payloads that are not available without applying the edit.
+    return std::nullopt;
 }
 
 std::optional<DocumentCommand> buildCommitEditCommand(Document& document,
@@ -114,7 +122,7 @@ std::optional<DocumentCommand> buildCommitEditCommand(Document& document,
     }
 
     const auto propertyValues = encodePreparedEditPropertyValues(edit);
-    if (!propertyValues) {
+    if (!propertyValues || !isCompletePropertyPayload(*propertyValues)) {
         return std::nullopt;
     }
 

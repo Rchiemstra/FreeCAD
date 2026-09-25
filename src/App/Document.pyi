@@ -346,7 +346,11 @@ class Document(PropertyContainer):
         prepared_edit: object,
         /,
     ) -> DocumentCommandHandle:
-        """Submit a pointer-free prepared-edit command without waiting."""
+        """Submit a pointer-free prepared-edit command without waiting.
+
+        Raises when the prepared edit cannot be encoded with non-empty copied
+        property payloads for every affected property.
+        """
         ...
 
     def commitCompatibilityMutation(
