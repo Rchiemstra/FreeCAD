@@ -65,6 +65,7 @@ struct AppExport DocumentCommandRecomputePayload
 {
     std::vector<std::string> featureIds;
     std::string coalescingKey;
+    int options {0};
     bool refreshRevisionFenceAfterEachCommit {false};
 };
 

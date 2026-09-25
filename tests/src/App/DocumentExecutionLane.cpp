@@ -3,17 +3,26 @@
 #include <gtest/gtest.h>
 
 #include <App/Application.h>
+#include <App/CollaborativeOperation.h>
 #include <App/Document.h>
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
+#include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
 #include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
 #include <App/RecomputeHandle.h>
+#include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <src/App/InitApplication.h>
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <stop_token>
+#include <string_view>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -21,22 +30,151 @@ using namespace std::chrono_literals;
 namespace
 {
 
+constexpr std::string_view LaneBlockingRecomputeOperationType =
+    "FreeCAD.Tests.DocumentExecutionLaneBlockingRecompute";
+
+class LaneBlockingRecomputeState
+{
+public:
+    bool block(const std::stop_token stopToken)
+    {
+        static_cast<void>(stopToken);
+        {
+            std::lock_guard lock(_mutex);
+            _started = true;
+        }
+        _changed.notify_all();
+        const auto result = App::DocumentExecutionStall::run(_stopSource.get_token(), 30s);
+        return !result.completed;
+    }
+
+    bool waitUntilStarted(const std::chrono::milliseconds timeout = 5s)
+    {
+        std::unique_lock lock(_mutex);
+        return _changed.wait_for(lock, timeout, [&] { return _started; });
+    }
+
+    void release()
+    {
+        _stopSource.request_stop();
+    }
+
+    void reset()
+    {
+        _stopSource = std::stop_source {};
+        std::lock_guard lock(_mutex);
+        _started = false;
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    std::stop_source _stopSource;
+    bool _started {false};
+};
+
+class LaneBlockingRecomputeStore
+{
+public:
+    static void add(const std::string& token,
+                    const std::shared_ptr<LaneBlockingRecomputeState>& state)
+    {
+        std::lock_guard lock(Mutex);
+        States[token] = state;
+    }
+
+    static void remove(const std::string& token)
+    {
+        std::lock_guard lock(Mutex);
+        States.erase(token);
+    }
+
+    static std::shared_ptr<LaneBlockingRecomputeState> get(const std::string& token)
+    {
+        std::lock_guard lock(Mutex);
+        const auto found = States.find(token);
+        return found == States.end() ? nullptr : found->second.lock();
+    }
+
+private:
+    static inline std::mutex Mutex;
+    static inline std::map<std::string, std::weak_ptr<LaneBlockingRecomputeState>> States;
+};
+
+class LaneBlockingRecomputeOperation final: public App::CollaborativeOperation
+{
+public:
+    std::string_view typeId() const noexcept override
+    {
+        return LaneBlockingRecomputeOperationType;
+    }
+
+    void apply(App::Document&) const override
+    {}
+
+    App::CollaborativePostconditionResult checkPostcondition(
+        const App::Document&) const override
+    {
+        return {true, {}};
+    }
+};
+
+void ensureLaneBlockingRecomputeAdapterRegistered()
+{
+    static std::once_flag registered;
+    std::call_once(registered, [] {
+        static_cast<void>(App::Internal::CollaborativeOperationRegistrar::registerAdapter(
+            std::string(LaneBlockingRecomputeOperationType),
+            [](const App::Document&,
+               const App::CollaborativeOperationIntent& intent) {
+                if (intent.arguments.size() != 1 || !intent.arguments.contains("token")) {
+                    throw std::invalid_argument("invalid lane blocking recompute intent");
+                }
+                auto state = LaneBlockingRecomputeStore::get(intent.arguments.at("token"));
+                if (!state) {
+                    throw std::invalid_argument("unknown lane blocking recompute state");
+                }
+                App::CollaborativeOperationPreparation::DetachedTask task =
+                    [state = std::move(state)](const std::stop_token stopToken) {
+                        if (!state->block(stopToken)) {
+                            throw std::runtime_error("lane blocking recompute was cancelled");
+                        }
+                        return std::make_unique<const LaneBlockingRecomputeOperation>();
+                    };
+                return App::CollaborativeOperationPreparation {
+                    {},
+                    {},
+                    {},
+                    std::move(task),
+                    App::PreparationPolicy::DetachedInProcess};
+            }));
+    });
+}
+
 class DocumentExecutionLaneTest : public ::testing::Test
 {
 protected:
     static void SetUpTestSuite()
     {
         tests::initApplication();
+        ensureLaneBlockingRecomputeAdapterRegistered();
     }
 
     void SetUp() override
     {
         _docName = App::GetApplication().getUniqueDocumentName("lane-test");
         _doc = App::GetApplication().newDocument(_docName.c_str(), "testUser");
+        _blockingToken = _docName + "-lane-stall";
+        _blocking = std::make_shared<LaneBlockingRecomputeState>();
+        LaneBlockingRecomputeStore::add(_blockingToken, _blocking);
     }
 
     void TearDown() override
     {
+        if (_blocking) {
+            _blocking->release();
+        }
+        LaneBlockingRecomputeStore::remove(_blockingToken);
         App::GetApplication().closeDocument(_docName.c_str());
     }
 
@@ -45,14 +183,21 @@ protected:
         return _doc;
     }
 
-    App::DocumentCommand makeRecomputeCommand(const std::string& coalescingKey) const
+    App::DocumentCommand makeRecomputeCommand(const std::string& coalescingKey,
+                                              int options = 0) const
     {
         App::DocumentCommand command;
         command.kind = App::DocumentCommandKind::Recompute;
         command.document = doc()->executionHandle().identity();
         command.recompute = App::DocumentCommandRecomputePayload {};
         command.recompute->coalescingKey = coalescingKey;
+        command.recompute->options = options;
         return command;
+    }
+
+    App::DocumentCommand makeLaneBlockingRecomputeCommand() const
+    {
+        return makeRecomputeCommand(std::string("lane-stall:") + _blockingToken);
     }
 
     App::DocumentCommand makeKindCommand(App::DocumentCommandKind kind) const
@@ -80,7 +225,9 @@ protected:
 
 private:
     std::string _docName;
+    std::string _blockingToken;
     App::Document* _doc {};
+    std::shared_ptr<LaneBlockingRecomputeState> _blocking;
 };
 
 TEST_F(DocumentExecutionLaneTest, OwnerThreadIsLaneThread)
@@ -285,16 +432,12 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotBlockNonOwner)
 
 TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitDoesNotDeadlockNonOwner)
 {
-    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
-        doc()->addObject("App::FeatureTestAsyncBlocker", "LaneWaitBlock"));
-    ASSERT_NE(blocker, nullptr);
-    blocker->touch();
-    App::FeatureTestAsyncBlocker::resetBlocker();
+    _blocking->reset();
 
     auto handle = doc()->executionHandle();
-    const auto outcome = handle.trySubmit(makeRecomputeCommand("wait-deadlock-test"));
+    const auto outcome = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
-    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+    ASSERT_TRUE(_blocking->waitUntilStarted(5s));
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     App::DocumentRecomputeId recomputeId {0};
@@ -323,21 +466,17 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitDoesNotDeadlockNonOwner)
     }
     EXPECT_TRUE(waitReturned.load(std::memory_order_acquire));
 
-    App::FeatureTestAsyncBlocker::releaseBlocker();
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, StalledStatePersistsWithoutProgress)
 {
-    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
-        doc()->addObject("App::FeatureTestAsyncBlocker", "LaneStallBlock"));
-    ASSERT_NE(blocker, nullptr);
-    blocker->touch();
-    App::FeatureTestAsyncBlocker::resetBlocker();
+    _blocking->reset();
 
     auto handle = doc()->executionHandle();
-    const auto outcome = handle.trySubmit(makeRecomputeCommand("stall-persist-test"));
+    const auto outcome = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
-    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+    ASSERT_TRUE(_blocking->waitUntilStarted(5s));
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     const auto stallDelay = std::chrono::milliseconds(
@@ -353,7 +492,30 @@ TEST_F(DocumentExecutionLaneTest, StalledStatePersistsWithoutProgress)
         std::this_thread::sleep_for(100ms);
     }
 
-    App::FeatureTestAsyncBlocker::releaseBlocker();
+    _blocking->release();
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputePassesOptionsToAsync)
+{
+    auto* objectA = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "OptionsCycleA"));
+    auto* objectB = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "OptionsCycleB"));
+    ASSERT_NE(objectA, nullptr);
+    ASSERT_NE(objectB, nullptr);
+    objectA->Link.setValue(objectB);
+    objectB->Link.setValue(objectA);
+    objectA->touch();
+    objectB->touch();
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(
+        makeRecomputeCommand("force;options=4;", App::Document::DepNoCycle));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(commandHandle));
+    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Completed);
 }
 
 TEST_F(DocumentExecutionLaneTest, CloseDocumentReturnsFalseWhileBusy)

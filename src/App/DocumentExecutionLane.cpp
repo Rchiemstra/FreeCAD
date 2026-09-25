@@ -65,6 +65,24 @@ bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept
     return true;
 }
 
+constexpr std::string_view laneTestBlockingCoalescingPrefix = "lane-stall:";
+
+DocumentRecomputeId submitLaneTestBlockingRecompute(Document& document,
+                                                      std::string_view token)
+{
+    DocumentRecomputeFeatureRequest feature;
+    feature.featureId = "lane-stall-probe";
+    feature.operationId = "document-execution-lane-stall-test";
+    feature.intent.operationType = "FreeCAD.Tests.DocumentExecutionLaneBlockingRecompute";
+    feature.intent.arguments = {{"token", std::string(token)}};
+    feature.provenance = "DocumentExecutionLane responsiveness test";
+
+    DocumentRecomputeRequest request;
+    request.coalescingKey = std::string(laneTestBlockingCoalescingPrefix) + std::string(token);
+    request.features.push_back(std::move(feature));
+    return document.recomputeCoordinator().submit(std::move(request));
+}
+
 DocumentCommandState mapRecomputeState(DocumentRecomputeState state)
 {
     switch (state) {
@@ -444,6 +462,8 @@ void DocumentExecutionLane::executeActiveCommand()
 void DocumentExecutionLane::executeActiveRecompute()
 {
     while (true) {
+        drainDispatchQueue();
+
         {
             std::lock_guard lock(_mutex);
             if (!_active) {
@@ -452,21 +472,34 @@ void DocumentExecutionLane::executeActiveRecompute()
         }
 
         if (!_active->recomputeId) {
-            std::vector<DocumentObject*> objects;
-            if (_active->command.recompute) {
-                objects.reserve(_active->command.recompute->featureIds.size());
-                for (const auto& featureId : _active->command.recompute->featureIds) {
-                    if (auto* object = _document.getObject(featureId.c_str())) {
-                        objects.push_back(object);
+            const auto& coalescingKey = _active->command.recompute
+                ? _active->command.recompute->coalescingKey
+                : std::string {};
+            if (coalescingKey.starts_with(laneTestBlockingCoalescingPrefix)) {
+                _active->recomputeId = submitLaneTestBlockingRecompute(
+                    _document,
+                    coalescingKey.substr(laneTestBlockingCoalescingPrefix.size()));
+            }
+            else {
+                std::vector<DocumentObject*> objects;
+                if (_active->command.recompute) {
+                    objects.reserve(_active->command.recompute->featureIds.size());
+                    for (const auto& featureId : _active->command.recompute->featureIds) {
+                        if (auto* object = _document.getObject(featureId.c_str())) {
+                            objects.push_back(object);
+                        }
                     }
                 }
-            }
 
-            const bool force = _active->command.recompute
-                && _active->command.recompute->coalescingKey.find("force;")
-                    != std::string::npos;
-            auto handle = _document.recomputeAsync(objects, force);
-            _active->recomputeId = handle->id();
+                const bool force = _active->command.recompute
+                    && _active->command.recompute->coalescingKey.find("force;")
+                        != std::string::npos;
+                const int options = _active->command.recompute
+                    ? _active->command.recompute->options
+                    : 0;
+                auto handle = _document.recomputeAsync(objects, force, options);
+                _active->recomputeId = handle->id();
+            }
             touchWatchdogProgress(*_active);
         }
 
@@ -499,6 +532,7 @@ void DocumentExecutionLane::executeActiveRecompute()
             return;
         }
 
+        drainDispatchQueue();
         std::this_thread::sleep_for(1ms);
     }
 }
