@@ -560,6 +560,8 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
     doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
                                                        collaborationIdentity.lifecycleEpoch);
+    doc->startExecutionLane(
+        {collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch});
     doc->setCollaborationRevisionPublicationSuppressed(false);
 
     //NOLINTBEGIN
@@ -687,6 +689,12 @@ bool Application::closeDocument(const char* name)
     }
     if (callerOwnsCollaborationAccess()) {
         return false;
+    }
+
+    if (const auto* lane = pos->second->executionLane()) {
+        if (!lane->isIdle()) {
+            return false;
+        }
     }
 
     enforceAtomicPresentationMutationTarget(pos->second);
@@ -869,6 +877,12 @@ DocumentIdentity Application::advanceDocumentCollaborationEpoch(
 void Application::closeAllDocuments()
 {
     Base::FlagToggler<bool> flag(_isClosingAll);
+    for (const auto& entry : DocMap) {
+        if (entry.second && entry.second->executionLane()) {
+            entry.second->executionLane()->requestShutdown(
+                "application closing all documents");
+        }
+    }
     std::map<std::string,Document*>::iterator pos;
     while ((pos = DocMap.begin()) != DocMap.end()) {
         if (!closeDocument(pos->first.c_str())) {

@@ -202,12 +202,15 @@ class Transaction;
 class DocumentCommitCoordinator;
 class DocumentCollaborationService;
 class DocumentRecomputeCoordinator;
+class DocumentExecutionLane;
+class DocumentHandle;
 class RecomputeHandle;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
 struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
+struct DocumentRevisionIdentityBinding;
 struct DocumentRecomputeSnapshot;
 struct RecoverySnapshotSaveOptions;
 namespace Internal
@@ -1198,6 +1201,18 @@ public:
         int options = 0,
         RecomputeVenue venue = RecomputeVenue::OwnerThread);
 
+    /** Thread-safe GUI-facing document reference for non-blocking command admission. */
+    [[nodiscard]] DocumentHandle executionHandle() const;
+
+    [[nodiscard]] DocumentExecutionLane* executionLane() noexcept;
+    [[nodiscard]] const DocumentExecutionLane* executionLane() const noexcept;
+
+    /** Bind the per-document execution lane after collaboration identity registration. */
+    void startExecutionLane(DocumentRevisionIdentityBinding identity);
+
+    /** Request cooperative lane shutdown before document destruction. */
+    void shutdownExecutionLane();
+
     /**
      * @brief Recompute a single object.
      *
@@ -2032,6 +2047,7 @@ private:
     };
 
     std::recursive_mutex& collaborationCommitMutex() noexcept;
+    void bindCollaborationOwnerThread(std::thread::id threadId) noexcept;
     [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
     [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;

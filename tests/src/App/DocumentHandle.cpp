@@ -67,7 +67,7 @@ TEST(DocumentHandleContractTest, identityMismatchReturnsConflict)
     EXPECT_EQ(outcome.result, DocumentCommandSubmitResult::Conflict);
 }
 
-TEST(DocumentHandleContractTest, matchingIdentityReturnsUnsupportedUntilLaneExists)
+TEST(DocumentHandleContractTest, matchingIdentityReturnsUnsupportedWithoutLane)
 {
     DocumentRevisionIdentityBinding identity {42, 7};
     DocumentHandle handle(identity);
@@ -89,7 +89,7 @@ TEST(DocumentCommandHandleContractTest, statusDoesNotRequireLiveModelPointers)
 
     EXPECT_EQ(snapshot.id, 17U);
     EXPECT_EQ(snapshot.document.documentInstanceId, 42U);
-    EXPECT_EQ(snapshot.state, DocumentCommandState::Running);
+    EXPECT_EQ(snapshot.state, DocumentCommandState::Failed);
 }
 
 TEST(DocumentCommandHandleContractTest, recomputeObservationIsObservationOnly)

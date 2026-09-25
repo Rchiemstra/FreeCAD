@@ -3,7 +3,9 @@
 #include "RecomputeHandle.h"
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObserver.h"
+#include "DocumentWouldBlock.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -102,8 +104,17 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
     if (!owner) {
         return closedDocumentSnapshot();
     }
-    static_cast<void>(owner->recomputeCoordinator().poll(_id));
-    auto snapshot = owner->recomputeCoordinator().status(_id);
+
+    if (DocumentWouldBlock::isGuiThread()) {
+        if (const auto* lane = owner->executionLane()) {
+            const auto recomputeSnapshot = lane->recomputeStatus(_id);
+            if (recomputeSnapshot) {
+                return *recomputeSnapshot;
+            }
+        }
+    }
+
+    const auto snapshot = owner->recomputeCoordinator().status(_id);
     if (!snapshot) {
         DocumentRecomputeSnapshot unavailable;
         unavailable.id = _id;
@@ -111,13 +122,30 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         unavailable.diagnostic = "recompute result is unavailable";
         return unavailable;
     }
-    finalizeIfTerminal(*owner, *snapshot);
     return *snapshot;
 }
 
 bool RecomputeHandle::poll()
 {
-    return status().terminal();
+    auto* owner = document();
+    if (!owner) {
+        return true;
+    }
+
+    const auto pump = [&]() -> bool {
+        static_cast<void>(owner->recomputeCoordinator().poll(_id));
+        const auto snapshot = owner->recomputeCoordinator().status(_id);
+        if (!snapshot) {
+            return true;
+        }
+        finalizeIfTerminal(*owner, *snapshot);
+        return snapshot->terminal();
+    };
+
+    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
+        return owner->executionLane()->dispatchToOwner(pump);
+    }
+    return pump();
 }
 
 bool RecomputeHandle::cancel(std::string reason)
@@ -126,25 +154,55 @@ bool RecomputeHandle::cancel(std::string reason)
     if (!owner) {
         return false;
     }
+
+    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
+        return owner->executionLane()->dispatchToOwner(
+            [this, owner, reasonCopy = std::move(reason)]() mutable -> bool {
+                const bool accepted =
+                    owner->recomputeCoordinator().cancel(_id, std::move(reasonCopy));
+                static_cast<void>(poll());
+                return accepted;
+            });
+    }
+
     const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
-    static_cast<void>(status());
+    static_cast<void>(poll());
     return accepted;
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds timeout)
 {
+    DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
+
     const auto boundedTimeout = std::max(timeout, 0ms);
     const auto deadline = std::chrono::steady_clock::now() + boundedTimeout;
-    while (true) {
-        auto snapshot = status();
-        if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
-            return snapshot;
+
+    const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
+        while (true) {
+            auto snapshot = status();
+            if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
+                if (!snapshot.terminal()) {
+                    static_cast<void>(poll());
+                    snapshot = status();
+                }
+                return snapshot;
+            }
+            static_cast<void>(poll());
+            if (QCoreApplication::instance()) {
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
+            }
+            std::this_thread::sleep_for(2ms);
         }
-        if (QCoreApplication::instance()) {
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
-        }
-        std::this_thread::sleep_for(2ms);
+    };
+
+    auto* owner = document();
+    if (!owner) {
+        return closedDocumentSnapshot();
     }
+    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
+        return owner->executionLane()->dispatchToOwner(waitOnOwner);
+    }
+    return waitOnOwner();
 }
 
 }  // namespace App

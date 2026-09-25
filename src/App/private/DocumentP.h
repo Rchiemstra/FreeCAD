@@ -78,6 +78,7 @@ using HasherMap = boost::bimap<StringHasherRef, int>;
 class Document;
 class Transaction;
 class DocumentCollaborationService;
+class DocumentExecutionLane;
 class DocumentRecomputeCoordinator;
 enum class DocumentSaveIntent;
 struct DocumentSaveOutcome;
@@ -278,6 +279,7 @@ struct DocumentP
     DocumentRevisionIndex collaborationRevisions;
     std::unique_ptr<DocumentCollaborationService> collaborationService;
     std::unique_ptr<DocumentRecomputeCoordinator> recomputeCoordinator;
+    std::shared_ptr<DocumentExecutionLane> executionLane;
     std::unordered_map<const DocumentObject*, std::uint64_t> collaborationObjectIdentities;
     std::unordered_map<const DocumentObject*, std::uint64_t>
         collaborationBoundaryObjectIdentities;

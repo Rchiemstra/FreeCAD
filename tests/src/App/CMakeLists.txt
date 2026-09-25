@@ -18,6 +18,7 @@ add_executable(App_tests_run
         DocumentCommitCoordinator.cpp
         Document.cpp
         DocumentFileWriter.cpp
+        DocumentExecutionLane.cpp
         DocumentExecutionStall.cpp
         DocumentExecutionTelemetry.cpp
         DocumentHandle.cpp

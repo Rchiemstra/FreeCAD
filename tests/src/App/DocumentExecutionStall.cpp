@@ -49,16 +49,19 @@ private:
 
 TEST_F(DocumentExecutionStallTest, RunRecordsDocumentOwnerThread)
 {
-    const auto ownerThread = std::this_thread::get_id();
-    ASSERT_TRUE(doc()->isCollaborationOwnerThread());
+    const auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    EXPECT_FALSE(doc()->isCollaborationOwnerThread());
 
     std::stop_source stopSource;
+    std::optional<App::DocumentExecutionStall::Result> result;
+    std::thread::id ownerThread {};
 
     std::jthread canceller([&](const std::stop_token stopToken) {
         const auto deadline = std::chrono::steady_clock::now() + 2s;
         while (!stopToken.stop_requested() && std::chrono::steady_clock::now() < deadline) {
             if (App::DocumentExecutionStall::isActive()) {
-                EXPECT_EQ(App::DocumentExecutionStall::activeThread(), ownerThread);
+                ownerThread = App::DocumentExecutionStall::activeThread();
                 stopSource.request_stop();
                 return;
             }
@@ -68,20 +71,26 @@ TEST_F(DocumentExecutionStallTest, RunRecordsDocumentOwnerThread)
         stopSource.request_stop();
     });
 
-    const auto result = App::DocumentExecutionStall::run(
-        stopSource.get_token(),
-        30s);
+    lane->dispatchToOwner([&] {
+        EXPECT_TRUE(doc()->isCollaborationOwnerThread());
+        result = App::DocumentExecutionStall::run(stopSource.get_token(), 30s);
+    });
 
-    EXPECT_EQ(result.executingThread, ownerThread);
-    EXPECT_FALSE(result.completed);
-    EXPECT_LT(result.elapsed, 30s);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_NE(ownerThread, std::thread::id {});
+    EXPECT_EQ(result->executingThread, ownerThread);
+    EXPECT_EQ(result->executingThread, lane->ownerThreadId());
+    EXPECT_FALSE(result->completed);
+    EXPECT_LT(result->elapsed, 30s);
     EXPECT_FALSE(App::DocumentExecutionStall::isActive());
 }
 
 TEST_F(DocumentExecutionStallTest, RunOnNonOwnerThreadRecordsThatThread)
 {
-    const auto ownerThread = std::this_thread::get_id();
-    ASSERT_TRUE(doc()->isCollaborationOwnerThread());
+    const auto* lane = doc()->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto ownerThread = lane->ownerThreadId();
+    EXPECT_FALSE(doc()->isCollaborationOwnerThread());
 
     std::optional<App::DocumentExecutionStall::Result> workerResult;
     std::stop_source stopSource;

@@ -13,6 +13,7 @@ namespace App
 {
 
 class Document;
+class DocumentExecutionLane;
 
 /**
  * Thread-safe, GUI-facing document reference.
@@ -48,8 +49,17 @@ public:
     [[nodiscard]] DocumentCommandSubmitOutcome trySubmit(DocumentCommand command);
 
 private:
-    struct State;
-    std::shared_ptr<const State> _state;
+    friend class DocumentExecutionLane;
+
+    struct State
+    {
+        DocumentRevisionIdentityBinding identity;
+        std::weak_ptr<DocumentExecutionLane> lane;
+    };
+
+    explicit DocumentHandle(std::shared_ptr<State> state);
+
+    std::shared_ptr<State> _state;
 };
 
 static_assert(!std::is_constructible_v<DocumentHandle, Document*>);

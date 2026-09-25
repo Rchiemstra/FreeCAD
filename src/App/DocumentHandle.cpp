@@ -2,6 +2,8 @@
 
 #include "DocumentHandle.h"
 
+#include "DocumentExecutionLane.h"
+
 #include <utility>
 
 namespace App
@@ -62,11 +64,6 @@ const char* documentCommandStateName(const DocumentCommandState state) noexcept
     return "Unknown";
 }
 
-struct DocumentHandle::State
-{
-    DocumentRevisionIdentityBinding identity;
-};
-
 DocumentCommandHandle::DocumentCommandHandle(DocumentCommandId id,
                                              DocumentRevisionIdentityBinding document)
     : _id(id)
@@ -99,8 +96,12 @@ DocumentCommandSnapshot DocumentCommandHandle::status() const
         return snapshot;
     }
 
-    snapshot.state = DocumentCommandState::Running;
-    snapshot.diagnostic = "document execution lane not active";
+    if (const auto lane = DocumentExecutionLane::find(_document.documentInstanceId)) {
+        return lane->commandStatus(_id);
+    }
+
+    snapshot.state = DocumentCommandState::Failed;
+    snapshot.diagnostic = "document execution lane is not active";
     return snapshot;
 }
 
@@ -110,7 +111,10 @@ bool DocumentCommandHandle::cancel(std::string reason)
         return false;
     }
 
-    (void)reason;
+    if (const auto lane = DocumentExecutionLane::find(_document.documentInstanceId)) {
+        return lane->cancelCommand(_id, std::move(reason));
+    }
+
     return false;
 }
 
@@ -137,15 +141,7 @@ DocumentCommandRecomputeId RecomputeCommandHandle::recomputeId() const noexcept
 
 DocumentCommandSnapshot RecomputeCommandHandle::status() const
 {
-    auto snapshot = _command.status();
-    if (valid()) {
-        DocumentCommandRecomputeObservation recompute;
-        recompute.id = _recomputeId;
-        recompute.state = DocumentCommandRecomputeState::Running;
-        recompute.diagnostic = snapshot.diagnostic;
-        snapshot.recompute = recompute;
-    }
-    return snapshot;
+    return _command.status();
 }
 
 bool RecomputeCommandHandle::cancel(std::string reason)
@@ -158,7 +154,13 @@ DocumentHandle::DocumentHandle()
 {}
 
 DocumentHandle::DocumentHandle(DocumentRevisionIdentityBinding identity)
-    : _state(std::make_shared<State>(State {identity}))
+    : _state(std::make_shared<State>())
+{
+    _state->identity = identity;
+}
+
+DocumentHandle::DocumentHandle(std::shared_ptr<State> state)
+    : _state(std::move(state))
 {}
 
 DocumentHandle::~DocumentHandle() = default;
@@ -196,6 +198,10 @@ DocumentCommandSubmitOutcome DocumentHandle::trySubmit(DocumentCommand command)
         outcome.result = DocumentCommandSubmitResult::Conflict;
         outcome.diagnostic = "command document identity does not match handle";
         return outcome;
+    }
+
+    if (const auto lane = _state->lane.lock()) {
+        return lane->trySubmit(std::move(command));
     }
 
     outcome.result = DocumentCommandSubmitResult::Unsupported;

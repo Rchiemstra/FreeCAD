@@ -83,7 +83,10 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
+#include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
+#include "DocumentWouldBlock.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
 #include "Application.h"
@@ -924,9 +927,53 @@ std::recursive_mutex& Document::collaborationCommitMutex() noexcept
     return d->collaborationCommitMutex;
 }
 
+void Document::bindCollaborationOwnerThread(const std::thread::id threadId) noexcept
+{
+    d->collaborationOwnerThread = threadId;
+}
+
 bool Document::isCollaborationOwnerThread() const noexcept
 {
     return std::this_thread::get_id() == d->collaborationOwnerThread;
+}
+
+DocumentHandle Document::executionHandle() const
+{
+    if (d->executionLane) {
+        return d->executionLane->handle();
+    }
+    if (const auto identity = d->collaborationRevisions.documentIdentity()) {
+        return DocumentHandle(*identity);
+    }
+    return DocumentHandle {};
+}
+
+DocumentExecutionLane* Document::executionLane() noexcept
+{
+    return d->executionLane.get();
+}
+
+const DocumentExecutionLane* Document::executionLane() const noexcept
+{
+    return d->executionLane.get();
+}
+
+void Document::startExecutionLane(DocumentRevisionIdentityBinding identity)
+{
+    if (d->executionLane) {
+        return;
+    }
+    d->executionLane = DocumentExecutionLane::create(*this, identity);
+}
+
+void Document::shutdownExecutionLane()
+{
+    if (!d->executionLane) {
+        return;
+    }
+    d->executionLane->requestShutdown("document closing");
+    d->executionLane->joinThread();
+    d->executionLane.reset();
 }
 
 bool Document::collaborationNotificationsReplaying() const noexcept
@@ -3738,6 +3785,8 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
+
+    shutdownExecutionLane();
 
     try {
         clearUndos();
@@ -6957,6 +7006,12 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const int options,
     const RecomputeVenue venue)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return recomputeAsync(objs, force, options, venue);
+        });
+    }
+
     enforceAtomicPresentationMutationTarget(*this);
 
     const auto submitEmpty = [this] {
@@ -7268,6 +7323,8 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
+    DocumentWouldBlock::throwIfGuiThread("Document::recompute()", "Document::recomputeAsync()");
+
     // The legacy loop ran its topologically sorted plan up to twice --
     // "maximum two passes to allow some form of dependency inversion".
     // Settling an object touches its dependents, and a dependent the single

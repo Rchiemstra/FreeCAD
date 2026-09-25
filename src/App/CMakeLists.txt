@@ -174,9 +174,11 @@ SET(Document_CPP_SRCS
     DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
+    DocumentExecutionLane.cpp
     DocumentExecutionStall.cpp
     DocumentExecutionTelemetry.cpp
     DocumentHandle.cpp
+    DocumentWouldBlock.cpp
     DocumentRecomputeCoordinator.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
@@ -261,9 +263,11 @@ SET(Document_HPP_SRCS
     DocumentCommand.h
     DocumentCommandHandle.h
     DocumentCommitCoordinator.h
+    DocumentExecutionLane.h
     DocumentExecutionStall.h
     DocumentExecutionTelemetry.h
     DocumentHandle.h
+    DocumentWouldBlock.h
     DocumentRecomputeCoordinator.h
     DocumentRevisionIndex.h
     EditSession.h
