@@ -346,7 +346,7 @@ class Document(PropertyContainer):
         prepared_edit: object,
         /,
     ) -> DocumentCommandHandle:
-        """Submit commit of a prepared edit without waiting."""
+        """Submit a pointer-free prepared-edit command without waiting."""
         ...
 
     def commitCompatibilityMutation(
@@ -379,7 +379,10 @@ class Document(PropertyContainer):
         postcondition: Callable[[], object] | None = None,
         object_name: str | None = None,
     ) -> DocumentCommandHandle:
-        """Submit one compatibility mutation without waiting."""
+        """Submit one compatibility mutation without waiting.
+
+        Raises when the callback cannot be encoded as a pointer-free document command.
+        """
         ...
 
     def cancelEdit(
@@ -629,8 +632,8 @@ class Document(PropertyContainer):
         """
         Submit the same isolated recompute used by recompute() and return immediately.
 
-        Use poll() on a RecomputeHandle to advance dependency-ready work, or call
-        wait() off the GUI thread for a compatibility wait.
+        Use RecomputeHandle.status() for observation-only progress on the GUI thread.
+        Call wait() only off the GUI thread when a blocking compatibility wait is required.
         """
         ...
 

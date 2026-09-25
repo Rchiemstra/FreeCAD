@@ -106,6 +106,9 @@ PyObject* RecomputeHandlePy::poll(PyObject* args)
     }
     PY_TRY
     {
+        if (DocumentWouldBlock::isGuiThread()) {
+            return PyBool_FromLong(getRecomputeHandlePtr()->status().terminal());
+        }
         return PyBool_FromLong(getRecomputeHandlePtr()->poll());
     }
     PY_CATCH;
@@ -138,7 +141,9 @@ PyObject* RecomputeHandlePy::wait(PyObject* args)
     const auto milliseconds = static_cast<long long>(timeoutSeconds * 1000.0);
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("RecomputeHandle.wait()", "RecomputeHandle.poll()");
+        DocumentWouldBlock::throwIfGuiThread(
+            "RecomputeHandle.wait()",
+            "Document.recomputeAsync() and RecomputeHandle.status()");
         Base::PyGILStateRelease gilRelease;
         return snapshotToPython(
             getRecomputeHandlePtr()->wait(std::chrono::milliseconds(milliseconds)));

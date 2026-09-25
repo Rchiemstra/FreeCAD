@@ -27,7 +27,7 @@ class RecomputeHandle(PyObjectBase):
         ...
 
     def poll(self) -> bool:
-        """Advance ready work once and report whether the recompute is terminal."""
+        """Report whether the recompute reached a terminal state without advancing execution."""
         ...
 
     def cancel(self, reason: str = "recompute cancelled by caller", /) -> bool:
