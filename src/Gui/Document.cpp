@@ -2757,10 +2757,8 @@ bool Document::save()
             Gui::WaitCursor wc;
             // save all documents
             for (auto doc : docs) {
-                // Changed 'mustExecute' status may be triggered by saving external document
-                if (!dmap[doc] && doc->mustExecute()) {
-                    App::AutoTransaction trans(doc, "Recompute");
-                    requestDocumentRecompute(*doc);
+                if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                    continue;
                 }
 
                 Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
@@ -2904,10 +2902,8 @@ void Document::saveAll()
         Gui::WaitCursor wc;
 
         try {
-            // Changed 'mustExecute' status may be triggered by saving external document
-            if (!dmap[doc] && doc->mustExecute()) {
-                App::AutoTransaction trans(doc, "Recompute");
-                requestDocumentRecompute(*doc);
+            if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                continue;
             }
             Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
         }
