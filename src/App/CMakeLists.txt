@@ -104,6 +104,7 @@ generate_from_py(DepEdge)
 generate_from_py(Document)
 generate_from_py(DocumentSettings)
 generate_from_py(RecomputeHandle)
+generate_from_py(DocumentCommandHandle)
 generate_from_py(DocumentObject)
 generate_from_py(Extension)
 generate_from_py(ExtensionContainer)
@@ -145,6 +146,7 @@ SET(FreeCADApp_Pyi_SRCS
     DocumentObject.pyi
     DocumentSettings.pyi
     RecomputeHandle.pyi
+    DocumentCommandHandle.pyi
     GeoFeature.pyi
     GeoFeatureGroupExtension.pyi
     OriginGroupExtension.pyi
@@ -207,6 +209,7 @@ SET(Document_CPP_SRCS
     DocumentSettingsPyImp.cpp
     RecomputeHandle.cpp
     RecomputeHandlePyImp.cpp
+    DocumentCommandHandlePyImp.cpp
     Expression.cpp
     QuantityInput.cpp
     ExpressionTokenizer.cpp

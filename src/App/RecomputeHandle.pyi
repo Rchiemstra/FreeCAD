@@ -15,14 +15,18 @@ class RecomputeHandle(PyObjectBase):
         ...
 
     def status(self) -> dict:
-        """Advance ready work once and return a copy of the current status."""
+        """Return a read-only recompute snapshot without advancing execution."""
         ...
 
     def progress(self) -> float:
-        """Advance ready work once and return progress in the inclusive [0, 1] range."""
+        """Return recompute progress in the inclusive [0, 1] range."""
         ...
 
     def done(self) -> bool:
+        """Report whether the recompute reached a terminal state."""
+        ...
+
+    def poll(self) -> bool:
         """Advance ready work once and report whether the recompute is terminal."""
         ...
 
@@ -31,5 +35,5 @@ class RecomputeHandle(PyObjectBase):
         ...
 
     def wait(self, timeout: float = 360.0, /) -> dict:
-        """Responsively wait up to timeout seconds and return the current status."""
+        """Wait up to timeout seconds off the GUI thread and return the current status."""
         ...

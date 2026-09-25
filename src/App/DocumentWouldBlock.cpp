@@ -2,6 +2,8 @@
 
 #include "DocumentWouldBlock.h"
 
+#include <Python.h>
+
 #include <format>
 
 namespace App
@@ -14,6 +16,18 @@ DocumentWouldBlock::DocumentWouldBlock(const char* message)
 DocumentWouldBlock::DocumentWouldBlock(const std::string& message)
     : Base::RuntimeError(message.c_str())
 {}
+
+PyObject* DocumentWouldBlock::getPyExceptionType() const
+{
+    static PyObject* exception = []() {
+        PyObject* type =
+            PyErr_NewException("FreeCAD.DocumentWouldBlock", PyExc_RuntimeError, nullptr);
+        Py_INCREF(type);
+        PyModule_AddObject(PyImport_AddModule("FreeCAD"), "DocumentWouldBlock", type);
+        return type;
+    }();
+    return exception;
+}
 
 bool DocumentWouldBlock::isGuiThread() noexcept
 {

@@ -26,6 +26,7 @@
 #include <Base/Interpreter.h>
 #include <Base/Stream.h>
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -35,10 +36,14 @@
 
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentCommand.h"
+#include "DocumentHandle.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
+#include "DocumentPythonCommand.h"
 #include "DocumentSettings.h"
 #include "DocumentSettingsPy.h"
+#include "DocumentWouldBlock.h"
 #include "MergeDocuments.h"
 #include "RecomputeHandlePy.h"
 
@@ -52,6 +57,86 @@ using namespace App;
 
 namespace
 {
+
+[[noreturn]] void raiseSubmitOutcome(const DocumentCommandSubmitOutcome& outcome)
+{
+    const char* fallback = documentCommandSubmitResultName(outcome.result);
+    if (outcome.diagnostic.empty()) {
+        throw Base::RuntimeError(fallback);
+    }
+    throw Base::RuntimeError(outcome.diagnostic);
+}
+
+std::string buildRecomputeCoalescingKey(const std::vector<DocumentObject*>& objects,
+                                        const bool force,
+                                        const int options)
+{
+    std::string key;
+    key += force ? "force;" : "normal;";
+    key += "options=" + std::to_string(options) + ";";
+    std::vector<std::string> names;
+    names.reserve(objects.size());
+    for (auto* object : objects) {
+        if (object && object->isAttachedToDocument()) {
+            names.emplace_back(object->getNameInDocument());
+        }
+    }
+    std::ranges::sort(names);
+    for (const auto& name : names) {
+        key += name;
+        key += ';';
+    }
+    return key;
+}
+
+PyObject* makeAcceptedCommandHandle(Document& document, const DocumentCommandSubmitOutcome& outcome)
+{
+    if (!outcome.accepted()) {
+        raiseSubmitOutcome(outcome);
+    }
+    const auto identity = document.executionHandle().identity();
+    return makeDocumentCommandHandlePy(DocumentCommandHandle(outcome.commandId, identity));
+}
+
+PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind)
+{
+    DocumentCommand command;
+    command.kind = kind;
+    command.document = document.executionHandle().identity();
+    return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
+}
+
+PyObject* submitRecomputeCommand(Document& document,
+                                 const std::vector<DocumentObject*>& objects,
+                                 const bool force,
+                                 const int options)
+{
+    DocumentCommand command;
+    command.kind = DocumentCommandKind::Recompute;
+    command.document = document.executionHandle().identity();
+    command.recompute = DocumentCommandRecomputePayload {};
+    command.recompute->coalescingKey = buildRecomputeCoalescingKey(objects, force, options);
+    command.recompute->featureIds.reserve(objects.size());
+    for (auto* object : objects) {
+        if (object && object->isAttachedToDocument() && object->getDocument() == &document) {
+            command.recompute->featureIds.emplace_back(object->getNameInDocument());
+        }
+    }
+
+    const auto outcome = document.executionHandle().trySubmit(std::move(command));
+    if (!outcome.accepted()) {
+        raiseSubmitOutcome(outcome);
+    }
+
+    const auto identity = document.executionHandle().identity();
+    const DocumentCommandHandle commandHandle(outcome.commandId, identity);
+    const auto snapshot = commandHandle.status();
+    if (snapshot.recompute && snapshot.recompute->id != 0) {
+        return new RecomputeHandlePy(
+            new RecomputeHandle(document, static_cast<DocumentRecomputeId>(snapshot.recompute->id)));
+    }
+    return makeDocumentCommandHandlePy(commandHandle);
+}
 
 const char* saveDispositionName(const DocumentSaveDisposition disposition)
 {
@@ -581,6 +666,7 @@ PyObject* DocumentPy::save(PyObject* args)
 
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread("Document.save()", "Document.saveAsync()");
         if (!getDocumentPtr()->save()) {
             if (*(getDocumentPtr()->FileName.getValue()) == '\0') {
                 PyErr_SetString(PyExc_ValueError, "Object attribute 'FileName' is not set");
@@ -601,6 +687,21 @@ PyObject* DocumentPy::save(PyObject* args)
     }
 
     Py_Return;
+}
+
+PyObject* DocumentPy::saveAsync(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("Document.save()", "Document.saveAsync()");
+        }
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Save);
+    }
+    PY_CATCH;
 }
 
 PyObject* DocumentPy::saveWithOutcome(PyObject* args)
@@ -1501,10 +1602,39 @@ PyObject* DocumentPy::commitEdit(PyObject* args)
     }
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread("Document.commitEdit()", "Document.commitEditAsync()");
         const auto result = getDocumentPtr()->collaborationService().commitEdit(
             sessionId,
             preparedEditFromCapsule(prepared));
         return Py::new_reference_to(commitResultToPython(result));
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::commitEditAsync(PyObject* args)
+{
+    const char* sessionId = nullptr;
+    PyObject* prepared = nullptr;
+    if (!PyArg_ParseTuple(args, "sO", &sessionId, &prepared)) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        static_cast<void>(sessionId);
+        static_cast<void>(prepared);
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread(
+                "Document.commitEdit()", "Document.commitEditAsync()");
+        }
+
+        DocumentCommand command;
+        command.kind = DocumentCommandKind::Edit;
+        command.document = getDocumentPtr()->executionHandle().identity();
+        command.edit = DocumentCommandEditPayload {};
+        command.edit->operationId = "python-commit-edit";
+        command.edit->provenance = "python-async";
+        return makeAcceptedCommandHandle(
+            *getDocumentPtr(), getDocumentPtr()->executionHandle().trySubmit(std::move(command)));
     }
     PY_CATCH;
 }
@@ -1546,6 +1676,9 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
 
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document.commitCompatibilityMutation()",
+            "Document.commitCompatibilityMutationAsync()");
         const auto retainCallable = [](PyObject* callable) {
             Py_INCREF(callable);
             return std::shared_ptr<PyObject>(callable, [](PyObject* object) {
@@ -1650,6 +1783,66 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
     PY_CATCH;
 }
 
+PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject* kwd)
+{
+    PyObject* callback = nullptr;
+    PyObject* structural = Py_False;
+    PyObject* recompute = Py_True;
+    PyObject* postcondition = Py_None;
+    const char* objectName = nullptr;
+    static const std::array<const char*, 6> kwlist {"",
+                                                    "structural",
+                                                    "recompute",
+                                                    "postcondition",
+                                                    "object_name",
+                                                    nullptr};
+    if (!Base::Wrapped_ParseTupleAndKeywords(args,
+                                             kwd,
+                                             "O|$O!O!Oz:commitCompatibilityMutationAsync",
+                                             kwlist,
+                                             &callback,
+                                             &PyBool_Type,
+                                             &structural,
+                                             &PyBool_Type,
+                                             &recompute,
+                                             &postcondition,
+                                             &objectName)) {
+        return nullptr;
+    }
+    static_cast<void>(callback);
+    static_cast<void>(structural);
+    static_cast<void>(recompute);
+    static_cast<void>(postcondition);
+    static_cast<void>(objectName);
+
+    PY_TRY
+    {
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread(
+                "Document.commitCompatibilityMutation()",
+                "Document.commitCompatibilityMutationAsync()");
+        }
+
+        DocumentCommand command;
+        command.kind = DocumentCommandKind::Edit;
+        command.document = getDocumentPtr()->executionHandle().identity();
+        command.edit = DocumentCommandEditPayload {};
+        command.edit->operationId = "python-compatibility-mutation";
+        command.edit->provenance = "python-async";
+        if (objectName != nullptr && *objectName != '\0') {
+            if (const auto* object = getDocumentPtr()->getObject(objectName)) {
+                DocumentCommandObjectTarget target;
+                target.objectName = objectName;
+                target.stableObjectIdentity = getDocumentPtr()->collaborationObjectIdentity(*object);
+                command.edit->targets.push_back(std::move(target));
+            }
+        }
+        return makeAcceptedCommandHandle(
+            *getDocumentPtr(), getDocumentPtr()->executionHandle().trySubmit(std::move(command)));
+    }
+    PY_CATCH;
+}
+
 PyObject* DocumentPy::cancelEdit(PyObject* args)
 {
     const char* sessionId = nullptr;
@@ -1693,10 +1886,15 @@ PyObject* DocumentPy::undo(PyObject* args)
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
-    if (getDocumentPtr()->getAvailableUndos()) {
-        getDocumentPtr()->undo();
+    PY_TRY
+    {
+        DocumentWouldBlock::throwIfGuiThread("Document.undo()", "Document.undoAsync()");
+        if (getDocumentPtr()->getAvailableUndos()) {
+            getDocumentPtr()->undo();
+        }
+        Py_Return;
     }
-    Py_Return;
+    PY_CATCH;
 }
 
 PyObject* DocumentPy::redo(PyObject* args)
@@ -1704,10 +1902,60 @@ PyObject* DocumentPy::redo(PyObject* args)
     if (!PyArg_ParseTuple(args, "")) {
         return nullptr;
     }
-    if (getDocumentPtr()->getAvailableRedos()) {
-        getDocumentPtr()->redo();
+    PY_TRY
+    {
+        DocumentWouldBlock::throwIfGuiThread("Document.redo()", "Document.redoAsync()");
+        if (getDocumentPtr()->getAvailableRedos()) {
+            getDocumentPtr()->redo();
+        }
+        Py_Return;
     }
-    Py_Return;
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::undoAsync(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("Document.undo()", "Document.undoAsync()");
+        }
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Undo);
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::redoAsync(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("Document.redo()", "Document.redoAsync()");
+        }
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Redo);
+    }
+    PY_CATCH;
+}
+
+PyObject* DocumentPy::closeAsync(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        if (!getDocumentPtr()->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("FreeCAD.closeDocument()", "Document.closeAsync()");
+        }
+        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Close);
+    }
+    PY_CATCH;
 }
 
 PyObject* DocumentPy::clearUndos(PyObject* args)
@@ -1785,6 +2033,7 @@ PyObject* DocumentPy::recompute(PyObject* args)
 
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread("Document.recompute()", "Document.recomputeAsync()");
         std::vector<App::DocumentObject*> objs;
         if (pyobjs != Py_None) {
             if (!PySequence_Check(pyobjs)) {
@@ -1863,8 +2112,11 @@ PyObject* DocumentPy::recomputeAsync(PyObject* args)
         if (Base::asBoolean(checkCycle)) {
             options = Document::DepNoCycle;
         }
-        auto handle = getDocumentPtr()->recomputeAsync(
-            objs, Base::asBoolean(force), options);
+        if (getDocumentPtr()->executionLane()) {
+            return submitRecomputeCommand(
+                *getDocumentPtr(), objs, Base::asBoolean(force), options);
+        }
+        auto handle = getDocumentPtr()->recomputeAsync(objs, Base::asBoolean(force), options);
         return new RecomputeHandlePy(handle.release());
     }
     PY_CATCH;
