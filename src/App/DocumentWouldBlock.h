@@ -20,6 +20,8 @@ public:
     explicit DocumentWouldBlock(const char* message = nullptr);
     explicit DocumentWouldBlock(const std::string& message);
 
+    PyObject* getPyExceptionType() const override;
+
     [[nodiscard]] static bool isGuiThread() noexcept;
     [[nodiscard]] static void throwIfGuiThread(const char* syncApi, const char* asyncApi);
 };

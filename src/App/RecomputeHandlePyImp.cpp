@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include "RecomputeHandle.h"
+#include "DocumentWouldBlock.h"
 
 #include <cmath>
 #include <limits>
 #include <sstream>
+
+#include <Base/Interpreter.h>
 
 #include "RecomputeHandlePy.h"
 #include "RecomputeHandlePy.cpp"
@@ -96,6 +99,21 @@ PyObject* RecomputeHandlePy::done(PyObject* args)
     PY_CATCH;
 }
 
+PyObject* RecomputeHandlePy::poll(PyObject* args)
+{
+    if (!PyArg_ParseTuple(args, "")) {
+        return nullptr;
+    }
+    PY_TRY
+    {
+        if (DocumentWouldBlock::isGuiThread()) {
+            return PyBool_FromLong(getRecomputeHandlePtr()->status().terminal());
+        }
+        return PyBool_FromLong(getRecomputeHandlePtr()->poll());
+    }
+    PY_CATCH;
+}
+
 PyObject* RecomputeHandlePy::cancel(PyObject* args)
 {
     const char* reason = "recompute cancelled by caller";
@@ -123,6 +141,10 @@ PyObject* RecomputeHandlePy::wait(PyObject* args)
     const auto milliseconds = static_cast<long long>(timeoutSeconds * 1000.0);
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "RecomputeHandle.wait()",
+            "Document.recomputeAsync() and RecomputeHandle.status()");
+        Base::PyGILStateRelease gilRelease;
         return snapshotToPython(
             getRecomputeHandlePtr()->wait(std::chrono::milliseconds(milliseconds)));
     }
