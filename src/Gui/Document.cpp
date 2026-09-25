@@ -2755,13 +2755,18 @@ bool Document::save()
             }
 
             Gui::WaitCursor wc;
+            bool saveCompleted = true;
             // save all documents
             for (auto doc : docs) {
                 if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                    saveCompleted = false;
                     continue;
                 }
 
                 Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
+            }
+            if (!saveCompleted) {
+                return false;
             }
         }
         catch (const Base::FileException& e) {
