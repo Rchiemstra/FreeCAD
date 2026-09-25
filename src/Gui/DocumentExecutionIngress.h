@@ -21,10 +21,11 @@ class DocumentObject;
 namespace Gui
 {
 
-/** Invalidates passive undo/redo completion timers when the GUI document closes. */
+/** Tracks the one in-flight undo/redo command observed by passive completion. */
 struct GuiExport UndoRedoCompletionAnchor
 {
     std::atomic<bool> active {true};
+    std::atomic<App::DocumentCommandId> inFlightCommandId {0};
 };
 
 /** Pointer-free recompute admission payload copied before trySubmit(). */

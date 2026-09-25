@@ -4162,23 +4162,23 @@ void Document::undo(int iSteps)
         return;
     }
 
-    d->_isTransacting = true;
-    if (!d->undoRedoCompletionAnchor) {
-        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
-    }
-    else {
-        d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
-    }
-
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Undo,
         iSteps);
     if (!outcome.accepted()) {
-        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
+
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(
+        outcome.commandId,
+        std::memory_order_release);
+    d->_isTransacting = true;
     scheduleUndoRedoCommandCompletion(
         getDocument()->getName(),
         getDocument()->executionHandle().identity(),
@@ -4194,23 +4194,23 @@ void Document::redo(int iSteps)
         return;
     }
 
-    d->_isTransacting = true;
-    if (!d->undoRedoCompletionAnchor) {
-        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
-    }
-    else {
-        d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
-    }
-
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Redo,
         iSteps);
     if (!outcome.accepted()) {
-        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
+
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(
+        outcome.commandId,
+        std::memory_order_release);
+    d->_isTransacting = true;
     scheduleUndoRedoCommandCompletion(
         getDocument()->getName(),
         getDocument()->executionHandle().identity(),
@@ -4220,8 +4220,15 @@ void Document::redo(int iSteps)
 }
 
 void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,
-                                             const App::DocumentCommandState state)
+                                             const App::DocumentCommandState state,
+                                             const App::DocumentCommandId commandId)
 {
+    if (!d->undoRedoCompletionAnchor
+        || d->undoRedoCompletionAnchor->inFlightCommandId.load(std::memory_order_acquire)
+            != commandId) {
+        return;
+    }
+    d->undoRedoCompletionAnchor->inFlightCommandId.store(0, std::memory_order_release);
     d->_isTransacting = false;
     if (state != App::DocumentCommandState::Completed) {
         return;

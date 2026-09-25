@@ -224,15 +224,19 @@ void scheduleUndoRedoCommandCompletion(
             if (anchor && !anchor->active.load(std::memory_order_acquire)) {
                 return;
             }
-            if (auto* guiDocument = findGuiDocumentByName(documentName.c_str())) {
-                guiDocument->finishExecutionLaneUndoRedo(kind, snapshot.state);
+            if (anchor
+                && anchor->inFlightCommandId.load(std::memory_order_acquire) != commandId) {
+                return;
             }
-            else if (snapshot.state == App::DocumentCommandState::Failed) {
+            if (snapshot.state == App::DocumentCommandState::Failed) {
                 FC_ERR("Document "
                        << App::documentCommandKindName(kind) << " "
                        << App::documentCommandStateName(snapshot.state) << ": "
                        << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
                                                        : snapshot.diagnostic));
+            }
+            if (auto* guiDocument = findGuiDocumentByName(documentName.c_str())) {
+                guiDocument->finishExecutionLaneUndoRedo(kind, snapshot.state, commandId);
             }
         });
 }

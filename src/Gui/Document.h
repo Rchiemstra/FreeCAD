@@ -49,6 +49,7 @@ namespace App
 class Document;
 enum class DocumentCommandKind;
 enum class DocumentCommandState;
+using DocumentCommandId = std::uint64_t;
 struct DocumentSaveOutcome;
 class DocumentObject;
 class DocumentObjectGroup;
@@ -389,7 +390,8 @@ public:
     void onExecutionLaneRedoCompleted();
     /** Clear transacting state after a terminal lane undo/redo command. */
     void finishExecutionLaneUndoRedo(App::DocumentCommandKind kind,
-                                     App::DocumentCommandState state);
+                                     App::DocumentCommandState state,
+                                     App::DocumentCommandId commandId);
     /** Check if the document is performing undo/redo transaction
      *
      * Unlike App::Document::isPerformingTransaction(), Gui::Document will
