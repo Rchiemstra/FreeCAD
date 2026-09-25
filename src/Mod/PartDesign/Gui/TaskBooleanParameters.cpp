@@ -42,6 +42,7 @@
 
 #include "ui_TaskBooleanParameters.h"
 #include "TaskBooleanParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -180,7 +181,7 @@ void TaskBooleanParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
                 item->setText(QString::fromUtf8(pcBody->Label.getValue()));
                 item->setData(Qt::UserRole, QString::fromLatin1(pcBody->getNameInDocument()));
 
-                pcBoolean->getDocument()->recomputeFeature(pcBoolean);
+                PartGui::submitDocumentRecomputeOrReport(*pcBoolean);
                 ui->buttonBodyAdd->setChecked(false);
                 exitSelectionMode();
 
@@ -229,7 +230,7 @@ void TaskBooleanParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
                     }
                 }
 
-                pcBoolean->getDocument()->recomputeFeature(pcBoolean);
+                PartGui::submitDocumentRecomputeOrReport(*pcBoolean);
                 ui->buttonBodyRemove->setChecked(false);
                 exitSelectionMode();
 
@@ -308,7 +309,7 @@ void TaskBooleanParameters::onTypeChanged(int index)
     // Force UI update before starting heavy computation to show user's selection immediately
     QApplication::processEvents();
 
-    pcBoolean->getDocument()->recomputeFeature(pcBoolean);
+    PartGui::submitDocumentRecomputeOrReport(*pcBoolean);
 }
 
 const std::vector<std::string> TaskBooleanParameters::getBodies() const
@@ -346,7 +347,7 @@ void TaskBooleanParameters::onBodyDeleted()
 
     ui->listWidgetBodies->model()->removeRow(index);
     pcBoolean->setObjects(bodies);
-    pcBoolean->getDocument()->recomputeFeature(pcBoolean);
+    PartGui::submitDocumentRecomputeOrReport(*pcBoolean);
 
     // Make bodies visible again
     Gui::ViewProviderDocumentObject* vp = dynamic_cast<Gui::ViewProviderDocumentObject*>(
@@ -447,7 +448,10 @@ bool TaskDlgBooleanParameters::accept()
         Gui::Command::runCommand(Gui::Command::Doc, str.str().c_str());
         FCMD_OBJ_CMD(obj, "Type = " << parameter->getType());
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        if (!PartGui::submitActiveDocumentRecomputeOrReport(this)) {
+            obj->getDocument()->abortTransaction();
+            return false;
+        }
         Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
         obj->getDocument()->commitTransaction();
     }
@@ -483,5 +487,4 @@ bool TaskDlgBooleanParameters::reject()
 
     return true;
 }
-
 #include "moc_TaskBooleanParameters.cpp"

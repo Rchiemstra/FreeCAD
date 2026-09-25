@@ -45,6 +45,7 @@
 
 #include "DlgBooleanOperation.h"
 #include "ui_DlgBooleanOperation.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -501,7 +502,7 @@ void DlgBooleanOperation::accept()
             Base::Tools::joinList(names).c_str()
         );
         activeDoc->commitTransaction();
-        activeDoc->recompute();
+        PartGui::submitDocumentRecomputeOrReport(*activeDoc);
     }
     catch (const Base::Exception& e) {
         e.reportException();
@@ -522,5 +523,4 @@ void TaskBooleanOperation::clicked(int id)
         widget->accept();
     }
 }
-
 #include "moc_DlgBooleanOperation.cpp"
