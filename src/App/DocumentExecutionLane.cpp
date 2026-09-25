@@ -42,12 +42,13 @@ void unregisterLane(DocumentInstanceId instanceId)
     g_laneRegistry.erase(instanceId);
 }
 
-bool recomputeCoalescingKeysMatch(const DocumentCommand& left, const DocumentCommand& right)
+bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentCommand& right)
 {
     if (!left.recompute || !right.recompute) {
         return false;
     }
-    return left.recompute->coalescingKey == right.recompute->coalescingKey;
+    return left.recompute->coalescingKey == right.recompute->coalescingKey
+        && left.recompute->options == right.recompute->options;
 }
 
 bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept
@@ -244,7 +245,7 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
     if (_active) {
         if (command.kind == DocumentCommandKind::Recompute
             && _active->command.kind == DocumentCommandKind::Recompute
-            && recomputeCoalescingKeysMatch(command, _active->command)) {
+            && recomputeCommandsCoalesce(command, _active->command)) {
             outcome.result = DocumentCommandSubmitResult::Accepted;
             outcome.commandId = _active->id;
             outcome.diagnostic = "joined active identical recompute";

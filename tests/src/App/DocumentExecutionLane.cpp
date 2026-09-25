@@ -273,6 +273,36 @@ TEST_F(DocumentExecutionLaneTest, IdenticalRecomputeSharesHandle)
     EXPECT_EQ(second.commandId, first.commandId);
 }
 
+TEST_F(DocumentExecutionLaneTest, RecomputeWithSameKeyAndOptionsCoalesces)
+{
+    auto handle = doc()->executionHandle();
+    const auto first = handle.trySubmit(
+        makeRecomputeCommand("shared-options-recompute", App::Document::DepNoCycle));
+    ASSERT_EQ(first.result, App::DocumentCommandSubmitResult::Accepted);
+
+    const auto second = handle.trySubmit(
+        makeRecomputeCommand("shared-options-recompute", App::Document::DepNoCycle));
+    EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Accepted);
+    EXPECT_EQ(second.commandId, first.commandId);
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeWithSameKeyButDifferentOptionsReturnsBusy)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "OptionsCoalesceBusy"));
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+
+    auto handle = doc()->executionHandle();
+    const auto first = handle.trySubmit(makeRecomputeCommand("shared-key-options"));
+    ASSERT_EQ(first.result, App::DocumentCommandSubmitResult::Accepted);
+
+    const auto second = handle.trySubmit(
+        makeRecomputeCommand("shared-key-options", App::Document::DepNoCycle));
+    EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Busy);
+    EXPECT_NE(second.commandId, first.commandId);
+}
+
 TEST_F(DocumentExecutionLaneTest, EditReturnsBusyWhileRecomputeActive)
 {
     auto* feature = dynamic_cast<App::FeatureTest*>(
