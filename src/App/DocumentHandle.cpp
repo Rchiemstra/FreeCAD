@@ -115,7 +115,7 @@ bool DocumentCommandHandle::cancel(std::string reason)
 }
 
 RecomputeCommandHandle::RecomputeCommandHandle(DocumentCommandHandle command,
-                                               DocumentRecomputeId recomputeId)
+                                               DocumentCommandRecomputeId recomputeId)
     : _command(command)
     , _recomputeId(recomputeId)
 {}
@@ -130,7 +130,7 @@ const DocumentCommandHandle& RecomputeCommandHandle::command() const noexcept
     return _command;
 }
 
-DocumentRecomputeId RecomputeCommandHandle::recomputeId() const noexcept
+DocumentCommandRecomputeId RecomputeCommandHandle::recomputeId() const noexcept
 {
     return _recomputeId;
 }
@@ -139,9 +139,9 @@ DocumentCommandSnapshot RecomputeCommandHandle::status() const
 {
     auto snapshot = _command.status();
     if (valid()) {
-        DocumentRecomputeSnapshot recompute;
+        DocumentCommandRecomputeObservation recompute;
         recompute.id = _recomputeId;
-        recompute.state = DocumentRecomputeState::Running;
+        recompute.state = DocumentCommandRecomputeState::Running;
         recompute.diagnostic = snapshot.diagnostic;
         snapshot.recompute = recompute;
     }
