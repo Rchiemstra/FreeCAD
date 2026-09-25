@@ -83,25 +83,33 @@ TEST_F(DocumentExecutionStallTest, RunOnNonOwnerThreadRecordsThatThread)
     const auto ownerThread = std::this_thread::get_id();
     ASSERT_TRUE(doc()->isCollaborationOwnerThread());
 
-    std::optional<std::thread::id> workerThread;
     std::optional<App::DocumentExecutionStall::Result> workerResult;
     std::stop_source stopSource;
 
     std::jthread worker([&](const std::stop_token stopToken) {
-        workerThread = std::this_thread::get_id();
-        EXPECT_NE(workerThread.value(), ownerThread);
+        EXPECT_NE(std::this_thread::get_id(), ownerThread);
         EXPECT_FALSE(doc()->isCollaborationOwnerThread());
         workerResult = App::DocumentExecutionStall::run(stopSource.get_token(), 30s);
     });
 
-    std::this_thread::sleep_for(50ms);
-    ASSERT_TRUE(workerThread.has_value());
-    EXPECT_EQ(App::DocumentExecutionStall::activeThread(), workerThread.value());
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    std::thread::id workerThread {};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (App::DocumentExecutionStall::isActive()) {
+            workerThread = App::DocumentExecutionStall::activeThread();
+            break;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_TRUE(App::DocumentExecutionStall::isActive())
+        << "non-owner stall did not become active";
+    EXPECT_NE(workerThread, ownerThread);
+    EXPECT_EQ(App::DocumentExecutionStall::activeThread(), workerThread);
     stopSource.request_stop();
     worker.join();
 
     ASSERT_TRUE(workerResult.has_value());
-    EXPECT_EQ(workerResult->executingThread, workerThread.value());
+    EXPECT_EQ(workerResult->executingThread, workerThread);
     EXPECT_NE(workerResult->executingThread, ownerThread);
     EXPECT_FALSE(workerResult->completed);
 }
