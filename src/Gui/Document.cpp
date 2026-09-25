@@ -2763,7 +2763,9 @@ bool Document::save()
                     continue;
                 }
 
-                Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
+                if (!submitDocumentSave(*doc)) {
+                    saveCompleted = false;
+                }
             }
             if (!saveCompleted) {
                 return false;
@@ -2915,7 +2917,13 @@ void Document::saveAll()
                        << "' because model work is still running or recompute was deferred");
                 continue;
             }
-            Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
+            if (!submitDocumentSave(*doc)) {
+                ++skippedSaves;
+                FC_ERR("Save All did not write document '"
+                       << doc->getName()
+                       << "' because the document execution lane is busy");
+                continue;
+            }
         }
         catch (const Base::Exception& e) {
             QMessageBox::critical(
@@ -4154,7 +4162,13 @@ void Document::undo(int iSteps)
     }
 
     for (int i = 0; i < iSteps; i++) {
-        getDocument()->undo();
+        const auto outcome = submitDocumentKindCommand(
+            *getDocument(),
+            App::DocumentCommandKind::Undo);
+        if (!outcome.accepted()) {
+            reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+            return;
+        }
     }
     App::GetApplication().signalUndo();
 }
@@ -4169,7 +4183,13 @@ void Document::redo(int iSteps)
     }
 
     for (int i = 0; i < iSteps; i++) {
-        getDocument()->redo();
+        const auto outcome = submitDocumentKindCommand(
+            *getDocument(),
+            App::DocumentCommandKind::Redo);
+        if (!outcome.accepted()) {
+            reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+            return;
+        }
     }
     App::GetApplication().signalRedo();
 

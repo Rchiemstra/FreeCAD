@@ -31,6 +31,19 @@ GuiExport App::DocumentCommand makeDocumentRecomputeCommand(
     App::Document& document,
     const DocumentRecomputeSubmitRequest& request = {});
 
+/** Build one pointer-free kind-only command for Save, Undo, or Redo admission. */
+GuiExport App::DocumentCommand makeDocumentKindCommand(
+    App::Document& document,
+    App::DocumentCommandKind kind);
+
+/** Admit one Save, Undo, or Redo through DocumentHandle::trySubmit(). */
+GuiExport App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
+    App::Document& document,
+    App::DocumentCommandKind kind);
+
+/** Submit save on the execution lane without waiting or blocking the GUI thread. */
+GuiExport bool submitDocumentSave(App::Document& document);
+
 /** Surface a visible Busy or admission failure reason without waiting. */
 GuiExport void reportDocumentCommandSubmitBlocked(
     App::Document& document,

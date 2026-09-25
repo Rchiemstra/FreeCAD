@@ -445,8 +445,10 @@ void DocumentExecutionLane::executeActiveCommand()
         }
 
         if (_active->command.kind == DocumentCommandKind::Close) {
-            completeActiveCommand(DocumentCommandState::Completed, "close accepted");
-            static_cast<void>(GetApplication().closeDocument(_document.getName()));
+            const bool closed = GetApplication().closeDocument(_document.getName());
+            completeActiveCommand(closed ? DocumentCommandState::Completed
+                                         : DocumentCommandState::Failed,
+                                  closed ? "close completed" : "close failed");
             return;
         }
 

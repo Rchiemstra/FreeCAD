@@ -128,8 +128,36 @@ App::DocumentCommand makeDocumentRecomputeCommand(
     command.document = document.executionHandle().identity();
     command.recompute = App::DocumentCommandRecomputePayload {};
     command.recompute->coalescingKey = buildRecomputeCoalescingKey(request);
+    command.recompute->options = request.options;
     command.recompute->featureIds = request.featureIds;
     return command;
+}
+
+App::DocumentCommand makeDocumentKindCommand(
+    App::Document& document,
+    const App::DocumentCommandKind kind)
+{
+    App::DocumentCommand command;
+    command.kind = kind;
+    command.document = document.executionHandle().identity();
+    return command;
+}
+
+App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
+    App::Document& document,
+    const App::DocumentCommandKind kind)
+{
+    return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind));
+}
+
+bool submitDocumentSave(App::Document& document)
+{
+    const auto outcome = submitDocumentKindCommand(document, App::DocumentCommandKind::Save);
+    if (outcome.accepted()) {
+        return true;
+    }
+    reportDocumentCommandSubmitBlocked(document, outcome);
+    return false;
 }
 
 void reportDocumentCommandSubmitBlocked(
