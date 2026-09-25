@@ -7,6 +7,7 @@
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
+#include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
 #include <App/RecomputeHandle.h>
 #include <src/App/InitApplication.h>
@@ -280,6 +281,79 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotBlockNonOwner)
         std::this_thread::sleep_for(1ms);
     }
     EXPECT_TRUE(statusReturned.load(std::memory_order_acquire));
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitDoesNotDeadlockNonOwner)
+{
+    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        doc()->addObject("App::FeatureTestAsyncBlocker", "LaneWaitBlock"));
+    ASSERT_NE(blocker, nullptr);
+    blocker->touch();
+    App::FeatureTestAsyncBlocker::resetBlocker();
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeRecomputeCommand("wait-deadlock-test"));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    App::DocumentRecomputeId recomputeId {0};
+    const auto idDeadline = std::chrono::steady_clock::now() + 2s;
+    while (recomputeId == 0 && std::chrono::steady_clock::now() < idDeadline) {
+        const auto snapshot = commandHandle.status();
+        if (snapshot.recompute) {
+            recomputeId = snapshot.recompute->id;
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_NE(recomputeId, 0U);
+
+    std::atomic<bool> waitReturned {false};
+    std::jthread waiter([&] {
+        App::RecomputeHandle recomputeHandle(*doc(), recomputeId);
+        static_cast<void>(recomputeHandle.wait(500ms));
+        waitReturned.store(true, std::memory_order_release);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (!waitReturned.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    EXPECT_TRUE(waitReturned.load(std::memory_order_acquire));
+
+    App::FeatureTestAsyncBlocker::releaseBlocker();
+}
+
+TEST_F(DocumentExecutionLaneTest, StalledStatePersistsWithoutProgress)
+{
+    auto* blocker = dynamic_cast<App::FeatureTestAsyncBlocker*>(
+        doc()->addObject("App::FeatureTestAsyncBlocker", "LaneStallBlock"));
+    ASSERT_NE(blocker, nullptr);
+    blocker->touch();
+    App::FeatureTestAsyncBlocker::resetBlocker();
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeRecomputeCommand("stall-persist-test"));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(App::FeatureTestAsyncBlocker::waitUntilStarted(5s));
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    const auto stallDelay = std::chrono::milliseconds(
+        App::DocumentExecutionWatchdogSnapshot::StallThresholdMilliseconds + 500);
+    std::this_thread::sleep_for(stallDelay);
+
+    const auto stalledSnapshot = commandHandle.status();
+    EXPECT_EQ(stalledSnapshot.state, App::DocumentCommandState::Stalled);
+
+    const auto observeDeadline = std::chrono::steady_clock::now() + 1s;
+    while (std::chrono::steady_clock::now() < observeDeadline) {
+        EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Stalled);
+        std::this_thread::sleep_for(100ms);
+    }
+
+    App::FeatureTestAsyncBlocker::releaseBlocker();
 }
 
 TEST_F(DocumentExecutionLaneTest, CloseDocumentReturnsFalseWhileBusy)

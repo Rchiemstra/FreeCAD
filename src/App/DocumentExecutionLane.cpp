@@ -379,13 +379,16 @@ void DocumentExecutionLane::joinThread()
 void DocumentExecutionLane::threadMain()
 {
     while (true) {
-        std::unique_lock lock(_mutex);
-        _workAvailable.wait(lock, [this] {
-            return _shutdownRequested || _active.has_value() || !_dispatchQueue.empty();
-        });
+        {
+            std::unique_lock lock(_mutex);
+            _workAvailable.wait(lock, [this] {
+                return _shutdownRequested || _active.has_value() || !_dispatchQueue.empty();
+            });
+        }
 
         drainDispatchQueue();
 
+        std::unique_lock lock(_mutex);
         if (_active) {
             lock.unlock();
             executeActiveCommand();
@@ -401,7 +404,10 @@ void DocumentExecutionLane::threadMain()
 void DocumentExecutionLane::drainDispatchQueue()
 {
     std::vector<std::function<void()>> queue;
-    queue.swap(_dispatchQueue);
+    {
+        std::lock_guard lock(_mutex);
+        queue.swap(_dispatchQueue);
+    }
     for (auto& task : queue) {
         task();
     }
@@ -559,11 +565,13 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
         return;
     }
 
-    const auto previousState = command.snapshot.state;
     const auto previousProgress = command.snapshot.progress;
     const auto previousCompleted = command.snapshot.recompute
         ? command.snapshot.recompute->completedFeatures
         : std::size_t {0};
+    const auto previousRecomputeState = command.snapshot.recompute
+        ? command.snapshot.recompute->state
+        : DocumentCommandRecomputeState::Running;
 
     if (command.cancelRequested.load(std::memory_order_acquire)) {
         static_cast<void>(_document.recomputeCoordinator().cancel(
@@ -582,10 +590,11 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
     command.snapshot.diagnostic = recomputeSnapshot->diagnostic;
     command.snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
 
-    const bool progressChanged = previousState != command.snapshot.state
-        || previousProgress != command.snapshot.progress
+    const bool progressChanged = previousProgress != command.snapshot.progress
         || (command.snapshot.recompute
-            && previousCompleted != command.snapshot.recompute->completedFeatures);
+            && previousCompleted != command.snapshot.recompute->completedFeatures)
+        || (command.snapshot.recompute
+            && previousRecomputeState != command.snapshot.recompute->state);
     if (progressChanged) {
         touchWatchdogProgress(command);
     }
