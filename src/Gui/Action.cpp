@@ -43,6 +43,7 @@
 #include "Action.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Dialogs/DlgUndoRedo.h"
 #include "PreferencePages/DlgSettingsWorkbenchesImp.h"
 #include "Document.h"
@@ -1254,8 +1255,10 @@ void RecentMacrosAction::activateFile(int id)
                     fi.filePath().toUtf8()
                 );
                 // after macro run recalculate the document
-                if (Application::Instance->activeDocument()) {
-                    Application::Instance->activeDocument()->getDocument()->recompute();
+                if (auto* active = Application::Instance->activeDocument()) {
+                    if (auto* document = active->getDocument()) {
+                        requestDocumentRecompute(*document);
+                    }
                 }
             }
             catch (const Base::SystemExitException&) {

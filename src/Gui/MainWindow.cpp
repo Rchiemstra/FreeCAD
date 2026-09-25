@@ -97,6 +97,7 @@
 #include "BitmapFactory.h"
 #include "ComboView.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "DockWindowManager.h"
 #include "DocumentChangesWidget.h"
 #include "DownloadManager.h"
@@ -2602,7 +2603,7 @@ void MainWindow::insertFromMimeData(const QMimeData* mimeData)
                 if (obj) {
                     obj->Label.setValue("PastedImage");
                     static_cast<Image::ImagePlane*>(obj)->ImageFile.setValue(tempPath.c_str());
-                    doc->recompute();
+                    requestDocumentRecompute(*doc);
                 }
             }
             catch (const Base::Exception& e) {

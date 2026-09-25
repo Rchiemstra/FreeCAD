@@ -466,6 +466,7 @@ SET(Command_CPP_SRCS
     Action.cpp
     ActionFunction.cpp
     Command.cpp
+    DocumentExecutionIngress.cpp
     CommandDoc.cpp
     CommandFeat.cpp
     CommandMacro.cpp
@@ -486,6 +487,7 @@ SET(Command_SRCS
     ActionFunction.h
     Command.h
     CommandT.h
+    DocumentExecutionIngress.h
     ShortcutManager.h
     CommandCompleter.h
     CommandActionPy.h

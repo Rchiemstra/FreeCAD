@@ -77,6 +77,7 @@
 #include "DocumentPy.h"
 #include "Application.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Control.h"
 #include "FileDialog.h"
 #include "MainWindow.h"
@@ -2759,11 +2760,7 @@ bool Document::save()
                 // Changed 'mustExecute' status may be triggered by saving external document
                 if (!dmap[doc] && doc->mustExecute()) {
                     App::AutoTransaction trans(doc, "Recompute");
-                    Command::doCommand(
-                        Command::Doc,
-                        "App.getDocument(\"%s\").recompute()",
-                        doc->getName()
-                    );
+                    requestDocumentRecompute(*doc);
                 }
 
                 Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
@@ -2910,7 +2907,7 @@ void Document::saveAll()
             // Changed 'mustExecute' status may be triggered by saving external document
             if (!dmap[doc] && doc->mustExecute()) {
                 App::AutoTransaction trans(doc, "Recompute");
-                Command::doCommand(Command::Doc, "App.getDocument('%s').recompute()", doc->getName());
+                requestDocumentRecompute(*doc);
             }
             Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
         }
