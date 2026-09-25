@@ -133,7 +133,7 @@ void Picker::createPrimitive(QWidget* widget, const QString& descr, Gui::Documen
         doc->openCommand(descr.toUtf8());
         Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
         doc->commitCommand();
-        Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::trySubmitActiveDocumentRecompute();
         Gui::Command::runCommand(
             Gui::Command::Gui,
             "Gui.ActiveDocument.ActiveView.sendMessage(\"ViewFit\")"
@@ -2313,7 +2313,7 @@ void DlgPrimitives::tryCreatePrimitive(const QString& placement)
     Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
     Gui::Command::runCommand(Gui::Command::Doc, getAutoGroupCommandStr(name).toUtf8());
     Gui::Application::Instance->activeDocument()->commitCommand();
-    Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    PartGui::trySubmitActiveDocumentRecompute();
     Gui::Command::runCommand(Gui::Command::Gui, "Gui.ActiveDocument.ActiveView.sendMessage(\"ViewFit\")");
 }
 
@@ -2362,7 +2362,7 @@ void DlgPrimitives::accept(const QString& placement)
     }
     App::Document* doc = featurePtr->getDocument();
     acceptChanges(placement);
-    doc->recompute();
+    PartGui::trySubmitDocumentRecompute(*doc);
     // commit undo command
     doc->commitTransaction();
 }
@@ -2702,3 +2702,4 @@ bool TaskPrimitivesEdit::reject()
 }
 
 #include "moc_DlgPrimitives.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

@@ -213,7 +213,7 @@ bool OffsetWidget::accept()
         );
         Gui::cmdAppObjectArgs(d->offset, "Fill = %s", d->ui.fillOffset->isChecked() ? "True" : "False");
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::trySubmitActiveDocumentRecompute();
         if (!d->offset->isValid()) {
             throw Base::CADKernelError(d->offset->getStatusString());
         }
@@ -291,3 +291,4 @@ bool TaskOffset::reject()
 }
 
 #include "moc_TaskOffset.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

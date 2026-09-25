@@ -507,7 +507,7 @@ void DlgRevolution::accept()
         }
 
         activeDoc->commitTransaction();
-        activeDoc->recompute();
+        PartGui::trySubmitDocumentRecompute(*activeDoc);
     }
     catch (Base::Exception& err) {
         QMessageBox::critical(
@@ -673,3 +673,4 @@ bool TaskRevolution::accept()
 }
 
 #include "moc_DlgRevolution.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

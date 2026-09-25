@@ -47,6 +47,7 @@
 #include "ViewProviderBody.h"
 #include "Utils.h"
 #include "ViewProvider.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -590,7 +591,7 @@ void ViewProviderBody::dropObject(App::DocumentObject* obj)
     }
 
     App::Document* doc = body->getDocument();
-    doc->recompute();
+    PartGui::trySubmitDocumentRecompute(*doc);
 
     // check if a proxy object has been created for the base feature
     std::vector<App::DocumentObject*> links = body->Group.getValues();

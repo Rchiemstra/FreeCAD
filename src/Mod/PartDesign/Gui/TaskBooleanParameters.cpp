@@ -447,7 +447,7 @@ bool TaskDlgBooleanParameters::accept()
         Gui::Command::runCommand(Gui::Command::Doc, str.str().c_str());
         FCMD_OBJ_CMD(obj, "Type = " << parameter->getType());
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::trySubmitActiveDocumentRecompute();
         Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
         obj->getDocument()->commitTransaction();
     }
@@ -485,3 +485,4 @@ bool TaskDlgBooleanParameters::reject()
 }
 
 #include "moc_TaskBooleanParameters.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

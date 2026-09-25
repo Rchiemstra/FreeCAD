@@ -1110,7 +1110,7 @@ bool DlgFilletEdges::accept()
                 .arg(name, shape);
     Gui::Command::runCommand(Gui::Command::App, code.toLatin1());
     activeDoc->commitTransaction();
-    activeDoc->recompute();
+    PartGui::trySubmitDocumentRecompute(*activeDoc);
     if (d->fillet) {
         Gui::ViewProvider* vp;
         vp = Gui::Application::Instance->getViewProvider(d->fillet);
@@ -1251,3 +1251,4 @@ bool TaskChamferEdges::reject()
 }
 
 #include "moc_DlgFilletEdges.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

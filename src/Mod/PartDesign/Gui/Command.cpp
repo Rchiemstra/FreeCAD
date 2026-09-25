@@ -33,6 +33,8 @@
 #include <TopoDS_Face.hxx>
 
 
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
+
 #include <App/Expression.h>
 #include <App/ObjectIdentifier.h>
 #include <App/Origin.h>
@@ -175,10 +177,7 @@ void UnifiedDatumCommand(Gui::Command& cmd, Base::Type type, std::string name)
                     );
                 }
             }
-            cmd.doCommand(
-                Gui::Command::Doc,
-                "App.activeDocument().recompute()"
-            );  // recompute the feature based on its references
+            PartGui::trySubmitActiveDocumentRecompute();  // recompute the feature based on its references
             PartDesignGui::setEdit(Feat, pcActiveBody);
         }
         else {

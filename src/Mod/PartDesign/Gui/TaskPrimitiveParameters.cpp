@@ -1096,7 +1096,7 @@ bool TaskBoxPrimitives::setPrimitive(App::DocumentObject* obj)
         // class or when starting to edit a primitive.
         Gui::Command::runCommand(Gui::Command::Doc, cmd.c_str());
         TaskFeatureAddSubParameters::apply();
-        Gui::Command::runCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::trySubmitActiveDocumentRecompute();
     }
     catch (const Base::PyException& e) {
         QMessageBox::warning(
@@ -1218,7 +1218,7 @@ bool TaskDlgPrimitiveParameters::accept()
     if (!primitiveOK) {
         return primitiveOK;
     }
-    Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+    PartGui::trySubmitActiveDocumentRecompute();
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
 
     return true;
@@ -1241,3 +1241,4 @@ QDialogButtonBox::StandardButtons TaskDlgPrimitiveParameters::getStandardButtons
 
 
 #include "moc_TaskPrimitiveParameters.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

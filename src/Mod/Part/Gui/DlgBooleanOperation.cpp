@@ -501,7 +501,7 @@ void DlgBooleanOperation::accept()
             Base::Tools::joinList(names).c_str()
         );
         activeDoc->commitTransaction();
-        activeDoc->recompute();
+        PartGui::trySubmitDocumentRecompute(*activeDoc);
     }
     catch (const Base::Exception& e) {
         e.reportException();
@@ -524,3 +524,4 @@ void TaskBooleanOperation::clicked(int id)
 }
 
 #include "moc_DlgBooleanOperation.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

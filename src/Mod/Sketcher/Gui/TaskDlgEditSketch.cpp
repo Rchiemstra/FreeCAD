@@ -23,7 +23,9 @@
  ***************************************************************************/
 
 
+#include <App/Application.h>
 #include <Gui/Command.h>
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 #include "TaskDlgEditSketch.h"
 #include "ViewProviderSketch.h"
@@ -140,7 +142,9 @@ bool TaskDlgEditSketch::accept()
 {
     std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
-    Gui::Command::doCommand(Gui::Command::Doc, "App.getDocument('%s').recompute()", document.c_str());
+    if (auto* appDoc = App::GetApplication().getDocument(document.c_str())) {
+        PartGui::trySubmitDocumentRecompute(*appDoc);
+    }
 
     return true;
 }

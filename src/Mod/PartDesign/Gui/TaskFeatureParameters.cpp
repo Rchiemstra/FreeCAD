@@ -211,7 +211,7 @@ bool TaskDlgFeatureParameters::accept()
         }
 
         if (isUpdateBlocked) {
-            Gui::cmdAppDocument(feature, "recompute()");
+            PartGui::trySubmitDocumentRecompute(*feature);
         }
         else {
             // object was already computed, nothing more to do with it...
@@ -226,7 +226,7 @@ bool TaskDlgFeatureParameters::accept()
                 obj->touch();
             }
             // ...and recompute them
-            Gui::cmdAppDocument(feature->getDocument(), "recompute()");
+            PartGui::trySubmitDocumentRecompute(*feature->getDocument());
         }
 
         if (!feature->isValid()) {
@@ -314,10 +314,11 @@ bool TaskDlgFeatureParameters::reject()
         }
     }
 
-    Gui::cmdAppDocument(document, "recompute()");
+    PartGui::trySubmitDocumentRecompute(*document);
     Gui::cmdGuiDocument(document, "resetEdit()");
 
     return true;
 }
 
 #include "moc_TaskFeatureParameters.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

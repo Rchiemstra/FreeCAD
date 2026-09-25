@@ -282,7 +282,7 @@ bool ThicknessWidget::accept()
             d->ui.selfIntersection->isChecked() ? "True" : "False"
         );
 
-        Gui::Command::doCommand(Gui::Command::Doc, "App.ActiveDocument.recompute()");
+        PartGui::trySubmitActiveDocumentRecompute();
         if (!d->thickness->isValid()) {
             throw Base::CADKernelError(d->thickness->getStatusString());
         }
@@ -421,3 +421,4 @@ bool TaskThickness::reject()
 }
 
 #include "moc_TaskThickness.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

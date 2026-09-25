@@ -428,7 +428,7 @@ bool TaskDlgShapeBinder::accept()
         if (!vp.expired()) {
             parameter->accept();
 
-            Gui::cmdAppDocument(vp->getObject(), "recompute()");
+            PartGui::trySubmitDocumentRecompute(*vp->getObject());
             if (!vp->getObject()->isValid()) {
                 throw Base::RuntimeError(vp->getObject()->getStatusString());
             }
@@ -457,9 +457,10 @@ bool TaskDlgShapeBinder::reject()
         vp->getDocument()->abortCommand();
         App::Document* doc = vp->getObject()->getDocument();
         Gui::cmdGuiDocument(doc, "resetEdit()");
-        Gui::cmdAppDocument(doc, "recompute()");
+        PartGui::trySubmitDocumentRecompute(*doc);
     }
     return true;
 }
 
 #include "moc_TaskShapeBinder.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

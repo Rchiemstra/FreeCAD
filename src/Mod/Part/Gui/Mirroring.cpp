@@ -394,7 +394,7 @@ bool Mirroring::accept()
     }
 
     activeDoc->commitTransaction();
-    activeDoc->recompute();
+    PartGui::trySubmitDocumentRecompute(*activeDoc);
     Gui::Selection().rmvSelectionGate();
     filterSelection = false;
     return true;
@@ -432,3 +432,4 @@ bool TaskMirroring::reject()
 }
 
 #include "moc_Mirroring.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

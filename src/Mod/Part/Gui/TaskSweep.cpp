@@ -417,7 +417,7 @@ bool SweepWidget::accept()
         }
         doc->openCommand(QT_TRANSLATE_NOOP("Command", "Sweep"));
         Gui::Command::runCommand(Gui::Command::App, cmd.toUtf8());
-        doc->getDocument()->recompute();
+        PartGui::trySubmitDocumentRecompute(*doc->getDocument());
         App::DocumentObject* obj = doc->getDocument()->getActiveObject();
         if (obj && !obj->isValid()) {
             std::string msg = obj->getStatusString();
@@ -569,3 +569,4 @@ bool TaskSweep::reject()
 }
 
 #include "moc_TaskSweep.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

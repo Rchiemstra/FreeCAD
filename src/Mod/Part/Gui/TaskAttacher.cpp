@@ -1634,7 +1634,7 @@ bool TaskDlgAttacher::accept()
             "MapMode = '%s'",
             AttachEngine::getModeName(eMapMode(pcAttach->MapMode.getValue())).c_str()
         );
-        Gui::cmdAppObject(obj, "recompute()");
+        PartGui::trySubmitDocumentRecompute(*obj);
 
         if (!obj->isValid()) {
             throw Base::RuntimeError(obj->getStatusString());
@@ -1667,7 +1667,9 @@ bool TaskDlgAttacher::reject()
     if (document) {
         // roll back the done things
         document->abortCommand();
-        Gui::Command::doCommand(Gui::Command::Doc, "%s.recompute()", doc.getAppDocumentPython().c_str());
+        if (auto* appDoc = document->getDocument()) {
+            PartGui::trySubmitDocumentRecompute(*appDoc);
+        }
     }
 
     accepted = false;

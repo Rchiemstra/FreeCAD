@@ -1332,7 +1332,7 @@ void DlgProjectOnSurface::accept()
     if (!feature.expired()) {
         auto document = feature->getDocument();
         document->commitTransaction();
-        document->recompute();
+        PartGui::trySubmitDocumentRecompute(*document);
     }
 }
 
@@ -1665,3 +1665,4 @@ bool TaskProjectOnSurface::reject()
 }
 
 #include "moc_DlgProjectionOnSurface.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

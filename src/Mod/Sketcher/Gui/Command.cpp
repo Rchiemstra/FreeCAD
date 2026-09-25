@@ -62,6 +62,7 @@
 #include "Utils.h"
 #include "ViewProviderSketch.h"
 #include "Command.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 // Hint: this is to prevent to re-format big parts of the file. Remove it later again.
 // clang-format off
@@ -259,7 +260,7 @@ void CmdSketcherNewSketch::activated(int iMsg)
             assert(0 /* mapmode index out of range */);
         doCommand(
             Gui, "App.activeDocument().%s.AttachmentSupport = %s", FeatName.c_str(), supportString.c_str());
-        doCommand(Gui, "App.activeDocument().recompute()");// recompute the sketch placement based
+        PartGui::trySubmitActiveDocumentRecompute();// recompute the sketch placement based
                                                            // on its support
         doCommand(Gui, "Gui.activeDocument().setEdit('%s')", FeatName.c_str());
 
@@ -390,7 +391,7 @@ void CmdSketcherLeaveSketch::activated(int iMsg)
 
     // See also TaskDlgEditSketch::reject
     doCommand(Gui, "Gui.activeDocument().resetEdit()");
-    doCommand(Doc, "App.ActiveDocument.recompute()");
+    PartGui::trySubmitActiveDocumentRecompute();
 }
 
 bool CmdSketcherLeaveSketch::isActive()
@@ -837,7 +838,7 @@ void CmdSketcherMapSketch::activated(int iMsg)
             Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = %s", supportString.c_str());
             // commitCommand();
             commitCommand();
-            doCommand(Gui, "App.activeDocument().recompute()");
+            PartGui::trySubmitActiveDocumentRecompute();
         }
         else {
             openCommand(QT_TRANSLATE_NOOP("Command", "Detach sketch"));
@@ -846,7 +847,7 @@ void CmdSketcherMapSketch::activated(int iMsg)
             Gui::cmdAppObjectArgs(sketch, "AttachmentSupport = None");
             // commitCommand();
             commitCommand();
-            doCommand(Gui, "App.activeDocument().recompute()");
+            PartGui::trySubmitActiveDocumentRecompute();
         }
     }
     catch (ExceptionWrongInput& e) {
@@ -1058,7 +1059,7 @@ void CmdSketcherMirrorSketch::activated(int iMsg)
     }
 
     commitCommand();
-    doCommand(Gui, "App.activeDocument().recompute()");
+    PartGui::trySubmitActiveDocumentRecompute();
 }
 
 bool CmdSketcherMirrorSketch::isActive()
@@ -1401,7 +1402,7 @@ void CmdSketcherMergeSketches::activated(int iMsg)
               selection.front().getFeatName());
 
     commitCommand();
-    doCommand(Doc, "App.activeDocument().recompute()");
+    PartGui::trySubmitActiveDocumentRecompute();
 }
 
 bool CmdSketcherMergeSketches::isActive()

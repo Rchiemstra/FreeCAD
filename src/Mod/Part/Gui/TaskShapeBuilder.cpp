@@ -200,7 +200,7 @@ void ShapeBuilderWidget::onCreateButtonClicked()
         else if (mode == 5) {
             createSolidFromShell();
         }
-        doc->getDocument()->recompute();
+        PartGui::trySubmitDocumentRecompute(*doc->getDocument());
         Gui::Selection().clearSelection();
     }
     catch (const Base::Exception& e) {
@@ -646,3 +646,4 @@ bool TaskShapeBuilder::reject()
 }
 
 #include "moc_TaskShapeBuilder.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

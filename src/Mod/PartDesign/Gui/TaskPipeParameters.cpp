@@ -608,7 +608,7 @@ bool TaskPipeParameters::accept()
         App::PropertyLinkT propT(spine, subNames);
         Gui::cmdAppObjectArgs(pipe, "Spine = %s", propT.getPropertyPython());
 
-        Gui::cmdAppDocument(pipe, "recompute()");
+        PartGui::trySubmitDocumentRecompute(*pipe);
         if (!getObject()->isValid()) {
             throw Base::RuntimeError(getObject()->getStatusString());
         }
@@ -1288,3 +1288,4 @@ bool TaskDlgPipeParameters::accept()
 
 
 #include "moc_TaskPipeParameters.cpp"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
