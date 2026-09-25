@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""Wave 0 inventory gate for production ViewProvider updateData providers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+INVENTORY_PATH = Path(__file__).resolve().parent / "view_provider_updatedata_inventory.md"
+GENERATOR = Path(__file__).resolve().parent / "generate_view_provider_updatedata_inventory.py"
+
+INVENTORY_HEADER = ("file", "symbol/caller", "line", "classification")
+CPP_IMPL = re.compile(
+    r"void\s+((?:\w+::)*\w+)::updateData\s*\([^)]*App::Property",
+    re.MULTILINE,
+)
+CPP_INLINE = re.compile(
+    r"void\s+updateData\s*\(\s*const\s+App::Property[^)]*\)\s*(?:override)?\s*\{",
+    re.MULTILINE,
+)
+PY_PROVIDER = re.compile(
+    r"^\s*def\s+updateData\s*\(\s*self\s*,\s*\w+\s*,\s*\w+",
+    re.MULTILINE,
+)
+EXCLUDED_WORKBENCHES = frozenset({"Test", "TemplatePyMod"})
+
+
+@dataclass(frozen=True)
+class InventoryRow:
+    number: int
+    file: str
+    symbol: str
+    line: int
+    classification: str
+
+    @property
+    def source_path(self) -> str:
+        return self.file.strip("`")
+
+    @property
+    def stable_symbol(self) -> str:
+        return self.symbol.strip("`")
+
+    def key(self) -> tuple[str, str, int]:
+        return (self.source_path, self.stable_symbol, self.line)
+
+    def diagnostic(self, message: str) -> str:
+        return f"{self.source_path}:{self.line} {self.stable_symbol}: {message}"
+
+
+def _parse_inventory(text: str) -> list[InventoryRow]:
+    rows: list[InventoryRow] = []
+    in_table = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.startswith("|"):
+            if in_table and rows:
+                break
+            continue
+        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
+        if cells == INVENTORY_HEADER:
+            in_table = True
+            continue
+        if not in_table or len(cells) != len(INVENTORY_HEADER):
+            continue
+        if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+            continue
+        file, symbol, line_text, classification = cells
+        rows.append(
+            InventoryRow(
+                number,
+                file,
+                symbol,
+                int(line_text),
+                classification,
+            )
+        )
+    return rows
+
+
+def _production_gui_sources() -> list[Path]:
+    paths: list[Path] = []
+    paths.extend(REPO_ROOT.joinpath("src", "Gui").rglob("*"))
+    mod_root = REPO_ROOT / "src" / "Mod"
+    if mod_root.is_dir():
+        for module in mod_root.iterdir():
+            if not module.is_dir() or module.name in EXCLUDED_WORKBENCHES:
+                continue
+            gui = module / "Gui"
+            if gui.is_dir():
+                paths.extend(gui.rglob("*"))
+    return sorted(
+        {
+            path
+            for path in paths
+            if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
+            and "_TEMPLATE_" not in path.parts
+        }
+    )
+
+
+def _class_name_from_source(text: str, line_index: int) -> str | None:
+    lines = text.splitlines()
+    for index in range(line_index, max(-1, line_index - 80), -1):
+        match = re.search(r"\b(?:class|struct)\s+(?:(?:\w+::)*)(\w+)", lines[index])
+        if match:
+            return match.group(1)
+    return None
+
+
+def _discover_providers() -> set[tuple[str, str, int]]:
+    discovered: set[tuple[str, str, int]] = set()
+    for path in _production_gui_sources():
+        text = path.read_text(encoding="utf-8", errors="surrogateescape")
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        for match in CPP_IMPL.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            discovered.add((relative, match.group(1), line))
+        if path.suffix.lower() == ".cpp":
+            for match in CPP_INLINE.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                class_name = _class_name_from_source(text, line - 1)
+                if class_name:
+                    discovered.add((relative, class_name, line))
+        if path.suffix.lower() == ".py":
+            for match in PY_PROVIDER.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                class_name = _class_name_from_source(text, line - 1) or path.stem
+                discovered.add((relative, class_name, line))
+    return discovered
+
+
+def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
+    violations: list[str] = []
+    keys = [row.key() for row in rows]
+    if len(keys) != len(set(keys)):
+        violations.append("<inventory>: duplicate file/symbol/line rows")
+    for row in rows:
+        if row.classification != "unclassified":
+            violations.append(row.diagnostic(f"classification is {row.classification!r}, expected unclassified"))
+        if not (REPO_ROOT / row.source_path).is_file():
+            violations.append(row.diagnostic("named source file does not exist"))
+        source = (REPO_ROOT / row.source_path).read_text(encoding="utf-8", errors="surrogateescape")
+        lines = source.splitlines()
+        if row.line <= 0 or row.line > len(lines):
+            violations.append(row.diagnostic("line is outside the source file"))
+            continue
+        if "updateData" not in lines[row.line - 1]:
+            neighborhood = "\n".join(
+                lines[max(0, row.line - 3) : min(len(lines), row.line + 2)]
+            )
+            if "updateData" not in neighborhood:
+                violations.append(row.diagnostic("line is not an updateData provider anchor"))
+    return violations
+
+
+def test_inventory_lists_only_unclassified_rows() -> None:
+    rows = _parse_inventory(INVENTORY_PATH.read_text(encoding="utf-8"))
+    assert rows, "inventory table is empty"
+    violations = _inventory_shape_violations(rows)
+    assert not violations, "inventory shape violations:\n" + "\n".join(violations)
+
+
+def test_every_production_provider_is_inventoried() -> None:
+    rows = _parse_inventory(INVENTORY_PATH.read_text(encoding="utf-8"))
+    inventoried = {row.key() for row in rows}
+    discovered = _discover_providers()
+    missing = sorted(discovered - inventoried)
+    stale = sorted(inventoried - discovered)
+    failures: list[str] = []
+    for file, symbol, line in missing:
+        failures.append(f"missing inventory row for {file}:{line} {symbol}")
+    for file, symbol, line in stale:
+        failures.append(f"stale inventory row for {file}:{line} {symbol}")
+    assert not failures, "updateData provider inventory drift:\n" + "\n".join(failures)
+
+
+def test_generator_reproduces_committed_inventory() -> None:
+    before = INVENTORY_PATH.read_text(encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(GENERATOR)],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    after = INVENTORY_PATH.read_text(encoding="utf-8")
+    INVENTORY_PATH.write_text(before, encoding="utf-8")
+    assert before == after, "committed inventory does not match generator output"
