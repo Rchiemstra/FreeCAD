@@ -5,6 +5,7 @@
 #include <App/DocumentCommand.h>
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentHandle.h>
+#include <Gui/PresentationDelta.h>
 
 #include <type_traits>
 
@@ -18,6 +19,17 @@ static_assert(!std::is_constructible_v<DocumentCommandHandle, DocumentObject*>);
 static_assert(std::is_copy_constructible_v<DocumentHandle>);
 static_assert(std::is_same_v<DocumentCommandSnapshot,
                               decltype(std::declval<const DocumentCommandHandle&>().status())>);
+static_assert(std::is_copy_constructible_v<DocumentCommandRecomputeObservation>);
+static_assert(!std::is_pointer_v<DocumentCommandRecomputeObservation>);
+static_assert(!std::is_pointer_v<Gui::PresentationRenderBuffer>);
+static_assert(std::is_same_v<decltype(std::declval<Gui::PresentationRenderBuffer>().topology),
+                              std::vector<std::uint32_t>>);
+static_assert(
+    std::is_same_v<decltype(std::declval<Gui::PresentationRenderBuffer>().subelementMappings),
+                   std::vector<Gui::PresentationRenderSubelementMapping>>);
+static_assert(
+    std::is_same_v<decltype(std::declval<Gui::PresentationRenderBuffer>().material),
+                   Gui::PresentationRenderMaterial>);
 
 TEST(DocumentCommandContractTest, exposesStableSubmitResultNames)
 {
@@ -78,4 +90,22 @@ TEST(DocumentCommandHandleContractTest, statusDoesNotRequireLiveModelPointers)
     EXPECT_EQ(snapshot.id, 17U);
     EXPECT_EQ(snapshot.document.documentInstanceId, 42U);
     EXPECT_EQ(snapshot.state, DocumentCommandState::Running);
+}
+
+TEST(DocumentCommandHandleContractTest, recomputeObservationIsObservationOnly)
+{
+    DocumentCommandRecomputeObservation observation;
+    observation.id = 9U;
+    observation.state = DocumentCommandRecomputeState::Running;
+    observation.features.push_back(
+        DocumentCommandRecomputeFeatureObservation {"feature-a",
+                                                    DocumentCommandRecomputeFeatureState::Waiting,
+                                                    "waiting",
+                                                    true});
+
+    const auto copied = observation;
+    EXPECT_EQ(copied.id, 9U);
+    EXPECT_EQ(copied.features.size(), 1U);
+    EXPECT_EQ(copied.features.front().featureId, "feature-a");
+    EXPECT_TRUE(copied.features.front().executed);
 }
