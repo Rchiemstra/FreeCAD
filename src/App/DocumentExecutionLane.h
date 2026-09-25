@@ -55,6 +55,8 @@ public:
     [[nodiscard]] std::thread::id ownerThreadId() const noexcept;
     [[nodiscard]] bool isOwnerThread() const noexcept;
     [[nodiscard]] bool isIdle() const noexcept;
+    /** True when idle or the owner thread is executing an admitted Close command. */
+    [[nodiscard]] bool permitsApplicationClose() const noexcept;
     [[nodiscard]] bool shutdownRequested() const noexcept;
 
     [[nodiscard]] DocumentCommandSubmitOutcome trySubmit(DocumentCommand command);
@@ -113,7 +115,11 @@ private:
     void threadMain();
     void drainDispatchQueue();
     void executeActiveCommand();
+    void executeActiveRecompute();
+    [[nodiscard]] bool executeInstantCommand(ActiveCommand& command);
     void pumpActiveRecompute(ActiveCommand& command);
+    [[nodiscard]] DocumentRecomputeSnapshot recomputeSnapshotFromObservation(
+        const DocumentCommandRecomputeObservation& observation) const;
     void completeActiveCommand(DocumentCommandState state, std::string diagnostic = {});
     void publishActiveSnapshot(const DocumentCommandSnapshot& snapshot);
     void publishActiveSnapshotLocked(const DocumentCommandSnapshot& snapshot);

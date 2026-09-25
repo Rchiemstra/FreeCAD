@@ -8,6 +8,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
 #include <App/FeatureTest.h>
+#include <App/RecomputeHandle.h>
 #include <src/App/InitApplication.h>
 
 #include <atomic>
@@ -51,6 +52,29 @@ protected:
         command.recompute = App::DocumentCommandRecomputePayload {};
         command.recompute->coalescingKey = coalescingKey;
         return command;
+    }
+
+    App::DocumentCommand makeKindCommand(App::DocumentCommandKind kind) const
+    {
+        App::DocumentCommand command;
+        command.kind = kind;
+        command.document = doc()->executionHandle().identity();
+        return command;
+    }
+
+    static bool waitForTerminal(App::DocumentCommandHandle& commandHandle,
+                                const std::chrono::milliseconds timeout = 5s)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        App::DocumentCommandSnapshot snapshot;
+        do {
+            snapshot = commandHandle.status();
+            if (snapshot.terminal()) {
+                return true;
+            }
+            std::this_thread::sleep_for(5ms);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return snapshot.terminal();
     }
 
 private:
@@ -150,6 +174,112 @@ TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
     EXPECT_TRUE(snapshot.state == App::DocumentCommandState::Cancelling
                 || snapshot.state == App::DocumentCommandState::Cancelled
                 || snapshot.state == App::DocumentCommandState::Failed);
+}
+
+TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsUndoWhenIdle)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "LaneUndo"));
+    ASSERT_NE(feature, nullptr);
+
+    doc()->openTransaction("lane-undo-first");
+    feature->Integer.setValue(10);
+    doc()->commitTransaction();
+    doc()->openTransaction("lane-undo-second");
+    feature->Integer.setValue(20);
+    doc()->commitTransaction();
+    ASSERT_EQ(feature->Integer.getValue(), 20);
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Undo));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(commandHandle));
+    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Completed);
+    EXPECT_EQ(feature->Integer.getValue(), 10);
+}
+
+TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsSaveWhenIdle)
+{
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Save));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    ASSERT_TRUE(waitForTerminal(commandHandle));
+    const auto snapshot = commandHandle.status();
+    EXPECT_TRUE(snapshot.terminal());
+    EXPECT_NE(snapshot.state, App::DocumentCommandState::Running);
+}
+
+TEST_F(DocumentExecutionLaneTest, UndoReturnsBusyWhileRecomputeActive)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "LaneUndoBusy"));
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+
+    auto handle = doc()->executionHandle();
+    const auto accepted = handle.trySubmit(makeRecomputeCommand("busy-undo-test"));
+    ASSERT_EQ(accepted.result, App::DocumentCommandSubmitResult::Accepted);
+
+    const auto busy = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Undo));
+    EXPECT_EQ(busy.result, App::DocumentCommandSubmitResult::Busy);
+}
+
+TEST_F(DocumentExecutionLaneTest, SaveReturnsBusyWhileRecomputeActive)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "LaneSaveBusy"));
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+
+    auto handle = doc()->executionHandle();
+    const auto accepted = handle.trySubmit(makeRecomputeCommand("busy-save-test"));
+    ASSERT_EQ(accepted.result, App::DocumentCommandSubmitResult::Accepted);
+
+    const auto busy = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Save));
+    EXPECT_EQ(busy.result, App::DocumentCommandSubmitResult::Busy);
+}
+
+TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotBlockNonOwner)
+{
+    auto* feature = dynamic_cast<App::FeatureTest*>(
+        doc()->addObject("App::FeatureTest", "LaneStatus"));
+    ASSERT_NE(feature, nullptr);
+    feature->touch();
+
+    auto handle = doc()->executionHandle();
+    const auto outcome = handle.trySubmit(makeRecomputeCommand("status-non-owner"));
+    ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+
+    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
+    App::DocumentRecomputeId recomputeId {0};
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (recomputeId == 0 && std::chrono::steady_clock::now() < deadline) {
+        const auto snapshot = commandHandle.status();
+        if (snapshot.recompute) {
+            recomputeId = snapshot.recompute->id;
+            break;
+        }
+        std::this_thread::sleep_for(5ms);
+    }
+    ASSERT_NE(recomputeId, 0U);
+
+    std::atomic<bool> statusReturned {false};
+    std::jthread observer([&] {
+        App::RecomputeHandle recomputeHandle(*doc(), recomputeId);
+        static_cast<void>(recomputeHandle.status());
+        statusReturned.store(true, std::memory_order_release);
+    });
+
+    const auto statusDeadline = std::chrono::steady_clock::now() + 200ms;
+    while (!statusReturned.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < statusDeadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_TRUE(statusReturned.load(std::memory_order_acquire));
 }
 
 TEST_F(DocumentExecutionLaneTest, CloseDocumentReturnsFalseWhileBusy)

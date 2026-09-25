@@ -125,6 +125,7 @@
 #include "TranslationQtBridge.h"
 #include "Services.h"
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
 #include "DocumentObjectGroup.h"
@@ -692,7 +693,7 @@ bool Application::closeDocument(const char* name)
     }
 
     if (const auto* lane = pos->second->executionLane()) {
-        if (!lane->isIdle()) {
+        if (!lane->permitsApplicationClose()) {
             return false;
         }
     }

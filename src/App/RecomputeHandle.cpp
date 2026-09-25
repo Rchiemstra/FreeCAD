@@ -105,12 +105,9 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         return closedDocumentSnapshot();
     }
 
-    if (DocumentWouldBlock::isGuiThread()) {
-        if (const auto* lane = owner->executionLane()) {
-            const auto recomputeSnapshot = lane->recomputeStatus(_id);
-            if (recomputeSnapshot) {
-                return *recomputeSnapshot;
-            }
+    if (const auto* lane = owner->executionLane()) {
+        if (const auto published = lane->recomputeStatus(_id)) {
+            return *published;
         }
     }
 
@@ -132,20 +129,18 @@ bool RecomputeHandle::poll()
         return true;
     }
 
-    const auto pump = [&]() -> bool {
-        static_cast<void>(owner->recomputeCoordinator().poll(_id));
-        const auto snapshot = owner->recomputeCoordinator().status(_id);
-        if (!snapshot) {
-            return true;
-        }
-        finalizeIfTerminal(*owner, *snapshot);
-        return snapshot->terminal();
-    };
-
     if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        return owner->executionLane()->dispatchToOwner(pump);
+        // Observation-only: the lane owner thread pumps during executeActiveRecompute().
+        return status().terminal();
     }
-    return pump();
+
+    static_cast<void>(owner->recomputeCoordinator().poll(_id));
+    const auto snapshot = owner->recomputeCoordinator().status(_id);
+    if (!snapshot) {
+        return true;
+    }
+    finalizeIfTerminal(*owner, *snapshot);
+    return snapshot->terminal();
 }
 
 bool RecomputeHandle::cancel(std::string reason)
@@ -155,17 +150,11 @@ bool RecomputeHandle::cancel(std::string reason)
         return false;
     }
 
+    const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
     if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        return owner->executionLane()->dispatchToOwner(
-            [this, owner, reasonCopy = std::move(reason)]() mutable -> bool {
-                const bool accepted =
-                    owner->recomputeCoordinator().cancel(_id, std::move(reasonCopy));
-                static_cast<void>(poll());
-                return accepted;
-            });
+        return accepted;
     }
 
-    const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
     static_cast<void>(poll());
     return accepted;
 }

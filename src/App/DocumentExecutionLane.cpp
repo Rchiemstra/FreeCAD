@@ -2,17 +2,21 @@
 
 #include "DocumentExecutionLane.h"
 
+#include "Application.h"
 #include "Document.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
 #include "DocumentWouldBlock.h"
+#include "Property.h"
 #include "RecomputeHandle.h"
 
 #include <Base/Exception.h>
+#include <Base/Persistence.h>
 
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <sstream>
 #include <utility>
 
 using namespace std::chrono_literals;
@@ -181,6 +185,18 @@ bool DocumentExecutionLane::isIdle() const noexcept
     return !_active;
 }
 
+bool DocumentExecutionLane::permitsApplicationClose() const noexcept
+{
+    if (isIdle()) {
+        return true;
+    }
+    if (!isOwnerThread()) {
+        return false;
+    }
+    std::lock_guard lock(_mutex);
+    return _active && _active->command.kind == DocumentCommandKind::Close;
+}
+
 bool DocumentExecutionLane::shutdownRequested() const noexcept
 {
     std::lock_guard lock(_mutex);
@@ -235,13 +251,17 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
             }
             break;
         case DocumentCommandKind::Edit:
+            if (!command.edit) {
+                outcome.result = DocumentCommandSubmitResult::Unsupported;
+                outcome.diagnostic = "edit command is missing payload";
+                return outcome;
+            }
+            break;
         case DocumentCommandKind::Undo:
         case DocumentCommandKind::Redo:
         case DocumentCommandKind::Save:
         case DocumentCommandKind::Close:
-            outcome.result = DocumentCommandSubmitResult::Unsupported;
-            outcome.diagnostic = "command kind is not implemented on the execution lane yet";
-            return outcome;
+            break;
         default:
             outcome.result = DocumentCommandSubmitResult::Unsupported;
             outcome.diagnostic = "unsupported document command kind";
@@ -296,24 +316,33 @@ DocumentCommandSnapshot DocumentExecutionLane::commandStatus(DocumentCommandId i
 std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
     DocumentRecomputeId id) const
 {
-    if (!isOwnerThread()) {
-        return dispatchToOwner([this, id] { return recomputeStatus(id); });
+    {
+        std::lock_guard lock(_mutex);
+        if (_active && _active->recomputeId == id && _active->snapshot.recompute) {
+            return recomputeSnapshotFromObservation(*_active->snapshot.recompute);
+        }
+        for (const auto& [commandId, snapshot] : _terminalSnapshots) {
+            static_cast<void>(commandId);
+            if (snapshot.recompute && snapshot.recompute->id == id) {
+                return recomputeSnapshotFromObservation(*snapshot.recompute);
+            }
+        }
     }
     return _document.recomputeCoordinator().status(id);
 }
 
 bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reason)
 {
-    std::lock_guard lock(_mutex);
-    if (!_active || _active->id != id) {
-        return false;
+    static_cast<void>(reason);
+    {
+        std::lock_guard lock(_mutex);
+        if (!_active || _active->id != id) {
+            return false;
+        }
+        _active->cancelRequested.store(true, std::memory_order_release);
+        _active->snapshot.state = DocumentCommandState::Cancelling;
+        publishActiveSnapshotLocked(_active->snapshot);
     }
-    _active->cancelRequested.store(true, std::memory_order_release);
-    _active->snapshot.state = DocumentCommandState::Cancelling;
-    if (_active->recomputeId) {
-        static_cast<void>(_document.recomputeCoordinator().cancel(*_active->recomputeId, reason));
-    }
-    publishActiveSnapshotLocked(_active->snapshot);
     _workAvailable.notify_one();
     return true;
 }
@@ -330,11 +359,6 @@ void DocumentExecutionLane::requestShutdown(std::string reason)
         if (_active) {
             _active->cancelRequested.store(true, std::memory_order_release);
             _active->snapshot.state = DocumentCommandState::Cancelling;
-            if (_active->recomputeId) {
-                static_cast<void>(_document.recomputeCoordinator().cancel(
-                    *_active->recomputeId,
-                    "document execution lane shutdown"));
-            }
         }
     }
     _workAvailable.notify_all();
@@ -389,18 +413,36 @@ void DocumentExecutionLane::executeActiveCommand()
         return;
     }
 
+    if (_active->command.kind != DocumentCommandKind::Recompute) {
+        if (_active->cancelRequested.load(std::memory_order_acquire)) {
+            completeActiveCommand(DocumentCommandState::Cancelled, "command cancelled");
+            return;
+        }
+
+        if (_active->command.kind == DocumentCommandKind::Close) {
+            completeActiveCommand(DocumentCommandState::Completed, "close accepted");
+            static_cast<void>(GetApplication().closeDocument(_document.getName()));
+            return;
+        }
+
+        const bool succeeded = executeInstantCommand(*_active);
+        completeActiveCommand(succeeded ? DocumentCommandState::Completed
+                                        : DocumentCommandState::Failed,
+                              succeeded ? "completed" : "command failed");
+        return;
+    }
+
+    executeActiveRecompute();
+}
+
+void DocumentExecutionLane::executeActiveRecompute()
+{
     while (true) {
         {
             std::lock_guard lock(_mutex);
             if (!_active) {
                 return;
             }
-        }
-
-        if (_active->command.kind != DocumentCommandKind::Recompute) {
-            completeActiveCommand(DocumentCommandState::Failed,
-                                  "command kind is not implemented on the execution lane");
-            return;
         }
 
         if (!_active->recomputeId) {
@@ -455,11 +497,73 @@ void DocumentExecutionLane::executeActiveCommand()
     }
 }
 
+bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
+{
+    switch (command.command.kind) {
+        case DocumentCommandKind::Undo:
+            return _document.undo();
+        case DocumentCommandKind::Redo:
+            return _document.redo();
+        case DocumentCommandKind::Save:
+            return _document.save();
+        case DocumentCommandKind::Close:
+            return false;
+        case DocumentCommandKind::Edit: {
+            if (!command.command.edit) {
+                return false;
+            }
+            for (const auto& propertyValue : command.command.edit->propertyValues) {
+                DocumentObject* object = nullptr;
+                if (!propertyValue.objectName.empty()) {
+                    object = _document.getObject(propertyValue.objectName.c_str());
+                }
+                if (!object && !propertyValue.stableObjectIdentity.empty()) {
+                    for (auto* candidate : _document.getObjects()) {
+                        try {
+                            if (_document.collaborationObjectIdentity(*candidate)
+                                == propertyValue.stableObjectIdentity) {
+                                object = candidate;
+                                break;
+                            }
+                        }
+                        catch (...) {
+                        }
+                    }
+                }
+                if (!object) {
+                    return false;
+                }
+                auto* property = object->getPropertyByName(propertyValue.propertyName.c_str());
+                if (!property) {
+                    return false;
+                }
+                std::unique_ptr<Property> copied(
+                    static_cast<Property*>(property->getTypeId().createInstance()));
+                if (!copied) {
+                    return false;
+                }
+                std::istringstream stream(propertyValue.copiedValue);
+                copied->restoreFromStream(stream);
+                property->Paste(*copied);
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
 {
     if (!command.recomputeId) {
         return;
     }
+
+    const auto previousState = command.snapshot.state;
+    const auto previousProgress = command.snapshot.progress;
+    const auto previousCompleted = command.snapshot.recompute
+        ? command.snapshot.recompute->completedFeatures
+        : std::size_t {0};
 
     if (command.cancelRequested.load(std::memory_order_acquire)) {
         static_cast<void>(_document.recomputeCoordinator().cancel(
@@ -477,7 +581,14 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
     command.snapshot.progress = recomputeSnapshot->progress;
     command.snapshot.diagnostic = recomputeSnapshot->diagnostic;
     command.snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
-    touchWatchdogProgress(command);
+
+    const bool progressChanged = previousState != command.snapshot.state
+        || previousProgress != command.snapshot.progress
+        || (command.snapshot.recompute
+            && previousCompleted != command.snapshot.recompute->completedFeatures);
+    if (progressChanged) {
+        touchWatchdogProgress(command);
+    }
     updateWatchdogState(command);
     publishActiveSnapshot(command.snapshot);
 
@@ -554,6 +665,30 @@ void DocumentExecutionLane::updateWatchdogState(ActiveCommand& command)
             ? "document execution stalled without progress"
             : telemetrySnapshot.watchdog.diagnostic;
     }
+}
+
+DocumentRecomputeSnapshot DocumentExecutionLane::recomputeSnapshotFromObservation(
+    const DocumentCommandRecomputeObservation& observation) const
+{
+    DocumentRecomputeSnapshot snapshot;
+    snapshot.id = observation.id;
+    snapshot.state = static_cast<DocumentRecomputeState>(static_cast<int>(observation.state));
+    snapshot.completedFeatures = observation.completedFeatures;
+    snapshot.failedFeatures = observation.failedFeatures;
+    snapshot.totalFeatures = observation.totalFeatures;
+    snapshot.progress = observation.progress;
+    snapshot.diagnostic = observation.diagnostic;
+    snapshot.features.reserve(observation.features.size());
+    for (const auto& feature : observation.features) {
+        DocumentRecomputeFeatureSnapshot copied;
+        copied.featureId = feature.featureId;
+        copied.state =
+            static_cast<DocumentRecomputeFeatureState>(static_cast<int>(feature.state));
+        copied.diagnostic = feature.diagnostic;
+        copied.executed = feature.executed;
+        snapshot.features.push_back(std::move(copied));
+    }
+    return snapshot;
 }
 
 DocumentCommandRecomputeObservation DocumentExecutionLane::makeRecomputeObservation(
