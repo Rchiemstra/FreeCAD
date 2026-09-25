@@ -1,6 +1,6 @@
 # AB-21 report — GUI blocking and live-model ingress
 
-This report summarizes the reproducible inventory (3,937 findings across seven
+This report summarizes the reproducible inventory (4,015 findings across eight
 categories, snapshot in `inventory.json`) and proposes bounded follow-up task
 candidates. It proposes work only; no production behavior is changed here.
 
@@ -8,18 +8,19 @@ candidates. It proposes work only; no production behavior is changed here.
 
 | Category | Findings | Disposition | Summary |
 | --- | ---: | --- | --- |
-| `live-app-dereference` | 2,809 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads. |
+| `live-app-dereference` | 2,882 | investigate | `App::GetApplication().getActiveDocument()/getDocument()/getDocuments()` and `FreeCAD.ActiveDocument` reach, including decoded Python command payloads and `Gui::Document::getDocument()->getObject()` ingress. |
 | `live-reference-callback` | 234 | migrate | State-change signal/slot callbacks and observer subscriptions carrying live references. |
+| `live-reference-payload` | 5 | migrate | `fastsignals::signal` declarations carrying live `App::Property*` or `App::DocumentObject*` payloads (including tree highlight/expand navigation). |
 | `update-data-provider` | 236 | migrate | C++ `ViewProvider::updateData` overrides plus provider-aware Python `updateData` callbacks. |
 | `direct-recompute` | 558 | migrate | Synchronous `recompute()` from GUI commands/tasks/dialogs, including executable literals passed to known C++ GUI command wrappers/macros. |
 | `process-events-polling` | 58 | investigate | Manual event-loop pumping. |
 | `thread-waits` | 41 | investigate | Blocking `waitFor*()`/`wait()`/worker joins on processes, futures, sockets, conditions, and threads. |
 | `blocking-invokes` | 1 | migrate | Single `Qt::BlockingQueuedConnection` dispatch hook. |
 
-The snapshot spans 1,938 C++ and 1,999 Python findings. Owning subsystems:
-`BIM` (913), `CAM` (499), `Fem` (431), `Gui` (389), `Sketcher` (372),
-`TechDraw` (311), `Draft` (230), `Part` (185), `PartDesign` (132),
-`Spreadsheet` (112), `Mesh` (98), `Assembly` (86), `OpenSCAD` (50),
+The snapshot spans 2,016 C++ and 1,999 Python findings. Owning subsystems:
+`BIM` (913), `CAM` (499), `Fem` (433), `Gui` (402), `Sketcher` (376),
+`TechDraw` (330), `Draft` (230), `Part` (190), `PartDesign` (163),
+`Spreadsheet` (113), `Mesh` (98), `Assembly` (89), `OpenSCAD` (50),
 `Robot` (32), `Surface` (29), `Measure` (18), `Inspection` (12), `Material`
 (12), `MeshPart` (7), `Points` (7), `Import` (6), `ReverseEngineering` (5),
 and `Start` (1).

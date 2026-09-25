@@ -10,9 +10,17 @@ import subprocess
 import sys
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-INVENTORY_PATH = Path(__file__).resolve().parent / "view_provider_updatedata_inventory.md"
-GENERATOR = Path(__file__).resolve().parent / "generate_view_provider_updatedata_inventory.py"
+ARCH_DIR = Path(__file__).resolve().parent
+REPO_ROOT = ARCH_DIR.parents[1]
+INVENTORY_PATH = ARCH_DIR / "view_provider_updatedata_inventory.md"
+GENERATOR = ARCH_DIR / "generate_view_provider_updatedata_inventory.py"
+
+sys.path.insert(0, str(ARCH_DIR))
+
+from gui_blocking_live_model.scanner import (  # noqa: E402
+    _python_update_data_provider_matches,
+    iter_source_files,
+)
 
 INVENTORY_HEADER = ("file", "symbol/caller", "line", "classification")
 CPP_IMPL = re.compile(
@@ -23,12 +31,6 @@ CPP_INLINE = re.compile(
     r"void\s+updateData\s*\(\s*const\s+App::Property[^)]*\)\s*(?:override)?\s*\{",
     re.MULTILINE,
 )
-PY_PROVIDER = re.compile(
-    r"^\s*def\s+updateData\s*\(\s*self\s*,\s*\w+\s*,\s*\w+",
-    re.MULTILINE,
-)
-EXCLUDED_WORKBENCHES = frozenset({"Test", "TemplatePyMod"})
-
 
 @dataclass(frozen=True)
 class InventoryRow:
@@ -83,24 +85,11 @@ def _parse_inventory(text: str) -> list[InventoryRow]:
 
 
 def _production_gui_sources() -> list[Path]:
-    paths: list[Path] = []
-    paths.extend(REPO_ROOT.joinpath("src", "Gui").rglob("*"))
-    mod_root = REPO_ROOT / "src" / "Mod"
-    if mod_root.is_dir():
-        for module in mod_root.iterdir():
-            if not module.is_dir() or module.name in EXCLUDED_WORKBENCHES:
-                continue
-            gui = module / "Gui"
-            if gui.is_dir():
-                paths.extend(gui.rglob("*"))
-    return sorted(
-        {
-            path
-            for path in paths
-            if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
-            and "_TEMPLATE_" not in path.parts
-        }
-    )
+    return [
+        path
+        for path in iter_source_files(REPO_ROOT)
+        if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
+    ]
 
 
 def _class_name_from_source(text: str, line_index: int) -> str | None:
@@ -127,8 +116,7 @@ def _discover_providers() -> set[tuple[str, str, int]]:
                 if class_name:
                     discovered.add((relative, class_name, line))
         if path.suffix.lower() == ".py":
-            for match in PY_PROVIDER.finditer(text):
-                line = text.count("\n", 0, match.start()) + 1
+            for line, _evidence in _python_update_data_provider_matches(text, relative):
                 class_name = _class_name_from_source(text, line - 1) or path.stem
                 discovered.add((relative, class_name, line))
     return discovered

@@ -18,7 +18,6 @@
     "src/Mod/Measure/Gui",
     "src/Mod/Mesh/Gui",
     "src/Mod/MeshPart/Gui",
-    "src/Mod/OpenSCAD/OpenSCADTest/Gui",
     "src/Mod/Part/Gui",
     "src/Mod/PartDesign/Gui",
     "src/Mod/Points/Gui",
@@ -278,6 +277,7 @@
     "direct-recompute",
     "live-app-dereference",
     "live-reference-callback",
+    "live-reference-payload",
     "update-data-provider"
   ],
   "excluded_count": 6,
@@ -468,6 +468,22 @@
     },
     {
       "path": "src/Gui/Application.h",
+      "line": 169,
+      "category": "live-reference-payload",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 171,
+      "category": "live-reference-payload",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalChangedObject;"
+    },
+    {
+      "path": "src/Gui/Application.h",
       "line": 205,
       "category": "live-reference-callback",
       "subsystem": "Gui",
@@ -553,6 +569,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "return App::GetApplication().getDocument(Name);"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
+      "line": 629,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "return getDocument() != nullptr && getDocument()->getObject(Name) != nullptr;"
     },
     {
       "path": "src/Gui/Command.cpp",
@@ -1484,6 +1508,14 @@
     },
     {
       "path": "src/Gui/Document.cpp",
+      "line": 997,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* pcFeat = getDocument()->getObject(name);"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
       "line": 1145,
       "category": "live-reference-callback",
       "subsystem": "Gui",
@@ -1675,6 +1707,30 @@
       "evidence": "void slotTouchedObject(const App::DocumentObject&);"
     },
     {
+      "path": "src/Gui/Document.h",
+      "line": 137,
+      "category": "live-reference-payload",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&, const App::Property&)>"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 153,
+      "category": "live-reference-payload",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "mutable fastsignals::signal<void( const Gui::ViewProviderDocumentObject&, const Gui::HighlightMode&, bool, App::DocumentObject* parent, const char* subname )>"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 162,
+      "category": "live-reference-payload",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "mutable fastsignals::signal<void( const Gui::ViewProviderDocumentObject&, const Gui::TreeItemMode&, App::DocumentObject* parent, const char* subname )>"
+    },
+    {
       "path": "src/Gui/DocumentChangesWidget.cpp",
       "line": 150,
       "category": "live-app-dereference",
@@ -1849,6 +1905,14 @@
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void slotChangedObject(const Gui::ViewProvider& Obj, const App::Property& Prop);"
+    },
+    {
+      "path": "src/Gui/DocumentPyImp.cpp",
+      "line": 301,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "obj = getDocumentPtr()->getDocument()->getObject(psFeatStr);"
     },
     {
       "path": "src/Gui/ExpressionBinding.cpp",
@@ -2684,6 +2748,30 @@
     },
     {
       "path": "src/Gui/TaskTransform.cpp",
+      "line": 608,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto obj = doc->getDocument()->getObject(msg.pObjectName);"
+    },
+    {
+      "path": "src/Gui/TaskTransform.cpp",
+      "line": 627,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto orgObj = orgDoc->getDocument()->getObject(msg.pOriginalMsg->pObjectName);"
+    },
+    {
+      "path": "src/Gui/TaskTransform.cpp",
+      "line": 672,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "&& obj->getDocument() == vp->getObject()->getDocument()) {"
+    },
+    {
+      "path": "src/Gui/TaskTransform.cpp",
       "line": 1097,
       "category": "direct-recompute",
       "subsystem": "Gui",
@@ -3012,6 +3100,14 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
+      "line": 4542,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "getTree()->NewObjects[pDocument->getDocument()->getName()].push_back(obj.getObject()->getID());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
       "line": 4642,
       "category": "live-reference-callback",
       "subsystem": "Gui",
@@ -3081,6 +3177,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::GetApplication().setActiveDocument(App::GetApplication().getActiveDocument());"
+    },
+    {
+      "path": "src/Gui/View3DInventorSelection.cpp",
+      "line": 115,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto obj = getDocument()->getDocument()->getObject(Reason.pObjectName);"
     },
     {
       "path": "src/Gui/ViewProvider.cpp",
@@ -3756,11 +3860,27 @@
     },
     {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
+      "line": 1013,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "sheet = host->getDocument()->getObject(name.toUtf8().constData());"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
       "line": 1647,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
       "evidence": "auto* doc = App::GetApplication().getDocument(sourceId.substr(0, sep).c_str());"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
+      "line": 1681,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "currentObj->getDocument()->getObject(stored.substr(sep + 1).c_str());"
     },
     {
       "path": "src/Mod/Assembly/Gui/TaskInterferenceCheck.cpp",
@@ -3897,6 +4017,14 @@
       "subsystem": "Assembly",
       "disposition": "migrate",
       "evidence": "void ViewProviderReviewNote::updateData(const App::Property* prop)"
+    },
+    {
+      "path": "src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp",
+      "line": 1265,
+      "category": "live-app-dereference",
+      "subsystem": "Assembly",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = note->getDocument()->getObject(hit.objName.c_str());"
     },
     {
       "path": "src/Mod/Assembly/Gui/ViewProviderReviewNote.h",
@@ -18244,6 +18372,14 @@
     },
     {
       "path": "src/Mod/Fem/Gui/TaskFemConstraintBearing.cpp",
+      "line": 159,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = ConstraintView->getObject()->getDocument()->getObject("
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskFemConstraintBearing.cpp",
       "line": 359,
       "category": "live-app-dereference",
       "subsystem": "Fem",
@@ -18585,6 +18721,14 @@
       "subsystem": "Fem",
       "disposition": "investigate",
       "evidence": "\"App.ActiveDocument.%s.Reversed = %s\","
+    },
+    {
+      "path": "src/Mod/Fem/Gui/TaskFemConstraintGear.cpp",
+      "line": 146,
+      "category": "live-app-dereference",
+      "subsystem": "Fem",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = ConstraintView->getObject()->getDocument()->getObject("
     },
     {
       "path": "src/Mod/Fem/Gui/TaskFemConstraintGear.cpp",
@@ -22956,6 +23100,14 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
+      "line": 544,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "auto newObj = sourceObj->getDocument()->getObject(name.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgExtrusion.cpp",
       "line": 643,
       "category": "live-app-dereference",
       "subsystem": "Part",
@@ -23172,6 +23324,14 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgScale.cpp",
+      "line": 254,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "auto newObj = sourceObj->getDocument()->getObject(name.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/DlgScale.cpp",
       "line": 300,
       "category": "live-app-dereference",
       "subsystem": "Part",
@@ -23249,6 +23409,22 @@
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "connectDelObject = guiDocument->signalDeletedObject.connect(bnd1);"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
+      "line": 617,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* selObj = obj->getDocument()->getObject(pair.objName.c_str());"
+    },
+    {
+      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
+      "line": 899,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = ViewProvider->getObject()->getDocument()->getObject(parts[0].toLatin1());"
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
@@ -23555,6 +23731,14 @@
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
     },
     {
+      "path": "src/Mod/Part/Gui/TaskThickness.cpp",
+      "line": 323,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "if (source && !source->getDocument()->getObject(objname.c_str())) {"
+    },
+    {
       "path": "src/Mod/Part/Gui/ViewProvider2DObject.cpp",
       "line": 256,
       "category": "update-data-provider",
@@ -23772,6 +23956,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 151,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
       "line": 482,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
@@ -23785,6 +23977,30 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "App::GetApplication().getActiveDocument()->getObject(FeatName.c_str())"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 560,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto bodyObj = obj->getDocument()->getObject(bodyName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 561,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto cloneObj = obj->getDocument()->getObject(cloneName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 923,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
@@ -23820,11 +24036,27 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 1954,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = body->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
       "line": 1957,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "FCMD_OBJ_CMD(Feat, \"UseAllEdges = True\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 2293,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
@@ -23884,11 +24116,27 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 2660,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
       "line": 2667,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "FCMD_OBJ_CMD(trFeat, \"Originals = []\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 2740,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
@@ -23953,6 +24201,14 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "doCommand(Gui, \"Gui.Selection.addSelection(App.ActiveDocument.%s)\", bodyString);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
+      "line": 289,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "baseFeature->getDocument()->getObject(bodyString)"
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
@@ -24027,6 +24283,38 @@
       "evidence": "FCMD_OBJ_CMD(target, \"addObjects(features_)\");"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/CommandPrimitive.cpp",
+      "line": 131,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "pcActiveBody->getDocument()->getObject(FeatName.c_str())"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/CommandPrimitive.cpp",
+      "line": 325,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/ReferenceSelection.cpp",
+      "line": 320,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "selObj = thisObj->getDocument()->getObject(msg.pObjectName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/SketchWorkflow.cpp",
+      "line": 268,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = activeBody->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/SketchWorkflow.cpp",
       "line": 269,
       "category": "live-app-dereference",
@@ -24052,6 +24340,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
+      "line": 159,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* pcBody = pcBoolean->getDocument()->getObject(body.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
       "line": 309,
       "category": "process-events-polling",
       "subsystem": "PartDesign",
@@ -24073,6 +24369,22 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskDraftParameters.cpp",
+      "line": 228,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "obj = getObject()->getDocument()->getObject(parts[0].toStdString().c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskDraftParameters.cpp",
+      "line": 238,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "obj = getObject()->getDocument()->getObject(parts[0].toStdString().c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
@@ -24235,6 +24547,14 @@
       "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/TaskLoftParameters.cpp",
+      "line": 292,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = loft->getDocument()->getObject(data.constData());"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
       "line": 149,
       "category": "live-reference-callback",
@@ -24249,6 +24569,22 @@
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "TaskTransformedParameters::slotDeletedObject(Obj);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 265,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcBody->getDocument()->getObject(newFeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 305,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcBody->getDocument()->getObject(newFeatName.c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
@@ -24268,6 +24604,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 354,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcBody->getDocument()->getObject(newFeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
       "line": 367,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
@@ -24284,6 +24628,14 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 393,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto Feat = pcBody->getDocument()->getObject(newFeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
       "line": 398,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
@@ -24297,6 +24649,14 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "FCMD_OBJ_CMD(Feat, \"Occurrences = 2\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.cpp",
+      "line": 433,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* newFeature = pcMultiTransform->getDocument()->getObject(newFeatName.c_str());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskMultiTransformParameters.h",
@@ -24329,6 +24689,14 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 389,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* profile = pipe->getDocument()->getObject(msg.pObjectName);"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
@@ -24379,6 +24747,22 @@
       "evidence": "App::Document* document = App::GetApplication().getDocument(msg.pDocName);"
     },
     {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 1112,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = pipe->getDocument()->getObject(msg.pObjectName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
+      "line": 1163,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = pipe->getDocument()->getObject(data.constData());"
+    },
+    {
       "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
       "line": 927,
       "category": "live-app-dereference",
@@ -24420,6 +24804,38 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 155,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 220,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 276,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
+      "line": 319,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "auto docObj = vp->getObject()->getDocument()->getObject(msg.pObjectName);"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
       "line": 431,
       "category": "direct-recompute",
       "subsystem": "PartDesign",
@@ -24449,6 +24865,14 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskSketchBasedParameters.cpp",
+      "line": 72,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* selObj = sketchBased->getDocument()->getObject(msg.pObjectName);"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
@@ -24457,6 +24881,14 @@
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void TaskTransformedParameters::slotDeletedObject(const Gui::ViewProviderDocumentObject& Obj)"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
+      "line": 225,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* selectedObject = pcTransformed->getDocument()->getObject(msg.pObjectName);"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.h",
@@ -25665,6 +26097,22 @@
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "\"addExternal(\\\"%s\\\",\\\"%s\\\", False, False)\","
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/CommandConstraints.cpp",
+      "line": 1496,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "sketchgui->getSketchObject()->getDocument()->getObject(msg.pObjectName);"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/CommandConstraints.cpp",
+      "line": 2479,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* source = Obj->getDocument()->getObject(msg.pObjectName);"
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandConstraints.cpp",
@@ -27276,6 +27724,14 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/DrawSketchHandlerCarbonCopy.h",
+      "line": 167,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = sketchgui->getObject()->getDocument()->getObject("
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/DrawSketchHandlerCarbonCopy.h",
       "line": 182,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
@@ -27345,6 +27801,14 @@
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "\"extend(%d, %f, %d)\\n\",  // GeoId, increment, PointPos"
+    },
+    {
+      "path": "src/Mod/Sketcher/Gui/DrawSketchHandlerExternal.h",
+      "line": 166,
+      "category": "live-app-dereference",
+      "subsystem": "Sketcher",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = sketchgui->getObject()->getDocument()->getObject("
     },
     {
       "path": "src/Mod/Sketcher/Gui/DrawSketchHandlerExternal.h",
@@ -28484,6 +28948,14 @@
     },
     {
       "path": "src/Mod/Spreadsheet/Gui/DlgBindSheet.cpp",
+      "line": 181,
+      "category": "live-app-dereference",
+      "subsystem": "Spreadsheet",
+      "disposition": "investigate",
+      "evidence": "obj = freecad_cast<Sheet*>(sheet->getDocument()->getObject(ref));"
+    },
+    {
+      "path": "src/Mod/Spreadsheet/Gui/DlgBindSheet.cpp",
       "line": 247,
       "category": "live-app-dereference",
       "subsystem": "Spreadsheet",
@@ -29460,6 +29932,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/Command.cpp",
+      "line": 516,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* docObj = getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/Command.cpp",
       "line": 528,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -29516,6 +29996,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/Command.cpp",
+      "line": 661,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* docObj = getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/Command.cpp",
       "line": 680,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -29545,6 +30033,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "doCommand(Doc, \"App.activeDocument().%s.addView(App.activeDocument().%s)\", PageName.c_str(),"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/Command.cpp",
+      "line": 1154,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* docObj = getDocument()->getObject(multiViewName.c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/Command.cpp",
@@ -29924,6 +30420,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/CommandCreateDims.cpp",
+      "line": 2333,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto* dim = dynamic_cast<TechDraw::DrawViewDimension*>(dvp->getDocument()->getObject(dimName.c_str()));"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandCreateDims.cpp",
       "line": 2354,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -29961,6 +30465,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "doCommand(Doc, \"App.activeDocument().%s.translateLabel('DrawGeomHatch', 'GeomHatch', '%s')\","
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandDecorate.cpp",
+      "line": 307,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto geomhatch( static_cast<TechDraw::DrawGeomHatch *>(getDocument()->getObject(FeatName.c_str())) );"
     },
     {
       "path": "src/Mod/TechDraw/Gui/CommandDecorate.cpp",
@@ -30028,11 +30540,35 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/CommandExtensionDims.cpp",
+      "line": 2411,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto dim = dynamic_cast<TechDraw::DrawViewDimension*>(objFeat->getDocument()->getObject(FeatName.c_str()));"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandExtensionDims.cpp",
       "line": 2416,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.activeDocument().%s.addView(App.activeDocument().%s)\", PageName.c_str(), FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandExtensionPack.cpp",
+      "line": 1914,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "this->getDocument()->getObject(balloonName.c_str()));"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/CommandExtensionPack.cpp",
+      "line": 2034,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto balloon = dynamic_cast<TechDraw::DrawViewBalloon *>(getDocument()->getObject(balloonName.c_str()));"
     },
     {
       "path": "src/Mod/TechDraw/Gui/DrawGuiUtil.cpp",
@@ -30164,6 +30700,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/QGSPage.cpp",
+      "line": 601,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "getDrawPage()->getDocument()->getObject(featName.c_str()));"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/QGSPage.cpp",
       "line": 606,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -30273,6 +30817,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Command::doCommand(Command::Doc, \"App.activeDocument().%s.SectionDirection = 'Aligned'\","
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskComplexSection.cpp",
+      "line": 598,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* newObj = m_page->getDocument()->getObject(m_sectionName.c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskComplexSection.cpp",
@@ -30404,6 +30956,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskDetail.cpp",
+      "line": 447,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject *docObj = m_baseFeat->getDocument()->getObject(m_detailName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskDetail.cpp",
       "line": 455,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -30441,6 +31001,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Command::Doc, \"App.activeDocument().%s.addView(App.activeDocument().%s)\","
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskDetail.cpp",
+      "line": 563,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* detailObj = m_baseFeat->getDocument()->getObject(m_detailName.c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskDetail.cpp",
@@ -30556,6 +31124,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskLeaderLine.cpp",
+      "line": 362,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = m_basePage->getDocument()->getObject(m_leaderName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskLeaderLine.cpp",
       "line": 469,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
@@ -30588,11 +31164,27 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskLinkDim.cpp",
+      "line": 180,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = m_page->getDocument()->getObject(name.toStdString().c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskLinkDim.cpp",
       "line": 191,
       "category": "live-app-dereference",
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Gui, \"App.activeDocument().%s.MeasureType = \\'%s\\'\","
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskLinkDim.cpp",
+      "line": 199,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = m_page->getDocument()->getObject(name.toStdString().c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskLinkDim.cpp",
@@ -30641,6 +31233,22 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.activeDocument().%s.Scale = %f\", view->getNameInDocument()"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskProjGroup.cpp",
+      "line": 797,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto viewCheck = m_page->getDocument()->getObject(m_viewName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskProjGroup.cpp",
+      "line": 820,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "auto viewCheck = m_page->getDocument()->getObject(m_viewName.c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskProjGroup.cpp",
@@ -30796,6 +31404,14 @@
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskRichAnno.cpp",
+      "line": 692,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* obj = m_basePage->getDocument()->getObject(annoName.c_str());"
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskRichAnno.cpp",
       "line": 855,
       "category": "direct-recompute",
       "subsystem": "TechDraw",
@@ -30897,6 +31513,14 @@
       "subsystem": "TechDraw",
       "disposition": "investigate",
       "evidence": "Command::doCommand(Command::Doc, \"App.ActiveDocument.%s.SectionDirection = '%s'\","
+    },
+    {
+      "path": "src/Mod/TechDraw/Gui/TaskSectionView.cpp",
+      "line": 539,
+      "category": "live-app-dereference",
+      "subsystem": "TechDraw",
+      "disposition": "investigate",
+      "evidence": "App::DocumentObject* newObj = m_base->getDocument()->getObject(m_sectionName.c_str());"
     },
     {
       "path": "src/Mod/TechDraw/Gui/TaskSectionView.cpp",

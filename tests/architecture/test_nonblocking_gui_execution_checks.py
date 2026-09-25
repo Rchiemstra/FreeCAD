@@ -25,17 +25,23 @@ EXCLUDED_FILES = frozenset(
 
 BLOCKING_QUEUED_CONNECTION = re.compile(r"Qt[^\S\n]*::[^\S\n]*BlockingQueuedConnection")
 DOCUMENT_THREAD_WAIT = re.compile(
-    r"(?:QThread[^\S\n]*::[^\S\n]*wait[^\S\n]*\(|"
+    r"\b(?:waitForFinished|waitForDone|waitForStarted|waitForBytesWritten|waitForConnected)"
+    r"[^\S\n]*\(|"
+    r"QThread[^\S\n]*::[^\S\n]*wait[^\S\n]*\(|"
     r"pthread_join[^\S\n]*\(|"
-    r"(?:->|\.)wait[^\S\n]*\()"
+    r"(?:->|\.)wait[^\S\n]*\("
 )
-RECOMPUTE_HANDLE_WAIT = re.compile(
-    r"(?:RecomputeHandle|recomputeAsync)[^\n]{0,160}\bwait[^\S\n]*\(|"
-    r"\bwait[^\S\n]*\([^\n]{0,160}RecomputeHandle"
+RECOMPUTE_HANDLE_CONTEXT = re.compile(
+    r"(?:RecomputeHandle|recomputeAsync|"
+    r"shared_ptr\s*<\s*App::RecomputeHandle|unique_ptr\s*<\s*App::RecomputeHandle)"
 )
+RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)wait[^\S\n]*\(")
 LIVE_REFERENCE_PAYLOAD = re.compile(
-    r"fastsignals::signal<[^>]*(?:App::)?(?:Property\s*\*|DocumentObject\s*\*|"
+    r"fastsignals::signal<[^>]*App::(?:Property\s*\*|DocumentObject\s*\*|"
     r"Property\s*&|DocumentObject\s*&)[^>]*>"
+)
+GUI_DOCUMENT_MODEL_INGRESS = re.compile(
+    r"getDocument\(\)[^\n]{0,120}(?:->|\.)getObject[^\S\n]*\("
 )
 LIVE_APP_DEREFERENCE = re.compile(
     r"App::GetApplication\s*\(\s*\)\s*\.\s*"
@@ -49,6 +55,7 @@ MODEL_INGRESS_PATHS = (
     "src/Gui/MainWindow.cpp",
     "src/Gui/propertyeditor/PropertyItem.cpp",
     "src/Gui/Application.cpp",
+    "src/Gui/Document.cpp",
 )
 
 
@@ -110,7 +117,7 @@ def _suppress_cpp_non_code(source: str) -> str:
                 elif char == quote:
                     break
             _blank_non_newlines(result, index, end)
-            index += 1
+            index = end
             continue
         index += 1
     return "".join(result)
@@ -154,6 +161,28 @@ def _production_gui_sources() -> list[Path]:
             and path.relative_to(REPO_ROOT).as_posix() not in EXCLUDED_FILES
         }
     )
+
+
+def _scan_recompute_handle_waits(
+    *,
+    paths: list[Path] | None = None,
+) -> list[tuple[str, int, str]]:
+    matches: list[tuple[str, int, str]] = []
+    for path in paths or _production_gui_sources():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        source = path.read_text(encoding="utf-8", errors="surrogateescape")
+        masked = _suppress_cpp_non_code(source)
+        lines = masked.splitlines()
+        for line_index, line in enumerate(lines):
+            if not RECOMPUTE_HANDLE_WAIT_CALL.search(line):
+                continue
+            context_start = max(0, line_index - 8)
+            context = "\n".join(lines[context_start : line_index + 1])
+            if not RECOMPUTE_HANDLE_CONTEXT.search(context):
+                continue
+            evidence = source.splitlines()[line_index].strip()
+            matches.append((relative, line_index + 1, evidence))
+    return matches
 
 
 def _scan_pattern(
@@ -229,7 +258,7 @@ def test_document_thread_waits_are_inventoried() -> None:
 
 
 def test_recompute_handle_wait_is_absent_from_gui_production_paths() -> None:
-    violations = _scan_pattern(RECOMPUTE_HANDLE_WAIT)
+    violations = _scan_recompute_handle_waits()
     assert not violations, "RecomputeHandle::wait in GUI production paths:\n" + "\n".join(
         f"{path}:{line}: {evidence}" for path, line, evidence in violations
     )
@@ -240,12 +269,12 @@ def test_live_reference_payload_signals_are_inventoried() -> None:
     inventoried = {
         (item["path"], int(item["line"]))
         for item in payload["findings"]
-        if item["category"] == "live-reference-callback"
+        if item["category"] == "live-reference-payload"
     }
     excluded = {
         (path, line)
         for path, line, category in _excluded_keys()
-        if category == "live-reference-callback"
+        if category == "live-reference-payload"
     }
     missing = sorted(
         (path, line, evidence)
@@ -266,6 +295,15 @@ def test_gui_model_ingress_paths_do_not_add_undocumented_live_app_dereference() 
     )
 
 
+def test_gui_document_model_ingress_is_inventoried() -> None:
+    paths = [REPO_ROOT / "src/Gui/Document.cpp"]
+    _assert_inventoried(
+        _scan_pattern(GUI_DOCUMENT_MODEL_INGRESS, paths=paths),
+        "live-app-dereference",
+        "Gui::Document getDocument/getObject ingress",
+    )
+
+
 def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
     inert = r'''
         // Qt::BlockingQueuedConnection
@@ -273,6 +311,12 @@ def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
         const char* text = "RecomputeHandle::wait()";
         const char* raw = R"tag(Qt::BlockingQueuedConnection)tag";
     '''
-    assert not BLOCKING_QUEUED_CONNECTION.search(_suppress_cpp_non_code(inert))
-    assert not DOCUMENT_THREAD_WAIT.search(_suppress_cpp_non_code(inert))
-    assert not RECOMPUTE_HANDLE_WAIT.search(_suppress_cpp_non_code(inert))
+    masked = _suppress_cpp_non_code(inert)
+    assert not BLOCKING_QUEUED_CONNECTION.search(masked)
+    assert not DOCUMENT_THREAD_WAIT.search(masked)
+    lines = masked.splitlines()
+    for line_index, line in enumerate(lines):
+        if not RECOMPUTE_HANDLE_WAIT_CALL.search(line):
+            continue
+        context = "\n".join(lines[max(0, line_index - 8) : line_index + 1])
+        assert not RECOMPUTE_HANDLE_CONTEXT.search(context)

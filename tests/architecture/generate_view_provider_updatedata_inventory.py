@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = Path(__file__).resolve().parent / "view_provider_updatedata_inventory.md"
+ARCH_DIR = Path(__file__).resolve().parent
+REPO_ROOT = ARCH_DIR.parents[1]
+OUTPUT = ARCH_DIR / "view_provider_updatedata_inventory.md"
 
-EXCLUDED_WORKBENCHES = frozenset({"Test", "TemplatePyMod"})
+sys.path.insert(0, str(ARCH_DIR))
+
+from gui_blocking_live_model.scanner import (  # noqa: E402
+    _python_update_data_provider_matches,
+    iter_source_files,
+)
+
 CPP_IMPL = re.compile(
     r"void\s+((?:\w+::)*\w+)::updateData\s*\([^)]*App::Property",
     re.MULTILINE,
@@ -18,31 +26,12 @@ CPP_INLINE = re.compile(
     r"void\s+updateData\s*\(\s*const\s+App::Property[^)]*\)\s*(?:override)?\s*\{",
     re.MULTILINE,
 )
-PY_PROVIDER = re.compile(
-    r"^\s*def\s+updateData\s*\(\s*self\s*,\s*\w+\s*,\s*\w+",
-    re.MULTILINE,
-)
-
-
 def _production_gui_sources() -> list[Path]:
-    paths: list[Path] = []
-    paths.extend(REPO_ROOT.joinpath("src", "Gui").rglob("*"))
-    mod_root = REPO_ROOT / "src" / "Mod"
-    if mod_root.is_dir():
-        for module in mod_root.iterdir():
-            if not module.is_dir() or module.name in EXCLUDED_WORKBENCHES:
-                continue
-            gui = module / "Gui"
-            if gui.is_dir():
-                paths.extend(gui.rglob("*"))
-    return sorted(
-        {
-            path
-            for path in paths
-            if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
-            and "_TEMPLATE_" not in path.parts
-        }
-    )
+    return [
+        path
+        for path in iter_source_files(REPO_ROOT)
+        if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
+    ]
 
 
 def _class_name_from_source(text: str, line_index: int) -> str | None:
@@ -74,8 +63,7 @@ def _collect_python_providers(path: Path, text: str) -> list[tuple[str, str, int
         return []
     relative = path.relative_to(REPO_ROOT).as_posix()
     rows: list[tuple[str, str, int]] = []
-    for match in PY_PROVIDER.finditer(text):
-        line = text.count("\n", 0, match.start()) + 1
+    for line, _evidence in _python_update_data_provider_matches(text, relative):
         class_name = _class_name_from_source(text, line - 1) or path.stem
         rows.append((relative, class_name, line))
     return rows
@@ -93,8 +81,10 @@ def _collect_rows() -> list[tuple[str, str, int]]:
 def _render(rows: list[tuple[str, str, int]]) -> str:
     header = (
         "# ViewProvider updateData provider inventory\n\n"
-        "Production presentation providers discovered under `src/Gui` and "
-        "`src/Mod/*/Gui`. Every row is classified `unclassified` until Wave 3 "
+        "Production presentation providers discovered under `src/Gui`, every "
+        "`src/Mod/*/Gui`, and the reviewed module-aware Python GUI packages "
+        "(Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Every row is "
+        "classified `unclassified` until Wave 3 "
         "migration assigns a pointer-free adapter or explicit `unsupported` "
         "capability.\n\n"
         "| file | symbol/caller | line | classification |\n"
