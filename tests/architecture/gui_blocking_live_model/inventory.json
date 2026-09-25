@@ -572,6 +572,14 @@
     },
     {
       "path": "src/Gui/Command.cpp",
+      "line": 375,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "App::Document* pDoc = getDocument(); return pDoc ? pDoc->getObject(Name) : nullptr;"
+    },
+    {
+      "path": "src/Gui/Command.cpp",
       "line": 629,
       "category": "live-app-dereference",
       "subsystem": "Gui",
@@ -2764,14 +2772,6 @@
     },
     {
       "path": "src/Gui/TaskTransform.cpp",
-      "line": 672,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "&& obj->getDocument() == vp->getObject()->getDocument()) {"
-    },
-    {
-      "path": "src/Gui/TaskTransform.cpp",
       "line": 1097,
       "category": "direct-recompute",
       "subsystem": "Gui",
@@ -3097,14 +3097,6 @@
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "std::bind(&DocumentItem::slotRecomputedObject, this, sp::_1)"
-    },
-    {
-      "path": "src/Gui/Tree.cpp",
-      "line": 4542,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "getTree()->NewObjects[pDocument->getDocument()->getName()].push_back(obj.getObject()->getID());"
     },
     {
       "path": "src/Gui/Tree.cpp",
@@ -24801,30 +24793,6 @@
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 155,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 220,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 276,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",

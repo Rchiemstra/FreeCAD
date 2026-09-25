@@ -35,13 +35,19 @@ RECOMPUTE_HANDLE_CONTEXT = re.compile(
     r"(?:RecomputeHandle|recomputeAsync|"
     r"shared_ptr\s*<\s*App::RecomputeHandle|unique_ptr\s*<\s*App::RecomputeHandle)"
 )
-RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)wait[^\S\n]*\(")
+RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)\s*wait\s*\(")
+RECOMPUTE_HANDLE_ASSIGN = re.compile(
+    r"([A-Za-z_]\w*)\s*=\s*[^;\n]*(?:recomputeAsync|RecomputeHandle)"
+)
+RECOMPUTE_HANDLE_TIGHT_LOOKBACK_LINES = 8
+RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES = 40
 LIVE_REFERENCE_PAYLOAD = re.compile(
-    r"fastsignals::signal<[^>]*App::(?:Property\s*\*|DocumentObject\s*\*|"
-    r"Property\s*&|DocumentObject\s*&)[^>]*>"
+    r"fastsignals::signal\s*<(?:[^<>]|<[^<>]*>)*\bApp::(?:Property\s*[*&]|DocumentObject\s*[*&])(?:[^<>]|<[^<>]*>)*>"
 )
 GUI_DOCUMENT_MODEL_INGRESS = re.compile(
-    r"getDocument\(\)[^\n]{0,120}(?:->|\.)getObject[^\S\n]*\("
+    r"getDocument\s*\(\s*\)(?:[^\S\n]*\n){0,2}[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\(|"
+    r"(?P<gd_var>[A-Za-z_]\w*)\s*=\s*getDocument\s*\(\s*\)\s*;"
+    r"(?:[^\n]*\n){0,5}[^\n]*\b(?P=gd_var)[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\("
 )
 LIVE_APP_DEREFERENCE = re.compile(
     r"App::GetApplication\s*\(\s*\)\s*\.\s*"
@@ -163,6 +169,17 @@ def _production_gui_sources() -> list[Path]:
     )
 
 
+def _line_index_at(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset)
+
+
+def _wait_receiver_name(masked: str, wait_start: int) -> str | None:
+    """Return the identifier immediately before ``->wait`` / ``.wait`` when present."""
+    prefix = masked[max(0, wait_start - 120) : wait_start]
+    match = re.search(r"([A-Za-z_]\w*)\s*$", re.sub(r"\s+", " ", prefix))
+    return match.group(1) if match else None
+
+
 def _scan_recompute_handle_waits(
     *,
     paths: list[Path] | None = None,
@@ -173,14 +190,29 @@ def _scan_recompute_handle_waits(
         source = path.read_text(encoding="utf-8", errors="surrogateescape")
         masked = _suppress_cpp_non_code(source)
         lines = masked.splitlines()
-        for line_index, line in enumerate(lines):
-            if not RECOMPUTE_HANDLE_WAIT_CALL.search(line):
+        source_lines = source.splitlines()
+        for wait_match in RECOMPUTE_HANDLE_WAIT_CALL.finditer(masked):
+            line_index = _line_index_at(masked, wait_match.start())
+            receiver = _wait_receiver_name(masked, wait_match.start())
+            tight_start = max(0, line_index - RECOMPUTE_HANDLE_TIGHT_LOOKBACK_LINES)
+            tight_context = "\n".join(lines[tight_start : line_index + 1])
+            if RECOMPUTE_HANDLE_CONTEXT.search(tight_context):
+                evidence = source_lines[line_index].strip()
+                matches.append((relative, line_index + 1, evidence))
                 continue
-            context_start = max(0, line_index - 8)
-            context = "\n".join(lines[context_start : line_index + 1])
-            if not RECOMPUTE_HANDLE_CONTEXT.search(context):
+            if receiver is None:
                 continue
-            evidence = source.splitlines()[line_index].strip()
+            bound_start = max(0, line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
+            bound_region = "\n".join(lines[bound_start:line_index])
+            assigned = False
+            for assign in RECOMPUTE_HANDLE_ASSIGN.finditer(bound_region):
+                if assign.group(1) == receiver and RECOMPUTE_HANDLE_CONTEXT.search(
+                    assign.group(0)
+                ):
+                    assigned = True
+            if not assigned:
+                continue
+            evidence = source_lines[line_index].strip()
             matches.append((relative, line_index + 1, evidence))
     return matches
 
@@ -296,12 +328,57 @@ def test_gui_model_ingress_paths_do_not_add_undocumented_live_app_dereference() 
 
 
 def test_gui_document_model_ingress_is_inventoried() -> None:
-    paths = [REPO_ROOT / "src/Gui/Document.cpp"]
+    paths = [
+        REPO_ROOT / "src/Gui/Document.cpp",
+        REPO_ROOT / "src/Gui/Command.cpp",
+    ]
+    paths = [path for path in paths if path.is_file()]
     _assert_inventoried(
         _scan_pattern(GUI_DOCUMENT_MODEL_INGRESS, paths=paths),
         "live-app-dereference",
         "Gui::Document getDocument/getObject ingress",
     )
+
+
+def test_get_document_get_object_requires_real_chain() -> None:
+    assert GUI_DOCUMENT_MODEL_INGRESS.search("getDocument()->getObject(name)")
+    assert GUI_DOCUMENT_MODEL_INGRESS.search("getDocument()\n    ->getObject(name)")
+    assert GUI_DOCUMENT_MODEL_INGRESS.search(
+        "App::Document* pDoc = getDocument();\n"
+        "    return pDoc ? pDoc->getObject(Name) : nullptr;"
+    )
+    assert not GUI_DOCUMENT_MODEL_INGRESS.search(
+        "&& obj->getDocument() == vp->getObject()->getDocument()) {"
+    )
+    assert not GUI_DOCUMENT_MODEL_INGRESS.search(
+        "getTree()->NewObjects[pDocument->getDocument()->getName()]"
+        ".push_back(obj.getObject()->getID());"
+    )
+    assert not GUI_DOCUMENT_MODEL_INGRESS.search(
+        "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+    )
+
+
+def test_recompute_handle_wait_detects_multiline_and_distant_bound_wait() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_probe.cpp"
+    probe.write_text(
+        "auto handle = doc->recomputeAsync();\n"
+        "handle->\n"
+        "    wait();\n"
+        "auto handle2 = doc->recomputeAsync(objs, false, options);\n"
+        + ("doSomething();\n" * 12)
+        + "handle2->wait();\n"
+        "other->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    evidences = [evidence for _path, _line, evidence in found]
+    assert any("wait" in evidence for evidence in evidences)
+    assert not any("other" in evidence for evidence in evidences)
+    assert len(found) >= 2
 
 
 def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
@@ -314,9 +391,5 @@ def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
     masked = _suppress_cpp_non_code(inert)
     assert not BLOCKING_QUEUED_CONNECTION.search(masked)
     assert not DOCUMENT_THREAD_WAIT.search(masked)
-    lines = masked.splitlines()
-    for line_index, line in enumerate(lines):
-        if not RECOMPUTE_HANDLE_WAIT_CALL.search(line):
-            continue
-        context = "\n".join(lines[max(0, line_index - 8) : line_index + 1])
-        assert not RECOMPUTE_HANDLE_CONTEXT.search(context)
+    assert not RECOMPUTE_HANDLE_WAIT_CALL.search(masked)
+    assert not RECOMPUTE_HANDLE_CONTEXT.search(masked)

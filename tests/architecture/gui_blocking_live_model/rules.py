@@ -519,16 +519,25 @@ CATEGORIES: tuple[Category, ...] = (
             "the committed presentation state. C++: App::GetApplication() document/"
             "object accessors (getActiveDocument, getDocument, getDocuments, "
             "getDocumentOrActive, getDocumentByPath), including the multi-line "
-            "receiver-chain form. Python: App/FreeCAD.ActiveDocument (attribute), "
-            "App/FreeCAD.activeDocument() (method), and App/FreeCAD.getDocument(). "
-            "Gui.ActiveDocument (the GUI-side document handle) is tracked "
-            "separately, as is the model-layer src/App core."
+            "receiver-chain form, plus Gui::Document/Command getDocument() chains "
+            "into getObject( (direct getDocument()->getObject, newline-split arrow "
+            "chains, and pDoc = getDocument(); followed within a few lines by "
+            "pDoc->getObject). Coincidence of getDocument() and an unrelated "
+            "getObject( on the same line is not a match. Python: "
+            "App/FreeCAD.ActiveDocument (attribute), App/FreeCAD.activeDocument() "
+            "(method), and App/FreeCAD.getDocument(). Gui.ActiveDocument (the "
+            "GUI-side document handle) is tracked separately, as is the "
+            "model-layer src/App core."
         ),
         cpp_pattern=(
             r"App::GetApplication\s*\(\s*\)\s*\.\s*"
             r"(?:getActiveDocument|getDocuments|getDocumentOrActive|getDocumentByPath|getDocument)"
             r"[^\S\n]*\(|"
-            r"getDocument\(\)[^\n]{0,120}(?:->|\.)getObject[^\S\n]*\("
+            # Direct chain: only whitespace/newlines between getDocument() and ->getObject(
+            r"getDocument\s*\(\s*\)(?:[^\S\n]*\n){0,2}[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\(|"
+            # Stored handle: pDoc = getDocument(); ... pDoc->getObject(
+            r"(?P<gd_var>[A-Za-z_]\w*)\s*=\s*getDocument\s*\(\s*\)\s*;"
+            r"(?:[^\n]*\n){0,5}[^\n]*\b(?P=gd_var)[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\("
         ),
         py_pattern=(
             r"(?:App|FreeCAD)[^\S\n]*\.[^\S\n]*(?:\+[^\S\n]*)?"
@@ -571,8 +580,9 @@ CATEGORIES: tuple[Category, ...] = (
             "scope for this category."
         ),
         cpp_pattern=(
-            r"fastsignals::signal<[^>]*App::(?:Property\s*\*|DocumentObject\s*\*|"
-            r"Property\s*&|DocumentObject\s*&)[^>]*>"
+            # Allow one level of nested <> so an earlier shared_ptr<Foo> '>' cannot
+            # hide a later App::DocumentObject* / App::Property* in the same signature.
+            r"fastsignals::signal\s*<(?:[^<>]|<[^<>]*>)*\bApp::(?:Property\s*[*&]|DocumentObject\s*[*&])(?:[^<>]|<[^<>]*>)*>"
         ),
         py_pattern=None,
         default_disposition="migrate",

@@ -35,11 +35,27 @@ def _production_gui_sources() -> list[Path]:
 
 
 def _class_name_from_source(text: str, line_index: int) -> str | None:
+    """Return the nearest enclosing class/struct name above ``line_index``.
+
+    Only definition-like lines count (``class Name`` / ``struct Name`` at the
+    start of a line after optional indent). Prose such as ``class docstring``
+    or ``class for`` inside comments/docstrings is ignored. The search walks
+    to the top of the file and prefers a class whose indent is strictly less
+    than the provider line (so nested ``def updateData`` finds its enclosing
+    ViewProvider class even when it is more than 80 lines above).
+    """
     lines = text.splitlines()
-    for index in range(line_index, max(-1, line_index - 80), -1):
-        match = re.search(r"\b(?:class|struct)\s+(?:(?:\w+::)*)(\w+)", lines[index])
-        if match:
-            return match.group(1)
+    if line_index < 0 or line_index >= len(lines):
+        return None
+    definition = re.compile(r"^(\s*)(?:class|struct)\s+(?:(?:\w+::)*)(\w+)\b")
+    target_indent = len(lines[line_index]) - len(lines[line_index].lstrip())
+    for index in range(line_index, -1, -1):
+        match = definition.search(lines[index])
+        if not match:
+            continue
+        indent = len(match.group(1))
+        if indent < target_indent or (indent == 0 and target_indent == 0):
+            return match.group(2)
     return None
 
 

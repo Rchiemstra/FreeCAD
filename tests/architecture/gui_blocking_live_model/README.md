@@ -11,7 +11,7 @@ behavior.
 
 | File | Purpose |
 | --- | --- |
-| `rules.py` | The seven inventory categories, their search rules (regex, per language), scope, and default migration dispositions. |
+| `rules.py` | The eight inventory categories, their search rules (regex, per language), scope, and default migration dispositions. |
 | `scanner.py` | The reproducible scanner. Walks the GUI source (C++ and Python), masks comments/literals per language, applies the rules, and emits sorted findings. Runnable standalone. |
 | `inventory.json` | The committed snapshot: `scanner --write` output (scanner results minus exclusions). |
 | `exclusions.json` | Narrow, justified false-positive exclusions. |
@@ -104,8 +104,9 @@ matched source line(s) as `evidence`.
 | `blocking-invokes` | `Qt[^\S\n]*::[^\S\n]*BlockingQueuedConnection` | `migrate` |
 | `process-events-polling` | `\bprocessEvents[^\S\n]*\(` | `investigate` |
 | `direct-recompute` | `(?:\.\|->)recompute[^\S\n]*\(` | `migrate` |
-| `live-app-dereference` | `App::GetApplication\s*\(\s*\)\s*\.\s*(?:getActiveDocument\|getDocuments\|getDocumentOrActive\|getDocumentByPath\|getDocument)[^\S\n]*\(` | `investigate` |
+| `live-app-dereference` | `App::GetApplication\s*\(\s*\)\s*\.\s*(?:getActiveDocument\|getDocuments\|getDocumentOrActive\|getDocumentByPath\|getDocument)[^\S\n]*\( \| getDocument\s*\(\s*\)\s*(?:->\|\.)\s*getObject\s*\( \| assigned getDocument then getObject` | `investigate` |
 | `live-reference-callback` | `\b(?:signal\|slot)(?:Changed\|Change\|Touched\|Deleted\|Delete\|BeforeChange\|Recomputed)(?:View)?Object\b` | `migrate` |
+| `live-reference-payload` | `fastsignals::signal\s*<(?:[^<>]\|<[^<>]*>)*\bApp::(?:Property\s*[*&]\|DocumentObject\s*[*&])(?:[^<>]\|<[^<>]*>)*>` | `migrate` |
 | `update-data-provider` | `\bupdateData[^\S\n]*\([^\S\n]*const[^\S\n]+App::Property` | `migrate` |
 
 The Python patterns mirror the C++ ones where a Python equivalent exists:
@@ -147,18 +148,26 @@ surface small):
 * **live-app-dereference** keys on the `App::GetApplication()` document/object
   accessors (`getActiveDocument`, `getDocument`, `getDocuments`,
   `getDocumentOrActive`, `getDocumentByPath`), including the multi-line
-  receiver-chain form (the regex spans newlines), and the callable
-  `App.activeDocument()` / `FreeCAD.activeDocument()` forms. A bare lower-case
-  `activeDocument` attribute is not a match. Broader live-handle patterns
-  such as `Gui::Document::getDocument()` are tracked separately (see the
-  report).
+  receiver-chain form (the regex spans newlines), the callable
+  `App.activeDocument()` / `FreeCAD.activeDocument()` forms, and the
+  `getDocument()->getObject(` model-object fetch (including newline-split
+  arrow chains and `pDoc = getDocument();` … `pDoc->getObject(`). A bare
+  lower-case `activeDocument` attribute is not a match. Same-line coincidence
+  of `getDocument()` with an unrelated `getObject(` is not a match.
 * **live-reference-callback** keys on the document-object state-change
   signals/slots (`Changed/Change/Touched/Deleted/Delete/BeforeChange/Recomputed`,
   plus the `ChangedView/DeletedView` view variants). Creation/rename/activate
   lifecycle signals (`New`, `Relabel`, `Activated`, `Created`) and tree
-  navigation signals (`Highlight`, `Expand`, `Scroll`) are out of scope. Pure
-  `fastsignals::signal<...>` member declarations are excluded in
+  navigation signals (`Highlight`, `Expand`, `Scroll`) are out of scope for
+  this category (their live pointer payloads are covered by
+  `live-reference-payload`). Pure `fastsignals::signal<...>` member
+  declarations without those slot/signal identifiers are excluded in
   `exclusions.json`.
+* **live-reference-payload** keys on `fastsignals::signal<...>` declarations
+  whose template arguments carry live `App::DocumentObject*` / `App::Property*`
+  (or reference) payloads. The pattern allows one level of nested `<>` so an
+  earlier `shared_ptr<Foo>` cannot hide a later `App::DocumentObject*` in the
+  same signature.
 * **update-data-provider** anchors on the concrete signature
   `updateData(const App::Property* ...)` in both its qualified definition form
   (`ViewProvider::updateData(const App::Property* prop)`) and its inline

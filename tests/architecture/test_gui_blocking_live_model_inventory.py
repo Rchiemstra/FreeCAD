@@ -687,6 +687,28 @@ str.join(parts)
             "getDocumentByPath",
         ):
             self.assertIsNotNone(cpp.search(f"App::GetApplication().{accessor}()"), accessor)
+        self.assertIsNotNone(cpp.search("getDocument()->getObject(name)"))
+        self.assertIsNotNone(cpp.search("getDocument()\n    ->getObject(name)"))
+        self.assertIsNotNone(
+            cpp.search(
+                "App::Document* pDoc = getDocument();\n"
+                "    return pDoc ? pDoc->getObject(Name) : nullptr;"
+            )
+        )
+        self.assertIsNone(
+            cpp.search("&& obj->getDocument() == vp->getObject()->getDocument()) {")
+        )
+        self.assertIsNone(
+            cpp.search(
+                "getTree()->NewObjects[pDocument->getDocument()->getName()]"
+                ".push_back(obj.getObject()->getID());"
+            )
+        )
+        self.assertIsNone(
+            cpp.search(
+                "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+            )
+        )
         py = scanner.compiled_pattern("live-app-dereference", "py")
         self.assertIsNotNone(py.search(scanner.mask_py_non_code("FreeCAD.ActiveDocument")))
         self.assertIsNotNone(py.search(scanner.mask_py_non_code("App.getDocument('x')")))
@@ -737,6 +759,11 @@ str.join(parts)
         masked_expand = scanner.mask_cpp_non_code(expand)
         self.assertIsNotNone(cpp.search(masked_highlight), "signalHighlightObject")
         self.assertIsNotNone(cpp.search(masked_expand), "signalExpandObject")
+        # An earlier nested template '>' must not hide a later DocumentObject* payload.
+        nested = (
+            "fastsignals::signal<void(std::shared_ptr<Foo>, App::DocumentObject*)> signalX;"
+        )
+        self.assertIsNotNone(cpp.search(nested), "shared_ptr nested template")
 
     def test_blocking_invokes_python_pattern_is_documented_not_none(self) -> None:
         py = scanner.compiled_pattern("blocking-invokes", "py")
