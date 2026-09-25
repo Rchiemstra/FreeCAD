@@ -57,6 +57,7 @@
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderGeometryObject.h>
 #include <Gui/WaitCursor.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include "ManualAlignment.h"
 
 
@@ -1009,7 +1010,7 @@ void ManualAlignment::finish()
     }
 
     if (myDocument) {
-        myDocument->getDocument()->recompute();
+        requestDocumentRecompute(*myDocument->getDocument());
     }
     closeViewer();
     reset();

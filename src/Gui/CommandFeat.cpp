@@ -28,6 +28,7 @@
 #include <App/SuppressibleExtension.h>
 #include <App/Part.h>
 #include "Application.h"
+#include "DocumentExecutionIngress.h"
 #include "Action.h"
 #include "cet_lut.hpp"
 #include "CommandT.h"
@@ -87,13 +88,13 @@ void StdCmdFeatRecompute::activated(int iMsg)
         }
 
         App::AutoTransaction committer(doc, "Recompute");
-        doc->recompute();
+        requestDocumentRecompute(*doc);
         return;
     }
 
     App::AutoTransaction committer(selectedObjectsByDocument.begin()->first, "Recompute object");
     for (auto& [doc, objects] : selectedObjectsByDocument) {
-        doc->recompute(objects, true);
+        requestDocumentRecompute(*doc, objects, true);
     }
 }
 

@@ -76,6 +76,7 @@
 #include "AxisOriginPy.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "CommandActionPy.h"
 #include "CommandPy.h"
 #include "Control.h"
@@ -1276,7 +1277,7 @@ void Application::checkForRecomputes()
     bool hasError = false;
     for (auto doc : App::Document::getDependentDocuments(docs, true)) {
         try {
-            doc->recompute({}, false, &hasError);
+            requestDocumentRecompute(*doc);
         }
         catch (Base::Exception& e) {
             e.reportException();

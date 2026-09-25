@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+#pragma once
+
+#include <App/DocumentCommand.h>
+#include <App/DocumentCommandHandle.h>
+
+#include <FCGlobal.h>
+
+#include <string>
+#include <vector>
+
+namespace App
+{
+class Document;
+class DocumentObject;
+}  // namespace App
+
+namespace Gui
+{
+
+/** Pointer-free recompute admission payload copied before trySubmit(). */
+struct DocumentRecomputeSubmitRequest
+{
+    std::vector<std::string> featureIds;
+    bool force = false;
+    int options = 0;
+};
+
+/** Build one recompute command from stable document/object identities. */
+GuiExport App::DocumentCommand makeDocumentRecomputeCommand(
+    App::Document& document,
+    const DocumentRecomputeSubmitRequest& request = {});
+
+/** Surface a visible Busy or admission failure reason without waiting. */
+GuiExport void reportDocumentCommandSubmitBlocked(
+    App::Document& document,
+    const App::DocumentCommandSubmitOutcome& outcome,
+    bool quiet = false);
+
+/** Report that save was deferred because model work is still running. */
+GuiExport void reportDocumentSaveDeferred(App::Document& document);
+
+/** True when the document execution lane is running model work. */
+GuiExport bool documentExecutionLaneBusy(const App::Document& document);
+
+/**
+ * Prepare one document for save on the GUI thread without waiting.
+ *
+ * Submits a pre-save recompute when needed. Returns true only when no model
+ * work is active and save may proceed immediately. Never waits.
+ */
+GuiExport bool prepareDocumentForImmediateSave(App::Document& document, bool skipRecomputeIfAlreadyFlagged);
+
+/**
+ * Admit one recompute through DocumentHandle::trySubmit().
+ *
+ * Returns the full admission outcome. Passive status refresh may continue on a
+ * timer when Accepted; status() is observation-only and never pumps work.
+ */
+GuiExport App::DocumentCommandSubmitOutcome submitDocumentRecompute(
+    App::Document& document,
+    const DocumentRecomputeSubmitRequest& request = {});
+
+/** Convenience wrapper that reports Busy and other rejections immediately. */
+GuiExport bool requestDocumentRecompute(
+    App::Document& document,
+    const std::vector<App::DocumentObject*>& objects = {},
+    bool force = false,
+    int options = 0,
+    bool quiet = false);
+
+}  // namespace Gui

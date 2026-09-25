@@ -58,6 +58,7 @@
 #include "Tree.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Document.h"
 #include "ExpressionCompleter.h"
 #include "Macro.h"
@@ -1480,7 +1481,7 @@ void TreeWidget::onFinishEditing()
         Gui::Document* doc = Gui::Application::Instance->getDocument(obj->getDocument());
         doc->commitCommand();
         doc->resetEdit();
-        doc->getDocument()->recompute();
+        requestDocumentRecompute(*doc->getDocument());
     }
 }
 
@@ -3236,7 +3237,7 @@ void TreeWidget::dropEvent(QDropEvent* event)
     }
 
     if (touched && TreeParams::getRecomputeOnDrop()) {
-        targetInfo.targetDoc->recompute();
+        requestDocumentRecompute(*targetInfo.targetDoc);
     }
     if (touched && TreeParams::getSyncView()) {
         auto gdoc = Application::Instance->getDocument(targetInfo.targetDoc);

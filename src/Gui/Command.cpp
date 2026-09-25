@@ -47,6 +47,7 @@
 
 #include "Command.h"
 #include "Action.h"
+#include "DocumentExecutionIngress.h"
 #include "App/Application.h"
 #include "Application.h"
 #include "BitmapFactory.h"
@@ -1040,8 +1041,11 @@ const std::string Command::strToPython(const char* Str)
 /// Updates the (active) document (propagate changes)
 void Command::updateActive()
 {
-    WaitCursor wc;
-    doCommand(App, "App.ActiveDocument.recompute()");
+    if (auto* active = Application::Instance->activeDocument()) {
+        if (auto* document = active->getDocument()) {
+            requestDocumentRecompute(*document);
+        }
+    }
 }
 
 bool Command::isActiveObjectValid()
@@ -1388,9 +1392,10 @@ void MacroCommand::activated(int iMsg)
     }
     else {
         Application::Instance->macroManager()->run(MacroManager::File, fi.filePath().toUtf8());
-        // after macro run recalculate the document
-        if (Application::Instance->activeDocument()) {
-            Application::Instance->activeDocument()->getDocument()->recompute();
+        if (auto* active = Application::Instance->activeDocument()) {
+            if (auto* document = active->getDocument()) {
+                requestDocumentRecompute(*document);
+            }
         }
     }
 }

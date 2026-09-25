@@ -77,6 +77,7 @@
 #include "DocumentPy.h"
 #include "Application.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Control.h"
 #include "FileDialog.h"
 #include "MainWindow.h"
@@ -2754,19 +2755,18 @@ bool Document::save()
             }
 
             Gui::WaitCursor wc;
+            bool saveCompleted = true;
             // save all documents
             for (auto doc : docs) {
-                // Changed 'mustExecute' status may be triggered by saving external document
-                if (!dmap[doc] && doc->mustExecute()) {
-                    App::AutoTransaction trans(doc, "Recompute");
-                    Command::doCommand(
-                        Command::Doc,
-                        "App.getDocument(\"%s\").recompute()",
-                        doc->getName()
-                    );
+                if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                    saveCompleted = false;
+                    continue;
                 }
 
                 Command::doCommand(Command::Doc, "App.getDocument(\"%s\").save()", doc->getName());
+            }
+            if (!saveCompleted) {
+                return false;
             }
         }
         catch (const Base::FileException& e) {
@@ -2891,6 +2891,7 @@ void Document::saveAll()
         return;
     }
 
+    unsigned skippedSaves = 0;
     for (auto doc : docs) {
         if (doc->testStatus(App::Document::PartialDoc) || doc->testStatus(App::Document::TempDoc)) {
             continue;
@@ -2907,10 +2908,12 @@ void Document::saveAll()
         Gui::WaitCursor wc;
 
         try {
-            // Changed 'mustExecute' status may be triggered by saving external document
-            if (!dmap[doc] && doc->mustExecute()) {
-                App::AutoTransaction trans(doc, "Recompute");
-                Command::doCommand(Command::Doc, "App.getDocument('%s').recompute()", doc->getName());
+            if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
+                ++skippedSaves;
+                FC_ERR("Save All did not write document '"
+                       << doc->getName()
+                       << "' because model work is still running or recompute was deferred");
+                continue;
             }
             Command::doCommand(Command::Doc, "App.getDocument('%s').save()", doc->getName());
         }
@@ -2922,6 +2925,16 @@ void Document::saveAll()
                 QString::fromLatin1(e.what())
             );
             break;
+        }
+    }
+
+    if (skippedSaves > 0) {
+        const auto message = QObject::tr(
+            "%1 document(s) were not saved because model work is still running. "
+            "Retry Save All when recompute finishes.")
+            .arg(QString::number(skippedSaves));
+        if (auto* window = getMainWindow()) {
+            window->showMessage(message, 5000);
         }
     }
 }
