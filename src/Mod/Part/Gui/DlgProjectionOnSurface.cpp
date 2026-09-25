@@ -62,6 +62,7 @@
 #include "DlgProjectionOnSurface.h"
 #include "ui_DlgProjectionOnSurface.h"
 #include "ViewProviderExt.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -1332,7 +1333,7 @@ void DlgProjectOnSurface::accept()
     if (!feature.expired()) {
         auto document = feature->getDocument();
         document->commitTransaction();
-        PartGui::trySubmitDocumentRecompute(*document);
+        PartGui::submitDocumentRecomputeOrReport(*document);
     }
 }
 
@@ -1472,7 +1473,7 @@ void DlgProjectOnSurface::setDirection()
         auto yVal = ui->doubleSpinBoxDirY->value();
         auto zVal = ui->doubleSpinBoxDirZ->value();
         feature->Direction.setValue(Base::Vector3d(xVal, yVal, zVal));
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1544,7 +1545,7 @@ void DlgProjectOnSurface::setSupportFace(const Gui::SelectionChanges& msg)
     Gui::SelectionObject selObj(msg);
     if (!feature.expired()) {
         feature->SupportFace.setValue(selObj.getObject(), selObj.getSubNames());
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1577,7 +1578,7 @@ void DlgProjectOnSurface::onShowAllClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::AllMode);
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1585,7 +1586,7 @@ void DlgProjectOnSurface::onFacesClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::FacesMode);
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1593,7 +1594,7 @@ void DlgProjectOnSurface::onEdgesClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::EdgesMode);
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1601,7 +1602,7 @@ void DlgProjectOnSurface::onExtrudeHeightValueChanged(double value)
 {
     if (!feature.expired()) {
         feature->Height.setValue(value);
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1609,7 +1610,7 @@ void DlgProjectOnSurface::onSolidDepthValueChanged(double value)
 {
     if (!feature.expired()) {
         feature->Offset.setValue(value);
-        feature->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*feature);
     }
 }
 
@@ -1663,6 +1664,4 @@ bool TaskProjectOnSurface::reject()
     resetEdit();
     return true;
 }
-
 #include "moc_DlgProjectionOnSurface.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

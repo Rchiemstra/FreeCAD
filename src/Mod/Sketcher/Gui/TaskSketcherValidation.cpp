@@ -47,6 +47,7 @@
 
 #include "TaskSketcherValidation.h"
 #include "ui_TaskSketcherValidation.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace SketcherGui;
@@ -210,7 +211,7 @@ void SketcherValidation::onFixButtonClicked()
     // finish the transaction and update
     Gui::WaitCursor wc;
     doc->commitTransaction();
-    PartGui::trySubmitDocumentRecompute(*doc);
+    PartGui::submitDocumentRecomputeOrReport(*doc);
 }
 
 void SketcherValidation::onHighlightButtonClicked()
@@ -524,7 +525,7 @@ void SketcherValidation::onFixDegeneratedClicked()
     // finish the transaction and update
     Gui::WaitCursor wc;
     doc->commitTransaction();
-    PartGui::trySubmitDocumentRecompute(*doc);
+    PartGui::submitDocumentRecomputeOrReport(*doc);
 }
 
 // -----------------------------------------------
@@ -538,6 +539,4 @@ TaskSketcherValidation::TaskSketcherValidation(Sketcher::SketchObject* Obj)
 }
 
 TaskSketcherValidation::~TaskSketcherValidation() = default;
-
 #include "moc_TaskSketcherValidation.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

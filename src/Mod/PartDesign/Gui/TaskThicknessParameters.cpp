@@ -42,6 +42,7 @@
 
 #include "ui_TaskThicknessParameters.h"
 #include "TaskThicknessParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 using namespace PartDesignGui;
 using namespace Gui;
@@ -177,7 +178,7 @@ PartDesign::Thickness* TaskThicknessParameters::onBeforeChange()
 
 void TaskThicknessParameters::onAfterChange(PartDesign::Thickness* obj)
 {
-    obj->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*obj);
     // hide the thickness if there was a computation error
     hideOnError();
 }
@@ -375,5 +376,4 @@ bool TaskDlgThicknessParameters::accept()
 
     return TaskDlgDressUpParameters::accept();
 }
-
 #include "moc_TaskThicknessParameters.cpp"

@@ -25,10 +25,9 @@
 
 #include <App/Application.h>
 #include <Gui/Command.h>
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
-
 #include "TaskDlgEditSketch.h"
 #include "ViewProviderSketch.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace SketcherGui;
@@ -143,7 +142,7 @@ bool TaskDlgEditSketch::accept()
     std::string document = getDocumentName();  // needed because resetEdit() deletes this instance
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
     if (auto* appDoc = App::GetApplication().getDocument(document.c_str())) {
-        PartGui::trySubmitDocumentRecompute(*appDoc);
+        PartGui::submitDocumentRecomputeOrReport(*appDoc);
     }
 
     return true;
@@ -175,5 +174,4 @@ void TaskDlgEditSketch::autoClosedOnClosedView()
     // Make sure the edit mode is exited when the view is closed.
     reject();
 }
-
 #include "moc_TaskDlgEditSketch.cpp"

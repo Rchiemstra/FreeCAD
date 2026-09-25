@@ -57,6 +57,7 @@
 #include "DlgPrimitives.h"
 #include "ui_DlgPrimitives.h"
 #include "ui_Location.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -133,7 +134,7 @@ void Picker::createPrimitive(QWidget* widget, const QString& descr, Gui::Documen
         doc->openCommand(descr.toUtf8());
         Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
         doc->commitCommand();
-        PartGui::trySubmitActiveDocumentRecompute();
+        PartGui::submitActiveDocumentRecomputeOrReport(this);
         Gui::Command::runCommand(
             Gui::Command::Gui,
             "Gui.ActiveDocument.ActiveView.sendMessage(\"ViewFit\")"
@@ -330,7 +331,7 @@ void PlanePrimitive::changeValue(QObject* widget)
         plane->Width.setValue(ui->planeWidth->value().getValue());
     }
 
-    plane->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*plane);
 }
 
 // ----------------------------------------------------------------------------
@@ -429,7 +430,7 @@ void BoxPrimitive::changeValue(QObject* widget)
         box->Height.setValue(ui->boxHeight->value().getValue());
     }
 
-    box->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*box);
 }
 
 // ----------------------------------------------------------------------------
@@ -556,7 +557,7 @@ void CylinderPrimitive::changeValue(QObject* widget)
         cyl->SecondAngle.setValue(ui->cylinderYSkew->value().getValue());
     }
 
-    cyl->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*cyl);
 }
 
 // ----------------------------------------------------------------------------
@@ -670,7 +671,7 @@ void ConePrimitive::changeValue(QObject* widget)
         cone->Angle.setValue(ui->coneAngle->value().getValue());
     }
 
-    cone->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*cone);
 }
 
 // ----------------------------------------------------------------------------
@@ -784,7 +785,7 @@ void SpherePrimitive::changeValue(QObject* widget)
         sphere->Angle3.setValue(ui->sphereAngle3->value().getValue());
     }
 
-    sphere->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*sphere);
 }
 
 // ----------------------------------------------------------------------------
@@ -928,7 +929,7 @@ void EllipsoidPrimitive::changeValue(QObject* widget)
         ell->Angle3.setValue(ui->ellipsoidAngle3->value().getValue());
     }
 
-    ell->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*ell);
 }
 
 // ----------------------------------------------------------------------------
@@ -1057,7 +1058,7 @@ void TorusPrimitive::changeValue(QObject* widget)
         torus->Angle3.setValue(ui->torusAngle3->value().getValue());
     }
 
-    torus->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*torus);
 }
 
 // ----------------------------------------------------------------------------
@@ -1178,7 +1179,7 @@ void PrismPrimitive::changeValue(QObject* widget)
         prism->SecondAngle.setValue(ui->prismYSkew->value().getValue());
     }
 
-    prism->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*prism);
 }
 
 // ----------------------------------------------------------------------------
@@ -1394,7 +1395,7 @@ void WedgePrimitive::changeValue(QObject* widget)
         wedge->Z2max.setValue(ui->wedgeZ2max->value().getValue());
     }
 
-    wedge->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*wedge);
 }
 
 // ----------------------------------------------------------------------------
@@ -1518,7 +1519,7 @@ void HelixPrimitive::changeValue(QObject* widget)
         helix->LocalCoord.setValue(ui->helixLocalCS->currentIndex());
     }
 
-    helix->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*helix);
 }
 
 // ----------------------------------------------------------------------------
@@ -1616,7 +1617,7 @@ void SpiralPrimitive::changeValue(QObject* widget)
         spiral->Radius.setValue(ui->spiralRadius->value().getValue());
     }
 
-    spiral->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*spiral);
 }
 
 // ----------------------------------------------------------------------------
@@ -1715,7 +1716,7 @@ void CirclePrimitive::changeValue(QObject* widget)
         circle->Angle2.setValue(ui->circleAngle2->value().getValue());
     }
 
-    circle->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*circle);
 }
 
 // ----------------------------------------------------------------------------
@@ -1829,7 +1830,7 @@ void EllipsePrimitive::changeValue(QObject* widget)
         ell->Angle2.setValue(ui->ellipseAngle2->value().getValue());
     }
 
-    ell->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*ell);
 }
 
 // ----------------------------------------------------------------------------
@@ -1907,7 +1908,7 @@ void PolygonPrimitive::changeValue(QObject* widget)
         poly->Circumradius.setValue(ui->regularPolygonCircumradius->value().getValue());
     }
 
-    poly->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*poly);
 }
 
 // ----------------------------------------------------------------------------
@@ -2035,7 +2036,7 @@ void LinePrimitive::changeValue(QObject* widget)
         line->Z2.setValue(ui->edgeZ2->value().getValue());
     }
 
-    line->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*line);
 }
 
 // ----------------------------------------------------------------------------
@@ -2139,7 +2140,7 @@ void VertexPrimitive::changeValue(QObject* widget)
         v->Z.setValue(ui->vertexZ->value().getValue());
     }
 
-    v->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*v);
 }
 
 // ----------------------------------------------------------------------------
@@ -2313,7 +2314,7 @@ void DlgPrimitives::tryCreatePrimitive(const QString& placement)
     Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
     Gui::Command::runCommand(Gui::Command::Doc, getAutoGroupCommandStr(name).toUtf8());
     Gui::Application::Instance->activeDocument()->commitCommand();
-    PartGui::trySubmitActiveDocumentRecompute();
+    PartGui::submitActiveDocumentRecomputeOrReport(this);
     Gui::Command::runCommand(Gui::Command::Gui, "Gui.ActiveDocument.ActiveView.sendMessage(\"ViewFit\")");
 }
 
@@ -2362,7 +2363,7 @@ void DlgPrimitives::accept(const QString& placement)
     }
     App::Document* doc = featurePtr->getDocument();
     acceptChanges(placement);
-    PartGui::trySubmitDocumentRecompute(*doc);
+    PartGui::submitDocumentRecomputeOrReport(*doc);
     // commit undo command
     doc->commitTransaction();
 }
@@ -2530,7 +2531,7 @@ void Location::onPlacementChanged()
 
     // apply new placement to the feature
     geom->Placement.setValue(placement);
-    geom->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*geom);
 }
 
 void Location::onViewPositionButton()
@@ -2700,6 +2701,4 @@ bool TaskPrimitivesEdit::reject()
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.getDocument('%s').resetEdit()", document.c_str());
     return true;
 }
-
 #include "moc_DlgPrimitives.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

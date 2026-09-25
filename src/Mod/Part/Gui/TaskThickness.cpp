@@ -45,6 +45,7 @@
 #include "TaskThickness.h"
 #include "ViewProvider.h"
 #include "ui_TaskOffset.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -158,7 +159,7 @@ void ThicknessWidget::onSpinOffsetValueChanged(double val)
 {
     d->thickness->Value.setValue(val);
     if (d->ui.updateView->isChecked()) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -166,7 +167,7 @@ void ThicknessWidget::onModeTypeActivated(int val)
 {
     d->thickness->Mode.setValue(val);
     if (d->ui.updateView->isChecked()) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -174,7 +175,7 @@ void ThicknessWidget::onJoinTypeActivated(int val)
 {
     d->thickness->Join.setValue((long)val);
     if (d->ui.updateView->isChecked()) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -182,7 +183,7 @@ void ThicknessWidget::onIntersectionToggled(bool on)
 {
     d->thickness->Intersection.setValue(on);
     if (d->ui.updateView->isChecked()) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -190,7 +191,7 @@ void ThicknessWidget::onSelfIntersectionToggled(bool on)
 {
     d->thickness->SelfIntersection.setValue(on);
     if (d->ui.updateView->isChecked()) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -241,7 +242,7 @@ void ThicknessWidget::onFacesButtonToggled(bool on)
         Gui::Application::Instance->showViewProvider(d->thickness);
         Gui::Application::Instance->hideViewProvider(d->thickness->Faces.getValue());
         if (d->ui.updateView->isChecked()) {
-            d->thickness->getDocument()->recomputeFeature(d->thickness);
+            PartGui::submitDocumentRecomputeOrReport(*d->thickness);
         }
 
         if (gizmoContainer) {
@@ -254,7 +255,7 @@ void ThicknessWidget::onFacesButtonToggled(bool on)
 void ThicknessWidget::onUpdateViewToggled(bool on)
 {
     if (on) {
-        d->thickness->getDocument()->recomputeFeature(d->thickness);
+        PartGui::submitDocumentRecomputeOrReport(*d->thickness);
     }
 }
 
@@ -282,10 +283,10 @@ bool ThicknessWidget::accept()
             d->ui.selfIntersection->isChecked() ? "True" : "False"
         );
 
-        PartGui::trySubmitActiveDocumentRecompute();
-        if (!d->thickness->isValid()) {
-            throw Base::CADKernelError(d->thickness->getStatusString());
+        if (!PartGui::submitActiveDocumentRecomputeOrReport(this)) {
+            return false;
         }
+
         Gui::Command::doCommand(Gui::Command::Gui, "Gui.ActiveDocument.resetEdit()");
         d->thickness->getDocument()->commitTransaction();  // Opened in
                                                            // ViewProviderDocumentObject::startDefaultEditMode()
@@ -419,6 +420,4 @@ bool TaskThickness::reject()
 {
     return widget->reject();
 }
-
 #include "moc_TaskThickness.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

@@ -78,7 +78,7 @@
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 #include "TaskLinkArrayParameters.h"
-
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 //===========================================================================
 // Part_PickCurveNet
 //===========================================================================
@@ -2600,7 +2600,7 @@ void activateLinkArrayCommand(
         return;
     }
 
-    if (source && array->getDocument()->recomputeFeature(array)) {
+    if (source && PartGui::submitDocumentRecomputeOrReport(*array)) {
         array->purgeTouched();
     }
 

@@ -51,6 +51,7 @@
 
 #include "TaskLoft.h"
 #include "ui_TaskLoft.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -213,12 +214,9 @@ bool LoftWidget::accept()
         }
         doc->openCommand(QT_TRANSLATE_NOOP("Command", "Loft"));
         Gui::Command::runCommand(Gui::Command::App, cmd.toUtf8());
-        PartGui::trySubmitDocumentRecompute(*doc->getDocument());
-        App::DocumentObject* obj = doc->getDocument()->getActiveObject();
-        if (obj && !obj->isValid()) {
-            std::string msg = obj->getStatusString();
+        if (!PartGui::submitDocumentRecomputeOrReport(*doc->getDocument(), this)) {
             doc->abortCommand();
-            throw Base::RuntimeError(msg);
+            return false;
         }
         doc->commitCommand();
     }
@@ -291,6 +289,4 @@ bool TaskLoft::reject()
 {
     return widget->reject();
 }
-
 #include "moc_TaskLoft.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

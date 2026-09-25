@@ -42,6 +42,7 @@
 
 #include "ui_TaskShapeBinder.h"
 #include "TaskShapeBinder.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -152,7 +153,7 @@ void TaskShapeBinder::supportChanged(const QString& text)
         PartDesign::ShapeBinder* binder = vp->getObject<PartDesign::ShapeBinder>();
         binder->Support.setValue(nullptr, nullptr);
         vp->highlightReferences(false);
-        vp->getObject()->getDocument()->recomputeFeature(vp->getObject());
+        PartGui::submitDocumentRecomputeOrReport(*vp->getObject());
         ui->listWidgetReferences->clear();
     }
 }
@@ -217,7 +218,7 @@ void TaskShapeBinder::deleteItem()
             binder->Support.setValue(obj, subs);
 
             vp->highlightReferences(false);
-            vp->getObject()->getDocument()->recomputeFeature(vp->getObject());
+            PartGui::submitDocumentRecomputeOrReport(*vp->getObject());
 
             clearButtons();
         }
@@ -273,7 +274,7 @@ void TaskShapeBinder::onSelectionChanged(const Gui::SelectionChanges& msg)
 
             if (!vp.expired()) {
                 vp->highlightReferences(false);
-                vp->getObject()->getDocument()->recomputeFeature(vp->getObject());
+                PartGui::submitDocumentRecomputeOrReport(*vp->getObject());
             }
         }
 
@@ -428,9 +429,8 @@ bool TaskDlgShapeBinder::accept()
         if (!vp.expired()) {
             parameter->accept();
 
-            PartGui::trySubmitDocumentRecompute(*vp->getObject());
-            if (!vp->getObject()->isValid()) {
-                throw Base::RuntimeError(vp->getObject()->getStatusString());
+            if (!PartGui::submitDocumentRecomputeOrReport(*vp->getObject(), parameter)) {
+                return false;
             }
             Gui::cmdGuiDocument(vp->getObject(), "resetEdit()");
             vp->getDocument()->commitCommand();
@@ -457,10 +457,8 @@ bool TaskDlgShapeBinder::reject()
         vp->getDocument()->abortCommand();
         App::Document* doc = vp->getObject()->getDocument();
         Gui::cmdGuiDocument(doc, "resetEdit()");
-        PartGui::trySubmitDocumentRecompute(*doc);
+        PartGui::submitDocumentRecomputeOrReport(*doc);
     }
     return true;
 }
-
 #include "moc_TaskShapeBinder.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>

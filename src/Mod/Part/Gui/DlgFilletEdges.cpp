@@ -70,6 +70,7 @@
 #include "SoBrepEdgeSet.h"
 #include "SoBrepFaceSet.h"
 #include "SoBrepPointSet.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 FC_LOG_LEVEL_INIT("Part", true, true)
 
@@ -1110,7 +1111,7 @@ bool DlgFilletEdges::accept()
                 .arg(name, shape);
     Gui::Command::runCommand(Gui::Command::App, code.toLatin1());
     activeDoc->commitTransaction();
-    PartGui::trySubmitDocumentRecompute(*activeDoc);
+    PartGui::submitDocumentRecomputeOrReport(*activeDoc);
     if (d->fillet) {
         Gui::ViewProvider* vp;
         vp = Gui::Application::Instance->getViewProvider(d->fillet);
@@ -1249,6 +1250,4 @@ bool TaskChamferEdges::reject()
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
     return true;
 }
-
 #include "moc_DlgFilletEdges.cpp"
-#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
