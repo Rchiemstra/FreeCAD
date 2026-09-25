@@ -2600,8 +2600,8 @@ void activateLinkArrayCommand(
         return;
     }
 
-    if (source && PartGui::submitDocumentRecomputeOrReport(*array)) {
-        array->purgeTouched();
+    if (source) {
+        PartGui::submitDocumentRecomputeOrReport(*array);
     }
 
     App::SubObjectT reference(array);

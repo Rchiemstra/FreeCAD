@@ -167,8 +167,6 @@ void TaskFilletParameters::onLengthChanged(double len)
         setupTransaction();
         fillet->Radius.setValue(len);
         PartGui::submitDocumentRecomputeOrReport(*fillet);
-        // hide the fillet if there was a computation error
-        hideOnError();
     }
 }
 

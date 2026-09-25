@@ -143,6 +143,7 @@ private:
     void CutValueHelper(double val, QDoubleSpinBox* SpinBox, QSlider* Slider);
     void FlipClickedHelper(const char* BoxName);
     void changeCutBoxColors();
+    void submitDocumentRecomputeOnce();
     void createAllObjects(const std::vector<App::DocumentObject*>& ObjectsListCut);
     App::DocumentObject* CreateBooleanFragments(App::Document* doc);
     App::DocumentObject* createBooleanFragments(

@@ -616,8 +616,8 @@ void TaskLinkArrayParameters::setupPatternTransaction()
 
 void TaskLinkArrayParameters::recomputePatternFeature()
 {
-    if (array && array->getDocument() && PartGui::submitDocumentRecomputeOrReport(*array)) {
-        array->purgeTouched();
+    if (array && array->getDocument()) {
+        PartGui::submitDocumentRecomputeOrReport(*array, this);
     }
     // vector<bool> does not satisfy the C++20 output_range requirements of ranges::fill.
     std::fill(instanceControlCentersValid.begin(), instanceControlCentersValid.end(), false);

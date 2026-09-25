@@ -209,9 +209,6 @@ void TaskDressUpParameters::updateFeature(
     if (selectionMode == refSel) {
         DressUpView->highlightReferences(true);
     }
-    else {
-        hideOnError();
-    }
 }
 
 void TaskDressUpParameters::onButtonRefSel(bool checked)

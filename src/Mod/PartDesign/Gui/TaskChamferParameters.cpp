@@ -221,8 +221,6 @@ void TaskChamferParameters::onTypeChanged(int index)
         ui->stackedWidget->setCurrentIndex(index);
         ui->flipDirection->setEnabled(index != 0);  // Enable if type is not "Equal distance"
         PartGui::submitDocumentRecomputeOrReport(*chamfer);
-        // hide the chamfer if there was a computation error
-        hideOnError();
     }
 }
 
@@ -233,8 +231,6 @@ void TaskChamferParameters::onSizeChanged(double len)
         setupTransaction();
         chamfer->Size.setValue(len);
         PartGui::submitDocumentRecomputeOrReport(*chamfer);
-        // hide the chamfer if there was a computation error
-        hideOnError();
     }
 }
 
@@ -245,8 +241,6 @@ void TaskChamferParameters::onSize2Changed(double len)
         setupTransaction();
         chamfer->Size2.setValue(len);
         PartGui::submitDocumentRecomputeOrReport(*chamfer);
-        // hide the chamfer if there was a computation error
-        hideOnError();
     }
 }
 
@@ -257,8 +251,6 @@ void TaskChamferParameters::onAngleChanged(double angle)
         setupTransaction();
         chamfer->Angle.setValue(angle);
         PartGui::submitDocumentRecomputeOrReport(*chamfer);
-        // hide the chamfer if there was a computation error
-        hideOnError();
     }
 }
 
@@ -269,8 +261,6 @@ void TaskChamferParameters::onFlipDirection(bool flip)
         setupTransaction();
         chamfer->FlipDirection.setValue(flip);
         PartGui::submitDocumentRecomputeOrReport(*chamfer);
-        // hide the chamfer if there was a computation error
-        hideOnError();
 
         setGizmoPositions();
     }

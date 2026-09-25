@@ -175,7 +175,7 @@ void UnifiedDatumCommand(Gui::Command& cmd, Base::Type type, std::string name)
                     );
                 }
             }
-            PartGui::submitActiveDocumentRecomputeOrReport(this);  // recompute the feature based on its references
+            PartGui::submitActiveDocumentRecomputeOrReport(nullptr);  // recompute the feature based on its references
             PartDesignGui::setEdit(Feat, pcActiveBody);
         }
         else {

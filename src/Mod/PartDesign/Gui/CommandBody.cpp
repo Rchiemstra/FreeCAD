@@ -960,7 +960,7 @@ void CmdPartDesignMoveFeature::activated(int iMsg)
         doCommand(Doc,"App.activeDocument().%s.addObject(App.activeDocument().%s)",
                       target->getNameInDocument(), (feat)->getNameInDocument());
         // Recompute to update the shape
-        PartGui::submitActiveDocumentRecomputeOrReport(this);
+        PartGui::submitActiveDocumentRecomputeOrReport(nullptr);
 
         // Adjust visibility of features
         // TODO: May be something can be done in view provider (2015-08-05, Fat-Zer)

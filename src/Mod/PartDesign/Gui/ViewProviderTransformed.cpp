@@ -185,8 +185,6 @@ void ViewProviderTransformed::recomputeFeature(bool recompute)
     }
 
     updatePreview();
-
-    handleTransformedResult(pcTransformed);
 }
 
 

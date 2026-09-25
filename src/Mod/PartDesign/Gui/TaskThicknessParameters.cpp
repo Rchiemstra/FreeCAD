@@ -179,8 +179,6 @@ PartDesign::Thickness* TaskThicknessParameters::onBeforeChange()
 void TaskThicknessParameters::onAfterChange(PartDesign::Thickness* obj)
 {
     PartGui::submitDocumentRecomputeOrReport(*obj);
-    // hide the thickness if there was a computation error
-    hideOnError();
 }
 
 void TaskThicknessParameters::onValueChanged(double angle)

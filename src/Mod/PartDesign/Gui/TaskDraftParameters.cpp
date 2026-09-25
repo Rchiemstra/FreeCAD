@@ -151,8 +151,6 @@ void TaskDraftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             PartGui::submitDocumentRecomputeOrReport(*pcDraft);
             // highlight existing references for possible further selections
             getDressUpView()->highlightReferences(true);
-            // hide the draft if there was a computation error
-            hideOnError();
             setGizmoPositions();
         }
         else if (selectionMode == line) {
@@ -170,8 +168,6 @@ void TaskDraftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             PartGui::submitDocumentRecomputeOrReport(*pcDraft);
             // highlight existing references for possible further selections
             getDressUpView()->highlightReferences(true);
-            // hide the draft if there was a computation error
-            hideOnError();
             setGizmoPositions();
         }
     }
@@ -249,8 +245,6 @@ void TaskDraftParameters::onAngleChanged(double angle)
         setupTransaction();
         draft->Angle.setValue(angle);
         PartGui::submitDocumentRecomputeOrReport(*draft);
-        // hide the draft if there was a computation error
-        hideOnError();
     }
 }
 
@@ -266,8 +260,6 @@ void TaskDraftParameters::onReversedChanged(const bool reversed)
         setupTransaction();
         draft->Reversed.setValue(reversed);
         PartGui::submitDocumentRecomputeOrReport(*draft);
-        // hide the draft if there was a computation error
-        hideOnError();
 
         setGizmoPositions();
     }

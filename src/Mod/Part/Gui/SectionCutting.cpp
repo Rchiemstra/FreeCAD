@@ -65,6 +65,13 @@
 
 using namespace PartGui;
 
+void SectionCut::submitDocumentRecomputeOnce()
+{
+    if (doc) {
+        PartGui::submitDocumentRecomputeOrReport(*doc, this);
+    }
+}
+
 namespace
 {
 struct Refresh
@@ -1293,8 +1300,6 @@ void SectionCut::processXBoxAndCut(const Args& args)
 
     // recomputing recursively is especially for assemblies very time-consuming
     // however there must be a final recursicve recompute and we do this at the end
-    // so only recomute recursively if there are no other cuts
-    PartGui::submitDocumentRecomputeOrReport(*pcCut);
     hasBoxX = true;
 }
 
@@ -1312,7 +1317,6 @@ void SectionCut::processYBoxAndCut(const Args& args)
     pcCut->Tool.setValue(pcBox);
     args.cutFunc(pcCut);
 
-    PartGui::submitDocumentRecomputeOrReport(*pcCut);
     hasBoxY = true;
 }
 
@@ -1329,7 +1333,6 @@ void SectionCut::processZBoxAndCut(const Args& args)
     pcCut->Tool.setValue(pcBox);
     args.cutFunc(pcCut);
 
-    PartGui::submitDocumentRecomputeOrReport(*pcCut);
     hasBoxZ = true;
 }
 
@@ -1451,6 +1454,8 @@ void SectionCut::createAllObjects(const std::vector<App::DocumentObject*>& Objec
              setTransparency}
         );
     }
+
+    submitDocumentRecomputeOnce();
 }
 
 SectionCut* SectionCut::makeDockWidget(QWidget* parent)
@@ -1722,7 +1727,7 @@ void SectionCut::onCutXvalueChanged(double val)
         // make SectionCutX invisible again
         CutObject->Visibility.setValue(false);
         // recompute the cut
-        PartGui::submitDocumentRecomputeOrReport(*CutFeatureY);
+        submitDocumentRecomputeOnce();
     }
     else if (hasBoxZ) {  // at least Z
         // the main cut is Z, no matter if there is a cut in Y
@@ -1742,7 +1747,7 @@ void SectionCut::onCutXvalueChanged(double val)
         // make SectionCutX invisible again
         CutObject->Visibility.setValue(false);
         // recompute the cut
-        PartGui::submitDocumentRecomputeOrReport(*CutFeatureZ);
+        submitDocumentRecomputeOnce();
     }
     else {  // just X
         // refresh Y and Z limits + values
@@ -1764,7 +1769,7 @@ void SectionCut::onCutXvalueChanged(double val)
                                       .c_str());
             return;
         }
-        PartGui::submitDocumentRecomputeOrReport(*pcCut);
+        submitDocumentRecomputeOnce();
     }
 }
 
@@ -1866,7 +1871,7 @@ void SectionCut::onCutYvalueChanged(double val)
         // make SectionCutX invisible again
         CutObject->Visibility.setValue(false);
         // recompute the cut
-        PartGui::submitDocumentRecomputeOrReport(*CutFeatureZ);
+        submitDocumentRecomputeOnce();
     }
     else {  // just Y
         // refresh Z limits + values
@@ -1888,7 +1893,7 @@ void SectionCut::onCutYvalueChanged(double val)
                                       .c_str());
             return;
         }
-        PartGui::submitDocumentRecomputeOrReport(*pcCut);
+        submitDocumentRecomputeOnce();
         // refresh X limits
         // this is done by
         // first making the cut X box visible, then setting the limits only for X
@@ -1977,7 +1982,7 @@ void SectionCut::onCutZvalueChanged(double val)
                                   .c_str());
         return;
     }
-    PartGui::submitDocumentRecomputeOrReport(*pcCut);
+    submitDocumentRecomputeOnce();
     // refresh X and Y limits
     // this is done e.g. for X by
     // first making the cut X box visible, then setting the limits only for X
@@ -2132,7 +2137,7 @@ void SectionCut::onFlipXclicked()
         }
         if (auto cut = dynamic_cast<Part::Cut*>(CutObject)) {
             // only do this when there is no other box to save recomputes
-            PartGui::submitDocumentRecomputeOrReport(*cut);
+            submitDocumentRecomputeOnce();
         }
     }
 }
@@ -2148,7 +2153,7 @@ void SectionCut::onFlipYclicked()
             CutObject = findObject(CutZName);
         }
         if (auto cut = dynamic_cast<Part::Cut*>(CutObject)) {
-            PartGui::submitDocumentRecomputeOrReport(*cut);
+            submitDocumentRecomputeOnce();
         }
     }
 }
@@ -2158,7 +2163,7 @@ void SectionCut::onFlipZclicked()
     FlipClickedHelper(BoxZName);
 
     if (auto CutObject = findOrCreateObject(CutZName)) {
-        PartGui::submitDocumentRecomputeOrReport(*CutObject);
+        submitDocumentRecomputeOnce();
     }
 }
 
@@ -2228,27 +2233,7 @@ void SectionCut::changeCutBoxColors()
         setColorTransparency(doc->getObject(BoxZName));
     }
 
-    // we must recompute the topmost cut to make the color visible
-    // we must hereby first recompute ewvery cut non-recursively in the order X -> Y -> Z
-    // eventually recompute the topmost cut recursively
-    if (doc->getObject(CutXName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutXName));
-    }
-    if (doc->getObject(CutYName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutYName));
-    }
-    if (doc->getObject(CutZName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutZName));
-    }
-    if (doc->getObject(CutZName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutZName));
-    }
-    else if (doc->getObject(CutYName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutYName));
-    }
-    else if (doc->getObject(CutXName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutXName));
-    }
+    submitDocumentRecomputeOnce();
 }
 
 void SectionCut::onTransparencyHSMoved(int val)
@@ -2284,16 +2269,7 @@ void SectionCut::onBFragColorclicked()
     }
 
     setBooleanFragmentsColor();
-    // we must recompute the topmost cut to make the color visible
-    if (doc->getObject(CutZName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutZName));
-    }
-    else if (doc->getObject(CutYName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutYName));
-    }
-    else if (doc->getObject(CutXName)) {
-        PartGui::submitDocumentRecomputeOrReport(*doc->getObject(CutXName));
-    }
+    submitDocumentRecomputeOnce();
 }
 
 // sets BooleanFragments color
@@ -2324,7 +2300,6 @@ void SectionCut::setBooleanFragmentsColor()
             CutCompoundBFGeom->ShapeAppearance.setDiffuseColor(BFColor);
             int BFTransparency = ui->BFragTransparencyHS->value();
             CutCompoundBFGeom->Transparency.setValue(BFTransparency);
-            PartGui::submitDocumentRecomputeOrReport(*compoundObject);
         }
     }
 }
@@ -2342,7 +2317,6 @@ void SectionCut::onBFragTransparencyHSMoved(int val)
         if (CutVPGeom) {
             int BFTransparency = ui->BFragTransparencyHS->value();
             CutVPGeom->Transparency.setValue(BFTransparency);
-            PartGui::submitDocumentRecomputeOrReport(*cutObject);
         }
     };
 
@@ -2373,6 +2347,7 @@ void SectionCut::onBFragTransparencyHSMoved(int val)
         if (doc->getObject(CutZName)) {
             setTransparency(doc->getObject(CutZName));
         }
+        submitDocumentRecomputeOnce();
     }
 }
 
@@ -2602,7 +2577,6 @@ Part::Compound* SectionCut::createCompound(const std::vector<App::DocumentObject
         Gui::Application::Instance->getViewProvider(CutCompoundPart)
     );
     vpCompound->Transparency.setValue(transparency);
-    PartGui::submitDocumentRecomputeOrReport(*CutCompoundPart);
 
     return CutCompoundPart;
 }
