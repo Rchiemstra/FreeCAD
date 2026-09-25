@@ -6,7 +6,9 @@
 
 #include <FCGlobal.h>
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,12 @@ class DocumentObject;
 
 namespace Gui
 {
+
+/** Invalidates passive undo/redo completion timers when the GUI document closes. */
+struct GuiExport UndoRedoCompletionAnchor
+{
+    std::atomic<bool> active {true};
+};
 
 /** Pointer-free recompute admission payload copied before trySubmit(). */
 struct DocumentRecomputeSubmitRequest
@@ -44,15 +52,16 @@ GuiExport App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::DocumentCommandKind kind,
     int steps = 1);
 
-/**
- * Poll command status without waiting and run \p onCompleted when the command
- * reaches a terminal Completed state.
- */
+/** Poll command status without waiting and notify the GUI document when terminal. */
 GuiExport void scheduleUndoRedoCommandCompletion(
+    const char* appDocumentName,
     App::DocumentRevisionIdentityBinding documentIdentity,
     App::DocumentCommandId commandId,
     App::DocumentCommandKind kind,
-    std::function<void()> onCompleted = {});
+    std::shared_ptr<UndoRedoCompletionAnchor> anchor);
+
+/** Report that grouped undo/redo across documents is not supported on this path. */
+GuiExport void reportGroupedUndoRedoUnsupported(App::Document& document, bool undo);
 
 /** Submit save on the execution lane without waiting or blocking the GUI thread. */
 GuiExport bool submitDocumentSave(App::Document& document);

@@ -118,6 +118,7 @@ struct DocumentP
     bool _isClosing;
     bool _isModified;
     bool _isTransacting;
+    std::shared_ptr<UndoRedoCompletionAnchor> undoRedoCompletionAnchor;
     bool _isActive;
     bool _restoredGuiDocument;
     bool _changeViewTouchDocument;
@@ -628,6 +629,10 @@ Document::Document(App::Document* pcDocument, Application* app)
 
 Document::~Document()
 {
+    if (d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor->active.store(false, std::memory_order_release);
+    }
+
     // disconnect everything to avoid to be double-deleted
     // in case an exception is raised somewhere
     d->connectNewObject.disconnect();
@@ -4098,6 +4103,12 @@ bool Document::checkTransactionID(bool undo, int iSteps)
             }
         }
     }
+    if (!dmap.empty()) {
+        if (prompts.empty()) {
+            reportGroupedUndoRedoUnsupported(*getDocument(), undo);
+            return false;
+        }
+    }
     if (!prompts.empty()) {
         std::ostringstream str;
         int i = 0;
@@ -4133,19 +4144,8 @@ bool Document::checkTransactionID(bool undo, int iSteps)
         if (ret == QMessageBox::No) {
             return true;
         }
-    }
-    for (auto& v : dmap) {
-        if (v.second <= 0) {
-            continue;
-        }
-        const auto outcome = submitDocumentKindCommand(
-            *v.first,
-            undo ? App::DocumentCommandKind::Undo : App::DocumentCommandKind::Redo,
-            v.second);
-        if (!outcome.accepted()) {
-            reportDocumentCommandSubmitBlocked(*v.first, outcome);
-            return false;
-        }
+        reportGroupedUndoRedoUnsupported(*getDocument(), undo);
+        return false;
     }
     return true;
 }
@@ -4158,10 +4158,16 @@ bool Document::isPerformingTransaction() const
 /// Will UNDO one or more steps
 void Document::undo(int iSteps)
 {
-    Base::FlagToggler<> flag(d->_isTransacting);
-
     if (!checkTransactionID(true, iSteps)) {
         return;
+    }
+
+    d->_isTransacting = true;
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    else {
+        d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
     }
 
     const auto outcome = submitDocumentKindCommand(
@@ -4169,22 +4175,31 @@ void Document::undo(int iSteps)
         App::DocumentCommandKind::Undo,
         iSteps);
     if (!outcome.accepted()) {
+        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
     scheduleUndoRedoCommandCompletion(
+        getDocument()->getName(),
         getDocument()->executionHandle().identity(),
         outcome.commandId,
-        App::DocumentCommandKind::Undo);
+        App::DocumentCommandKind::Undo,
+        d->undoRedoCompletionAnchor);
 }
 
 /// Will REDO one or more steps
 void Document::redo(int iSteps)
 {
-    Base::FlagToggler<> flag(d->_isTransacting);
-
     if (!checkTransactionID(false, iSteps)) {
         return;
+    }
+
+    d->_isTransacting = true;
+    if (!d->undoRedoCompletionAnchor) {
+        d->undoRedoCompletionAnchor = std::make_shared<UndoRedoCompletionAnchor>();
+    }
+    else {
+        d->undoRedoCompletionAnchor->active.store(true, std::memory_order_release);
     }
 
     const auto outcome = submitDocumentKindCommand(
@@ -4192,14 +4207,32 @@ void Document::redo(int iSteps)
         App::DocumentCommandKind::Redo,
         iSteps);
     if (!outcome.accepted()) {
+        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
     scheduleUndoRedoCommandCompletion(
+        getDocument()->getName(),
         getDocument()->executionHandle().identity(),
         outcome.commandId,
         App::DocumentCommandKind::Redo,
-        [this]() { onExecutionLaneRedoCompleted(); });
+        d->undoRedoCompletionAnchor);
+}
+
+void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,
+                                             const App::DocumentCommandState state)
+{
+    d->_isTransacting = false;
+    if (state != App::DocumentCommandState::Completed) {
+        return;
+    }
+    if (kind == App::DocumentCommandKind::Undo) {
+        App::GetApplication().signalUndo();
+    }
+    else if (kind == App::DocumentCommandKind::Redo) {
+        App::GetApplication().signalRedo();
+        onExecutionLaneRedoCompleted();
+    }
 }
 
 void Document::onExecutionLaneRedoCompleted()

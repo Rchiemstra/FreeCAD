@@ -2,9 +2,12 @@
 
 #include "DocumentExecutionIngress.h"
 
+#include "Application.h"
+#include "Document.h"
 #include "MainWindow.h"
 
 #include <App/Application.h>
+#include <App/DocumentCommandHandle.h>
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
@@ -80,6 +83,9 @@ QString blockedReasonMessage(
     App::Document& document,
     const App::DocumentCommandSubmitOutcome& outcome)
 {
+    if (!outcome.diagnostic.empty()) {
+        return QString::fromStdString(outcome.diagnostic);
+    }
     const auto documentLabel = QString::fromUtf8(document.getName());
     switch (outcome.result) {
         case App::DocumentCommandSubmitResult::Busy:
@@ -157,48 +163,76 @@ App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind, steps));
 }
 
+namespace
+{
+
+Gui::Document* findGuiDocumentByName(const char* appDocumentName)
+{
+    if (!appDocumentName || appDocumentName[0] == '\0') {
+        return nullptr;
+    }
+    auto* appDocument = App::GetApplication().getDocument(appDocumentName);
+    if (!appDocument) {
+        return nullptr;
+    }
+    return Application::Instance->getDocument(appDocument);
+}
+
+}  // namespace
+
+void reportGroupedUndoRedoUnsupported(App::Document& document, const bool undo)
+{
+    App::DocumentCommandSubmitOutcome outcome;
+    outcome.result = App::DocumentCommandSubmitResult::Unsupported;
+    outcome.diagnostic = undo
+        ? "grouped undo across linked documents is not supported on the execution lane"
+        : "grouped redo across linked documents is not supported on the execution lane";
+    reportDocumentCommandSubmitBlocked(document, outcome);
+}
+
 void scheduleUndoRedoCommandCompletion(
+    const char* appDocumentName,
     App::DocumentRevisionIdentityBinding documentIdentity,
     App::DocumentCommandId commandId,
     const App::DocumentCommandKind kind,
-    std::function<void()> onCompleted)
+    std::shared_ptr<UndoRedoCompletionAnchor> anchor)
 {
     auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
+    const std::string documentName = appDocumentName ? appDocumentName : std::string {};
     QTimer::singleShot(
         50,
         qApp,
-        [documentIdentity,
+        [documentName,
+         documentIdentity,
          commandId,
          kind,
-         onCompleted = std::move(onCompleted),
+         anchor = std::move(anchor),
          commandHandle = std::move(commandHandle)]() mutable {
+            if (anchor && !anchor->active.load(std::memory_order_acquire)) {
+                return;
+            }
             const auto snapshot = commandHandle->status();
             if (!snapshot.terminal()) {
                 scheduleUndoRedoCommandCompletion(
+                    documentName.c_str(),
                     documentIdentity,
                     commandId,
                     kind,
-                    std::move(onCompleted));
+                    std::move(anchor));
                 return;
             }
-            if (snapshot.state != App::DocumentCommandState::Completed) {
-                if (snapshot.state == App::DocumentCommandState::Failed) {
-                    FC_ERR("Document "
-                           << App::documentCommandKindName(kind) << " "
-                           << App::documentCommandStateName(snapshot.state) << ": "
-                           << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
-                                                           : snapshot.diagnostic));
-                }
+            if (anchor && !anchor->active.load(std::memory_order_acquire)) {
                 return;
             }
-            if (kind == App::DocumentCommandKind::Undo) {
-                App::GetApplication().signalUndo();
+            if (auto* guiDocument = findGuiDocumentByName(documentName.c_str())) {
+                guiDocument->finishExecutionLaneUndoRedo(kind, snapshot.state);
             }
-            else if (kind == App::DocumentCommandKind::Redo) {
-                App::GetApplication().signalRedo();
-                if (onCompleted) {
-                    onCompleted();
-                }
+            else if (snapshot.state == App::DocumentCommandState::Failed) {
+                FC_ERR("Document "
+                       << App::documentCommandKindName(kind) << " "
+                       << App::documentCommandStateName(snapshot.state) << ": "
+                       << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
+                                                       : snapshot.diagnostic));
             }
         });
 }
