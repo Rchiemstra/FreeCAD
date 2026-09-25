@@ -75,16 +75,16 @@ TEST(DocumentExecutionTelemetryContractTest, exposesStableEnumNames)
 TEST_F(DocumentExecutionTelemetryTest, recordsProcessAndDocumentLatencySamples)
 {
     auto& telemetry = DocumentExecutionTelemetry::instance();
-    auto& collector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
+    auto collector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
 
     telemetry.recordGuiEventLoopLatency(12.5);
     telemetry.recordGuiEventLoopLatency(37.5);
-    collector.recordApplySliceDuration(3.5);
-    collector.recordApplySliceDuration(4.0);
-    collector.recordScenePreparationTime(18.0);
-    collector.recordPresentationRevisionLag(9.25);
+    collector->recordApplySliceDuration(3.5);
+    collector->recordApplySliceDuration(4.0);
+    collector->recordScenePreparationTime(18.0);
+    collector->recordPresentationRevisionLag(9.25);
 
-    const auto documentSnapshot = collector.snapshot();
+    const auto documentSnapshot = collector->snapshot();
     EXPECT_EQ(documentSnapshot.documentInstanceId, FirstDocumentId);
     EXPECT_EQ(documentSnapshot.lifecycleEpoch, TestLifecycleEpoch);
     EXPECT_EQ(documentSnapshot.applySliceDuration.sampleCount, 2U);
@@ -107,11 +107,11 @@ TEST_F(DocumentExecutionTelemetryTest, recordsProcessAndDocumentLatencySamples)
 TEST_F(DocumentExecutionTelemetryTest, aggregatesBusyRejectionsAcrossDocuments)
 {
     auto& telemetry = DocumentExecutionTelemetry::instance();
-    auto& first = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
-    auto& second = telemetry.document(SecondDocumentId, TestLifecycleEpoch);
+    auto first = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
+    auto second = telemetry.document(SecondDocumentId, TestLifecycleEpoch);
 
-    recordBusyRejections(first);
-    recordBusyRejections(second);
+    recordBusyRejections(*first);
+    recordBusyRejections(*second);
 
     const auto processSnapshot = telemetry.snapshot();
     EXPECT_EQ(processSnapshot.busyRejections.edit, 2U);
@@ -175,13 +175,13 @@ TEST(DocumentExecutionTelemetryTest, recentSampleBuffersAreBounded)
 TEST_F(DocumentExecutionTelemetryTest, publishedSnapshotIsAtomicallyReplaced)
 {
     auto& telemetry = DocumentExecutionTelemetry::instance();
-    auto& collector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
+    auto collector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
 
     telemetry.recordGuiEventLoopLatency(5.0);
     telemetry.publishProcessSnapshot();
     const auto firstPublication = telemetry.processSnapshot();
 
-    collector.recordApplySliceDuration(2.0);
+    collector->recordApplySliceDuration(2.0);
     telemetry.publishProcessSnapshot();
     const auto secondPublication = telemetry.processSnapshot();
 
@@ -193,11 +193,47 @@ TEST_F(DocumentExecutionTelemetryTest, publishedSnapshotIsAtomicallyReplaced)
 TEST_F(DocumentExecutionTelemetryTest, documentSnapshotLookupHonorsRemoval)
 {
     auto& telemetry = DocumentExecutionTelemetry::instance();
-    telemetry.document(FirstDocumentId, TestLifecycleEpoch).recordApplySliceDuration(1.0);
+    telemetry.document(FirstDocumentId, TestLifecycleEpoch)->recordApplySliceDuration(1.0);
     EXPECT_TRUE(telemetry.documentSnapshot(FirstDocumentId).has_value());
 
     telemetry.removeDocument(FirstDocumentId);
     EXPECT_FALSE(telemetry.documentSnapshot(FirstDocumentId).has_value());
+}
+
+TEST_F(DocumentExecutionTelemetryTest, documentCollectorSurvivesRemovalWhilePinned)
+{
+    auto& telemetry = DocumentExecutionTelemetry::instance();
+    auto collector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
+    collector->recordApplySliceDuration(2.5);
+
+    telemetry.removeDocument(FirstDocumentId);
+    EXPECT_FALSE(telemetry.documentSnapshot(FirstDocumentId).has_value());
+
+    const auto snapshot = collector->snapshot();
+    EXPECT_EQ(snapshot.documentInstanceId, FirstDocumentId);
+    EXPECT_EQ(snapshot.applySliceDuration.sampleCount, 1U);
+    EXPECT_DOUBLE_EQ(snapshot.applySliceDuration.minimumMilliseconds, 2.5);
+}
+
+TEST_F(DocumentExecutionTelemetryTest, documentLookupReplacesCollectorOnLifecycleEpochChange)
+{
+    auto& telemetry = DocumentExecutionTelemetry::instance();
+    constexpr DocumentLifecycleEpoch reopenedLifecycleEpoch = TestLifecycleEpoch + 1;
+
+    auto firstCollector = telemetry.document(FirstDocumentId, TestLifecycleEpoch);
+    firstCollector->recordApplySliceDuration(1.0);
+
+    auto secondCollector = telemetry.document(FirstDocumentId, reopenedLifecycleEpoch);
+    EXPECT_NE(firstCollector.get(), secondCollector.get());
+    EXPECT_EQ(secondCollector->lifecycleEpoch(), reopenedLifecycleEpoch);
+    EXPECT_EQ(secondCollector->snapshot().applySliceDuration.sampleCount, 0U);
+
+    secondCollector->recordApplySliceDuration(3.0);
+    const auto registrySnapshot = telemetry.documentSnapshot(FirstDocumentId);
+    ASSERT_TRUE(registrySnapshot.has_value());
+    EXPECT_EQ(registrySnapshot->lifecycleEpoch, reopenedLifecycleEpoch);
+    EXPECT_EQ(registrySnapshot->applySliceDuration.sampleCount, 1U);
+    EXPECT_DOUBLE_EQ(registrySnapshot->applySliceDuration.minimumMilliseconds, 3.0);
 }
 
 TEST_F(DocumentExecutionTelemetryTest, snapshotsSerializeToJson)

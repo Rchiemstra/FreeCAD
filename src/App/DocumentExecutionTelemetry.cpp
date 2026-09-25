@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string_view>
 #include <utility>
 
 namespace App
@@ -495,14 +496,23 @@ void DocumentExecutionTelemetry::recordGuiEventLoopLatency(double milliseconds)
                         milliseconds);
 }
 
-DocumentExecutionTelemetryCollector& DocumentExecutionTelemetry::document(
+std::shared_ptr<DocumentExecutionTelemetryCollector> DocumentExecutionTelemetry::document(
     DocumentInstanceId documentInstanceId,
     DocumentLifecycleEpoch lifecycleEpoch)
 {
     std::lock_guard lock(_mutex);
     const auto found = _documents.find(documentInstanceId);
     if (found != _documents.end()) {
-        return *found->second;
+        if (found->second->lifecycleEpoch() == lifecycleEpoch) {
+            return found->second;
+        }
+
+        auto collector = std::make_shared<DocumentExecutionTelemetryCollector>(
+            documentInstanceId,
+            lifecycleEpoch,
+            _sampleCapacity);
+        found->second = collector;
+        return collector;
     }
 
     auto collector = std::make_shared<DocumentExecutionTelemetryCollector>(
@@ -510,7 +520,7 @@ DocumentExecutionTelemetryCollector& DocumentExecutionTelemetry::document(
         lifecycleEpoch,
         _sampleCapacity);
     _documents.emplace(documentInstanceId, collector);
-    return *collector;
+    return collector;
 }
 
 void DocumentExecutionTelemetry::removeDocument(DocumentInstanceId documentInstanceId)
