@@ -4,6 +4,7 @@
 
 #include "MainWindow.h"
 
+#include <App/Application.h>
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
@@ -135,19 +136,71 @@ App::DocumentCommand makeDocumentRecomputeCommand(
 
 App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,
-    const App::DocumentCommandKind kind)
+    const App::DocumentCommandKind kind,
+    const int steps)
 {
     App::DocumentCommand command;
     command.kind = kind;
     command.document = document.executionHandle().identity();
+    if (kind == App::DocumentCommandKind::Undo || kind == App::DocumentCommandKind::Redo) {
+        command.transaction = App::DocumentCommandTransactionPayload {};
+        command.transaction->steps = steps > 0 ? steps : 1;
+    }
     return command;
 }
 
 App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::Document& document,
-    const App::DocumentCommandKind kind)
+    const App::DocumentCommandKind kind,
+    const int steps)
 {
-    return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind));
+    return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind, steps));
+}
+
+void scheduleUndoRedoCommandCompletion(
+    App::DocumentRevisionIdentityBinding documentIdentity,
+    App::DocumentCommandId commandId,
+    const App::DocumentCommandKind kind,
+    std::function<void()> onCompleted)
+{
+    auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
+    QTimer::singleShot(
+        50,
+        qApp,
+        [documentIdentity,
+         commandId,
+         kind,
+         onCompleted = std::move(onCompleted),
+         commandHandle = std::move(commandHandle)]() mutable {
+            const auto snapshot = commandHandle->status();
+            if (!snapshot.terminal()) {
+                scheduleUndoRedoCommandCompletion(
+                    documentIdentity,
+                    commandId,
+                    kind,
+                    std::move(onCompleted));
+                return;
+            }
+            if (snapshot.state != App::DocumentCommandState::Completed) {
+                if (snapshot.state == App::DocumentCommandState::Failed) {
+                    FC_ERR("Document "
+                           << App::documentCommandKindName(kind) << " "
+                           << App::documentCommandStateName(snapshot.state) << ": "
+                           << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
+                                                           : snapshot.diagnostic));
+                }
+                return;
+            }
+            if (kind == App::DocumentCommandKind::Undo) {
+                App::GetApplication().signalUndo();
+            }
+            else if (kind == App::DocumentCommandKind::Redo) {
+                App::GetApplication().signalRedo();
+                if (onCompleted) {
+                    onCompleted();
+                }
+            }
+        });
 }
 
 bool submitDocumentSave(App::Document& document)

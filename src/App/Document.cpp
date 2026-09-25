@@ -972,6 +972,11 @@ void Document::shutdownExecutionLane()
         return;
     }
     d->executionLane->requestShutdown("document closing");
+    if (d->executionLane->isOwnerThread()) {
+        // The lane thread closes the document; it keeps itself alive until
+        // executeActiveCommand returns and must not destroy itself here.
+        return;
+    }
     d->executionLane->joinThread();
     d->executionLane.reset();
 }

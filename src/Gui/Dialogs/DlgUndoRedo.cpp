@@ -67,16 +67,28 @@ void UndoDialog::onFetchInfo()
     }
 }
 
-/** Closes the dialog and sends the message 'Undo' to the currently active MDI view. */
+/** Submit one multi-step undo without waiting for the active document. */
 void UndoDialog::onSelected()
 {
     auto a = static_cast<QAction*>(sender());
-    QList<QAction*> acts = this->actions();
-    for (QList<QAction*>::Iterator it = acts.begin(); it != acts.end(); ++it) {
-        Gui::Application::Instance->sendMsgToActiveView("Undo");
-        if (*it == a) {
+    const QList<QAction*> acts = this->actions();
+    int steps = 0;
+    for (const auto* action : acts) {
+        ++steps;
+        if (action == a) {
             break;
         }
+    }
+    if (steps <= 0) {
+        return;
+    }
+
+    MDIView* mdi = getMainWindow()->activeWindow();
+    if (!mdi) {
+        return;
+    }
+    if (auto* guiDocument = Application::Instance->getDocument(mdi->getAppDocument())) {
+        guiDocument->undo(steps);
     }
 }
 
@@ -114,16 +126,28 @@ void RedoDialog::onFetchInfo()
     }
 }
 
-/** Closes the dialog and sends the message 'Redo' to the currently active MDI view. */
+/** Submit one multi-step redo without waiting for the active document. */
 void RedoDialog::onSelected()
 {
     auto a = static_cast<QAction*>(sender());
-    QList<QAction*> acts = this->actions();
-    for (QList<QAction*>::Iterator it = acts.begin(); it != acts.end(); ++it) {
-        Gui::Application::Instance->sendMsgToActiveView("Redo");
-        if (*it == a) {
+    const QList<QAction*> acts = this->actions();
+    int steps = 0;
+    for (const auto* action : acts) {
+        ++steps;
+        if (action == a) {
             break;
         }
+    }
+    if (steps <= 0) {
+        return;
+    }
+
+    MDIView* mdi = getMainWindow()->activeWindow();
+    if (!mdi) {
+        return;
+    }
+    if (auto* guiDocument = Application::Instance->getDocument(mdi->getAppDocument())) {
+        guiDocument->redo(steps);
     }
 }
 

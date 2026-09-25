@@ -397,6 +397,8 @@ void DocumentExecutionLane::joinThread()
 
 void DocumentExecutionLane::threadMain()
 {
+    const auto selfPin = shared_from_this();
+    static_cast<void>(selfPin);
     while (true) {
         {
             std::unique_lock lock(_mutex);
@@ -434,6 +436,8 @@ void DocumentExecutionLane::drainDispatchQueue()
 
 void DocumentExecutionLane::executeActiveCommand()
 {
+    const auto selfPin = shared_from_this();
+    static_cast<void>(selfPin);
     if (!_active) {
         return;
     }
@@ -543,10 +547,30 @@ void DocumentExecutionLane::executeActiveRecompute()
 bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
 {
     switch (command.command.kind) {
-        case DocumentCommandKind::Undo:
-            return _document.undo();
-        case DocumentCommandKind::Redo:
-            return _document.redo();
+        case DocumentCommandKind::Undo: {
+            const int steps = command.command.transaction ? command.command.transaction->steps : 1;
+            if (steps <= 0) {
+                return false;
+            }
+            for (int step = 0; step < steps; ++step) {
+                if (!_document.undo()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        case DocumentCommandKind::Redo: {
+            const int steps = command.command.transaction ? command.command.transaction->steps : 1;
+            if (steps <= 0) {
+                return false;
+            }
+            for (int step = 0; step < steps; ++step) {
+                if (!_document.redo()) {
+                    return false;
+                }
+            }
+            return true;
+        }
         case DocumentCommandKind::Save:
             return _document.save();
         case DocumentCommandKind::Close:

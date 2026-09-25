@@ -6,6 +6,7 @@
 
 #include <FCGlobal.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -34,12 +35,24 @@ GuiExport App::DocumentCommand makeDocumentRecomputeCommand(
 /** Build one pointer-free kind-only command for Save, Undo, or Redo admission. */
 GuiExport App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,
-    App::DocumentCommandKind kind);
+    App::DocumentCommandKind kind,
+    int steps = 1);
 
 /** Admit one Save, Undo, or Redo through DocumentHandle::trySubmit(). */
 GuiExport App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::Document& document,
-    App::DocumentCommandKind kind);
+    App::DocumentCommandKind kind,
+    int steps = 1);
+
+/**
+ * Poll command status without waiting and run \p onCompleted when the command
+ * reaches a terminal Completed state.
+ */
+GuiExport void scheduleUndoRedoCommandCompletion(
+    App::DocumentRevisionIdentityBinding documentIdentity,
+    App::DocumentCommandId commandId,
+    App::DocumentCommandKind kind,
+    std::function<void()> onCompleted = {});
 
 /** Submit save on the execution lane without waiting or blocking the GUI thread. */
 GuiExport bool submitDocumentSave(App::Document& document);

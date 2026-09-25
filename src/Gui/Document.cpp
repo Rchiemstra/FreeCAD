@@ -4135,13 +4135,16 @@ bool Document::checkTransactionID(bool undo, int iSteps)
         }
     }
     for (auto& v : dmap) {
-        for (int i = 0; i < v.second; ++i) {
-            if (undo) {
-                v.first->undo();
-            }
-            else {
-                v.first->redo();
-            }
+        if (v.second <= 0) {
+            continue;
+        }
+        const auto outcome = submitDocumentKindCommand(
+            *v.first,
+            undo ? App::DocumentCommandKind::Undo : App::DocumentCommandKind::Redo,
+            v.second);
+        if (!outcome.accepted()) {
+            reportDocumentCommandSubmitBlocked(*v.first, outcome);
+            return false;
         }
     }
     return true;
@@ -4161,16 +4164,18 @@ void Document::undo(int iSteps)
         return;
     }
 
-    for (int i = 0; i < iSteps; i++) {
-        const auto outcome = submitDocumentKindCommand(
-            *getDocument(),
-            App::DocumentCommandKind::Undo);
-        if (!outcome.accepted()) {
-            reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
-            return;
-        }
+    const auto outcome = submitDocumentKindCommand(
+        *getDocument(),
+        App::DocumentCommandKind::Undo,
+        iSteps);
+    if (!outcome.accepted()) {
+        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+        return;
     }
-    App::GetApplication().signalUndo();
+    scheduleUndoRedoCommandCompletion(
+        getDocument()->executionHandle().identity(),
+        outcome.commandId,
+        App::DocumentCommandKind::Undo);
 }
 
 /// Will REDO one or more steps
@@ -4182,17 +4187,23 @@ void Document::redo(int iSteps)
         return;
     }
 
-    for (int i = 0; i < iSteps; i++) {
-        const auto outcome = submitDocumentKindCommand(
-            *getDocument(),
-            App::DocumentCommandKind::Redo);
-        if (!outcome.accepted()) {
-            reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
-            return;
-        }
+    const auto outcome = submitDocumentKindCommand(
+        *getDocument(),
+        App::DocumentCommandKind::Redo,
+        iSteps);
+    if (!outcome.accepted()) {
+        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+        return;
     }
-    App::GetApplication().signalRedo();
+    scheduleUndoRedoCommandCompletion(
+        getDocument()->executionHandle().identity(),
+        outcome.commandId,
+        App::DocumentCommandKind::Redo,
+        [this]() { onExecutionLaneRedoCompleted(); });
+}
 
+void Document::onExecutionLaneRedoCompleted()
+{
     for (auto it : d->_redoViewProviders) {
         handleChildren3D(it);
     }

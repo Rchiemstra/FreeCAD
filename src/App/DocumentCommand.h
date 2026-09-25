@@ -78,6 +78,12 @@ struct AppExport DocumentCommandEditPayload
     std::vector<DocumentCommandPropertyValue> propertyValues;
 };
 
+/** Pointer-free undo/redo payload carried by one admitted command. */
+struct AppExport DocumentCommandTransactionPayload
+{
+    int steps {1};
+};
+
 /**
  * Immutable, pointer-free document command submitted through DocumentHandle.
  *
@@ -92,6 +98,7 @@ struct AppExport DocumentCommand
     std::vector<DocumentRevisionObservation> expectedRevisions;
     std::optional<DocumentCommandRecomputePayload> recompute;
     std::optional<DocumentCommandEditPayload> edit;
+    std::optional<DocumentCommandTransactionPayload> transaction;
     std::string diagnostic;
 
     [[nodiscard]] bool pointerFree() const noexcept

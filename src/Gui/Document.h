@@ -383,6 +383,8 @@ public:
     void undo(int iSteps);
     /// Will REDO one or more steps
     void redo(int iSteps);
+    /** Finalize redo view-provider children after lane redo completes. */
+    void onExecutionLaneRedoCompleted();
     /** Check if the document is performing undo/redo transaction
      *
      * Unlike App::Document::isPerformingTransaction(), Gui::Document will
