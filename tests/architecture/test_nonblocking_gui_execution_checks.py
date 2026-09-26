@@ -37,14 +37,16 @@ RECOMPUTE_HANDLE_CONTEXT = re.compile(
 )
 RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)\s*wait\s*\(")
 RECOMPUTE_HANDLE_TYPED = (
-    r"(?:App::RecomputeHandle|"
-    r"(?:std::)?(?:shared_ptr|unique_ptr)\s*<\s*App::RecomputeHandle\s*>)"
+    r"(?:App::RecomputeHandle\b|"
+    r"(?:std::)?(?:shared_ptr|unique_ptr)\s*<\s*App::RecomputeHandle\b\s*>)"
 )
-RECOMPUTE_HANDLE_DECLARE = re.compile(
-    rf"{RECOMPUTE_HANDLE_TYPED}\s*(?:const\s+)?(?:[&*]\s*)?([A-Za-z_]\w*)\b"
+RECOMPUTE_HANDLE_TYPED_RE = re.compile(RECOMPUTE_HANDLE_TYPED)
+RECOMPUTE_HANDLE_TYPED_DECL = re.compile(
+    rf"{RECOMPUTE_HANDLE_TYPED}\s*"
+    r"((?:const\s+)?(?:[&*]\s*)?\w+(?:\s*,\s*(?:const\s+)?(?:[&*]\s*)?\w+)*)"
 )
 RECOMPUTE_HANDLE_RECOMPUTE_BIND = re.compile(
-    r"([A-Za-z_]\w*)\s*(?:=\s*|{\s*)[^;]*?recomputeAsync",
+    r"([A-Za-z_]\w*)\s*(?:=\s*|{\s*)[^;]*?\brecomputeAsync\s*\(",
     re.DOTALL,
 )
 RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES = 40
@@ -180,6 +182,18 @@ def _line_index_at(text: str, offset: int) -> int:
     return text.count("\n", 0, offset)
 
 
+def _line_start_offset(text: str, line_index: int) -> int:
+    if line_index <= 0:
+        return 0
+    offset = 0
+    for _ in range(line_index):
+        next_newline = text.find("\n", offset)
+        if next_newline < 0:
+            return offset
+        offset = next_newline + 1
+    return offset
+
+
 def _wait_receiver_name(masked: str, arrow_start: int) -> str | None:
     """Return the identifier immediately before ``->`` / ``.`` that precedes ``wait``."""
     prefix = masked[max(0, arrow_start - 120) : arrow_start]
@@ -187,18 +201,194 @@ def _wait_receiver_name(masked: str, arrow_start: int) -> str | None:
     return match.group(1) if match else None
 
 
+def _is_scope_brace(text: str, index: int) -> bool:
+    if text[index] != "{":
+        return False
+    prefix = text[max(0, index - 80) : index].rstrip()
+    if re.search(r"\)\s*$|\belse\s*$|\]\s*$", prefix):
+        return True
+    if re.search(r"\b(?:struct|class|enum|union|namespace)\s+[\w:]+\s*$", prefix):
+        return True
+    brace_index = index - 1
+    while brace_index >= 0 and text[brace_index].isspace():
+        brace_index -= 1
+    if brace_index >= 0 and (text[brace_index].isalnum() or text[brace_index] == "_"):
+        return False
+    return True
+
+
+def _scope_depth_at(text: str, offset: int) -> int:
+    scope_depth = 0
+    init_depth = 0
+    for index in range(offset):
+        char = text[index]
+        if char == "{":
+            if _is_scope_brace(text, index):
+                scope_depth += 1
+            else:
+                init_depth += 1
+        elif char == "}":
+            if init_depth > 0:
+                init_depth -= 1
+            elif scope_depth > 0:
+                scope_depth -= 1
+    return scope_depth
+
+
+def _enclosing_block_start(text: str, offset: int) -> int | None:
+    if _scope_depth_at(text, offset) == 0:
+        return None
+    balance = 0
+    init_depth = 0
+    for index in range(offset - 1, -1, -1):
+        char = text[index]
+        if char == "}":
+            if init_depth > 0:
+                init_depth -= 1
+            else:
+                balance += 1
+        elif char == "{":
+            if init_depth > 0:
+                init_depth += 1
+            elif balance == 0 and _is_scope_brace(text, index):
+                return index
+            elif balance > 0:
+                balance -= 1
+    return None
+
+
+def _function_param_paren_start(text: str, block_start: int) -> int | None:
+    index = block_start - 1
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    if index < 0 or text[index] != ")":
+        return None
+    balance = 0
+    for pos in range(index, -1, -1):
+        char = text[pos]
+        if char == ")":
+            balance += 1
+        elif char == "(":
+            balance -= 1
+            if balance == 0:
+                return pos
+    return None
+
+
+def _scope_region_start(text: str, wait_offset: int) -> int:
+    block_start = _enclosing_block_start(text, wait_offset)
+    if block_start is not None:
+        param_start = _function_param_paren_start(text, block_start)
+        return param_start if param_start is not None else block_start + 1
+    scope_depth = 0
+    region_start = 0
+    init_depth = 0
+    for index, char in enumerate(text[:wait_offset]):
+        if char == "{":
+            if _is_scope_brace(text, index):
+                scope_depth += 1
+            else:
+                init_depth += 1
+        elif char == "}":
+            if init_depth > 0:
+                init_depth -= 1
+            elif scope_depth > 0:
+                scope_depth -= 1
+                if scope_depth == 0:
+                    region_start = index + 1
+    return region_start
+
+
+def _is_function_declarator(text: str, name_end: int) -> bool:
+    index = name_end
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index < len(text) and text[index] == "("
+
+
+def _declarator_names(declarator_list: str, text: str, list_start: int) -> list[tuple[str, int]]:
+    names: list[tuple[str, int]] = []
+    cursor = list_start
+    for part in declarator_list.split(","):
+        stripped = part.strip()
+        match = re.match(r"(?:const\s+)?(?:[*&]\s*)*(\w+)", stripped)
+        if not match:
+            cursor += len(part) + 1
+            continue
+        name = match.group(1)
+        name_offset = text.find(name, cursor, cursor + len(part) + 1)
+        if name_offset < 0:
+            name_offset = cursor + part.find(name)
+        name_end = name_offset + len(name)
+        if not _is_function_declarator(text, name_end):
+            names.append((name, name_offset))
+        cursor += len(part) + 1
+    return names
+
+
+def _wait_line_end(masked: str, wait_offset: int) -> int:
+    line_end = masked.find("\n", wait_offset)
+    return len(masked) if line_end < 0 else line_end
+
+
+def _shadow_names_in_line(line: str) -> list[str]:
+    if RECOMPUTE_HANDLE_TYPED_RE.search(line):
+        return []
+    if re.search(r"\brecomputeAsync\s*\(", line):
+        return []
+    if re.match(
+        r"\s*(?:auto|struct|class|union|enum|return|if|while|for|switch|catch|else)\b",
+        line,
+    ):
+        return []
+    names: list[str] = []
+    for match in re.finditer(r"(?:^|[\s,{}])(\w+)\s*[,;=]", line):
+        name = match.group(1)
+        name_end = match.start(1) + len(name)
+        if _is_function_declarator(line, name_end):
+            continue
+        names.append(name)
+    return names
+
+
+def _binding_events_in_scope(masked: str, scope_start: int, region_end: int) -> list[tuple[int, str, str]]:
+    events: list[tuple[int, str, str]] = []
+    for match in RECOMPUTE_HANDLE_TYPED_DECL.finditer(masked, scope_start, region_end):
+        for name, _offset in _declarator_names(match.group(1), masked, match.start(1)):
+            events.append((match.start(), "recompute", name))
+    for match in RECOMPUTE_HANDLE_RECOMPUTE_BIND.finditer(masked, scope_start, region_end):
+        events.append((match.start(), "recompute", match.group(1)))
+    region = masked[scope_start:region_end]
+    line_start = scope_start
+    for line in region.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped:
+            for name in _shadow_names_in_line(stripped):
+                events.append((line_start, "shadow", name))
+        line_start += len(line)
+    events.sort(key=lambda item: item[0])
+    return events
+
+
+def _effective_binding(events: list[tuple[int, str, str]], receiver: str) -> str | None:
+    state: dict[str, str] = {}
+    for _offset, kind, name in events:
+        state[name] = kind
+    return state.get(receiver)
+
+
 def _receiver_bound_to_recompute_handle(
     receiver: str,
-    lines: list[str],
-    wait_line_index: int,
+    masked: str,
+    wait_offset: int,
 ) -> bool:
+    wait_line_index = _line_index_at(masked, wait_offset)
     bound_start = max(0, wait_line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
-    bound_region = "\n".join(lines[bound_start : wait_line_index + 1])
-    for pattern in (RECOMPUTE_HANDLE_DECLARE, RECOMPUTE_HANDLE_RECOMPUTE_BIND):
-        for match in pattern.finditer(bound_region):
-            if match.group(1) == receiver:
-                return True
-    return False
+    bound_line_offset = _line_start_offset(masked, bound_start)
+    scope_start = max(_scope_region_start(masked, wait_offset), bound_line_offset)
+    region_end = _wait_line_end(masked, wait_offset)
+    events = _binding_events_in_scope(masked, scope_start, region_end)
+    return _effective_binding(events, receiver) == "recompute"
 
 
 def _scan_recompute_handle_waits(
@@ -218,7 +408,7 @@ def _scan_recompute_handle_waits(
             receiver = _wait_receiver_name(masked, wait_match.start())
             if receiver is None:
                 continue
-            if not _receiver_bound_to_recompute_handle(receiver, lines, wait_line_index):
+            if not _receiver_bound_to_recompute_handle(receiver, masked, wait_offset):
                 continue
             evidence = source_lines[wait_line_index].strip()
             matches.append((relative, wait_line_index + 1, evidence))
@@ -427,6 +617,61 @@ def test_recompute_handle_wait_detects_same_line_assignment_and_init_forms() -> 
     assert by_line[3] == "handle2->wait();"
     assert by_line[6].startswith("handle3->wait();")
     assert len(found) == 3
+
+
+def test_recompute_handle_wait_rejects_type_name_suffix_and_function_declarator() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_false_pos_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandleFactory Factory;\n"
+        "Factory->wait();\n"
+        "App::RecomputeHandlePtr Ptr;\n"
+        "Ptr->wait();\n"
+        "App::RecomputeHandle createHandle();\n"
+        "createHandle->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
+
+
+def test_recompute_handle_wait_rejects_cross_function_and_shadowed_names() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_scope_probe.cpp"
+    probe.write_text(
+        "void foo(std::shared_ptr<App::RecomputeHandle> handle) {}\n"
+        "void bar() {\n"
+        "  QFuture<void> handle;\n"
+        "  handle.wait();\n"
+        "}\n"
+        "std::shared_ptr<App::RecomputeHandle> handle;\n"
+        "std::future<int> handle;\n"
+        "handle.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
+
+
+def test_recompute_handle_wait_detects_multi_declarator_and_rejects_substring_async() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_multi_probe.cpp"
+    probe.write_text(
+        "std::shared_ptr<App::RecomputeHandle> handle, other;\n"
+        "other->wait();\n"
+        "auto status = check_recomputeAsync();\n"
+        "status.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line == {2: "other->wait();"}
 
 
 def test_recompute_handle_wait_detects_typed_declarations() -> None:
