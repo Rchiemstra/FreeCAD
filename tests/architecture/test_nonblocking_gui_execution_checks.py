@@ -226,6 +226,8 @@ def _is_scope_brace(text: str, index: int) -> bool:
     brace_index = index - 1
     while brace_index >= 0 and text[brace_index].isspace():
         brace_index -= 1
+    if brace_index >= 0 and text[brace_index] in "(_":
+        return False
     if brace_index >= 0 and (text[brace_index].isalnum() or text[brace_index] == "_"):
         return False
     return True
@@ -346,21 +348,54 @@ def _split_top_level_commas(inner: str) -> list[str]:
     return parts
 
 
-def _is_type_only_param_list(inner: str) -> bool:
-    if re.search(r"->|\.|\brecomputeAsync\s*\(", inner):
+def _looks_like_expression_part(part: str) -> bool:
+    stripped = part.strip()
+    if not stripped:
         return False
+    if re.fullmatch(r"[A-Za-z_]\w*", stripped):
+        return True
+    if re.search(r"->|\.|\brecomputeAsync\s*\(", stripped):
+        return True
+    if re.search(r"\(\s*\*", stripped):
+        return False
+    if re.match(
+        r"^(?:const\s+|volatile\s+)?(?:[\w:]+\s*::\s*)*[\w:]+\s*(?:<[^>]*>)?\s+"
+        r"(?:const\s+)?(?:[*&]\s*)*[A-Za-z_]\w*\s*$",
+        stripped,
+    ):
+        return False
+    if re.match(r"^[\w:]+\s*<[^>]*>\s*$", stripped):
+        return False
+    if re.match(
+        r"^(?:unsigned|signed|short|long|int|void|char|bool|float|double)\b",
+        stripped,
+    ):
+        return False
+    angle_depth = 0
+    index = 0
+    while index < len(stripped):
+        char = stripped[index]
+        if char == "<":
+            angle_depth += 1
+        elif char == ">":
+            angle_depth -= 1
+        elif char == "(" and angle_depth == 0:
+            before = stripped[:index].rstrip()
+            if before.endswith("<") or re.search(r"\(\s*\*$", before):
+                index += 1
+                continue
+            return True
+        index += 1
+    if re.search(r"::", stripped) and "<" not in stripped and "(" not in stripped:
+        return True
+    return False
+
+
+def _is_type_only_param_list(inner: str) -> bool:
     parts = _split_top_level_commas(inner)
     if not parts:
         return True
-    for part in parts:
-        if re.fullmatch(r"\w+", part):
-            return False
-        if re.match(r"[A-Za-z_]\w*\s*\(", part) and not re.search(
-            r"::|<|\(\s*\*|\b(?:int|void|char|bool|float|double|long|short|unsigned|signed|std::function)\b",
-            part,
-        ):
-            return False
-    return True
+    return not any(_looks_like_expression_part(part) for part in parts)
 
 
 def _after_name_kind(text: str, name_end: int) -> str | None:
@@ -464,6 +499,18 @@ def _async_bind_local_segment(text: str, start: int, async_start: int) -> tuple[
     return local_start, segment[cut + 1 :]
 
 
+def _async_bind_name_from_local(local: str) -> tuple[int, str] | None:
+    assign_match: re.Match[str] | None = None
+    for match in re.finditer(r"([A-Za-z_]\w*)\s*=\s*", local):
+        assign_match = match
+    if assign_match is not None:
+        return assign_match.start(1), assign_match.group(1)
+    brace_match = re.search(r"([A-Za-z_]\w*)\s*{", local)
+    if brace_match is not None:
+        return brace_match.start(1), brace_match.group(1)
+    return None
+
+
 def _async_recompute_binds(text: str, start: int, end: int) -> list[tuple[int, str]]:
     binds: list[tuple[int, str]] = []
     search = start
@@ -474,13 +521,29 @@ def _async_recompute_binds(text: str, start: int, end: int) -> list[tuple[int, s
             break
         async_start = search + match.start()
         local_start, local = _async_bind_local_segment(text, start, async_start)
-        bind_match = re.search(
-            r"([A-Za-z_]\w*)\s*(?:=\s*[^;{}]*|{\s*[^;{}]*)$",
-            local,
-            re.DOTALL,
-        )
-        if bind_match:
-            binds.append((local_start + bind_match.start(1), bind_match.group(1)))
+        bind = _async_bind_name_from_local(local)
+        if bind is not None:
+            name_offset, name = bind
+            binds.append((local_start + name_offset, name))
+        search = async_start + match.end()
+    return binds
+
+
+def _recompute_bind_names_in_text(text: str, start: int, end: int) -> list[tuple[int, str]]:
+    binds: list[tuple[int, str]] = []
+    search = start
+    while search < end:
+        region = text[search:end]
+        match = re.search(r"\brecomputeAsync\s*\(", region)
+        if not match:
+            break
+        async_start = search + match.start()
+        statement_start = text.rfind(";", start, async_start) + 1
+        local = text[statement_start:async_start]
+        bind = _async_bind_name_from_local(local)
+        if bind is not None:
+            name_offset, name = bind
+            binds.append((statement_start + name_offset, name))
         search = async_start + match.end()
     return binds
 
@@ -501,8 +564,10 @@ def _recompute_names_on_line(
         name_end = line_start + match.start(1) + len(name)
         if _after_name_kind(text, name_end) == "init":
             names.append(name)
-    for match in RECOMPUTE_HANDLE_RECOMPUTE_BIND.finditer(line):
-        names.append(match.group(1))
+    line_binds = _recompute_bind_names_in_text(text, line_start, line_start + len(line))
+    for bind_offset, name in line_binds:
+        if name not in names:
+            names.append(name)
     if async_binds is not None:
         line_end = line_start + len(line)
         for bind_start, name in async_binds:
@@ -1115,6 +1180,57 @@ def test_recompute_handle_wait_rejects_nested_type_function_declarators() -> Non
         probe.unlink(missing_ok=True)
     by_line = {line: evidence for _path, line, evidence in found}
     assert by_line == {10: "handle.wait();", 12: "handle2->wait();"}
+
+
+def test_recompute_handle_wait_detects_move_and_factory_direct_inits() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_move_init_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle handle(std::move(other));\n"
+        "handle.wait();\n"
+        "std::shared_ptr<App::RecomputeHandle> handle2(std::move(other));\n"
+        "handle2->wait();\n"
+        "App::RecomputeHandle handle3(App::makeHandle());\n"
+        "handle3.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle.wait();"
+    assert by_line[4] == "handle2->wait();"
+    assert by_line[6] == "handle3.wait();"
+    assert len(found) == 3
+
+
+def test_recompute_handle_wait_binds_nested_brace_async_initializers() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_nested_brace_async_probe.cpp"
+    probe.write_text(
+        "auto handle = Foo{doc->recomputeAsync()};\n"
+        "handle->wait();\n"
+        "auto handle2 = wrap({doc->recomputeAsync()});\n"
+        "handle2->wait();\n"
+        "auto handle3{doc->recomputeAsync()};\n"
+        "handle3->wait();\n"
+        "void foo() {\n"
+        "  auto cb = [&]() {\n"
+        "    auto handle = doc->recomputeAsync();\n"
+        "    handle->wait();\n"
+        "  };\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle->wait();"
+    assert by_line[4] == "handle2->wait();"
+    assert by_line[6] == "handle3->wait();"
+    assert by_line[10].startswith("handle->wait();")
+    assert len(found) == 4
 
 
 def test_recompute_handle_wait_detects_typed_declarations() -> None:
