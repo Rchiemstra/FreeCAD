@@ -205,7 +205,7 @@ def _is_scope_brace(text: str, index: int) -> bool:
     if text[index] != "{":
         return False
     prefix = text[max(0, index - 80) : index].rstrip()
-    if re.search(r"\)\s*$|\belse\s*$|\]\s*$", prefix):
+    if re.search(r"\)\s*$|\b(?:else|try|do)\s*$|\]\s*$", prefix):
         return True
     if re.search(r"\b(?:struct|class|enum|union|namespace)\s+[\w:]+\s*$", prefix):
         return True
@@ -299,11 +299,67 @@ def _scope_region_start(text: str, wait_offset: int) -> int:
     return region_start
 
 
-def _is_function_declarator(text: str, name_end: int) -> bool:
+def _matching_close_paren(text: str, open_index: int) -> int:
+    balance = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "(":
+            balance += 1
+        elif char == ")":
+            balance -= 1
+            if balance == 0:
+                return index
+    return len(text) - 1
+
+
+def _is_type_only_param_list(inner: str) -> bool:
+    if re.search(r"->|\.|\brecomputeAsync\s*\(", inner):
+        return False
+    parts = [part.strip() for part in inner.split(",") if part.strip()]
+    if not parts:
+        return True
+    for part in parts:
+        if re.fullmatch(r"\w+", part):
+            return False
+        if re.search(r"\w+\s*\(", part):
+            return False
+    return True
+
+
+def _after_name_kind(text: str, name_end: int) -> str | None:
     index = name_end
     while index < len(text) and text[index].isspace():
         index += 1
-    return index < len(text) and text[index] == "("
+    if index >= len(text):
+        return None
+    if text[index] == "{" and not _is_scope_brace(text, index):
+        return "init"
+    if text[index] != "(":
+        return None
+    close_index = _matching_close_paren(text, index)
+    inner = text[index + 1 : close_index].strip()
+    if not inner:
+        return "function"
+    if _is_type_only_param_list(inner):
+        return "function"
+    return "init"
+
+
+def _is_function_body_brace(text: str, index: int) -> bool:
+    if not _is_scope_brace(text, index):
+        return False
+    prefix = text[max(0, index - 200) : index].rstrip()
+    if not prefix.endswith(")"):
+        return False
+    if re.search(r"\b(?:if|while|for|switch|catch)\s*\([^)]*\)\s*$", prefix):
+        return False
+    if re.search(r"\]\s*\(\s*\)\s*$", prefix):
+        return False
+    return bool(re.search(r"[\w:]+\s*\([^)]*\)\s*$", prefix))
+
+
+def _closes_scope_brace_at(text: str, index: int) -> bool:
+    return _scope_depth_at(text, index) > _scope_depth_at(text, index + 1)
 
 
 def _declarator_names(declarator_list: str, text: str, list_start: int) -> list[tuple[str, int]]:
@@ -320,7 +376,7 @@ def _declarator_names(declarator_list: str, text: str, list_start: int) -> list[
         if name_offset < 0:
             name_offset = cursor + part.find(name)
         name_end = name_offset + len(name)
-        if not _is_function_declarator(text, name_end):
+        if _after_name_kind(text, name_end) != "function":
             names.append((name, name_offset))
         cursor += len(part) + 1
     return names
@@ -331,50 +387,129 @@ def _wait_line_end(masked: str, wait_offset: int) -> int:
     return len(masked) if line_end < 0 else line_end
 
 
-def _shadow_names_in_line(line: str) -> list[str]:
-    if RECOMPUTE_HANDLE_TYPED_RE.search(line):
-        return []
+RECOMPUTE_HANDLE_DIRECT_INIT = re.compile(
+    rf"{RECOMPUTE_HANDLE_TYPED}\s*(?:const\s+)?(?:[&*]\s*)?(\w+)\s*\("
+)
+
+
+def _function_param_bindings(text: str, brace_index: int) -> dict[str, str]:
+    paren_start = _function_param_paren_start(text, brace_index)
+    if paren_start is None:
+        return {}
+    close_index = brace_index - 1
+    while close_index > paren_start and text[close_index].isspace():
+        close_index -= 1
+    if close_index <= paren_start or text[close_index] != ")":
+        return {}
+    bindings: dict[str, str] = {}
+    param_region = text[paren_start : close_index + 1]
+    for match in RECOMPUTE_HANDLE_TYPED_DECL.finditer(param_region):
+        list_start = paren_start + match.start(1)
+        for name, _offset in _declarator_names(match.group(1), text, list_start):
+            bindings[name] = "recompute"
+    return bindings
+
+
+def _async_recompute_binds(text: str, start: int, end: int) -> list[tuple[int, str]]:
+    return [
+        (match.start(), match.group(1))
+        for match in RECOMPUTE_HANDLE_RECOMPUTE_BIND.finditer(text, start, end)
+    ]
+
+
+def _recompute_names_on_line(
+    line: str,
+    text: str,
+    line_start: int,
+    async_binds: list[tuple[int, str]] | None = None,
+) -> list[str]:
+    names: list[str] = []
+    for match in RECOMPUTE_HANDLE_TYPED_DECL.finditer(line):
+        list_start = line_start + match.start(1)
+        for name, name_offset in _declarator_names(match.group(1), text, list_start):
+            names.append(name)
+    for match in RECOMPUTE_HANDLE_DIRECT_INIT.finditer(line):
+        name = match.group(1)
+        name_end = line_start + match.start(1) + len(name)
+        if _after_name_kind(text, name_end) == "init":
+            names.append(name)
+    if async_binds is not None:
+        line_end = line_start + len(line)
+        for bind_start, name in async_binds:
+            if line_start <= bind_start < line_end:
+                names.append(name)
+    else:
+        for match in RECOMPUTE_HANDLE_RECOMPUTE_BIND.finditer(line):
+            names.append(match.group(1))
+    return names
+
+
+def _shadow_names_in_line(
+    line: str,
+    text: str,
+    line_start: int,
+    async_binds: list[tuple[int, str]] | None = None,
+) -> list[str]:
     if re.search(r"\brecomputeAsync\s*\(", line):
         return []
     if re.match(
-        r"\s*(?:auto|struct|class|union|enum|return|if|while|for|switch|catch|else)\b",
+        r"\s*(?:auto|struct|class|union|enum|return|if|while|for|switch|catch|else|try|do)\b",
         line,
     ):
         return []
+    recompute_names = set(_recompute_names_on_line(line, text, line_start, async_binds))
     names: list[str] = []
-    for match in re.finditer(r"(?:^|[\s,{}])(\w+)\s*[,;=]", line):
+    for match in re.finditer(r"(?:^|[\s,{}])(\w+)(?=\s*[,;={]|\s*\()", line):
         name = match.group(1)
-        name_end = match.start(1) + len(name)
-        if _is_function_declarator(line, name_end):
+        if name in recompute_names:
+            continue
+        name_end = line_start + match.end(1)
+        if _after_name_kind(text, name_end) == "function":
             continue
         names.append(name)
     return names
 
 
-def _binding_events_in_scope(masked: str, scope_start: int, region_end: int) -> list[tuple[int, str, str]]:
-    events: list[tuple[int, str, str]] = []
-    for match in RECOMPUTE_HANDLE_TYPED_DECL.finditer(masked, scope_start, region_end):
-        for name, _offset in _declarator_names(match.group(1), masked, match.start(1)):
-            events.append((match.start(), "recompute", name))
-    for match in RECOMPUTE_HANDLE_RECOMPUTE_BIND.finditer(masked, scope_start, region_end):
-        events.append((match.start(), "recompute", match.group(1)))
-    region = masked[scope_start:region_end]
-    line_start = scope_start
-    for line in region.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped:
-            for name in _shadow_names_in_line(stripped):
-                events.append((line_start, "shadow", name))
-        line_start += len(line)
-    events.sort(key=lambda item: item[0])
-    return events
+def _apply_line_bindings(
+    stack: list[dict[str, str]],
+    line: str,
+    text: str,
+    line_start: int,
+    async_binds: list[tuple[int, str]],
+) -> None:
+    frame = stack[-1]
+    for name in _recompute_names_on_line(line, text, line_start, async_binds):
+        frame[name] = "recompute"
+    for name in _shadow_names_in_line(line, text, line_start, async_binds):
+        frame[name] = "shadow"
 
 
-def _effective_binding(events: list[tuple[int, str, str]], receiver: str) -> str | None:
-    state: dict[str, str] = {}
-    for _offset, kind, name in events:
-        state[name] = kind
-    return state.get(receiver)
+def _process_line_scope_and_bindings(
+    stack: list[dict[str, str]],
+    line: str,
+    line_start: int,
+    text: str,
+    async_binds: list[tuple[int, str]],
+) -> None:
+    index = 0
+    while index < len(line):
+        char = line[index]
+        absolute = line_start + index
+        if char == "{":
+            if _is_scope_brace(text, absolute):
+                if _is_function_body_brace(text, absolute):
+                    stack.append(_function_param_bindings(text, absolute))
+                else:
+                    stack.append(stack[-1].copy())
+            index += 1
+            continue
+        if char == "}":
+            if _closes_scope_brace_at(text, absolute) and len(stack) > 1:
+                stack.pop()
+            index += 1
+            continue
+        index += 1
+    _apply_line_bindings(stack, line, text, line_start, async_binds)
 
 
 def _receiver_bound_to_recompute_handle(
@@ -384,11 +519,21 @@ def _receiver_bound_to_recompute_handle(
 ) -> bool:
     wait_line_index = _line_index_at(masked, wait_offset)
     bound_start = max(0, wait_line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
-    bound_line_offset = _line_start_offset(masked, bound_start)
-    scope_start = max(_scope_region_start(masked, wait_offset), bound_line_offset)
-    region_end = _wait_line_end(masked, wait_offset)
-    events = _binding_events_in_scope(masked, scope_start, region_end)
-    return _effective_binding(events, receiver) == "recompute"
+    scan_start = _line_start_offset(masked, bound_start)
+    async_binds = _async_recompute_binds(masked, scan_start, wait_offset)
+    stack: list[dict[str, str]] = [{}]
+    wait_line_start = _line_start_offset(masked, wait_line_index)
+    position = scan_start
+    while position <= wait_line_start:
+        line_end = masked.find("\n", position)
+        if line_end < 0:
+            line_end = len(masked)
+        line = masked[position:line_end]
+        _process_line_scope_and_bindings(stack, line, position, masked, async_binds)
+        if line_end >= len(masked) or masked[line_end] != "\n":
+            break
+        position = line_end + 1
+    return stack[-1].get(receiver) == "recompute"
 
 
 def _scan_recompute_handle_waits(
@@ -672,6 +817,100 @@ def test_recompute_handle_wait_detects_multi_declarator_and_rejects_substring_as
         probe.unlink(missing_ok=True)
     by_line = {line: evidence for _path, line, evidence in found}
     assert by_line == {2: "other->wait();"}
+
+
+def test_recompute_handle_wait_rejects_direct_init_shadows() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_direct_shadow_probe.cpp"
+    probe.write_text(
+        "std::shared_ptr<App::RecomputeHandle> handle;\n"
+        "std::future<int> handle(std::launch::async, fn);\n"
+        "handle.wait();\n"
+        "std::shared_ptr<App::RecomputeHandle> handle2;\n"
+        "QFuture<void> handle2(std::launch::async, fn);\n"
+        "handle2.wait();\n"
+        "std::shared_ptr<App::RecomputeHandle> handle3;\n"
+        "std::future<int> handle3{};\n"
+        "handle3.wait();\n"
+        "std::shared_ptr<App::RecomputeHandle> handle4;\n"
+        "QFuture<void> handle4{};\n"
+        "handle4.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
+
+
+def test_recompute_handle_wait_detects_direct_init_and_nested_scopes() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_nested_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle handle(other);\n"
+        "handle.wait();\n"
+        "std::shared_ptr<App::RecomputeHandle> handle2(doc->recomputeAsync());\n"
+        "handle2->wait();\n"
+        "void foo() {\n"
+        "  auto handle = doc->recomputeAsync();\n"
+        "  if (ready) {\n"
+        "    handle->wait();\n"
+        "  }\n"
+        "  while (ready) {\n"
+        "    handle->wait();\n"
+        "  }\n"
+        "  for (;;) {\n"
+        "    handle->wait();\n"
+        "  }\n"
+        "  if (ready) {\n"
+        "  } else {\n"
+        "    handle->wait();\n"
+        "  }\n"
+        "  try {\n"
+        "    handle->wait();\n"
+        "  } catch (...) {\n"
+        "  }\n"
+        "  do {\n"
+        "    handle->wait();\n"
+        "  } while (ready);\n"
+        "  auto fn = [&]() {\n"
+        "    handle->wait();\n"
+        "  };\n"
+        "  {\n"
+        "    handle->wait();\n"
+        "  }\n"
+        "  if (ready) {\n"
+        "    QFuture<void> handle;\n"
+        "    handle.wait();\n"
+        "  }\n"
+        "  handle->wait();\n"
+        "}\n"
+        "void bar() {\n"
+        "  {\n"
+        "    std::shared_ptr<App::RecomputeHandle> handle;\n"
+        "  }\n"
+        "  handle->wait();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle.wait();"
+    assert by_line[4] == "handle2->wait();"
+    assert by_line[8].startswith("handle->wait();")
+    assert by_line[11].startswith("handle->wait();")
+    assert by_line[14].startswith("handle->wait();")
+    assert by_line[18].startswith("handle->wait();")
+    assert by_line[21].startswith("handle->wait();")
+    assert by_line[25].startswith("handle->wait();")
+    assert by_line[28].startswith("handle->wait();")
+    assert by_line[31].startswith("handle->wait();")
+    assert 34 not in by_line
+    assert by_line[37].startswith("handle->wait();")
+    assert 41 not in by_line
+    assert len(found) == 11
 
 
 def test_recompute_handle_wait_detects_typed_declarations() -> None:
