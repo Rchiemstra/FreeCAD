@@ -215,12 +215,25 @@ def _wait_receiver_name(masked: str, arrow_start: int) -> str | None:
     return match.group(1) if match else None
 
 
+def _auto_shadow_name_in_line(line: str) -> str | None:
+    if re.search(r"\brecomputeAsync\s*\(", line):
+        return None
+    match = re.match(r"\s*auto\s+(\w+)\s*=", line)
+    if not match:
+        return None
+    if re.search(r"=\s*[\w:]*\s*\{", line) or re.search(r"=\s*[\w:]*\s*\(\s*$", line.rstrip()):
+        return None
+    return match.group(1)
+
+
 def _brace_inner_has_declaration(text: str, open_index: int) -> bool:
     close_index = _matching_close_brace(text, open_index)
     inner = text[open_index + 1 : close_index]
     offset = open_index + 1
     for line in inner.splitlines():
         if _shadow_names_in_line(line, text, offset):
+            return True
+        if _auto_shadow_name_in_line(line) is not None:
             return True
         offset += len(line) + 1
     return False
@@ -395,11 +408,6 @@ def _looks_like_type_declarator_part(stripped: str) -> bool:
         return True
     if re.match(r"^std::string(?:\s+\w+)?\s*$", stripped):
         return True
-    if re.match(
-        r"^(?:const\s+|volatile\s+)?(?:[\w:]+\s*::\s*)*[A-Z][\w:]*\s*$",
-        stripped,
-    ):
-        return True
     return False
 
 
@@ -428,7 +436,7 @@ def _looks_like_expression_part(part: str) -> bool:
                 continue
             return True
         index += 1
-    if re.search(r"::", stripped) and re.search(r"::[a-z]\w*\s*$", stripped):
+    if re.match(r"^(?:[\w:]+\s*::\s*)+[A-Za-z_]\w*\s*$", stripped):
         return True
     return False
 
@@ -526,21 +534,6 @@ def _function_param_bindings(text: str, brace_index: int) -> dict[str, str]:
     return bindings
 
 
-def _async_bind_local_segment(text: str, start: int, async_start: int) -> tuple[int, str]:
-    segment = text[start:async_start]
-    cut = -1
-    for index in range(len(segment) - 1, -1, -1):
-        char = segment[index]
-        if char in ";}":
-            cut = index
-            break
-        if char == "{" and _is_scope_brace(text, start + index):
-            cut = index
-            break
-    local_start = start + cut + 1
-    return local_start, segment[cut + 1 :]
-
-
 def _async_bind_name_from_local(local: str) -> tuple[int, str] | None:
     assign_match: re.Match[str] | None = None
     for match in re.finditer(r"([A-Za-z_]\w*)\s*=\s*", local):
@@ -553,20 +546,64 @@ def _async_bind_name_from_local(local: str) -> tuple[int, str] | None:
     return None
 
 
+def _init_call_name_before(text: str, open_paren_index: int, region_start: int) -> tuple[int, str] | None:
+    before = text[region_start:open_paren_index].rstrip()
+    bind = _async_bind_name_from_local(before)
+    if bind is not None:
+        return region_start + bind[0], bind[1]
+    return None
+
+
+def _async_bind_from_enclosing_init(
+    text: str,
+    async_start: int,
+    region_start: int,
+) -> tuple[int, str] | None:
+    index = async_start
+    brace_depth = 0
+    paren_depth = 0
+    while index > region_start:
+        index -= 1
+        char = text[index]
+        if char == ")":
+            paren_depth += 1
+        elif char == "(":
+            if paren_depth > 0:
+                paren_depth -= 1
+            elif brace_depth == 0:
+                bind = _init_call_name_before(text, index, region_start)
+                if bind is not None:
+                    return bind
+        elif char == "}":
+            brace_depth += 1
+        elif char == "{":
+            if brace_depth > 0:
+                brace_depth -= 1
+    return None
+
+
+def _async_bind_name_at(text: str, async_start: int, region_start: int) -> tuple[int, str] | None:
+    statement_start = text.rfind(";", region_start, async_start) + 1
+    local = text[statement_start:async_start]
+    bind = _async_bind_name_from_local(local)
+    if bind is not None:
+        return statement_start + bind[0], bind[1]
+    if re.search(r"\breturn\b", local):
+        return _async_bind_from_enclosing_init(text, async_start, region_start)
+    return None
+
+
 def _async_recompute_binds(text: str, start: int, end: int) -> list[tuple[int, str]]:
     binds: list[tuple[int, str]] = []
     search = start
     while search < end:
-        region = text[search:end]
-        match = re.search(r"\brecomputeAsync\s*\(", region)
+        match = re.search(r"\brecomputeAsync\s*\(", text[search:end])
         if not match:
             break
         async_start = search + match.start()
-        local_start, local = _async_bind_local_segment(text, start, async_start)
-        bind = _async_bind_name_from_local(local)
+        bind = _async_bind_name_at(text, async_start, start)
         if bind is not None:
-            name_offset, name = bind
-            binds.append((local_start + name_offset, name))
+            binds.append(bind)
         search = async_start + match.end()
     return binds
 
@@ -575,17 +612,13 @@ def _recompute_bind_names_in_text(text: str, start: int, end: int) -> list[tuple
     binds: list[tuple[int, str]] = []
     search = start
     while search < end:
-        region = text[search:end]
-        match = re.search(r"\brecomputeAsync\s*\(", region)
+        match = re.search(r"\brecomputeAsync\s*\(", text[search:end])
         if not match:
             break
         async_start = search + match.start()
-        statement_start = text.rfind(";", start, async_start) + 1
-        local = text[statement_start:async_start]
-        bind = _async_bind_name_from_local(local)
+        bind = _async_bind_name_at(text, async_start, start)
         if bind is not None:
-            name_offset, name = bind
-            binds.append((statement_start + name_offset, name))
+            binds.append(bind)
         search = async_start + match.end()
     return binds
 
@@ -626,7 +659,7 @@ def _shadow_names_in_line(
 ) -> list[str]:
     if re.search(r"\brecomputeAsync\s*\(", line):
         return []
-    if re.match(r"\s*(?:auto|struct|class|union|enum|return)\b", line):
+    if re.match(r"\s*(?:struct|class|union|enum|return)\b", line):
         return []
     recompute_names = set(_recompute_names_on_line(line, text, line_start, async_binds))
     names: list[str] = []
@@ -653,6 +686,9 @@ def _apply_line_bindings(
         frame[name] = "recompute"
     for name in _shadow_names_in_line(line, text, line_start, async_binds):
         frame[name] = "shadow"
+    auto_shadow = _auto_shadow_name_in_line(line)
+    if auto_shadow is not None:
+        frame[auto_shadow] = "shadow"
 
 
 def _process_line_scope_and_bindings(
@@ -1286,6 +1322,70 @@ def test_recompute_handle_wait_wrap_block_shadow_keeps_outer_handle() -> None:
     by_line = {line: evidence for _path, line, evidence in found}
     assert 5 not in by_line
     assert by_line[7].startswith("handle->wait();")
+    assert len(found) == 1
+
+
+def test_recompute_handle_wait_wrap_block_auto_shadow_keeps_outer_handle() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_wrap_auto_shadow_probe.cpp"
+    probe.write_text(
+        "void f() {\n"
+        "  auto handle = doc->recomputeAsync();\n"
+        "  auto wrapped = wrap({\n"
+        "    auto handle = otherFuture();\n"
+        "    handle.wait();\n"
+        "  });\n"
+        "  handle->wait();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert 5 not in by_line
+    assert by_line[7].startswith("handle->wait();")
+    assert len(found) == 1
+
+
+def test_recompute_handle_wait_binds_return_async_through_enclosing_init() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_return_async_probe.cpp"
+    probe.write_text(
+        "auto handle = wrap({\n"
+        "  int x;\n"
+        "  return doc->recomputeAsync();\n"
+        "});\n"
+        "handle->wait();\n"
+        "auto handle2 = runAsync({\n"
+        "  std::lock_guard<std::mutex> guard(mutex);\n"
+        "  return doc->recomputeAsync();\n"
+        "});\n"
+        "handle2->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[5].startswith("handle->wait();")
+    assert by_line[10].startswith("handle2->wait();")
+    assert len(found) == 2
+
+
+def test_recompute_handle_wait_detects_qualified_value_direct_init() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_qualified_value_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle handle(App::DefaultHandle);\n"
+        "handle.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle.wait();"
     assert len(found) == 1
 
 
