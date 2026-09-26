@@ -87,7 +87,9 @@ public:
                 std::forward<Fn>(fn)();
                 return;
             }
-            return std::forward<Fn>(fn)();
+            else {
+                return std::forward<Fn>(fn)();
+            }
         }
 
         // std::function requires a copyable target; share the promise and
@@ -112,22 +114,23 @@ public:
             future.get();
             return;
         }
-
-        auto promise = std::make_shared<std::promise<Result>>();
-        auto future = promise->get_future();
-        {
-            std::lock_guard lock(_mutex);
-            _dispatchQueue.push_back([promise, sharedFn]() {
-                try {
-                    promise->set_value((*sharedFn)());
-                }
-                catch (...) {
-                    promise->set_exception(std::current_exception());
-                }
-            });
-            _workAvailable.notify_one();
+        else {
+            auto promise = std::make_shared<std::promise<Result>>();
+            auto future = promise->get_future();
+            {
+                std::lock_guard lock(_mutex);
+                _dispatchQueue.push_back([promise, sharedFn]() {
+                    try {
+                        promise->set_value((*sharedFn)());
+                    }
+                    catch (...) {
+                        promise->set_exception(std::current_exception());
+                    }
+                });
+                _workAvailable.notify_one();
+            }
+            return future.get();
         }
-        return future.get();
     }
 
     void joinThread();
