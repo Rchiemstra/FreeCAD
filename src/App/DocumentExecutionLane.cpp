@@ -111,6 +111,7 @@ std::shared_ptr<DocumentExecutionLane> DocumentExecutionLane::create(
         new DocumentExecutionLane(document, identity));
     lane->_handleState->lane = lane;
     registerLane(lane);
+    lane->startOwnerThread();
     return lane;
 }
 
@@ -134,7 +135,10 @@ DocumentExecutionLane::DocumentExecutionLane(Document& document,
           identity.lifecycleEpoch))
 {
     _handleState->identity = identity;
+}
 
+void DocumentExecutionLane::startOwnerThread()
+{
     _thread = std::thread([this] {
         _ownerThreadId = std::this_thread::get_id();
         _document.bindCollaborationOwnerThread(_ownerThreadId);

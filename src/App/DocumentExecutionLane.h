@@ -180,6 +180,9 @@ private:
 
     DocumentExecutionLane(Document& document, DocumentRevisionIdentityBinding identity);
 
+    /** Starts the owner thread after \c create establishes \c shared_ptr ownership. */
+    void startOwnerThread();
+
     void threadMain();
     void drainDispatchQueue();
     void executeActiveCommand();
