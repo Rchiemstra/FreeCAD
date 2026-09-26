@@ -27,6 +27,7 @@
 
 #include "Dialogs/DlgUndoRedo.h"
 #include "Application.h"
+#include "Document.h"
 #include "MainWindow.h"
 #include "MDIView.h"
 
