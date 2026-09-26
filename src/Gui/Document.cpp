@@ -61,6 +61,7 @@
 
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
+#include <App/DocumentHandle.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
