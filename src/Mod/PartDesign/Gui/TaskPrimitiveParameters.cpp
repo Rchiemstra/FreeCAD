@@ -1219,7 +1219,7 @@ bool TaskDlgPrimitiveParameters::accept()
     if (!primitiveOK) {
         return primitiveOK;
     }
-    PartGui::submitActiveDocumentRecomputeOrReport(this);
+    PartGui::submitActiveDocumentRecomputeOrReport(primitive);
     Gui::Command::doCommand(Gui::Command::Gui, "Gui.activeDocument().resetEdit()");
 
     return true;

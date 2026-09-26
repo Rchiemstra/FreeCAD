@@ -448,7 +448,7 @@ bool TaskDlgBooleanParameters::accept()
         Gui::Command::runCommand(Gui::Command::Doc, str.str().c_str());
         FCMD_OBJ_CMD(obj, "Type = " << parameter->getType());
 
-        if (!PartGui::submitActiveDocumentRecomputeOrReport(this)) {
+        if (!PartGui::submitActiveDocumentRecomputeOrReport(parameter)) {
             obj->getDocument()->abortTransaction();
             return false;
         }
