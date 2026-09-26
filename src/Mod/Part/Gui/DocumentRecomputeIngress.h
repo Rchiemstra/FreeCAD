@@ -61,7 +61,7 @@ inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
 {
     App::DocumentCommand command;
     command.kind = App::DocumentCommandKind::Recompute;
-    const auto handle = document.executionHandle();
+    auto handle = document.executionHandle();
     command.document = handle.identity();
     command.recompute = App::DocumentCommandRecomputePayload {};
     if (coalescingKey.empty()) {
