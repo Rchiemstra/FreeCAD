@@ -68,6 +68,14 @@ bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept
 
 constexpr std::string_view laneTestBlockingCoalescingPrefix = "lane-stall:";
 
+std::string commandExceptionDiagnostic(const std::exception& exception)
+{
+    if (const auto* base = dynamic_cast<const Base::Exception*>(&exception)) {
+        return base->what();
+    }
+    return exception.what();
+}
+
 DocumentRecomputeId submitLaneTestBlockingRecompute(Document& document,
                                                       std::string_view token)
 {
@@ -406,7 +414,17 @@ void DocumentExecutionLane::threadMain()
         std::unique_lock lock(_mutex);
         if (_active) {
             lock.unlock();
-            executeActiveCommand();
+            try {
+                executeActiveCommand();
+            }
+            catch (const std::exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+            }
+            catch (...) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      "document command failed with an unknown exception");
+            }
             continue;
         }
 
@@ -443,17 +461,37 @@ void DocumentExecutionLane::executeActiveCommand()
         }
 
         if (_active->command.kind == DocumentCommandKind::Close) {
-            const bool closed = GetApplication().closeDocument(_document.getName());
-            completeActiveCommand(closed ? DocumentCommandState::Completed
-                                         : DocumentCommandState::Failed,
-                                  closed ? "close completed" : "close failed");
+            try {
+                const bool closed = GetApplication().closeDocument(_document.getName());
+                completeActiveCommand(closed ? DocumentCommandState::Completed
+                                               : DocumentCommandState::Failed,
+                                      closed ? "close completed" : "close failed");
+            }
+            catch (const std::exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+            }
+            catch (...) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      "close failed with an unknown exception");
+            }
             return;
         }
 
-        const bool succeeded = executeInstantCommand(*_active);
-        completeActiveCommand(succeeded ? DocumentCommandState::Completed
-                                        : DocumentCommandState::Failed,
-                              succeeded ? "completed" : "command failed");
+        try {
+            const bool succeeded = executeInstantCommand(*_active);
+            completeActiveCommand(succeeded ? DocumentCommandState::Completed
+                                            : DocumentCommandState::Failed,
+                                  succeeded ? "completed" : "command failed");
+        }
+        catch (const std::exception& exception) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  commandExceptionDiagnostic(exception));
+        }
+        catch (...) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  "command failed with an unknown exception");
+        }
         return;
     }
 
@@ -476,35 +514,74 @@ void DocumentExecutionLane::executeActiveRecompute()
             const auto& coalescingKey = _active->command.recompute
                 ? _active->command.recompute->coalescingKey
                 : std::string {};
-            if (coalescingKey.starts_with(laneTestBlockingCoalescingPrefix)) {
-                _active->recomputeId = submitLaneTestBlockingRecompute(
-                    _document,
-                    coalescingKey.substr(laneTestBlockingCoalescingPrefix.size()));
-            }
-            else {
-                std::vector<DocumentObject*> objects;
-                if (_active->command.recompute) {
-                    objects.reserve(_active->command.recompute->featureIds.size());
-                    for (const auto& featureId : _active->command.recompute->featureIds) {
-                        if (auto* object = _document.getObject(featureId.c_str())) {
-                            objects.push_back(object);
+            try {
+                if (coalescingKey.starts_with(laneTestBlockingCoalescingPrefix)) {
+                    _active->recomputeId = submitLaneTestBlockingRecompute(
+                        _document,
+                        coalescingKey.substr(laneTestBlockingCoalescingPrefix.size()));
+                }
+                else {
+                    std::vector<DocumentObject*> objects;
+                    if (_active->command.recompute) {
+                        objects.reserve(_active->command.recompute->featureIds.size());
+                        for (const auto& featureId : _active->command.recompute->featureIds) {
+                            if (auto* object = _document.getObject(featureId.c_str())) {
+                                objects.push_back(object);
+                            }
                         }
                     }
-                }
 
-                const bool force = _active->command.recompute
-                    && _active->command.recompute->coalescingKey.find("force;")
-                        != std::string::npos;
-                const int options = _active->command.recompute
-                    ? _active->command.recompute->options
-                    : 0;
-                auto handle = _document.recomputeAsync(objects, force, options);
-                _active->recomputeId = handle->id();
+                    const bool force = _active->command.recompute
+                        && _active->command.recompute->coalescingKey.find("force;")
+                            != std::string::npos;
+                    const int options = _active->command.recompute
+                        ? _active->command.recompute->options
+                        : 0;
+                    try {
+                        auto handle = _document.recomputeAsync(objects, force, options);
+                        _active->recomputeId = handle->id();
+                    }
+                    catch (const Base::BadGraphError&) {
+                        if ((options & Document::DepNoCycle) == 0) {
+                            throw;
+                        }
+                        // DepNoCycle requests cyclic-link tolerance for ordering.
+                        // Preserve the requested options in the coordinator key by
+                        // retrying with only the sort flag for dependency capture.
+                        auto handle = _document.recomputeAsync(
+                            objects,
+                            force,
+                            options & ~Document::DepNoCycle);
+                        _active->recomputeId = handle->id();
+                    }
+                }
+                touchWatchdogProgress(*_active);
             }
-            touchWatchdogProgress(*_active);
+            catch (const std::exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+                return;
+            }
+            catch (...) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      "recompute submission failed with an unknown exception");
+                return;
+            }
         }
 
-        pumpActiveRecompute(*_active);
+        try {
+            pumpActiveRecompute(*_active);
+        }
+        catch (const std::exception& exception) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  commandExceptionDiagnostic(exception));
+            return;
+        }
+        catch (...) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  "recompute polling failed with an unknown exception");
+            return;
+        }
 
         if (!_active || !_active->recomputeId) {
             return;
@@ -522,7 +599,19 @@ void DocumentExecutionLane::executeActiveRecompute()
             if (recomputeSnapshot->state == DocumentRecomputeState::Completed
                 && _document.recomputeCoordinator().claimPresentationFinalization(
                     _active->recomputeId.value())) {
-                _document.finalizeDetachedRecompute(*recomputeSnapshot);
+                try {
+                    _document.finalizeDetachedRecompute(*recomputeSnapshot);
+                }
+                catch (const std::exception& exception) {
+                    completeActiveCommand(DocumentCommandState::Failed,
+                                          commandExceptionDiagnostic(exception));
+                    return;
+                }
+                catch (...) {
+                    completeActiveCommand(DocumentCommandState::Failed,
+                                          "presentation finalization failed with an unknown exception");
+                    return;
+                }
             }
             const auto commandState = mapRecomputeState(recomputeSnapshot->state);
             completeActiveCommand(commandState, recomputeSnapshot->diagnostic);
