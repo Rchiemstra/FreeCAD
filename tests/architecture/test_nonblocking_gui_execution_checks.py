@@ -392,15 +392,23 @@ def _qualified_last_component(stripped: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _is_constant_style_name(name: str) -> bool:
-    if name.startswith("Default"):
-        return True
+def _is_all_caps_name(name: str) -> bool:
     compact = name.replace("_", "")
     return bool(compact) and compact.isupper()
 
 
+def _is_bare_value_name(name: str) -> bool:
+    if re.match(r"^[a-z]", name):
+        return True
+    if _is_all_caps_name(name):
+        return True
+    if name.endswith("Handle") or name.endswith("Mode"):
+        return True
+    return False
+
+
 def _is_pascal_case_type_name(name: str) -> bool:
-    return bool(re.match(r"^[A-Z]", name)) and not _is_constant_style_name(name)
+    return bool(re.match(r"^[A-Z]", name)) and not _is_bare_value_name(name)
 
 
 def _looks_like_bare_type_name(stripped: str) -> bool:
@@ -465,9 +473,7 @@ def _looks_like_expression_part(part: str) -> bool:
         last = _qualified_last_component(stripped)
         if last is None:
             return False
-        if _is_constant_style_name(last) or re.match(r"^[a-z]", last):
-            return True
-        return False
+        return _is_bare_value_name(last)
     return False
 
 
@@ -1464,6 +1470,62 @@ def test_recompute_handle_wait_rejects_bare_type_only_parameters() -> None:
         "createHandle3->wait();\n"
         "App::RecomputeHandle createHandle4(App::Gui::DocumentObject);\n"
         "createHandle4->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
+
+
+def test_recompute_handle_wait_detects_handle_and_mode_value_direct_inits() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_handle_mode_value_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle handle(App::DefaultHandle);\n"
+        "handle.wait();\n"
+        "App::RecomputeHandle handle2(MyHandle);\n"
+        "handle2.wait();\n"
+        "App::RecomputeHandle handle3(NullHandle);\n"
+        "handle3.wait();\n"
+        "App::RecomputeHandle handle4(App::RecomputeMode);\n"
+        "handle4.wait();\n"
+        "App::RecomputeHandle handle5(other);\n"
+        "handle5.wait();\n"
+        "App::RecomputeHandle handle6(App::makeHandle());\n"
+        "handle6.wait();\n"
+        "App::RecomputeHandle handle7(std::move(other));\n"
+        "handle7.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle.wait();"
+    assert by_line[4] == "handle2.wait();"
+    assert by_line[6] == "handle3.wait();"
+    assert by_line[8] == "handle4.wait();"
+    assert by_line[10] == "handle5.wait();"
+    assert by_line[12] == "handle6.wait();"
+    assert by_line[14] == "handle7.wait();"
+    assert len(found) == 7
+
+
+def test_recompute_handle_wait_rejects_default_prefixed_type_parameters() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_default_type_param_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle createHandle(DefaultDocument);\n"
+        "createHandle->wait();\n"
+        "App::RecomputeHandle createHandle2(DefaultAppearance);\n"
+        "createHandle2->wait();\n"
+        "App::RecomputeHandle createHandle3(DefaultStyle);\n"
+        "createHandle3->wait();\n"
+        "App::RecomputeHandle createHandle4(DefaultHandler);\n"
+        "createHandle4->wait();\n"
+        "App::RecomputeHandle createHandle5(DefaultVisibility);\n"
+        "createHandle5->wait();\n",
         encoding="utf-8",
     )
     try:
