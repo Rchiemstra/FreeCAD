@@ -387,6 +387,31 @@ def _split_top_level_commas(inner: str) -> list[str]:
     return parts
 
 
+def _qualified_last_component(stripped: str) -> str | None:
+    match = re.match(r"^(?:[\w:]+\s*::\s*)*([A-Za-z_]\w*)\s*$", stripped)
+    return match.group(1) if match else None
+
+
+def _is_constant_style_name(name: str) -> bool:
+    if name.startswith("Default"):
+        return True
+    compact = name.replace("_", "")
+    return bool(compact) and compact.isupper()
+
+
+def _is_pascal_case_type_name(name: str) -> bool:
+    return bool(re.match(r"^[A-Z]", name)) and not _is_constant_style_name(name)
+
+
+def _looks_like_bare_type_name(stripped: str) -> bool:
+    if re.match(r"^std::string(?:\s+\w+)?\s*$", stripped):
+        return True
+    last = _qualified_last_component(stripped)
+    if last is None:
+        return False
+    return _is_pascal_case_type_name(last)
+
+
 def _looks_like_type_declarator_part(stripped: str) -> bool:
     if re.search(r"\(\s*\*", stripped):
         return True
@@ -406,7 +431,7 @@ def _looks_like_type_declarator_part(stripped: str) -> bool:
         stripped,
     ):
         return True
-    if re.match(r"^std::string(?:\s+\w+)?\s*$", stripped):
+    if _looks_like_bare_type_name(stripped):
         return True
     return False
 
@@ -416,7 +441,7 @@ def _looks_like_expression_part(part: str) -> bool:
     if not stripped:
         return False
     if re.fullmatch(r"[A-Za-z_]\w*", stripped):
-        return True
+        return not _is_pascal_case_type_name(stripped)
     if re.search(r"->|\.|\brecomputeAsync\s*\(", stripped):
         return True
     if _looks_like_type_declarator_part(stripped):
@@ -437,7 +462,12 @@ def _looks_like_expression_part(part: str) -> bool:
             return True
         index += 1
     if re.match(r"^(?:[\w:]+\s*::\s*)+[A-Za-z_]\w*\s*$", stripped):
-        return True
+        last = _qualified_last_component(stripped)
+        if last is None:
+            return False
+        if _is_constant_style_name(last) or re.match(r"^[a-z]", last):
+            return True
+        return False
     return False
 
 
@@ -688,7 +718,13 @@ def _apply_line_bindings(
         frame[name] = "shadow"
     auto_shadow = _auto_shadow_name_in_line(line)
     if auto_shadow is not None:
-        frame[auto_shadow] = "shadow"
+        line_end = line_start + len(line)
+        is_enclosing_async_init = any(
+            name == auto_shadow and line_start <= bind_start < line_end
+            for bind_start, name in async_binds
+        )
+        if not is_enclosing_async_init:
+            frame[auto_shadow] = "shadow"
 
 
 def _process_line_scope_and_bindings(
@@ -1387,6 +1423,54 @@ def test_recompute_handle_wait_detects_qualified_value_direct_init() -> None:
     by_line = {line: evidence for _path, line, evidence in found}
     assert by_line[2] == "handle.wait();"
     assert len(found) == 1
+
+
+def test_recompute_handle_wait_binds_lambda_call_initializers() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_lambda_init_probe.cpp"
+    probe.write_text(
+        "auto handle = runAsync([&]() {\n"
+        "  return doc->recomputeAsync();\n"
+        "});\n"
+        "handle->wait();\n"
+        "auto handle2 = QtConcurrent::run([&]() {\n"
+        "  return doc->recomputeAsync();\n"
+        "});\n"
+        "handle2->wait();\n"
+        "auto handle3 = std::async([&]() {\n"
+        "  return doc->recomputeAsync();\n"
+        "});\n"
+        "handle3->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[4] == "handle->wait();"
+    assert by_line[8] == "handle2->wait();"
+    assert by_line[12] == "handle3->wait();"
+    assert len(found) == 3
+
+
+def test_recompute_handle_wait_rejects_bare_type_only_parameters() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_bare_type_param_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle createHandle(App::Document);\n"
+        "createHandle->wait();\n"
+        "App::RecomputeHandle createHandle2(Document);\n"
+        "createHandle2->wait();\n"
+        "App::RecomputeHandle createHandle3(Gui::Document);\n"
+        "createHandle3->wait();\n"
+        "App::RecomputeHandle createHandle4(App::Gui::DocumentObject);\n"
+        "createHandle4->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
 
 
 def test_recompute_handle_wait_binds_nested_brace_async_initializers() -> None:
