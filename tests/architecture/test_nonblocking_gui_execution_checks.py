@@ -39,7 +39,6 @@ RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)\s*wait\s*\(")
 RECOMPUTE_HANDLE_ASSIGN = re.compile(
     r"([A-Za-z_]\w*)\s*=\s*[^;\n]*(?:recomputeAsync|RecomputeHandle)"
 )
-RECOMPUTE_HANDLE_TIGHT_LOOKBACK_LINES = 8
 RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES = 40
 LIVE_REFERENCE_PAYLOAD = re.compile(
     r"fastsignals::signal\s*<(?:[^<>]|<[^<>]*>)*\bApp::(?:Property\s*[*&]|DocumentObject\s*[*&])(?:[^<>]|<[^<>]*>)*>"
@@ -173,11 +172,24 @@ def _line_index_at(text: str, offset: int) -> int:
     return text.count("\n", 0, offset)
 
 
-def _wait_receiver_name(masked: str, wait_start: int) -> str | None:
-    """Return the identifier immediately before ``->wait`` / ``.wait`` when present."""
-    prefix = masked[max(0, wait_start - 120) : wait_start]
+def _wait_receiver_name(masked: str, arrow_start: int) -> str | None:
+    """Return the identifier immediately before ``->`` / ``.`` that precedes ``wait``."""
+    prefix = masked[max(0, arrow_start - 120) : arrow_start]
     match = re.search(r"([A-Za-z_]\w*)\s*$", re.sub(r"\s+", " ", prefix))
     return match.group(1) if match else None
+
+
+def _receiver_bound_to_recompute_handle(
+    receiver: str,
+    lines: list[str],
+    wait_line_index: int,
+) -> bool:
+    bound_start = max(0, wait_line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
+    bound_region = "\n".join(lines[bound_start:wait_line_index])
+    for assign in RECOMPUTE_HANDLE_ASSIGN.finditer(bound_region):
+        if assign.group(1) == receiver and RECOMPUTE_HANDLE_CONTEXT.search(assign.group(0)):
+            return True
+    return False
 
 
 def _scan_recompute_handle_waits(
@@ -192,28 +204,15 @@ def _scan_recompute_handle_waits(
         lines = masked.splitlines()
         source_lines = source.splitlines()
         for wait_match in RECOMPUTE_HANDLE_WAIT_CALL.finditer(masked):
-            line_index = _line_index_at(masked, wait_match.start())
+            wait_offset = wait_match.start() + wait_match.group().index("wait")
+            wait_line_index = _line_index_at(masked, wait_offset)
             receiver = _wait_receiver_name(masked, wait_match.start())
-            tight_start = max(0, line_index - RECOMPUTE_HANDLE_TIGHT_LOOKBACK_LINES)
-            tight_context = "\n".join(lines[tight_start : line_index + 1])
-            if RECOMPUTE_HANDLE_CONTEXT.search(tight_context):
-                evidence = source_lines[line_index].strip()
-                matches.append((relative, line_index + 1, evidence))
-                continue
             if receiver is None:
                 continue
-            bound_start = max(0, line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
-            bound_region = "\n".join(lines[bound_start:line_index])
-            assigned = False
-            for assign in RECOMPUTE_HANDLE_ASSIGN.finditer(bound_region):
-                if assign.group(1) == receiver and RECOMPUTE_HANDLE_CONTEXT.search(
-                    assign.group(0)
-                ):
-                    assigned = True
-            if not assigned:
+            if not _receiver_bound_to_recompute_handle(receiver, lines, wait_line_index):
                 continue
-            evidence = source_lines[line_index].strip()
-            matches.append((relative, line_index + 1, evidence))
+            evidence = source_lines[wait_line_index].strip()
+            matches.append((relative, wait_line_index + 1, evidence))
     return matches
 
 
@@ -375,10 +374,28 @@ def test_recompute_handle_wait_detects_multiline_and_distant_bound_wait() -> Non
         found = _scan_recompute_handle_waits(paths=[probe])
     finally:
         probe.unlink(missing_ok=True)
-    evidences = [evidence for _path, _line, evidence in found]
-    assert any("wait" in evidence for evidence in evidences)
-    assert not any("other" in evidence for evidence in evidences)
-    assert len(found) >= 2
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[3].startswith("wait")
+    assert by_line[17].startswith("handle2")
+    assert 4 not in by_line
+    assert len(found) == 2
+
+
+def test_recompute_handle_wait_ignores_unbound_nearby_waits() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_unbound_probe.cpp"
+    probe.write_text(
+        "auto handle = doc->recomputeAsync();\n"
+        "handle->wait();\n"
+        "other->wait();\n"
+        "future.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line == {2: "handle->wait();"}
 
 
 def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
