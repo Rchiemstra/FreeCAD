@@ -2393,6 +2393,9 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return undo(id); });
+    }
     return collaborationService().undoCompatibilityTransaction(id);
 }
 
@@ -2457,6 +2460,9 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
 
 bool Document::redo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return redo(id); });
+    }
     return collaborationService().redoCompatibilityTransaction(id);
 }
 
@@ -5062,6 +5068,9 @@ DocumentMutationReadiness Document::getMutationReadiness() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return save(); });
+    }
     ensureCollaborationSaveAllowed();
 
     if (testStatus(Document::PartialDoc)) {

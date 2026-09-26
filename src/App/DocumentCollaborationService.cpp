@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
 #include "GenericIsolatedRecompute.h"
 #include "MainThreadSignal.h"
@@ -66,6 +67,22 @@ App::PreparedEditExecutionStatus preparationStatus(const App::GeometryJobState s
             return App::PreparedEditExecutionStatus::Failed;
     }
     return App::PreparedEditExecutionStatus::Failed;
+}
+
+template<typename Result, typename Callable>
+Result invokeCollaborationOnDocumentThread(App::Document& document, Callable&& callable)
+{
+    if (document.isCollaborationOwnerThread()) {
+        return std::forward<Callable>(callable)();
+    }
+    if (auto* lane = document.executionLane()) {
+        return lane->dispatchToOwner(std::forward<Callable>(callable));
+    }
+    if (!App::MainThreadSignalConfig::hasHooks()) {
+        throw Base::RuntimeError(
+            "off-owner collaboration work requires a document-thread dispatcher");
+    }
+    return invokeOnDocumentThread<Result>(std::forward<Callable>(callable));
 }
 
 template<typename Result, typename Callable>
@@ -786,15 +803,12 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsync(
         throw Base::RuntimeError(
             "cannot prepare detached collaboration work while document is closing");
     }
-    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "off-owner detached preparation requires a document-thread dispatcher");
-    }
-    return invokeOnDocumentThread<PreparedEditExecutionId>(
+    return invokeCollaborationOnDocumentThread<PreparedEditExecutionId>(
+        _document,
         [this,
          sessionId,
          operationId = std::move(operationId),
-         &intent,
+         intent,
          provenance = std::move(provenance)]() mutable {
             return prepareEditAsyncOnDocumentThread(sessionId,
                                                     std::move(operationId),
@@ -1048,11 +1062,8 @@ DocumentCollaborationService::takePreparedEdit(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "off-owner detached result collection requires a document-thread dispatcher");
-    }
-    return invokeOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+    return invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+        _document,
         [this, sessionId, executionId] {
             return takePreparedEditOnDocumentThread(sessionId, executionId);
         });
@@ -1067,11 +1078,8 @@ DocumentCollaborationService::takeRecomputePreparedEdit(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "off-owner recompute result collection requires a document-thread dispatcher");
-    }
-    return invokeOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+    return invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+        _document,
         [this, sessionId, executionId] {
             return takePreparedEditOnDocumentThread(sessionId, executionId, true);
         });

@@ -2,7 +2,9 @@
 
 #include "DocumentRecomputeCoordinator.h"
 
+#include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "GeometryJobManager.h"
 
 #include <Base/Exception.h>
@@ -272,70 +274,79 @@ DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
 
 DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeRequest request)
 {
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
-    const std::string signature = canonicalizeAndSign(request);
-
+    DocumentRecomputeId admittedId {0};
+    bool scheduleAfterRelease = false;
     {
-        std::lock_guard stateLock(_stateMutex);
-        if (!request.coalescingKey.empty()) {
-            for (const auto& [id, job] : _jobs) {
-                if (job->coalescingKey != request.coalescingKey || jobTerminal(job->state)) {
-                    continue;
+        std::lock_guard operationLock(_operationMutex);
+        OperationAdmission operationAdmission(_operationActive);
+        const std::string signature = canonicalizeAndSign(request);
+
+        {
+            std::lock_guard stateLock(_stateMutex);
+            if (!request.coalescingKey.empty()) {
+                for (const auto& [id, job] : _jobs) {
+                    if (job->coalescingKey != request.coalescingKey || jobTerminal(job->state)) {
+                        continue;
+                    }
+                    if (job->signature != signature) {
+                        throw std::invalid_argument(
+                            "active recompute coalescing key names a different plan");
+                    }
+                    return id;
                 }
-                if (job->signature != signature) {
-                    throw std::invalid_argument(
-                        "active recompute coalescing key names a different plan");
+            }
+
+            while (_jobs.size() >= MaxRetainedJobs) {
+                const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
+                    return jobTerminal(entry.second->state);
+                });
+                if (terminal == _jobs.end()) {
+                    throw std::runtime_error("too many active document recompute plans");
                 }
-                return id;
+                _jobs.erase(terminal);
             }
         }
 
-        while (_jobs.size() >= MaxRetainedJobs) {
-            const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
-                return jobTerminal(entry.second->state);
-            });
-            if (terminal == _jobs.end()) {
-                throw std::runtime_error("too many active document recompute plans");
-            }
-            _jobs.erase(terminal);
+        if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+            throw std::overflow_error("document recompute id space exhausted");
+        }
+        admittedId = _nextId++;
+
+        std::string sessionId;
+        if (!request.features.empty()) {
+            sessionId = _service.beginEditSession("document-recompute").sessionId();
+        }
+
+        auto job = std::make_unique<Job>();
+        job->id = admittedId;
+        job->coalescingKey = std::move(request.coalescingKey);
+        job->signature = signature;
+        job->sessionId = std::move(sessionId);
+        job->refreshRevisionFenceAfterEachCommit =
+            request.refreshRevisionFenceAfterEachCommit;
+        for (auto& feature : request.features) {
+            const std::string featureId = feature.featureId;
+            job->nodes.emplace(featureId,
+                               Job::Node {.request = std::move(feature),
+                                          .executionId = std::nullopt,
+                                          .diagnostic = {}});
+        }
+        if (job->nodes.empty()) {
+            job->state = DocumentRecomputeState::Completed;
+        }
+        else {
+            scheduleAfterRelease = true;
+        }
+        {
+            std::lock_guard stateLock(_stateMutex);
+            _jobs.emplace(admittedId, std::move(job));
         }
     }
 
-    if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
-        throw std::overflow_error("document recompute id space exhausted");
+    if (scheduleAfterRelease) {
+        scheduleReady(admittedId);
     }
-    const auto id = _nextId++;
-
-    std::string sessionId;
-    if (!request.features.empty()) {
-        sessionId = _service.beginEditSession("document-recompute").sessionId();
-    }
-
-    auto job = std::make_unique<Job>();
-    job->id = id;
-    job->coalescingKey = std::move(request.coalescingKey);
-    job->signature = signature;
-    job->sessionId = std::move(sessionId);
-    job->refreshRevisionFenceAfterEachCommit =
-        request.refreshRevisionFenceAfterEachCommit;
-    for (auto& feature : request.features) {
-        const std::string featureId = feature.featureId;
-        job->nodes.emplace(featureId,
-                           Job::Node {.request = std::move(feature),
-                                      .executionId = std::nullopt,
-                                      .diagnostic = {}});
-    }
-    if (job->nodes.empty()) {
-        job->state = DocumentRecomputeState::Completed;
-    }
-    {
-        std::lock_guard stateLock(_stateMutex);
-        _jobs.emplace(id, std::move(job));
-    }
-
-    scheduleReady(id);
-    return id;
+    return admittedId;
 }
 
 void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
@@ -493,6 +504,11 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
 
 bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 {
+    Document& document = _service.document();
+    if (document.executionLane() && !document.isCollaborationOwnerThread()) {
+        return document.executionLane()->dispatchToOwner([this, id] { return poll(id); });
+    }
+
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, PreparedEditExecutionId>> active;
