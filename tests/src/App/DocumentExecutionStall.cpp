@@ -4,6 +4,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentExecutionStall.h>
 #include <src/App/InitApplication.h>
 
@@ -14,6 +15,20 @@
 #include <thread>
 
 using namespace std::chrono_literals;
+
+namespace App::Internal
+{
+
+class DocumentExecutionLaneTestAccess
+{
+public:
+    static bool isCollaborationOwnerThread(const Document& document) noexcept
+    {
+        return document.isCollaborationOwnerThread();
+    }
+};
+
+}  // namespace App::Internal
 
 namespace
 {
@@ -49,9 +64,10 @@ private:
 
 TEST_F(DocumentExecutionStallTest, RunRecordsDocumentOwnerThread)
 {
-    const auto* lane = doc()->executionLane();
+    auto* lane = doc()->executionLane();
     ASSERT_NE(lane, nullptr);
-    EXPECT_FALSE(doc()->isCollaborationOwnerThread());
+    EXPECT_FALSE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+        *doc()));
 
     std::stop_source stopSource;
     std::optional<App::DocumentExecutionStall::Result> result;
@@ -72,7 +88,8 @@ TEST_F(DocumentExecutionStallTest, RunRecordsDocumentOwnerThread)
     });
 
     lane->dispatchToOwner([&] {
-        EXPECT_TRUE(doc()->isCollaborationOwnerThread());
+        EXPECT_TRUE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+            *doc()));
         result = App::DocumentExecutionStall::run(stopSource.get_token(), 30s);
     });
 
@@ -87,17 +104,19 @@ TEST_F(DocumentExecutionStallTest, RunRecordsDocumentOwnerThread)
 
 TEST_F(DocumentExecutionStallTest, RunOnNonOwnerThreadRecordsThatThread)
 {
-    const auto* lane = doc()->executionLane();
+    auto* lane = doc()->executionLane();
     ASSERT_NE(lane, nullptr);
     const auto ownerThread = lane->ownerThreadId();
-    EXPECT_FALSE(doc()->isCollaborationOwnerThread());
+    EXPECT_FALSE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+        *doc()));
 
     std::optional<App::DocumentExecutionStall::Result> workerResult;
     std::stop_source stopSource;
 
     std::jthread worker([&](const std::stop_token stopToken) {
         EXPECT_NE(std::this_thread::get_id(), ownerThread);
-        EXPECT_FALSE(doc()->isCollaborationOwnerThread());
+        EXPECT_FALSE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+            *doc()));
         workerResult = App::DocumentExecutionStall::run(stopSource.get_token(), 30s);
     });
 

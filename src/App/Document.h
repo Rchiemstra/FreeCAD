@@ -221,6 +221,7 @@ class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
 class GenericIsolatedRecomputeAccess;
 class NestedCommitBookingTestAccess;
+class DocumentExecutionLaneTestAccess;
 struct DocumentFileReplacementResult;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 enum class DocumentPostDurableSaveCheckpoint
@@ -1721,6 +1722,7 @@ public:
     friend class Internal::CollaborationStructuralMutationRecorder;
     friend class Internal::GenericIsolatedRecomputeAccess;
     friend class Internal::NestedCommitBookingTestAccess;
+    friend class Internal::DocumentExecutionLaneTestAccess;
     friend class ::Spreadsheet::Sheet;
 
     ~Document() override;

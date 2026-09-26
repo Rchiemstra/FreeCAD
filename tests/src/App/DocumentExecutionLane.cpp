@@ -27,6 +27,20 @@
 
 using namespace std::chrono_literals;
 
+namespace App::Internal
+{
+
+class DocumentExecutionLaneTestAccess
+{
+public:
+    static bool isCollaborationOwnerThread(const Document& document) noexcept
+    {
+        return document.isCollaborationOwnerThread();
+    }
+};
+
+}  // namespace App::Internal
+
 namespace
 {
 
@@ -223,7 +237,6 @@ protected:
         return snapshot.terminal();
     }
 
-private:
     std::string _docName;
     std::string _blockingToken;
     App::Document* _doc {};
@@ -232,11 +245,13 @@ private:
 
 TEST_F(DocumentExecutionLaneTest, OwnerThreadIsLaneThread)
 {
-    const auto* lane = doc()->executionLane();
+    auto* lane = doc()->executionLane();
     ASSERT_NE(lane, nullptr);
-    EXPECT_FALSE(doc()->isCollaborationOwnerThread());
+    EXPECT_FALSE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+        *doc()));
     lane->dispatchToOwner([&] {
-        EXPECT_TRUE(doc()->isCollaborationOwnerThread());
+        EXPECT_TRUE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
+            *doc()));
         EXPECT_EQ(std::this_thread::get_id(), lane->ownerThreadId());
     });
 }

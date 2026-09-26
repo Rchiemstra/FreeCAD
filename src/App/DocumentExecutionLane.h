@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -82,14 +83,38 @@ public:
     {
         using Result = std::invoke_result_t<Fn>;
         if (isOwnerThread()) {
+            if constexpr (std::is_void_v<Result>) {
+                std::forward<Fn>(fn)();
+                return;
+            }
             return std::forward<Fn>(fn)();
         }
 
         // std::function requires a copyable target; share the promise and
         // callable so the queued lambda is copy-constructible.
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        if constexpr (std::is_void_v<Result>) {
+            auto promise = std::make_shared<std::promise<void>>();
+            auto future = promise->get_future();
+            {
+                std::lock_guard lock(_mutex);
+                _dispatchQueue.push_back([promise, sharedFn]() {
+                    try {
+                        (*sharedFn)();
+                        promise->set_value();
+                    }
+                    catch (...) {
+                        promise->set_exception(std::current_exception());
+                    }
+                });
+                _workAvailable.notify_one();
+            }
+            future.get();
+            return;
+        }
+
         auto promise = std::make_shared<std::promise<Result>>();
         auto future = promise->get_future();
-        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
         {
             std::lock_guard lock(_mutex);
             _dispatchQueue.push_back([promise, sharedFn]() {
