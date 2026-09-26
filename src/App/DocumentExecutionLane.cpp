@@ -68,11 +68,13 @@ bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept
 
 constexpr std::string_view laneTestBlockingCoalescingPrefix = "lane-stall:";
 
+std::string commandExceptionDiagnostic(const Base::Exception& exception)
+{
+    return exception.what();
+}
+
 std::string commandExceptionDiagnostic(const std::exception& exception)
 {
-    if (const auto* base = dynamic_cast<const Base::Exception*>(&exception)) {
-        return base->what();
-    }
     return exception.what();
 }
 
@@ -417,6 +419,10 @@ void DocumentExecutionLane::threadMain()
             try {
                 executeActiveCommand();
             }
+            catch (const Base::Exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+            }
             catch (const std::exception& exception) {
                 completeActiveCommand(DocumentCommandState::Failed,
                                       commandExceptionDiagnostic(exception));
@@ -467,6 +473,10 @@ void DocumentExecutionLane::executeActiveCommand()
                                                : DocumentCommandState::Failed,
                                       closed ? "close completed" : "close failed");
             }
+            catch (const Base::Exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+            }
             catch (const std::exception& exception) {
                 completeActiveCommand(DocumentCommandState::Failed,
                                       commandExceptionDiagnostic(exception));
@@ -483,6 +493,10 @@ void DocumentExecutionLane::executeActiveCommand()
             completeActiveCommand(succeeded ? DocumentCommandState::Completed
                                             : DocumentCommandState::Failed,
                                   succeeded ? "completed" : "command failed");
+        }
+        catch (const Base::Exception& exception) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  commandExceptionDiagnostic(exception));
         }
         catch (const std::exception& exception) {
             completeActiveCommand(DocumentCommandState::Failed,
@@ -537,25 +551,15 @@ void DocumentExecutionLane::executeActiveRecompute()
                     const int options = _active->command.recompute
                         ? _active->command.recompute->options
                         : 0;
-                    try {
-                        auto handle = _document.recomputeAsync(objects, force, options);
-                        _active->recomputeId = handle->id();
-                    }
-                    catch (const Base::BadGraphError&) {
-                        if ((options & Document::DepNoCycle) == 0) {
-                            throw;
-                        }
-                        // DepNoCycle requests cyclic-link tolerance for ordering.
-                        // Preserve the requested options in the coordinator key by
-                        // retrying with only the sort flag for dependency capture.
-                        auto handle = _document.recomputeAsync(
-                            objects,
-                            force,
-                            options & ~Document::DepNoCycle);
-                        _active->recomputeId = handle->id();
-                    }
+                    auto handle = _document.recomputeAsync(objects, force, options);
+                    _active->recomputeId = handle->id();
                 }
                 touchWatchdogProgress(*_active);
+            }
+            catch (const Base::Exception& exception) {
+                completeActiveCommand(DocumentCommandState::Failed,
+                                      commandExceptionDiagnostic(exception));
+                return;
             }
             catch (const std::exception& exception) {
                 completeActiveCommand(DocumentCommandState::Failed,
@@ -571,6 +575,11 @@ void DocumentExecutionLane::executeActiveRecompute()
 
         try {
             pumpActiveRecompute(*_active);
+        }
+        catch (const Base::Exception& exception) {
+            completeActiveCommand(DocumentCommandState::Failed,
+                                  commandExceptionDiagnostic(exception));
+            return;
         }
         catch (const std::exception& exception) {
             completeActiveCommand(DocumentCommandState::Failed,
@@ -601,6 +610,11 @@ void DocumentExecutionLane::executeActiveRecompute()
                     _active->recomputeId.value())) {
                 try {
                     _document.finalizeDetachedRecompute(*recomputeSnapshot);
+                }
+                catch (const Base::Exception& exception) {
+                    completeActiveCommand(DocumentCommandState::Failed,
+                                          commandExceptionDiagnostic(exception));
+                    return;
                 }
                 catch (const std::exception& exception) {
                     completeActiveCommand(DocumentCommandState::Failed,

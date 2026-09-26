@@ -560,7 +560,7 @@ TEST_F(DocumentExecutionLaneTest, RecomputePassesOptionsToAsync)
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     ASSERT_TRUE(waitForTerminal(commandHandle));
-    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Completed);
+    EXPECT_EQ(commandHandle.status().state, App::DocumentCommandState::Failed);
 }
 
 TEST_F(DocumentExecutionLaneTest, CloseDocumentReturnsFalseWhileBusy)
