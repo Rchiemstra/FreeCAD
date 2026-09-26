@@ -38,6 +38,7 @@
 
 #include "Application.h"
 #include "ApplicationPy.h"
+#include "DocumentWouldBlock.h"
 #include "DocumentPy.h"
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
@@ -278,6 +279,7 @@ PyObject* ApplicationPy::sSaveDocument(PyObject* /*self*/, PyObject* args)
 
     Document* doc = GetApplication().getDocument(pDoc);
     if (doc) {
+        DocumentWouldBlock::throwIfGuiThread("FreeCAD.saveDocument()", "Document.saveAsync()");
         if (!doc->save()) {
             PyErr_Format(Base::PyExc_FC_GeneralError, "Cannot save document '%s'", pDoc);
             return nullptr;

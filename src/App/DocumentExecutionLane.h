@@ -7,8 +7,13 @@
 #include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
 #include "DocumentRevisionIndex.h"
+#include "DocumentWouldBlock.h"
+
+#include <Base/Interpreter.h>
 
 #include <FCGlobal.h>
+
+#include <Python.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -90,6 +95,15 @@ public:
             else {
                 return std::forward<Fn>(fn)();
             }
+        }
+
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentExecutionLane::dispatchToOwner",
+            "Document.*Async() or executionHandle().trySubmit()");
+
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
         }
 
         // std::function requires a copyable target; share the promise and
