@@ -36,8 +36,16 @@ RECOMPUTE_HANDLE_CONTEXT = re.compile(
     r"shared_ptr\s*<\s*App::RecomputeHandle|unique_ptr\s*<\s*App::RecomputeHandle)"
 )
 RECOMPUTE_HANDLE_WAIT_CALL = re.compile(r"(?:->|\.)\s*wait\s*\(")
-RECOMPUTE_HANDLE_ASSIGN = re.compile(
-    r"([A-Za-z_]\w*)\s*=\s*[^;\n]*(?:recomputeAsync|RecomputeHandle)"
+RECOMPUTE_HANDLE_TYPED = (
+    r"(?:App::RecomputeHandle|"
+    r"(?:std::)?(?:shared_ptr|unique_ptr)\s*<\s*App::RecomputeHandle\s*>)"
+)
+RECOMPUTE_HANDLE_DECLARE = re.compile(
+    rf"{RECOMPUTE_HANDLE_TYPED}\s*(?:const\s+)?(?:[&*]\s*)?([A-Za-z_]\w*)\b"
+)
+RECOMPUTE_HANDLE_RECOMPUTE_BIND = re.compile(
+    r"([A-Za-z_]\w*)\s*(?:=\s*|{\s*)[^;]*?recomputeAsync",
+    re.DOTALL,
 )
 RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES = 40
 LIVE_REFERENCE_PAYLOAD = re.compile(
@@ -185,10 +193,11 @@ def _receiver_bound_to_recompute_handle(
     wait_line_index: int,
 ) -> bool:
     bound_start = max(0, wait_line_index - RECOMPUTE_HANDLE_BOUND_LOOKBACK_LINES)
-    bound_region = "\n".join(lines[bound_start:wait_line_index])
-    for assign in RECOMPUTE_HANDLE_ASSIGN.finditer(bound_region):
-        if assign.group(1) == receiver and RECOMPUTE_HANDLE_CONTEXT.search(assign.group(0)):
-            return True
+    bound_region = "\n".join(lines[bound_start : wait_line_index + 1])
+    for pattern in (RECOMPUTE_HANDLE_DECLARE, RECOMPUTE_HANDLE_RECOMPUTE_BIND):
+        for match in pattern.finditer(bound_region):
+            if match.group(1) == receiver:
+                return True
     return False
 
 
@@ -396,6 +405,51 @@ def test_recompute_handle_wait_ignores_unbound_nearby_waits() -> None:
         probe.unlink(missing_ok=True)
     by_line = {line: evidence for _path, line, evidence in found}
     assert by_line == {2: "handle->wait();"}
+
+
+def test_recompute_handle_wait_detects_same_line_assignment_and_init_forms() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_forms_probe.cpp"
+    probe.write_text(
+        "auto handle = doc->recomputeAsync(); handle->wait();\n"
+        "auto handle2{doc->recomputeAsync()};\n"
+        "handle2->wait();\n"
+        "auto handle3 = doc\n"
+        "    ->recomputeAsync();\n"
+        "handle3->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[1].startswith("auto handle = doc->recomputeAsync(); handle->wait();")
+    assert by_line[3] == "handle2->wait();"
+    assert by_line[6].startswith("handle3->wait();")
+    assert len(found) == 3
+
+
+def test_recompute_handle_wait_detects_typed_declarations() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_decl_probe.cpp"
+    probe.write_text(
+        "std::shared_ptr<App::RecomputeHandle> handle;\n"
+        "handle->wait();\n"
+        "void foo(std::shared_ptr<App::RecomputeHandle> handle) {\n"
+        "    handle->wait();\n"
+        "}\n"
+        "App::RecomputeHandle handle2 = other;\n"
+        "handle2.wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert by_line[2] == "handle->wait();"
+    assert "handle->wait();" in by_line[4]
+    assert by_line[7] == "handle2.wait();"
+    assert len(found) == 3
 
 
 def test_scanner_ignores_comments_strings_and_raw_literals() -> None:
