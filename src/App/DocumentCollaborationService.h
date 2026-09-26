@@ -191,6 +191,14 @@ public:
         CollaborationCompatibilityCallback callback);
 
 private:
+    [[nodiscard]] static bool collaborationOwnerThread(const Document& document) noexcept;
+
+    template<typename Result, typename Callable>
+    static Result invokeOnDocumentThread(Callable&& callable);
+
+    template<typename Result, typename Callable>
+    static Result invokeCollaborationOnDocumentThread(Document& document, Callable&& callable);
+
     friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
     friend class Application;

@@ -505,8 +505,8 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
 bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 {
     Document& document = _service.document();
-    if (document.executionLane() && !document.isCollaborationOwnerThread()) {
-        return document.executionLane()->dispatchToOwner([this, id] { return poll(id); });
+    if (DocumentExecutionLane* lane = document.executionLane(); lane && !lane->isOwnerThread()) {
+        return lane->dispatchToOwner([this, id] { return poll(id); });
     }
 
     std::lock_guard operationLock(_operationMutex);

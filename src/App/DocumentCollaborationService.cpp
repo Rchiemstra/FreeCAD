@@ -69,57 +69,6 @@ App::PreparedEditExecutionStatus preparationStatus(const App::GeometryJobState s
     return App::PreparedEditExecutionStatus::Failed;
 }
 
-template<typename Result, typename Callable>
-Result invokeCollaborationOnDocumentThread(App::Document& document, Callable&& callable)
-{
-    if (document.isCollaborationOwnerThread()) {
-        return std::forward<Callable>(callable)();
-    }
-    if (auto* lane = document.executionLane()) {
-        return lane->dispatchToOwner(std::forward<Callable>(callable));
-    }
-    if (!App::MainThreadSignalConfig::hasHooks()) {
-        throw Base::RuntimeError(
-            "off-owner collaboration work requires a document-thread dispatcher");
-    }
-    return invokeOnDocumentThread<Result>(std::forward<Callable>(callable));
-}
-
-template<typename Result, typename Callable>
-Result invokeOnDocumentThread(Callable&& callable)
-{
-    if (!App::MainThreadSignalConfig::hasHooks()
-        || App::MainThreadSignalConfig::isMainThread()) {
-        return std::forward<Callable>(callable)();
-    }
-
-    std::optional<Result> result;
-    std::exception_ptr failure;
-    {
-        std::optional<Base::PyGILStateRelease> release;
-        if (Py_IsInitialized() && PyGILState_Check()) {
-            release.emplace();
-        }
-        App::MainThreadSignalConfig::invoke(
-            [&] {
-                try {
-                    result.emplace(std::forward<Callable>(callable)());
-                }
-                catch (...) {
-                    failure = std::current_exception();
-                }
-            },
-            true);
-    }
-    if (failure) {
-        std::rethrow_exception(failure);
-    }
-    if (!result) {
-        throw std::runtime_error("main-thread collaboration dispatch returned no result");
-    }
-    return std::move(*result);
-}
-
 std::vector<App::DocumentRevisionKey> canonicalKeys(
     std::vector<App::DocumentRevisionKey> keys)
 {
@@ -194,6 +143,64 @@ private:
 }  // namespace
 
 using namespace App;
+
+bool DocumentCollaborationService::collaborationOwnerThread(
+    const Document& document) noexcept
+{
+    return document.isCollaborationOwnerThread();
+}
+
+template<typename Result, typename Callable>
+Result DocumentCollaborationService::invokeOnDocumentThread(Callable&& callable)
+{
+    if (!MainThreadSignalConfig::hasHooks() || MainThreadSignalConfig::isMainThread()) {
+        return std::forward<Callable>(callable)();
+    }
+
+    std::optional<Result> result;
+    std::exception_ptr failure;
+    {
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
+        MainThreadSignalConfig::invoke(
+            [&] {
+                try {
+                    result.emplace(std::forward<Callable>(callable)());
+                }
+                catch (...) {
+                    failure = std::current_exception();
+                }
+            },
+            true);
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!result) {
+        throw std::runtime_error("main-thread collaboration dispatch returned no result");
+    }
+    return std::move(*result);
+}
+
+template<typename Result, typename Callable>
+Result DocumentCollaborationService::invokeCollaborationOnDocumentThread(
+    Document& document,
+    Callable&& callable)
+{
+    if (collaborationOwnerThread(document)) {
+        return std::forward<Callable>(callable)();
+    }
+    if (auto* lane = document.executionLane()) {
+        return lane->dispatchToOwner(std::forward<Callable>(callable));
+    }
+    if (!MainThreadSignalConfig::hasHooks()) {
+        throw Base::RuntimeError(
+            "off-owner collaboration work requires a document-thread dispatcher");
+    }
+    return DocumentCollaborationService::invokeOnDocumentThread<Result>(std::forward<Callable>(callable));
+}
 
 DocumentCollaborationService::LifecyclePin::LifecyclePin(
     const DocumentCollaborationService& service)
@@ -549,7 +556,7 @@ CollaborationEditSnapshot DocumentCollaborationService::captureSemanticRevisions
         throw Base::RuntimeError(
             "off-owner semantic revision capture requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<CollaborationEditSnapshot>(
+    return DocumentCollaborationService::invokeOnDocumentThread<CollaborationEditSnapshot>(
         [this, keys = std::move(keys)]() mutable {
             return captureSemanticRevisionsOnDocumentThread(std::move(keys));
         });
@@ -592,7 +599,7 @@ CollaborationEditSnapshot DocumentCollaborationService::snapshotForEdit(
         throw Base::RuntimeError(
             "off-owner collaboration snapshots require a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<CollaborationEditSnapshot>(
+    return DocumentCollaborationService::invokeOnDocumentThread<CollaborationEditSnapshot>(
         [this, sessionId, keys = std::move(keys)]() mutable {
             return snapshotForEditOnDocumentThread(sessionId, std::move(keys));
         });
@@ -641,7 +648,7 @@ PreparedEdit DocumentCollaborationService::prepareEdit(
         throw Base::RuntimeError(
             "off-owner collaboration preparation requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<PreparedEdit>(
+    return DocumentCollaborationService::invokeOnDocumentThread<PreparedEdit>(
         [this,
          sessionId,
          operationId = std::move(operationId),
@@ -670,7 +677,7 @@ PreparedEdit DocumentCollaborationService::prepareEditWithExpectedRevisions(
         throw Base::RuntimeError(
             "off-owner collaboration preparation requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<PreparedEdit>(
+    return DocumentCollaborationService::invokeOnDocumentThread<PreparedEdit>(
         [this,
          sessionId,
          operationId = std::move(operationId),
@@ -803,7 +810,7 @@ PreparedEditExecutionId DocumentCollaborationService::prepareEditAsync(
         throw Base::RuntimeError(
             "cannot prepare detached collaboration work while document is closing");
     }
-    return invokeCollaborationOnDocumentThread<PreparedEditExecutionId>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<PreparedEditExecutionId>(
         _document,
         [this,
          sessionId,
@@ -1062,7 +1069,7 @@ DocumentCollaborationService::takePreparedEdit(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    return invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
         _document,
         [this, sessionId, executionId] {
             return takePreparedEditOnDocumentThread(sessionId, executionId);
@@ -1078,7 +1085,7 @@ DocumentCollaborationService::takeRecomputePreparedEdit(
     if (!lifecyclePin) {
         return std::nullopt;
     }
-    return invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<std::optional<CollaborationPreparedEditResult>>(
         _document,
         [this, sessionId, executionId] {
             return takePreparedEditOnDocumentThread(sessionId, executionId, true);
@@ -1308,7 +1315,7 @@ DocumentCommitResult DocumentCollaborationService::commitEdit(const std::string&
     if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
         return _coordinator.commit(edit);
     }
-    return invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
         [this, sessionId, &edit] { return commitEditOnDocumentThread(sessionId, edit); });
 }
 
@@ -1376,7 +1383,7 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEdit(
             edit,
             "derived recompute commit requires the document owner thread");
     }
-    return invokeOnDocumentThread<DocumentCommitResult>([this, sessionId, &edit] {
+    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>([this, sessionId, &edit] {
         return commitRecomputeEditOnDocumentThread(sessionId, edit);
     });
 }
@@ -1480,7 +1487,7 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWi
             rejectedOperationId,
             "off-owner compatibility mutation requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
         [this,
          mutation = std::move(mutation),
          callback = std::move(callback),
@@ -1650,7 +1657,7 @@ DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallbac
             operationId,
             "off-owner serialized compatibility requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
         [this, callback = std::move(callback)]() mutable {
             return serializeCompatibilityCallbackOnDocumentThread(std::move(callback));
         });
@@ -1674,7 +1681,7 @@ DocumentCommitResult DocumentCollaborationService::serializeAtomicCompatibilityC
             operationId,
             "off-owner atomic compatibility requires a document-thread dispatcher");
     }
-    return invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
         [this,
          allowedWrites = std::move(allowedWrites),
          callback = std::move(callback)]() mutable {
