@@ -134,7 +134,7 @@ void Picker::createPrimitive(QWidget* widget, const QString& descr, Gui::Documen
         doc->openCommand(descr.toUtf8());
         Gui::Command::runCommand(Gui::Command::Doc, cmd.toUtf8());
         doc->commitCommand();
-        PartGui::submitActiveDocumentRecomputeOrReport(this);
+        PartGui::submitActiveDocumentRecomputeOrReport(widget);
         Gui::Command::runCommand(
             Gui::Command::Gui,
             "Gui.ActiveDocument.ActiveView.sendMessage(\"ViewFit\")"

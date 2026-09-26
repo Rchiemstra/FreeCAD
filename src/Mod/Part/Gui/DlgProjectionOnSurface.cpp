@@ -1473,7 +1473,7 @@ void DlgProjectOnSurface::setDirection()
         auto yVal = ui->doubleSpinBoxDirY->value();
         auto zVal = ui->doubleSpinBoxDirZ->value();
         feature->Direction.setValue(Base::Vector3d(xVal, yVal, zVal));
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1545,7 +1545,7 @@ void DlgProjectOnSurface::setSupportFace(const Gui::SelectionChanges& msg)
     Gui::SelectionObject selObj(msg);
     if (!feature.expired()) {
         feature->SupportFace.setValue(selObj.getObject(), selObj.getSubNames());
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1578,7 +1578,7 @@ void DlgProjectOnSurface::onShowAllClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::AllMode);
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1586,7 +1586,7 @@ void DlgProjectOnSurface::onFacesClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::FacesMode);
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1594,7 +1594,7 @@ void DlgProjectOnSurface::onEdgesClicked()
 {
     if (!feature.expired()) {
         feature->Mode.setValue(Part::ProjectOnSurface::EdgesMode);
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1602,7 +1602,7 @@ void DlgProjectOnSurface::onExtrudeHeightValueChanged(double value)
 {
     if (!feature.expired()) {
         feature->Height.setValue(value);
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
@@ -1610,7 +1610,7 @@ void DlgProjectOnSurface::onSolidDepthValueChanged(double value)
 {
     if (!feature.expired()) {
         feature->Offset.setValue(value);
-        PartGui::submitDocumentRecomputeOrReport(*feature);
+        PartGui::submitDocumentRecomputeOrReport(*feature->getDocument(), this);
     }
 }
 
