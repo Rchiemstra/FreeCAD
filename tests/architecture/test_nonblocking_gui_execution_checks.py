@@ -215,6 +215,17 @@ def _wait_receiver_name(masked: str, arrow_start: int) -> str | None:
     return match.group(1) if match else None
 
 
+def _brace_inner_has_declaration(text: str, open_index: int) -> bool:
+    close_index = _matching_close_brace(text, open_index)
+    inner = text[open_index + 1 : close_index]
+    offset = open_index + 1
+    for line in inner.splitlines():
+        if _shadow_names_in_line(line, text, offset):
+            return True
+        offset += len(line) + 1
+    return False
+
+
 def _is_scope_brace(text: str, index: int) -> bool:
     if text[index] != "{":
         return False
@@ -226,7 +237,9 @@ def _is_scope_brace(text: str, index: int) -> bool:
     brace_index = index - 1
     while brace_index >= 0 and text[brace_index].isspace():
         brace_index -= 1
-    if brace_index >= 0 and text[brace_index] in "(_":
+    if brace_index >= 0 and text[brace_index] == "(":
+        return _brace_inner_has_declaration(text, index)
+    if brace_index >= 0 and text[brace_index] in "_":
         return False
     if brace_index >= 0 and (text[brace_index].isalnum() or text[brace_index] == "_"):
         return False
@@ -328,6 +341,19 @@ def _matching_close_paren(text: str, open_index: int) -> int:
     return len(text) - 1
 
 
+def _matching_close_brace(text: str, open_index: int) -> int:
+    balance = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "{":
+            balance += 1
+        elif char == "}":
+            balance -= 1
+            if balance == 0:
+                return index
+    return len(text) - 1
+
+
 def _split_top_level_commas(inner: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -348,6 +374,35 @@ def _split_top_level_commas(inner: str) -> list[str]:
     return parts
 
 
+def _looks_like_type_declarator_part(stripped: str) -> bool:
+    if re.search(r"\(\s*\*", stripped):
+        return True
+    if re.search(r"[*&]{1,2}(?:[A-Za-z_]\w*)?\s*$", stripped):
+        return True
+    if re.match(
+        r"^(?:const\s+|volatile\s+)?(?:unsigned\s+|signed\s+|short\s+|long\s+)?"
+        r"(?:[\w:]+\s*::\s*)*[\w:]+\s*(?:<[^>]*>)?\s+"
+        r"(?:const\s+)?(?:[*&]{1,2})?[A-Za-z_]\w*\s*$",
+        stripped,
+    ):
+        return True
+    if re.match(r"^[\w:]+\s*<[^>]*>\s*$", stripped):
+        return True
+    if re.match(
+        r"^(?:unsigned|signed|short|long|int|void|char|bool|float|double)\b(?:\s+\w+)?\s*$",
+        stripped,
+    ):
+        return True
+    if re.match(r"^std::string(?:\s+\w+)?\s*$", stripped):
+        return True
+    if re.match(
+        r"^(?:const\s+|volatile\s+)?(?:[\w:]+\s*::\s*)*[A-Z][\w:]*\s*$",
+        stripped,
+    ):
+        return True
+    return False
+
+
 def _looks_like_expression_part(part: str) -> bool:
     stripped = part.strip()
     if not stripped:
@@ -356,20 +411,7 @@ def _looks_like_expression_part(part: str) -> bool:
         return True
     if re.search(r"->|\.|\brecomputeAsync\s*\(", stripped):
         return True
-    if re.search(r"\(\s*\*", stripped):
-        return False
-    if re.match(
-        r"^(?:const\s+|volatile\s+)?(?:[\w:]+\s*::\s*)*[\w:]+\s*(?:<[^>]*>)?\s+"
-        r"(?:const\s+)?(?:[*&]\s*)*[A-Za-z_]\w*\s*$",
-        stripped,
-    ):
-        return False
-    if re.match(r"^[\w:]+\s*<[^>]*>\s*$", stripped):
-        return False
-    if re.match(
-        r"^(?:unsigned|signed|short|long|int|void|char|bool|float|double)\b",
-        stripped,
-    ):
+    if _looks_like_type_declarator_part(stripped):
         return False
     angle_depth = 0
     index = 0
@@ -386,7 +428,7 @@ def _looks_like_expression_part(part: str) -> bool:
                 continue
             return True
         index += 1
-    if re.search(r"::", stripped) and "<" not in stripped and "(" not in stripped:
+    if re.search(r"::", stripped) and re.search(r"::[a-z]\w*\s*$", stripped):
         return True
     return False
 
@@ -1202,6 +1244,49 @@ def test_recompute_handle_wait_detects_move_and_factory_direct_inits() -> None:
     assert by_line[4] == "handle2->wait();"
     assert by_line[6] == "handle3.wait();"
     assert len(found) == 3
+
+
+def test_recompute_handle_wait_rejects_qualified_parameter_types() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_param_type_probe.cpp"
+    probe.write_text(
+        "App::RecomputeHandle createHandle(const App::Document& doc);\n"
+        "createHandle->wait();\n"
+        "App::RecomputeHandle createHandle2(App::Document* doc);\n"
+        "createHandle2->wait();\n"
+        "App::RecomputeHandle createHandle3(const App::Document&);\n"
+        "createHandle3->wait();\n"
+        "App::RecomputeHandle createHandle4(std::string);\n"
+        "createHandle4->wait();\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    assert found == []
+
+
+def test_recompute_handle_wait_wrap_block_shadow_keeps_outer_handle() -> None:
+    probe = ARCH_DIR / "_tmp_recompute_wait_wrap_shadow_probe.cpp"
+    probe.write_text(
+        "void f() {\n"
+        "  auto handle = doc->recomputeAsync();\n"
+        "  auto wrapped = wrap({\n"
+        "    QFuture<void> handle;\n"
+        "    handle.wait();\n"
+        "  });\n"
+        "  handle->wait();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    try:
+        found = _scan_recompute_handle_waits(paths=[probe])
+    finally:
+        probe.unlink(missing_ok=True)
+    by_line = {line: evidence for _path, line, evidence in found}
+    assert 5 not in by_line
+    assert by_line[7].startswith("handle->wait();")
+    assert len(found) == 1
 
 
 def test_recompute_handle_wait_binds_nested_brace_async_initializers() -> None:
