@@ -21,6 +21,8 @@
 #include <string>
 #include <utility>
 
+FC_LOG_LEVEL_INIT("Gui", true, true)
+
 namespace Gui
 {
 namespace
