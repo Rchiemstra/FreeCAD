@@ -557,7 +557,7 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     std::exception_ptr failure;
     {
         std::optional<Base::PyGILStateRelease> release;
-        if (Py_IsInitialized() && PyGILState_Check()) {
+        if (Py_IsInitialized() && PyThreadState_Get() != nullptr) {
             release.emplace();
         }
         MainThreadSignalConfig::invoke(

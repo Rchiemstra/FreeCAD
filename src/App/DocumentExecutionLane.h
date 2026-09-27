@@ -85,10 +85,12 @@ public:
      * Run \p fn on the lane owner thread and wait for the result.
      *
      * Must not be called from the GUI thread when \p fn would block on model
-     * work. The Python GIL must be released by callers that hold it.
+     * work. When \p releaseGilWhileWaiting is true, releases the GIL for the
+     * wait if this thread holds it (see PyThreadState_Get()).
      */
     template<typename Fn>
-    auto dispatchToOwner(Fn&& fn) -> std::invoke_result_t<Fn>
+    auto dispatchToOwner(Fn&& fn, const bool releaseGilWhileWaiting = true)
+        -> std::invoke_result_t<Fn>
     {
         using Result = std::invoke_result_t<Fn>;
         if (isOwnerThread()) {
@@ -106,7 +108,7 @@ public:
             "Document.*Async() or executionHandle().trySubmit()");
 
         std::optional<Base::PyGILStateRelease> release;
-        if (Py_IsInitialized() && PyGILState_Check()) {
+        if (releaseGilWhileWaiting && Py_IsInitialized() && PyThreadState_Get() != nullptr) {
             release.emplace();
         }
 
