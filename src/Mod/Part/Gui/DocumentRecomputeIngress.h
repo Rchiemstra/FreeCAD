@@ -4,16 +4,16 @@
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentCommand.h>
-#include <App/DocumentHandle.h>
+#include <App/DocumentObject.h>
 #include <Base/Console.h>
+
+#include <Gui/DocumentExecutionIngress.h>
 
 #include <QMessageBox>
 #include <QObject>
 #include <QString>
 #include <QWidget>
 
-#include <algorithm>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -57,121 +57,82 @@ inline bool reportDocumentRecomputeSubmitOutcome(
     return false;
 }
 
-/** Match Gui::DocumentExecutionIngress recompute coalescing (force/options/features). */
-inline std::string buildDocumentRecomputeCoalescingKey(
-    const std::vector<App::DocumentObject*>& objects,
-    const bool force,
-    const int options)
-{
-    std::string key;
-    key += force ? "force;" : "normal;";
-    key += "options=" + std::to_string(options) + ";";
-    if (!objects.empty()) {
-        key += "features=";
-        std::vector<std::string> featureIds;
-        featureIds.reserve(objects.size());
-        for (auto* object : objects) {
-            if (object && object->isAttachedToDocument()) {
-                featureIds.emplace_back(object->getNameInDocument());
-            }
-        }
-        std::sort(featureIds.begin(), featureIds.end());
-        for (const auto& featureId : featureIds) {
-            key += featureId + ";";
-        }
-    }
-    return key;
-}
-
+/**
+ * Admit recompute through Gui::DocumentExecutionIngress so coalescing keys
+ * include force, options, and sorted feature ids (contract: identical join
+ * only when key AND options match).
+ */
 inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
     App::Document& document,
-    const std::vector<App::DocumentObject*>& objects,
-    const bool force,
-    const int options)
+    const std::vector<App::DocumentObject*>& objects = {},
+    const bool force = false,
+    const int options = 0)
 {
-    App::DocumentCommand command;
-    command.kind = App::DocumentCommandKind::Recompute;
-    auto handle = document.executionHandle();
-    command.document = handle.identity();
-    command.recompute = App::DocumentCommandRecomputePayload {};
-    command.recompute->coalescingKey =
-        buildDocumentRecomputeCoalescingKey(objects, force, options);
-    command.recompute->options = options;
-    command.recompute->featureIds.reserve(objects.size());
+    Gui::DocumentRecomputeSubmitRequest request;
+    request.force = force;
+    request.options = options;
+    request.featureIds.reserve(objects.size());
     for (auto* object : objects) {
-        if (object && object->isAttachedToDocument()) {
-            command.recompute->featureIds.emplace_back(object->getNameInDocument());
+        if (object && object->isAttachedToDocument() && object->getDocument() == &document) {
+            request.featureIds.emplace_back(object->getNameInDocument());
         }
     }
-    return handle.trySubmit(std::move(command));
-}
-
-inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
-    App::Document& document,
-    std::string coalescingKey = {})
-{
-    App::DocumentCommand command;
-    command.kind = App::DocumentCommandKind::Recompute;
-    auto handle = document.executionHandle();
-    command.document = handle.identity();
-    command.recompute = App::DocumentCommandRecomputePayload {};
-    if (coalescingKey.empty()) {
-        coalescingKey = buildDocumentRecomputeCoalescingKey({}, false, 0);
-    }
-    command.recompute->coalescingKey = std::move(coalescingKey);
-    return handle.trySubmit(std::move(command));
+    return Gui::submitDocumentRecompute(document, request);
 }
 
 inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
     App::DocumentObject& object,
-    std::string coalescingKey = {})
+    const bool force = false,
+    const int options = 0)
 {
-    static_cast<void>(coalescingKey);
-    return trySubmitDocumentRecompute(*object.getDocument(), {&object}, false, 0);
+    return trySubmitDocumentRecompute(*object.getDocument(), {&object}, force, options);
 }
 
 inline App::DocumentCommandSubmitOutcome trySubmitActiveDocumentRecompute(
-    std::string coalescingKey = {})
+    const std::vector<App::DocumentObject*>& objects = {},
+    const bool force = false,
+    const int options = 0)
 {
-    static_cast<void>(coalescingKey);
     App::Document* document = App::GetApplication().getActiveDocument();
     if (!document) {
         App::DocumentCommandSubmitOutcome outcome;
         outcome.result = App::DocumentCommandSubmitResult::Closed;
         return outcome;
     }
-    return trySubmitDocumentRecompute(*document);
+    return trySubmitDocumentRecompute(*document, objects, force, options);
 }
 
 inline bool submitDocumentRecomputeOrReport(
     App::Document& document,
     QWidget* parent = nullptr,
-    std::string coalescingKey = {})
+    const std::vector<App::DocumentObject*>& objects = {},
+    const bool force = false,
+    const int options = 0)
 {
-    static_cast<void>(coalescingKey);
     return reportDocumentRecomputeSubmitOutcome(
-        trySubmitDocumentRecompute(document),
+        trySubmitDocumentRecompute(document, objects, force, options),
         parent);
 }
 
 inline bool submitDocumentRecomputeOrReport(
     App::DocumentObject& object,
     QWidget* parent = nullptr,
-    std::string coalescingKey = {})
+    const bool force = false,
+    const int options = 0)
 {
-    static_cast<void>(coalescingKey);
     return reportDocumentRecomputeSubmitOutcome(
-        trySubmitDocumentRecompute(object),
+        trySubmitDocumentRecompute(object, force, options),
         parent);
 }
 
 inline bool submitActiveDocumentRecomputeOrReport(
     QWidget* parent = nullptr,
-    std::string coalescingKey = {})
+    const std::vector<App::DocumentObject*>& objects = {},
+    const bool force = false,
+    const int options = 0)
 {
-    static_cast<void>(coalescingKey);
     return reportDocumentRecomputeSubmitOutcome(
-        trySubmitActiveDocumentRecompute(),
+        trySubmitActiveDocumentRecompute(objects, force, options),
         parent);
 }
 

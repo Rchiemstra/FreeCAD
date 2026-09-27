@@ -7041,11 +7041,12 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const std::vector<DocumentObject*>& objs,
     const bool force,
     const int options,
-    const RecomputeVenue venue)
+    const RecomputeVenue venue,
+    const DocumentRecomputeId admissionId)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
         return d->executionLane->dispatchToOwner([&] {
-            return recomputeAsync(objs, force, options, venue);
+            return recomputeAsync(objs, force, options, venue, admissionId);
         });
     }
 
@@ -7151,7 +7152,7 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
             && !collaborationDerivedRecomputeGranted());
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
-    const auto id = recomputeCoordinator().submit(std::move(request));
+    const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
     return std::make_unique<RecomputeHandle>(*this, id);
 }
 

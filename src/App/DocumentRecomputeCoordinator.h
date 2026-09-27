@@ -131,7 +131,9 @@ public:
     DocumentRecomputeCoordinator(const DocumentRecomputeCoordinator&) = delete;
     DocumentRecomputeCoordinator& operator=(const DocumentRecomputeCoordinator&) = delete;
 
-    [[nodiscard]] DocumentRecomputeId submit(DocumentRecomputeRequest request);
+    [[nodiscard]] DocumentRecomputeId submit(
+        DocumentRecomputeRequest request,
+        DocumentRecomputeId admissionId = 0);
     [[nodiscard]] bool poll(DocumentRecomputeId id);
     [[nodiscard]] bool cancel(DocumentRecomputeId id,
                               std::string reason = "recompute cancelled by caller");
@@ -143,6 +145,9 @@ public:
 private:
     friend class RecomputeHandle;
     friend class DocumentExecutionLane;
+
+    /** Reserve one coordinator id before owner-thread submit binds a job. */
+    [[nodiscard]] DocumentRecomputeId reserveAdmissionId();
 
     struct Job;
 

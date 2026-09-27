@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #pragma once
 
-#include "DocumentCommandHandle.h"
 #include "DocumentRecomputeCoordinator.h"
 
 #include <FCGlobal.h>
@@ -29,9 +28,6 @@ class AppExport RecomputeHandle
 {
 public:
     RecomputeHandle(Document& document, DocumentRecomputeId id);
-    RecomputeHandle(Document& document,
-                    DocumentCommandId laneCommandId,
-                    DocumentRevisionIdentityBinding documentIdentity);
     ~RecomputeHandle();
 
     RecomputeHandle(const RecomputeHandle&) = delete;
@@ -59,16 +55,12 @@ public:
 
 private:
     [[nodiscard]] Document* document() const noexcept;
-    [[nodiscard]] DocumentRecomputeId resolvedRecomputeId() const noexcept;
-    [[nodiscard]] DocumentRecomputeSnapshot snapshotFromLaneCommand() const;
     DocumentRecomputeSnapshot closedDocumentSnapshot() const;
     void finalizeIfTerminal(Document& document,
                             const DocumentRecomputeSnapshot& snapshot);
 
     std::unique_ptr<DocumentWeakPtrT> _document;
     DocumentRecomputeId _id {0};
-    DocumentCommandId _laneCommandId {0};
-    DocumentRevisionIdentityBinding _laneIdentity {};
 };
 
 AppExport const char* documentRecomputeStateName(DocumentRecomputeState state) noexcept;

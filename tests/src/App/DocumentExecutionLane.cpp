@@ -495,17 +495,11 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotBlockNonOwner)
     ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
-    App::DocumentRecomputeId recomputeId {0};
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (recomputeId == 0 && std::chrono::steady_clock::now() < deadline) {
-        const auto snapshot = commandHandle.status();
-        if (snapshot.recompute) {
-            recomputeId = snapshot.recompute->id;
-            break;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    ASSERT_NE(recomputeId, 0U);
+    const auto snapshot = commandHandle.status();
+    ASSERT_TRUE(snapshot.recompute);
+    ASSERT_NE(snapshot.recompute->id, 0U);
+    const App::DocumentRecomputeId recomputeId =
+        static_cast<App::DocumentRecomputeId>(snapshot.recompute->id);
 
     std::atomic<bool> statusReturned {false};
     std::jthread observer([&] {
@@ -532,17 +526,11 @@ TEST_F(DocumentExecutionLaneTest, RecomputeHandleWaitDoesNotDeadlockNonOwner)
     ASSERT_TRUE(_blocking->waitUntilStarted(5s));
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
-    App::DocumentRecomputeId recomputeId {0};
-    const auto idDeadline = std::chrono::steady_clock::now() + 2s;
-    while (recomputeId == 0 && std::chrono::steady_clock::now() < idDeadline) {
-        const auto snapshot = commandHandle.status();
-        if (snapshot.recompute) {
-            recomputeId = snapshot.recompute->id;
-            break;
-        }
-        std::this_thread::sleep_for(5ms);
-    }
-    ASSERT_NE(recomputeId, 0U);
+    const auto idSnapshot = commandHandle.status();
+    ASSERT_TRUE(idSnapshot.recompute);
+    ASSERT_NE(idSnapshot.recompute->id, 0U);
+    const App::DocumentRecomputeId recomputeId =
+        static_cast<App::DocumentRecomputeId>(idSnapshot.recompute->id);
 
     std::atomic<bool> waitReturned {false};
     std::jthread waiter([&] {

@@ -328,9 +328,19 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
 
     _active = std::move(active);
     if (_active->command.kind == DocumentCommandKind::Recompute) {
+        DocumentRecomputeId admissionId {0};
+        try {
+            admissionId = _document.recomputeCoordinator().reserveAdmissionId();
+        }
+        catch (const std::exception& exception) {
+            _active.reset();
+            outcome.result = DocumentCommandSubmitResult::Unsupported;
+            outcome.diagnostic = exception.what();
+            return outcome;
+        }
         _active->snapshot.recompute.emplace();
         _active->snapshot.recompute->id =
-            static_cast<DocumentCommandRecomputeId>(_active->id);
+            static_cast<DocumentCommandRecomputeId>(admissionId);
         _active->snapshot.recompute->state = DocumentCommandRecomputeState::Running;
         _active->snapshot.recompute->diagnostic =
             "admitted; awaiting owner-thread coordinator submit";
@@ -591,7 +601,13 @@ void DocumentExecutionLane::executeActiveRecompute()
                     const int options = _active->command.recompute
                         ? _active->command.recompute->options
                         : 0;
-                    auto handle = _document.recomputeAsync(objects, force, options);
+                    DocumentRecomputeId admissionId {0};
+                    if (_active->snapshot.recompute && _active->snapshot.recompute->id != 0) {
+                        admissionId = static_cast<DocumentRecomputeId>(
+                            _active->snapshot.recompute->id);
+                    }
+                    auto handle = _document.recomputeAsync(
+                        objects, force, options, RecomputeVenue::OwnerThread, admissionId);
                     _active->recomputeId = handle->id();
                 }
                 touchWatchdogProgress(*_active);

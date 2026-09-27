@@ -270,7 +270,18 @@ DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
     }
 }
 
-DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeRequest request)
+DocumentRecomputeId DocumentRecomputeCoordinator::reserveAdmissionId()
+{
+    std::lock_guard stateLock(_stateMutex);
+    if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+        throw std::overflow_error("document recompute id space exhausted");
+    }
+    return _nextId++;
+}
+
+DocumentRecomputeId DocumentRecomputeCoordinator::submit(
+    DocumentRecomputeRequest request,
+    const DocumentRecomputeId admissionId)
 {
     DocumentRecomputeId admittedId {0};
     bool scheduleAfterRelease = false;
@@ -305,10 +316,22 @@ DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeReques
             }
         }
 
-        if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
-            throw std::overflow_error("document recompute id space exhausted");
+        if (admissionId != 0) {
+            std::lock_guard stateLock(_stateMutex);
+            if (_jobs.contains(admissionId)) {
+                throw std::invalid_argument("admission recompute id is already in use");
+            }
+            admittedId = admissionId;
+            if (admittedId >= _nextId) {
+                _nextId = admittedId + 1;
+            }
         }
-        admittedId = _nextId++;
+        else {
+            if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+                throw std::overflow_error("document recompute id space exhausted");
+            }
+            admittedId = _nextId++;
+        }
 
         std::string sessionId;
         if (!request.features.empty()) {

@@ -67,72 +67,11 @@ RecomputeHandle::RecomputeHandle(Document& document, const DocumentRecomputeId i
     , _id(id)
 {}
 
-RecomputeHandle::RecomputeHandle(Document& document,
-                                 const DocumentCommandId laneCommandId,
-                                 DocumentRevisionIdentityBinding documentIdentity)
-    : _document(std::make_unique<DocumentWeakPtrT>(&document))
-    , _laneCommandId(laneCommandId)
-    , _laneIdentity(documentIdentity)
-{}
-
 RecomputeHandle::~RecomputeHandle() = default;
-
-DocumentRecomputeId RecomputeHandle::resolvedRecomputeId() const noexcept
-{
-    if (_laneCommandId != 0) {
-        const DocumentCommandHandle commandHandle(_laneCommandId, _laneIdentity);
-        const auto snapshot = commandHandle.status();
-        if (snapshot.recompute && snapshot.recompute->id != 0) {
-            return static_cast<DocumentRecomputeId>(snapshot.recompute->id);
-        }
-    }
-    return _id;
-}
 
 DocumentRecomputeId RecomputeHandle::id() const noexcept
 {
-    return resolvedRecomputeId();
-}
-
-DocumentRecomputeSnapshot RecomputeHandle::snapshotFromLaneCommand() const
-{
-    DocumentRecomputeSnapshot unavailable;
-    unavailable.id = resolvedRecomputeId();
-    unavailable.state = DocumentRecomputeState::Cancelled;
-    unavailable.diagnostic = "recompute result is unavailable";
-
-    const DocumentCommandHandle commandHandle(_laneCommandId, _laneIdentity);
-    const auto commandSnapshot = commandHandle.status();
-    if (!commandSnapshot.recompute) {
-        if (commandSnapshot.terminal()) {
-            unavailable.diagnostic = commandSnapshot.diagnostic.empty()
-                ? "document recompute command finished without observation"
-                : commandSnapshot.diagnostic;
-        }
-        return unavailable;
-    }
-
-    const auto& observation = *commandSnapshot.recompute;
-    DocumentRecomputeSnapshot snapshot;
-    snapshot.id = observation.id != 0 ? observation.id : unavailable.id;
-    snapshot.state =
-        static_cast<DocumentRecomputeState>(static_cast<int>(observation.state));
-    snapshot.completedFeatures = observation.completedFeatures;
-    snapshot.failedFeatures = observation.failedFeatures;
-    snapshot.totalFeatures = observation.totalFeatures;
-    snapshot.progress = observation.progress;
-    snapshot.diagnostic = observation.diagnostic;
-    snapshot.features.reserve(observation.features.size());
-    for (const auto& feature : observation.features) {
-        DocumentRecomputeFeatureSnapshot copied;
-        copied.featureId = feature.featureId;
-        copied.state =
-            static_cast<DocumentRecomputeFeatureState>(static_cast<int>(feature.state));
-        copied.diagnostic = feature.diagnostic;
-        copied.executed = feature.executed;
-        snapshot.features.push_back(std::move(copied));
-    }
-    return snapshot;
+    return _id;
 }
 
 Document* RecomputeHandle::document() const noexcept
@@ -166,10 +105,6 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
         return closedDocumentSnapshot();
     }
 
-    if (_laneCommandId != 0) {
-        return snapshotFromLaneCommand();
-    }
-
     if (const auto* lane = owner->executionLane()) {
         if (const auto published = lane->recomputeStatus(_id)) {
             return *published;
@@ -194,10 +129,6 @@ bool RecomputeHandle::poll()
         return true;
     }
 
-    if (_laneCommandId != 0) {
-        return status().terminal();
-    }
-
     if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
         // Observation-only: the lane owner thread pumps during executeActiveRecompute().
         return status().terminal();
@@ -217,11 +148,6 @@ bool RecomputeHandle::cancel(std::string reason)
     auto* owner = document();
     if (!owner) {
         return false;
-    }
-
-    if (_laneCommandId != 0) {
-        DocumentCommandHandle commandHandle(_laneCommandId, _laneIdentity);
-        return commandHandle.cancel(std::move(reason));
     }
 
     const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));

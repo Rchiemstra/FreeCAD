@@ -1202,7 +1202,8 @@ public:
         const std::vector<DocumentObject*>& objs = {},
         bool force = false,
         int options = 0,
-        RecomputeVenue venue = RecomputeVenue::OwnerThread);
+        RecomputeVenue venue = RecomputeVenue::OwnerThread,
+        DocumentRecomputeId admissionId = 0);
 
     /** Thread-safe GUI-facing document reference for non-blocking command admission. */
     [[nodiscard]] DocumentHandle executionHandle() const;
