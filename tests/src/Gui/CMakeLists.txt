@@ -15,6 +15,7 @@ add_executable(Gui_tests_run
         CollaborationViewIsolation.cpp
         PersonalViewContext.cpp
         SharedPresentationCoordinator.cpp
+        DocumentPresentationCache.cpp
         DocumentRecovery.cpp
         ColorScaleOverlayTest.cpp
         FileDialog.cpp

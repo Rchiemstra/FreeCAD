@@ -1343,6 +1343,8 @@ SET(FreeCADGui_CPP_SRCS
     SharedPresentationCoordinator.cpp
     Document.cpp
     DocumentPresentationState.cpp
+    DocumentPresentationCache.cpp
+    PresentationApplyScheduler.cpp
     DocumentChangesWidget.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1394,6 +1396,8 @@ SET(FreeCADGui_SRCS
     SharedPresentationCoordinator.h
     Document.h
     DocumentPresentationState.h
+    DocumentPresentationCache.h
+    PresentationApplyScheduler.h
     PresentationDelta.h
     PresentationRevision.h
     DocumentChangesWidget.h
