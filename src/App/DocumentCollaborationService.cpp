@@ -163,7 +163,7 @@ Result DocumentCollaborationService::invokeOnDocumentThread(Callable&& callable)
     std::exception_ptr failure;
     {
         std::optional<Base::PyGILStateRelease> release;
-        if (Py_IsInitialized() && PyThreadState_Get() != nullptr) {
+        if (Py_IsInitialized() && PyGILState_Check()) {
             release.emplace();
         }
         MainThreadSignalConfig::invoke(
@@ -195,11 +195,7 @@ Result DocumentCollaborationService::invokeCollaborationOnDocumentThread(
         return std::forward<Callable>(callable)();
     }
     if (auto* lane = document.executionLane()) {
-        std::optional<Base::PyGILStateRelease> release;
-        if (Py_IsInitialized() && PyThreadState_Get() != nullptr) {
-            release.emplace();
-        }
-        return lane->dispatchToOwner(std::forward<Callable>(callable), false);
+        return lane->dispatchToOwner(std::forward<Callable>(callable));
     }
     if (!MainThreadSignalConfig::hasHooks()) {
         throw Base::RuntimeError(

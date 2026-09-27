@@ -86,7 +86,7 @@ public:
      *
      * Must not be called from the GUI thread when \p fn would block on model
      * work. When \p releaseGilWhileWaiting is true, releases the GIL for the
-     * wait if this thread holds it (see PyThreadState_Get()).
+     * wait if this thread holds it (see PyGILState_Check()).
      */
     template<typename Fn>
     auto dispatchToOwner(Fn&& fn, const bool releaseGilWhileWaiting = true)
@@ -108,7 +108,7 @@ public:
             "Document.*Async() or executionHandle().trySubmit()");
 
         std::optional<Base::PyGILStateRelease> release;
-        if (releaseGilWhileWaiting && Py_IsInitialized() && PyThreadState_Get() != nullptr) {
+        if (releaseGilWhileWaiting && Py_IsInitialized() && PyGILState_Check()) {
             release.emplace();
         }
 
