@@ -4265,10 +4265,10 @@ void Document::redo(int iSteps)
 
 void Document::finishExecutionLaneSave(const App::DocumentCommandState state)
 {
-    if (state != App::DocumentCommandState::Completed) {
+    if (state != App::DocumentCommandState::Completed || !d->_pcDocument) {
         return;
     }
-    setModified(false);
+    slotFileChangeStateChanged(*d->_pcDocument);
 }
 
 void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,

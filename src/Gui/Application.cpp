@@ -1205,7 +1205,9 @@ void Application::slotDeleteDocument(const App::Document& Doc)
 
                 // 5. Close if truly orphan
                 if (!isStillReferenced) {
-                    App::GetApplication().closeDocument(cand.name.c_str());
+                    if (auto* orphan = App::GetApplication().getDocument(cand.name.c_str())) {
+                        submitDocumentClose(*orphan);
+                    }
                 }
             }
         });

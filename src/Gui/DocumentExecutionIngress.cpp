@@ -11,6 +11,7 @@
 #include <App/AutoTransaction.h>
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
+#include <App/DocumentWouldBlock.h>
 #include <Base/Console.h>
 
 #include <QApplication>
@@ -299,7 +300,7 @@ bool submitDocumentSave(App::Document& document)
             document.getName(),
             document.executionHandle().identity(),
             outcome.commandId);
-        reportDocumentSaveDeferred(document);
+        reportDocumentSaveAdmitted(document);
         // Admission is not completion — callers must not claim the write finished.
         return false;
     }
@@ -338,6 +339,34 @@ void reportDocumentSaveDeferred(App::Document& document)
         window->showMessage(message, 5000);
     }
     Base::Console().message("%s\n", message.toUtf8().constData());
+}
+
+void reportDocumentSaveAdmitted(App::Document& document)
+{
+    const auto message = QCoreApplication::translate(
+        "Gui::DocumentExecutionIngress",
+        "Save of document '%1' was admitted and is in progress.")
+        .arg(QString::fromUtf8(document.getName()));
+    if (auto* window = getMainWindow()) {
+        window->showMessage(message, 5000);
+    }
+    Base::Console().message("%s\n", message.toUtf8().constData());
+}
+
+bool submitDocumentClose(App::Document& document)
+{
+    if (!App::DocumentWouldBlock::isGuiThread() || !document.executionLane()) {
+        return App::GetApplication().closeDocument(&document);
+    }
+    if (!document.isClosable()) {
+        return false;
+    }
+    const auto outcome =
+        submitDocumentKindCommand(document, App::DocumentCommandKind::Close);
+    if (!outcome.accepted()) {
+        reportDocumentCommandSubmitBlocked(document, outcome);
+    }
+    return outcome.accepted();
 }
 
 bool documentExecutionLaneBusy(const App::Document& document)

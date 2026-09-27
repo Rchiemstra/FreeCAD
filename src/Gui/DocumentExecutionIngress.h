@@ -89,6 +89,12 @@ GuiExport void reportDocumentCommandSubmitBlocked(
 /** Report that save was deferred because model work is still running. */
 GuiExport void reportDocumentSaveDeferred(App::Document& document);
 
+/** Report that save was admitted and is executing on the document lane. */
+GuiExport void reportDocumentSaveAdmitted(App::Document& document);
+
+/** Admit document close on the GUI thread without blocking on the lane. */
+GuiExport bool submitDocumentClose(App::Document& document);
+
 /** True when the document execution lane is running model work. */
 GuiExport bool documentExecutionLaneBusy(const App::Document& document);
 
