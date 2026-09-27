@@ -528,12 +528,6 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
     // Owner-thread hop goes through DocumentCollaborationService so this
     // translation unit never includes Document.h / DocumentExecutionLane.h.
     return _service.runOnOwnerThread([this, id] {
-        return pollOnOwnerThread(id);
-    });
-}
-
-bool DocumentRecomputeCoordinator::pollOnOwnerThread(const DocumentRecomputeId id)
-{
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, PreparedEditExecutionId>> active;
@@ -772,6 +766,7 @@ bool DocumentRecomputeCoordinator::pollOnOwnerThread(const DocumentRecomputeId i
     scheduleReady(id);
     finalizeIfTerminal(id);
     return changed;
+    });
 }
 
 bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::string reason)

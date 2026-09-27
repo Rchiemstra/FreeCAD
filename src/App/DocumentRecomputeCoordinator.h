@@ -153,7 +153,6 @@ private:
 
     void scheduleReady(DocumentRecomputeId id);
     void finalizeIfTerminal(DocumentRecomputeId id);
-    [[nodiscard]] bool pollOnOwnerThread(DocumentRecomputeId id);
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> statusLocked(
         DocumentRecomputeId id) const;
     [[nodiscard]] bool claimPresentationFinalization(DocumentRecomputeId id);
