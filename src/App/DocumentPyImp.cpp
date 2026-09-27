@@ -179,9 +179,14 @@ std::string buildRecomputeCoalescingKey(const std::vector<DocumentObject*>& obje
         }
     }
     std::ranges::sort(names);
-    for (const auto& name : names) {
-        key += name;
-        key += ';';
+    // Match Gui::DocumentExecutionIngress key shape ("features=") so Python and
+    // GUI identical recomputes can join.
+    if (!names.empty()) {
+        key += "features=";
+        for (const auto& name : names) {
+            key += name;
+            key += ';';
+        }
     }
     return key;
 }
