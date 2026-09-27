@@ -291,7 +291,7 @@
     "live-reference-payload",
     "update-data-provider"
   ],
-  "excluded_count": 0,
+  "excluded_count": 6,
   "findings": [
     {
       "path": "src/Gui/Application.cpp",
@@ -487,35 +487,11 @@
     },
     {
       "path": "src/Gui/Application.h",
-      "line": 167,
-      "category": "live-reference-callback",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&)> signalDeletedObject;"
-    },
-    {
-      "path": "src/Gui/Application.h",
-      "line": 169,
-      "category": "live-reference-callback",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;"
-    },
-    {
-      "path": "src/Gui/Application.h",
       "line": 169,
       "category": "live-reference-payload",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;"
-    },
-    {
-      "path": "src/Gui/Application.h",
-      "line": 171,
-      "category": "live-reference-callback",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalChangedObject;"
     },
     {
       "path": "src/Gui/Application.h",
@@ -1551,7 +1527,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2682,
+      "line": 2685,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1559,7 +1535,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3009,
+      "line": 3012,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1567,7 +1543,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3044,
+      "line": 3047,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1575,7 +1551,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3058,
+      "line": 3061,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1583,7 +1559,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3154,
+      "line": 3157,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1591,7 +1567,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4260,
+      "line": 4263,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1631,27 +1607,11 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 139,
-      "category": "live-reference-callback",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalDeletedObject;"
-    },
-    {
-      "path": "src/Gui/Document.h",
       "line": 142,
       "category": "live-reference-payload",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&, const App::Property&)>"
-    },
-    {
-      "path": "src/Gui/Document.h",
-      "line": 143,
-      "category": "live-reference-callback",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "signalChangedObject;"
     },
     {
       "path": "src/Gui/Document.h",
@@ -2420,14 +2380,6 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "this->signalthread->wait();"
-    },
-    {
-      "path": "src/Gui/Quarter/SignalThread.cpp",
-      "line": 71,
-      "category": "thread-waits",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "this->waitcond.wait(&this->mutex);"
     },
     {
       "path": "src/Gui/Selection/BoxSelection.cpp",

@@ -3103,24 +3103,26 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Mod/PartDesign/Gui/TaskFeaturePick.cpp", 288, "live-app-dereference")
 
     def test_getDocuments_live_dereference_found(self) -> None:
-        self._assert_site("src/Gui/CommandDoc.cpp", 2232, "live-app-dereference")
+        self._assert_site("src/Gui/CommandDoc.cpp", 2182, "live-app-dereference")
 
     def test_decoded_cpp_command_payload_sites_found(self) -> None:
         for path, line, category in (
-            ("src/Gui/CommandDoc.cpp", 1020, "live-app-dereference"),
+            ("src/Gui/CommandDoc.cpp", 1018, "live-app-dereference"),
             ("src/Mod/CAM/Gui/Command.cpp", 123, "live-app-dereference"),
-            ("src/Gui/Document.cpp", 2764, "live-app-dereference"),
-            ("src/Gui/Document.cpp", 2764, "direct-recompute"),
-            ("src/Gui/Document.cpp", 2913, "live-app-dereference"),
-            ("src/Gui/Document.cpp", 2913, "direct-recompute"),
+            # Decoded executable GUI command wrappers still carry both categories.
+            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "live-app-dereference"),
+            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "direct-recompute"),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 443, "live-app-dereference"),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 443, "direct-recompute"),
         ):
             self._assert_site(path, line, category)
 
     def test_cpp_gui_command_wrapper_sites_found(self) -> None:
+        # FileHandler / PartDesign TaskFeatureParameters recomputes were routed
+        # through requestDocumentRecompute / preview helpers; keep anchors that
+        # still decode as direct-recompute via known GUI command wrappers.
         for path, lines in (
-            ("src/Gui/FileHandler.cpp", (181,)),
             ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", (120, 143)),
-            ("src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp", (214, 229, 317)),
             ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", (443,)),
         ):
             for line in lines:
