@@ -278,7 +278,7 @@ void scheduleSaveCommandCompletion(
                 return;
             }
             if (guiDocument) {
-                guiDocument->setModified(false);
+                guiDocument->finishExecutionLaneSave(snapshot.state);
             }
             if (auto* window = getMainWindow()) {
                 window->showMessage(

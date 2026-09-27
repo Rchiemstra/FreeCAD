@@ -992,6 +992,7 @@ void Document::shutdownExecutionLane()
     if (DocumentWouldBlock::isGuiThread()) {
         // Keep the shared_ptr alive via the lane's self-pin until the owner
         // thread exits; drop the Document-owned reference without joining.
+        d->executionLane->detachThread();
         d->executionLane.reset();
         return;
     }

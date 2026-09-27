@@ -809,7 +809,10 @@ void Application::open(const char* FileName, const char* Module)
     App::Document* act = App::GetApplication().getActiveDocument();
     Gui::Document* gui = this->getDocument(act);
     if (act && act->countObjects() == 0 && gui && !gui->isModified() && act->isAutoCreated()) {
-        Command::doCommand(Command::App, "App.closeDocument('%s')", act->getName());
+        Command::doCommand(
+            Command::App,
+            "App.getDocument('%s').closeAsync()",
+            act->getName());
         qApp->processEvents();  // an update is needed otherwise the new view isn't shown
     }
 
@@ -1818,7 +1821,7 @@ void Application::onLastWindowClosed(Gui::Document* pcDoc)
             // open document.
             Command::doCommand(
                 Command::Doc,
-                "App.closeDocument(\"%s\")",
+                "App.getDocument(\"%s\").closeAsync()",
                 pcDoc->getDocument()->getName()
             );
             if (!d->activeDocument && !d->documents.empty()) {

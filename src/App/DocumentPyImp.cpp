@@ -227,6 +227,11 @@ PyObject* submitRecomputeCommand(Document& document,
     }
 
     const auto identity = document.executionHandle().identity();
+    if (document.executionLane()) {
+        return new RecomputeHandlePy(
+            new RecomputeHandle(document, outcome.commandId, identity));
+    }
+
     const DocumentCommandHandle commandHandle(outcome.commandId, identity);
     const auto snapshot = commandHandle.status();
     if (snapshot.recompute && snapshot.recompute->id != 0) {

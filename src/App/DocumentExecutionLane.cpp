@@ -327,6 +327,14 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
             .count());
 
     _active = std::move(active);
+    if (_active->command.kind == DocumentCommandKind::Recompute) {
+        _active->snapshot.recompute.emplace();
+        _active->snapshot.recompute->id =
+            static_cast<DocumentCommandRecomputeId>(_active->id);
+        _active->snapshot.recompute->state = DocumentCommandRecomputeState::Running;
+        _active->snapshot.recompute->diagnostic =
+            "admitted; awaiting owner-thread coordinator submit";
+    }
     publishActiveSnapshotLocked(_active->snapshot);
     if (_telemetry) {
         _telemetry->beginWatchdog(documentCommandKindName(_active->command.kind));
@@ -420,6 +428,13 @@ void DocumentExecutionLane::joinThread()
     }
 }
 
+void DocumentExecutionLane::detachThread()
+{
+    if (_thread.joinable() && _thread.get_id() != std::this_thread::get_id()) {
+        _thread.detach();
+    }
+}
+
 void DocumentExecutionLane::threadMain()
 {
     const auto selfPin = shared_from_this();
@@ -488,24 +503,28 @@ void DocumentExecutionLane::executeActiveCommand()
         }
 
         if (_active->command.kind == DocumentCommandKind::Close) {
+            const std::string documentName = _document.getName();
+            DocumentCommandState finalState = DocumentCommandState::Failed;
+            std::string finalDiagnostic = "close failed";
             try {
-                const bool closed = GetApplication().closeDocument(_document.getName());
-                completeActiveCommand(closed ? DocumentCommandState::Completed
-                                               : DocumentCommandState::Failed,
-                                      closed ? "close completed" : "close failed");
+                const bool closed = GetApplication().closeDocument(documentName.c_str());
+                finalState = closed ? DocumentCommandState::Completed
+                                    : DocumentCommandState::Failed;
+                finalDiagnostic = closed ? "close completed" : "close failed";
             }
             catch (const Base::Exception& exception) {
-                completeActiveCommand(DocumentCommandState::Failed,
-                                      commandExceptionDiagnostic(exception));
+                finalDiagnostic = commandExceptionDiagnostic(exception);
             }
             catch (const std::exception& exception) {
-                completeActiveCommand(DocumentCommandState::Failed,
-                                      commandExceptionDiagnostic(exception));
+                finalDiagnostic = commandExceptionDiagnostic(exception);
             }
             catch (...) {
-                completeActiveCommand(DocumentCommandState::Failed,
-                                      "close failed with an unknown exception");
+                finalDiagnostic = "close failed with an unknown exception";
             }
+            // Finish the admitted Close command before the lane thread exits; do
+            // not touch _document after closeDocument() returns.
+            completeActiveCommand(finalState, finalDiagnostic);
+            requestShutdown("document closed");
             return;
         }
 

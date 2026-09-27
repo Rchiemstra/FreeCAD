@@ -3403,7 +3403,10 @@ void TreeWidget::onCloseDoc()
         Gui::Document* gui = docitem->document();
         App::Document* doc = gui->getDocument();
         if (gui->canClose(true, true)) {
-            Command::doCommand(Command::Doc, "App.closeDocument(\"%s\")", doc->getName());
+            Command::doCommand(
+                Command::Doc,
+                "App.getDocument(\"%s\").closeAsync()",
+                doc->getName());
         }
     }
     catch (const Base::Exception& e) {

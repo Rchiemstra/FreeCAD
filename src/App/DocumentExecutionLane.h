@@ -186,6 +186,8 @@ public:
     }
 
     void joinThread();
+    /** Release the owner thread without waiting; used when the GUI closes a document. */
+    void detachThread();
 
     void notifyCloseAdmissionReleased() const noexcept;
 

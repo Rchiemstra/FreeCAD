@@ -85,9 +85,9 @@ inline std::string buildDocumentRecomputeCoalescingKey(
 
 inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
     App::Document& document,
-    const std::vector<App::DocumentObject*>& objects = {},
-    const bool force = false,
-    const int options = 0)
+    const std::vector<App::DocumentObject*>& objects,
+    const bool force,
+    const int options)
 {
     App::DocumentCommand command;
     command.kind = App::DocumentCommandKind::Recompute;
@@ -108,7 +108,7 @@ inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
 
 inline App::DocumentCommandSubmitOutcome trySubmitDocumentRecompute(
     App::Document& document,
-    std::string coalescingKey)
+    std::string coalescingKey = {})
 {
     App::DocumentCommand command;
     command.kind = App::DocumentCommandKind::Recompute;

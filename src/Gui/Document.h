@@ -406,6 +406,8 @@ public:
     void finishExecutionLaneUndoRedo(App::DocumentCommandKind kind,
                                      App::DocumentCommandState state,
                                      App::DocumentCommandId commandId);
+    /** Refresh modified state after a terminal lane save command. */
+    void finishExecutionLaneSave(App::DocumentCommandState state);
     /** Check if the document is performing undo/redo transaction
      *
      * Unlike App::Document::isPerformingTransaction(), Gui::Document will

@@ -4263,6 +4263,14 @@ void Document::redo(int iSteps)
         d->undoRedoCompletionAnchor);
 }
 
+void Document::finishExecutionLaneSave(const App::DocumentCommandState state)
+{
+    if (state != App::DocumentCommandState::Completed) {
+        return;
+    }
+    setModified(false);
+}
+
 void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,
                                              const App::DocumentCommandState state,
                                              const App::DocumentCommandId commandId)
