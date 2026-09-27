@@ -231,25 +231,22 @@ void DocumentExecutionLane::notifyCloseAdmissionReleased() noexcept
 
 bool DocumentExecutionLane::isIdle() const noexcept
 {
-    {
-        std::lock_guard lock(_mutex);
-        if (_active) {
-            return false;
-        }
-    }
-    return !collaborationCloseAdmissionActive(_document);
+    std::lock_guard lock(_mutex);
+    return !_active;
 }
 
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 {
-    if (isIdle()) {
-        return true;
+    {
+        std::lock_guard lock(_mutex);
+        if (_active) {
+            if (!isOwnerThread()) {
+                return false;
+            }
+            return _active->command.kind == DocumentCommandKind::Close;
+        }
     }
-    if (!isOwnerThread()) {
-        return false;
-    }
-    std::lock_guard lock(_mutex);
-    return _active && _active->command.kind == DocumentCommandKind::Close;
+    return !collaborationCloseAdmissionActive(_document);
 }
 
 bool DocumentExecutionLane::shutdownRequested() const noexcept

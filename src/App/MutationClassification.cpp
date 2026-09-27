@@ -115,30 +115,33 @@ void endMutationTarget(const App::Document& document,
                        bool readOnly) noexcept
 {
     try {
-        auto& admission = atomicPresentationMutationAdmission();
-        std::lock_guard lock(admission.mutex);
-        auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
-        auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
-                                       : admission.legacyReadOnlyDepth;
-        if (admission.target != &document
-            || admission.owner != std::this_thread::get_id() || depth == 0
-            || (readOnly && readOnlyDepth == 0)) {
-            return;
-        }
-        if (readOnly) {
-            --readOnlyDepth;
-        }
-        --depth;
-        if (mutationTargetDepth(admission) == 0) {
-            const App::Document* releasedDocument = admission.target;
-            admission.target = nullptr;
-            admission.targetRevisionIndex = nullptr;
-            admission.owner = std::thread::id {};
-            admission.legacyReadOnlyDepth = 0;
-            admission.preparedReadOnlyDepth = 0;
-            if (releasedDocument) {
-                notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
+        const App::Document* releasedDocument = nullptr;
+        {
+            auto& admission = atomicPresentationMutationAdmission();
+            std::lock_guard lock(admission.mutex);
+            auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
+            auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
+                                           : admission.legacyReadOnlyDepth;
+            if (admission.target != &document
+                || admission.owner != std::this_thread::get_id() || depth == 0
+                || (readOnly && readOnlyDepth == 0)) {
+                return;
             }
+            if (readOnly) {
+                --readOnlyDepth;
+            }
+            --depth;
+            if (mutationTargetDepth(admission) == 0) {
+                releasedDocument = admission.target;
+                admission.target = nullptr;
+                admission.targetRevisionIndex = nullptr;
+                admission.owner = std::thread::id {};
+                admission.legacyReadOnlyDepth = 0;
+                admission.preparedReadOnlyDepth = 0;
+            }
+        }
+        if (releasedDocument) {
+            notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
         }
     }
     catch (...) {

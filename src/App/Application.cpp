@@ -619,8 +619,6 @@ bool Application::closeDocument(const Document* doc)
 
 bool Application::closeDocument(const char* name)
 {
-    enforceCollaborationLifecycleMutationAllowed();
-
     auto pos = DocMap.find(name);
     if (pos == DocMap.end()) {  // no such document
         return false;
@@ -704,7 +702,7 @@ bool Application::closeDocument(const char* name)
             return false;
         }
     }
-    if (atomicPresentationMutationAdmissionHeldByOtherThread(*pos->second)) {
+    if (atomicPresentationMutationAdmissionHeldFor(*pos->second)) {
         return false;
     }
 

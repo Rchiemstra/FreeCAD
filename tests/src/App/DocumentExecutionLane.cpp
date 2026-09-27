@@ -166,14 +166,15 @@ void ensureLaneBlockingRecomputeAdapterRegistered()
     });
 }
 
-void waitForLaneIdle(App::DocumentExecutionLane* lane,
-                     const std::chrono::milliseconds timeout = 5s)
+void waitForApplicationClosePermitted(App::DocumentExecutionLane* lane,
+                                      const std::chrono::milliseconds timeout = 5s)
 {
     if (!lane) {
         return;
     }
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
+    while (!lane->permitsApplicationClose()
+           && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(5ms);
     }
 }
@@ -185,8 +186,9 @@ void closeDocumentAllowingLaneWait(const char* docName)
         return;
     }
     if (auto* lane = document->executionLane()) {
-        waitForLaneIdle(lane);
-        ASSERT_TRUE(lane->isIdle()) << "execution lane still busy or admission held";
+        waitForApplicationClosePermitted(lane);
+        ASSERT_TRUE(lane->permitsApplicationClose())
+            << "application close still blocked by lane command or admission";
     }
 
     const auto close = [&] {
@@ -408,8 +410,8 @@ TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
                 || snapshot.state == App::DocumentCommandState::Cancelled
                 || snapshot.state == App::DocumentCommandState::Failed);
 
-    waitForLaneIdle(doc()->executionLane());
-    ASSERT_TRUE(doc()->executionLane()->isIdle());
+    waitForApplicationClosePermitted(doc()->executionLane());
+    ASSERT_TRUE(doc()->executionLane()->permitsApplicationClose());
     ASSERT_TRUE(App::GetApplication().closeDocument(_docName.c_str()));
     _doc = nullptr;
 }
