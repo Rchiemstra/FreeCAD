@@ -12,12 +12,9 @@ CLASSIFICATIONS_PATH = ARCH_DIR / "view_provider_updatedata_classifications.json
 
 VALID_CLASSIFICATIONS: Final[frozenset[str]] = frozenset({"adapted", "unsupported"})
 
-_ADAPTED_GUI_FILES = frozenset(
-    {
-        "src/Gui/ViewProviderGeometryObject.cpp",
-        "src/Gui/ViewProviderPart.cpp",
-    }
-)
+# Only providers with a real pointer-free capture override are Adapted.
+# GeometryObject/Part base stubs and Coin-only Sketch paths stay Unsupported.
+_ADAPTED_GUI_FILES = frozenset()
 
 _ADAPTED_PART_GUI_FILES = frozenset(
     {
@@ -27,7 +24,6 @@ _ADAPTED_PART_GUI_FILES = frozenset(
         "src/Mod/Part/Gui/ViewProviderCurveNet.cpp",
         "src/Mod/Part/Gui/ViewProviderExt.cpp",
         "src/Mod/Part/Gui/ViewProviderMirror.cpp",
-        "src/Mod/Part/Gui/ViewProviderReference.cpp",
         "src/Mod/Part/Gui/ViewProviderRuledSurface.cpp",
     }
 )
@@ -67,10 +63,12 @@ def classify_provider(file: str, symbol: str, line: int) -> str:
         return "adapted"
     if file == "src/Mod/Points/Gui/ViewProvider.cpp":
         return "adapted"
+    # Sketcher and PartDesign still rely on Coin/live geometry — Unsupported until
+    # they ship pointer-free buffers (Wave 3 inventory must match C++).
     if file == "src/Mod/Sketcher/Gui/ViewProviderSketch.cpp" and symbol == "ViewProviderSketch":
-        return "adapted"
+        return "unsupported"
     if file.startswith(_ADAPTED_PARTDESIGN_PREFIX):
-        return "adapted"
+        return "unsupported"
     if file == "src/Gui/ViewProviderLink.cpp":
         return "unsupported"
     if file == "src/Mod/Sketcher/Gui/ViewProviderPython.cpp":

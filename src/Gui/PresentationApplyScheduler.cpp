@@ -2,9 +2,15 @@
 
 #include "PresentationApplyScheduler.h"
 
+#include <Inventor/nodes/SoCoordinate3.h>
+#include <Inventor/nodes/SoIndexedFaceSet.h>
+#include <Inventor/nodes/SoNormal.h>
+#include <Inventor/nodes/SoSeparator.h>
+
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <utility>
 
 namespace Gui
@@ -21,11 +27,76 @@ std::uint64_t elapsedMicros(const Clock::time_point start, const Clock::time_poi
         std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
 }
 
+SoSeparator* buildCoinSubtree(const PresentationRenderBuffer& buffer)
+{
+    auto* root = new SoSeparator;
+    root->ref();
+
+    if (!buffer.vertices.empty()) {
+        auto* coords = new SoCoordinate3;
+        const int pointCount = static_cast<int>(buffer.vertices.size() / 3);
+        coords->point.setNum(pointCount);
+        SbVec3f* points = coords->point.startEditing();
+        for (int i = 0; i < pointCount; ++i) {
+            points[i].setValue(
+                buffer.vertices[static_cast<std::size_t>(i) * 3U],
+                buffer.vertices[static_cast<std::size_t>(i) * 3U + 1U],
+                buffer.vertices[static_cast<std::size_t>(i) * 3U + 2U]);
+        }
+        coords->point.finishEditing();
+        root->addChild(coords);
+    }
+
+    if (!buffer.normals.empty()) {
+        auto* normals = new SoNormal;
+        const int normalCount = static_cast<int>(buffer.normals.size() / 3);
+        normals->vector.setNum(normalCount);
+        SbVec3f* vectors = normals->vector.startEditing();
+        for (int i = 0; i < normalCount; ++i) {
+            vectors[i].setValue(
+                buffer.normals[static_cast<std::size_t>(i) * 3U],
+                buffer.normals[static_cast<std::size_t>(i) * 3U + 1U],
+                buffer.normals[static_cast<std::size_t>(i) * 3U + 2U]);
+        }
+        normals->vector.finishEditing();
+        root->addChild(normals);
+    }
+
+    if (!buffer.indices.empty()) {
+        auto* faces = new SoIndexedFaceSet;
+        const int indexCount = static_cast<int>(buffer.indices.size());
+        // Coin face sets expect -1 sentinels between triangles when using
+        // indexed triangles; append one sentinel after every three indices.
+        const int coinIndexCount = indexCount + (indexCount / 3);
+        faces->coordIndex.setNum(coinIndexCount);
+        int32_t* indices = faces->coordIndex.startEditing();
+        int out = 0;
+        for (int i = 0; i < indexCount; ++i) {
+            indices[out++] = static_cast<int32_t>(buffer.indices[static_cast<std::size_t>(i)]);
+            if ((i % 3) == 2) {
+                indices[out++] = -1;
+            }
+        }
+        faces->coordIndex.finishEditing();
+        root->addChild(faces);
+    }
+
+    return root;
+}
+
 }  // namespace
 
 PresentationApplyScheduler::PresentationApplyScheduler(DocumentPresentationCache& cache)
     : _cache(cache)
 {}
+
+PresentationApplyScheduler::~PresentationApplyScheduler()
+{
+    if (_stagingCoinRoot) {
+        _stagingCoinRoot->unref();
+        _stagingCoinRoot = nullptr;
+    }
+}
 
 void PresentationApplyScheduler::enqueue(PresentationDelta&& delta)
 {
@@ -45,12 +116,20 @@ void PresentationApplyScheduler::enqueue(PresentationDelta&& delta)
         }
     }
 
+    if (_stagingCoinRoot) {
+        _stagingCoinRoot->unref();
+        _stagingCoinRoot = nullptr;
+    }
+
     _stagingPacket = std::move(delta);
     _stagingBuild = {};
     _stagingBuild.revision = _stagingPacket->revision;
     _stagingBuild.status = _stagingPacket->status;
     _stagingBuild.status.state = DocumentPresentationState::Pending;
     _nextSlice = 0;
+    // Detached staging root: old committed root stays navigable until commit.
+    _stagingCoinRoot = new SoSeparator;
+    _stagingCoinRoot->ref();
     rebuildSlicePlan();
 
     DocumentPresentationStatus pending;
@@ -104,8 +183,22 @@ PresentationApplyPumpResult PresentationApplyScheduler::pump(const int budgetMs)
     _stagingBuild.status.revision = _stagingBuild.revision;
     _stagingBuild.status.state = DocumentPresentationState::Committed;
 
-    const auto commitResult = _cache.tryCommit(std::move(_stagingBuild));
+    SoSeparator* rootToCommit = _stagingCoinRoot;
+    _stagingCoinRoot = nullptr;
+    const auto commitResult =
+        _cache.tryCommitWithCoinRoot(std::move(_stagingBuild), rootToCommit);
+    if (rootToCommit) {
+        rootToCommit->unref();
+    }
     result.committedRevision = commitResult == PresentationCommitResult::Accepted;
+    if (!result.committedRevision) {
+        // Keep the previous committed presentation and surface the apply error.
+        DocumentPresentationStatus observation = _cache.status();
+        observation.state = DocumentPresentationState::Error;
+        observation.errorMessage = std::string("presentation commit rejected: ")
+            + presentationCommitResultName(commitResult);
+        _cache.publishObservation(observation);
+    }
 
     _stagingPacket.reset();
     _stagingBuild = {};
@@ -170,6 +263,11 @@ void PresentationApplyScheduler::applySlice(const ApplySlicePlan& slice)
                     _stagingBuild.renderBuffers.resize(slice.renderBufferIndex + 1);
                 }
                 _stagingBuild.renderBuffers[slice.renderBufferIndex] = source;
+                if (_stagingCoinRoot) {
+                    SoSeparator* subtree = buildCoinSubtree(source);
+                    _stagingCoinRoot->addChild(subtree);
+                    subtree->unref();
+                }
             }
             break;
     }

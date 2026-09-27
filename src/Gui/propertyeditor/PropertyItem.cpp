@@ -65,6 +65,7 @@
 #include <Gui/Application.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 
 // NOLINTBEGIN(cppcoreguidelines-pro-*,cppcoreguidelines-prefer-member-initializer)
 using namespace Gui::PropertyEditor;
@@ -786,6 +787,20 @@ QVariant PropertyItem::dataValue(int role) const
         return decoration(value(propertyItems[0]));
     }
     if (role == Qt::DisplayRole) {
+        if (!propertyItems.empty()) {
+            auto* prop = propertyItems[0];
+            auto* object = prop ? freecad_cast<App::DocumentObject*>(prop->getContainer()) : nullptr;
+            auto* document = object ? object->getDocument() : nullptr;
+            const char* propertyName = prop ? prop->getName() : nullptr;
+            if (document && object && propertyName) {
+                if (const auto committed = committedPresentationPropertyDisplayValue(
+                        *document,
+                        *object,
+                        propertyName)) {
+                    return QString::fromStdString(*committed);
+                }
+            }
+        }
         return toString(value(propertyItems[0]));
     }
     if (role == Qt::ToolTipRole) {

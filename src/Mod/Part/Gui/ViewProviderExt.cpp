@@ -1648,18 +1648,36 @@ bool ViewProviderPartExt::capturePresentationRenderBuffer(
     const Gui::ViewProviderPresentationCaptureRequest& request,
     Gui::PresentationRenderBuffer& buffer) const
 {
-    if (!coords || !faceset) {
-        buffer.stableObjectIdentity = request.stableObjectIdentity;
+    buffer = Gui::PresentationRenderBuffer {};
+    buffer.stableObjectIdentity = request.stableObjectIdentity;
+    if (!pcObject) {
         return !request.stableObjectIdentity.empty();
     }
 
-    buffer = Gui::PresentationRenderBuffer {};
-    buffer.stableObjectIdentity = request.stableObjectIdentity;
-    appendCoinVec3Field(coords->point, buffer.vertices);
-    if (norm) {
-        appendCoinVec3Field(norm->vector, buffer.normals);
+    const TopoDS_Shape shape = getRenderedShape().getShape();
+    if (Part::Tools::isShapeEmpty(shape)) {
+        return !request.stableObjectIdentity.empty();
     }
-    appendCoinInt32Field(faceset->coordIndex, buffer.indices);
-    appendCoinInt32Field(faceset->partIndex, buffer.topology);
+
+    SoCoordinate3 tempCoords;
+    SoBrepFaceSet tempFaces;
+    SoNormal tempNorm;
+    SoBrepEdgeSet tempLines;
+    SoBrepPointSet tempNodes;
+    ViewProviderPartExt::setupCoinGeometry(
+        shape,
+        &tempCoords,
+        &tempFaces,
+        &tempNorm,
+        &tempLines,
+        &tempNodes,
+        Deviation.getValue(),
+        AngularDeflection.getValue(),
+        NormalsFromUV);
+
+    appendCoinVec3Field(tempCoords.point, buffer.vertices);
+    appendCoinVec3Field(tempNorm.vector, buffer.normals);
+    appendCoinInt32Field(tempFaces.coordIndex, buffer.indices);
+    appendCoinInt32Field(tempFaces.partIndex, buffer.topology);
     return !buffer.vertices.empty() || !request.stableObjectIdentity.empty();
 }

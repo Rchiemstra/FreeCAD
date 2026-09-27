@@ -77,6 +77,7 @@
 #include "BitmapFactory.h"
 #include "Command.h"
 #include "DocumentExecutionIngress.h"
+#include "DocumentObserverPython.h"
 #include "CommandActionPy.h"
 #include "CommandPy.h"
 #include "Control.h"
@@ -753,6 +754,7 @@ Application::Application(bool GUIenabled)
     _pcWorkbenchDictionary = PyDict_New();
 
     if (GUIenabled) {
+        DocumentObserverPython::installValueEventHandler();
         createStandardOperations();
         MacroCommand::load();
     }

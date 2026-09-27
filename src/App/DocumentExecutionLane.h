@@ -64,7 +64,13 @@ enum class UnresponsiveLaneAction
            "terminate the document-owner thread inside FreeCAD.";
 }
 
-[[nodiscard]] UnresponsiveLaneAction recommendedActionWhileLaneBusy() noexcept;
+/**
+ * When @p stalled is false, keep waiting cooperatively. When the diagnostic
+ * watchdog has marked the lane Stalled, offer whole-process exit instead of
+ * in-process thread termination.
+ */
+[[nodiscard]] UnresponsiveLaneAction recommendedActionWhileLaneBusy(
+    bool stalled = false) noexcept;
 
 }  // namespace DocumentExecutionClosePolicy
 
@@ -102,6 +108,8 @@ public:
     /** True when idle or the owner thread is executing an admitted Close command. */
     [[nodiscard]] bool permitsApplicationClose() const noexcept;
     [[nodiscard]] bool shutdownRequested() const noexcept;
+    /** Diagnostic-only: true when the watchdog has marked active work Stalled. */
+    [[nodiscard]] bool isWatchdogStalled() const noexcept;
 
     [[nodiscard]] DocumentCommandSubmitOutcome trySubmit(DocumentCommand command);
 
@@ -204,6 +212,7 @@ private:
         DocumentCommand command;
         DocumentCommandSnapshot snapshot;
         std::optional<DocumentRecomputeId> recomputeId;
+        std::vector<DocumentRevisionIdentityBinding> crossDocumentReservations;
         std::atomic<bool> cancelRequested {false};
         std::uint64_t lastProgressEpochMilliseconds {0};
 
@@ -215,6 +224,7 @@ private:
             , command(std::move(other.command))
             , snapshot(std::move(other.snapshot))
             , recomputeId(std::move(other.recomputeId))
+            , crossDocumentReservations(std::move(other.crossDocumentReservations))
             , cancelRequested(other.cancelRequested.load(std::memory_order_relaxed))
             , lastProgressEpochMilliseconds(other.lastProgressEpochMilliseconds)
         {}
@@ -225,6 +235,7 @@ private:
                 command = std::move(other.command);
                 snapshot = std::move(other.snapshot);
                 recomputeId = std::move(other.recomputeId);
+                crossDocumentReservations = std::move(other.crossDocumentReservations);
                 cancelRequested.store(
                     other.cancelRequested.load(std::memory_order_relaxed),
                     std::memory_order_relaxed);

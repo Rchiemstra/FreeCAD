@@ -4,12 +4,11 @@
 
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
+#include <App/DocumentObject.h>
 #include <App/DocumentWouldBlock.h>
-#include <App/FeaturePython.h>
 #include <Base/Interpreter.h>
 
 #include "ViewProvider.h"
-#include "ViewProviderFeaturePython.h"
 
 #include <Python.h>
 
@@ -25,6 +24,7 @@ namespace
 std::mutex g_queueMutex;
 std::deque<GuiPythonGateCallback> g_deferredCallbacks;
 std::deque<GuiPythonObserverValueEvent> g_deferredObserverEvents;
+GuiPythonObserverValueEventHandler g_observerHandler;
 
 class GilTryLock
 {
@@ -102,6 +102,18 @@ bool queueCallback(GuiPythonGateCallback callback)
     return true;
 }
 
+void deliverObserverEvent(const GuiPythonObserverValueEvent& event)
+{
+    GuiPythonObserverValueEventHandler handler;
+    {
+        std::lock_guard lock(g_queueMutex);
+        handler = g_observerHandler;
+    }
+    if (handler) {
+        handler(event);
+    }
+}
+
 }  // namespace
 
 bool GuiPythonGate::gilAvailableForNonBlockingAcquire() noexcept
@@ -131,11 +143,10 @@ bool GuiPythonGate::documentModelIngressAvailable(const App::Document& document)
 GuiPythonGateAdmissionOutcome GuiPythonGate::verifyFeaturePythonExecution(
     const App::DocumentObject& object)
 {
-    const auto* pythonFeature = dynamic_cast<const App::FeaturePython*>(&object);
-    if (!pythonFeature) {
+    if (!object.requiresDocumentThreadExecutionDeclaration()) {
         return makeOutcome(GuiPythonGateAdmissionResult::Executed);
     }
-    if (!pythonFeature->declaresDocumentThreadExecution()) {
+    if (!object.declaresDocumentThreadExecution()) {
         return makeOutcome(
             GuiPythonGateAdmissionResult::RejectedUnsupported,
             "Python feature must declare supportsDocumentThreadExecution() before lane execution");
@@ -146,12 +157,10 @@ GuiPythonGateAdmissionOutcome GuiPythonGate::verifyFeaturePythonExecution(
 GuiPythonGateAdmissionOutcome GuiPythonGate::verifyViewProviderPythonExecution(
     const ViewProvider& provider)
 {
-    const auto* pythonProvider =
-        dynamic_cast<const ViewProviderFeaturePython*>(&provider);
-    if (!pythonProvider) {
+    if (!provider.requiresAsyncPresentationDeclaration()) {
         return makeOutcome(GuiPythonGateAdmissionResult::Executed);
     }
-    if (!pythonProvider->declaresAsyncPresentation()) {
+    if (!provider.declaresAsyncPresentation()) {
         return makeOutcome(
             GuiPythonGateAdmissionResult::RejectedUnsupported,
             "Python view provider must declare supportsAsyncPresentation() before async GUI "
@@ -164,6 +173,12 @@ void GuiPythonGate::enqueueObserverValueEvent(GuiPythonObserverValueEvent event)
 {
     std::lock_guard lock(g_queueMutex);
     g_deferredObserverEvents.push_back(std::move(event));
+}
+
+void GuiPythonGate::setObserverValueEventHandler(GuiPythonObserverValueEventHandler handler)
+{
+    std::lock_guard lock(g_queueMutex);
+    g_observerHandler = std::move(handler);
 }
 
 GuiPythonGateAdmissionOutcome GuiPythonGate::tryAdmit(
@@ -199,13 +214,11 @@ GuiPythonGateAdmissionOutcome GuiPythonGate::tryAdmit(
 
     if (kind == GuiPythonGateCallbackKind::ObserverDelivery) {
         if (!gilAvailableForNonBlockingAcquire()) {
-            queueCallback(std::move(callback));
             return makeOutcome(GuiPythonGateAdmissionResult::Queued,
                                "observer delivery deferred until the GIL is available");
         }
         GilTryLock gilLock(true);
         if (!gilLock.owns()) {
-            queueCallback(std::move(callback));
             return makeOutcome(GuiPythonGateAdmissionResult::Queued,
                                "observer delivery deferred until the GIL is available");
         }
@@ -263,13 +276,22 @@ std::size_t GuiPythonGate::pumpQueuedCallbacks(const std::size_t maxCallbacks)
     }
 
     while (processed < maxCallbacks) {
+        GuiPythonObserverValueEvent event;
         {
             std::lock_guard lock(g_queueMutex);
             if (g_deferredObserverEvents.empty()) {
                 break;
             }
+            event = std::move(g_deferredObserverEvents.front());
             g_deferredObserverEvents.pop_front();
         }
+        GilTryLock gilLock(true);
+        if (!gilLock.owns()) {
+            std::lock_guard lock(g_queueMutex);
+            g_deferredObserverEvents.push_front(std::move(event));
+            break;
+        }
+        deliverObserverEvent(event);
         ++processed;
     }
 

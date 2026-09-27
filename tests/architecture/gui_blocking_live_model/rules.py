@@ -356,6 +356,18 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
     "src/Mod/Start/StartMigrator.py",
+    # AddonManager has no Gui/ directory; InitGui loads these GUI controllers.
+    "src/Mod/AddonManager/AddonManager.py",
+    "src/Mod/AddonManager/addonmanager_python_deps_commands.py",
+    "src/Mod/AddonManager/NetworkManager.py",
+    "src/Mod/AddonManager/addonmanager_connection_checker.py",
+    "src/Mod/AddonManager/addonmanager_installer.py",
+    "src/Mod/AddonManager/addonmanager_installer_gui.py",
+    "src/Mod/AddonManager/addonmanager_package_details_controller.py",
+    "src/Mod/AddonManager/addonmanager_uninstaller_gui.py",
+    "src/Mod/AddonManager/addonmanager_update_all_gui.py",
+    "src/Mod/AddonManager/addonmanager_utilities.py",
+    "src/Mod/AddonManager/addonmanager_workers_utility.py",
 )
 
 # Direct local imports from production InitGui.py files that were reviewed and
@@ -371,6 +383,7 @@ REVIEWED_INITGUI_IMPORT_EXCLUSIONS: dict[str, str] = {
     "src/Mod/CAM/Path/Tool/library/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/CAM/Path/Tool/toolbit/ui/__init__.py": "CAM UI package initializer; command module is listed explicitly",
     "src/Mod/PartDesign/__init__.py": "PartDesign App package initializer; GUI modules are listed explicitly",
+    "src/Mod/AddonManager/__init__.py": "AddonManager package initializer; GUI modules are listed explicitly",
 }
 
 # Local modules reached transitively from GUI commands but intentionally kept

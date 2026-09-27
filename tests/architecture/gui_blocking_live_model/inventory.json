@@ -10,7 +10,6 @@
     "src/Mod/CAM/Path/Op/Gui",
     "src/Mod/CAM/Path/Post/Gui",
     "src/Mod/CAM/Path/Tool/Gui",
-    "src/Mod/Fem/femtest/Gui",
     "src/Mod/Fem/Gui",
     "src/Mod/Import/Gui",
     "src/Mod/Inspection/Gui",
@@ -28,6 +27,7 @@
     "src/Mod/Start/Gui",
     "src/Mod/Surface/Gui",
     "src/Mod/TechDraw/Gui",
+    "src/Mod/AddonManager/InitGui.py",
     "src/Mod/Assembly/InitGui.py",
     "src/Mod/BIM/InitGui.py",
     "src/Mod/CAM/InitGui.py",
@@ -268,7 +268,18 @@
     "src/Mod/OpenSCAD/OpenSCADFeatures.py",
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py",
     "src/Mod/Sketcher/Profiles.py",
-    "src/Mod/Start/StartMigrator.py"
+    "src/Mod/Start/StartMigrator.py",
+    "src/Mod/AddonManager/AddonManager.py",
+    "src/Mod/AddonManager/addonmanager_python_deps_commands.py",
+    "src/Mod/AddonManager/NetworkManager.py",
+    "src/Mod/AddonManager/addonmanager_connection_checker.py",
+    "src/Mod/AddonManager/addonmanager_installer.py",
+    "src/Mod/AddonManager/addonmanager_installer_gui.py",
+    "src/Mod/AddonManager/addonmanager_package_details_controller.py",
+    "src/Mod/AddonManager/addonmanager_uninstaller_gui.py",
+    "src/Mod/AddonManager/addonmanager_update_all_gui.py",
+    "src/Mod/AddonManager/addonmanager_utilities.py",
+    "src/Mod/AddonManager/addonmanager_workers_utility.py"
   ],
   "categories": [
     "thread-waits",
@@ -280,19 +291,11 @@
     "live-reference-payload",
     "update-data-provider"
   ],
-  "excluded_count": 6,
+  "excluded_count": 0,
   "findings": [
     {
-      "path": "src/Gui/Action.cpp",
-      "line": 1258,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
-    },
-    {
       "path": "src/Gui/Application.cpp",
-      "line": 468,
+      "line": 470,
       "category": "blocking-invokes",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -300,7 +303,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 808,
+      "line": 811,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -308,7 +311,15 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 812,
+      "line": 816,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "\"App.getDocument('%s').closeAsync()\","
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 818,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -316,7 +327,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 899,
+      "line": 905,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -324,7 +335,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1002,
+      "line": 1008,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -332,7 +343,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1096,
+      "line": 1102,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -340,7 +351,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1097,
+      "line": 1103,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -348,7 +359,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1098,
+      "line": 1104,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -356,7 +367,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1176,
+      "line": 1182,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -364,7 +375,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1183,
+      "line": 1189,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -372,7 +383,15 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1245,
+      "line": 1210,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (auto* orphan = App::GetApplication().getDocument(cand.name.c_str())) {"
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 1253,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -380,15 +399,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1279,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute({}, false, &hasError);"
-    },
-    {
-      "path": "src/Gui/Application.cpp",
-      "line": 1386,
+      "line": 1394,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -396,7 +407,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1388,
+      "line": 1396,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -404,7 +415,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1392,
+      "line": 1400,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -412,7 +423,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1487,
+      "line": 1495,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -420,7 +431,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1502,
+      "line": 1510,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -428,7 +439,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1697,
+      "line": 1705,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -436,7 +447,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1706,
+      "line": 1714,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -444,7 +455,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1709,
+      "line": 1717,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -452,7 +463,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1749,
+      "line": 1757,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -460,11 +471,35 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 2098,
+      "line": 1828,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "\"App.getDocument(\\\"%s\\\").closeAsync()\","
+    },
+    {
+      "path": "src/Gui/Application.cpp",
+      "line": 2106,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* pDoc = App::GetApplication().getDocument(name);"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 167,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&)> signalDeletedObject;"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 169,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;"
     },
     {
       "path": "src/Gui/Application.h",
@@ -473,6 +508,14 @@
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalBeforeChangeObject;"
+    },
+    {
+      "path": "src/Gui/Application.h",
+      "line": 171,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "fastsignals::signal<void(const Gui::ViewProvider&, const App::Property&)> signalChangedObject;"
     },
     {
       "path": "src/Gui/Application.h",
@@ -564,7 +607,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 367,
+      "line": 368,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -572,7 +615,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 375,
+      "line": 376,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -580,7 +623,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 629,
+      "line": 630,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -588,7 +631,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 639,
+      "line": 640,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -596,7 +639,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 653,
+      "line": 654,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -604,7 +647,7 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 773,
+      "line": 774,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -612,35 +655,11 @@
     },
     {
       "path": "src/Gui/Command.cpp",
-      "line": 939,
+      "line": 940,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto doc = App::GetApplication().getActiveDocument();"
-    },
-    {
-      "path": "src/Gui/Command.cpp",
-      "line": 1044,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doCommand(App, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Gui/Command.cpp",
-      "line": 1044,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "doCommand(App, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Gui/Command.cpp",
-      "line": 1393,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
     },
     {
       "path": "src/Gui/Command.h",
@@ -660,7 +679,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 212,
+      "line": 210,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -668,7 +687,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 251,
+      "line": 249,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -676,7 +695,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 419,
+      "line": 417,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -684,7 +703,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 424,
+      "line": 422,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -692,7 +711,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 680,
+      "line": 678,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -700,7 +719,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 730,
+      "line": 728,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -708,7 +727,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 762,
+      "line": 760,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -716,7 +735,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 843,
+      "line": 841,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -724,7 +743,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1020,
+      "line": 1018,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -732,7 +751,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1482,
+      "line": 1480,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -740,7 +759,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1560,
+      "line": 1558,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -748,7 +767,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1571,
+      "line": 1569,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -756,23 +775,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 1760,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "FCMD_DOC_CMD(doc, \"recompute()\");"
-    },
-    {
-      "path": "src/Gui/CommandDoc.cpp",
-      "line": 1760,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "FCMD_DOC_CMD(doc, \"recompute()\");"
-    },
-    {
-      "path": "src/Gui/CommandDoc.cpp",
-      "line": 2224,
+      "line": 2174,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -780,7 +783,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2225,
+      "line": 2175,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -788,7 +791,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2232,
+      "line": 2182,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -796,7 +799,7 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2327,
+      "line": 2277,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -804,31 +807,15 @@
     },
     {
       "path": "src/Gui/CommandDoc.cpp",
-      "line": 2415,
+      "line": 2365,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "if (!App::GetApplication().getActiveDocument()) {"
     },
     {
-      "path": "src/Gui/CommandFeat.cpp",
-      "line": 90,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
-      "path": "src/Gui/CommandFeat.cpp",
-      "line": 96,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute(objects, true);"
-    },
-    {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 57,
+      "line": 58,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -836,7 +823,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 96,
+      "line": 97,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -844,7 +831,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 137,
+      "line": 138,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -852,7 +839,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 157,
+      "line": 158,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -860,7 +847,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 173,
+      "line": 174,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -868,7 +855,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 174,
+      "line": 175,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -876,7 +863,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 184,
+      "line": 185,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -884,7 +871,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 192,
+      "line": 193,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -892,7 +879,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 193,
+      "line": 194,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -900,7 +887,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 206,
+      "line": 207,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -908,7 +895,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 212,
+      "line": 213,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -916,7 +903,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 219,
+      "line": 220,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -924,7 +911,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 234,
+      "line": 235,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -932,7 +919,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 274,
+      "line": 275,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -940,7 +927,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 279,
+      "line": 280,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -948,7 +935,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 292,
+      "line": 293,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -956,7 +943,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 303,
+      "line": 304,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -964,7 +951,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 370,
+      "line": 371,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -972,7 +959,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 415,
+      "line": 416,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -980,15 +967,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 570,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "recomputes.front()->getDocument()->recompute(recomputes);"
-    },
-    {
-      "path": "src/Gui/CommandLink.cpp",
-      "line": 748,
+      "line": 749,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -996,7 +975,7 @@
     },
     {
       "path": "src/Gui/CommandLink.cpp",
-      "line": 758,
+      "line": 759,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1252,7 +1231,7 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 138,
+      "line": 139,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1260,7 +1239,7 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 139,
+      "line": 140,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1268,7 +1247,7 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 141,
+      "line": 142,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1276,7 +1255,7 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 142,
+      "line": 143,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1284,7 +1263,7 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 277,
+      "line": 278,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1292,19 +1271,11 @@
     },
     {
       "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 308,
+      "line": 309,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
       "evidence": "void Model::slotChangeObject(const ViewProviderDocumentObject& VPDObjectIn, const App::Property& propertyIn)"
-    },
-    {
-      "path": "src/Gui/DAGView/DAGModel.cpp",
-      "line": 1158,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->getDocument()->recompute();"
     },
     {
       "path": "src/Gui/DAGView/DAGModel.h",
@@ -1435,14 +1406,6 @@
       "evidence": "App::Document* doc = App::GetApplication().getDocument(nameDoc.toUtf8());"
     },
     {
-      "path": "src/Gui/Dialogs/DlgMacroExecuteImp.cpp",
-      "line": 407,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "Application::Instance->activeDocument()->getDocument()->recompute();"
-    },
-    {
       "path": "src/Gui/Dialogs/DlgPropertyLink.cpp",
       "line": 241,
       "category": "live-app-dereference",
@@ -1452,7 +1415,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 528,
+      "line": 546,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1460,7 +1423,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 529,
+      "line": 547,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1468,7 +1431,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 531,
+      "line": 549,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1476,7 +1439,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 532,
+      "line": 550,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1484,7 +1447,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 534,
+      "line": 552,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1492,7 +1455,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 535,
+      "line": 553,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1500,7 +1463,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 602,
+      "line": 620,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1508,7 +1471,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 603,
+      "line": 621,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1516,7 +1479,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 997,
+      "line": 1021,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1524,7 +1487,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1145,
+      "line": 1169,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1532,7 +1495,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1175,
+      "line": 1199,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1540,7 +1503,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1197,
+      "line": 1221,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1548,7 +1511,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1233,
+      "line": 1267,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1556,7 +1519,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1327,
+      "line": 1363,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1564,7 +1527,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1339,
+      "line": 1375,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1572,7 +1535,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1360,
+      "line": 1396,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1580,7 +1543,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1544,
+      "line": 1580,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1588,7 +1551,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2504,
+      "line": 2682,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1596,31 +1559,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2764,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "\"App.getDocument(\\\"%s\\\").recompute()\","
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2764,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "\"App.getDocument(\\\"%s\\\").recompute()\","
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2769,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "Command::doCommand(Command::Doc, \"App.getDocument(\\\"%s\\\").save()\", doc->getName());"
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2830,
+      "line": 3009,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1628,7 +1567,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2865,
+      "line": 3044,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1636,7 +1575,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2879,
+      "line": 3058,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1644,31 +1583,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2913,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "Command::doCommand(Command::Doc, \"App.getDocument('%s').recompute()\", doc->getName());"
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2913,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "Command::doCommand(Command::Doc, \"App.getDocument('%s').recompute()\", doc->getName());"
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2915,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "Command::doCommand(Command::Doc, \"App.getDocument('%s').save()\", doc->getName());"
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 2956,
+      "line": 3154,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1676,7 +1591,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4062,
+      "line": 4260,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1684,7 +1599,7 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 103,
+      "line": 108,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1692,7 +1607,7 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 104,
+      "line": 109,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1700,7 +1615,7 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 105,
+      "line": 110,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1708,7 +1623,7 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 121,
+      "line": 126,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1716,7 +1631,15 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 137,
+      "line": 139,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "mutable fastsignals::signal<void(const Gui::ViewProviderDocumentObject&)> signalDeletedObject;"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 142,
       "category": "live-reference-payload",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1724,7 +1647,15 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 153,
+      "line": 143,
+      "category": "live-reference-callback",
+      "subsystem": "Gui",
+      "disposition": "migrate",
+      "evidence": "signalChangedObject;"
+    },
+    {
+      "path": "src/Gui/Document.h",
+      "line": 158,
       "category": "live-reference-payload",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1732,7 +1663,7 @@
     },
     {
       "path": "src/Gui/Document.h",
-      "line": 162,
+      "line": 167,
       "category": "live-reference-payload",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1745,6 +1676,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "for (auto* appDocument : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Gui/DocumentExecutionIngress.cpp",
+      "line": 180,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto* appDocument = App::GetApplication().getDocument(appDocumentName);"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",
@@ -1868,7 +1807,15 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.cpp",
-      "line": 180,
+      "line": 189,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto* appDocument = App::GetApplication().getDocument(documentName.c_str());"
+    },
+    {
+      "path": "src/Gui/DocumentObserverPython.cpp",
+      "line": 394,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1876,7 +1823,7 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.cpp",
-      "line": 194,
+      "line": 412,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1884,7 +1831,7 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.cpp",
-      "line": 217,
+      "line": 440,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1892,7 +1839,7 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
-      "line": 75,
+      "line": 78,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1900,7 +1847,7 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
-      "line": 77,
+      "line": 80,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1908,7 +1855,7 @@
     },
     {
       "path": "src/Gui/DocumentObserverPython.h",
-      "line": 79,
+      "line": 82,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1996,7 +1943,7 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 68,
+      "line": 69,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2004,7 +1951,7 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 80,
+      "line": 81,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2012,7 +1959,7 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 83,
+      "line": 84,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2020,7 +1967,7 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 178,
+      "line": 179,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2028,7 +1975,7 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 179,
+      "line": 180,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2036,27 +1983,11 @@
     },
     {
       "path": "src/Gui/FileHandler.cpp",
-      "line": 180,
+      "line": 181,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppDocumentArgs(doc, \"ActiveObject.Label = '%s'\", encBase);"
-    },
-    {
-      "path": "src/Gui/FileHandler.cpp",
-      "line": 181,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
-    },
-    {
-      "path": "src/Gui/FileHandler.cpp",
-      "line": 181,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
     },
     {
       "path": "src/Gui/GraphvizView.cpp",
@@ -2172,7 +2103,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 267,
+      "line": 269,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2180,7 +2111,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 290,
+      "line": 292,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2188,7 +2119,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 1132,
+      "line": 1134,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2196,7 +2127,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 1965,
+      "line": 1967,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2204,7 +2135,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2064,
+      "line": 2066,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2212,7 +2143,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2067,
+      "line": 2069,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2220,7 +2151,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2121,
+      "line": 2123,
       "category": "thread-waits",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2228,7 +2159,15 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2451,
+      "line": 2203,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto* appDocument : App::GetApplication().getDocuments()) {"
+    },
+    {
+      "path": "src/Gui/MainWindow.cpp",
+      "line": 2484,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2236,7 +2175,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2580,
+      "line": 2613,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2244,15 +2183,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2605,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
-      "path": "src/Gui/MainWindow.cpp",
-      "line": 2646,
+      "line": 2679,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2260,7 +2191,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2651,
+      "line": 2684,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2268,7 +2199,7 @@
     },
     {
       "path": "src/Gui/ManualAlignment.cpp",
-      "line": 905,
+      "line": 906,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2276,7 +2207,7 @@
     },
     {
       "path": "src/Gui/ManualAlignment.cpp",
-      "line": 906,
+      "line": 907,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2284,15 +2215,7 @@
     },
     {
       "path": "src/Gui/ManualAlignment.cpp",
-      "line": 1012,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "myDocument->getDocument()->recompute();"
-    },
-    {
-      "path": "src/Gui/ManualAlignment.cpp",
-      "line": 1261,
+      "line": 1262,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2316,19 +2239,11 @@
     },
     {
       "path": "src/Gui/Placement.cpp",
-      "line": 187,
+      "line": 188,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
-    },
-    {
-      "path": "src/Gui/Placement.cpp",
-      "line": 432,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "document->getDocument()->recompute();"
     },
     {
       "path": "src/Gui/Placement.cpp",
@@ -2507,6 +2422,14 @@
       "evidence": "this->signalthread->wait();"
     },
     {
+      "path": "src/Gui/Quarter/SignalThread.cpp",
+      "line": 71,
+      "category": "thread-waits",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "this->waitcond.wait(&this->mutex);"
+    },
+    {
       "path": "src/Gui/Selection/BoxSelection.cpp",
       "line": 156,
       "category": "live-app-dereference",
@@ -2524,7 +2447,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 582,
+      "line": 583,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2532,7 +2455,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 1215,
+      "line": 1216,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2540,7 +2463,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 1218,
+      "line": 1219,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2548,7 +2471,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 1818,
+      "line": 1848,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2556,7 +2479,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 2193,
+      "line": 2223,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2564,7 +2487,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 2266,
+      "line": 2296,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2572,7 +2495,7 @@
     },
     {
       "path": "src/Gui/Selection/Selection.cpp",
-      "line": 2267,
+      "line": 2297,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2716,15 +2639,7 @@
     },
     {
       "path": "src/Gui/TaskElementColors.cpp",
-      "line": 225,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "obj->getDocument()->recompute(obj->getInListRecursive());"
-    },
-    {
-      "path": "src/Gui/TaskElementColors.cpp",
-      "line": 385,
+      "line": 386,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2732,7 +2647,7 @@
     },
     {
       "path": "src/Gui/TaskElementColors.cpp",
-      "line": 386,
+      "line": 387,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2740,7 +2655,7 @@
     },
     {
       "path": "src/Gui/TaskElementColors.cpp",
-      "line": 450,
+      "line": 451,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2756,7 +2671,7 @@
     },
     {
       "path": "src/Gui/TaskTransform.cpp",
-      "line": 608,
+      "line": 609,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2764,27 +2679,11 @@
     },
     {
       "path": "src/Gui/TaskTransform.cpp",
-      "line": 627,
+      "line": 628,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto orgObj = orgDoc->getDocument()->getObject(msg.pOriginalMsg->pObjectName);"
-    },
-    {
-      "path": "src/Gui/TaskTransform.cpp",
-      "line": 1097,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "document->getDocument()->recompute();"
-    },
-    {
-      "path": "src/Gui/TaskTransform.cpp",
-      "line": 1108,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "document->getDocument()->recompute();"
     },
     {
       "path": "src/Gui/TaskView/TaskAppearance.cpp",
@@ -2819,22 +2718,6 @@
       "evidence": "void slotChangedObject(const Gui::ViewProvider&, const App::Property& Prop);"
     },
     {
-      "path": "src/Gui/TaskView/TaskImage.cpp",
-      "line": 352,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
-      "path": "src/Gui/TaskView/TaskOrientation.cpp",
-      "line": 76,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
       "path": "src/Gui/TaskView/TaskWatcher.cpp",
       "line": 153,
       "category": "live-app-dereference",
@@ -2852,7 +2735,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 688,
+      "line": 689,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2860,7 +2743,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 689,
+      "line": 690,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2868,7 +2751,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 902,
+      "line": 903,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2876,7 +2759,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1227,
+      "line": 1242,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2884,7 +2767,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1308,
+      "line": 1323,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2892,7 +2775,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1311,
+      "line": 1326,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2900,15 +2783,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 1483,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->getDocument()->recompute();"
-    },
-    {
-      "path": "src/Gui/Tree.cpp",
-      "line": 2309,
+      "line": 2324,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2916,7 +2791,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2624,
+      "line": 2639,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2924,7 +2799,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2641,
+      "line": 2656,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2932,7 +2807,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2688,
+      "line": 2703,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2940,19 +2815,11 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 2959,
+      "line": 2974,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto doc = App::GetApplication().getDocument(info.doc.c_str());"
-    },
-    {
-      "path": "src/Gui/Tree.cpp",
-      "line": 2975,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "auto parentDoc = App::GetApplication().getDocument(info.parentDoc.c_str());"
     },
     {
       "path": "src/Gui/Tree.cpp",
@@ -2960,19 +2827,27 @@
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
+      "evidence": "auto parentDoc = App::GetApplication().getDocument(info.parentDoc.c_str());"
+    },
+    {
+      "path": "src/Gui/Tree.cpp",
+      "line": 3005,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
       "evidence": "auto ownerDoc = App::GetApplication().getDocument(info.ownerDoc.c_str());"
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3239,
-      "category": "direct-recompute",
+      "line": 3406,
+      "category": "live-app-dereference",
       "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "targetInfo.targetDoc->recompute();"
+      "disposition": "investigate",
+      "evidence": "\"App.getDocument(\\\"%s\\\").closeAsync()\","
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3442,
+      "line": 3460,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2980,7 +2855,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3453,
+      "line": 3471,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -2988,7 +2863,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3568,
+      "line": 3628,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2996,7 +2871,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3652,
+      "line": 3712,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3004,7 +2879,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3653,
+      "line": 3713,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3012,7 +2887,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3655,
+      "line": 3715,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3020,7 +2895,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 3656,
+      "line": 3716,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3028,7 +2903,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4384,
+      "line": 4444,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -3036,7 +2911,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4404,
+      "line": 4464,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3044,7 +2919,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4405,
+      "line": 4465,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3052,7 +2927,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4408,
+      "line": 4468,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3060,7 +2935,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4409,
+      "line": 4469,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3068,7 +2943,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4411,
+      "line": 4471,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3076,7 +2951,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4412,
+      "line": 4472,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3084,7 +2959,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4432,
+      "line": 4492,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3092,7 +2967,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4433,
+      "line": 4493,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3100,7 +2975,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 4642,
+      "line": 4702,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3108,7 +2983,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 5074,
+      "line": 5134,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3116,7 +2991,7 @@
     },
     {
       "path": "src/Gui/Tree.cpp",
-      "line": 5461,
+      "line": 5521,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3124,7 +2999,7 @@
     },
     {
       "path": "src/Gui/Tree.h",
-      "line": 248,
+      "line": 249,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3132,7 +3007,7 @@
     },
     {
       "path": "src/Gui/Tree.h",
-      "line": 252,
+      "line": 253,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3140,7 +3015,7 @@
     },
     {
       "path": "src/Gui/Tree.h",
-      "line": 253,
+      "line": 254,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3148,7 +3023,7 @@
     },
     {
       "path": "src/Gui/Tree.h",
-      "line": 254,
+      "line": 255,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3156,7 +3031,7 @@
     },
     {
       "path": "src/Gui/Tree.h",
-      "line": 421,
+      "line": 422,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3188,7 +3063,7 @@
     },
     {
       "path": "src/Gui/ViewProvider.h",
-      "line": 602,
+      "line": 603,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3292,7 +3167,7 @@
     },
     {
       "path": "src/Gui/ViewProviderFeaturePython.h",
-      "line": 363,
+      "line": 376,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3396,7 +3271,7 @@
     },
     {
       "path": "src/Gui/ViewProviderLink.cpp",
-      "line": 2591,
+      "line": 2603,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3412,7 +3287,7 @@
     },
     {
       "path": "src/Gui/ViewProviderPart.cpp",
-      "line": 85,
+      "line": 86,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -3420,7 +3295,7 @@
     },
     {
       "path": "src/Gui/ViewProviderPart.cpp",
-      "line": 150,
+      "line": 166,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -3476,19 +3351,195 @@
     },
     {
       "path": "src/Gui/propertyeditor/PropertyEditor.cpp",
-      "line": 422,
-      "category": "direct-recompute",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
-      "path": "src/Gui/propertyeditor/PropertyEditor.cpp",
-      "line": 446,
+      "line": 447,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 274,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "finished = thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 311,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(25)"
+    },
+    {
+      "path": "src/Mod/AddonManager/AddonManager.py",
+      "line": 314,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/NetworkManager.py",
+      "line": 387,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_connection_checker.py",
+      "line": 79,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.connection_checker.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer.py",
+      "line": 328,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer.py",
+      "line": 351,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 95,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(100)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 97,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 161,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(50)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 162,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 223,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 458,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(100)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 460,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_installer_gui.py",
+      "line": 895,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.dependency_worker_thread.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_package_details_controller.py",
+      "line": 97,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_uninstaller_gui.py",
+      "line": 148,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait(500)"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_update_all_gui.py",
+      "line": 341,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "self.worker_thread.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 756,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "process.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 757,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "reader.join()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 777,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "process.wait()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_utilities.py",
+      "line": 778,
+      "category": "thread-waits",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "reader.join()"
+    },
+    {
+      "path": "src/Mod/AddonManager/addonmanager_workers_utility.py",
+      "line": 72,
+      "category": "process-events-polling",
+      "subsystem": "AddonManager",
+      "disposition": "investigate",
+      "evidence": "QtCore.QCoreApplication.processEvents()"
     },
     {
       "path": "src/Mod/Assembly/CommandCreateAssembly.py",
@@ -21892,7 +21943,7 @@
     },
     {
       "path": "src/Mod/Mesh/Gui/ViewProvider.h",
-      "line": 341,
+      "line": 347,
       "category": "update-data-provider",
       "subsystem": "Mesh",
       "disposition": "migrate",
@@ -21900,7 +21951,7 @@
     },
     {
       "path": "src/Mod/Mesh/Gui/ViewProvider.h",
-      "line": 369,
+      "line": 375,
       "category": "update-data-provider",
       "subsystem": "Mesh",
       "disposition": "migrate",
@@ -23004,7 +23055,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 110,
+      "line": 111,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23012,7 +23063,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 111,
+      "line": 112,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23020,7 +23071,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 137,
+      "line": 138,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23028,7 +23079,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 147,
+      "line": 148,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23036,7 +23087,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 229,
+      "line": 230,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23044,7 +23095,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 433,
+      "line": 434,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23052,19 +23103,11 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 496,
+      "line": 497,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"bp = BOPFeatures.BOPFeatures(App.activeDocument())\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgBooleanOperation.cpp",
-      "line": 504,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "activeDoc->recompute();"
     },
     {
       "path": "src/Mod/Part/Gui/DlgBooleanOperation.h",
@@ -23132,7 +23175,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 271,
+      "line": 272,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23140,7 +23183,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 551,
+      "line": 552,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23148,7 +23191,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 593,
+      "line": 594,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23156,7 +23199,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 834,
+      "line": 835,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23164,71 +23207,23 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 1045,
+      "line": 1046,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
     },
     {
-      "path": "src/Mod/Part/Gui/DlgFilletEdges.cpp",
-      "line": 1113,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "activeDoc->recompute();"
-    },
-    {
       "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 136,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 136,
-      "category": "live-app-dereference",
-      "subsystem": "Part",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 2296,
+      "line": 2297,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 2316,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 2316,
-      "category": "live-app-dereference",
-      "subsystem": "Part",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgPrimitives.cpp",
-      "line": 2365,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
     },
     {
       "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
-      "line": 167,
+      "line": 168,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23236,19 +23231,11 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
-      "line": 283,
+      "line": 284,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
       "evidence": "void PartGui::DlgProjectionOnSurface::slotDeletedObject(const App::DocumentObject& Obj)"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.cpp",
-      "line": 1335,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "document->recompute();"
     },
     {
       "path": "src/Mod/Part/Gui/DlgProjectionOnSurface.h",
@@ -23260,7 +23247,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
-      "line": 197,
+      "line": 198,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23268,7 +23255,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
-      "line": 265,
+      "line": 266,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23276,7 +23263,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
-      "line": 378,
+      "line": 379,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23284,19 +23271,11 @@
     },
     {
       "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
-      "line": 425,
+      "line": 426,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
-    },
-    {
-      "path": "src/Mod/Part/Gui/DlgRevolution.cpp",
-      "line": 510,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "activeDoc->recompute();"
     },
     {
       "path": "src/Mod/Part/Gui/DlgScale.cpp",
@@ -23363,8 +23342,16 @@
       "evidence": "std::vector<App::Document*> docs = App::GetApplication().getDocuments();"
     },
     {
+      "path": "src/Mod/Part/Gui/DocumentRecomputeIngress.h",
+      "line": 96,
+      "category": "live-app-dereference",
+      "subsystem": "Part",
+      "disposition": "investigate",
+      "evidence": "App::Document* document = App::GetApplication().getActiveDocument();"
+    },
+    {
       "path": "src/Mod/Part/Gui/Mirroring.cpp",
-      "line": 269,
+      "line": 270,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23372,19 +23359,11 @@
     },
     {
       "path": "src/Mod/Part/Gui/Mirroring.cpp",
-      "line": 317,
+      "line": 318,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getDocument("
-    },
-    {
-      "path": "src/Mod/Part/Gui/Mirroring.cpp",
-      "line": 397,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "activeDoc->recompute();"
     },
     {
       "path": "src/Mod/Part/Gui/ShapeFromMesh.cpp",
@@ -23396,7 +23375,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 301,
+      "line": 303,
       "category": "live-reference-callback",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23404,7 +23383,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 617,
+      "line": 619,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23412,7 +23391,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 899,
+      "line": 901,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23420,7 +23399,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1607,
+      "line": 1609,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23428,7 +23407,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1620,
+      "line": 1622,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23436,7 +23415,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1626,
+      "line": 1628,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23444,7 +23423,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1630,
+      "line": 1632,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23452,35 +23431,11 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1634,
+      "line": 1636,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "\"MapMode = '%s'\","
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1637,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppObject(obj, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1637,
-      "category": "live-app-dereference",
-      "subsystem": "Part",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppObject(obj, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskAttacher.cpp",
-      "line": 1670,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"%s.recompute()\", doc.getAppDocumentPython().c_str());"
     },
     {
       "path": "src/Mod/Part/Gui/TaskCheckGeometry.cpp",
@@ -23532,7 +23487,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskLinkArrayParameters.cpp",
-      "line": 754,
+      "line": 755,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23540,7 +23495,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskLinkArrayParameters.cpp",
-      "line": 781,
+      "line": 782,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23548,23 +23503,15 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskLoft.cpp",
-      "line": 97,
+      "line": 98,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
     },
     {
-      "path": "src/Mod/Part/Gui/TaskLoft.cpp",
-      "line": 216,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "doc->getDocument()->recompute();"
-    },
-    {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 200,
+      "line": 201,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23572,7 +23519,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 202,
+      "line": 203,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23580,7 +23527,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 203,
+      "line": 204,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23588,7 +23535,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 206,
+      "line": 207,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23596,7 +23543,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 211,
+      "line": 212,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23604,63 +23551,31 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 214,
+      "line": 215,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppObjectArgs(d->offset, \"Fill = %s\", d->ui.fillOffset->isChecked() ? \"True\" : \"False\");"
     },
     {
-      "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 216,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskOffset.cpp",
-      "line": 216,
-      "category": "live-app-dereference",
-      "subsystem": "Part",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
       "path": "src/Mod/Part/Gui/TaskShapeBuilder.cpp",
-      "line": 153,
+      "line": 154,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getDocument(msg.pDocName);"
     },
     {
-      "path": "src/Mod/Part/Gui/TaskShapeBuilder.cpp",
-      "line": 203,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "doc->getDocument()->recompute();"
-    },
-    {
       "path": "src/Mod/Part/Gui/TaskSweep.cpp",
-      "line": 161,
+      "line": 162,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
       "evidence": "App::Document* activeDoc = App::GetApplication().getActiveDocument();"
     },
     {
-      "path": "src/Mod/Part/Gui/TaskSweep.cpp",
-      "line": 420,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "doc->getDocument()->recompute();"
-    },
-    {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 269,
+      "line": 270,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23668,7 +23583,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 271,
+      "line": 272,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23676,7 +23591,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 272,
+      "line": 273,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23684,7 +23599,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 273,
+      "line": 274,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23692,7 +23607,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 276,
+      "line": 277,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23700,7 +23615,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 281,
+      "line": 282,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23708,23 +23623,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 285,
-      "category": "direct-recompute",
-      "subsystem": "Part",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 285,
-      "category": "live-app-dereference",
-      "subsystem": "Part",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Part/Gui/TaskThickness.cpp",
-      "line": 323,
+      "line": 324,
       "category": "live-app-dereference",
       "subsystem": "Part",
       "disposition": "investigate",
@@ -23844,7 +23743,7 @@
     },
     {
       "path": "src/Mod/Part/Gui/ViewProviderExt.cpp",
-      "line": 969,
+      "line": 974,
       "category": "update-data-provider",
       "subsystem": "Part",
       "disposition": "migrate",
@@ -23956,7 +23855,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 482,
+      "line": 479,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -23964,7 +23863,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 486,
+      "line": 483,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -23972,7 +23871,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 560,
+      "line": 557,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -23980,7 +23879,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 561,
+      "line": 558,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -23988,11 +23887,19 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 923,
+      "line": 920,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "auto Feat = pcActiveBody->getDocument()->getObject(FeatName.c_str());"
+    },
+    {
+      "path": "src/Mod/PartDesign/Gui/Command.cpp",
+      "line": 1409,
+      "category": "live-app-dereference",
+      "subsystem": "PartDesign",
+      "disposition": "investigate",
+      "evidence": "FCMD_OBJ_CMD(Feat, \"Angle = 360.0\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
@@ -24000,19 +23907,11 @@
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
-      "evidence": "FCMD_OBJ_CMD(Feat, \"Angle = 360.0\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 1415,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
       "evidence": "FCMD_OBJ_CMD(Feat, \"Reversed = 1\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 1474,
+      "line": 1471,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24020,7 +23919,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 1481,
+      "line": 1478,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24028,7 +23927,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 1954,
+      "line": 1951,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24036,7 +23935,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 1957,
+      "line": 1954,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24044,7 +23943,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2293,
+      "line": 2290,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24052,7 +23951,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2296,
+      "line": 2293,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24060,7 +23959,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2457,
+      "line": 2454,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24068,7 +23967,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2458,
+      "line": 2455,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24076,7 +23975,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2519,
+      "line": 2516,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24084,7 +23983,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2520,
+      "line": 2517,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24092,7 +23991,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2562,
+      "line": 2559,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24100,7 +23999,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2563,
+      "line": 2560,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24108,7 +24007,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2660,
+      "line": 2657,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24116,7 +24015,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2667,
+      "line": 2664,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24124,7 +24023,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/Command.cpp",
-      "line": 2740,
+      "line": 2737,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24132,7 +24031,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 232,
+      "line": 231,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24140,7 +24039,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 236,
+      "line": 235,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24148,7 +24047,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 239,
+      "line": 238,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24156,7 +24055,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 248,
+      "line": 247,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24164,7 +24063,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 258,
+      "line": 257,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24172,7 +24071,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 266,
+      "line": 265,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24180,7 +24079,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 277,
+      "line": 276,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24188,7 +24087,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 284,
+      "line": 283,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24196,7 +24095,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 289,
+      "line": 288,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24204,7 +24103,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 570,
+      "line": 569,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24212,7 +24111,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 573,
+      "line": 572,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24220,7 +24119,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 579,
+      "line": 578,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24228,7 +24127,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 586,
+      "line": 585,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24236,7 +24135,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 601,
+      "line": 600,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24244,7 +24143,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 631,
+      "line": 630,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24252,7 +24151,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 727,
+      "line": 726,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24260,7 +24159,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 941,
+      "line": 940,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24268,7 +24167,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/CommandBody.cpp",
-      "line": 942,
+      "line": 941,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24332,7 +24231,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
-      "line": 159,
+      "line": 160,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24340,31 +24239,15 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
-      "line": 309,
+      "line": 310,
       "category": "process-events-polling",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "QApplication::processEvents();"
     },
     {
-      "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
-      "line": 450,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskBooleanParameters.cpp",
-      "line": 450,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
       "path": "src/Mod/PartDesign/Gui/TaskDraftParameters.cpp",
-      "line": 228,
+      "line": 225,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24372,7 +24255,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskDraftParameters.cpp",
-      "line": 238,
+      "line": 235,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24380,7 +24263,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 155,
+      "line": 156,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -24388,59 +24271,11 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 214,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(feature, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 214,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(feature, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 218,
+      "line": 221,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppDocument(feature, \"purgeTouched()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 229,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(feature->getDocument(), \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 229,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(feature->getDocument(), \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 317,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(document, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.cpp",
-      "line": 317,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(document, \"recompute()\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskFeatureParameters.h",
@@ -24660,7 +24495,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 236,
+      "line": 237,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24668,7 +24503,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 255,
+      "line": 256,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24676,7 +24511,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 280,
+      "line": 281,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24684,7 +24519,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 389,
+      "line": 390,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24692,27 +24527,11 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 609,
+      "line": 610,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppObjectArgs(pipe, \"Spine = %s\", propT.getPropertyPython());"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 611,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(pipe, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
-      "line": 611,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(pipe, \"recompute()\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPipeParameters.cpp",
@@ -24756,83 +24575,19 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
-      "line": 927,
+      "line": 928,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "App::Document* doc = App::GetApplication().getActiveDocument();"
     },
     {
-      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
-      "line": 1099,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
-      "line": 1099,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::runCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
-      "line": 1221,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskPrimitiveParameters.cpp",
-      "line": 1221,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
       "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 319,
+      "line": 320,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
       "evidence": "auto docObj = vp->getObject()->getDocument()->getObject(msg.pObjectName);"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 431,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(vp->getObject(), \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 431,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(vp->getObject(), \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 460,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/TaskShapeBinder.cpp",
-      "line": 460,
-      "category": "live-app-dereference",
-      "subsystem": "PartDesign",
-      "disposition": "investigate",
-      "evidence": "Gui::cmdAppDocument(doc, \"recompute()\");"
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskSketchBasedParameters.cpp",
@@ -24844,7 +24599,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
-      "line": 158,
+      "line": 159,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -24852,7 +24607,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/TaskTransformedParameters.cpp",
-      "line": 225,
+      "line": 226,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24900,7 +24655,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 105,
+      "line": 104,
       "category": "live-reference-callback",
       "subsystem": "PartDesign",
       "disposition": "migrate",
@@ -24908,7 +24663,7 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 324,
+      "line": 323,
       "category": "live-app-dereference",
       "subsystem": "PartDesign",
       "disposition": "investigate",
@@ -24916,19 +24671,11 @@
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 328,
+      "line": 327,
       "category": "update-data-provider",
       "subsystem": "PartDesign",
       "disposition": "migrate",
       "evidence": "void ViewProviderBody::updateData(const App::Property* prop)"
-    },
-    {
-      "path": "src/Mod/PartDesign/Gui/ViewProviderBody.cpp",
-      "line": 593,
-      "category": "direct-recompute",
-      "subsystem": "PartDesign",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
     },
     {
       "path": "src/Mod/PartDesign/Gui/ViewProviderBody.h",
@@ -25268,7 +25015,7 @@
     },
     {
       "path": "src/Mod/Points/Gui/ViewProvider.h",
-      "line": 140,
+      "line": 145,
       "category": "update-data-provider",
       "subsystem": "Points",
       "disposition": "migrate",
@@ -25276,7 +25023,7 @@
     },
     {
       "path": "src/Mod/Points/Gui/ViewProvider.h",
-      "line": 168,
+      "line": 173,
       "category": "update-data-provider",
       "subsystem": "Points",
       "disposition": "migrate",
@@ -25612,22 +25359,6 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 262,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");// recompute the sketch placement based"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 262,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");// recompute the sketch placement based"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 271,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
@@ -25676,22 +25407,6 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 393,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 393,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Doc, \"App.ActiveDocument.recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 628,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
@@ -25724,22 +25439,6 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 840,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 840,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 845,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
@@ -25753,22 +25452,6 @@
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppObjectArgs(sketch, \"AttachmentSupport = None\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 849,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 849,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
@@ -25804,22 +25487,6 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 1061,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 1061,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Gui, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
       "line": 1276,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
@@ -25849,22 +25516,6 @@
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "\"App.activeDocument().ActiveObject.Placement = App.activeDocument().%s.Placement\","
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 1404,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doCommand(Doc, \"App.activeDocument().recompute()\");"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/Command.cpp",
-      "line": 1404,
-      "category": "live-app-dereference",
-      "subsystem": "Sketcher",
-      "disposition": "investigate",
-      "evidence": "doCommand(Doc, \"App.activeDocument().recompute()\");"
     },
     {
       "path": "src/Mod/Sketcher/Gui/CommandAlterGeometry.cpp",
@@ -28212,7 +27863,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/EditDatumDialog.cpp",
-      "line": 295,
+      "line": 296,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -28220,7 +27871,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/EditDatumDialog.cpp",
-      "line": 310,
+      "line": 311,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -28244,19 +27895,11 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
-      "line": 143,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.getDocument('%s').recompute()\", document.c_str());"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/TaskDlgEditSketch.cpp",
-      "line": 143,
+      "line": 144,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
-      "evidence": "Gui::Command::doCommand(Gui::Command::Doc, \"App.getDocument('%s').recompute()\", document.c_str());"
+      "evidence": "if (auto* appDoc = App::GetApplication().getDocument(document.c_str())) {"
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherConstraints.cpp",
@@ -28364,7 +28007,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 205,
+      "line": 206,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -28372,15 +28015,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 213,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 260,
+      "line": 261,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -28388,7 +28023,7 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 413,
+      "line": 414,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
@@ -28396,19 +28031,11 @@
     },
     {
       "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 519,
+      "line": 520,
       "category": "live-app-dereference",
       "subsystem": "Sketcher",
       "disposition": "investigate",
       "evidence": "Gui::cmdAppObjectArgs(sketch.get(), \"removeDegeneratedGeometries(%.12f)\", prec);"
-    },
-    {
-      "path": "src/Mod/Sketcher/Gui/TaskSketcherValidation.cpp",
-      "line": 527,
-      "category": "direct-recompute",
-      "subsystem": "Sketcher",
-      "disposition": "migrate",
-      "evidence": "doc->recompute();"
     },
     {
       "path": "src/Mod/Sketcher/Gui/Utils.cpp",

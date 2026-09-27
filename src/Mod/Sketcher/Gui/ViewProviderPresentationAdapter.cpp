@@ -18,15 +18,14 @@ bool SketcherGui::captureSketcherWorkbenchPresentationRenderBuffer(
 
 ViewProviderPresentationClassification ViewProviderSketch::presentationClassification() const
 {
-    return ViewProviderPresentationClassification::Adapted;
+    // Sketch geometry remains on Coin edit nodes; do not claim Adapted until a
+    // real pointer-free buffer path exists.
+    return ViewProviderPresentationClassification::Unsupported;
 }
 
 bool ViewProviderSketch::capturePresentationRenderBuffer(
-    const ViewProviderPresentationCaptureRequest& request,
-    PresentationRenderBuffer& buffer) const
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
 {
-    buffer = PresentationRenderBuffer {};
-    buffer.stableObjectIdentity = request.stableObjectIdentity;
-    // Sketch geometry remains on Coin edit nodes until a dedicated buffer path lands.
-    return !request.stableObjectIdentity.empty();
+    return false;
 }

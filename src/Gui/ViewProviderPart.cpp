@@ -95,14 +95,17 @@ void ViewProviderPart::updateData(const App::Property* prop)
 
 ViewProviderPresentationClassification ViewProviderPart::presentationClassification() const
 {
-    return ViewProviderPresentationClassification::Adapted;
+    // Concrete Part tessellation capture lives on PartGui::ViewProviderPartExt.
+    // Do not call capturePartPresentationRenderBuffer here: that free function
+    // dispatches back through this virtual and would recurse forever.
+    return ViewProviderPresentationClassification::Unsupported;
 }
 
 bool ViewProviderPart::capturePresentationRenderBuffer(
-    const ViewProviderPresentationCaptureRequest& request,
-    PresentationRenderBuffer& buffer) const
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
 {
-    return capturePartPresentationRenderBuffer(*this, request, buffer);
+    return false;
 }
 
 void ViewProviderPart::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)

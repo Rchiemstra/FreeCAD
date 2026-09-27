@@ -4,6 +4,7 @@
 
 #include "Application.h"
 #include "Document.h"
+#include "DocumentCrossDocumentSnapshot.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
 #include "DocumentWouldBlock.h"
@@ -25,9 +26,10 @@ namespace App
 {
 
 DocumentExecutionClosePolicy::UnresponsiveLaneAction
-DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy() noexcept
+DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(const bool stalled) noexcept
 {
-    return UnresponsiveLaneAction::KeepWaiting;
+    return stalled ? UnresponsiveLaneAction::RequestProcessExit
+                   : UnresponsiveLaneAction::KeepWaiting;
 }
 
 namespace
@@ -245,6 +247,14 @@ bool DocumentExecutionLane::shutdownRequested() const noexcept
 {
     std::lock_guard lock(_mutex);
     return _shutdownRequested;
+}
+
+bool DocumentExecutionLane::isWatchdogStalled() const noexcept
+{
+    if (!_telemetry) {
+        return false;
+    }
+    return _telemetry->snapshot().watchdog.stalled();
 }
 
 DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand command)
@@ -595,6 +605,72 @@ void DocumentExecutionLane::executeActiveRecompute()
                         }
                     }
 
+                    // Cross-document XLink inputs: reserve in stable ID order and
+                    // capture revision-bound snapshots. Undeclared live references
+                    // are rejected as Unsupported before recompute starts.
+                    {
+                        std::vector<DocumentRevisionIdentityBinding> foreign;
+                        std::vector<DocumentRevisionKey> structureKeys {
+                            DocumentRevisionKey::documentStructure()};
+                        for (auto* object : objects) {
+                            if (!object) {
+                                continue;
+                            }
+                            for (auto* linked :
+                                 object->getOutList(DocumentObject::OutListNoHidden)) {
+                                if (!linked || !linked->getDocument()
+                                    || linked->getDocument() == &_document) {
+                                    continue;
+                                }
+                                if (auto identity =
+                                        linked->getDocument()
+                                            ->collaborationRevisions()
+                                            .documentIdentity()) {
+                                    foreign.push_back(*identity);
+                                    static_cast<void>(captureCrossDocumentSnapshot(
+                                        *linked->getDocument(), structureKeys));
+                                }
+                            }
+                        }
+                        if (!foreign.empty()) {
+                            const bool declaresSnapshots =
+                                _active->command.recompute
+                                && _active->command.recompute->declaresCrossDocumentSnapshots;
+                            const auto dependencyKind = declaresSnapshots
+                                ? DocumentCrossDocumentDependencyKind::DeclaredSnapshot
+                                : DocumentCrossDocumentDependencyKind::UndeclaredLiveReference;
+                            const auto reservation =
+                                tryReserveDocumentsForCrossDocumentCommand(
+                                    foreign,
+                                    dependencyKind);
+                            if (reservation.result
+                                == DocumentCrossDocumentReservationResult::Unsupported) {
+                                completeActiveCommand(
+                                    DocumentCommandState::Failed,
+                                    reservation.diagnostic.empty()
+                                        ? "cross-document live references are Unsupported"
+                                        : reservation.diagnostic);
+                                return;
+                            }
+                            if (reservation.result
+                                == DocumentCrossDocumentReservationResult::Busy
+                                || reservation.result
+                                    == DocumentCrossDocumentReservationResult::Conflict) {
+                                completeActiveCommand(
+                                    DocumentCommandState::Failed,
+                                    reservation.diagnostic.empty()
+                                        ? "cross-document reservation failed"
+                                        : reservation.diagnostic);
+                                return;
+                            }
+                            if (reservation.result
+                                == DocumentCrossDocumentReservationResult::Reserved) {
+                                _active->crossDocumentReservations =
+                                    reservation.reservedInOrder;
+                            }
+                        }
+                    }
+
                     const bool force = _active->command.recompute
                         && _active->command.recompute->coalescingKey.find("force;")
                             != std::string::npos;
@@ -829,6 +905,11 @@ void DocumentExecutionLane::completeActiveCommand(DocumentCommandState state,
     std::lock_guard lock(_mutex);
     if (!_active) {
         return;
+    }
+
+    if (!_active->crossDocumentReservations.empty()) {
+        releaseCrossDocumentReservations(_active->crossDocumentReservations);
+        _active->crossDocumentReservations.clear();
     }
 
     _active->snapshot.state = state;

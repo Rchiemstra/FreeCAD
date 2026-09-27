@@ -38,7 +38,9 @@ bool ViewProviderPoints::capturePresentationRenderBuffer(
         return !request.stableObjectIdentity.empty();
     }
 
-    const Points::PointKernel& points = pointsProperty->Points.getValue();
+    // Capture runs at the stable recompute boundary on the GUI thread after the
+    // App model is quiescent; values are copied into locals before buffer fill.
+    const Points::PointKernel points = pointsProperty->Points.getValue();
     buffer.vertices.reserve(points.size() * 3U);
     for (const Base::Vector3d& point : points) {
         buffer.vertices.push_back(static_cast<float>(point.x));

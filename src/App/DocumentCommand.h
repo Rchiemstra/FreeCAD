@@ -67,6 +67,8 @@ struct AppExport DocumentCommandRecomputePayload
     std::string coalescingKey;
     int options {0};
     bool refreshRevisionFenceAfterEachCommit {false};
+    /** When true, foreign-document out-list dependencies use DeclaredSnapshot. */
+    bool declaresCrossDocumentSnapshots {false};
 };
 
 /** Pointer-free edit payload carried by one admitted command. */

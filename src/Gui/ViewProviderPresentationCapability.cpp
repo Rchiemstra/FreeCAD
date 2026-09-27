@@ -35,6 +35,14 @@ bool Gui::capturePartPresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer)
 {
+    // Dispatch only when the concrete provider already overrides capture.
+    // Calling this from a default/base override that forwards here recurses.
+    if (provider.presentationClassification()
+        != ViewProviderPresentationClassification::Adapted) {
+        buffer = PresentationRenderBuffer {};
+        buffer.stableObjectIdentity = request.stableObjectIdentity;
+        return false;
+    }
     return provider.capturePresentationRenderBuffer(request, buffer);
 }
 
@@ -43,6 +51,12 @@ bool Gui::captureMeshPresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer)
 {
+    if (provider.presentationClassification()
+        != ViewProviderPresentationClassification::Adapted) {
+        buffer = PresentationRenderBuffer {};
+        buffer.stableObjectIdentity = request.stableObjectIdentity;
+        return false;
+    }
     return provider.capturePresentationRenderBuffer(request, buffer);
 }
 
@@ -51,6 +65,12 @@ bool Gui::capturePointsPresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer)
 {
+    if (provider.presentationClassification()
+        != ViewProviderPresentationClassification::Adapted) {
+        buffer = PresentationRenderBuffer {};
+        buffer.stableObjectIdentity = request.stableObjectIdentity;
+        return false;
+    }
     return provider.capturePresentationRenderBuffer(request, buffer);
 }
 
@@ -59,5 +79,11 @@ bool Gui::captureSketchPresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer)
 {
+    if (provider.presentationClassification()
+        != ViewProviderPresentationClassification::Adapted) {
+        buffer = PresentationRenderBuffer {};
+        buffer.stableObjectIdentity = request.stableObjectIdentity;
+        return false;
+    }
     return provider.capturePresentationRenderBuffer(request, buffer);
 }

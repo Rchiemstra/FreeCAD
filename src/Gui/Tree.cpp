@@ -1167,19 +1167,17 @@ void TreeWidget::_updateStatus(bool delay)
         return;
     }
 
-    // While a document execution lane is busy and a committed presentation
-    // revision is available, keep the last committed tree and do not pull
-    // live model mutations into the widget.
-    bool suppressLiveModelRefresh = false;
+    bool readingCommittedPresentation = false;
     for (const auto& entry : DocumentMap) {
         auto* guiDocument = entry.first;
         auto* appDocument = guiDocument ? guiDocument->getDocument() : nullptr;
         if (appDocument && shouldReadCommittedPresentation(*appDocument)) {
-            suppressLiveModelRefresh = true;
+            readingCommittedPresentation = true;
             break;
         }
     }
-    if (suppressLiveModelRefresh) {
+    if (readingCommittedPresentation) {
+        applyCommittedPresentationTreeReading();
         return;
     }
 
@@ -3553,6 +3551,48 @@ struct UpdateDisabler
         }
     }
 };
+
+void TreeWidget::applyCommittedPresentationTreeReading()
+{
+    for (const auto& entry : DocumentMap) {
+        auto* guiDocument = entry.first;
+        auto* appDocument = guiDocument ? guiDocument->getDocument() : nullptr;
+        if (!appDocument || !shouldReadCommittedPresentation(*appDocument)) {
+            continue;
+        }
+        const auto presentation = guiDocument->presentationCache().current();
+        if (!presentation) {
+            continue;
+        }
+        for (const auto& node : presentation->tree) {
+            App::DocumentObject* object = nullptr;
+            for (auto* candidate : appDocument->getObjects()) {
+                if (appDocument->collaborationObjectIdentity(*candidate)
+                    == node.stableObjectIdentity) {
+                    object = candidate;
+                    break;
+                }
+            }
+            if (!object) {
+                continue;
+            }
+            auto itEntry = ObjectTable.find(object);
+            if (itEntry == ObjectTable.end() || itEntry->second.empty()) {
+                continue;
+            }
+            const auto displayName = QString::fromUtf8(node.label.c_str());
+            for (const auto& data : itEntry->second) {
+                if (data->label != node.label) {
+                    data->label = node.label;
+                }
+                for (auto* item : data->items) {
+                    item->setText(0, displayName);
+                    item->setHidden(!node.visible);
+                }
+            }
+        }
+    }
+}
 
 void TreeWidget::onUpdateStatus()
 {

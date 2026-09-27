@@ -98,8 +98,10 @@ TEST_F(GuiPythonGateTest, ModelTouchingRejectsWhenGilIsBusy)
 TEST_F(GuiPythonGateTest, ClosePolicyNeverTerminatesLaneThread)
 {
     EXPECT_TRUE(App::DocumentExecutionClosePolicy::laneThreadTerminationIsForbidden());
-    EXPECT_EQ(App::DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(),
+    EXPECT_EQ(App::DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(false),
               App::DocumentExecutionClosePolicy::UnresponsiveLaneAction::KeepWaiting);
+    EXPECT_EQ(App::DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(true),
+              App::DocumentExecutionClosePolicy::UnresponsiveLaneAction::RequestProcessExit);
     EXPECT_NE(App::DocumentExecutionClosePolicy::unresponsiveLaneGuidance(), nullptr);
 }
 

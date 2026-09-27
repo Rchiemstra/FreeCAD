@@ -90,16 +90,29 @@ PUBLIC_OPERATION_PATTERNS = {
         r"(?<![A-Za-z0-9_])setActiveTransaction\s*\("
     ),
     "undo/history control": re.compile(
-        r"(?<![A-Za-z0-9_])(?:undo|clearUndo|clearUndos)\s*\("
+        r"(?<![A-Za-z0-9_])(?:undo|clearUndo|clearUndos|"
+        r"submitDocumentKindCommand)\s*\("
     ),
-    "redo/history control": re.compile(r"(?<![A-Za-z0-9_])redo\s*\("),
-    "full recompute": re.compile(r"(?<![A-Za-z0-9_])recompute\s*\("),
+    "redo/history control": re.compile(
+        r"(?<![A-Za-z0-9_])(?:redo|submitDocumentKindCommand)\s*\("
+    ),
+    "full recompute": re.compile(
+        r"(?<![A-Za-z0-9_])(?:recompute|recomputeAsync|"
+        r"submitDocumentRecompute(?:OrReport|Once)?|"
+        r"submitActiveDocumentRecomputeOrReport|trySubmitDocumentRecompute|"
+        r"requestDocumentRecompute)\s*\("
+    ),
     "feature recompute": re.compile(
-        r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute)\s*\("
+        r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute|recomputeAsync|"
+        r"submitDocumentRecompute(?:OrReport|Once)?|"
+        r"submitActiveDocumentRecomputeOrReport|trySubmitDocumentRecompute|"
+        r"requestDocumentRecompute)\s*\("
     ),
     "command/macro bridge": re.compile(
         r"(?<![A-Za-z0-9_])(?:doCommand|doCommandT|runCommand|runPythonCommand|"
-        r"FCMD_OBJ_CMD|FCMD_DOC_CMD)\s*\("
+        r"FCMD_OBJ_CMD|FCMD_DOC_CMD|submitDocumentKindCommand|"
+        r"submitDocumentRecompute(?:OrReport)?|"
+        r"submitActiveDocumentRecomputeOrReport)\s*\("
     ),
 }
 

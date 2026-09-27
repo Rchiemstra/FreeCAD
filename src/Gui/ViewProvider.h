@@ -612,6 +612,19 @@ public:
         const ViewProviderPresentationCaptureRequest& request,
         PresentationRenderBuffer& buffer) const;
 
+    /**
+     * Python view providers must opt in before async presentation capture.
+     * Native providers return false / true respectively.
+     */
+    [[nodiscard]] virtual bool requiresAsyncPresentationDeclaration() const
+    {
+        return false;
+    }
+    [[nodiscard]] virtual bool declaresAsyncPresentation() const
+    {
+        return true;
+    }
+
     bool isUpdatesEnabled() const;
     void setUpdatesEnabled(bool enable);
 

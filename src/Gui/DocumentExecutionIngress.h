@@ -9,6 +9,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -100,9 +101,16 @@ GuiExport bool documentExecutionLaneBusy(const App::Document& document);
 
 /**
  * True when GUI readers must use DocumentPresentationCache instead of live
- * App::DocumentObject / Property pointers (lane busy with a committed revision).
+ * App::DocumentObject / Property pointers (lane busy or post-commit sticky
+ * presentation until idle live updateData).
  */
 GuiExport bool shouldReadCommittedPresentation(const App::Document& document);
+
+/** Committed presentation display string for one property, if published. */
+GuiExport std::optional<std::string> committedPresentationPropertyDisplayValue(
+    const App::Document& document,
+    const App::DocumentObject& object,
+    const char* propertyName);
 
 /**
  * Prepare one document for save on the GUI thread without waiting.

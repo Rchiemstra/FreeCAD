@@ -234,7 +234,12 @@ public:
         delete imp;
     }
 
-    [[nodiscard]] bool declaresAsyncPresentation() const
+    [[nodiscard]] bool requiresAsyncPresentationDeclaration() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] bool declaresAsyncPresentation() const override
     {
         return imp->supportsAsyncPresentation() == ViewProviderFeaturePythonImp::Accepted;
     }

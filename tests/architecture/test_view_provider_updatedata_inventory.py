@@ -206,6 +206,70 @@ def test_every_production_provider_is_inventoried() -> None:
     assert not failures, "updateData provider inventory drift:\n" + "\n".join(failures)
 
 
+PRESENTATION_CLASSIFICATION_IMPL = re.compile(
+    r"(?:Gui::)?ViewProviderPresentationClassification\s+"
+    r"(\w+(?:::\w+)*)::presentationClassification\(\)\s+const\s*\{"
+    r"(?P<body>.*?)\n\}",
+    re.MULTILINE | re.DOTALL,
+)
+PRESENTATION_CLASSIFICATION_RETURN = re.compile(
+    r"return\s+(?:Gui::)?ViewProviderPresentationClassification::(Adapted|Unsupported)\s*;",
+)
+
+# Inventory-critical Adapted / Unsupported pairs that must not drift silently.
+CRITICAL_PRESENTATION_SOURCE_EXPECTATIONS: dict[str, str] = {
+    "src/Gui/ViewProviderPart.cpp": "Unsupported",
+    "src/Gui/ViewProviderGeometryObject.cpp": "Unsupported",
+    "src/Gui/ViewProviderLink.cpp": "Unsupported",
+    "src/Gui/ViewProviderPresentationCapability.cpp": "Unsupported",
+    "src/Mod/Sketcher/Gui/ViewProviderPresentationAdapter.cpp": "Unsupported",
+    "src/Mod/Part/Gui/ViewProviderExt.cpp": "Adapted",
+    "src/Mod/Mesh/Gui/ViewProviderPresentationAdapter.cpp": "Adapted",
+    "src/Mod/Points/Gui/ViewProviderPresentationAdapter.cpp": "Adapted",
+}
+
+
+def _presentation_classification_in_cpp(path: Path) -> str | None:
+    text = path.read_text(encoding="utf-8", errors="surrogateescape")
+    match = PRESENTATION_CLASSIFICATION_IMPL.search(text)
+    if not match:
+        return None
+    body = match.group("body")
+    return_match = PRESENTATION_CLASSIFICATION_RETURN.search(body)
+    return return_match.group(1) if return_match else None
+
+
+def test_presentation_classification_matches_cpp_expectations() -> None:
+    failures: list[str] = []
+    discovered: dict[str, str] = {}
+    for path in iter_source_files(REPO_ROOT):
+        if path.suffix != ".cpp":
+            continue
+        classification = _presentation_classification_in_cpp(path)
+        if classification is None:
+            continue
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        discovered[relative] = classification
+
+    for relative, expected in CRITICAL_PRESENTATION_SOURCE_EXPECTATIONS.items():
+        actual = discovered.get(relative)
+        if actual is None:
+            failures.append(f"missing presentationClassification() implementation in {relative}")
+        elif actual != expected:
+            failures.append(
+                f"{relative} presentationClassification expected {expected}, found {actual}"
+            )
+
+    for relative, actual in sorted(discovered.items()):
+        if relative not in CRITICAL_PRESENTATION_SOURCE_EXPECTATIONS:
+            failures.append(
+                f"untracked presentationClassification() in {relative} returns {actual}; "
+                "add to CRITICAL_PRESENTATION_SOURCE_EXPECTATIONS"
+            )
+
+    assert not failures, "presentation classification drift:\n" + "\n".join(failures)
+
+
 def test_generator_reproduces_committed_inventory() -> None:
     before = INVENTORY_PATH.read_text(encoding="utf-8")
     completed = subprocess.run(

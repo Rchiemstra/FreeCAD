@@ -65,6 +65,7 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
+#include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <App/ElementNamingUtils.h>
 #include <Base/Console.h>
@@ -91,8 +92,12 @@
 #include "View3DInventorViewer.h"
 #include "DocumentPresentationCache.h"
 #include "PresentationApplyScheduler.h"
+#include "PresentationDelta.h"
 #include "ViewProvider.h"
 #include "ViewProviderDocumentObject.h"
+#include "ViewProviderPresentationCapability.h"
+#include "GuiPythonGate.h"
+#include <App/DocumentRevisionIndex.h>
 #include "ViewProviderDocumentObjectGroup.h"
 #include "WaitCursor.h"
 #include "WindowLayout.h"
@@ -115,6 +120,8 @@ struct DocumentP
     mutable std::optional<SharedPresentationPersistenceCapture> pendingPresentationSave;
     DocumentPresentationCache presentationCache;
     std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
+    /** Keep committed Coin visible after apply until idle live updateData. */
+    bool _preferCommittedPresentation {false};
     PersonalViewContextStore personalViewContexts;
     bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
@@ -674,6 +681,8 @@ Document::~Document()
 
     // e.g. if document gets closed from within a Python command
     d->_isClosing = true;
+    d->_preferCommittedPresentation = false;
+    syncCommittedPresentationInViewers();
     // calls Document::detachView() and alter the view list
     std::list<Gui::BaseView*> temp = d->baseViews;
     for (auto& it : temp) {
@@ -1213,6 +1222,16 @@ void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Prop
 {
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (viewProvider) {
+        // While the lane is busy, do not drive presentation through sync
+        // updateData(Property*). Readers use the committed cache; a full
+        // revision is published at the next stable recompute boundary.
+        if (documentExecutionLaneBusy(*d->_pcDocument)) {
+            return;
+        }
+        if (d->_preferCommittedPresentation) {
+            d->_preferCommittedPresentation = false;
+            syncCommittedPresentationInViewers();
+        }
         try {
             viewProvider->update(&Prop);
             if (d->_editingViewer && d->_editingObject && d->_editViewProviderParent
@@ -1325,6 +1344,8 @@ void Document::slotRecomputed(const App::Document& doc)
     if (d->_pcDocument != &doc) {
         return;
     }
+    // Stable boundary: publish one immutable presentation revision for GUI apply.
+    publishPresentationRevisionFromModel();
     getMainWindow()->updateActions();
     TreeWidget::updateStatus();
 }
@@ -1735,12 +1756,122 @@ PresentationApplyScheduler& Document::presentationApplyScheduler()
 
 PresentationApplyPumpResult Document::pumpPresentationApply(const int budgetMs)
 {
-    return presentationApplyScheduler().pump(budgetMs);
+    const auto result = presentationApplyScheduler().pump(budgetMs);
+    if (result.committedRevision) {
+        d->_preferCommittedPresentation = true;
+    }
+    syncCommittedPresentationInViewers();
+    return result;
+}
+
+bool Document::prefersCommittedPresentation() const noexcept
+{
+    return d->_preferCommittedPresentation;
+}
+
+void Document::syncCommittedPresentationInViewers()
+{
+    SoSeparator* committedRoot = presentationCache().committedCoinRoot();
+    const bool hasCommittedPresentation = presentationCache().current().has_value();
+    const bool preferCommitted = committedRoot != nullptr && hasCommittedPresentation
+        && (d->_preferCommittedPresentation
+            || documentExecutionLaneBusy(*d->_pcDocument));
+    for (auto* view : d->baseViews) {
+        auto* inventorView = dynamic_cast<View3DInventor*>(view);
+        if (!inventorView) {
+            continue;
+        }
+        if (auto* viewer = inventorView->getViewer()) {
+            // When not preferring committed, uninstall the committed Coin
+            // sibling so live objectGroup is the only navigable geometry.
+            viewer->installCommittedPresentationRoot(
+                preferCommitted ? committedRoot : nullptr, preferCommitted);
+        }
+    }
 }
 
 void Document::enqueuePresentationDelta(PresentationDelta&& delta)
 {
     presentationApplyScheduler().enqueue(std::move(delta));
+    // Ensure the ~4 ms pump keeps running across event-loop turns.
+    if (auto* main = getMainWindow()) {
+        main->updateActions(/*delay=*/true);
+    }
+}
+
+void Document::publishPresentationRevisionFromModel()
+{
+    auto& cache = presentationCache();
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    cache.bindDocumentIdentity(identity.instanceId, identity.lifecycleEpoch);
+
+    PresentationDelta delta;
+    delta.revision.documentInstanceId = identity.instanceId;
+    delta.revision.lifecycleEpoch = identity.lifecycleEpoch;
+    delta.revision.sequence = cache.committedSequence() + 1;
+    delta.revision.sourceModelRevision =
+        d->_pcDocument->collaborationRevisions().current(
+            App::DocumentRevisionKey::documentStructure());
+    if (delta.revision.sourceModelRevision == 0) {
+        delta.revision.sourceModelRevision = delta.revision.sequence;
+    }
+    delta.status.revision = delta.revision;
+    delta.status.state = DocumentPresentationState::Applying;
+    delta.status.statusMessage = "presentation revision captured at recompute boundary";
+
+    for (const auto& entry : d->_ViewProviderMap) {
+        const App::DocumentObject* object = entry.first;
+        ViewProviderDocumentObject* provider = entry.second;
+        if (!object || !provider) {
+            continue;
+        }
+        const std::string stableIdentity =
+            d->_pcDocument->collaborationObjectIdentity(*object);
+
+        PresentationTreeNode node;
+        node.stableObjectIdentity = stableIdentity;
+        node.label = object->Label.getValue();
+        node.visible = provider->isShow();
+        delta.tree.push_back(std::move(node));
+
+        const auto captureDisplayProperty =
+            [&](const char* propertyName, const std::string& displayValue) {
+                if (propertyName == nullptr || displayValue.empty()) {
+                    return;
+                }
+                PresentationPropertyValue propertyValue;
+                propertyValue.stableObjectIdentity = stableIdentity;
+                propertyValue.propertyName = propertyName;
+                propertyValue.displayValue = displayValue;
+                delta.properties.push_back(std::move(propertyValue));
+            };
+        captureDisplayProperty("Label", object->Label.getValue());
+        captureDisplayProperty("Label2", object->Label2.getValue());
+        captureDisplayProperty(
+            "Visibility",
+            object->Visibility.getValue() ? std::string("true") : std::string("false"));
+
+        const bool adaptedProvider =
+            provider->presentationClassification()
+            == ViewProviderPresentationClassification::Adapted;
+        const auto featureAdmission =
+            GuiPythonGate::verifyFeaturePythonExecution(*object);
+        if (adaptedProvider && featureAdmission.executed()) {
+            const auto admission =
+                GuiPythonGate::verifyViewProviderPythonExecution(*provider);
+            if (!admission.executed()) {
+                continue;
+            }
+            ViewProviderPresentationCaptureRequest request;
+            request.stableObjectIdentity = stableIdentity;
+            PresentationRenderBuffer buffer;
+            if (provider->capturePresentationRenderBuffer(request, buffer)) {
+                delta.renderBuffers.push_back(std::move(buffer));
+            }
+        }
+    }
+
+    enqueuePresentationDelta(std::move(delta));
 }
 
 void Document::publishSharedPresentationSchemaMutation(

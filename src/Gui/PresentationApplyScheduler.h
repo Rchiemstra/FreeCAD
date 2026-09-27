@@ -36,6 +36,7 @@ class GuiExport PresentationApplyScheduler
 {
 public:
     explicit PresentationApplyScheduler(DocumentPresentationCache& cache);
+    ~PresentationApplyScheduler();
 
     PresentationApplyScheduler(const PresentationApplyScheduler&) = delete;
     PresentationApplyScheduler& operator=(const PresentationApplyScheduler&) = delete;
@@ -78,6 +79,7 @@ private:
     DocumentPresentationCache& _cache;
     std::optional<PresentationDelta> _stagingPacket;
     PresentationDelta _stagingBuild;
+    class SoSeparator* _stagingCoinRoot {nullptr};
     std::vector<ApplySlicePlan> _slicePlan;
     std::size_t _nextSlice {0};
     mutable std::mutex _mutex;

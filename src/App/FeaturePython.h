@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include <App/DocumentWouldBlock.h>
 #include <App/GeoFeature.h>
 #include <App/PropertyPythonObject.h>
 
@@ -214,6 +215,15 @@ public:
     /// recalculate the Feature
     DocumentObjectExecReturn* execute() override
     {
+        // Document-lane / non-GUI execution requires an explicit Python opt-in.
+        // GuiPythonGate::verifyFeaturePythonExecution enforces the same rule
+        // before GUI-admitted Python work; this rejects undeclared features at
+        // the execute boundary so they cannot run on the owner thread either.
+        if (!DocumentWouldBlock::isGuiThread() && !declaresDocumentThreadExecution()) {
+            return new App::DocumentObjectExecReturn(
+                "Python feature must declare supportsDocumentThreadExecution() "
+                "before document-thread execution");
+        }
         try {
             bool handled = imp->execute();
             if (!handled) {
@@ -358,7 +368,12 @@ public:
         return imp->supportsAsyncRecompute() == FeaturePythonImp::Accepted;
     }
 
-    [[nodiscard]] bool declaresDocumentThreadExecution() const
+    [[nodiscard]] bool requiresDocumentThreadExecutionDeclaration() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] bool declaresDocumentThreadExecution() const override
     {
         return imp->supportsDocumentThreadExecution() == FeaturePythonImp::Accepted;
     }

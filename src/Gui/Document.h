@@ -247,6 +247,15 @@ public:
     [[nodiscard]] PresentationApplyPumpResult pumpPresentationApply(int budgetMs = 4);
     /** Enqueue one pointer-free presentation packet for incremental apply. */
     void enqueuePresentationDelta(PresentationDelta&& delta);
+    /**
+     * Capture one immutable presentation revision at a stable model boundary
+     * (post-recompute) and enqueue it for GUI apply. Pointer-free only.
+     */
+    void publishPresentationRevisionFromModel();
+    /** Install the cache's committed Coin root into all 3D views for this document. */
+    void syncCommittedPresentationInViewers();
+    /** True after a successful presentation commit until idle live updateData. */
+    [[nodiscard]] bool prefersCommittedPresentation() const noexcept;
     /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
     void publishSharedPresentationSchemaMutation(
         const Gui::ViewProvider& viewProvider,

@@ -15,6 +15,7 @@
 #include <Base/Console.h>
 
 #include <QApplication>
+#include <QMessageBox>
 #include <QTimer>
 
 #include <algorithm>
@@ -140,6 +141,8 @@ App::DocumentCommand makeDocumentRecomputeCommand(
     command.recompute->coalescingKey = buildRecomputeCoalescingKey(request);
     command.recompute->options = request.options;
     command.recompute->featureIds = request.featureIds;
+    // Public GUI/App facade recomputes declare snapshot-based foreign reads.
+    command.recompute->declaresCrossDocumentSnapshots = true;
     return command;
 }
 
@@ -365,6 +368,34 @@ bool submitDocumentClose(App::Document& document)
         submitDocumentKindCommand(document, App::DocumentCommandKind::Close);
     if (!outcome.accepted()) {
         reportDocumentCommandSubmitBlocked(document, outcome);
+        // Never terminate the lane thread. When the watchdog has marked the
+        // lane Stalled, offer whole-process exit as the only forced path.
+        const auto* lane = document.executionLane();
+        const bool stalled = lane && lane->isWatchdogStalled();
+        const auto action =
+            App::DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(stalled);
+        if (action
+            == App::DocumentExecutionClosePolicy::UnresponsiveLaneAction::RequestProcessExit) {
+            if (auto* window = getMainWindow()) {
+                const auto choice = QMessageBox::question(
+                    window,
+                    QCoreApplication::translate(
+                        "Gui::DocumentExecutionIngress",
+                        "Document execution stalled"),
+                    QCoreApplication::translate(
+                        "Gui::DocumentExecutionIngress",
+                        "%1\n\nKeep waiting for cooperative shutdown, or exit "
+                        "the whole FreeCAD process? The document owner thread "
+                        "is never terminated inside the process.")
+                        .arg(QString::fromUtf8(
+                            App::DocumentExecutionClosePolicy::unresponsiveLaneGuidance())),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No);
+                if (choice == QMessageBox::Yes) {
+                    QCoreApplication::exit(1);
+                }
+            }
+        }
     }
     return outcome.accepted();
 }
@@ -377,16 +408,46 @@ bool documentExecutionLaneBusy(const App::Document& document)
 
 bool shouldReadCommittedPresentation(const App::Document& document)
 {
-    if (!documentExecutionLaneBusy(document)) {
-        return false;
-    }
     auto* guiDocument = Application::Instance
         ? Application::Instance->getDocument(&document)
         : nullptr;
     if (!guiDocument) {
         return false;
     }
-    return guiDocument->presentationCache().current().has_value();
+    if (!guiDocument->presentationCache().current().has_value()) {
+        return false;
+    }
+    return documentExecutionLaneBusy(document)
+        || guiDocument->prefersCommittedPresentation();
+}
+
+std::optional<std::string> committedPresentationPropertyDisplayValue(
+    const App::Document& document,
+    const App::DocumentObject& object,
+    const char* propertyName)
+{
+    if (!propertyName || propertyName[0] == '\0'
+        || !shouldReadCommittedPresentation(document)) {
+        return std::nullopt;
+    }
+    auto* guiDocument = Application::Instance
+        ? Application::Instance->getDocument(&document)
+        : nullptr;
+    if (!guiDocument) {
+        return std::nullopt;
+    }
+    const auto presentation = guiDocument->presentationCache().current();
+    if (!presentation) {
+        return std::nullopt;
+    }
+    const std::string stableIdentity = document.collaborationObjectIdentity(object);
+    for (const auto& propertyValue : presentation->properties) {
+        if (propertyValue.stableObjectIdentity == stableIdentity
+            && propertyValue.propertyName == propertyName) {
+            return propertyValue.displayValue;
+        }
+    }
+    return std::nullopt;
 }
 
 bool prepareDocumentForImmediateSave(App::Document& document, const bool skipRecomputeIfAlreadyFlagged)

@@ -81,11 +81,17 @@ PUBLIC_OPERATION_PATTERNS = {
     "open": re.compile(r"(?<![A-Za-z0-9_])(?:openTransaction|openCommand|setActiveTransaction)\s*\("),
     "commit": re.compile(r"(?<![A-Za-z0-9_])(?:commitTransaction|commitCommand|closeActiveTransaction)\s*\("),
     "abort": re.compile(r"(?<![A-Za-z0-9_])(?:abortTransaction|abortCommand|closeActiveTransaction)\s*\("),
-    "undo": re.compile(r"(?<![A-Za-z0-9_])undo\s*\("),
-    "redo": re.compile(r"(?<![A-Za-z0-9_])redo\s*\("),
+    "undo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:undo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Undo)"
+    ),
+    "redo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:redo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Redo)"
+    ),
 }
 PUBLIC_RECOMPUTE_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute)\s*\("
+    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recomputeAsync|"
+    r"submitDocumentRecompute(?:OrReport)?|trySubmitDocumentRecompute|"
+    r"requestDocumentRecompute|submitDocumentKindCommand|recompute)\s*\("
 )
 
 
@@ -487,8 +493,6 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
         ("openCommand", "openTransaction("),
         ("commitCommand", "commitTransaction("),
         ("abortCommand", "abortTransaction("),
-        ("undo", "undo("),
-        ("redo", "redo("),
     )
     for method, public_call in gui_routes:
         owner = f"Gui::Document::{method}"
@@ -496,6 +500,19 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
             _body_for(gui_document, f"Document::{method}"),
             f"getDocument()->{public_call}",
             owner,
+        )
+    # Wave 1: undo/redo admit via trySubmit (submitDocumentKindCommand) instead of
+    # a synchronous getDocument()->undo()/redo() call on the GUI thread.
+    for method, kind in (("undo", "Undo"), ("redo", "Redo")):
+        owner = f"Gui::Document::{method}"
+        body = _body_for(gui_document, f"Document::{method}")
+        compact = "".join(body.split())
+        assert (
+            f"submitDocumentKindCommand" in compact
+            and f"DocumentCommandKind::{kind}" in compact
+        ) or f"getDocument()->{method}(" in compact, (
+            f"{owner}: expected submitDocumentKindCommand(...::{kind}) "
+            f"or getDocument()->{method}("
         )
 
 

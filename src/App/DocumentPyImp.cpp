@@ -219,6 +219,7 @@ PyObject* submitRecomputeCommand(Document& document,
     command.recompute = DocumentCommandRecomputePayload {};
     command.recompute->coalescingKey = buildRecomputeCoalescingKey(objects, force, options);
     command.recompute->options = options;
+    command.recompute->declaresCrossDocumentSnapshots = true;
     command.recompute->featureIds.reserve(objects.size());
     for (auto* object : objects) {
         if (object && object->isAttachedToDocument() && object->getDocument() == &document) {

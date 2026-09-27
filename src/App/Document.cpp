@@ -7604,6 +7604,15 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 {
     FC_LOG("Recomputing " << Feat->getFullName());
 
+    if (!DocumentWouldBlock::isGuiThread()
+        && Feat->requiresDocumentThreadExecutionDeclaration()
+        && !Feat->declaresDocumentThreadExecution()) {
+        d->addRecomputeLog(
+            "Python feature must declare supportsDocumentThreadExecution() before lane execution",
+            Feat);
+        return 1;
+    }
+
     DocumentObjectExecReturn* returnCode = nullptr;
     try {
         returnCode = Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);

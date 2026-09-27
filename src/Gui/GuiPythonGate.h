@@ -67,6 +67,8 @@ struct GuiExport GuiPythonObserverValueEvent
 };
 
 using GuiPythonGateCallback = std::function<void()>;
+using GuiPythonObserverValueEventHandler =
+    std::function<void(const GuiPythonObserverValueEvent&)>;
 
 /**
  * Central gate for GUI-thread Python entry.
@@ -99,6 +101,9 @@ public:
         const ViewProvider& provider);
 
     static void enqueueObserverValueEvent(GuiPythonObserverValueEvent event);
+
+    /** Optional delivery sink for queued pointer-free observer value events. */
+    static void setObserverValueEventHandler(GuiPythonObserverValueEventHandler handler);
 };
 
 }  // namespace Gui

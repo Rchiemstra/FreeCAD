@@ -1016,7 +1016,9 @@ View3DInventorViewer::View3DInventorViewer(QWidget* parent, const QOpenGLWidget*
     : Quarter::SoQTQuarterAdaptor(parent, sharewidget)
     , SelectionObserver(false, ResolveMode::NoResolve)
     , editViewProvider(nullptr)
+    , objectGroupSwitch(nullptr)
     , objectGroup(nullptr)
+    , pcCommittedPresentationRoot(nullptr)
     , navigation(nullptr)
     , renderType(Native)
     , framebuffer(nullptr)
@@ -1040,7 +1042,9 @@ View3DInventorViewer::View3DInventorViewer(
     : Quarter::SoQTQuarterAdaptor(format, parent, sharewidget)
     , SelectionObserver(false, ResolveMode::NoResolve)
     , editViewProvider(nullptr)
+    , objectGroupSwitch(nullptr)
     , objectGroup(nullptr)
+    , pcCommittedPresentationRoot(nullptr)
     , navigation(nullptr)
     , renderType(Native)
     , framebuffer(nullptr)
@@ -1260,7 +1264,16 @@ void View3DInventorViewer::init()
     objectGroup = new SoGroup();
     objectGroup->ref();
     objectGroup->setName("ObjectGroup");
-    pcViewProviderRoot->addChild(objectGroup);
+    objectGroupSwitch = new SoSwitch(SO_SWITCH_ALL);
+    objectGroupSwitch->ref();
+    objectGroupSwitch->setName("ObjectGroupSwitch");
+    objectGroupSwitch->addChild(objectGroup);
+    pcViewProviderRoot->addChild(objectGroupSwitch);
+
+    pcCommittedPresentationRoot = new SoSeparator();
+    pcCommittedPresentationRoot->ref();
+    pcCommittedPresentationRoot->setName("CommittedPresentationRoot");
+    pcViewProviderRoot->addChild(pcCommittedPresentationRoot);
 
     // Set our own render action which show a bounding box if
     // the SoFCSelection::BOX style is set
@@ -1396,6 +1409,15 @@ View3DInventorViewer::~View3DInventorViewer()
     coinRemoveAllChildren(this->pcViewProviderRoot);
     this->pcViewProviderRoot->unref();
     this->pcViewProviderRoot = nullptr;
+    if (this->pcCommittedPresentationRoot) {
+        coinRemoveAllChildren(this->pcCommittedPresentationRoot);
+        this->pcCommittedPresentationRoot->unref();
+        this->pcCommittedPresentationRoot = nullptr;
+    }
+    if (this->objectGroupSwitch) {
+        this->objectGroupSwitch->unref();
+        this->objectGroupSwitch = nullptr;
+    }
     this->objectGroup->unref();
     this->objectGroup = nullptr;
     this->backlight->unref();
@@ -1576,6 +1598,23 @@ bool View3DInventorViewer::containsViewProvider(const ViewProvider* vp) const
     sa.setSearchingAll(false);
     sa.apply(getSoRenderManager()->getSceneGraph());
     return sa.getPath() != nullptr;
+}
+
+void View3DInventorViewer::installCommittedPresentationRoot(
+    SoSeparator* coinRoot,
+    const bool showCommittedGeometry)
+{
+    if (!pcCommittedPresentationRoot || !objectGroupSwitch) {
+        return;
+    }
+
+    coinRemoveAllChildren(pcCommittedPresentationRoot);
+    if (coinRoot) {
+        pcCommittedPresentationRoot->addChild(coinRoot);
+    }
+
+    objectGroupSwitch->whichChild =
+        showCommittedGeometry && coinRoot ? SO_SWITCH_NONE : SO_SWITCH_ALL;
 }
 
 /// adds an ViewProvider to the view, e.g. from a feature

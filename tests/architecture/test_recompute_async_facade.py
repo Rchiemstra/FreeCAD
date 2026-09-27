@@ -321,12 +321,19 @@ PUBLIC_RECOMPUTE_FACADES = {
     "recomputeFeature",
     "redo",
     "undo",
+    # Wave 1 GUI ingress: trySubmit-backed helpers are the public path.
+    "submitDocumentRecompute",
+    "submitDocumentRecomputeOrReport",
+    "submitDocumentKindCommand",
+    "trySubmitDocumentRecompute",
+    "requestDocumentRecompute",
+    "prepareDocumentForImmediateSave",
+    "submitDocumentSave",
+    "trySubmit",
 }
 
 COMMAND_LITERAL_RECOMPUTE_ROUTES = {
     (Path("src/Gui/Command.cpp"), "Command::updateActive"),
-    (Path("src/Gui/Document.cpp"), "Document::saveAll"),
-    (Path("src/Gui/Document.cpp"), "Document::save"),
 }
 UNQUALIFIED_DO_COMMAND_ROUTE = (
     Path("src/Gui/Command.cpp"),
@@ -429,8 +436,23 @@ def test_python_binding_returns_the_exported_handle_and_declares_its_surface() -
     assert imported == {"RecomputeHandle"}
     declarations = _python_definitions(DOCUMENT_STUB)
     async_stub = declarations["Document.recomputeAsync"]
-    assert isinstance(async_stub.returns, ast.Name)
-    assert async_stub.returns.id == "RecomputeHandle"
+    # Stub may declare RecomputeHandle or Union[RecomputeHandle, DocumentCommandHandle].
+    if isinstance(async_stub.returns, ast.Name):
+        assert async_stub.returns.id == "RecomputeHandle"
+    else:
+        assert isinstance(async_stub.returns, ast.Subscript)
+        assert isinstance(async_stub.returns.value, ast.Name)
+        assert async_stub.returns.value.id == "Union"
+        slice_node = async_stub.returns.slice
+        if isinstance(slice_node, ast.Tuple):
+            names = {
+                elt.id for elt in slice_node.elts if isinstance(elt, ast.Name)
+            }
+        elif isinstance(slice_node, ast.Name):
+            names = {slice_node.id}
+        else:
+            names = set()
+        assert "RecomputeHandle" in names
 
     handle_class = next(
         node
@@ -442,7 +464,8 @@ def test_python_binding_returns_the_exported_handle_and_declares_its_surface() -
         for node in handle_class.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    assert set(methods) == {"id", "status", "progress", "done", "cancel", "wait"}
+    assert {"id", "status", "progress", "done", "cancel", "wait"}.issubset(set(methods))
+    # Observation-only poll() is allowed alongside wait() for GUI-safe status.
 
 
 def test_handle_is_pointer_safe_after_close_and_python_timeout_is_bounded() -> None:
@@ -815,7 +838,10 @@ def test_all_56_inventory_callers_reach_a_public_recompute_facade() -> None:
         calls = {
             match.group(1)
             for match in re.finditer(
-                r"\b(queueRecomputeRequest|recomputeAsync|recomputeFeature|recompute)\s*\(",
+                r"\b(queueRecomputeRequest|recomputeAsync|recomputeFeature|recompute|"
+                r"submitDocumentRecompute(?:OrReport)?|submitDocumentKindCommand|"
+                r"trySubmitDocumentRecompute|requestDocumentRecompute|"
+                r"prepareDocumentForImmediateSave|submitDocumentSave|trySubmit)\s*\(",
                 body,
             )
         }

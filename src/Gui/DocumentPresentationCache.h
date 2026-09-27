@@ -36,13 +36,16 @@ GuiExport const char* presentationCommitResultName(PresentationCommitResult resu
  * GUI-owned store for the last committed presentation revision.
  *
  * Committed tree, property, selection, and render-buffer data are swapped
- * atomically as one immutable snapshot. Observation APIs are thread-safe and
- * do not expose live model pointers.
+ * atomically as one immutable snapshot. The companion Coin presentation root
+ * is activated in the same critical section so readers never observe a split
+ * cache/root pair. Observation APIs are thread-safe and do not expose live
+ * model pointers.
  */
 class GuiExport DocumentPresentationCache
 {
 public:
     DocumentPresentationCache();
+    ~DocumentPresentationCache();
     DocumentPresentationCache(const DocumentPresentationCache&) = delete;
     DocumentPresentationCache& operator=(const DocumentPresentationCache&) = delete;
 
@@ -59,8 +62,20 @@ public:
      */
     [[nodiscard]] PresentationCommitResult tryCommit(PresentationDelta&& delta);
 
+    /**
+     * Atomically install @p delta and activate @p coinRoot as the committed
+     * presentation scene root. Ownership of @p coinRoot transfers to the cache
+     * (ref taken). The previous committed root is unref'd after the swap.
+     */
+    [[nodiscard]] PresentationCommitResult tryCommitWithCoinRoot(
+        PresentationDelta&& delta,
+        class SoSeparator* coinRoot);
+
     /** Copy of the last committed presentation packet, if any. */
     [[nodiscard]] std::optional<PresentationDelta> current() const;
+
+    /** Detached Coin presentation root for the committed revision, or null. */
+    [[nodiscard]] class SoSeparator* committedCoinRoot() const noexcept;
 
     /** Pointer-free lifecycle observation; does not advance work. */
     [[nodiscard]] DocumentPresentationStatus status() const;
@@ -73,12 +88,15 @@ private:
     [[nodiscard]] bool acceptsPacket(const PresentationRevision& revision) const noexcept;
 
     void publishObservation(DocumentPresentationStatus observation);
+    PresentationCommitResult tryCommitLocked(PresentationDelta&& delta);
+    void activateCoinRootLocked(class SoSeparator* coinRoot);
 
     mutable std::mutex _mutex;
     std::optional<App::DocumentRevisionIdentityBinding> _documentIdentity;
     PresentationSequence _committedSequence {0};
     App::DocumentRevision _committedSourceRevision {0};
     std::shared_ptr<const PresentationDelta> _committed;
+    class SoSeparator* _committedCoinRoot {nullptr};
     DocumentPresentationStatus _status;
     std::atomic<PresentationSequence> _committedSequenceAtomic {0};
 };

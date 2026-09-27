@@ -2,6 +2,8 @@
 
 #include "DocumentPresentationCache.h"
 
+#include <Inventor/nodes/SoSeparator.h>
+
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +32,14 @@ const char* presentationCommitResultName(const PresentationCommitResult result) 
 DocumentPresentationCache::DocumentPresentationCache()
 {
     _status.state = DocumentPresentationState::Committed;
+}
+
+DocumentPresentationCache::~DocumentPresentationCache()
+{
+    if (_committedCoinRoot) {
+        _committedCoinRoot->unref();
+        _committedCoinRoot = nullptr;
+    }
 }
 
 void DocumentPresentationCache::bindDocumentIdentity(
@@ -92,13 +102,11 @@ bool DocumentPresentationCache::acceptsPacket(
     return true;
 }
 
-PresentationCommitResult DocumentPresentationCache::tryCommit(PresentationDelta&& delta)
+PresentationCommitResult DocumentPresentationCache::tryCommitLocked(PresentationDelta&& delta)
 {
     if (!delta.revision.valid()) {
         return PresentationCommitResult::InvalidRevision;
     }
-
-    std::lock_guard<std::mutex> lock(_mutex);
     if (!_documentIdentity) {
         return PresentationCommitResult::Unbound;
     }
@@ -132,6 +140,36 @@ PresentationCommitResult DocumentPresentationCache::tryCommit(PresentationDelta&
     return PresentationCommitResult::Accepted;
 }
 
+void DocumentPresentationCache::activateCoinRootLocked(SoSeparator* coinRoot)
+{
+    if (_committedCoinRoot) {
+        _committedCoinRoot->unref();
+        _committedCoinRoot = nullptr;
+    }
+    if (coinRoot) {
+        coinRoot->ref();
+        _committedCoinRoot = coinRoot;
+    }
+}
+
+PresentationCommitResult DocumentPresentationCache::tryCommit(PresentationDelta&& delta)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return tryCommitLocked(std::move(delta));
+}
+
+PresentationCommitResult DocumentPresentationCache::tryCommitWithCoinRoot(
+    PresentationDelta&& delta,
+    SoSeparator* coinRoot)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const auto result = tryCommitLocked(std::move(delta));
+    if (result == PresentationCommitResult::Accepted) {
+        activateCoinRootLocked(coinRoot);
+    }
+    return result;
+}
+
 std::optional<PresentationDelta> DocumentPresentationCache::current() const
 {
     std::shared_ptr<const PresentationDelta> snapshot;
@@ -143,6 +181,12 @@ std::optional<PresentationDelta> DocumentPresentationCache::current() const
         return std::nullopt;
     }
     return *snapshot;
+}
+
+SoSeparator* DocumentPresentationCache::committedCoinRoot() const noexcept
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _committedCoinRoot;
 }
 
 DocumentPresentationStatus DocumentPresentationCache::status() const
