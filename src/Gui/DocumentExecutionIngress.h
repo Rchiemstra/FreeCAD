@@ -64,8 +64,21 @@ GuiExport void scheduleUndoRedoCommandCompletion(
 /** Report that grouped undo/redo across documents is not supported on this path. */
 GuiExport void reportGroupedUndoRedoUnsupported(App::Document& document, bool undo);
 
-/** Submit save on the execution lane without waiting or blocking the GUI thread. */
+/**
+ * Admit save on the execution lane without waiting.
+ *
+ * Returns true only after the Save command reaches a terminal Succeeded state
+ * observed by a prior completion schedule. Immediate trySubmit Accepted alone
+ * schedules completion and returns false so callers do not claim the write
+ * finished before the lane runs it.
+ */
 GuiExport bool submitDocumentSave(App::Document& document);
+
+/** Poll Save command status without waiting; update GUI modified state on terminal. */
+GuiExport void scheduleSaveCommandCompletion(
+    const char* appDocumentName,
+    App::DocumentRevisionIdentityBinding documentIdentity,
+    App::DocumentCommandId commandId);
 
 /** Surface a visible Busy or admission failure reason without waiting. */
 GuiExport void reportDocumentCommandSubmitBlocked(

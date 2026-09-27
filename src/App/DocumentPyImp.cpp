@@ -809,6 +809,8 @@ PyObject* DocumentPy::saveWithOutcome(PyObject* args)
     }
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document.saveWithOutcome()", "Document.saveAsync()");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveWithOutcome()));
     }
     PY_CATCH
@@ -821,6 +823,7 @@ PyObject* DocumentPy::forceSave(PyObject* args)
     }
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread("Document.forceSave()", "Document.saveAsync()");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->forceSave()));
     }
     PY_CATCH

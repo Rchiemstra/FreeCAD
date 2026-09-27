@@ -243,11 +243,65 @@ void scheduleUndoRedoCommandCompletion(
         });
 }
 
+void scheduleSaveCommandCompletion(
+    const char* appDocumentName,
+    App::DocumentRevisionIdentityBinding documentIdentity,
+    App::DocumentCommandId commandId)
+{
+    auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
+    const std::string documentName = appDocumentName ? appDocumentName : std::string {};
+    QTimer::singleShot(
+        50,
+        qApp,
+        [documentName, documentIdentity, commandId, commandHandle = std::move(commandHandle)]() mutable {
+            const auto snapshot = commandHandle->status();
+            if (!snapshot.terminal()) {
+                scheduleSaveCommandCompletion(
+                    documentName.c_str(), documentIdentity, commandId);
+                return;
+            }
+            auto* guiDocument = findGuiDocumentByName(documentName.c_str());
+            if (snapshot.state == App::DocumentCommandState::Failed
+                || snapshot.state == App::DocumentCommandState::Cancelled) {
+                FC_ERR("Document Save "
+                       << App::documentCommandStateName(snapshot.state) << ": "
+                       << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
+                                                       : snapshot.diagnostic));
+                if (auto* window = getMainWindow()) {
+                    window->showMessage(
+                        QCoreApplication::translate(
+                            "Gui::DocumentExecutionIngress",
+                            "Save of document '%1' failed.")
+                            .arg(QString::fromStdString(documentName)),
+                        5000);
+                }
+                return;
+            }
+            if (guiDocument) {
+                guiDocument->setModified(false);
+            }
+            if (auto* window = getMainWindow()) {
+                window->showMessage(
+                    QCoreApplication::translate(
+                        "Gui::DocumentExecutionIngress",
+                        "Document '%1' saved.")
+                        .arg(QString::fromStdString(documentName)),
+                    3000);
+            }
+        });
+}
+
 bool submitDocumentSave(App::Document& document)
 {
     const auto outcome = submitDocumentKindCommand(document, App::DocumentCommandKind::Save);
     if (outcome.accepted()) {
-        return true;
+        scheduleSaveCommandCompletion(
+            document.getName(),
+            document.executionHandle().identity(),
+            outcome.commandId);
+        reportDocumentSaveDeferred(document);
+        // Admission is not completion — callers must not claim the write finished.
+        return false;
     }
     reportDocumentCommandSubmitBlocked(document, outcome);
     return false;

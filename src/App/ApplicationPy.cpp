@@ -38,6 +38,9 @@
 
 #include "Application.h"
 #include "ApplicationPy.h"
+#include "Document.h"
+#include "DocumentCommand.h"
+#include "DocumentCommandHandle.h"
 #include "DocumentWouldBlock.h"
 #include "DocumentPy.h"
 #include "DocumentObserverPython.h"
@@ -224,6 +227,49 @@ PyObject* ApplicationPy::sSetActiveDocument(PyObject* /*self*/, PyObject* args)
 
 PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
 {
+    auto admitCloseAsync = [](Document* doc) -> PyObject* {
+        if (!doc) {
+            PyErr_Format(PyExc_RuntimeError, "Invalid document");
+            return nullptr;
+        }
+        if (!doc->isClosable()) {
+            PyErr_Format(
+                PyExc_RuntimeError,
+                "The document '%s' is not closable for the moment",
+                doc->getName());
+            return nullptr;
+        }
+        // GUI must never wait on lane join / collaboration drain. Admit Close
+        // through trySubmit and return immediately.
+        if (DocumentWouldBlock::isGuiThread()) {
+            if (!doc->executionLane()) {
+                DocumentWouldBlock::throwIfGuiThread(
+                    "FreeCAD.closeDocument()", "Document.closeAsync()");
+            }
+            DocumentCommand command;
+            command.kind = DocumentCommandKind::Close;
+            command.document = doc->executionHandle().identity();
+            const auto outcome = doc->executionHandle().trySubmit(std::move(command));
+            if (!outcome.accepted()) {
+                PyErr_Format(
+                    PyExc_RuntimeError,
+                    "Closing the document '%s' was not admitted: %s",
+                    doc->getName(),
+                    outcome.diagnostic.empty()
+                        ? documentCommandSubmitResultName(outcome.result)
+                        : outcome.diagnostic.c_str());
+                return nullptr;
+            }
+            Py_Return;
+        }
+        if (!GetApplication().closeDocument(doc)) {
+            PyErr_Format(
+                PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
+            return nullptr;
+        }
+        Py_Return;
+    };
+
     char* pstr = nullptr;
     if (PyArg_ParseTuple(args, "s", &pstr)) {
         Document* doc = GetApplication().getDocument(pstr);
@@ -231,39 +277,13 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             PyErr_Format(PyExc_NameError, "Unknown document '%s'", pstr);
             return nullptr;
         }
-        if (!doc->isClosable()) {
-            PyErr_Format(PyExc_RuntimeError, "The document '%s' is not closable for the moment", pstr);
-            return nullptr;
-        }
-
-        if (!GetApplication().closeDocument(pstr)) {
-            PyErr_Format(PyExc_RuntimeError, "Closing the document '%s' failed", pstr);
-            return nullptr;
-        }
-
-        Py_Return;
+        return admitCloseAsync(doc);
     }
 
     PyErr_Clear();
     PyObject* docpy {};
     if (PyArg_ParseTuple(args, "O!", &App::DocumentPy::Type, &docpy)) {
-        Document* doc = static_cast<App::DocumentPy*>(docpy)->getDocumentPtr();
-        if (!doc) {
-            PyErr_Format(PyExc_RuntimeError, "Invalid document");
-            return nullptr;
-        }
-
-        if (!doc->isClosable()) {
-            PyErr_Format(PyExc_RuntimeError, "The document '%s' is not closable for the moment", doc->getName());
-            return nullptr;
-        }
-
-        if (!GetApplication().closeDocument(doc)) {
-            PyErr_Format(PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
-            return nullptr;
-        }
-
-        Py_Return;
+        return admitCloseAsync(static_cast<App::DocumentPy*>(docpy)->getDocumentPtr());
     }
 
     PyErr_SetString(PyExc_TypeError, "Expect str or Document");

@@ -988,6 +988,13 @@ void Document::shutdownExecutionLane()
         // executeActiveCommand returns and must not destroy itself here.
         return;
     }
+    // Never join the lane on the GUI thread — that would stall painting.
+    if (DocumentWouldBlock::isGuiThread()) {
+        // Keep the shared_ptr alive via the lane's self-pin until the owner
+        // thread exits; drop the Document-owned reference without joining.
+        d->executionLane.reset();
+        return;
+    }
     d->executionLane->joinThread();
     d->executionLane.reset();
 }
@@ -4747,6 +4754,8 @@ bool Document::saveCopy(const char* file) const
 
 DocumentSaveOutcome Document::saveWithOutcome()
 {
+    DocumentWouldBlock::throwIfGuiThread(
+        "Document::saveWithOutcome()", "Document::saveAsync() / DocumentCommandKind::Save");
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4769,6 +4778,8 @@ DocumentSaveOutcome Document::saveWithOutcome()
 
 DocumentSaveOutcome Document::forceSave()
 {
+    DocumentWouldBlock::throwIfGuiThread(
+        "Document::forceSave()", "Document::saveAsync() / DocumentCommandKind::Save");
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
