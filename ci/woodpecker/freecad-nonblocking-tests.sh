@@ -18,7 +18,8 @@ run_arch() {
   if ! python3 -c 'import pytest' 2>/dev/null; then
     python3 -m pip install --break-system-packages -q pytest
   fi
-  python3 -m pytest tests/architecture/
+  export PYTHONUNBUFFERED=1
+  python3 -m pytest -vv --tb=line tests/architecture/
 }
 
 run_lane() {
