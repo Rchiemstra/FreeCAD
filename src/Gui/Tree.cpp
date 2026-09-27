@@ -1167,6 +1167,22 @@ void TreeWidget::_updateStatus(bool delay)
         return;
     }
 
+    // While a document execution lane is busy and a committed presentation
+    // revision is available, keep the last committed tree and do not pull
+    // live model mutations into the widget.
+    bool suppressLiveModelRefresh = false;
+    for (const auto& entry : DocumentMap) {
+        auto* guiDocument = entry.first;
+        auto* appDocument = guiDocument ? guiDocument->getDocument() : nullptr;
+        if (appDocument && shouldReadCommittedPresentation(*appDocument)) {
+            suppressLiveModelRefresh = true;
+            break;
+        }
+    }
+    if (suppressLiveModelRefresh) {
+        return;
+    }
+
     if (!delay) {
         if (!ChangedObjects.empty() || !NewObjects.empty()) {
             onUpdateStatus();

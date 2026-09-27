@@ -2,9 +2,7 @@
 
 #include "DocumentRecomputeCoordinator.h"
 
-#include "Document.h"
 #include "DocumentCollaborationService.h"
-#include "DocumentExecutionLane.h"
 #include "GeometryJobManager.h"
 
 #include <Base/Exception.h>
@@ -504,11 +502,15 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
 
 bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 {
-    Document& document = _service.document();
-    if (DocumentExecutionLane* lane = document.executionLane(); lane && !lane->isOwnerThread()) {
-        return lane->dispatchToOwner([this, id] { return poll(id); });
-    }
+    // Owner-thread hop goes through DocumentCollaborationService so this
+    // translation unit never includes Document.h / DocumentExecutionLane.h.
+    return _service.runOnOwnerThread([this, id] {
+        return pollOnOwnerThread(id);
+    });
+}
 
+bool DocumentRecomputeCoordinator::pollOnOwnerThread(const DocumentRecomputeId id)
+{
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, PreparedEditExecutionId>> active;

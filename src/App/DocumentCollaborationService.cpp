@@ -313,6 +313,18 @@ Document& DocumentCollaborationService::document() const noexcept
     return _document;
 }
 
+bool DocumentCollaborationService::runOnOwnerThread(const std::function<bool()>& fn)
+{
+    if (!fn) {
+        throw std::invalid_argument("runOnOwnerThread requires a callable");
+    }
+    if (DocumentExecutionLane* lane = _document.executionLane();
+        lane && !lane->isOwnerThread()) {
+        return lane->dispatchToOwner(fn);
+    }
+    return fn();
+}
+
 int DocumentCollaborationService::openCompatibilityTransaction(
     TransactionName name,
     const int transactionId)

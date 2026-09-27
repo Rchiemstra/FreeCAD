@@ -2203,6 +2203,16 @@ void MainWindow::_updateActions()
 
     d->actionUpdateDelay = 0;
 
+    // Bounded presentation apply (~4 ms) so Coin/tree/property packets cannot
+    // monopolize the GUI event loop while a document lane is publishing.
+    if (Application::Instance) {
+        for (auto* appDocument : App::GetApplication().getDocuments()) {
+            if (auto* guiDocument = Application::Instance->getDocument(appDocument)) {
+                guiDocument->pumpPresentationApply(4);
+            }
+        }
+    }
+
     if (auto view = activeWindow()) {
         setWindowTitle(view->buildWindowTitle());
         if (auto document = view->getGuiDocument()) {

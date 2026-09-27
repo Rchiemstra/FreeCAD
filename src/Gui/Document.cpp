@@ -89,6 +89,8 @@
 #include "Tree.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
+#include "DocumentPresentationCache.h"
+#include "PresentationApplyScheduler.h"
 #include "ViewProvider.h"
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderDocumentObjectGroup.h"
@@ -111,6 +113,8 @@ struct DocumentP
     SharedPresentationCoordinator sharedPresentationCoordinator;
     mutable SharedPresentationRevisionIndex sharedPresentationRevisions;
     mutable std::optional<SharedPresentationPersistenceCapture> pendingPresentationSave;
+    DocumentPresentationCache presentationCache;
+    std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
     PersonalViewContextStore personalViewContexts;
     bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
@@ -522,6 +526,10 @@ Document::Document(App::Document* pcDocument, Application* app)
     const auto collaborationIdentity = pcDocument->collaborationIdentity();
     d->sharedPresentationRevisions.bindDocumentIdentity(
         collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch);
+    d->presentationCache.bindDocumentIdentity(
+        collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch);
+    d->presentationApplyScheduler =
+        std::make_unique<PresentationApplyScheduler>(d->presentationCache);
 
     // NOLINTBEGIN
     //  Setup the connections
@@ -1698,6 +1706,41 @@ const SharedPresentationRevisionIndex& Document::sharedPresentationRevisions() c
 {
     syncSharedPresentationIdentity();
     return d->sharedPresentationRevisions;
+}
+
+DocumentPresentationCache& Document::presentationCache()
+{
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    d->presentationCache.bindDocumentIdentity(
+        identity.instanceId, identity.lifecycleEpoch);
+    return d->presentationCache;
+}
+
+const DocumentPresentationCache& Document::presentationCache() const
+{
+    const auto identity = d->_pcDocument->collaborationIdentity();
+    d->presentationCache.bindDocumentIdentity(
+        identity.instanceId, identity.lifecycleEpoch);
+    return d->presentationCache;
+}
+
+PresentationApplyScheduler& Document::presentationApplyScheduler()
+{
+    if (!d->presentationApplyScheduler) {
+        d->presentationApplyScheduler =
+            std::make_unique<PresentationApplyScheduler>(d->presentationCache);
+    }
+    return *d->presentationApplyScheduler;
+}
+
+PresentationApplyPumpResult Document::pumpPresentationApply(const int budgetMs)
+{
+    return presentationApplyScheduler().pump(budgetMs);
+}
+
+void Document::enqueuePresentationDelta(PresentationDelta&& delta)
+{
+    presentationApplyScheduler().enqueue(std::move(delta));
 }
 
 void Document::publishSharedPresentationSchemaMutation(

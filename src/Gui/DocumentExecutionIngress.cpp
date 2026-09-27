@@ -292,6 +292,20 @@ bool documentExecutionLaneBusy(const App::Document& document)
     return lane && !lane->isIdle();
 }
 
+bool shouldReadCommittedPresentation(const App::Document& document)
+{
+    if (!documentExecutionLaneBusy(document)) {
+        return false;
+    }
+    auto* guiDocument = Application::Instance
+        ? Application::Instance->getDocument(&document)
+        : nullptr;
+    if (!guiDocument) {
+        return false;
+    }
+    return guiDocument->presentationCache().current().has_value();
+}
+
 bool prepareDocumentForImmediateSave(App::Document& document, const bool skipRecomputeIfAlreadyFlagged)
 {
     if (documentExecutionLaneBusy(document)) {

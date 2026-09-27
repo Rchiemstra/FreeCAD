@@ -32,7 +32,9 @@
 
 #include <Base/Persistence.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
+#include <Gui/DocumentPresentationCache.h>
 #include <Gui/PersonalViewContext.h>
+#include <Gui/PresentationApplyScheduler.h>
 #include <Gui/SharedPresentationCoordinator.h>
 #include <Gui/TreeItemMode.h>
 
@@ -233,6 +235,18 @@ public:
     /** Pointer-free revision provider for deliberately shared ViewProvider state. */
     [[nodiscard]] SharedPresentationRevisionIndex& sharedPresentationRevisions();
     [[nodiscard]] const SharedPresentationRevisionIndex& sharedPresentationRevisions() const;
+
+    /**
+     * GUI-owned committed presentation cache for tree/property/selection/scene.
+     * Observation-only while the document execution lane is busy.
+     */
+    [[nodiscard]] DocumentPresentationCache& presentationCache();
+    [[nodiscard]] const DocumentPresentationCache& presentationCache() const;
+    [[nodiscard]] PresentationApplyScheduler& presentationApplyScheduler();
+    /** Pump bounded presentation apply slices (~4 ms default). */
+    [[nodiscard]] PresentationApplyPumpResult pumpPresentationApply(int budgetMs = 4);
+    /** Enqueue one pointer-free presentation packet for incremental apply. */
+    void enqueuePresentationDelta(PresentationDelta&& delta);
     /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
     void publishSharedPresentationSchemaMutation(
         const Gui::ViewProvider& viewProvider,

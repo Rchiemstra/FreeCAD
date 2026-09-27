@@ -45,6 +45,7 @@
 #include "SelectionObject.h"
 #include "Application.h"
 #include "Document.h"
+#include "DocumentExecutionIngress.h"
 #include "Macro.h"
 #include "MainWindow.h"
 #include "MDIView.h"
@@ -1317,6 +1318,35 @@ bool SelectionSingleton::addSelection(
     int ret = checkSelection(pDocName, pObjectName, pSubName, ResolveMode::NoResolve, temp);
     if (ret != 0) {
         return false;
+    }
+
+    // While the document lane is busy, selection may only resolve objects that
+    // appear in the committed presentation cache (no live model dependency).
+    if (temp.pDoc && shouldReadCommittedPresentation(*temp.pDoc) && pObjectName) {
+        auto* guiDocument = Application::Instance
+            ? Application::Instance->getDocument(temp.pDoc)
+            : nullptr;
+        const auto committed =
+            guiDocument ? guiDocument->presentationCache().current() : std::nullopt;
+        bool presentInCache = false;
+        if (committed) {
+            const std::string objectName(pObjectName);
+            for (const auto& node : committed->tree) {
+                if (node.stableObjectIdentity == objectName || node.label == objectName) {
+                    presentInCache = true;
+                    break;
+                }
+            }
+            for (const auto& mapping : committed->selectionMappings) {
+                if (mapping.stableObjectIdentity == objectName) {
+                    presentInCache = true;
+                    break;
+                }
+            }
+        }
+        if (!presentInCache) {
+            return false;
+        }
     }
 
     temp.x = x;

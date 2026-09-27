@@ -138,6 +138,13 @@ public:
     // Document lifetime guarantee and must not retain the reference across
     // closeDocument(); operational facade methods below are internally pinned.
     [[nodiscard]] Document& document() const noexcept;
+
+    /**
+     * Run \p fn on the document execution-lane owner thread when a lane exists.
+     * Never blocks the GUI thread (dispatchToOwner throws DocumentWouldBlock there).
+     * When already on the owner thread, or no lane is present, runs \p fn inline.
+     */
+    [[nodiscard]] bool runOnOwnerThread(const std::function<bool()>& fn);
     [[nodiscard]] EditSession beginEditSession(std::string actorId);
     [[nodiscard]] std::optional<EditSession> sessionStatus(
         const std::string& sessionId) const;

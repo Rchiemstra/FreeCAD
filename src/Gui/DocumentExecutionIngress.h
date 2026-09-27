@@ -80,6 +80,12 @@ GuiExport void reportDocumentSaveDeferred(App::Document& document);
 GuiExport bool documentExecutionLaneBusy(const App::Document& document);
 
 /**
+ * True when GUI readers must use DocumentPresentationCache instead of live
+ * App::DocumentObject / Property pointers (lane busy with a committed revision).
+ */
+GuiExport bool shouldReadCommittedPresentation(const App::Document& document);
+
+/**
  * Prepare one document for save on the GUI thread without waiting.
  *
  * Submits a pre-save recompute when needed. Returns true only when no model
