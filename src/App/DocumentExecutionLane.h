@@ -229,7 +229,7 @@ private:
     std::thread _thread;
     std::thread::id _ownerThreadId {};
     mutable std::mutex _mutex;
-    std::condition_variable _workAvailable;
+    mutable std::condition_variable _workAvailable;
     bool _threadReady {false};
     bool _shutdownRequested {false};
     std::string _shutdownReason;
