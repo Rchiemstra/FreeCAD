@@ -9,6 +9,7 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentExecutionStall.h>
 #include <App/DocumentHandle.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/DocumentExecutionTelemetry.h>
 #include <App/FeatureTest.h>
 #include <App/RecomputeHandle.h>
@@ -165,6 +166,46 @@ void ensureLaneBlockingRecomputeAdapterRegistered()
     });
 }
 
+void waitForLaneIdle(App::DocumentExecutionLane* lane,
+                     const std::chrono::milliseconds timeout = 5s)
+{
+    if (!lane) {
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(5ms);
+    }
+    if (lane->isIdle()) {
+        // Let the lane owner thread finish releasing collaboration admission
+        // after the last command reaches a terminal state.
+        std::this_thread::sleep_for(25ms);
+    }
+}
+
+void closeDocumentAllowingLaneWait(const char* docName)
+{
+    auto* document = App::GetApplication().getDocument(docName);
+    if (!document) {
+        return;
+    }
+    if (auto* lane = document->executionLane()) {
+        waitForLaneIdle(lane);
+        if (!lane->isIdle()) {
+            return;
+        }
+    }
+
+    const auto close = [&] { App::GetApplication().closeDocument(docName); };
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        std::jthread worker([&] { close(); });
+        worker.join();
+    }
+    else {
+        close();
+    }
+}
+
 class DocumentExecutionLaneTest : public ::testing::Test
 {
 protected:
@@ -189,7 +230,8 @@ protected:
             _blocking->release();
         }
         LaneBlockingRecomputeStore::remove(_blockingToken);
-        App::GetApplication().closeDocument(_docName.c_str());
+        closeDocumentAllowingLaneWait(_docName.c_str());
+        _doc = nullptr;
     }
 
     App::Document* doc() const noexcept
@@ -363,6 +405,7 @@ TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     EXPECT_TRUE(commandHandle.cancel("test cancellation"));
+    ASSERT_TRUE(waitForTerminal(commandHandle));
     const auto snapshot = commandHandle.status();
     EXPECT_TRUE(snapshot.state == App::DocumentCommandState::Cancelling
                 || snapshot.state == App::DocumentCommandState::Cancelled
