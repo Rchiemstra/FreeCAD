@@ -85,6 +85,8 @@ public:
 
     ValueT supportsAsyncRecompute() const;
 
+    ValueT supportsDocumentThreadExecution() const;
+
     /// return true to activate tree view group object handling
     ValueT hasChildElement() const;
     /// Get sub-element visibility
@@ -120,6 +122,7 @@ private:
     FC_PY_ELEMENT(redirectSubName)                                                                 \
     FC_PY_ELEMENT(canLoadPartial)                                                                  \
     FC_PY_ELEMENT(supportsAsyncRecompute)                                                          \
+    FC_PY_ELEMENT(supportsDocumentThreadExecution)                                                 \
     FC_PY_ELEMENT(hasChildElement)                                                                 \
     FC_PY_ELEMENT(isElementVisible)                                                                \
     FC_PY_ELEMENT(setElementVisible)                                                               \
@@ -353,6 +356,11 @@ public:
         }
 
         return imp->supportsAsyncRecompute() == FeaturePythonImp::Accepted;
+    }
+
+    [[nodiscard]] bool declaresDocumentThreadExecution() const
+    {
+        return imp->supportsDocumentThreadExecution() == FeaturePythonImp::Accepted;
     }
 
     /**

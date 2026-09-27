@@ -177,6 +177,7 @@ SET(Document_CPP_SRCS
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
     DocumentExecutionLane.cpp
+    DocumentCrossDocumentSnapshot.cpp
     DocumentExecutionStall.cpp
     DocumentExecutionTelemetry.cpp
     DocumentHandle.cpp
@@ -267,6 +268,7 @@ SET(Document_HPP_SRCS
     DocumentCommandHandle.h
     DocumentCommitCoordinator.h
     DocumentExecutionLane.h
+    DocumentCrossDocumentSnapshot.h
     DocumentExecutionStall.h
     DocumentExecutionTelemetry.h
     DocumentHandle.h

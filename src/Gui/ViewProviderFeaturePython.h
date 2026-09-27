@@ -143,6 +143,8 @@ public:
 
     bool editProperty(const char* propName);
 
+    ValueT supportsAsyncPresentation() const;
+
 private:
     ViewProviderDocumentObject* object;
     App::PropertyPythonObject& Proxy;
@@ -192,7 +194,8 @@ private:
     FC_PY_ELEMENT(getDropPrefix) \
     FC_PY_ELEMENT(replaceObject) \
     FC_PY_ELEMENT(getLinkedViewProvider) \
-    FC_PY_ELEMENT(editProperty)
+    FC_PY_ELEMENT(editProperty) \
+    FC_PY_ELEMENT(supportsAsyncPresentation)
 
 #undef FC_PY_ELEMENT
 #define FC_PY_ELEMENT(_name) FC_PY_ELEMENT_DEFINE(_name)
@@ -229,6 +232,11 @@ public:
     ~ViewProviderFeaturePythonT() override
     {
         delete imp;
+    }
+
+    [[nodiscard]] bool declaresAsyncPresentation() const
+    {
+        return imp->supportsAsyncPresentation() == ViewProviderFeaturePythonImp::Accepted;
     }
 
     // Returns the icon

@@ -36,6 +36,38 @@ namespace App
 class Document;
 class DocumentExecutionTelemetryCollector;
 
+/**
+ * Close policy for document execution lanes.
+ *
+ * A lane thread is never forcibly terminated inside the process (no
+ * QThread::terminate, pthread_kill, or similar). When close admission cannot
+ * complete because work is active or the lane is stalled, the application may
+ * only keep waiting cooperatively or offer whole-process exit.
+ */
+namespace DocumentExecutionClosePolicy
+{
+
+enum class UnresponsiveLaneAction
+{
+    KeepWaiting,
+    RequestProcessExit
+};
+
+[[nodiscard]] constexpr bool laneThreadTerminationIsForbidden() noexcept
+{
+    return true;
+}
+
+[[nodiscard]] constexpr const char* unresponsiveLaneGuidance() noexcept
+{
+    return "Keep waiting for cooperative lane shutdown or exit the whole process; never "
+           "terminate the document-owner thread inside FreeCAD.";
+}
+
+[[nodiscard]] UnresponsiveLaneAction recommendedActionWhileLaneBusy() noexcept;
+
+}  // namespace DocumentExecutionClosePolicy
+
 /** Wake lane idle waiters after collaboration admission for close is released. */
 AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
     const Document& document) noexcept;

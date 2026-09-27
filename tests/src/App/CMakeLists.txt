@@ -19,6 +19,7 @@ add_executable(App_tests_run
         Document.cpp
         DocumentFileWriter.cpp
         DocumentExecutionLane.cpp
+        DocumentCrossDocumentSnapshot.cpp
         DocumentExecutionStall.cpp
         DocumentExecutionTelemetry.cpp
         DocumentHandle.cpp

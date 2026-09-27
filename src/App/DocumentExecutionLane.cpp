@@ -24,6 +24,12 @@ using namespace std::chrono_literals;
 namespace App
 {
 
+DocumentExecutionClosePolicy::UnresponsiveLaneAction
+DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy() noexcept
+{
+    return UnresponsiveLaneAction::KeepWaiting;
+}
+
 namespace
 {
 

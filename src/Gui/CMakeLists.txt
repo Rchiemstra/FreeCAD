@@ -467,6 +467,7 @@ SET(Command_CPP_SRCS
     ActionFunction.cpp
     Command.cpp
     DocumentExecutionIngress.cpp
+    GuiPythonGate.cpp
     CommandDoc.cpp
     CommandFeat.cpp
     CommandMacro.cpp
@@ -488,6 +489,7 @@ SET(Command_SRCS
     Command.h
     CommandT.h
     DocumentExecutionIngress.h
+    GuiPythonGate.h
     ShortcutManager.h
     CommandCompleter.h
     CommandActionPy.h

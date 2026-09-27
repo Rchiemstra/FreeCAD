@@ -1387,6 +1387,27 @@ bool ViewProviderFeaturePythonImp::getLinkedViewProvider(
     return true;
 }
 
+ViewProviderFeaturePythonImp::ValueT ViewProviderFeaturePythonImp::supportsAsyncPresentation() const
+{
+    _FC_PY_CALL_CHECK(supportsAsyncPresentation, return (NotImplemented));
+    Base::PyGILStateLocker lock;
+    try {
+        Py::Tuple args(1);
+        args.setItem(0, Py::Object(object->getPyObject(), true));
+        Py::Boolean ok(Base::pyCall(py_supportsAsyncPresentation.ptr(), args.ptr()));
+        return ok ? Accepted : Rejected;
+    }
+    catch (Py::Exception&) {
+        if (PyErr_ExceptionMatches(PyExc_NotImplementedError)) {
+            PyErr_Clear();
+            return NotImplemented;
+        }
+        Base::PyException e;  // extract the Python error text
+        e.reportException();
+        return Rejected;
+    }
+}
+
 bool ViewProviderFeaturePythonImp::editProperty(const char* name)
 {
     _FC_PY_CALL_CHECK(editProperty, return false);
