@@ -190,6 +190,9 @@ public:
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
         CollaborationCompatibilityCallback callback);
 
+    /** True while a lifecycle pin or atomic-presentation admission blocks close. */
+    [[nodiscard]] bool closeAdmissionActive() const noexcept;
+
 private:
     [[nodiscard]] static bool collaborationOwnerThread(const Document& document) noexcept;
 

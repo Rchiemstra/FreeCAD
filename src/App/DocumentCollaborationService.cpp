@@ -266,6 +266,16 @@ DocumentCollaborationService::lifetimeGate() const
     return GetApplication().collaborationServiceLifetimeGate(*this);
 }
 
+bool DocumentCollaborationService::closeAdmissionActive() const noexcept
+{
+    const auto gate = lifetimeGate();
+    if (!gate) {
+        return false;
+    }
+    std::lock_guard lock(gate->mutex);
+    return gate->activeAccesses != 0;
+}
+
 DocumentCollaborationService::DocumentCollaborationService(Document& document)
     : _document(document)
     , _coordinator(document)

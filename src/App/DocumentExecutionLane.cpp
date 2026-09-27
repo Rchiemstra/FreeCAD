@@ -4,7 +4,6 @@
 
 #include "Application.h"
 #include "Document.h"
-#include "MutationClassification.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
 #include "DocumentWouldBlock.h"
@@ -41,19 +40,6 @@ void unregisterLane(DocumentInstanceId instanceId)
 {
     std::lock_guard lock(g_laneRegistryMutex);
     g_laneRegistry.erase(instanceId);
-}
-
-bool collaborationCloseAdmissionActive(const Document& document)
-{
-    const auto gate = GetApplication().collaborationServiceLifetimeGate(
-        document.collaborationService());
-    if (gate) {
-        std::lock_guard lock(gate->mutex);
-        if (gate->activeAccesses != 0) {
-            return true;
-        }
-    }
-    return atomicPresentationMutationAdmissionHeldFor(document);
 }
 
 bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentCommand& right)
@@ -223,7 +209,7 @@ void notifyDocumentExecutionLaneCloseAdmissionReleased(const Document& document)
     }
 }
 
-void DocumentExecutionLane::notifyCloseAdmissionReleased() noexcept
+void DocumentExecutionLane::notifyCloseAdmissionReleased() const noexcept
 {
     std::lock_guard lock(_mutex);
     _workAvailable.notify_all();
@@ -246,7 +232,7 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
             return _active->command.kind == DocumentCommandKind::Close;
         }
     }
-    return !collaborationCloseAdmissionActive(_document);
+    return !_document.collaborationCloseAdmissionActive();
 }
 
 bool DocumentExecutionLane::shutdownRequested() const noexcept

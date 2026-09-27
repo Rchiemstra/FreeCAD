@@ -635,6 +635,17 @@ DocumentCollaborationService& Document::collaborationService()
     return *d->collaborationService;
 }
 
+bool Document::collaborationCloseAdmissionActive() const noexcept
+{
+    if (atomicPresentationMutationAdmissionHeldFor(*this)) {
+        return true;
+    }
+    if (!d->collaborationService) {
+        return false;
+    }
+    return d->collaborationService->closeAdmissionActive();
+}
+
 DocumentRecomputeCoordinator& Document::recomputeCoordinator()
 {
     return *d->recomputeCoordinator;

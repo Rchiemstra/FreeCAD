@@ -153,7 +153,7 @@ public:
 
     void joinThread();
 
-    void notifyCloseAdmissionReleased() noexcept;
+    void notifyCloseAdmissionReleased() const noexcept;
 
     [[nodiscard]] static std::shared_ptr<DocumentExecutionLane> find(
         DocumentInstanceId instanceId);

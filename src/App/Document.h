@@ -741,6 +741,7 @@ public:
     DocumentRevisionIndex& collaborationRevisions();
     const DocumentRevisionIndex& collaborationRevisions() const;
     DocumentCollaborationService& collaborationService();
+    [[nodiscard]] bool collaborationCloseAdmissionActive() const noexcept;
     DocumentRecomputeCoordinator& recomputeCoordinator();
     const DocumentRecomputeCoordinator& recomputeCoordinator() const;
     bool collaborationRevisionPublicationSuppressed() const;
