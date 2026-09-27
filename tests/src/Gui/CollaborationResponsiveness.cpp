@@ -11,6 +11,7 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/RecomputeHandle.h>
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
 #include <Gui/Camera.h>
@@ -250,6 +251,26 @@ bool terminal(App::PreparedEditExecutionStatus status)
         || status == App::PreparedEditExecutionStatus::Failed;
 }
 
+void recomputeWithoutBlockingGui(App::Document& document)
+{
+    auto handle = document.recomputeAsync();
+    ASSERT_NE(handle, nullptr);
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        if (handle->poll()) {
+            const auto snapshot = handle->status();
+            if (snapshot.terminal()) {
+                ASSERT_EQ(snapshot.state, App::DocumentRecomputeState::Completed)
+                    << snapshot.diagnostic;
+                return;
+            }
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    FAIL() << "document recompute did not finish before timeout";
+}
+
 std::optional<App::PreparedEditExecutionSnapshot> waitForTerminal(
     App::DocumentCollaborationService& service,
     App::PreparedEditExecutionId executionId,
@@ -291,7 +312,7 @@ protected:
         ASSERT_NE(_target, nullptr);
         _source->Label.setValue("Source-before");
         _target->Label.setValue("Target-before");
-        _document->recompute();
+        recomputeWithoutBlockingGui(*_document);
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
         _session = _document->collaborationService().beginEditSession("gui-actor");
