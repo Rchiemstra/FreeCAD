@@ -2,6 +2,8 @@
 
 #include "DocumentCollaborationService.h"
 
+#include "DocumentExecutionLane.h"
+
 #include "Application.h"
 #include "CollaborativeSetPropertyOperation.h"
 #include "Document.h"
@@ -205,6 +207,7 @@ Result DocumentCollaborationService::invokeCollaborationOnDocumentThread(
 DocumentCollaborationService::LifecyclePin::LifecyclePin(
     const DocumentCollaborationService& service)
     : _gate(service.lifetimeGate())
+    , _document(&service.document())
 {
     if (!_gate) {
         return;
@@ -226,7 +229,10 @@ DocumentCollaborationService::LifecyclePin::LifecyclePin(
 
 DocumentCollaborationService::LifecyclePin::~LifecyclePin()
 {
-    if (_pinned) {
+    if (!_pinned) {
+        return;
+    }
+    {
         std::lock_guard lock(_gate->mutex);
         const auto owner = _gate->accessOwners.find(std::this_thread::get_id());
         if (owner == _gate->accessOwners.end() || _gate->activeAccesses == 0) {
@@ -237,6 +243,9 @@ DocumentCollaborationService::LifecyclePin::~LifecyclePin()
         }
         --_gate->activeAccesses;
         _gate->changed.notify_all();
+    }
+    if (_document) {
+        notifyDocumentExecutionLaneCloseAdmissionReleased(*_document);
     }
 }
 

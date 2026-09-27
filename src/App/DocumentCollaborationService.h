@@ -221,6 +221,7 @@ private:
 
     private:
         std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
+        const Document* _document {nullptr};
         bool _pinned {false};
     };
 

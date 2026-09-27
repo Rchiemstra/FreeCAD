@@ -36,6 +36,10 @@ namespace App
 class Document;
 class DocumentExecutionTelemetryCollector;
 
+/** Wake lane idle waiters after collaboration admission for close is released. */
+AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
+    const Document& document) noexcept;
+
 /**
  * Serial document-owner thread for one live App::Document.
  *
@@ -148,6 +152,8 @@ public:
     }
 
     void joinThread();
+
+    void notifyCloseAdmissionReleased() noexcept;
 
     [[nodiscard]] static std::shared_ptr<DocumentExecutionLane> find(
         DocumentInstanceId instanceId);

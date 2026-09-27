@@ -93,6 +93,12 @@ AppExport void beginAtomicPresentationMutationTarget(Document& document);
 AppExport void endAtomicPresentationMutationTarget(const Document& document) noexcept;
 AppExport void enforceAtomicPresentationMutationTarget(const Document& document);
 AppExport void enforceAtomicPresentationMutationTarget(const Document* document);
+/** True while a mutation target is bound to \p document in this process. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionHeldFor(
+    const Document& document) noexcept;
+/** True when admission targets \p document on a thread other than the caller. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionHeldByOtherThread(
+    const Document& document) noexcept;
 
 /** Nest a read-only validation callback on the current mutation target. */
 AppExport void beginCollaborationReadOnlyMutationTarget(Document& document);

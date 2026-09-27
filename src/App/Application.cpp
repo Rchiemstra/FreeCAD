@@ -698,6 +698,16 @@ bool Application::closeDocument(const char* name)
         }
     }
 
+    {
+        std::lock_guard lock(collaborationLifetimeGate->mutex);
+        if (collaborationLifetimeGate->activeAccesses != 0) {
+            return false;
+        }
+    }
+    if (atomicPresentationMutationAdmissionHeldByOtherThread(*pos->second)) {
+        return false;
+    }
+
     enforceAtomicPresentationMutationTarget(pos->second);
     const auto preparedClose = _collaborationRegistry->prepareDocumentClose(*pos->second);
     if (!preparedClose) {

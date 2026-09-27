@@ -4,6 +4,7 @@
 
 #include "Application.h"
 #include "Document.h"
+#include "MutationClassification.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
 #include "DocumentWouldBlock.h"
@@ -40,6 +41,19 @@ void unregisterLane(DocumentInstanceId instanceId)
 {
     std::lock_guard lock(g_laneRegistryMutex);
     g_laneRegistry.erase(instanceId);
+}
+
+bool collaborationCloseAdmissionActive(const Document& document)
+{
+    const auto gate = GetApplication().collaborationServiceLifetimeGate(
+        document.collaborationService());
+    if (gate) {
+        std::lock_guard lock(gate->mutex);
+        if (gate->activeAccesses != 0) {
+            return true;
+        }
+    }
+    return atomicPresentationMutationAdmissionHeldFor(document);
 }
 
 bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentCommand& right)
@@ -202,10 +216,28 @@ bool DocumentExecutionLane::isOwnerThread() const noexcept
     return std::this_thread::get_id() == _ownerThreadId;
 }
 
-bool DocumentExecutionLane::isIdle() const noexcept
+void notifyDocumentExecutionLaneCloseAdmissionReleased(const Document& document) noexcept
+{
+    if (const auto* lane = document.executionLane()) {
+        lane->notifyCloseAdmissionReleased();
+    }
+}
+
+void DocumentExecutionLane::notifyCloseAdmissionReleased() noexcept
 {
     std::lock_guard lock(_mutex);
-    return !_active;
+    _workAvailable.notify_all();
+}
+
+bool DocumentExecutionLane::isIdle() const noexcept
+{
+    {
+        std::lock_guard lock(_mutex);
+        if (_active) {
+            return false;
+        }
+    }
+    return !collaborationCloseAdmissionActive(_document);
 }
 
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept

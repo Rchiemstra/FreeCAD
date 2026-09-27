@@ -176,11 +176,6 @@ void waitForLaneIdle(App::DocumentExecutionLane* lane,
     while (!lane->isIdle() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(5ms);
     }
-    if (lane->isIdle()) {
-        // Let the lane owner thread finish releasing collaboration admission
-        // after the last command reaches a terminal state.
-        std::this_thread::sleep_for(25ms);
-    }
 }
 
 void closeDocumentAllowingLaneWait(const char* docName)
@@ -191,18 +186,20 @@ void closeDocumentAllowingLaneWait(const char* docName)
     }
     if (auto* lane = document->executionLane()) {
         waitForLaneIdle(lane);
-        if (!lane->isIdle()) {
-            return;
-        }
+        ASSERT_TRUE(lane->isIdle()) << "execution lane still busy or admission held";
     }
 
-    const auto close = [&] { App::GetApplication().closeDocument(docName); };
+    const auto close = [&] {
+        return App::GetApplication().closeDocument(docName);
+    };
     if (App::DocumentWouldBlock::isGuiThread()) {
-        std::jthread worker([&] { close(); });
+        std::jthread worker([&] {
+            ASSERT_TRUE(close()) << "closeDocument failed after lane became idle";
+        });
         worker.join();
     }
     else {
-        close();
+        ASSERT_TRUE(close()) << "closeDocument failed after lane became idle";
     }
 }
 
@@ -410,6 +407,11 @@ TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
     EXPECT_TRUE(snapshot.state == App::DocumentCommandState::Cancelling
                 || snapshot.state == App::DocumentCommandState::Cancelled
                 || snapshot.state == App::DocumentCommandState::Failed);
+
+    waitForLaneIdle(doc()->executionLane());
+    ASSERT_TRUE(doc()->executionLane()->isIdle());
+    ASSERT_TRUE(App::GetApplication().closeDocument(_docName.c_str()));
+    _doc = nullptr;
 }
 
 TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsUndoWhenIdle)

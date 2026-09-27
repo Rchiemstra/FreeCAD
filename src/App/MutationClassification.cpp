@@ -3,6 +3,7 @@
 #include "MutationClassification.h"
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
 #include "PropertyContainer.h"
 
@@ -129,11 +130,15 @@ void endMutationTarget(const App::Document& document,
         }
         --depth;
         if (mutationTargetDepth(admission) == 0) {
+            const App::Document* releasedDocument = admission.target;
             admission.target = nullptr;
             admission.targetRevisionIndex = nullptr;
             admission.owner = std::thread::id {};
             admission.legacyReadOnlyDepth = 0;
             admission.preparedReadOnlyDepth = 0;
+            if (releasedDocument) {
+                notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
+            }
         }
     }
     catch (...) {
@@ -223,6 +228,32 @@ void App::beginAtomicPresentationMutationTarget(Document& document)
 void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
 {
     endMutationTarget(document, false, false);
+}
+
+bool App::atomicPresentationMutationAdmissionHeldFor(const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0;
+    }
+    catch (...) {
+        return true;
+    }
+}
+
+bool App::atomicPresentationMutationAdmissionHeldByOtherThread(
+    const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0
+            && admission.owner != std::this_thread::get_id();
+    }
+    catch (...) {
+        return true;
+    }
 }
 
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
