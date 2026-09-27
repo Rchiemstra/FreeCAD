@@ -2343,8 +2343,10 @@ def iter_source_files(repository_root: Path) -> list[Path]:
     mod_root = repository_root / "src" / "Mod"
     mod_gui_roots = sorted(mod_root.rglob("Gui")) if mod_root.is_dir() else []
     for gui_dir in mod_gui_roots:
-        workbench = gui_dir.relative_to(mod_root).parts[0]
-        if workbench in rules.EXCLUDED_WORKBENCHES:
+        relative_parts = gui_dir.relative_to(mod_root).parts
+        if relative_parts[0] in rules.EXCLUDED_WORKBENCHES:
+            continue
+        if any(part in rules.EXCLUDED_GUI_DIR_NAMES for part in relative_parts):
             continue
         files.extend(gui_dir.rglob("*"))
 
@@ -2538,6 +2540,10 @@ def scope_entries(repository_root: Path) -> list[str]:
             f"src/Mod/{path.relative_to(mod_root).as_posix()}"
             for path in sorted(mod_root.rglob("Gui"))
             if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
+            and not any(
+                part in rules.EXCLUDED_GUI_DIR_NAMES
+                for part in path.relative_to(mod_root).parts
+            )
         )
     entries.extend(
         path.relative_to(repository_root).as_posix()

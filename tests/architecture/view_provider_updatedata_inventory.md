@@ -1,6 +1,6 @@
 # ViewProvider updateData provider inventory
 
-Production presentation providers discovered under `src/Gui` and `src/Mod/*/Gui`. Every row is classified `unclassified` until Wave 3 migration assigns a pointer-free adapter or explicit `unsupported` capability.
+Production presentation providers discovered under `src/Gui`, every `src/Mod/*/Gui`, and the reviewed module-aware Python GUI packages (Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Every row is classified `unclassified` until Wave 3 migration assigns a pointer-free adapter or explicit `unsupported` capability.
 
 | file | symbol/caller | line | classification |
 | --- | --- | ---: | --- |
@@ -12,16 +12,61 @@ Production presentation providers discovered under `src/Gui` and `src/Mod/*/Gui`
 | `src/Gui/ViewProviderGeometryObject.cpp` | `ViewProviderGeometryObject` | 171 | unclassified |
 | `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | 353 | unclassified |
 | `src/Gui/ViewProviderInventorObject.cpp` | `ViewProviderInventorObject` | 90 | unclassified |
+| `src/Gui/ViewProviderLink.cpp` | `LinkInfo` | 532 | unclassified |
 | `src/Gui/ViewProviderLink.cpp` | `ViewProviderLink` | 2204 | unclassified |
 | `src/Gui/ViewProviderPart.cpp` | `ViewProviderPart` | 85 | unclassified |
 | `src/Gui/ViewProviderPlacement.cpp` | `ViewProviderPlacement` | 99 | unclassified |
 | `src/Gui/ViewProviderVRMLObject.cpp` | `ViewProviderVRMLObject` | 213 | unclassified |
+| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderMotion` | 381 | unclassified |
+| `src/Mod/Assembly/CommandCreateSimulation.py` | `ViewProviderSimulation` | 229 | unclassified |
+| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedView` | 288 | unclassified |
+| `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedViewStep` | 663 | unclassified |
 | `src/Mod/Assembly/Gui/ViewProviderAssembly.cpp` | `ViewProviderAssembly` | 245 | unclassified |
 | `src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp` | `ViewProviderReviewNote` | 488 | unclassified |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1749 | unclassified |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | 1231 | unclassified |
+| `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | 565 | unclassified |
+| `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | 190 | unclassified |
+| `src/Mod/BIM/ArchBuildingPart.py` | `ViewProviderBuildingPart` | 917 | unclassified |
+| `src/Mod/BIM/ArchComponent.py` | `ViewProviderComponent` | 1636 | unclassified |
+| `src/Mod/BIM/ArchCoveringGui.py` | `_ViewProviderCovering` | 149 | unclassified |
+| `src/Mod/BIM/ArchCurtainWall.py` | `ViewProviderCurtainWall` | 766 | unclassified |
+| `src/Mod/BIM/ArchEquipment.py` | `_ViewProviderEquipment` | 226 | unclassified |
+| `src/Mod/BIM/ArchFence.py` | `_ViewProviderFence` | 330 | unclassified |
+| `src/Mod/BIM/ArchMaterial.py` | `_ViewProviderArchMaterial` | 412 | unclassified |
+| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelCut` | 1003 | unclassified |
+| `src/Mod/BIM/ArchPanel.py` | `ViewProviderPanelSheet` | 1395 | unclassified |
+| `src/Mod/BIM/ArchPanel.py` | `_ViewProviderPanel` | 605 | unclassified |
+| `src/Mod/BIM/ArchRebar.py` | `_ViewProviderRebar` | 612 | unclassified |
+| `src/Mod/BIM/ArchReference.py` | `ViewProviderArchReference` | 638 | unclassified |
+| `src/Mod/BIM/ArchSectionPlane.py` | `_ViewProviderSectionPlane` | 1428 | unclassified |
+| `src/Mod/BIM/ArchSite.py` | `_ViewProviderSite` | 1705 | unclassified |
+| `src/Mod/BIM/ArchSpace.py` | `_ViewProviderSpace` | 724 | unclassified |
+| `src/Mod/BIM/ArchStructure.py` | `_ViewProviderStructure` | 1505 | unclassified |
+| `src/Mod/BIM/ArchWall.py` | `_ViewProviderWall` | 1985 | unclassified |
+| `src/Mod/BIM/ArchWindow.py` | `_ViewProviderWindow` | 900 | unclassified |
+| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_material` | 557 | unclassified |
+| `src/Mod/BIM/nativeifc/ifc_viewproviders.py` | `ifc_vp_object` | 66 | unclassified |
 | `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderArea` | 90 | unclassified |
 | `src/Mod/CAM/Gui/ViewProviderArea.cpp` | `ViewProviderAreaView` | 172 | unclassified |
 | `src/Mod/CAM/Gui/ViewProviderPath.cpp` | `ViewProviderPath` | 498 | unclassified |
 | `src/Mod/CAM/Gui/ViewProviderPathShape.cpp` | `ViewProviderPathShape` | 89 | unclassified |
+| `src/Mod/CAM/Path/Dressup/Gui/Tags.py` | `PathDressupTagViewProvider` | 483 | unclassified |
+| `src/Mod/CAM/Path/Main/Gui/Fixture.py` | `_ViewProviderFixture` | 137 | unclassified |
+| `src/Mod/CAM/Path/Main/Gui/Job.py` | `ViewProvider` | 308 | unclassified |
+| `src/Mod/CAM/Path/Op/Gui/Base.py` | `ViewProvider` | 297 | unclassified |
+| `src/Mod/CAM/Path/Tool/Gui/Controller.py` | `ViewProvider` | 88 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraft` | 191 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_base.py` | `ViewProviderDraftAlt` | 592 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderAngularDimension` | 901 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_dimension.py` | `ViewProviderLinearDimension` | 324 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_draft_annotation.py` | `ViewProviderDraftAnnotation` | 194 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_draftlink.py` | `ViewProviderDraftLink` | 59 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_label.py` | `ViewProviderLabel` | 209 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_layer.py` | `ViewProviderLayer` | 206 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_text.py` | `ViewProviderText` | 108 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_wire.py` | `ViewProviderWire` | 112 | unclassified |
+| `src/Mod/Draft/draftviewproviders/view_wpproxy.py` | `ViewProviderWorkingPlaneProxy` | 193 | unclassified |
 | `src/Mod/Fem/Gui/ViewProviderFemConstraint.cpp` | `ViewProviderFemConstraint` | 179 | unclassified |
 | `src/Mod/Fem/Gui/ViewProviderFemConstraintBearing.cpp` | `ViewProviderFemConstraintBearing` | 67 | unclassified |
 | `src/Mod/Fem/Gui/ViewProviderFemConstraintContact.cpp` | `ViewProviderFemConstraintContact` | 62 | unclassified |
@@ -45,6 +90,10 @@ Production presentation providers discovered under `src/Gui` and `src/Mod/*/Gui`
 | `src/Mod/Fem/Gui/ViewProviderFemPostFunction.cpp` | `ViewProviderFemPostFunctionProvider` | 75 | unclassified |
 | `src/Mod/Fem/Gui/ViewProviderFemPostObject.cpp` | `ViewProviderFemPostObject` | 799 | unclassified |
 | `src/Mod/Fem/Gui/ViewProviderFemPostPipeline.cpp` | `ViewProviderFemPostPipeline` | 56 | unclassified |
+| `src/Mod/Fem/femviewprovider/view_base_fempostvisualization.py` | `VPPostVisualization` | 89 | unclassified |
+| `src/Mod/Fem/femviewprovider/view_constraint_currentdensity.py` | `VPConstraintCurrentDensity` | 58 | unclassified |
+| `src/Mod/Fem/femviewprovider/view_mesh_gmsh.py` | `VPMeshGmsh` | 72 | unclassified |
+| `src/Mod/Fem/femviewprovider/view_mesh_shape.py` | `VPMeshShape` | 57 | unclassified |
 | `src/Mod/Inspection/Gui/ViewProviderInspection.cpp` | `ViewProviderInspection` | 351 | unclassified |
 | `src/Mod/Measure/Gui/ViewProviderMeasureBase.cpp` | `ViewProviderMeasureBase` | 443 | unclassified |
 | `src/Mod/Mesh/Gui/ViewProvider.cpp` | `ViewProviderIndexedFaceSet` | 2532 | unclassified |
@@ -54,6 +103,7 @@ Production presentation providers discovered under `src/Gui` and `src/Mod/*/Gui`
 | `src/Mod/Mesh/Gui/ViewProviderMeshFaceSet.cpp` | `ViewProviderMeshFaceSet` | 100 | unclassified |
 | `src/Mod/Mesh/Gui/ViewProviderTransform.cpp` | `ViewProviderMeshTransform` | 79 | unclassified |
 | `src/Mod/MeshPart/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | 90 | unclassified |
+| `src/Mod/OpenSCAD/OpenSCADFeatures.py` | `ViewProviderTree` | 48 | unclassified |
 | `src/Mod/Part/Gui/CrossSections.cpp` | `ViewProviderCrossSections` | 90 | unclassified |
 | `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObject` | 403 | unclassified |
 | `src/Mod/Part/Gui/ViewProvider2DObject.cpp` | `ViewProvider2DObjectGrid` | 256 | unclassified |

@@ -386,7 +386,9 @@ def report_count_violations(report_text: str, payload: dict) -> list[str]:
     if rows != category_counts:
         problems.append(f"category counts {rows} != {category_counts}")
 
-    total_match = re.search(r"\(([\d,]+)\s+findings across seven\s+categories", report_text)
+    total_match = re.search(
+        r"\(([\d,]+)\s+findings across (?:seven|eight)\s+categories", report_text
+    )
     if not total_match or int(total_match.group(1).replace(",", "")) != len(findings):
         problems.append("REPORT total finding count does not match inventory")
     language_match = re.search(r"spans ([\d,]+) C\+\+ and ([\d,]+) Python\s+findings", report_text)
@@ -685,6 +687,28 @@ str.join(parts)
             "getDocumentByPath",
         ):
             self.assertIsNotNone(cpp.search(f"App::GetApplication().{accessor}()"), accessor)
+        self.assertIsNotNone(cpp.search("getDocument()->getObject(name)"))
+        self.assertIsNotNone(cpp.search("getDocument()\n    ->getObject(name)"))
+        self.assertIsNotNone(
+            cpp.search(
+                "App::Document* pDoc = getDocument();\n"
+                "    return pDoc ? pDoc->getObject(Name) : nullptr;"
+            )
+        )
+        self.assertIsNone(
+            cpp.search("&& obj->getDocument() == vp->getObject()->getDocument()) {")
+        )
+        self.assertIsNone(
+            cpp.search(
+                "getTree()->NewObjects[pDocument->getDocument()->getName()]"
+                ".push_back(obj.getObject()->getID());"
+            )
+        )
+        self.assertIsNone(
+            cpp.search(
+                "vp->getObject()->getDocument()->recomputeFeature(vp->getObject());"
+            )
+        )
         py = scanner.compiled_pattern("live-app-dereference", "py")
         self.assertIsNotNone(py.search(scanner.mask_py_non_code("FreeCAD.ActiveDocument")))
         self.assertIsNotNone(py.search(scanner.mask_py_non_code("App.getDocument('x')")))
@@ -710,6 +734,37 @@ str.join(parts)
         # Gui.activeDocument is the GUI-side handle, tracked separately.
         self.assertIsNone(py.search(scanner.mask_py_non_code("Gui.activeDocument()")))
 
+    def test_live_reference_payload_covers_highlight_and_expand_signals(self) -> None:
+        cpp = scanner.compiled_pattern("live-reference-payload", "cpp")
+        highlight = (
+            "mutable fastsignals::signal<void(\n"
+            "    const Gui::ViewProviderDocumentObject&,\n"
+            "    const Gui::HighlightMode&,\n"
+            "    bool,\n"
+            "    App::DocumentObject* parent,\n"
+            "    const char* subname\n"
+            ")>\n"
+            "    signalHighlightObject;"
+        )
+        expand = (
+            "mutable fastsignals::signal<void(\n"
+            "    const Gui::ViewProviderDocumentObject&,\n"
+            "    const Gui::TreeItemMode&,\n"
+            "    App::DocumentObject* parent,\n"
+            "    const char* subname\n"
+            ")>\n"
+            "    signalExpandObject;"
+        )
+        masked_highlight = scanner.mask_cpp_non_code(highlight)
+        masked_expand = scanner.mask_cpp_non_code(expand)
+        self.assertIsNotNone(cpp.search(masked_highlight), "signalHighlightObject")
+        self.assertIsNotNone(cpp.search(masked_expand), "signalExpandObject")
+        # An earlier nested template '>' must not hide a later DocumentObject* payload.
+        nested = (
+            "fastsignals::signal<void(std::shared_ptr<Foo>, App::DocumentObject*)> signalX;"
+        )
+        self.assertIsNotNone(cpp.search(nested), "shared_ptr nested template")
+
     def test_blocking_invokes_python_pattern_is_documented_not_none(self) -> None:
         py = scanner.compiled_pattern("blocking-invokes", "py")
         self.assertIsNotNone(py)
@@ -720,7 +775,7 @@ str.join(parts)
 
     def test_python_pattern_none_set_matches_rules_documentation(self) -> None:
         none_keys = {category.key for category in rules.CATEGORIES if category.py_pattern is None}
-        self.assertEqual(none_keys, {"update-data-provider"})
+        self.assertEqual(none_keys, {"update-data-provider", "live-reference-payload"})
         readme = (PACKAGE_DIR / "README.md").read_text(encoding="utf-8")
         self.assertRegex(readme, r"`update-data-provider` Python side uses an AST classifier")
         self.assertNotIn(

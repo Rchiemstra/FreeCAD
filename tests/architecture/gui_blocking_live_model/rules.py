@@ -79,6 +79,9 @@ EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({"_TEMPLATE_"})
 #: shipped workbench surface.
 EXCLUDED_WORKBENCHES: frozenset[str] = frozenset({"TemplatePyMod", "Test"})
 
+#: Nested GUI directories that are test infrastructure rather than production GUI.
+EXCLUDED_GUI_DIR_NAMES: frozenset[str] = frozenset({"OpenSCADTest"})
+
 #: Individual test-harness files excluded from the scan. These are compiled into
 #: the GUI library (or importable) but are test infrastructure, not a shipped
 #: GUI surface; the rationale mirrors ``EXCLUDED_WORKBENCHES``.
@@ -383,6 +386,7 @@ REVIEWED_TRANSITIVE_IMPORT_EXCLUSIONS: dict[str, str] = {
     "src/Mod/Draft/draftmake/make_orthoarray.py": "Draft model constructor; no GUI handlers",
     "src/Mod/Draft/draftutils/groups.py": "Draft model grouping helper; no GUI handlers",
     "src/Mod/Fem/feminout/importCcxDatResults.py": "FEM result importer; GUI caller is inventoried",
+    "src/Mod/Fem/femtest/app/test_object.py": "FEM unit-test helper; GUI caller is inventoried",
     "src/Mod/Fem/femsolver/mystran/tasks.py": "FEM solver task helper; GUI caller is inventoried",
     "src/Mod/PartDesign/fcgear/fcgear.py": "PartDesign model helper; GUI caller is inventoried",
     "src/Mod/PartDesign/fcsprocket/fcsprocket.py": "PartDesign model helper; GUI caller is inventoried",
@@ -515,15 +519,25 @@ CATEGORIES: tuple[Category, ...] = (
             "the committed presentation state. C++: App::GetApplication() document/"
             "object accessors (getActiveDocument, getDocument, getDocuments, "
             "getDocumentOrActive, getDocumentByPath), including the multi-line "
-            "receiver-chain form. Python: App/FreeCAD.ActiveDocument (attribute), "
-            "App/FreeCAD.activeDocument() (method), and App/FreeCAD.getDocument(). "
-            "Gui.ActiveDocument (the GUI-side document handle) is tracked "
-            "separately, as is the model-layer src/App core."
+            "receiver-chain form, plus Gui::Document/Command getDocument() chains "
+            "into getObject( (direct getDocument()->getObject, newline-split arrow "
+            "chains, and pDoc = getDocument(); followed within a few lines by "
+            "pDoc->getObject). Coincidence of getDocument() and an unrelated "
+            "getObject( on the same line is not a match. Python: "
+            "App/FreeCAD.ActiveDocument (attribute), App/FreeCAD.activeDocument() "
+            "(method), and App/FreeCAD.getDocument(). Gui.ActiveDocument (the "
+            "GUI-side document handle) is tracked separately, as is the "
+            "model-layer src/App core."
         ),
         cpp_pattern=(
             r"App::GetApplication\s*\(\s*\)\s*\.\s*"
             r"(?:getActiveDocument|getDocuments|getDocumentOrActive|getDocumentByPath|getDocument)"
-            r"[^\S\n]*\("
+            r"[^\S\n]*\(|"
+            # Direct chain: only whitespace/newlines between getDocument() and ->getObject(
+            r"getDocument\s*\(\s*\)(?:[^\S\n]*\n){0,2}[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\(|"
+            # Stored handle: pDoc = getDocument(); ... pDoc->getObject(
+            r"(?P<gd_var>[A-Za-z_]\w*)\s*=\s*getDocument\s*\(\s*\)\s*;"
+            r"(?:[^\n]*\n){0,5}[^\n]*\b(?P=gd_var)[^\S\n]*(?:->|\.)[^\S\n]*getObject\s*\("
         ),
         py_pattern=(
             r"(?:App|FreeCAD)[^\S\n]*\.[^\S\n]*(?:\+[^\S\n]*)?"
@@ -552,6 +566,25 @@ CATEGORIES: tuple[Category, ...] = (
             r"(?:View)?Object\b"
         ),
         py_pattern=r"\b(?:addObserver|removeObserver)[^\S\n]*\(",
+        default_disposition="migrate",
+    ),
+    Category(
+        key="live-reference-payload",
+        title="Live-reference signal payloads",
+        description=(
+            "fastsignals::signal declarations whose template arguments carry live "
+            "App::DocumentObject* or App::Property* / reference payloads into GUI "
+            "callbacks. These include tree/highlight navigation signals such as "
+            "signalHighlightObject and signalExpandObject. Pure signal member "
+            "declarations without live pointer/reference parameters remain out of "
+            "scope for this category."
+        ),
+        cpp_pattern=(
+            # Allow one level of nested <> so an earlier shared_ptr<Foo> '>' cannot
+            # hide a later App::DocumentObject* / App::Property* in the same signature.
+            r"fastsignals::signal\s*<(?:[^<>]|<[^<>]*>)*\bApp::(?:Property\s*[*&]|DocumentObject\s*[*&])(?:[^<>]|<[^<>]*>)*>"
+        ),
+        py_pattern=None,
         default_disposition="migrate",
     ),
     Category(
