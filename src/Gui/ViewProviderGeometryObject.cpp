@@ -449,3 +449,17 @@ void ViewProviderGeometryObject::handleChangedPropertyName(
         ViewProviderDragger::handleChangedPropertyName(reader, TypeName, PropName);
     }
 }
+
+ViewProviderPresentationClassification ViewProviderGeometryObject::presentationClassification() const
+{
+    return ViewProviderPresentationClassification::Adapted;
+}
+
+bool ViewProviderGeometryObject::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest& request,
+    PresentationRenderBuffer& buffer) const
+{
+    buffer = PresentationRenderBuffer {};
+    buffer.stableObjectIdentity = request.stableObjectIdentity;
+    return !request.stableObjectIdentity.empty();
+}

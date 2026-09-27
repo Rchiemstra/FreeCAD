@@ -75,6 +75,11 @@ protected:
 
     void updateData(const App::Property*) override;
 
+    [[nodiscard]] ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const ViewProviderPresentationCaptureRequest& request,
+        PresentationRenderBuffer& buffer) const override;
+
     bool setEdit(int ModNum) override;
     void setEditViewer(View3DInventorViewer*, int ModNum) override;
 

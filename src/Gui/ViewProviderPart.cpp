@@ -40,6 +40,7 @@
 #include "TaskElementColors.h"
 #include "Control.h"
 #include "ViewProviderLink.h"
+#include "ViewProviderPresentationCapability.h"
 
 using namespace Gui;
 
@@ -90,6 +91,18 @@ void ViewProviderPart::updateData(const App::Property* prop)
         }
     }
     inherited::updateData(prop);
+}
+
+ViewProviderPresentationClassification ViewProviderPart::presentationClassification() const
+{
+    return ViewProviderPresentationClassification::Adapted;
+}
+
+bool ViewProviderPart::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest& request,
+    PresentationRenderBuffer& buffer) const
+{
+    return capturePartPresentationRenderBuffer(*this, request, buffer);
 }
 
 void ViewProviderPart::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Wave 0 inventory gate for production ViewProvider updateData providers."""
+"""Wave 3 inventory gate for production ViewProvider updateData providers."""
 
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ sys.path.insert(0, str(ARCH_DIR))
 from gui_blocking_live_model.scanner import (  # noqa: E402
     _python_update_data_provider_matches,
     iter_source_files,
+)
+from view_provider_updatedata_classifications import (  # noqa: E402
+    VALID_CLASSIFICATIONS,
+    resolve_classification,
 )
 
 INVENTORY_HEADER = ("file", "symbol/caller", "line", "classification")
@@ -144,8 +148,23 @@ def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
     if len(keys) != len(set(keys)):
         violations.append("<inventory>: duplicate file/symbol/line rows")
     for row in rows:
-        if row.classification != "unclassified":
-            violations.append(row.diagnostic(f"classification is {row.classification!r}, expected unclassified"))
+        if row.classification not in VALID_CLASSIFICATIONS:
+            violations.append(
+                row.diagnostic(
+                    f"classification is {row.classification!r}, "
+                    f"expected one of {sorted(VALID_CLASSIFICATIONS)}"
+                )
+            )
+        elif row.classification == "unclassified":
+            violations.append(row.diagnostic("classification must not remain unclassified"))
+        else:
+            expected = resolve_classification(row.source_path, row.stable_symbol, row.line)
+            if row.classification != expected:
+                violations.append(
+                    row.diagnostic(
+                        f"classification is {row.classification!r}, expected {expected!r}"
+                    )
+                )
         if not (REPO_ROOT / row.source_path).is_file():
             violations.append(row.diagnostic("named source file does not exist"))
         source = (REPO_ROOT / row.source_path).read_text(encoding="utf-8", errors="surrogateescape")
@@ -162,11 +181,15 @@ def _inventory_shape_violations(rows: list[InventoryRow]) -> list[str]:
     return violations
 
 
-def test_inventory_lists_only_unclassified_rows() -> None:
+def test_inventory_classifies_every_production_provider() -> None:
     rows = _parse_inventory(INVENTORY_PATH.read_text(encoding="utf-8"))
     assert rows, "inventory table is empty"
     violations = _inventory_shape_violations(rows)
     assert not violations, "inventory shape violations:\n" + "\n".join(violations)
+    unclassified = [row for row in rows if row.classification == "unclassified"]
+    assert not unclassified, "unclassified production providers remain:\n" + "\n".join(
+        row.diagnostic("still unclassified") for row in unclassified
+    )
 
 
 def test_every_production_provider_is_inventoried() -> None:

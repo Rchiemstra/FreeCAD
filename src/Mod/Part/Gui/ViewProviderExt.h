@@ -103,6 +103,11 @@ public:
 
     void updateData(const App::Property*) override;
 
+    [[nodiscard]] Gui::ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const Gui::ViewProviderPresentationCaptureRequest& request,
+        Gui::PresentationRenderBuffer& buffer) const override;
+
     /** @name Restoring view provider from document load */
     //@{
     void startRestoring() override;

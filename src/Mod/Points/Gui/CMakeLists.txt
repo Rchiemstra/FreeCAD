@@ -41,6 +41,8 @@ SET(PointsGui_SRCS
     PreCompiled.h
     ViewProvider.cpp
     ViewProvider.h
+    ViewProviderPresentationAdapter.cpp
+    ViewProviderPresentationAdapter.h
     Workbench.cpp
     Workbench.h
 )

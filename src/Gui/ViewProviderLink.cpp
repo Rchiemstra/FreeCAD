@@ -2217,6 +2217,18 @@ void ViewProviderLink::updateData(const App::Property* prop)
     }
 }
 
+ViewProviderPresentationClassification ViewProviderLink::presentationClassification() const
+{
+    return ViewProviderPresentationClassification::Unsupported;
+}
+
+bool ViewProviderLink::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
+{
+    return false;
+}
+
 static inline bool canScale(const Base::Vector3d& v)
 {
     return fabs(v.x) > 1e-7 && fabs(v.y) > 1e-7 && fabs(v.z) > 1e-7;

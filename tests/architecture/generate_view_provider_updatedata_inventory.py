@@ -17,6 +17,7 @@ from gui_blocking_live_model.scanner import (  # noqa: E402
     _python_update_data_provider_matches,
     iter_source_files,
 )
+from view_provider_updatedata_classifications import resolve_classification  # noqa: E402
 
 CPP_IMPL = re.compile(
     r"void\s+((?:\w+::)*\w+)::updateData\s*\([^)]*App::Property",
@@ -99,15 +100,14 @@ def _render(rows: list[tuple[str, str, int]]) -> str:
         "# ViewProvider updateData provider inventory\n\n"
         "Production presentation providers discovered under `src/Gui`, every "
         "`src/Mod/*/Gui`, and the reviewed module-aware Python GUI packages "
-        "(Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Every row is "
-        "classified `unclassified` until Wave 3 "
-        "migration assigns a pointer-free adapter or explicit `unsupported` "
-        "capability.\n\n"
+        "(Draft, BIM, Assembly, Fem, OpenSCAD, CAM, and peers). Wave 3 "
+        "classifies every row as `adapted` (pointer-free presentation adapter) "
+        "or `unsupported` (explicit capability; no synchronous updateData fallback).\n\n"
         "| file | symbol/caller | line | classification |\n"
         "| --- | --- | ---: | --- |\n"
     )
     body = "\n".join(
-        f"| `{file}` | `{symbol}` | {line} | unclassified |"
+        f"| `{file}` | `{symbol}` | {line} | {resolve_classification(file, symbol, line)} |"
         for file, symbol, line in rows
     )
     return f"{header}{body}\n"

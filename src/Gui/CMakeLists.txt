@@ -1028,6 +1028,7 @@ SET(Viewprovider_CPP_SRCS
     ViewProviderTextDocument.cpp
     ViewProviderTextureExtension.cpp
     ViewProviderLink.cpp
+    ViewProviderPresentationCapability.cpp
     LinkViewPyImp.cpp
     ViewProviderLinkPyImp.cpp
     ViewProviderVarSet.cpp
@@ -1066,6 +1067,7 @@ SET(Viewprovider_SRCS
     ViewProviderTextDocument.h
     ViewProviderTextureExtension.h
     ViewProviderLink.h
+    ViewProviderPresentationCapability.h
     ViewProviderVarSet.h
     AxisOrigin.h
 )

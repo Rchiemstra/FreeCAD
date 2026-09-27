@@ -66,6 +66,10 @@
 #include <Inventor/nodes/SoPolygonOffset.h>
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoShapeHints.h>
+#include <Inventor/fields/SoMFInt32.h>
+#include <Inventor/fields/SoMFVec3f.h>
+
+#include <cstdint>
 
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -87,6 +91,7 @@
 #include <Mod/Part/App/Tools.h>
 
 #include "ViewProviderExt.h"
+#include "ViewProviderPresentationAdapter.h"
 #include "ViewProviderPartExtPy.h"
 #include "SoBrepEdgeSet.h"
 #include "SoBrepFaceSet.h"
@@ -1606,4 +1611,55 @@ void ViewProviderPartExt::handleChangedPropertyName(
     else {
         Gui::ViewProviderGeometryObject::handleChangedPropertyName(reader, TypeName, PropName);
     }
+}
+
+Gui::ViewProviderPresentationClassification ViewProviderPartExt::presentationClassification() const
+{
+    return Gui::ViewProviderPresentationClassification::Adapted;
+}
+
+namespace
+{
+
+void appendCoinVec3Field(const SoMFVec3f& field, std::vector<float>& target)
+{
+    const int count = field.getNum();
+    target.reserve(target.size() + static_cast<std::size_t>(count) * 3U);
+    for (int index = 0; index < count; ++index) {
+        const SbVec3f& value = field[index];
+        target.push_back(value[0]);
+        target.push_back(value[1]);
+        target.push_back(value[2]);
+    }
+}
+
+void appendCoinInt32Field(const SoMFInt32& field, std::vector<std::uint32_t>& target)
+{
+    const int count = field.getNum();
+    target.reserve(target.size() + static_cast<std::size_t>(count));
+    for (int index = 0; index < count; ++index) {
+        target.push_back(static_cast<std::uint32_t>(field[index]));
+    }
+}
+
+}  // namespace
+
+bool ViewProviderPartExt::capturePresentationRenderBuffer(
+    const Gui::ViewProviderPresentationCaptureRequest& request,
+    Gui::PresentationRenderBuffer& buffer) const
+{
+    if (!coords || !faceset) {
+        buffer.stableObjectIdentity = request.stableObjectIdentity;
+        return !request.stableObjectIdentity.empty();
+    }
+
+    buffer = Gui::PresentationRenderBuffer {};
+    buffer.stableObjectIdentity = request.stableObjectIdentity;
+    appendCoinVec3Field(coords->point, buffer.vertices);
+    if (norm) {
+        appendCoinVec3Field(norm->vector, buffer.normals);
+    }
+    appendCoinInt32Field(faceset->coordIndex, buffer.indices);
+    appendCoinInt32Field(faceset->partIndex, buffer.topology);
+    return !buffer.vertices.empty() || !request.stableObjectIdentity.empty();
 }
