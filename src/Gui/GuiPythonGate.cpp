@@ -16,7 +16,6 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -75,27 +74,25 @@ bool tryAcquireGilWithoutBlocking(PyGILState_STATE* state) noexcept
 {
     // Never detach a thread blocked in PyGILState_Ensure: when the foreign GIL
     // holder later releases, the orphan races with a second Ensure and can crash.
+    // Do not signal via a stack-local promise either — on timeout that object is
+    // destroyed while the orphan may still be inside Ensure.
     reapFinishedOrphanGilProbes();
 
     auto done = std::make_shared<std::atomic<bool>>(false);
-    std::promise<void> probeFinished;
-    auto probeDone = probeFinished.get_future();
-    std::thread probe([done, &probeFinished] {
+    std::thread probe([done] {
         PyGILState_STATE probeState = PyGILState_Ensure();
         PyGILState_Release(probeState);
         done->store(true, std::memory_order_release);
-        try {
-            probeFinished.set_value();
-        }
-        catch (const std::future_error&) {
-            // Timed-out waiter already abandoned the promise; done flag is enough.
-        }
     });
     using namespace std::chrono_literals;
-    if (probeDone.wait_for(2ms) != std::future_status::ready) {
-        std::lock_guard lock(g_orphanGilProbeMutex);
-        g_orphanGilProbes.push_back(OrphanGilProbe {std::move(probe), std::move(done)});
-        return false;
+    const auto deadline = std::chrono::steady_clock::now() + 2ms;
+    while (!done->load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            std::lock_guard lock(g_orphanGilProbeMutex);
+            g_orphanGilProbes.push_back(OrphanGilProbe {std::move(probe), std::move(done)});
+            return false;
+        }
+        std::this_thread::sleep_for(100us);
     }
     probe.join();
     *state = PyGILState_Ensure();

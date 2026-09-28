@@ -2055,7 +2055,7 @@
     },
     {
       "path": "src/Gui/GuiPythonGate.cpp",
-      "line": 35,
+      "line": 37,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
