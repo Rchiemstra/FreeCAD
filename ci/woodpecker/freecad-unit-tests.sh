@@ -20,12 +20,24 @@ run_gtest() {
       # Run the rest of Gui_tests_run first, then each Collaboration* family alone.
       if [ "$name" = "Gui_tests_run" ]; then
         main_log="/tmp/gtest/$name.log"
+        main_only_log="/tmp/gtest/$name-main-only.log"
         : >"$main_log"
         env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
           "$t" \
           --gtest_filter=-CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*:CollaborationViewIsolation*:CollaborationResponsiveness* \
           --gtest_output=json:/tmp/gtest/"$name"-main.json >>"$main_log" 2>&1
         main_rc=$?
+        # Evaluate main-batch teardown tolerance against the main log only,
+        # before Collaboration filters append PASSED lines that could mask a
+        # crashed main batch (no [ FAILED ], no main [ PASSED ]).
+        cp "$main_log" "$main_only_log"
+        if [ "$main_rc" -ne 0 ] \
+          && grep -q '\[  PASSED  \]' "$main_only_log" \
+          && ! grep -q '\[  FAILED  \]' "$main_only_log"; then
+          echo "WARN: accepting $name main batch exit $main_rc after all tests passed (teardown)" \
+            | tee -a "$main_log"
+          main_rc=0
+        fi
         collab_rc=0
         for part in \
           'CollaborationDomainIntegration*:CollaborationDomainIntegrationStandalone*' \
@@ -52,14 +64,6 @@ run_gtest() {
             collab_rc=$part_rc
           fi
         done
-        # Same teardown tolerance for the main Gui batch.
-        if [ "$main_rc" -ne 0 ] \
-          && grep -q '\[  PASSED  \]' "$main_log" \
-          && ! grep -q '\[  FAILED  \]' "$main_log"; then
-          echo "WARN: accepting $name main batch exit $main_rc after all tests passed (teardown)" \
-            | tee -a "$main_log"
-          main_rc=0
-        fi
         if [ "$main_rc" -ne 0 ]; then
           return "$main_rc"
         fi
