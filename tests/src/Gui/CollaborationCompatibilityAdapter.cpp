@@ -452,7 +452,7 @@ TEST(GuiCommandCoordinatorContractTest,
     auto* object = document->addObject("App::FeatureTest", "Target");
     ASSERT_NE(object, nullptr);
     object->Label.setValue("before");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     App::GetApplication().setActiveDocument(document);
 
     transactionId = App::GetApplication().setActiveTransaction(

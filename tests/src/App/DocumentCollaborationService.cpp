@@ -9,6 +9,7 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/DocumentCommitCoordinator.h"
+#include "App/DocumentExecutionLane.h"
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
@@ -130,7 +131,8 @@ public:
         return document.commitCollaborationCommitTransaction(true);
     }
 
-    static std::string grantDiagnostic(Document& document)
+    /** Probe grant on the calling thread (no lane hop). */
+    static std::string grantDiagnosticOnCallingThread(Document& document)
     {
         try {
             auto grant = document.openCollaborationStructuralMutationGrant();
@@ -141,66 +143,94 @@ public:
         }
     }
 
+    /** Probe grant on the document owner thread (lane when present). */
+    static std::string grantDiagnostic(Document& document)
+    {
+        return onOwner(document, [&] { return grantDiagnosticOnCallingThread(document); });
+    }
+
     static std::string withoutTransaction(Document& document)
     {
-        document.beginCollaborationCommitNotificationBarrier();
-        document.setCollaborationRevisionPublicationSuppressed(true);
-        const auto diagnostic = grantDiagnostic(document);
-        document.setCollaborationRevisionPublicationSuppressed(false);
-        document.finishCollaborationCommitNotificationBarrier(false);
-        return diagnostic;
+        return onOwner(document, [&] {
+            document.beginCollaborationCommitNotificationBarrier();
+            document.setCollaborationRevisionPublicationSuppressed(true);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.setCollaborationRevisionPublicationSuppressed(false);
+            document.finishCollaborationCommitNotificationBarrier(false);
+            return diagnostic;
+        });
     }
 
     static std::string withoutRevisionSuppression(Document& document)
     {
-        beginBoundary(document, false);
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, false);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string withForeignStableRead(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationStableReadCapture();
-        const auto diagnostic = grantDiagnostic(document);
-        document.finishCollaborationStableReadCapture();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationStableReadCapture();
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.finishCollaborationStableReadCapture();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string duringAtomicPresentationAudit(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationAtomicPresentationAudit({});
-        const auto diagnostic = grantDiagnostic(document);
-        document.endCollaborationAtomicPresentationAudit();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationAtomicPresentationAudit({});
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.endCollaborationAtomicPresentationAudit();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string onPoisonedDocument(Document& document)
     {
-        beginBoundary(document, true);
-        document.poisonCollaborationCommit("test poison");
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.poisonCollaborationCommit("test poison");
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string reentrant(Document& document)
     {
-        beginBoundary(document, true);
-        std::string diagnostic;
-        {
-            auto grant = document.openCollaborationStructuralMutationGrant();
-            diagnostic = grantDiagnostic(document);
-        }
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            std::string diagnostic;
+            {
+                auto grant = document.openCollaborationStructuralMutationGrant();
+                diagnostic = grantDiagnosticOnCallingThread(document);
+            }
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
 private:
+    template<typename Fn>
+    static auto onOwner(Document& document, Fn&& fn) -> decltype(fn())
+    {
+        if (DocumentExecutionLane* lane = document.executionLane();
+            lane && !lane->isOwnerThread()) {
+            return lane->dispatchToOwner(std::forward<Fn>(fn));
+        }
+        return std::forward<Fn>(fn)();
+    }
+
     static void beginBoundary(Document& document, bool suppressRevisions)
     {
         document.beginCollaborationCommitNotificationBarrier();
@@ -1779,7 +1809,7 @@ TEST_F(DocumentCollaborationServiceTest, structuralGrantPreconditionsHaveDistinc
               std::string::npos);
 
     auto ownerDiagnostic = std::async(std::launch::async, [&] {
-        return Access::grantDiagnostic(*_document);
+        return Access::grantDiagnosticOnCallingThread(*_document);
     });
     EXPECT_NE(ownerDiagnostic.get().find("owner thread"), std::string::npos);
 }
