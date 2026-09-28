@@ -9,6 +9,7 @@
 #include "App/Application.h"
 #include "App/AutoTransaction.h"
 #include "App/Document.h"
+#include "App/DocumentExecutionLane.h"
 #include "App/DocumentObserverPython.h"
 #include "App/DocumentPy.h"
 #include "App/DocumentRevisionIndex.h"
