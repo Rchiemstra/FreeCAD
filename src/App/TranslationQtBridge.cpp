@@ -7,6 +7,8 @@
 #include <QThread>
 #include <QTranslator>
 
+#include <future>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -62,13 +64,24 @@ public:
             return installTranslatorImpl(file);
         }
 
-        bool ok = false;
+        // Never use Qt::BlockingQueuedConnection: a document-owner caller would
+        // stall while the GUI thread is waiting on the lane. Queue + future keeps
+        // the wait on the caller without a blocking queued cross-thread invoke.
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
         QMetaObject::invokeMethod(
             app,
-            [&ok, file]() { ok = installTranslatorImpl(file); },
-            Qt::BlockingQueuedConnection
+            [promise, file]() {
+                try {
+                    promise->set_value(installTranslatorImpl(file));
+                }
+                catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            },
+            Qt::QueuedConnection
         );
-        return ok;
+        return future.get();
     }
 
     bool removeTranslators(const std::vector<std::string>& filenames) const override
@@ -78,13 +91,21 @@ public:
             return removeTranslatorsImpl(filenames);
         }
 
-        bool ok = false;
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
         QMetaObject::invokeMethod(
             app,
-            [&ok, filenames]() { ok = removeTranslatorsImpl(filenames); },
-            Qt::BlockingQueuedConnection
+            [promise, filenames]() {
+                try {
+                    promise->set_value(removeTranslatorsImpl(filenames));
+                }
+                catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            },
+            Qt::QueuedConnection
         );
-        return ok;
+        return future.get();
     }
 };
 
