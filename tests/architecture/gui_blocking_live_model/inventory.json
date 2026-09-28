@@ -1543,7 +1543,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3080,
+      "line": 3085,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1551,7 +1551,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3094,
+      "line": 3099,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1559,7 +1559,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3190,
+      "line": 3199,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1567,7 +1567,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4296,
+      "line": 4305,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1639,11 +1639,19 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 207,
+      "line": 211,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "auto* appDocument = App::GetApplication().getDocument(appDocumentName);"
+    },
+    {
+      "path": "src/Gui/DocumentExecutionIngress.cpp",
+      "line": 347,
+      "category": "process-events-polling",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "QApplication::processEvents();"
     },
     {
       "path": "src/Gui/DocumentModel.cpp",

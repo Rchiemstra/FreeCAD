@@ -1667,13 +1667,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     const auto legacyMode = intent.arguments.find("legacy_revision_semantics");
     const auto forceMode = intent.arguments.find("force_execution");
     const auto ownerThreadMode = intent.arguments.find("owner_thread_execution");
-    if (intent.arguments.empty() || intent.arguments.size() > 4
+    const auto derivedCoordinatorMode =
+        intent.arguments.find("derived_coordinator_recompute");
+    if (intent.arguments.empty() || intent.arguments.size() > 5
         || !intent.arguments.contains("feature")
         || std::ranges::any_of(intent.arguments, [](const auto& argument) {
                return argument.first != "feature"
                    && argument.first != "legacy_revision_semantics"
                    && argument.first != "force_execution"
-                   && argument.first != "owner_thread_execution";
+                   && argument.first != "owner_thread_execution"
+                   && argument.first != "derived_coordinator_recompute";
            })) {
         throw std::invalid_argument(
             "generic recompute requires a feature and optional revision/force/venue modes");
@@ -1809,7 +1812,13 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                                                        App::PreparationPolicy::DetachedInProcess};
     };
 
-    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract) {
+    const bool derivedCoordinatorRecompute =
+        derivedCoordinatorMode != intent.arguments.end();
+    if (derivedCoordinatorRecompute && derivedCoordinatorMode->second != "1") {
+        throw std::invalid_argument("generic recompute derived pass mode is invalid");
+    }
+    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract
+        && !derivedCoordinatorRecompute) {
         return prepareOwnerThreadExecution();
     }
 
@@ -1854,9 +1863,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                 App::PreparationPolicy::DetachedInProcess};
     }
 
-    if (ownerThreadExecution) {
+    if (ownerThreadExecution && target->canRecomputeOnWorker()) {
         // Same decision tree as the detached venue -- the opt-out and
         // bookkeeping branches above already ran -- only the venue differs.
+        // During the coordinator's derived pass inside a structural commit,
+        // still prove the closure is worker-reproducible before running live
+        // on the owner thread; unserializable runtime types must fail here
+        // instead of executing object code.
+        if (derivedCoordinatorRecompute) {
+            static_cast<void>(collectClosure(document, *target));
+        }
         return prepareOwnerThreadExecution();
     }
 
@@ -1872,6 +1888,13 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
         // document links and unserializable runtime types are not handled
         // here and still fail closed inside collectClosure() when the
         // worker venue is chosen.
+        //
+        // A target that has not opted into worker execution during the
+        // coordinator's derived pass is not a closure-shape fallback: it must
+        // be refused before execute() runs live.
+        if (derivedCoordinatorRecompute && !target->canRecomputeOnWorker()) {
+            static_cast<void>(collectClosure(document, *target));
+        }
         return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
     }
 

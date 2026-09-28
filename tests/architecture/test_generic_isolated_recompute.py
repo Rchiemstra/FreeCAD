@@ -251,12 +251,16 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     assert "_recomputeFeature(" not in full
     assert "_recomputeFeature(" not in facade
     assert "recomputeCoordinator()" in facade
-    # Compatibility facades always ask for the owner-thread venue; isolation
-    # is enforced by the coordinator commit path, not by spawning a worker per
-    # feature during derived recompute inside a structural commit.
+    # Compatibility facades always ask for the owner-thread venue; structural
+    # isolation during the coordinator's derived pass is enforced in
+    # prepareGenericRecompute() via the derived_coordinator_recompute intent
+    # tag stamped by recomputeAsync(), not by refusing owner-thread execution
+    # for every worker-opted feature.
     assert "makeGenericIsolatedRecomputeRequest(" in facade
     assert "*this,*feature,recursive" in facade
     assert "/*ownerThreadExecution=*/true" in facade
+    async_facade = _compact(_body(document, "Document::recomputeAsync"))
+    assert 'derived_coordinator_recompute", "1"' in async_facade
 
     temp_document = friend.find("document.testStatus(Document::TempDoc)")
     ownership = friend.find("feature.getDocument()!=&document", temp_document)

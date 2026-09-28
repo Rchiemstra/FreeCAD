@@ -7169,6 +7169,11 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         // Either way a target that does not opt into worker execution falls
         // back to the owner thread inside GenericIsolatedRecompute.cpp:1714.
         /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread);
+    if (collaborationDerivedRecomputeGranted()) {
+        for (auto& node : request.features) {
+            node.intent.arguments.emplace("derived_coordinator_recompute", "1");
+        }
+    }
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
