@@ -219,10 +219,10 @@ public:
         // GuiPythonGate::verifyFeaturePythonExecution enforces the same rule
         // before GUI-admitted Python work; this rejects undeclared features at
         // the execute boundary so they cannot run on the owner thread either.
-        if (!DocumentWouldBlock::isGuiThread() && !declaresDocumentThreadExecution()) {
+        if (!declaresDocumentThreadExecution()) {
             return new App::DocumentObjectExecReturn(
                 "Python feature must declare supportsDocumentThreadExecution() "
-                "before document-thread execution");
+                "before execution");
         }
         try {
             bool handled = imp->execute();

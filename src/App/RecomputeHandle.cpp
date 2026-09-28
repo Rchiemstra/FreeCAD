@@ -124,23 +124,7 @@ DocumentRecomputeSnapshot RecomputeHandle::status()
 
 bool RecomputeHandle::poll()
 {
-    auto* owner = document();
-    if (!owner) {
-        return true;
-    }
-
-    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        // Observation-only: the lane owner thread pumps during executeActiveRecompute().
-        return status().terminal();
-    }
-
-    static_cast<void>(owner->recomputeCoordinator().poll(_id));
-    const auto snapshot = owner->recomputeCoordinator().status(_id);
-    if (!snapshot) {
-        return true;
-    }
-    finalizeIfTerminal(*owner, *snapshot);
-    return snapshot->terminal();
+    return status().terminal();
 }
 
 bool RecomputeHandle::cancel(std::string reason)
@@ -150,13 +134,7 @@ bool RecomputeHandle::cancel(std::string reason)
         return false;
     }
 
-    const bool accepted = owner->recomputeCoordinator().cancel(_id, std::move(reason));
-    if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        return accepted;
-    }
-
-    static_cast<void>(poll());
-    return accepted;
+    return owner->recomputeCoordinator().cancel(_id, std::move(reason));
 }
 
 DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds timeout)
@@ -166,14 +144,21 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
     const auto boundedTimeout = std::max(timeout, 0ms);
     const auto deadline = std::chrono::steady_clock::now() + boundedTimeout;
 
+    auto* owner = document();
+    if (!owner) {
+        return closedDocumentSnapshot();
+    }
+
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
         while (true) {
-            // Always poll before observing terminal state. A plan can finish
-            // between recomputeAsync() returning and wait() starting; skipping
-            // poll() would leave presentation finalization unclaimed and skip
-            // collaboration recompute teardown (pending removals, stable).
-            static_cast<void>(poll());
-            auto snapshot = status();
+            // Pump coordinator work on the owner thread only inside wait().
+            static_cast<void>(owner->recomputeCoordinator().poll(_id));
+            auto snapshot = owner->recomputeCoordinator().status(_id);
+            if (!snapshot) {
+                return closedDocumentSnapshot();
+            }
+            finalizeIfTerminal(*owner, *snapshot);
+            snapshot = status();
             if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
                 return snapshot;
             }
@@ -183,11 +168,6 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
             std::this_thread::sleep_for(2ms);
         }
     };
-
-    auto* owner = document();
-    if (!owner) {
-        return closedDocumentSnapshot();
-    }
     if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
         return owner->executionLane()->dispatchToOwner(waitOnOwner, true, true);
     }

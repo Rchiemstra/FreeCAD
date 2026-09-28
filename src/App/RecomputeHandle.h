@@ -20,9 +20,8 @@ class DocumentWeakPtrT;
  * Pointer-safe public observation and control handle for one document recompute.
  *
  * The handle never owns a document and becomes a terminal cancelled view when
- * the document closes. poll() and wait() are owner-thread compatibility pumps:
- * detached work runs outside the document, while capture and commit remain on
- * the caller/GUI thread through DocumentRecomputeCoordinator.
+ * the document closes. poll() and status() are observation-only on every thread.
+ * wait() pumps coordinator work on the document owner thread only.
  */
 class AppExport RecomputeHandle
 {

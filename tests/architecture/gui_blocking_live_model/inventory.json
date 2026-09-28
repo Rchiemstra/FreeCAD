@@ -295,14 +295,6 @@
   "findings": [
     {
       "path": "src/Gui/Application.cpp",
-      "line": 470,
-      "category": "blocking-invokes",
-      "subsystem": "Gui",
-      "disposition": "migrate",
-      "evidence": "blocking ? Qt::BlockingQueuedConnection : Qt::QueuedConnection"
-    },
-    {
-      "path": "src/Gui/Application.cpp",
       "line": 811,
       "category": "live-app-dereference",
       "subsystem": "Gui",
