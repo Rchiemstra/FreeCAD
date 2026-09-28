@@ -813,14 +813,24 @@ DocumentIdentity Application::advanceDocumentCollaborationEpoch(
     const RecoverySnapshotSaveOptions& recoveryOptions,
     std::string reason)
 {
+    if (!document.isCollaborationOwnerThread()) {
+        if (auto* lane = document.executionLane()) {
+            return lane->dispatchToOwner(
+                [this, &document, &recoveryOptions, &reason]() {
+                    return advanceDocumentCollaborationEpoch(
+                        document, recoveryOptions, reason);
+                },
+                true,
+                true);
+        }
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires the document owner thread");
+    }
+
     auto lifecycleAccess = document.collaborationService().pinDocumentAccess();
     if (!lifecycleAccess) {
         throw Base::RuntimeError(
             "administrative collaboration recovery cannot start while close is sealed");
-    }
-    if (!document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "administrative collaboration recovery requires the document owner thread");
     }
 
     const auto found = DocMap.find(document.getName());

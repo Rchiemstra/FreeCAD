@@ -168,15 +168,15 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
 
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {
         while (true) {
+            // Always poll before observing terminal state. A plan can finish
+            // between recomputeAsync() returning and wait() starting; skipping
+            // poll() would leave presentation finalization unclaimed and skip
+            // collaboration recompute teardown (pending removals, stable).
+            static_cast<void>(poll());
             auto snapshot = status();
             if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
-                if (!snapshot.terminal()) {
-                    static_cast<void>(poll());
-                    snapshot = status();
-                }
                 return snapshot;
             }
-            static_cast<void>(poll());
             if (QCoreApplication::instance()) {
                 QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
             }
