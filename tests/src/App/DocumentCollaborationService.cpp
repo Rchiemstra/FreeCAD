@@ -1929,25 +1929,29 @@ TEST_F(DocumentCollaborationServiceTest, reentrantObserverCommitReturnsBusy)
     EXPECT_EQ(_target->Label.getStrValue(), "Outer");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerCommitIsRejectedOffOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, offOwnerCommitSucceedsViaExecutionLane)
 {
+    // Documents own a DocumentExecutionLane; off-owner commitEdit hops to the
+    // owner instead of returning Unsupported (pre-lane MainThreadSignal-only path).
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto prepared = prepare("off-owner", "Worker");
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
 
     const auto result = future.get();
-    EXPECT_EQ(result.status, DocumentCommitStatus::Unsupported);
-    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Worker");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRejected)
+TEST_F(DocumentCollaborationServiceTest, offOwnerSnapshotAndPreparationSucceedViaExecutionLane)
 {
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             _session.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(snapshotFuture.get()));
 
     const auto preparedIntent = intent("Worker");
     auto prepareFuture = std::async(std::launch::async, [&] {
@@ -1956,12 +1960,19 @@ TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRe
                                                              preparedIntent,
                                                              "native-test");
     });
-    EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(prepareFuture.get()));
     EXPECT_EQ(_target->Label.getStrValue(), "Before");
 }
 
-TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, laneSerializesConcurrentAdmissionsOnOwnerThread)
 {
+    // invokeCollaborationOnDocumentThread prefers the execution lane over
+    // MainThreadSignal hooks, so BlockingTestDispatcher::runOne would deadlock
+    // waiting for a queue that never fills.
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto ownerId = lane->ownerThreadId();
+
     auto* other = _document->addObject<FeatureTest>("Other");
     other->Label.setValue("BeforeOther");
     _document->recompute();
@@ -1972,26 +1983,23 @@ TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwn
         ApplyThreads.clear();
     }
 
-    BlockingTestDispatcher dispatcher;
     auto firstFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), first);
     });
     auto secondFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), second);
     });
-    dispatcher.runOne();
-    dispatcher.runOne();
 
     const auto firstResult = firstFuture.get();
     const auto secondResult = secondFuture.get();
-    EXPECT_TRUE(firstResult.committed());
-    EXPECT_TRUE(secondResult.committed());
+    EXPECT_TRUE(firstResult.committed()) << firstResult.message;
+    EXPECT_TRUE(secondResult.committed()) << secondResult.message;
     EXPECT_EQ(_target->Label.getStrValue(), "First");
     EXPECT_EQ(other->Label.getStrValue(), "Second");
     std::lock_guard lock(InstrumentationMutex);
     ASSERT_EQ(ApplyThreads.size(), 2U);
-    EXPECT_EQ(ApplyThreads[0], std::this_thread::get_id());
-    EXPECT_EQ(ApplyThreads[1], std::this_thread::get_id());
+    EXPECT_EQ(ApplyThreads[0], ownerId);
+    EXPECT_EQ(ApplyThreads[1], ownerId);
 }
 
 TEST_F(DocumentCollaborationServiceTest,
