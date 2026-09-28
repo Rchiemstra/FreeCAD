@@ -273,8 +273,13 @@ void App::enforceAtomicPresentationMutationTarget(const Document& document)
             "mutation is unavailable during a collaboration postcondition check");
     }
     if (admission.owner != std::this_thread::get_id()) {
-        throw Base::RuntimeError(
-            "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        // Off-owner callers that hold admission may hop document work onto the
+        // lane owner via dispatchToOwner; allow that owner to mutate the same
+        // target document while the admitting thread waits for the hop.
+        if (!(document.isCollaborationOwnerThread() && admission.target == &document)) {
+            throw Base::RuntimeError(
+                "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        }
     }
     if (admission.target != &document) {
         throw Base::RuntimeError(

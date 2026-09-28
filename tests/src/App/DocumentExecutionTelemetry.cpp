@@ -124,7 +124,7 @@ TEST_F(DocumentExecutionTelemetryTest, aggregatesBusyRejectionsAcrossDocuments)
     EXPECT_EQ(processSnapshot.busyRejections.total(), 14U);
 }
 
-TEST(DocumentExecutionTelemetryTest, reportsWatchdogStallAfterFiveSeconds)
+TEST_F(DocumentExecutionTelemetryTest, reportsWatchdogStallAfterFiveSeconds)
 {
     DocumentExecutionTelemetryCollector collector(FirstDocumentId, TestLifecycleEpoch, 8);
     collector.beginWatchdog("recompute-plan-7");
@@ -150,7 +150,7 @@ TEST(DocumentExecutionTelemetryTest, reportsWatchdogStallAfterFiveSeconds)
     EXPECT_NE(snapshot.watchdog.diagnostic.find("not terminated"), std::string::npos);
 }
 
-TEST(DocumentExecutionTelemetryTest, watchdogReturnsIdleWhenInactive)
+TEST_F(DocumentExecutionTelemetryTest, watchdogReturnsIdleWhenInactive)
 {
     DocumentExecutionTelemetryCollector collector(FirstDocumentId, TestLifecycleEpoch);
     const auto snapshot = collector.snapshot();
@@ -158,7 +158,7 @@ TEST(DocumentExecutionTelemetryTest, watchdogReturnsIdleWhenInactive)
     EXPECT_FALSE(snapshot.watchdog.stalled());
 }
 
-TEST(DocumentExecutionTelemetryTest, recentSampleBuffersAreBounded)
+TEST_F(DocumentExecutionTelemetryTest, recentSampleBuffersAreBounded)
 {
     DocumentExecutionTelemetryCollector collector(FirstDocumentId, TestLifecycleEpoch, 4);
     for (int sample = 1; sample <= 6; ++sample) {
@@ -256,7 +256,7 @@ TEST_F(DocumentExecutionTelemetryTest, snapshotsSerializeToJson)
     EXPECT_NE(processJson.find("\"publication_sequence\""), std::string::npos);
 }
 
-TEST(DocumentExecutionTelemetryTest, concurrentRecordingProducesConsistentSnapshots)
+TEST_F(DocumentExecutionTelemetryTest, concurrentRecordingProducesConsistentSnapshots)
 {
     DocumentExecutionTelemetryCollector collector(FirstDocumentId, TestLifecycleEpoch, 128);
     std::atomic<bool> start {false};
