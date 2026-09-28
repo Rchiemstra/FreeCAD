@@ -619,10 +619,11 @@ public:
         task->changed.notify_all();
     }
 
-    void waitUntilQueued()
+    [[nodiscard]] bool waitUntilQueued(
+        std::chrono::milliseconds timeout = std::chrono::seconds(5))
     {
         std::unique_lock lock(_mutex);
-        _changed.wait(lock, [&] { return !_tasks.empty(); });
+        return _changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); });
     }
 
 private:
@@ -958,7 +959,15 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
 
 TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCallback)
 {
+    // Install MainThreadSignal hooks so the test thread is treated as the GUI
+    // owner: close must reject while a collaboration admission is held.
+    // prepareEditAsync hops through the document execution lane; use the
+    // post-submit hook as the pin barrier instead of waiting for a
+    // MainThreadSignal queue that the lane path never fills.
     BlockingTestDispatcher dispatcher;
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(
+        &HookBarrier::invoke);
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -966,11 +975,19 @@ TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCa
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        return;
+    }
 
     EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
 
-    dispatcher.runOne();
+    barrier.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     const auto executionId = preparationFuture.get();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     std::optional<PreparedEditExecutionSnapshot> status;
@@ -1585,13 +1602,16 @@ TEST_F(DocumentCollaborationServiceTest, cancellationRejectsPreparedCommit)
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmission)
 {
     auto prepared = prepare("queued-cancellation", "Must Not Apply");
-    BlockingTestDispatcher dispatcher;
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
     ASSERT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "queued"));
-    dispatcher.runOne();
+    barrier.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
 
     const auto result = future.get();
     EXPECT_EQ(result.status, DocumentCommitStatus::Cancelled);
@@ -1600,7 +1620,9 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmis
 
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadAdmission)
 {
-    BlockingTestDispatcher dispatcher;
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
 
     const auto snapshotSession =
         _document->collaborationService().beginEditSession("queued snapshot");
@@ -1608,11 +1630,12 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadA
         return _document->collaborationService().snapshotForEdit(
             snapshotSession.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
     ASSERT_TRUE(_document->collaborationService().cancelEdit(snapshotSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
     EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
 
+    barrier.reset();
     const auto prepareSession =
         _document->collaborationService().beginEditSession("queued preparation");
     const auto preparedIntent = intent("Must Not Prepare");
@@ -1622,9 +1645,10 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadA
                                                              preparedIntent,
                                                              "native-test");
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
     ASSERT_TRUE(_document->collaborationService().cancelEdit(prepareSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
 }
 
