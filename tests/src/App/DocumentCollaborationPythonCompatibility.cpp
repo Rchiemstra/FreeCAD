@@ -4444,7 +4444,10 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         EXPECT_STREQ(PyUnicode_AsUTF8(PyDict_GetItemString(result, "status")), "Committed");
         EXPECT_EQ(probe.calls, 1);
         EXPECT_TRUE(probe.gilHeld);
-        EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+        const auto* lane = _document->executionLane();
+        ASSERT_NE(lane, nullptr);
+        EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
+        EXPECT_NE(probe.callbackThread, std::this_thread::get_id());
         Py_DECREF(result);
         Py_DECREF(callback);
         Py_DECREF(document);
@@ -4508,7 +4511,10 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_EQ(message, "compatibility callback failed");
     EXPECT_EQ(probe.calls, 1);
     EXPECT_TRUE(probe.gilHeld);
-    EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+    const auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
+    EXPECT_NE(probe.callbackThread, std::this_thread::get_id());
     EXPECT_EQ(_target->Label.getStrValue(), "Before");
     EXPECT_EQ(wildcardRevision(), wildcardBefore);
     {
