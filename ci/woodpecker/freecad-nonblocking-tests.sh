@@ -40,16 +40,20 @@ run_lane() {
 
 run_presentation() {
   echo "== TIER=presentation: cache, tree/property/selection, providers, 4ms slice =="
-  run_lane
-  for t in build/debug/tests/Gui_tests_run; do
+  # One App lane suite + one Gui process. A second xvfb Gui_tests_run right after
+  # CollaborationResponsiveness reliably SIGSEGVs on teardown/startup in this image
+  # (lane alone is fine; presentation-only filters alone are fine).
+  for t in build/debug/tests/App_tests_run build/debug/tests/Gui_tests_run; do
     [ -x "$t" ] || {
       echo "FATAL: $t not found or not executable (build required for TIER=presentation)" >&2
       exit 1
     }
   done
+  build/debug/tests/App_tests_run \
+    --gtest_filter='DocumentExecutionLane*:RecomputeHandle*:DocumentRecomputeCoordinator*:DocumentCommitCoordinator*'
   env QT_QPA_PLATFORM=xcb xvfb-run -a -s "-screen 0 1024x768x24" \
     build/debug/tests/Gui_tests_run \
-    --gtest_filter='DocumentPresentationCache*:PresentationApplyScheduler*'
+    --gtest_filter='CollaborationResponsiveness*:DocumentExecution*:DocumentPresentationCache*:PresentationApplyScheduler*'
 }
 
 run_unit() {
