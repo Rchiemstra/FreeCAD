@@ -7160,16 +7160,15 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         !collaborationDerivedRecomputeGranted(),
         force,
         // The coordinator's own derived pass inside a structural commit is
-        // always isolated: refusing to run unserializable object code live is
-        // exactly what that venue is for. Every other plan takes the venue the
-        // caller asked for, and the default is the owner thread -- one
-        // FreeCADCmd spawn per feature is a cost neither an interactive
-        // session nor the test suite can carry.
+        // still isolated: each node is a prepared edit applied through
+        // commitDerivedRecomputeInActiveTransaction(), not a second legacy
+        // recompute loop. Venue follows the caller; the default owner thread
+        // avoids one FreeCADCmd spawn per feature, which neither an
+        // interactive session nor the test suite can carry.
         //
         // Either way a target that does not opt into worker execution falls
         // back to the owner thread inside GenericIsolatedRecompute.cpp:1714.
-        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread
-            && !collaborationDerivedRecomputeGranted());
+        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread);
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
     const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
@@ -7715,7 +7714,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         Internal::ensureGenericIsolatedRecomputeRegistered();
         auto request = Internal::makeGenericIsolatedRecomputeRequest(
             *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true,
-            /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
+            /*ownerThreadExecution=*/true);
         for (const auto& node : request.features) {
             if (auto* object = getObject(node.featureId.c_str())) {
                 d->clearRecomputeLog(object);
