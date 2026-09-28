@@ -112,7 +112,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Part/Gui/ViewProviderBoolean.cpp` | `ViewProviderMultiFuse` | 270 | adapted |
 | `src/Mod/Part/Gui/ViewProviderCompound.cpp` | `ViewProviderCompound` | 136 | adapted |
 | `src/Mod/Part/Gui/ViewProviderCurveNet.cpp` | `ViewProviderCurveNet` | 100 | adapted |
-| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | 974 | adapted |
+| `src/Mod/Part/Gui/ViewProviderExt.cpp` | `ViewProviderPartExt` | 975 | adapted |
 | `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderChamfer` | 368 | adapted |
 | `src/Mod/Part/Gui/ViewProviderMirror.cpp` | `ViewProviderFillet` | 247 | adapted |
 | `src/Mod/Part/Gui/ViewProviderPython.cpp` | `ViewProviderCustom` | 57 | unsupported |
