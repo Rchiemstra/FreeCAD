@@ -2165,7 +2165,18 @@ void Application::slotStartSaveDocument(const Document& doc, const std::string& 
 void Application::slotFinishSaveDocument(const Document& doc, const std::string& filename)
 {
     DocFileMap.clear();
-    this->signalFinishSaveDocument(doc, filename);
+    try {
+        this->signalFinishSaveDocument(doc, filename);
+    }
+    catch (const Base::Exception& exception) {
+        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+    }
+    catch (const std::exception& exception) {
+        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+    }
+    catch (...) {
+        Base::Console().error("Legacy finish-save observer failed with an unknown exception\n");
+    }
 }
 
 void Application::slotChangePropertyEditor(const Document& doc, const Property& prop)

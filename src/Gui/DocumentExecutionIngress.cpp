@@ -19,9 +19,13 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
+
+using namespace std::chrono_literals;
 
 FC_LOG_LEVEL_INIT("Gui", true, true)
 
@@ -320,6 +324,56 @@ void scheduleSaveCommandCompletion(
                     3000);
             }
         });
+}
+
+bool submitDocumentSaveAwaitingCompletion(
+    App::Document& document,
+    std::string* failureDiagnostic)
+{
+    const auto outcome = submitDocumentKindCommand(document, App::DocumentCommandKind::Save);
+    if (!outcome.accepted()) {
+        reportDocumentCommandSubmitBlocked(document, outcome);
+        if (failureDiagnostic) {
+            failureDiagnostic->clear();
+        }
+        return false;
+    }
+
+    App::DocumentCommandHandle commandHandle(
+        outcome.commandId,
+        document.executionHandle().identity());
+    const auto deadline = std::chrono::steady_clock::now() + 120s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        const auto snapshot = commandHandle.status();
+        if (!snapshot.terminal()) {
+            std::this_thread::sleep_for(1ms);
+            continue;
+        }
+        if (snapshot.state == App::DocumentCommandState::Completed) {
+            if (auto* guiDocument = findGuiDocumentByName(document.getName())) {
+                guiDocument->finishExecutionLaneSave(snapshot.state);
+            }
+            if (failureDiagnostic) {
+                failureDiagnostic->clear();
+            }
+            return true;
+        }
+        if (failureDiagnostic) {
+            *failureDiagnostic = snapshot.diagnostic;
+        }
+        FC_ERR("Document Save "
+               << App::documentCommandStateName(snapshot.state) << ": "
+               << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
+                                               : snapshot.diagnostic));
+        return false;
+    }
+
+    if (failureDiagnostic) {
+        *failureDiagnostic = "document save did not finish before timeout";
+    }
+    FC_ERR("Document Save timed out waiting for completion");
+    return false;
 }
 
 bool submitDocumentSave(App::Document& document)

@@ -699,7 +699,8 @@ void Document::beginCollaborationAtomicPresentationAuditImpl(
     bool readOnly,
     bool preparedOwner)
 {
-    if (!isCollaborationOwnerThread()) {
+    const bool readOnlyPostconditionAudit = readOnly && !preparedOwner;
+    if (!readOnlyPostconditionAudit && !isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
             "atomic presentation mutation audit requires the document owner thread");
     }
@@ -838,6 +839,12 @@ bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
 void Document::endCollaborationAtomicPresentationAudit() noexcept
 {
     if (!isCollaborationOwnerThread()) {
+        if (d->collaborationAtomicPresentationAuditActive
+            && d->collaborationAtomicPresentationAuditReadOnly
+            && !d->collaborationAtomicPresentationAuditPreparedOwner) {
+            endCollaborationAtomicPresentationAuditImpl(false);
+            return;
+        }
         noteCollaborationReadOnlyMutationAttempt();
         return;
     }

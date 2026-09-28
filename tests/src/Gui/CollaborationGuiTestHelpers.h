@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <App/Document.h>
+
 namespace App
 {
 class Document;
@@ -18,5 +20,11 @@ void recomputeWithoutBlockingGui(App::Document& document,
 /// Submits save-as through the document execution handle and pumps the GUI event
 /// loop until it completes, avoiding synchronous saveAs() on the GUI thread.
 void saveAsWithoutBlockingGui(App::Document& document, const char* path);
+
+App::DocumentSaveOutcome saveWithOutcomeWithoutBlockingGui(App::Document& document);
+
+App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& document,
+                                                               const char* path,
+                                                               bool overwrite = false);
 
 }  // namespace Gui::Test

@@ -9,6 +9,7 @@
 #include <App/Document.h>
 #include <App/DocumentCommand.h>
 #include <App/DocumentCommandHandle.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
 
 #include <chrono>
@@ -22,6 +23,23 @@ namespace Gui::Test
 
 namespace
 {
+
+void waitForExecutionLaneIdle(App::Document& document)
+{
+    const auto* lane = document.executionLane();
+    if (!lane) {
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        if (lane->isIdle()) {
+            return;
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    FAIL() << "document execution lane did not become idle before timeout";
+}
 
 void waitForCompletedCommand(App::DocumentCommandHandle& commandHandle)
 {
@@ -42,6 +60,7 @@ void waitForCompletedCommand(App::DocumentCommandHandle& commandHandle)
 
 void submitAndWait(App::Document& document, App::DocumentCommand&& command)
 {
+    waitForExecutionLaneIdle(document);
     auto handle = document.executionHandle();
     command.document = handle.identity();
     const auto outcome = handle.trySubmit(std::move(command));
@@ -52,6 +71,7 @@ void submitAndWait(App::Document& document, App::DocumentCommand&& command)
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     waitForCompletedCommand(commandHandle);
+    waitForExecutionLaneIdle(document);
 }
 
 }  // namespace
@@ -74,6 +94,30 @@ void saveAsWithoutBlockingGui(App::Document& document, const char* path)
     command.save->targetPath = path;
     command.save->saveAs = true;
     submitAndWait(document, std::move(command));
+}
+
+template<typename Fn>
+App::DocumentSaveOutcome runSaveOnOwnerThread(App::Document& document, Fn&& saveFn)
+{
+    auto* lane = document.executionLane();
+    if (!lane) {
+        return saveFn();
+    }
+    waitForExecutionLaneIdle(document);
+    return lane->dispatchToOwner(std::forward<Fn>(saveFn));
+}
+
+App::DocumentSaveOutcome saveWithOutcomeWithoutBlockingGui(App::Document& document)
+{
+    return runSaveOnOwnerThread(document, [&] { return document.saveWithOutcome(); });
+}
+
+App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& document,
+                                                             const char* path,
+                                                             const bool overwrite)
+{
+    return runSaveOnOwnerThread(
+        document, [&] { return document.saveAsWithOutcome(path, overwrite); });
 }
 
 }  // namespace Gui::Test

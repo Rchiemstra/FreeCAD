@@ -4,10 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string_view>
 #include <thread>
+
+using namespace std::chrono_literals;
 
 #include <QApplication>
 #include <QAbstractButton>
@@ -89,28 +92,39 @@ class FailedSaveDialogProbe
 public:
     void inspectNextDialog()
     {
-        QTimer::singleShot(0, &timerContext, [this] { inspectActiveDialog(); });
+        dialogWaitDeadline = std::chrono::steady_clock::now() + 30s;
+        QTimer::singleShot(0, &timerContext, [this] { waitForActiveDialog(); });
     }
 
     int saveErrorDialogCount {0};
     bool inspectedCloseSafetyDialog {false};
 
 private:
-    void inspectActiveDialog()
+    void waitForActiveDialog()
     {
-        auto* active = QApplication::activeModalWidget();
-        auto* dialog = qobject_cast<QMessageBox*>(active);
-        if (!dialog) {
-            ADD_FAILURE() << "expected a modal failed-save dialog";
-            if (auto* unexpected = qobject_cast<QDialog*>(active)) {
-                unexpected->reject();
-            }
-            else if (active) {
-                active->close();
-            }
+        if (std::chrono::steady_clock::now() >= dialogWaitDeadline) {
+            ADD_FAILURE() << "timed out waiting for a modal failed-save dialog";
             return;
         }
+        if (auto* active = QApplication::activeModalWidget()) {
+            if (auto* dialog = qobject_cast<QMessageBox*>(active)) {
+                if (!dialog->button(QMessageBox::Save)) {
+                    inspectActiveDialog(dialog);
+                    return;
+                }
+            }
+            else if (auto* unexpected = qobject_cast<QDialog*>(active)) {
+                unexpected->reject();
+            }
+            else {
+                active->close();
+            }
+        }
+        QTimer::singleShot(0, &timerContext, [this] { waitForActiveDialog(); });
+    }
 
+    void inspectActiveDialog(QMessageBox* dialog)
+    {
         auto* discard = dialog->button(QMessageBox::Discard);
         auto* cancel = dialog->button(QMessageBox::Cancel);
         if (discard && cancel) {
@@ -145,6 +159,7 @@ private:
     }
 
     QObject timerContext;
+    std::chrono::steady_clock::time_point dialogWaitDeadline {};
 };
 
 class CollaborationDomainIntegrationTest: public ::testing::Test
@@ -267,7 +282,7 @@ TEST_F(CollaborationDomainIntegrationTest,
     clearHistory->click();
     EXPECT_EQ(history->count(), 0);
 
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
     auto* provider = dynamic_cast<Gui::ViewProviderDocumentObject*>(
         guiDocument->getViewProvider(object));
@@ -285,7 +300,7 @@ TEST_F(CollaborationDomainIntegrationTest,
     ASSERT_EQ(blocker.write("block"), 5);
     blocker.close();
     const auto failedPath = QDir(blockedParent).filePath(QStringLiteral("cannot-save.FCStd"));
-    const auto failed = document->saveAsWithOutcome(failedPath.toUtf8().constData());
+    const auto failed = Gui::Test::saveAsWithOutcomeWithoutBlockingGui(*document,failedPath.toUtf8().constData());
     EXPECT_EQ(failed.disposition, App::DocumentSaveDisposition::Failed);
     QApplication::processEvents();
     EXPECT_EQ(state->text(), QStringLiteral("Save failed"));
@@ -324,7 +339,8 @@ TEST_F(CollaborationDomainIntegrationTest, documentChangesRetainsBackgroundSaveH
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
     const auto path = temporary.filePath("background.FCStd").toUtf8();
-    ASSERT_EQ(background->saveAsWithOutcome(path.constData()).disposition,
+    ASSERT_EQ(Gui::Test::saveAsWithOutcomeWithoutBlockingGui(*background, path.constData())
+                  .disposition,
               App::DocumentSaveDisposition::Written);
     QApplication::processEvents();
     EXPECT_EQ(history->count(), activeHistoryCount)
@@ -357,7 +373,7 @@ TEST_F(CollaborationDomainIntegrationTest,
                 }
             });
 
-    const auto outcome = document->saveAsWithOutcome(
+    const auto outcome = Gui::Test::saveAsWithOutcomeWithoutBlockingGui(*document,
         attemptedPath.toUtf8().constData(), true);
     throwingRelabelConnection.disconnect();
     QApplication::processEvents();
@@ -402,7 +418,7 @@ TEST_F(CollaborationDomainIntegrationTest,
             return;
         }
         failureDialogs.inspectNextDialog();
-        save->click();
+        QMetaObject::invokeMethod(save, "click", Qt::QueuedConnection);
     });
 
     EXPECT_FALSE(guiDocument->canClose(true, false));
@@ -491,7 +507,7 @@ TEST_F(CollaborationDomainIntegrationTest,
         }
         confirmAll->setChecked(true);
         failureDialogs.inspectNextDialog();
-        save->click();
+        QMetaObject::invokeMethod(save, "click", Qt::QueuedConnection);
     });
 
     EXPECT_FALSE(mainWindow->closeAllDocuments(false));
@@ -516,7 +532,7 @@ TEST_F(CollaborationDomainIntegrationTest, touchOnlyActivityDoesNotDirtyCanonica
     EXPECT_EQ(fileStateNotifications, 0);
     EXPECT_FALSE(document->hasPendingFileChanges());
     EXPECT_FALSE(guiDocument->isModified());
-    EXPECT_EQ(document->saveWithOutcome().disposition,
+    EXPECT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Unchanged);
 }
 
@@ -534,20 +550,20 @@ TEST_F(CollaborationDomainIntegrationTest,
     EXPECT_FALSE(document->getPendingFileChanges().testFlag(App::DocumentFileChange::Model));
     ASSERT_TRUE(
         document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
 
     ASSERT_TRUE(provider->renameDynamicProperty(property, "RenamedTransientViewSchema"));
     ASSERT_TRUE(
         document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
 
     ASSERT_TRUE(provider->changeDynamicProperty(
         property, "Changed group", "Changed documentation"));
     ASSERT_TRUE(
         document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
 
     ASSERT_TRUE(provider->changeDynamicProperty(
@@ -570,7 +586,7 @@ TEST_F(CollaborationDomainIntegrationTest,
     ASSERT_TRUE(provider->removeDynamicProperty("RenamedTransientViewSchema"));
     ASSERT_TRUE(
         document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
 
     auto* noPersist = provider->addDynamicProperty(
@@ -603,7 +619,7 @@ TEST_F(CollaborationDomainIntegrationTest,
         document->getPendingFileChanges().testFlag(App::DocumentFileChange::Appearance));
     EXPECT_EQ(guiDocument->sharedPresentationRevisions().current(key),
               revisionBefore + 1);
-    ASSERT_EQ(document->saveWithOutcome().disposition,
+    ASSERT_EQ(Gui::Test::saveWithOutcomeWithoutBlockingGui(*document).disposition,
               App::DocumentSaveDisposition::Written);
 
     provider->ShowInTree.setStatus(App::Property::Hidden, true);
@@ -682,7 +698,7 @@ TEST_F(CollaborationDomainIntegrationTest,
                             property != &provider->ShowInTree);
     }
     ASSERT_FALSE(provider->ShowInTree.testStatus(App::Property::Hidden));
-    const auto baselineSave = document->saveWithOutcome();
+    const auto baselineSave = Gui::Test::saveWithOutcomeWithoutBlockingGui(*document);
     ASSERT_TRUE(baselineSave.succeeded()) << baselineSave.message;
     ASSERT_FALSE(document->hasPendingFileChanges());
 
@@ -863,7 +879,7 @@ TEST_F(CollaborationDomainIntegrationTest,
     rejectedProperty->setStatus(App::Property::Hidden, false);
     ASSERT_FALSE(admittedProperty->testStatus(App::Property::Hidden));
     ASSERT_FALSE(rejectedProperty->testStatus(App::Property::Hidden));
-    const auto baselineSave = document->saveWithOutcome();
+    const auto baselineSave = Gui::Test::saveWithOutcomeWithoutBlockingGui(*document);
     ASSERT_TRUE(baselineSave.succeeded()) << baselineSave.message;
     ASSERT_FALSE(document->hasPendingFileChanges());
 

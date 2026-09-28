@@ -89,6 +89,15 @@ GuiExport void reportGroupedUndoRedoUnsupported(App::Document& document, bool un
  */
 GuiExport bool submitDocumentSave(App::Document& document);
 
+/**
+ * Admit save on the execution lane and poll the GUI event loop until the Save
+ * command reaches a terminal state. Returns true only on Completed. Does not
+ * schedule the passive completion timer used by submitDocumentSave().
+ */
+GuiExport bool submitDocumentSaveAwaitingCompletion(
+    App::Document& document,
+    std::string* failureDiagnostic = nullptr);
+
 /** Poll Save command status without waiting; update GUI modified state on terminal. */
 GuiExport void scheduleSaveCommandCompletion(
     const char* appDocumentName,

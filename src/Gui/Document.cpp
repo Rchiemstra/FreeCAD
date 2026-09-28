@@ -2958,7 +2958,12 @@ bool Document::save()
                     continue;
                 }
 
-                if (!submitDocumentSave(*doc)) {
+                std::string saveFailureDiagnostic;
+                if (!submitDocumentSaveAwaitingCompletion(*doc, &saveFailureDiagnostic)) {
+                    if (!saveFailureDiagnostic.empty()
+                        && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
+                        continue;
+                    }
                     saveCompleted = false;
                 }
             }
@@ -3130,11 +3135,15 @@ void Document::saveAll()
                        << "' because model work is still running or recompute was deferred");
                 continue;
             }
-            if (!submitDocumentSave(*doc)) {
+            std::string saveFailureDiagnostic;
+            if (!submitDocumentSaveAwaitingCompletion(*doc, &saveFailureDiagnostic)) {
                 ++skippedSaves;
                 FC_ERR("Save All did not write document '"
                        << doc->getName()
-                       << "' because the document execution lane is busy");
+                       << "'"
+                       << (saveFailureDiagnostic.empty()
+                               ? " because the document execution lane rejected or deferred save"
+                               : (": " + saveFailureDiagnostic)));
                 continue;
             }
         }
