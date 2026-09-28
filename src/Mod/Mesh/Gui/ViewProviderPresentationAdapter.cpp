@@ -21,12 +21,12 @@ bool MeshGui::captureMeshWorkbenchPresentationRenderBuffer(
     return provider.capturePresentationRenderBuffer(request, buffer);
 }
 
-ViewProviderPresentationClassification ViewProviderMesh::presentationClassification() const
+ViewProviderPresentationClassification MeshGui::ViewProviderMesh::presentationClassification() const
 {
     return ViewProviderPresentationClassification::Adapted;
 }
 
-bool ViewProviderMesh::capturePresentationRenderBuffer(
+bool MeshGui::ViewProviderMesh::capturePresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer) const
 {

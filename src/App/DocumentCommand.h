@@ -86,6 +86,16 @@ struct AppExport DocumentCommandTransactionPayload
     int steps {1};
 };
 
+/** Pointer-free save / save-as payload carried by one admitted Save command. */
+struct AppExport DocumentCommandSavePayload
+{
+    /** When empty, the lane runs canonical Document::save(). */
+    std::string targetPath;
+    bool overwrite {false};
+    std::string expectedDestinationSha256;
+    bool saveAs {false};
+};
+
 /**
  * Immutable, pointer-free document command submitted through DocumentHandle.
  *
@@ -101,6 +111,7 @@ struct AppExport DocumentCommand
     std::optional<DocumentCommandRecomputePayload> recompute;
     std::optional<DocumentCommandEditPayload> edit;
     std::optional<DocumentCommandTransactionPayload> transaction;
+    std::optional<DocumentCommandSavePayload> save;
     std::string diagnostic;
 
     [[nodiscard]] bool pointerFree() const noexcept
@@ -125,6 +136,23 @@ struct AppExport DocumentCommandSubmitOutcome
 AppExport const char* documentCommandKindName(DocumentCommandKind kind) noexcept;
 AppExport const char* documentCommandSubmitResultName(
     DocumentCommandSubmitResult result) noexcept;
+
+/** True when an active command of this kind must reject owner-thread dispatch hops. */
+[[nodiscard]] constexpr bool documentCommandKindBlocksOwnerDispatch(
+    DocumentCommandKind kind) noexcept
+{
+    switch (kind) {
+        case DocumentCommandKind::Recompute:
+            return true;
+        case DocumentCommandKind::Edit:
+        case DocumentCommandKind::Undo:
+        case DocumentCommandKind::Redo:
+        case DocumentCommandKind::Save:
+        case DocumentCommandKind::Close:
+            return true;
+    }
+    return true;
+}
 
 static_assert(!std::is_pointer_v<DocumentCommandId>);
 static_assert(std::is_trivially_copyable_v<DocumentRevisionIdentityBinding>);

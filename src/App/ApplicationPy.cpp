@@ -39,6 +39,7 @@
 #include "Application.h"
 #include "ApplicationPy.h"
 #include "Document.h"
+#include "DocumentHandle.h"
 #include "DocumentCommand.h"
 #include "DocumentCommandHandle.h"
 #include "DocumentWouldBlock.h"

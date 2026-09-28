@@ -847,6 +847,8 @@ PyObject* DocumentPy::saveAs(PyObject* args)
 
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document.saveAs()", "Document.saveAsync() / DocumentCommandKind::Save");
         // Preserve the legacy Python contract: saveAs() returns None when the
         // C++ bool result is false. Callers that need an unambiguous failure
         // result use saveAsWithOutcome().
@@ -869,6 +871,9 @@ PyObject* DocumentPy::saveAsWithPolicy(PyObject* args)
 
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document.saveAsWithPolicy()",
+            "Document.saveAsync() / DocumentCommandKind::Save");
         const auto status = getDocumentPtr()->saveAsWithPolicy(
             utf8Name.c_str(), Base::asBoolean(overwriteObject));
         Py::Dict result;
@@ -914,6 +919,9 @@ PyObject* DocumentPy::saveAsWithOutcome(PyObject* args)
     }
     PY_TRY
     {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document.saveAsWithOutcome()",
+            "Document.saveAsync() / DocumentCommandKind::Save");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveAsWithOutcome(
             utf8Name.c_str(), Base::asBoolean(overwriteObject), expectedHash)));
     }

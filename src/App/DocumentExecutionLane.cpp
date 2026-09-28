@@ -25,6 +25,26 @@ using namespace std::chrono_literals;
 namespace App
 {
 
+namespace DocumentExecutionLaneDetail
+{
+thread_local bool g_guiDispatchPumpActive = false;
+}  // namespace DocumentExecutionLaneDetail
+
+bool documentExecutionLaneGuiDispatchPumpActive() noexcept
+{
+    return DocumentExecutionLaneDetail::g_guiDispatchPumpActive;
+}
+
+DocumentExecutionLaneGuiDispatchPumpScope::DocumentExecutionLaneGuiDispatchPumpScope()
+{
+    DocumentExecutionLaneDetail::g_guiDispatchPumpActive = true;
+}
+
+DocumentExecutionLaneGuiDispatchPumpScope::~DocumentExecutionLaneGuiDispatchPumpScope()
+{
+    DocumentExecutionLaneDetail::g_guiDispatchPumpActive = false;
+}
+
 DocumentExecutionClosePolicy::UnresponsiveLaneAction
 DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(const bool stalled) noexcept
 {
@@ -61,17 +81,8 @@ bool recomputeCommandsCoalesce(const DocumentCommand& left, const DocumentComman
 
 bool commandRequiresBusyWhileActive(DocumentCommandKind kind) noexcept
 {
-    switch (kind) {
-        case DocumentCommandKind::Edit:
-        case DocumentCommandKind::Undo:
-        case DocumentCommandKind::Redo:
-        case DocumentCommandKind::Save:
-        case DocumentCommandKind::Close:
-            return true;
-        case DocumentCommandKind::Recompute:
-            return false;
-    }
-    return true;
+    // Same predicate as owner-dispatch blocking (including active Recompute).
+    return documentCommandKindBlocksOwnerDispatch(kind);
 }
 
 constexpr std::string_view laneTestBlockingCoalescingPrefix = "lane-stall:";
@@ -370,7 +381,18 @@ DocumentCommandSnapshot DocumentExecutionLane::commandStatus(DocumentCommandId i
 {
     std::lock_guard lock(_mutex);
     if (_active && _active->id == id) {
-        return _active->snapshot;
+        auto snapshot = _active->snapshot;
+        // Reflect watchdog stall on observation even when the owner is blocked
+        // inside feature execute and has not yet pumped updateWatchdogState.
+        if (snapshot.state == DocumentCommandState::Running && _telemetry
+            && _telemetry->snapshot().watchdog.stalled()) {
+            snapshot.state = DocumentCommandState::Stalled;
+            const auto diagnostic = _telemetry->snapshot().watchdog.diagnostic;
+            snapshot.diagnostic = diagnostic.empty()
+                ? "document execution stalled without progress"
+                : diagnostic;
+        }
+        return snapshot;
     }
     const auto found = _terminalSnapshots.find(id);
     if (found != _terminalSnapshots.end()) {
@@ -801,6 +823,14 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             return true;
         }
         case DocumentCommandKind::Save:
+            if (command.command.save && command.command.save->saveAs
+                && !command.command.save->targetPath.empty()) {
+                return _document
+                    .saveAsWithOutcome(command.command.save->targetPath.c_str(),
+                                       command.command.save->overwrite,
+                                       command.command.save->expectedDestinationSha256)
+                    .succeeded();
+            }
             return _document.save();
         case DocumentCommandKind::Close:
             return false;

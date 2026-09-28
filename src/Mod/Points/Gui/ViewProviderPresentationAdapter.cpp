@@ -6,6 +6,7 @@
 
 #include <Gui/ViewProviderPresentationCapability.h>
 
+#include <Mod/Points/App/PointsFeature.h>
 #include <Mod/Points/App/PropertyPointKernel.h>
 
 using namespace Gui;
@@ -18,12 +19,13 @@ bool PointsGui::capturePointsWorkbenchPresentationRenderBuffer(
     return provider.capturePresentationRenderBuffer(request, buffer);
 }
 
-ViewProviderPresentationClassification ViewProviderPoints::presentationClassification() const
+ViewProviderPresentationClassification PointsGui::ViewProviderPoints::presentationClassification()
+    const
 {
     return ViewProviderPresentationClassification::Adapted;
 }
 
-bool ViewProviderPoints::capturePresentationRenderBuffer(
+bool PointsGui::ViewProviderPoints::capturePresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer) const
 {
@@ -33,7 +35,7 @@ bool ViewProviderPoints::capturePresentationRenderBuffer(
         return !request.stableObjectIdentity.empty();
     }
 
-    const auto* pointsProperty = dynamic_cast<Points::Feature*>(pcObject);
+    const auto* pointsProperty = dynamic_cast<const Points::Feature*>(pcObject);
     if (!pointsProperty) {
         return !request.stableObjectIdentity.empty();
     }

@@ -42,6 +42,20 @@ GuiExport App::DocumentCommand makeDocumentRecomputeCommand(
     App::Document& document,
     const DocumentRecomputeSubmitRequest& request = {});
 
+/** Build one pointer-free Save-As command for lane admission. */
+GuiExport App::DocumentCommand makeDocumentSaveAsCommand(
+    App::Document& document,
+    std::string targetPath,
+    bool overwrite,
+    std::string expectedDestinationSha256 = {});
+
+/** Admit Save As on the execution lane without blocking the GUI thread. */
+GuiExport App::DocumentCommandSubmitOutcome submitDocumentSaveAs(
+    App::Document& document,
+    std::string targetPath,
+    bool overwrite,
+    std::string expectedDestinationSha256 = {});
+
 /** Build one pointer-free kind-only command for Save, Undo, or Redo admission. */
 GuiExport App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,

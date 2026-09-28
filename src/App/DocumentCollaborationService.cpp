@@ -587,7 +587,8 @@ CollaborationEditSnapshot DocumentCollaborationService::captureSemanticRevisions
         throw Base::RuntimeError(
             "off-owner semantic revision capture requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<CollaborationEditSnapshot>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<CollaborationEditSnapshot>(
+        _document,
         [this, keys = std::move(keys)]() mutable {
             return captureSemanticRevisionsOnDocumentThread(std::move(keys));
         });
@@ -630,7 +631,8 @@ CollaborationEditSnapshot DocumentCollaborationService::snapshotForEdit(
         throw Base::RuntimeError(
             "off-owner collaboration snapshots require a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<CollaborationEditSnapshot>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<CollaborationEditSnapshot>(
+        _document,
         [this, sessionId, keys = std::move(keys)]() mutable {
             return snapshotForEditOnDocumentThread(sessionId, std::move(keys));
         });
@@ -679,7 +681,8 @@ PreparedEdit DocumentCollaborationService::prepareEdit(
         throw Base::RuntimeError(
             "off-owner collaboration preparation requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<PreparedEdit>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<PreparedEdit>(
+        _document,
         [this,
          sessionId,
          operationId = std::move(operationId),
@@ -708,7 +711,8 @@ PreparedEdit DocumentCollaborationService::prepareEditWithExpectedRevisions(
         throw Base::RuntimeError(
             "off-owner collaboration preparation requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<PreparedEdit>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<PreparedEdit>(
+        _document,
         [this,
          sessionId,
          operationId = std::move(operationId),
@@ -1346,7 +1350,8 @@ DocumentCommitResult DocumentCollaborationService::commitEdit(const std::string&
     if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
         return _coordinator.commit(edit);
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
+        _document,
         [this, sessionId, &edit] { return commitEditOnDocumentThread(sessionId, edit); });
 }
 
@@ -1414,9 +1419,9 @@ DocumentCommitResult DocumentCollaborationService::commitRecomputeEdit(
             edit,
             "derived recompute commit requires the document owner thread");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>([this, sessionId, &edit] {
-        return commitRecomputeEditOnDocumentThread(sessionId, edit);
-    });
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
+        _document,
+        [this, sessionId, &edit] { return commitRecomputeEditOnDocumentThread(sessionId, edit); });
 }
 
 DocumentCommitResult DocumentCollaborationService::commitRecomputeEditOnDocumentThread(
@@ -1518,7 +1523,8 @@ DocumentCommitResult DocumentCollaborationService::commitCompatibilityMutationWi
             rejectedOperationId,
             "off-owner compatibility mutation requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
+        _document,
         [this,
          mutation = std::move(mutation),
          callback = std::move(callback),
@@ -1688,7 +1694,8 @@ DocumentCommitResult DocumentCollaborationService::serializeCompatibilityCallbac
             operationId,
             "off-owner serialized compatibility requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
+        _document,
         [this, callback = std::move(callback)]() mutable {
             return serializeCompatibilityCallbackOnDocumentThread(std::move(callback));
         });
@@ -1712,7 +1719,8 @@ DocumentCommitResult DocumentCollaborationService::serializeAtomicCompatibilityC
             operationId,
             "off-owner atomic compatibility requires a document-thread dispatcher");
     }
-    return DocumentCollaborationService::invokeOnDocumentThread<DocumentCommitResult>(
+    return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
+        _document,
         [this,
          allowedWrites = std::move(allowedWrites),
          callback = std::move(callback)]() mutable {

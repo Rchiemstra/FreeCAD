@@ -1659,25 +1659,36 @@ bool ViewProviderPartExt::capturePresentationRenderBuffer(
         return !request.stableObjectIdentity.empty();
     }
 
-    SoCoordinate3 tempCoords;
-    SoBrepFaceSet tempFaces;
-    SoNormal tempNorm;
-    SoBrepEdgeSet tempLines;
-    SoBrepPointSet tempNodes;
+    // Coin node destructors are protected — allocate with refcounting.
+    auto* tempCoords = new SoCoordinate3;
+    auto* tempFaces = new SoBrepFaceSet;
+    auto* tempNorm = new SoNormal;
+    auto* tempLines = new SoBrepEdgeSet;
+    auto* tempNodes = new SoBrepPointSet;
+    tempCoords->ref();
+    tempFaces->ref();
+    tempNorm->ref();
+    tempLines->ref();
+    tempNodes->ref();
     ViewProviderPartExt::setupCoinGeometry(
         shape,
-        &tempCoords,
-        &tempFaces,
-        &tempNorm,
-        &tempLines,
-        &tempNodes,
+        tempCoords,
+        tempFaces,
+        tempNorm,
+        tempLines,
+        tempNodes,
         Deviation.getValue(),
         AngularDeflection.getValue(),
         NormalsFromUV);
 
-    appendCoinVec3Field(tempCoords.point, buffer.vertices);
-    appendCoinVec3Field(tempNorm.vector, buffer.normals);
-    appendCoinInt32Field(tempFaces.coordIndex, buffer.indices);
-    appendCoinInt32Field(tempFaces.partIndex, buffer.topology);
+    appendCoinVec3Field(tempCoords->point, buffer.vertices);
+    appendCoinVec3Field(tempNorm->vector, buffer.normals);
+    appendCoinInt32Field(tempFaces->coordIndex, buffer.indices);
+    appendCoinInt32Field(tempFaces->partIndex, buffer.topology);
+    tempNodes->unref();
+    tempLines->unref();
+    tempNorm->unref();
+    tempFaces->unref();
+    tempCoords->unref();
     return !buffer.vertices.empty() || !request.stableObjectIdentity.empty();
 }

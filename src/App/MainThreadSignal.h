@@ -175,11 +175,16 @@ static_assert(alignof(ResilientSignal<void()>)
               == alignof(::fastsignals::signal<void()>));
 
 // Wrapper that mirrors fastsignals::signal but executes slots on GUI thread.
-template<class Signature, template<class T> class Combiner = ::fastsignals::optional_last_value>
+template<class Signature,
+         bool BlockingMarshalling = true,
+         template<class T> class Combiner = ::fastsignals::optional_last_value>
 class MainThreadSignal;
 
-template<class Return, class... Arguments, template<class T> class Combiner>
-class MainThreadSignal<Return(Arguments...), Combiner>
+template<class Return,
+         class... Arguments,
+         bool BlockingMarshalling,
+         template<class T> class Combiner>
+class MainThreadSignal<Return(Arguments...), BlockingMarshalling, Combiner>
 {
     using base_sig = ::fastsignals::signal<Return(Arguments...), Combiner>;
 
@@ -272,7 +277,11 @@ private:
             return self->sig_(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
         }
 
-        Base::PyGILStateRelease release;
+        // PyGILStateRelease requires the GIL; many owner-thread emitters do not hold it.
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
 
         auto caps = std::make_tuple(
             detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...
@@ -283,8 +292,7 @@ private:
                 [self, caps = std::move(caps)]() mutable {
                     std::apply([self](auto&... c) { self->sig_(c.get()...); }, caps);
                 },
-                /*blocking=*/true
-            );
+                BlockingMarshalling);
         }
         else {
             std::optional<detail::non_void_t<result_type>> result;
@@ -294,8 +302,7 @@ private:
                         std::apply([self](auto&... c) { return self->sig_(c.get()...); }, caps)
                     );
                 },
-                /*blocking=*/true
-            );
+                BlockingMarshalling);
             return std::move(*result);
         }
     }
@@ -370,7 +377,10 @@ private:
             return;
         }
 
-        Base::PyGILStateRelease release;
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
         auto caps = std::make_tuple(
             detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
         MainThreadSignalConfig::invoke(

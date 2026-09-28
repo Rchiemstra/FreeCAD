@@ -189,7 +189,7 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
         return closedDocumentSnapshot();
     }
     if (owner->executionLane() && !owner->isCollaborationOwnerThread()) {
-        return owner->executionLane()->dispatchToOwner(waitOnOwner);
+        return owner->executionLane()->dispatchToOwner(waitOnOwner, true, true);
     }
     return waitOnOwner();
 }

@@ -23,7 +23,7 @@ public:
     PyObject* getPyExceptionType() const override;
 
     [[nodiscard]] static bool isGuiThread() noexcept;
-    [[nodiscard]] static void throwIfGuiThread(const char* syncApi, const char* asyncApi);
+    static void throwIfGuiThread(const char* syncApi, const char* asyncApi);
 };
 
 }  // namespace App

@@ -5,7 +5,9 @@
 #include "CollaborativeOperation.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
+#include "DocumentWouldBlock.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 #include "PreparedEdit.h"
@@ -531,26 +533,28 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool retainUndoHistory,
     const bool nestInCallerTransaction)
 {
-    if (!MainThreadSignalConfig::hasHooks()) {
-        if (!_document.isCollaborationOwnerThread()) {
-            return makeResult(DocumentCommitStatus::Unsupported,
-                              edit,
-                              "off-owner collaboration commit requires a document-thread dispatcher");
-        }
+    const auto commitOnOwner = [&]() {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
                                                  nestInCallerTransaction);
+    };
+
+    if (_document.isCollaborationOwnerThread()) {
+        return commitOnOwner();
+    }
+    if (DocumentExecutionLane* lane = _document.executionLane()) {
+        return lane->dispatchToOwner(commitOnOwner);
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return makeResult(DocumentCommitStatus::Unsupported,
+                          edit,
+                          "off-owner collaboration commit requires a document-thread dispatcher");
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThreadWithOptions(edit,
-                                                 requireDetachedPreparationSupport,
-                                                 structuralCompatibility,
-                                                 recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+        return commitOnOwner();
     }
 
     std::optional<DocumentCommitResult> result;

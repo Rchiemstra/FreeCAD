@@ -15,7 +15,11 @@
 
 #include <Python.h>
 
+#include <QCoreApplication>
+#include <QEventLoop>
+
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <future>
@@ -78,6 +82,22 @@ enum class UnresponsiveLaneAction
 AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
     const Document& document) noexcept;
 
+/** True while the GUI thread pumps Qt inside dispatchToOwner's wait loop. */
+[[nodiscard]] AppExport bool documentExecutionLaneGuiDispatchPumpActive() noexcept;
+
+/** RAII marker for GUI dispatch wait-loop pumping (GilTryLock deadlock avoidance). */
+class AppExport DocumentExecutionLaneGuiDispatchPumpScope final
+{
+public:
+    DocumentExecutionLaneGuiDispatchPumpScope();
+    ~DocumentExecutionLaneGuiDispatchPumpScope();
+
+    DocumentExecutionLaneGuiDispatchPumpScope(
+        const DocumentExecutionLaneGuiDispatchPumpScope&) = delete;
+    DocumentExecutionLaneGuiDispatchPumpScope& operator=(
+        const DocumentExecutionLaneGuiDispatchPumpScope&) = delete;
+};
+
 /**
  * Serial document-owner thread for one live App::Document.
  *
@@ -129,7 +149,9 @@ public:
      * wait if this thread holds it (see PyGILState_Check()).
      */
     template<typename Fn>
-    auto dispatchToOwner(Fn&& fn, const bool releaseGilWhileWaiting = true)
+    auto dispatchToOwner(Fn&& fn,
+                         const bool releaseGilWhileWaiting = true,
+                         const bool allowWhileCommandActive = false)
         -> std::invoke_result_t<Fn>
     {
         using Result = std::invoke_result_t<Fn>;
@@ -143,9 +165,19 @@ public:
             }
         }
 
-        DocumentWouldBlock::throwIfGuiThread(
-            "DocumentExecutionLane::dispatchToOwner",
-            "Document.*Async() or executionHandle().trySubmit()");
+        // Sync App APIs must call DocumentWouldBlock::throwIfGuiThread before
+        // reaching here. Collaboration prepare/commit entry points may hop from
+        // the GUI onto the owner for a short admission; refuse only while a
+        // command is already executing unless the caller opts in.
+        {
+            std::lock_guard lock(_mutex);
+            if (_active && !allowWhileCommandActive
+                && documentCommandKindBlocksOwnerDispatch(_active->command.kind)) {
+                throw DocumentWouldBlock(
+                    "document execution lane is busy executing model work; use "
+                    "DocumentHandle::trySubmit() instead");
+            }
+        }
 
         std::optional<Base::PyGILStateRelease> release;
         if (releaseGilWhileWaiting && Py_IsInitialized() && PyGILState_Check()) {
@@ -155,6 +187,23 @@ public:
         // std::function requires a copyable target; share the promise and
         // callable so the queued lambda is copy-constructible.
         auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        // When the GUI/main thread waits for the owner, the owner may emit
+        // MainThreadSignal with BlockingQueuedConnection. Pump events so that
+        // hop can complete instead of deadlocking.
+        auto waitForDispatch = [](auto& future) -> decltype(future.get()) {
+            // Only the real GUI thread may pump Qt while waiting. Without Gui
+            // hooks installed, MainThreadSignalConfig::isMainThread() is true on
+            // every thread and must not drive processEvents here.
+            if (DocumentWouldBlock::isGuiThread() && QCoreApplication::instance()) {
+                DocumentExecutionLaneGuiDispatchPumpScope dispatchPump;
+                while (future.wait_for(std::chrono::milliseconds(1))
+                       == std::future_status::timeout) {
+                    QCoreApplication::processEvents(
+                        QEventLoop::ExcludeUserInputEvents, 5);
+                }
+            }
+            return future.get();
+        };
         if constexpr (std::is_void_v<Result>) {
             auto promise = std::make_shared<std::promise<void>>();
             auto future = promise->get_future();
@@ -171,7 +220,7 @@ public:
                 });
                 _workAvailable.notify_one();
             }
-            future.get();
+            waitForDispatch(future);
             return;
         }
         else {
@@ -189,7 +238,7 @@ public:
                 });
                 _workAvailable.notify_one();
             }
-            return future.get();
+            return waitForDispatch(future);
         }
     }
 

@@ -146,6 +146,33 @@ App::DocumentCommand makeDocumentRecomputeCommand(
     return command;
 }
 
+App::DocumentCommand makeDocumentSaveAsCommand(
+    App::Document& document,
+    std::string targetPath,
+    const bool overwrite,
+    std::string expectedDestinationSha256)
+{
+    App::DocumentCommand command;
+    command.kind = App::DocumentCommandKind::Save;
+    command.document = document.executionHandle().identity();
+    command.save = App::DocumentCommandSavePayload {};
+    command.save->targetPath = std::move(targetPath);
+    command.save->overwrite = overwrite;
+    command.save->expectedDestinationSha256 = std::move(expectedDestinationSha256);
+    command.save->saveAs = true;
+    return command;
+}
+
+App::DocumentCommandSubmitOutcome submitDocumentSaveAs(
+    App::Document& document,
+    std::string targetPath,
+    const bool overwrite,
+    std::string expectedDestinationSha256)
+{
+    return document.executionHandle().trySubmit(makeDocumentSaveAsCommand(
+        document, std::move(targetPath), overwrite, std::move(expectedDestinationSha256)));
+}
+
 App::DocumentCommand makeDocumentKindCommand(
     App::Document& document,
     const App::DocumentCommandKind kind,

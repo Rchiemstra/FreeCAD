@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <Inventor/SoDB.h>
+
 #include <Gui/DocumentPresentationCache.h>
 #include <Gui/PresentationApplyScheduler.h>
 
@@ -14,6 +16,12 @@ namespace
 
 constexpr App::DocumentInstanceId TestDocumentInstance = 91;
 constexpr App::DocumentLifecycleEpoch TestDocumentEpoch = 3;
+
+void ensureCoinInitialized()
+{
+    // Idempotent; SoSeparator construction requires the Coin type database.
+    SoDB::init();
+}
 
 Gui::PresentationDelta makeDelta(Gui::PresentationSequence sequence,
                                  App::DocumentRevision sourceRevision,
@@ -106,6 +114,7 @@ TEST(DocumentPresentationCacheTest, AtomicRevisionSwap)
 
 TEST(PresentationApplySchedulerTest, CoalescesToNewestStagingRevision)
 {
+    ensureCoinInitialized();
     Gui::DocumentPresentationCache cache;
     cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
     Gui::PresentationApplyScheduler scheduler(cache);
@@ -132,6 +141,7 @@ TEST(PresentationApplySchedulerTest, CoalescesToNewestStagingRevision)
 
 TEST(PresentationApplySchedulerTest, RecordsSliceBudgetAcrossPumpTurns)
 {
+    ensureCoinInitialized();
     Gui::DocumentPresentationCache cache;
     cache.bindDocumentIdentity(TestDocumentInstance, TestDocumentEpoch);
     Gui::PresentationApplyScheduler scheduler(cache);

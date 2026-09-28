@@ -1345,9 +1345,24 @@ void Document::slotRecomputed(const App::Document& doc)
         return;
     }
     // Stable boundary: publish one immutable presentation revision for GUI apply.
-    publishPresentationRevisionFromModel();
-    getMainWindow()->updateActions();
-    TreeWidget::updateStatus();
+    // Schedule heavy capture on the GUI loop so blocking signal marshalling only
+    // waits for this cheap hop, not tessellation.
+    const std::string docName = doc.getName();
+    QTimer::singleShot(0, qApp, [docName]() {
+        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+        if (!appDoc) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        guiDoc->publishPresentationRevisionFromModel();
+        if (auto* window = getMainWindow()) {
+            window->updateActions();
+        }
+        TreeWidget::updateStatus();
+    });
 }
 
 // This function is called when some asks to recompute a document that is marked
@@ -3002,20 +3017,38 @@ bool Document::saveAs()
         // save as new file name
         try {
             Gui::WaitCursor wc;
-            std::string escapedstr = Base::Tools::escapedUnicodeFromUtf8(fn.toUtf8());
-            escapedstr = Base::Tools::escapeEncodeFilename(escapedstr);
-            // The legacy Python saveAs() deliberately keeps its historical
-            // None-on-false behavior. The GUI needs an authoritative outcome
-            // so a failed Save As cannot fall through as success during close.
-            Command::doCommand(
-                Command::Doc,
-                "_save_outcome = App.getDocument(\"%s\").saveAsWithOutcome(u\"%s\", True)\n"
-                "if not _save_outcome['success']:\n"
-                "    raise RuntimeError(_save_outcome.get('message') or "
-                "'The document could not be saved under the requested path')",
-                DocName,
-                escapedstr.c_str()
-            );
+            const std::string nativePath = fn.toUtf8().constData();
+            auto* appDocument = getDocument();
+            if (appDocument->executionLane()) {
+                if (documentExecutionLaneBusy(*appDocument)) {
+                    App::DocumentCommandSubmitOutcome busy;
+                    busy.result = App::DocumentCommandSubmitResult::Busy;
+                    busy.diagnostic = "document execution lane is busy";
+                    reportDocumentCommandSubmitBlocked(*appDocument, busy);
+                    return false;
+                }
+                const auto outcome = submitDocumentSaveAs(
+                    *appDocument, nativePath, true);
+                if (!outcome.accepted()) {
+                    reportDocumentCommandSubmitBlocked(*appDocument, outcome);
+                    return false;
+                }
+                scheduleSaveCommandCompletion(
+                    DocName,
+                    appDocument->executionHandle().identity(),
+                    outcome.commandId);
+                reportDocumentSaveAdmitted(*appDocument);
+                // Admission is not completion — recent files update when the lane save finishes.
+                return false;
+            }
+            const auto saveOutcome =
+                appDocument->saveAsWithOutcome(nativePath.c_str(), true);
+            if (!saveOutcome.succeeded()) {
+                throw Base::RuntimeError(
+                    saveOutcome.message.empty()
+                        ? "The document could not be saved under the requested path"
+                        : saveOutcome.message);
+            }
             // App::Document::saveAs() may modify the passed file name
             fi.setFile(QString::fromUtf8(d->_pcDocument->FileName.getValue()));
             getMainWindow()->appendRecentFile(fi.filePath());
@@ -4400,6 +4433,12 @@ void Document::finishExecutionLaneSave(const App::DocumentCommandState state)
         return;
     }
     slotFileChangeStateChanged(*d->_pcDocument);
+    const char* savedPath = d->_pcDocument->FileName.getValue();
+    if (savedPath && savedPath[0] != '\0') {
+        if (auto* window = getMainWindow()) {
+            window->appendRecentFile(QString::fromUtf8(savedPath));
+        }
+    }
 }
 
 void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,

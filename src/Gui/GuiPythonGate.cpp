@@ -2,6 +2,7 @@
 
 #include "GuiPythonGate.h"
 
+#include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
@@ -12,8 +13,11 @@
 
 #include <Python.h>
 
+#include <chrono>
 #include <deque>
+#include <future>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 namespace Gui
@@ -26,6 +30,50 @@ std::deque<GuiPythonGateCallback> g_deferredCallbacks;
 std::deque<GuiPythonObserverValueEvent> g_deferredObserverEvents;
 GuiPythonObserverValueEventHandler g_observerHandler;
 
+bool anyDocumentExecutionLaneBusy() noexcept
+{
+    for (auto* document : App::GetApplication().getDocuments()) {
+        if (!document) {
+            continue;
+        }
+        const auto* lane = document->executionLane();
+        if (lane && !lane->isIdle()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+#if PY_VERSION_HEX >= 0x030c0000
+bool tryAcquireGilWithoutBlocking(PyGILState_STATE* state) noexcept
+{
+    std::promise<void> probeFinished;
+    auto probeDone = probeFinished.get_future();
+    std::thread probe([&probeFinished] {
+        PyGILState_STATE probeState = PyGILState_Ensure();
+        PyGILState_Release(probeState);
+        probeFinished.set_value();
+    });
+    using namespace std::chrono_literals;
+    if (probeDone.wait_for(2ms) != std::future_status::ready) {
+        probe.detach();
+        return false;
+    }
+    probe.join();
+    *state = PyGILState_Ensure();
+    return true;
+}
+#endif
+
+/**
+ * Non-blocking GIL ownership for GUI admission.
+ *
+ * On the GUI thread, never block on the GIL while dispatchToOwner is pumping
+ * Qt (deadlock with BlockingQueued MainThreadSignal). When lanes are idle and
+ * pumping is inactive, acquire via a non-blocking probe (Python 3.12+) or
+ * PyEval_TryAcquireLock (older). Off the GUI thread, PyGILState_Ensure is used
+ * only when every document lane is idle.
+ */
 class GilTryLock
 {
 public:
@@ -37,22 +85,55 @@ public:
         }
         if (PyGILState_Check()) {
             _owns = true;
-            _releasedGil = false;
             return;
         }
         if (!acquire) {
             return;
         }
-        if (PyEval_TryAcquireLock()) {
+        const bool onGui = App::DocumentWouldBlock::isGuiThread();
+        if (onGui) {
+            if (App::documentExecutionLaneGuiDispatchPumpActive()) {
+                return;
+            }
+            if (anyDocumentExecutionLaneBusy()) {
+                return;
+            }
+#if PY_VERSION_HEX < 0x030c0000
+            if (!PyEval_TryAcquireLock()) {
+                return;
+            }
             _owns = true;
-            _releasedGil = true;
+            _usedDeprecatedGilLock = true;
+#else
+            if (!tryAcquireGilWithoutBlocking(&_state)) {
+                return;
+            }
+            _owns = true;
+            _usedEnsure = true;
+#endif
+            return;
         }
+        if (anyDocumentExecutionLaneBusy()) {
+            return;
+        }
+        _state = PyGILState_Ensure();
+        _owns = true;
+        _usedEnsure = true;
     }
 
     ~GilTryLock()
     {
-        if (_owns && _releasedGil) {
+        if (!_owns) {
+            return;
+        }
+        if (_usedDeprecatedGilLock) {
+#if PY_VERSION_HEX < 0x030c0000
             PyEval_ReleaseLock();
+#endif
+            return;
+        }
+        if (_usedEnsure) {
+            PyGILState_Release(_state);
         }
     }
 
@@ -65,8 +146,10 @@ public:
     GilTryLock& operator=(const GilTryLock&) = delete;
 
 private:
+    PyGILState_STATE _state {};
     bool _owns {false};
-    bool _releasedGil {false};
+    bool _usedEnsure {false};
+    bool _usedDeprecatedGilLock {false};
 };
 
 GuiPythonGateAdmissionOutcome makeOutcome(
@@ -124,11 +207,11 @@ bool GuiPythonGate::gilAvailableForNonBlockingAcquire() noexcept
     if (PyGILState_Check()) {
         return true;
     }
-    if (!PyEval_TryAcquireLock()) {
+    if (App::DocumentWouldBlock::isGuiThread()
+        && App::documentExecutionLaneGuiDispatchPumpActive()) {
         return false;
     }
-    PyEval_ReleaseLock();
-    return true;
+    return !anyDocumentExecutionLaneBusy();
 }
 
 bool GuiPythonGate::documentModelIngressAvailable(const App::Document& document) noexcept

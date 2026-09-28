@@ -4726,6 +4726,9 @@ void Document::ensureCollaborationSaveAllowed() const
 
 bool Document::saveAs(const char* _file)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, _file] { return saveAs(_file); });
+    }
     ensureCollaborationSaveAllowed();
     const std::string file = checkFileName(_file);
     return saveWithOutcomeImpl(
@@ -4811,6 +4814,14 @@ DocumentSaveOutcome Document::saveAsWithOutcome(
     const bool overwrite,
     const std::string& expectedDestinationSha256)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return saveAsWithOutcome(file, overwrite, expectedDestinationSha256);
+        });
+    }
+    DocumentWouldBlock::throwIfGuiThread(
+        "Document::saveAsWithOutcome()",
+        "Document.saveAsync() / DocumentCommandKind::Save with save payload");
     ensureCollaborationSaveAllowed();
     std::string checked;
     const auto preflightFailure = [this, file](const char* message) {

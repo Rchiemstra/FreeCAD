@@ -14,6 +14,8 @@
 #include <mutex>
 #include <optional>
 
+class SoSeparator;
+
 namespace Gui
 {
 
@@ -69,13 +71,13 @@ public:
      */
     [[nodiscard]] PresentationCommitResult tryCommitWithCoinRoot(
         PresentationDelta&& delta,
-        class SoSeparator* coinRoot);
+        SoSeparator* coinRoot);
 
     /** Copy of the last committed presentation packet, if any. */
     [[nodiscard]] std::optional<PresentationDelta> current() const;
 
     /** Detached Coin presentation root for the committed revision, or null. */
-    [[nodiscard]] class SoSeparator* committedCoinRoot() const noexcept;
+    [[nodiscard]] SoSeparator* committedCoinRoot() const noexcept;
 
     /** Pointer-free lifecycle observation; does not advance work. */
     [[nodiscard]] DocumentPresentationStatus status() const;
@@ -89,14 +91,14 @@ private:
 
     void publishObservation(DocumentPresentationStatus observation);
     PresentationCommitResult tryCommitLocked(PresentationDelta&& delta);
-    void activateCoinRootLocked(class SoSeparator* coinRoot);
+    void activateCoinRootLocked(SoSeparator* coinRoot);
 
     mutable std::mutex _mutex;
     std::optional<App::DocumentRevisionIdentityBinding> _documentIdentity;
     PresentationSequence _committedSequence {0};
     App::DocumentRevision _committedSourceRevision {0};
     std::shared_ptr<const PresentationDelta> _committed;
-    class SoSeparator* _committedCoinRoot {nullptr};
+    SoSeparator* _committedCoinRoot {nullptr};
     DocumentPresentationStatus _status;
     std::atomic<PresentationSequence> _committedSequenceAtomic {0};
 };

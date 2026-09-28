@@ -277,6 +277,8 @@ enum class RecomputeVenue : std::uint8_t
     Isolated,
 };
 
+using DocumentRecomputeId = std::uint64_t;
+
 /**
  * @brief A class that represents a FreeCAD document.
  *
@@ -478,7 +480,8 @@ public:
     /// Signal after recomputing the document but before the document is fully
     /// stable again. Observers that require a fully stable post-recompute
     /// state should wait for signalBecameStable().
-    App::MainThreadSignal<void(const Document&, const std::vector<DocumentObject*>&)> signalRecomputed;
+    App::MainThreadSignal<void(const Document&, const std::vector<DocumentObject*>&)>
+        signalRecomputed;
     /// Signal after recomputing an object.
     App::MainThreadSignal<void(const DocumentObject&)> signalRecomputedObject;
     /// Signal on a new opened transaction.
