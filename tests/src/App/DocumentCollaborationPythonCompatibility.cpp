@@ -1855,7 +1855,9 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_STREQ(PyUnicode_AsUTF8(publicationKind), "UnknownModelMutation");
     EXPECT_EQ(probe.calls, 1);
     EXPECT_TRUE(probe.gilHeld);
-    EXPECT_EQ(probe.callbackThread, std::this_thread::get_id());
+    const auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
     EXPECT_EQ(_target->Label.getStrValue(), "Compatibility callback");
     EXPECT_EQ(wildcardRevision(), wildcardBefore + 1);
     EXPECT_EQ(Py_REFCNT(callback.get()), callbackReferences);
@@ -4527,7 +4529,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       rejectedOffOwnerCallDoesNotInvokeOrRetainTheCallback)
+       offOwnerCallWithoutMainThreadHooksUsesLaneAndCommits)
 {
     PyObject* document = nullptr;
     PyObject* callback = nullptr;
@@ -4555,8 +4557,13 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
         ASSERT_NE(result, nullptr);
         PyObject* status = PyDict_GetItemString(result, "status");
         ASSERT_NE(status, nullptr);
-        EXPECT_STREQ(PyUnicode_AsUTF8(status), "Unsupported");
-        EXPECT_EQ(probe.calls, 0);
+        // Headless App tests install no MainThreadSignal hooks; the execution
+        // lane still owns the document and must admit the off-owner commit.
+        EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+        EXPECT_EQ(probe.calls, 1);
+        const auto* lane = _document->executionLane();
+        ASSERT_NE(lane, nullptr);
+        EXPECT_EQ(probe.callbackThread, lane->ownerThreadId());
         EXPECT_EQ(Py_REFCNT(callback), callbackReferences);
         Py_DECREF(result);
         Py_DECREF(callback);

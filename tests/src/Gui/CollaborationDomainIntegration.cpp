@@ -42,6 +42,7 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 namespace App::Internal
@@ -164,11 +165,11 @@ protected:
         ASSERT_NE(document, nullptr);
         object = document->addObject("App::FeatureTest", "Target");
         ASSERT_NE(object, nullptr);
-        document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(*document);
         ASSERT_TRUE(baselineDirectory.isValid());
         const auto baselinePath = baselineDirectory.filePath(
             QString::fromStdString(documentName) + QStringLiteral(".FCStd"));
-        ASSERT_TRUE(document->saveAs(baselinePath.toUtf8().constData()));
+        Gui::Test::saveAsWithoutBlockingGui(*document, baselinePath.toUtf8().constData());
         guiDocument = Gui::Application::Instance->getDocument(document);
         ASSERT_NE(guiDocument, nullptr);
         guiDocument->setModified(false);
@@ -431,10 +432,10 @@ TEST_F(CollaborationDomainIntegrationTest,
     });
     auto* secondObject = second->addObject("App::FeatureTest", "SecondTarget");
     ASSERT_NE(secondObject, nullptr);
-    second->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*second);
     const auto secondBaseline =
         baselineDirectory.filePath(QStringLiteral("close-failure-second-baseline.FCStd"));
-    ASSERT_TRUE(second->saveAs(secondBaseline.toUtf8().constData()));
+    Gui::Test::saveAsWithoutBlockingGui(*second, secondBaseline.toUtf8().constData());
 
     const auto blockedParent = baselineDirectory.filePath(QStringLiteral("blocked-save-all"));
     QFile blocker(blockedParent);
@@ -1347,7 +1348,7 @@ TEST_F(CollaborationDomainIntegrationTest,
     auto* foreignObject = foreignDocument->addObject("App::FeatureTest", "ForeignTarget");
     ASSERT_NE(foreignObject, nullptr);
     foreignObject->Label.setValue("ForeignBefore");
-    foreignDocument->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*foreignDocument);
 
     const auto closeForeign = qScopeGuard([&] {
         if (App::GetApplication().getDocument(foreignName.c_str())) {
@@ -1922,7 +1923,7 @@ TEST_F(CollaborationDomainIntegrationTest, successfulSaveAdvancesPresentationPer
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
     const auto path = temporary.filePath("presentation-marker.FCStd").toUtf8();
-    ASSERT_TRUE(document->saveAs(path.constData()));
+    Gui::Test::saveAsWithoutBlockingGui(*document, path.constData());
 
     const auto afterSave = guiDocument->sharedPresentationRevisions().persistenceState();
     EXPECT_FALSE(afterSave.poisoned);
@@ -1967,8 +1968,7 @@ TEST(CollaborationDomainIntegrationStandalone,
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
     const auto path = temporary.filePath("resilient-gui-outcome.FCStd").toUtf8();
-    const auto outcome = document->saveAsWithOutcome(path.constData());
-    ASSERT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written);
+    Gui::Test::saveAsWithoutBlockingGui(*document, path.constData());
 
     const auto afterSave = guiDocument->sharedPresentationRevisions().persistenceState();
     EXPECT_FALSE(afterSave.poisoned);
@@ -1987,7 +1987,7 @@ TEST_F(CollaborationDomainIntegrationTest, restoredDocumentStartsAtPersistedPres
     QTemporaryDir temporary;
     ASSERT_TRUE(temporary.isValid());
     const auto path = temporary.filePath("restored-presentation-marker.FCStd").toUtf8();
-    ASSERT_TRUE(document->saveAs(path.constData()));
+    Gui::Test::saveAsWithoutBlockingGui(*document, path.constData());
     App::GetApplication().closeDocument(documentName.c_str());
     QApplication::processEvents();
     document = nullptr;

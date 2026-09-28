@@ -11,7 +11,7 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
-#include <App/DocumentHandle.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
 #include <Gui/Camera.h>
@@ -251,38 +251,6 @@ bool terminal(App::PreparedEditExecutionStatus status)
         || status == App::PreparedEditExecutionStatus::Failed;
 }
 
-void recomputeWithoutBlockingGui(App::Document& document)
-{
-    auto handle = document.executionHandle();
-    App::DocumentCommand command;
-    command.kind = App::DocumentCommandKind::Recompute;
-    command.document = handle.identity();
-    command.recompute = App::DocumentCommandRecomputePayload {};
-    command.recompute->coalescingKey = "gui-responsiveness-setup-recompute";
-    command.recompute->options = 0;
-
-    const auto outcome = handle.trySubmit(std::move(command));
-    if (outcome.result != App::DocumentCommandSubmitResult::Accepted) {
-        FAIL() << "recompute trySubmit failed: "
-               << App::documentCommandSubmitResultName(outcome.result);
-    }
-
-    App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
-    const auto deadline = std::chrono::steady_clock::now() + 30s;
-    App::DocumentCommandSnapshot snapshot;
-    while (std::chrono::steady_clock::now() < deadline) {
-        QApplication::processEvents();
-        snapshot = commandHandle.status();
-        if (snapshot.terminal()) {
-            ASSERT_EQ(snapshot.state, App::DocumentCommandState::Completed)
-                << snapshot.diagnostic;
-            return;
-        }
-        std::this_thread::sleep_for(1ms);
-    }
-    FAIL() << "document recompute did not finish before timeout";
-}
-
 std::optional<App::PreparedEditExecutionSnapshot> waitForTerminal(
     App::DocumentCollaborationService& service,
     App::PreparedEditExecutionId executionId,
@@ -324,7 +292,8 @@ protected:
         ASSERT_NE(_target, nullptr);
         _source->Label.setValue("Source-before");
         _target->Label.setValue("Target-before");
-        recomputeWithoutBlockingGui(*_document);
+        Gui::Test::recomputeWithoutBlockingGui(
+            *_document, "gui-responsiveness-setup-recompute");
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
         _session = _document->collaborationService().beginEditSession("gui-actor");

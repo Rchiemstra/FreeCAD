@@ -8,6 +8,7 @@ add_executable(Gui_tests_run
         Assistant.cpp
         Camera.cpp
         CollaborationCompatibilityAdapter.cpp
+        CollaborationGuiTestHelpers.cpp
         CollaborationLinkReplayGuard.cpp
         CollaborationAuthorityRemoval.cpp
         CollaborationDomainIntegration.cpp
@@ -50,6 +51,8 @@ setup_qt_test(TranslatorLocale)
 setup_qt_test(InputField)
 setup_qt_test(QuantitySpinBox)
 setup_qt_test(NumericLocaleConsumers)
+
+target_include_directories(Gui_tests_run PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(Gui_tests_run PRIVATE
     GTest::gmock_main

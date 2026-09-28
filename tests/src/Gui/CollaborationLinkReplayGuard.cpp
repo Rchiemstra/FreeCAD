@@ -14,6 +14,7 @@
 #include <Gui/Application.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 namespace
@@ -78,7 +79,7 @@ protected:
         ASSERT_NE(_linkRight, nullptr);
         _linkLeft->setLink(-1, _target);
         _linkRight->setLink(-1, _target);
-        _document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(*_document);
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
         ensureViewProviders(

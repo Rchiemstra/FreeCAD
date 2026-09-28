@@ -26,6 +26,7 @@
 #include <Gui/MainWindow.h>
 #include <Gui/MergeDocuments.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 namespace App::Internal
@@ -102,7 +103,7 @@ protected:
         _object = _document->addObject("App::FeatureTest", "Target");
         ASSERT_NE(_object, nullptr);
         _object->Label.setValue("before");
-        _document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(*_document);
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
     }
