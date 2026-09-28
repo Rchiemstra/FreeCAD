@@ -13,12 +13,15 @@
 
 #include <Python.h>
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace Gui
 {
@@ -45,18 +48,53 @@ bool anyDocumentExecutionLaneBusy() noexcept
 }
 
 #if PY_VERSION_HEX >= 0x030c0000
+struct OrphanGilProbe
+{
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+};
+
+std::mutex g_orphanGilProbeMutex;
+std::vector<OrphanGilProbe> g_orphanGilProbes;
+
+void reapFinishedOrphanGilProbes() noexcept
+{
+    std::lock_guard lock(g_orphanGilProbeMutex);
+    for (auto it = g_orphanGilProbes.begin(); it != g_orphanGilProbes.end();) {
+        if (it->done && it->done->load(std::memory_order_acquire) && it->thread.joinable()) {
+            it->thread.join();
+            it = g_orphanGilProbes.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+}
+
 bool tryAcquireGilWithoutBlocking(PyGILState_STATE* state) noexcept
 {
+    // Never detach a thread blocked in PyGILState_Ensure: when the foreign GIL
+    // holder later releases, the orphan races with a second Ensure and can crash.
+    reapFinishedOrphanGilProbes();
+
+    auto done = std::make_shared<std::atomic<bool>>(false);
     std::promise<void> probeFinished;
     auto probeDone = probeFinished.get_future();
-    std::thread probe([&probeFinished] {
+    std::thread probe([done, &probeFinished] {
         PyGILState_STATE probeState = PyGILState_Ensure();
         PyGILState_Release(probeState);
-        probeFinished.set_value();
+        done->store(true, std::memory_order_release);
+        try {
+            probeFinished.set_value();
+        }
+        catch (const std::future_error&) {
+            // Timed-out waiter already abandoned the promise; done flag is enough.
+        }
     });
     using namespace std::chrono_literals;
     if (probeDone.wait_for(2ms) != std::future_status::ready) {
-        probe.detach();
+        std::lock_guard lock(g_orphanGilProbeMutex);
+        g_orphanGilProbes.push_back(OrphanGilProbe {std::move(probe), std::move(done)});
         return false;
     }
     probe.join();
