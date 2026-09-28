@@ -10,10 +10,31 @@ run_gtest() {
   name=$(basename "$t")
   echo "== C++ gtest: $name =="
   case "$name" in
-    Gui_tests_run)
+    Gui_tests_run|GuiShutdown_tests_run|*Gui*_tests_run)
       if [ ! -x /usr/bin/xvfb-run ]; then
         echo "FATAL: mandatory /usr/bin/xvfb-run is missing or not executable (required for $name OpenGL tests)" >&2
         exit 1
+      fi
+      # CollaborationResponsiveness segfaults in-process after DomainIntegration's
+      # native personal render (Coin realtime sensor / main window). Run it in a
+      # fresh xvfb process after the rest of the Gui suite.
+      if [ "$name" = "Gui_tests_run" ]; then
+        env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
+          "$t" --gtest_filter=-CollaborationResponsiveness* \
+          --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
+        main_rc=$?
+        env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
+          "$t" --gtest_filter=CollaborationResponsiveness* \
+          --gtest_output=json:/tmp/gtest/"$name"-responsiveness.json \
+          >"/tmp/gtest/$name-responsiveness.log" 2>&1
+        resp_rc=$?
+        if [ "$resp_rc" -ne 0 ]; then
+          cat "/tmp/gtest/$name-responsiveness.log" >>"/tmp/gtest/$name.log"
+        fi
+        if [ "$main_rc" -ne 0 ]; then
+          return "$main_rc"
+        fi
+        return "$resp_rc"
       fi
       env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
         "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
