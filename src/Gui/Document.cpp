@@ -4379,11 +4379,15 @@ void Document::undo(int iSteps)
         return;
     }
 
+    // Mark before trySubmit so AutoSaver / observers see the in-flight
+    // transaction even if the lane completes the undo before we return.
+    d->_isTransacting = true;
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Undo,
         iSteps);
     if (!outcome.accepted()) {
+        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
@@ -4395,7 +4399,6 @@ void Document::undo(int iSteps)
     d->undoRedoCompletionAnchor->inFlightCommandId.store(
         outcome.commandId,
         std::memory_order_release);
-    d->_isTransacting = true;
     scheduleUndoRedoCommandCompletion(
         getDocument()->getName(),
         getDocument()->executionHandle().identity(),
@@ -4411,11 +4414,13 @@ void Document::redo(int iSteps)
         return;
     }
 
+    d->_isTransacting = true;
     const auto outcome = submitDocumentKindCommand(
         *getDocument(),
         App::DocumentCommandKind::Redo,
         iSteps);
     if (!outcome.accepted()) {
+        d->_isTransacting = false;
         reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
         return;
     }
@@ -4427,7 +4432,6 @@ void Document::redo(int iSteps)
     d->undoRedoCompletionAnchor->inFlightCommandId.store(
         outcome.commandId,
         std::memory_order_release);
-    d->_isTransacting = true;
     scheduleUndoRedoCommandCompletion(
         getDocument()->getName(),
         getDocument()->executionHandle().identity(),
@@ -4463,6 +4467,12 @@ void Document::finishExecutionLaneUndoRedo(const App::DocumentCommandKind kind,
     d->_isTransacting = false;
     if (state != App::DocumentCommandState::Completed) {
         return;
+    }
+    // App undo/redo already emitted becameStable while Gui::_isTransacting was
+    // still true, so AutoSaver deferred. Re-emit now that the Gui transaction
+    // flag is clear so deferred recovery can proceed.
+    if (d->_pcDocument) {
+        d->_pcDocument->emitCollaborationBecameStable();
     }
     if (kind == App::DocumentCommandKind::Undo) {
         App::GetApplication().signalUndo();

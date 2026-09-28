@@ -25,12 +25,14 @@
 #include <zipios++/zipoutputstream.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #ifdef __linux__
@@ -133,12 +135,14 @@ std::string metadataXmlWithProvenance(std::string_view provenanceXml)
 
 bool processEventsUntil(const std::function<bool()>& predicate)
 {
-    for (int pass = 0; pass < 20; ++pass) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
         QCoreApplication::sendPostedEvents(nullptr, 0);
         QCoreApplication::processEvents(QEventLoop::AllEvents);
         if (predicate()) {
             return true;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return predicate();
 }
@@ -590,6 +594,8 @@ TEST_F(AutoSaverRecoveryTest, GuiTransactionDefersUntilGroupedUndoFinishes)
     });
 
     guiDocument->undo(1);
+    ASSERT_TRUE(processEventsUntil([&] { return flushedInsideGuiTransaction; }));
+    ASSERT_TRUE(processEventsUntil([this] { return !guiDocument->isPerformingTransaction(); }));
     connection.disconnect();
 
     ASSERT_TRUE(flushedInsideGuiTransaction);
