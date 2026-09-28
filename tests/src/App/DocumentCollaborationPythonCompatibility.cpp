@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -1618,6 +1619,31 @@ public:
             task->done = true;
         }
         task->changed.notify_all();
+        return true;
+    }
+
+    /**
+     * Drain MainThreadSignal tasks until @p pred is true.
+     *
+     * Off-owner collaboration now hops through DocumentExecutionLane; the lane
+     * thread may re-enter MainThreadSignal while the worker waits. A single
+     * waitUntilQueued/runOne pair can race past that hop and leave worker.join
+     * deadlocked — keep pumping until the worker signals completion.
+     */
+    template<typename Pred>
+    [[nodiscard]] bool pumpUntil(Pred&& pred,
+                                 std::chrono::milliseconds timeout = 10s)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                abortPending();
+                return false;
+            }
+            if (waitUntilQueued(50ms)) {
+                static_cast<void>(runOne(50ms));
+            }
+        }
         return true;
     }
 
@@ -4399,21 +4425,17 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 
     PyObject* result = nullptr;
     bool callFailed = false;
+    std::atomic_bool workerFinished {false};
     std::thread worker([&] {
         Base::PyGILStateLocker gil;
         result = PyObject_CallMethod(document, "commitCompatibilityMutation", "O", callback);
         callFailed = result == nullptr;
+        workerFinished.store(true, std::memory_order_release);
     });
 
-    const bool queued = dispatcher.waitUntilQueued();
-    const bool dispatched = queued && dispatcher.runOne();
-    if (!dispatched) {
-        dispatcher.abortPending();
-    }
+    ASSERT_TRUE(dispatcher.pumpUntil(
+        [&] { return workerFinished.load(std::memory_order_acquire); }));
     worker.join();
-
-    ASSERT_TRUE(queued);
-    ASSERT_TRUE(dispatched);
 
     {
         Base::PyGILStateLocker gil;
@@ -4453,6 +4475,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     PyObject* result = nullptr;
     bool exactType = false;
     std::string message;
+    std::atomic_bool workerFinished {false};
     std::thread worker([&] {
         Base::PyGILStateLocker gil;
         result = PyObject_CallMethod(document, "commitCompatibilityMutation", "O", callback);
@@ -4473,17 +4496,13 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
             Py_XDECREF(value);
             Py_XDECREF(traceback);
         }
+        workerFinished.store(true, std::memory_order_release);
     });
 
-    const bool queued = dispatcher.waitUntilQueued();
-    const bool dispatched = queued && dispatcher.runOne();
-    if (!dispatched) {
-        dispatcher.abortPending();
-    }
+    ASSERT_TRUE(dispatcher.pumpUntil(
+        [&] { return workerFinished.load(std::memory_order_acquire); }));
     worker.join();
 
-    ASSERT_TRUE(queued);
-    ASSERT_TRUE(dispatched);
     EXPECT_EQ(result, nullptr);
     EXPECT_TRUE(exactType);
     EXPECT_EQ(message, "compatibility callback failed");
