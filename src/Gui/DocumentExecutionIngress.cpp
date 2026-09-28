@@ -12,7 +12,9 @@
 #include <App/Document.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentWouldBlock.h>
+#include <App/Property.h>
 #include <Base/Console.h>
+#include <Base/PyObjectBase.h>
 
 #include <QApplication>
 #include <QMessageBox>
@@ -21,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -198,6 +201,108 @@ App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     const int steps)
 {
     return document.executionHandle().trySubmit(makeDocumentKindCommand(document, kind, steps));
+}
+
+App::DocumentCommand makeDocumentPropertyEditCommand(
+    App::Document& document,
+    std::vector<App::DocumentCommandPropertyValue> propertyValues)
+{
+    App::DocumentCommand command;
+    command.kind = App::DocumentCommandKind::Edit;
+    command.document = document.executionHandle().identity();
+    command.edit = App::DocumentCommandEditPayload {};
+    command.edit->operationId = "gui.property-editor";
+    command.edit->provenance = "Gui::PropertyItem::setPropertyValue";
+    command.edit->propertyValues = std::move(propertyValues);
+    return command;
+}
+
+std::optional<std::string> copyPropertyValueFromPythonRhs(
+    const App::Property& schema,
+    const std::string& pythonRhs)
+{
+    if (pythonRhs.empty()) {
+        return std::nullopt;
+    }
+
+    std::unique_ptr<App::Property> staged(
+        static_cast<App::Property*>(schema.getTypeId().createInstance()));
+    if (!staged) {
+        return std::nullopt;
+    }
+
+    try {
+        Base::PyGILStateLocker gil;
+        std::string code = "__freecad_property_editor_rhs = ";
+        code += pythonRhs;
+        Base::Interpreter().runString(code.c_str());
+        Py::Module mainModule(PyImport_AddModule("__main__"));
+        Py::Dict mainDict(mainModule.dict());
+        Py::Object rhs = mainDict.getItem("__freecad_property_editor_rhs");
+        staged->setPyObject(rhs.ptr());
+    }
+    catch (const Base::Exception& exception) {
+        FC_ERR("Failed to copy property value for lane edit: " << exception.what());
+        return std::nullopt;
+    }
+    catch (const std::exception& exception) {
+        FC_ERR("Failed to copy property value for lane edit: " << exception.what());
+        return std::nullopt;
+    }
+    catch (...) {
+        FC_ERR("Failed to copy property value for lane edit: unknown exception");
+        return std::nullopt;
+    }
+
+    std::ostringstream stream(std::ios::out | std::ios::binary);
+    staged->dumpToStream(stream, 1);
+    return stream.str();
+}
+
+namespace
+{
+
+void schedulePropertyEditCommandCompletion(
+    App::DocumentRevisionIdentityBinding documentIdentity,
+    App::DocumentCommandId commandId)
+{
+    auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
+    QTimer::singleShot(50, qApp, [documentIdentity, commandId, commandHandle = std::move(commandHandle)] {
+        const auto snapshot = commandHandle->status();
+        if (!snapshot.terminal()) {
+            schedulePropertyEditCommandCompletion(documentIdentity, commandId);
+            return;
+        }
+        if (snapshot.state == App::DocumentCommandState::Failed) {
+            FC_ERR("Document Edit "
+                   << App::documentCommandStateName(snapshot.state) << ": "
+                   << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
+                                                   : snapshot.diagnostic));
+        }
+    });
+}
+
+}  // namespace
+
+App::DocumentCommandSubmitOutcome submitDocumentPropertyEdit(
+    App::Document& document,
+    std::vector<App::DocumentCommandPropertyValue> propertyValues)
+{
+    if (propertyValues.empty()) {
+        App::DocumentCommandSubmitOutcome outcome;
+        outcome.result = App::DocumentCommandSubmitResult::Unsupported;
+        outcome.diagnostic = "property edit command has no values";
+        return outcome;
+    }
+
+    const auto outcome = document.executionHandle().trySubmit(
+        makeDocumentPropertyEditCommand(document, std::move(propertyValues)));
+    if (outcome.accepted() && outcome.commandId != 0) {
+        schedulePropertyEditCommandCompletion(
+            document.executionHandle().identity(),
+            outcome.commandId);
+    }
+    return outcome;
 }
 
 namespace

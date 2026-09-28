@@ -2974,7 +2974,6 @@ bool Document::save()
                 return false;
             }
 
-            Gui::WaitCursor wc;
             bool saveCompleted = true;
             // save all documents
             for (auto doc : docs) {
@@ -2983,12 +2982,29 @@ bool Document::save()
                     continue;
                 }
 
-                std::string saveFailureDiagnostic;
-                if (!submitDocumentSaveAwaitingCompletion(*doc, &saveFailureDiagnostic)) {
+                if (doc->executionLane()) {
+                    const auto outcome =
+                        submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                    if (outcome.accepted()) {
+                        scheduleSaveCommandCompletion(
+                            doc->getName(),
+                            doc->executionHandle().identity(),
+                            outcome.commandId);
+                        reportDocumentSaveAdmitted(*doc);
+                        continue;
+                    }
+                    std::string saveFailureDiagnostic = outcome.diagnostic;
+                    reportDocumentCommandSubmitBlocked(*doc, outcome);
                     if (!saveFailureDiagnostic.empty()
                         && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
                         continue;
                     }
+                    saveCompleted = false;
+                    continue;
+                }
+
+                Gui::WaitCursor wc;
+                if (!doc->save()) {
                     saveCompleted = false;
                 }
             }
@@ -3150,8 +3166,6 @@ void Document::saveAll()
                 break;
             }
         }
-        Gui::WaitCursor wc;
-
         try {
             if (!prepareDocumentForImmediateSave(*doc, dmap[doc])) {
                 ++skippedSaves;
@@ -3160,16 +3174,32 @@ void Document::saveAll()
                        << "' because model work is still running or recompute was deferred");
                 continue;
             }
-            std::string saveFailureDiagnostic;
-            if (!submitDocumentSaveAwaitingCompletion(*doc, &saveFailureDiagnostic)) {
-                ++skippedSaves;
-                FC_ERR("Save All did not write document '"
-                       << doc->getName()
-                       << "'"
-                       << (saveFailureDiagnostic.empty()
-                               ? " because the document execution lane rejected or deferred save"
-                               : (": " + saveFailureDiagnostic)));
+            if (doc->executionLane()) {
+                const auto outcome =
+                    submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                if (!outcome.accepted()) {
+                    ++skippedSaves;
+                    reportDocumentCommandSubmitBlocked(*doc, outcome);
+                    FC_ERR("Save All did not write document '"
+                           << doc->getName()
+                           << "'"
+                           << (outcome.diagnostic.empty()
+                                   ? " because the document execution lane rejected or deferred save"
+                                   : (": " + outcome.diagnostic)));
+                    continue;
+                }
+                scheduleSaveCommandCompletion(
+                    doc->getName(),
+                    doc->executionHandle().identity(),
+                    outcome.commandId);
+                reportDocumentSaveAdmitted(*doc);
                 continue;
+            }
+
+            Gui::WaitCursor wc;
+            if (!doc->save()) {
+                ++skippedSaves;
+                FC_ERR("Save All did not write document '" << doc->getName() << "'");
             }
         }
         catch (const Base::Exception& e) {

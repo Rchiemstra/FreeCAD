@@ -68,6 +68,25 @@ GuiExport App::DocumentCommandSubmitOutcome submitDocumentKindCommand(
     App::DocumentCommandKind kind,
     int steps = 1);
 
+/** Build one pointer-free property Edit command for the property editor. */
+GuiExport App::DocumentCommand makeDocumentPropertyEditCommand(
+    App::Document& document,
+    std::vector<App::DocumentCommandPropertyValue> propertyValues);
+
+/**
+ * Copy one property value from a Python assignment RHS on the GUI thread.
+ *
+ * The returned stream payload is suitable for lane Edit admission.
+ */
+GuiExport std::optional<std::string> copyPropertyValueFromPythonRhs(
+    const App::Property& schema,
+    const std::string& pythonRhs);
+
+/** Admit one property-editor Edit through DocumentHandle::trySubmit(). */
+GuiExport App::DocumentCommandSubmitOutcome submitDocumentPropertyEdit(
+    App::Document& document,
+    std::vector<App::DocumentCommandPropertyValue> propertyValues);
+
 /** Poll command status without waiting and notify the GUI document when terminal. */
 GuiExport void scheduleUndoRedoCommandCompletion(
     const char* appDocumentName,

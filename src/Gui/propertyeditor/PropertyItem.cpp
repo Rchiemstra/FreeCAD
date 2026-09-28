@@ -25,6 +25,8 @@
 #include <algorithm>
 #include <iomanip>
 #include <limits>
+#include <map>
+#include <vector>
 #include <QApplication>
 #include <QComboBox>
 #include <QCheckBox>
@@ -63,6 +65,7 @@
 #include <Gui/VectorListEditor.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Gui/Application.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Document.h>
 #include <Gui/DocumentExecutionIngress.h>
@@ -598,20 +601,12 @@ void PropertyItem::setPropertyName(const QString& name, const QString& realName)
 
 void PropertyItem::setPropertyValue(const std::string& value)
 {
-    const auto runCompatibilityMutation = [](Gui::Document* guiDoc,
-                                           Gui::CollaborationCompatibilityMutationDeclaration declaration,
-                                           const std::string& command) {
-        const auto outcome = guiDoc->executeCompatibilityMutation(
-            std::move(declaration),
-            [command] { Base::Interpreter().runString(command.c_str()); });
-        if (!outcome.completed()) {
-            Base::Console().error(
-                "PropertyItem::setPropertyValue compatibility mutation failed: %s\n",
-                outcome.diagnostic.c_str());
-        }
+    const auto runLegacyCommand = [](const std::string& command) {
+        Gui::Command::runCommand(Gui::Command::App, command.c_str());
     };
 
     try {
+        std::map<App::Document*, std::vector<App::DocumentCommandPropertyValue>> laneEdits;
         for (auto prop : propertyItems) {
             App::PropertyContainer* parent = prop->getContainer();
             if (!parent || parent->isReadOnly(prop) || prop->testStatus(App::Property::ReadOnly)) {
@@ -622,23 +617,30 @@ void PropertyItem::setPropertyValue(const std::string& value)
             assignment << parent->getPropertyPrefix() << prop->getName() << " = " << value;
             const std::string line = assignment.str();
             const char* propertyName = prop->getName();
+            if (!propertyName || *propertyName == '\0') {
+                continue;
+            }
 
             if (parent->isDerivedFrom<App::Document>()) {
                 auto* doc = static_cast<App::Document*>(parent);
                 std::ostringstream cmd;
                 cmd << "FreeCAD.getDocument('" << doc->getName() << "')." << line << '\n';
                 const std::string command = cmd.str();
-                Gui::Document* guiDoc =
-                    Gui::Application::Instance ? Gui::Application::Instance->getDocument(doc)
-                                               : nullptr;
-                if (!guiDoc) {
-                    Gui::Command::runCommand(Gui::Command::App, command.c_str());
+                if (!doc->executionLane()) {
+                    runLegacyCommand(command);
                     continue;
                 }
-                runCompatibilityMutation(
-                    guiDoc,
-                    {Gui::CollaborationCompatibilityMutationKind::UnknownModel, {}, {}, {}},
-                    command);
+                const auto copiedValue = copyPropertyValueFromPythonRhs(*prop, value);
+                if (!copiedValue) {
+                    Base::Console().error(
+                        "PropertyItem::setPropertyValue: failed to copy document property '%s'\n",
+                        propertyName);
+                    continue;
+                }
+                App::DocumentCommandPropertyValue propertyValue;
+                propertyValue.propertyName = propertyName;
+                propertyValue.copiedValue = std::move(*copiedValue);
+                laneEdits[doc].push_back(std::move(propertyValue));
                 continue;
             }
 
@@ -653,7 +655,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
                 continue;
             }
 
-            if (!object || !object->getDocument() || !propertyName || *propertyName == '\0') {
+            if (!object || !object->getDocument()) {
                 continue;
             }
 
@@ -663,10 +665,8 @@ void PropertyItem::setPropertyValue(const std::string& value)
                 << object->getNameInDocument() << "')." << line << '\n';
             const std::string command = cmd.str();
 
-            Gui::Document* guiDoc =
-                Gui::Application::Instance ? Gui::Application::Instance->getDocument(doc) : nullptr;
-            if (!guiDoc) {
-                Gui::Command::runCommand(Gui::Command::App, command.c_str());
+            if (!doc->executionLane()) {
+                runLegacyCommand(command);
                 continue;
             }
 
@@ -677,13 +677,26 @@ void PropertyItem::setPropertyValue(const std::string& value)
                 continue;
             }
 
-            runCompatibilityMutation(
-                guiDoc,
-                {Gui::CollaborationCompatibilityMutationKind::Model,
-                 objectName,
-                 stableIdentity,
-                 propertyName},
-                command);
+            const auto copiedValue = copyPropertyValueFromPythonRhs(*prop, value);
+            if (!copiedValue) {
+                Base::Console().error(
+                    "PropertyItem::setPropertyValue: failed to copy property '%s' on '%s'\n",
+                    propertyName,
+                    objectName);
+                continue;
+            }
+            App::DocumentCommandPropertyValue propertyValue;
+            propertyValue.stableObjectIdentity = stableIdentity;
+            propertyValue.propertyName = propertyName;
+            propertyValue.copiedValue = std::move(*copiedValue);
+            laneEdits[doc].push_back(std::move(propertyValue));
+        }
+
+        for (auto& [doc, propertyValues] : laneEdits) {
+            const auto outcome = submitDocumentPropertyEdit(*doc, std::move(propertyValues));
+            if (!outcome.accepted()) {
+                reportDocumentCommandSubmitBlocked(*doc, outcome);
+            }
         }
     }
     catch (Base::PyException& e) {

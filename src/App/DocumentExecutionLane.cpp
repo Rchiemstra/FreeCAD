@@ -841,8 +841,12 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                 return false;
             }
             for (const auto& propertyValue : command.command.edit->propertyValues) {
-                DocumentObject* object = nullptr;
-                if (!propertyValue.stableObjectIdentity.empty()) {
+                App::Property* property = nullptr;
+                if (propertyValue.stableObjectIdentity.empty()) {
+                    property = _document.getPropertyByName(propertyValue.propertyName.c_str());
+                }
+                else {
+                    DocumentObject* object = nullptr;
                     for (auto* candidate : _document.getObjects()) {
                         try {
                             if (_document.collaborationObjectIdentity(*candidate)
@@ -854,11 +858,11 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                         catch (...) {
                         }
                     }
+                    if (!object) {
+                        return false;
+                    }
+                    property = object->getPropertyByName(propertyValue.propertyName.c_str());
                 }
-                if (!object) {
-                    return false;
-                }
-                auto* property = object->getPropertyByName(propertyValue.propertyName.c_str());
                 if (!property) {
                     return false;
                 }
