@@ -19,6 +19,7 @@
 #include <Gui/DocumentRecovery.h>
 #include <Gui/DocumentRecoveryInternal.h>
 #include <Gui/MainWindow.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 #include <zipios++/zipoutputstream.h>
@@ -178,7 +179,7 @@ protected:
         ASSERT_NE(guiDocument, nullptr);
         object = document->addObject("App::FeatureTest", "AutosaveTarget");
         ASSERT_NE(object, nullptr);
-        document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(*document);
         ASSERT_TRUE(document->canWriteRecoverySnapshot());
         removeRecoveryOutputs();
     }
@@ -348,8 +349,9 @@ TEST_F(RecoveryGuiTest, ReopenedDocumentKeepsProvenanceDiagnosticAndGetsFreshRun
         sourceName.c_str(), "recovery identity source", flags);
     ASSERT_NE(source, nullptr);
     ASSERT_NE(source->addObject("App::FeatureTest", "SourceObject"), nullptr);
-    source->recompute();
-    ASSERT_TRUE(source->saveAs(projectPath.toUtf8().constData()));
+    Gui::Test::recomputeWithoutBlockingGui(*source);
+    Gui::Test::saveAsWithoutBlockingGui(*source, projectPath.toUtf8().constData());
+    ASSERT_TRUE(QFileInfo::exists(projectPath));
 
     const auto sourceIdentity = source->collaborationIdentity();
     App::RecoverySnapshotMetadata metadata;
@@ -455,7 +457,7 @@ TEST_F(RecoveryGuiTest, StatusRewritePreservesExactCollaborationProvenance)
 TEST_F(AutoSaverRecoveryTest, OrdinaryChangesWaitForConfiguredTimer)
 {
     object->Label.setValue("ordinary dirty work");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
     QCoreApplication::processEvents(QEventLoop::AllEvents);
 
@@ -470,14 +472,14 @@ TEST_F(AutoSaverRecoveryTest, OrdinaryChangesWaitForConfiguredTimer)
 TEST_F(AutoSaverRecoveryTest, LaterMutationInSameCategorySchedulesAnotherSnapshot)
 {
     object->Label.setValue("first model mutation");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     flush();
     ASSERT_TRUE(QFileInfo(archivePath()).isFile());
     ASSERT_TRUE(QFileInfo(metadataPath()).isFile());
 
     removeRecoveryOutputs();
     object->Label.setValue("second model mutation");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     flush();
 
     EXPECT_TRUE(QFileInfo(archivePath()).isFile())
@@ -496,7 +498,7 @@ TEST_F(AutoSaverRecoveryTest, RecoveryOutcomeDoesNotAdvanceCanonicalSavepoint)
         });
 
     object->Label.setValue("recovery outcome source");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     flush();
     connection.disconnect();
 
@@ -518,7 +520,7 @@ TEST_F(AutoSaverRecoveryTest, AppTransactionDefersAndRetriesAfterStableSignal)
     EXPECT_FALSE(QFileInfo::exists(metadataPath()));
 
     document->commitTransaction();
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
     EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
@@ -533,7 +535,7 @@ TEST_F(AutoSaverRecoveryTest, PendingRecomputeDefersAndRetriesAfterRecompute)
     EXPECT_FALSE(QFileInfo::exists(archivePath()));
     EXPECT_FALSE(QFileInfo::exists(metadataPath()));
 
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
     EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
@@ -546,7 +548,7 @@ TEST_F(AutoSaverRecoveryTest, QueuedRetryCannotAutosaveReplacementWithReusedName
     flush();
     ASSERT_FALSE(QFileInfo::exists(archivePath()));
     document->commitTransaction();
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
 
     ASSERT_TRUE(App::GetApplication().closeDocument(documentName.c_str()));
 
@@ -559,7 +561,7 @@ TEST_F(AutoSaverRecoveryTest, QueuedRetryCannotAutosaveReplacementWithReusedName
     ASSERT_NE(guiDocument, nullptr);
     object = document->addObject("App::FeatureTest", "ReplacementTarget");
     ASSERT_NE(object, nullptr);
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     removeRecoveryOutputs();
     object->Label.setValue("replacement ordinary dirty work");
 
@@ -575,7 +577,7 @@ TEST_F(AutoSaverRecoveryTest, GuiTransactionDefersUntilGroupedUndoFinishes)
     document->openTransaction("gui transaction source");
     object->Label.setValue("undo me");
     document->commitTransaction();
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     removeRecoveryOutputs();
 
     bool flushedInsideGuiTransaction = false;
@@ -592,7 +594,7 @@ TEST_F(AutoSaverRecoveryTest, GuiTransactionDefersUntilGroupedUndoFinishes)
 
     ASSERT_TRUE(flushedInsideGuiTransaction);
     EXPECT_FALSE(archiveExistedInsideGuiTransaction);
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
     EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
@@ -601,7 +603,7 @@ TEST_F(AutoSaverRecoveryTest, GuiTransactionDefersUntilGroupedUndoFinishes)
 TEST_F(AutoSaverRecoveryTest, FailedWriteRetainsDirtyWorkForNextRetry)
 {
     object->Label.setValue("must survive failed recovery write");
-    document->recompute();
+    Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
     ASSERT_TRUE(QDir().mkpath(metadataPath()));
     QFile blocker(QDir(metadataPath()).filePath(QStringLiteral("keep-directory-nonempty")));
