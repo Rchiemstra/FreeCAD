@@ -43,6 +43,8 @@
 #include <QSurfaceFormat>
 #include <QTextStream>
 #include <QTimer>
+
+#include <future>
 #include <QThread>
 #include <QWindow>
 #include <QStyleFactory>
@@ -72,6 +74,7 @@
 #include <Quarter/Quarter.h>
 
 #include "Application.h"
+#include "DocumentPresentationCapture.h"
 #include "ApplicationPy.h"
 #include "AxisOriginPy.h"
 #include "BitmapFactory.h"
@@ -456,19 +459,39 @@ bool qtIsMainThread()
     return !qApp || (QThread::currentThread() == qApp->thread());
 }
 
-// Hook: invoke a functor on the GUI thread, either blocking or queued.
+// Hook: invoke a functor on the GUI thread. Blocking waits use queued delivery
+// plus a future, never Qt::BlockingQueuedConnection.
 void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
 {
-    if (!qApp) {
+    if (!qApp || qtIsMainThread()) {
         fn();
         return;
     }
 
+    if (!blocking) {
+        QMetaObject::invokeMethod(
+            MainThreadInvoker::instance(),
+            [f = std::move(fn)]() mutable { f(); },
+            Qt::QueuedConnection);
+        return;
+    }
+
+    auto sharedFn = std::make_shared<std::decay_t<decltype(fn)>>(std::move(fn));
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
     QMetaObject::invokeMethod(
         MainThreadInvoker::instance(),
-        [f = std::move(fn)]() mutable { f(); },
-        blocking ? Qt::BlockingQueuedConnection : Qt::QueuedConnection
-    );
+        [sharedFn, promise]() mutable {
+            try {
+                (*sharedFn)();
+                promise->set_value();
+            }
+            catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        },
+        Qt::QueuedConnection);
+    future.get();
 }
 
 }  // namespace Gui
@@ -558,6 +581,7 @@ Application::Application(bool GUIenabled)
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
         App::MainThreadSignalConfig::setHooks(&qtIsMainThread, &qtInvokeOnMain);
+        installDocumentPresentationBoundaryHook();
 
         // NOLINTBEGIN
         App::GetApplication().signalNewDocument.connect(

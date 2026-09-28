@@ -1348,6 +1348,7 @@ SET(FreeCADGui_CPP_SRCS
     Document.cpp
     DocumentPresentationState.cpp
     DocumentPresentationCache.cpp
+    DocumentPresentationCapture.cpp
     PresentationApplyScheduler.cpp
     DocumentChangesWidget.cpp
     DocumentModel.cpp
@@ -1401,6 +1402,7 @@ SET(FreeCADGui_SRCS
     Document.h
     DocumentPresentationState.h
     DocumentPresentationCache.h
+    DocumentPresentationCapture.h
     PresentationApplyScheduler.h
     PresentationDelta.h
     PresentationRevision.h

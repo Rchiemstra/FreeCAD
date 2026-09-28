@@ -80,6 +80,7 @@
 #include "Application.h"
 #include "Command.h"
 #include "DocumentExecutionIngress.h"
+#include <App/DocumentPresentationBoundary.h>
 #include "Control.h"
 #include "FileDialog.h"
 #include "MainWindow.h"
@@ -529,6 +530,10 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->_editModePrevious = 0;
     d->_editWantsRestore = false;
     d->_editWantsRestorePrevious = false;
+
+    d->collaborationCompatibilityAdapter.bindOwnerThreadPredicate([this]() {
+        return d->_pcDocument && d->_pcDocument->isCollaborationOwnerThread();
+    });
 
     const auto collaborationIdentity = pcDocument->collaborationIdentity();
     d->sharedPresentationRevisions.bindDocumentIdentity(
@@ -1344,9 +1349,26 @@ void Document::slotRecomputed(const App::Document& doc)
     if (d->_pcDocument != &doc) {
         return;
     }
-    // Stable boundary: publish one immutable presentation revision for GUI apply.
-    // Schedule heavy capture on the GUI loop so blocking signal marshalling only
-    // waits for this cheap hop, not tessellation.
+    // Presentation capture runs on the document owner thread via the boundary hook.
+    // Defer only passive GUI refresh so signal marshalling stays cheap.
+    if (App::hasDocumentPresentationBoundaryCallback()) {
+        const std::string docName = doc.getName();
+        QTimer::singleShot(0, qApp, [docName]() {
+            auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+            if (!appDoc) {
+                return;
+            }
+            auto* guiDoc = Application::Instance->getDocument(appDoc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            if (auto* window = getMainWindow()) {
+                window->updateActions();
+            }
+            TreeWidget::updateStatus();
+        });
+        return;
+    }
     const std::string docName = doc.getName();
     QTimer::singleShot(0, qApp, [docName]() {
         auto* appDoc = App::GetApplication().getDocument(docName.c_str());
@@ -1816,6 +1838,9 @@ void Document::enqueuePresentationDelta(PresentationDelta&& delta)
 
 void Document::publishPresentationRevisionFromModel()
 {
+    if (App::hasDocumentPresentationBoundaryCallback()) {
+        return;
+    }
     auto& cache = presentationCache();
     const auto identity = d->_pcDocument->collaborationIdentity();
     cache.bindDocumentIdentity(identity.instanceId, identity.lifecycleEpoch);

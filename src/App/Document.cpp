@@ -83,6 +83,7 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentPresentationBoundary.h"
 #include "DocumentExecutionLane.h"
 #include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
@@ -7215,6 +7216,7 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             : node.diagnostic;
         d->addRecomputeLog(diagnostic.c_str(), object);
     }
+    invokeDocumentPresentationBoundary(*this);
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::Recomputed};

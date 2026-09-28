@@ -75,6 +75,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
 #include <Base/Console.h>
 #include <Base/Parameter.h>
 #include <Base/TimeInfo.h>
@@ -1648,6 +1649,9 @@ bool ViewProviderPartExt::capturePresentationRenderBuffer(
     const Gui::ViewProviderPresentationCaptureRequest& request,
     Gui::PresentationRenderBuffer& buffer) const
 {
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        return false;
+    }
     buffer = Gui::PresentationRenderBuffer {};
     buffer.stableObjectIdentity = request.stableObjectIdentity;
     if (!pcObject) {

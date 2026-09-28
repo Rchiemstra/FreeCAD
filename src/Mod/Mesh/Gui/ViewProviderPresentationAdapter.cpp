@@ -4,6 +4,7 @@
 
 #include "ViewProvider.h"
 
+#include <App/DocumentWouldBlock.h>
 #include <Gui/ViewProviderPresentationCapability.h>
 
 #include <Base/Vector3D.h>
@@ -30,6 +31,9 @@ bool MeshGui::ViewProviderMesh::capturePresentationRenderBuffer(
     const ViewProviderPresentationCaptureRequest& request,
     PresentationRenderBuffer& buffer) const
 {
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        return false;
+    }
     buffer = PresentationRenderBuffer {};
     buffer.stableObjectIdentity = request.stableObjectIdentity;
     if (!pcObject) {
