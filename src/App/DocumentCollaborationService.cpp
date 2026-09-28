@@ -1331,9 +1331,9 @@ DocumentCommitResult DocumentCollaborationService::commitEdit(const std::string&
                               edit,
                               "document close has sealed collaboration access");
     }
-    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
-        return _coordinator.commit(edit);
-    }
+    // Always hop through the document owner (lane / MainThreadSignal). A headless
+    // short-circuit to _coordinator.commit would skip session cancel / stale checks
+    // in commitEditOnDocumentThread and let a queued cancel lose the race.
     return DocumentCollaborationService::invokeCollaborationOnDocumentThread<DocumentCommitResult>(
         _document,
         [this, sessionId, &edit] { return commitEditOnDocumentThread(sessionId, edit); });
