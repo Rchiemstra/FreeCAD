@@ -1630,12 +1630,17 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmis
 
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadAdmission)
 {
+    // beginEditSession also pins; open sessions before installing the blocking hook or
+    // the test thread deadlocks inside beginEditSession waiting for its own release.
+    const auto snapshotSession =
+        _document->collaborationService().beginEditSession("queued snapshot");
+    const auto prepareSession =
+        _document->collaborationService().beginEditSession("queued preparation");
+    const auto preparedIntent = intent("Must Not Prepare");
+
     HookBarrier barrier;
     Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
         &HookBarrier::invoke);
-
-    const auto snapshotSession =
-        _document->collaborationService().beginEditSession("queued snapshot");
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             snapshotSession.sessionId(), {DocumentRevisionKey::objectModel("Target")});
@@ -1649,9 +1654,6 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadA
     barrier.reset();
     Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
         &HookBarrier::invoke);
-    const auto prepareSession =
-        _document->collaborationService().beginEditSession("queued preparation");
-    const auto preparedIntent = intent("Must Not Prepare");
     auto prepareFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEdit(prepareSession.sessionId(),
                                                              "queued-preparation",
