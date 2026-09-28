@@ -426,6 +426,13 @@ public:
         _changed.notify_all();
     }
 
+    void reset()
+    {
+        std::lock_guard lock(_mutex);
+        _entered = false;
+        _released = false;
+    }
+
 private:
     static inline HookBarrier* Active {nullptr};
     std::mutex _mutex;
@@ -1609,9 +1616,12 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmis
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
     ASSERT_TRUE(barrier.waitUntilEntered());
+    // cancelEdit also constructs LifecyclePin; clear the blocking hook first or the
+    // test thread re-enters HookBarrier::invoke while the owner is already waiting
+    // for release (deadlock). Cancel still wins: session is marked before release.
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "queued"));
     barrier.release();
-    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
 
     const auto result = future.get();
     EXPECT_EQ(result.status, DocumentCommitStatus::Cancelled);
@@ -1631,11 +1641,14 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadA
             snapshotSession.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
     ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(snapshotSession.sessionId()));
     barrier.release();
     EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
 
     barrier.reset();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     const auto prepareSession =
         _document->collaborationService().beginEditSession("queued preparation");
     const auto preparedIntent = intent("Must Not Prepare");
@@ -1646,9 +1659,9 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadA
                                                              "native-test");
     });
     ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(prepareSession.sessionId()));
     barrier.release();
-    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
 }
 
