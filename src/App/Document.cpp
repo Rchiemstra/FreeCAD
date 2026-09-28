@@ -2422,6 +2422,7 @@ bool Document::checkOnCycle()
 bool Document::undo(const int id)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread("Document::undo()", "Document.undoAsync()");
         return d->executionLane->dispatchToOwner([this, id] { return undo(id); });
     }
     return collaborationService().undoCompatibilityTransaction(id);
@@ -2489,6 +2490,7 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
 bool Document::redo(const int id)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread("Document::redo()", "Document.redoAsync()");
         return d->executionLane->dispatchToOwner([this, id] { return redo(id); });
     }
     return collaborationService().redoCompatibilityTransaction(id);
@@ -4736,6 +4738,9 @@ void Document::ensureCollaborationSaveAllowed() const
 bool Document::saveAs(const char* _file)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document::saveAs()",
+            "Document.saveAsync() / DocumentCommandKind::Save");
         return d->executionLane->dispatchToOwner([this, _file] { return saveAs(_file); });
     }
     ensureCollaborationSaveAllowed();
@@ -4823,14 +4828,14 @@ DocumentSaveOutcome Document::saveAsWithOutcome(
     const bool overwrite,
     const std::string& expectedDestinationSha256)
 {
+    DocumentWouldBlock::throwIfGuiThread(
+        "Document::saveAsWithOutcome()",
+        "Document.saveAsync() / DocumentCommandKind::Save with save payload");
     if (d->executionLane && !isCollaborationOwnerThread()) {
         return d->executionLane->dispatchToOwner([&] {
             return saveAsWithOutcome(file, overwrite, expectedDestinationSha256);
         });
     }
-    DocumentWouldBlock::throwIfGuiThread(
-        "Document::saveAsWithOutcome()",
-        "Document.saveAsync() / DocumentCommandKind::Save with save payload");
     ensureCollaborationSaveAllowed();
     std::string checked;
     const auto preflightFailure = [this, file](const char* message) {
@@ -5112,6 +5117,9 @@ DocumentMutationReadiness Document::getMutationReadiness() const
 bool Document::save()
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document::save()",
+            "Document.saveAsync() / DocumentCommandKind::Save");
         return d->executionLane->dispatchToOwner([this] { return save(); });
     }
     ensureCollaborationSaveAllowed();
@@ -7065,6 +7073,8 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const DocumentRecomputeId admissionId)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "Document::recomputeAsync()", "Document.recomputeAsync()");
         return d->executionLane->dispatchToOwner([&] {
             return recomputeAsync(objs, force, options, venue, admissionId);
         });

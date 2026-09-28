@@ -179,6 +179,10 @@ public:
             }
         }
 
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentExecutionLane::dispatchToOwner()",
+            "DocumentHandle::trySubmit()");
+
         std::optional<Base::PyGILStateRelease> release;
         if (releaseGilWhileWaiting && Py_IsInitialized() && PyGILState_Check()) {
             release.emplace();
@@ -187,23 +191,6 @@ public:
         // std::function requires a copyable target; share the promise and
         // callable so the queued lambda is copy-constructible.
         auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
-        // When the GUI/main thread waits for the owner, the owner may emit
-        // MainThreadSignal with BlockingQueuedConnection. Pump events so that
-        // hop can complete instead of deadlocking.
-        auto waitForDispatch = [](auto& future) -> decltype(future.get()) {
-            // Only the real GUI thread may pump Qt while waiting. Without Gui
-            // hooks installed, MainThreadSignalConfig::isMainThread() is true on
-            // every thread and must not drive processEvents here.
-            if (DocumentWouldBlock::isGuiThread() && QCoreApplication::instance()) {
-                DocumentExecutionLaneGuiDispatchPumpScope dispatchPump;
-                while (future.wait_for(std::chrono::milliseconds(1))
-                       == std::future_status::timeout) {
-                    QCoreApplication::processEvents(
-                        QEventLoop::ExcludeUserInputEvents, 5);
-                }
-            }
-            return future.get();
-        };
         if constexpr (std::is_void_v<Result>) {
             auto promise = std::make_shared<std::promise<void>>();
             auto future = promise->get_future();
@@ -220,7 +207,7 @@ public:
                 });
                 _workAvailable.notify_one();
             }
-            waitForDispatch(future);
+            future.get();
             return;
         }
         else {
@@ -238,7 +225,7 @@ public:
                 });
                 _workAvailable.notify_one();
             }
-            return waitForDispatch(future);
+            return future.get();
         }
     }
 

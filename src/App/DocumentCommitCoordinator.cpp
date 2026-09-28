@@ -546,6 +546,9 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
         return commitOnOwner();
     }
     if (DocumentExecutionLane* lane = _document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions()",
+            "Document.commitEditAsync() / DocumentHandle::trySubmit()");
         return lane->dispatchToOwner(commitOnOwner);
     }
     if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {

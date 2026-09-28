@@ -195,6 +195,9 @@ Result DocumentCollaborationService::invokeCollaborationOnDocumentThread(
         return std::forward<Callable>(callable)();
     }
     if (auto* lane = document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCollaborationService::invokeCollaborationOnDocumentThread()",
+            "DocumentHandle::trySubmit() / async document APIs");
         return lane->dispatchToOwner(std::forward<Callable>(callable));
     }
     if (!MainThreadSignalConfig::hasHooks()) {
@@ -320,6 +323,9 @@ bool DocumentCollaborationService::runOnOwnerThread(const std::function<bool()>&
     }
     if (DocumentExecutionLane* lane = _document.executionLane();
         lane && !lane->isOwnerThread()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCollaborationService::runOnOwnerThread()",
+            "DocumentHandle::trySubmit() / async document APIs");
         return lane->dispatchToOwner(fn);
     }
     return fn();
