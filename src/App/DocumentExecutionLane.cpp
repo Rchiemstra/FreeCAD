@@ -251,7 +251,9 @@ bool DocumentExecutionLane::permitsApplicationClose() const noexcept
             return _active->command.kind == DocumentCommandKind::Close;
         }
     }
-    return !_document.collaborationCloseAdmissionActive();
+    // Application::closeDocument publishes Closing and drains outstanding
+    // collaboration admissions; do not reject here while they are still held.
+    return true;
 }
 
 bool DocumentExecutionLane::shutdownRequested() const noexcept

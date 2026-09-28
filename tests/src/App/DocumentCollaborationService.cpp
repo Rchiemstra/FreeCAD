@@ -924,7 +924,6 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
         &HookBarrier::invoke);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
         &HookBarrier::releaseActive);
-    BlockingTestDispatcher dispatcher;
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -932,22 +931,24 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        return;
+    }
 
-    bool hookEntered = false;
     bool closeResult = true;
     std::thread closeThread([&] {
-        hookEntered = barrier.waitUntilEntered();
-        if (hookEntered) {
-            closeResult = App::GetApplication().closeDocument(_documentName.c_str());
-        }
+        closeResult = App::GetApplication().closeDocument(_documentName.c_str());
     });
-    dispatcher.runOne();
     closeThread.join();
     Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
 
-    EXPECT_TRUE(hookEntered);
     EXPECT_TRUE(closeResult);
     static_cast<void>(preparationFuture.get());
     if (closeResult) {

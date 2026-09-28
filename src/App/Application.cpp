@@ -696,12 +696,6 @@ bool Application::closeDocument(const char* name)
         }
     }
 
-    {
-        std::lock_guard lock(collaborationLifetimeGate->mutex);
-        if (collaborationLifetimeGate->activeAccesses != 0) {
-            return false;
-        }
-    }
     if (atomicPresentationMutationAdmissionHeldFor(*pos->second)) {
         return false;
     }
