@@ -510,11 +510,13 @@ def test_archive_protocol_is_bounded_schema_exact_and_fail_closed() -> None:
         in prepare
     )
     assert 'constautoforceMode=intent.arguments.find("force_execution")' in prepare
-    assert "intent.arguments.empty()||intent.arguments.size()>4" in prepare
+    assert "intent.arguments.empty()||intent.arguments.size()>5" in prepare
     assert '!intent.arguments.contains("feature")' in prepare
     assert "std::ranges::any_of(intent.arguments" in prepare
     assert 'argument.first!="legacy_revision_semantics"' in prepare
     assert 'argument.first!="force_execution"' in prepare
+    assert 'argument.first!="owner_thread_execution"' in prepare
+    assert 'argument.first!="derived_coordinator_recompute"' in prepare
     assert (
         "constboolpreserveLegacyRevisionSemantics="
         "legacyMode!=intent.arguments.end()" in prepare
@@ -878,7 +880,12 @@ def test_worker_opt_out_runs_in_process_instead_of_failing_the_node() -> None:
     """
     generic = _read(GENERIC_SOURCE)
     prepare = _compact(_body(generic, "prepareGenericRecompute"))
-    opt_out = "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract){"
+    # Derived-coordinator recomputes may keep a non-worker target on the
+    # owner-thread path without treating it as a hard worker opt-out failure.
+    opt_out = (
+        "if(!target->canRecomputeOnWorker()&&!provenInertBookkeepingContract"
+        "&&!derivedCoordinatorRecompute){"
+    )
     assert opt_out in prepare
     # The opt-out branch has to come before the general bookkeeping
     # short-circuit: a scripted feature's mustExecute() reports nothing about
