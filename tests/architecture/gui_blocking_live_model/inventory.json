@@ -1495,7 +1495,15 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1363,
+      "line": 1352,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "auto* appDoc = App::GetApplication().getDocument(docName.c_str());"
+    },
+    {
+      "path": "src/Gui/Document.cpp",
+      "line": 1378,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1503,7 +1511,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1375,
+      "line": 1390,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1511,7 +1519,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1396,
+      "line": 1411,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1519,7 +1527,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 1580,
+      "line": 1595,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -1527,7 +1535,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2685,
+      "line": 2700,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1535,15 +1543,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3012,
-      "category": "live-app-dereference",
-      "subsystem": "Gui",
-      "disposition": "investigate",
-      "evidence": "\"_save_outcome = App.getDocument(\\\"%s\\\").saveAsWithOutcome(u\\\"%s\\\", True)\\n\""
-    },
-    {
-      "path": "src/Gui/Document.cpp",
-      "line": 3047,
+      "line": 3080,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1551,7 +1551,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3061,
+      "line": 3094,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1559,7 +1559,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3157,
+      "line": 3190,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1567,7 +1567,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4263,
+      "line": 4296,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1639,7 +1639,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 180,
+      "line": 207,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2044,6 +2044,14 @@
       "subsystem": "Gui",
       "disposition": "investigate",
       "evidence": "return socket.waitForBytesWritten(timeout);"
+    },
+    {
+      "path": "src/Gui/GuiPythonGate.cpp",
+      "line": 35,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "for (auto* document : App::GetApplication().getDocuments()) {"
     },
     {
       "path": "src/Gui/MDIView.cpp",
