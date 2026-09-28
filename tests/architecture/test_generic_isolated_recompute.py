@@ -257,10 +257,10 @@ def test_private_feature_execution_has_only_full_recompute_and_detached_friend_c
     # tag stamped by recomputeAsync(), not by refusing owner-thread execution
     # for every worker-opted feature.
     assert "makeGenericIsolatedRecomputeRequest(" in facade
-    assert "*this,*feature,recursive" in facade
-    assert "/*ownerThreadExecution=*/true" in facade
-    async_facade = _compact(_body(document, "Document::recomputeAsync"))
-    assert 'derived_coordinator_recompute", "1"' in async_facade
+    assert "makeGenericIsolatedRecomputeRequest(*this,*feature,recursive,true,true)" in facade
+    async_raw = _compact(_body(document, "Document::recomputeAsync", raw=True))
+    assert "derived_coordinator_recompute" in async_raw
+    assert 'derived_coordinator_recompute","1"' in async_raw
 
     temp_document = friend.find("document.testStatus(Document::TempDoc)")
     ownership = friend.find("feature.getDocument()!=&document", temp_document)
