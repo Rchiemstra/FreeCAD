@@ -130,7 +130,8 @@ TEST(PresentationApplySchedulerTest, CoalescesToNewestStagingRevision)
     const auto pumpResult = scheduler.pump(0);
     EXPECT_TRUE(pumpResult.stagingComplete);
     EXPECT_TRUE(pumpResult.committedRevision);
-    EXPECT_EQ(pumpResult.slicesApplied, 4U);
+    // Tree + Properties + Selection; coalesced packet has no render buffers.
+    EXPECT_EQ(pumpResult.slicesApplied, 3U);
 
     const auto committed = cache.current();
     ASSERT_TRUE(committed.has_value());
