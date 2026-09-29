@@ -150,13 +150,13 @@ SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
             SharedPresentationCommitWork&& work,
             SharedPresentationCommitCompletion&& complete) mutable {
             invokeOnOwnerWorkerWhilePumpingGui([&] {
-                static_cast<void>(SharedPresentationSerializeTestAccess::serializeAtomic(
+                return SharedPresentationSerializeTestAccess::serializeAtomic(
                     appDocument->collaborationService(),
                     allowedAppWrites,
                     [&] {
                         work();
                         complete({true, {}});
-                    }));
+                    });
             });
         };
     return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
