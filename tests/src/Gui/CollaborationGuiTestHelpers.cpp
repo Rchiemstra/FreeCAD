@@ -11,6 +11,7 @@
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
+#include <Gui/Document.h>
 
 #include <chrono>
 #include <string>
@@ -110,6 +111,16 @@ App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& docu
     waitForExecutionLaneIdle(document);
     return invokeOnOwnerWorkerWhilePumpingGui(
         [&] { return document.saveAsWithOutcome(path, overwrite); });
+}
+
+SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
+    Document& guiDocument,
+    SharedPresentationCommitRequest request,
+    SharedPresentationCommitCallbacks callbacks)
+{
+    return invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
+    });
 }
 
 }  // namespace Gui::Test

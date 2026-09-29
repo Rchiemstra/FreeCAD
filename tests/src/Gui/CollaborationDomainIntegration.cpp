@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string_view>
 #include <thread>
@@ -161,6 +162,15 @@ private:
     QObject timerContext;
     std::chrono::steady_clock::time_point dialogWaitDeadline {};
 };
+
+void pumpGuiUntil(std::chrono::steady_clock::time_point deadline,
+                  const std::function<bool()>& satisfied)
+{
+    while (!satisfied() && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+}
 
 class CollaborationDomainIntegrationTest: public ::testing::Test
 {
@@ -422,6 +432,9 @@ TEST_F(CollaborationDomainIntegrationTest,
     });
 
     EXPECT_FALSE(guiDocument->canClose(true, false));
+    pumpGuiUntil(std::chrono::steady_clock::now() + 30s, [&] {
+        return failureDialogs.inspectedCloseSafetyDialog;
+    });
     EXPECT_EQ(failureDialogs.saveErrorDialogCount, 1);
     EXPECT_TRUE(failureDialogs.inspectedCloseSafetyDialog);
     EXPECT_TRUE(document->hasPendingFileChanges());
@@ -511,6 +524,9 @@ TEST_F(CollaborationDomainIntegrationTest,
     });
 
     EXPECT_FALSE(mainWindow->closeAllDocuments(false));
+    pumpGuiUntil(std::chrono::steady_clock::now() + 30s, [&] {
+        return failureDialogs.inspectedCloseSafetyDialog;
+    });
     EXPECT_EQ(failureDialogs.saveErrorDialogCount, 2);
     EXPECT_TRUE(failureDialogs.inspectedCloseSafetyDialog);
     EXPECT_TRUE(document->hasPendingFileChanges());
@@ -670,8 +686,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     ASSERT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_NE(provider->ShowInTree.testStatus(App::Property::Hidden), hiddenBefore);
@@ -735,8 +751,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     ASSERT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_TRUE(provider->ShowInTree.testStatus(App::Property::Hidden));
@@ -787,8 +803,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
         << result.diagnostic;
@@ -839,8 +855,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
         << result.diagnostic;
@@ -920,8 +936,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
         << result.diagnostic;
@@ -1112,8 +1128,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
     ASSERT_TRUE(result.committed()) << result.diagnostic;
     ASSERT_TRUE(result.publishedPresentation.has_value());
     EXPECT_EQ(object->Visibility.getValue(), targetVisibility);
@@ -1189,8 +1205,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::PostconditionFailed);
     EXPECT_EQ(object->Visibility.getValue(), appBefore);
     EXPECT_EQ(provider->Visibility.getValue(), guiBefore);
@@ -1268,8 +1284,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::AppCommitFailed)
         << result.diagnostic;
@@ -1337,8 +1353,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::AppCommitFailed)
         << result.diagnostic;
@@ -1410,8 +1426,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::AppApplyFailed)
         << result.diagnostic;
@@ -1481,8 +1497,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::GuiApplyFailed)
         << result.diagnostic;
@@ -1549,8 +1565,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_TRUE(closeAttempted);
@@ -1628,8 +1644,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_TRUE(observerMutated);
@@ -1710,8 +1726,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_TRUE(observerMutated);
@@ -1820,8 +1836,8 @@ TEST_F(CollaborationDomainIntegrationTest,
         return Gui::SharedPresentationStepResult {true, {}};
     };
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_TRUE(result.committed()) << result.diagnostic;
     EXPECT_TRUE(removalAttempted);
@@ -1919,8 +1935,8 @@ TEST_F(CollaborationDomainIntegrationTest,
     callbacks.rollbackGuiMutation = callbacks.applyAppMutation;
     callbacks.rollbackAppMutation = callbacks.applyAppMutation;
 
-    const auto result =
-        guiDocument->commitSharedPresentation(std::move(request), std::move(callbacks));
+    const auto result = Gui::Test::commitSharedPresentationWithoutBlockingGui(
+        *guiDocument, std::move(request), std::move(callbacks));
 
     EXPECT_EQ(result.status, Gui::SharedPresentationCommitStatus::PresentationConflict)
         << result.diagnostic;

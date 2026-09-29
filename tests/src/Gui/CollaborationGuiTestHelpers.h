@@ -3,6 +3,7 @@
 #pragma once
 
 #include <App/Document.h>
+#include <Gui/SharedPresentationCoordinator.h>
 
 #include <QApplication>
 
@@ -14,6 +15,11 @@
 #include <type_traits>
 
 namespace App
+{
+class Document;
+}
+
+namespace Gui
 {
 class Document;
 }
@@ -81,5 +87,11 @@ App::DocumentSaveOutcome saveWithOutcomeWithoutBlockingGui(App::Document& docume
 App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& document,
                                                                const char* path,
                                                                bool overwrite = false);
+
+/** commitSharedPresentation from a worker while pumping Qt on the GUI thread. */
+[[nodiscard]] SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
+    Document& guiDocument,
+    SharedPresentationCommitRequest request,
+    SharedPresentationCommitCallbacks callbacks);
 
 }  // namespace Gui::Test

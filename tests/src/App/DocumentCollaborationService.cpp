@@ -1001,7 +1001,6 @@ TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCa
     // prepareEditAsync hops through the document execution lane; use the
     // post-submit hook as the pin barrier instead of waiting for a
     // MainThreadSignal queue that the lane path never fills.
-    BlockingTestDispatcher dispatcher;
     HookBarrier barrier;
     Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(
         &HookBarrier::invoke);
@@ -1021,7 +1020,10 @@ TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCa
         return;
     }
 
-    EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    {
+        BlockingTestDispatcher dispatcher;
+        EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    }
 
     barrier.release();
     Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
