@@ -3001,6 +3001,8 @@ bool Document::save()
                             doc->executionHandle().identity(),
                             outcome.commandId);
                         reportDocumentSaveAdmitted(*doc);
+                        // Admission is not completion — callers must not treat save as finished.
+                        saveCompleted = false;
                         continue;
                     }
                     std::string saveFailureDiagnostic = outcome.diagnostic;
