@@ -178,7 +178,10 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
             saveThumbnail ? QStringLiteral("thumbnail-enabled.FCStd")
                           : QStringLiteral("thumbnail-disabled.FCStd"));
 
-        const auto outcome = _document->saveAsWithOutcome(target.toUtf8().constData(), false);
+        const auto outcome = Gui::Test::saveAsWithOutcomeWithoutBlockingGui(
+            *_document,
+            target.toUtf8().constData(),
+            false);
         EXPECT_TRUE(outcome.succeeded()) << outcome.errorCode << ": " << outcome.message;
         EXPECT_EQ(outcome.disposition, App::DocumentSaveDisposition::Written);
         EXPECT_TRUE(outcome.fileWritten);
@@ -376,7 +379,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
 {
     const auto before = captureRevisions();
     int callbackCalls = 0;
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::Model,
          _object->getNameInDocument(),
          _document->collaborationObjectIdentity(*_object)},
@@ -431,7 +435,7 @@ TEST(GuiPythonCommandBridgeTest, preservesFileEvalAndErrorSemanticsWithoutGuiBoo
 TEST(GuiCommandCoordinatorContractTest,
      longLivedPublicTransactionMakesCompetingCompatibilityCommitBusy)
 {
-    tests::initApplication();
+    initializeCompatibilityGui();
     App::DocumentInitFlags flags;
     flags.createView = false;
     const auto documentName =
@@ -471,13 +475,14 @@ TEST(GuiCommandCoordinatorContractTest,
             });
     };
 
-    const auto busy = attemptCommit();
+    const auto busy = Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, attemptCommit);
     EXPECT_EQ(busy.status, App::DocumentCommitStatus::Busy);
     EXPECT_EQ(callbackCalls, 0);
     EXPECT_STREQ(object->Label.getValue(), "before");
 
     ASSERT_TRUE(App::GetApplication().abortTransaction(transactionId));
-    const auto completed = attemptCommit();
+    const auto completed =
+        Gui::Test::runOnDocumentOwnerWhilePumpingGui(*document, attemptCommit);
     ASSERT_TRUE(completed.committed()) << completed.message;
     EXPECT_EQ(callbackCalls, 1);
     EXPECT_STREQ(object->Label.getValue(), "after GUI task");
@@ -487,7 +492,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
        callbackFailureRollsBackAndDoesNotPublishRevisions)
 {
     const auto before = captureRevisions();
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::UnknownModel, {}, {}},
         [&] {
             _object->Label.setValue("must roll back");
@@ -506,7 +512,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
 {
     const auto before = captureRevisions();
     int callbackCalls = 0;
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::Model, _object->getNameInDocument(), "stale-object-identity"},
         [&] { ++callbackCalls; });
 
@@ -520,7 +527,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
 {
     const auto before = captureRevisions();
     int callbackCalls = 0;
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::SharedPresentation, {}, {}},
         [&] { ++callbackCalls; });
 
@@ -537,7 +545,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     ASSERT_FALSE(_document->collaborationPreparationSupported());
     const auto before = captureRevisions();
 
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::UnknownModel, {}, {}},
         [&] { _object->Label.setValue("synchronous-python-document"); });
 
@@ -556,7 +565,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     bool callbackRan = false;
     bool callbackSawNoViewProvider = false;
 
-    const auto result = _document->collaborationService().commitCompatibilityMutation(
+    const auto result = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *_document,
         {App::CollaborationCompatibilityScope::Structural, {}, {}},
         [&] {
             callbackRan = true;
@@ -632,7 +642,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     bool callbackSawNoViewProvider = false;
     Gui::MergeDocuments retainedImporter(_document);
 
-    const auto result = _document->collaborationService().commitCompatibilityMutation(
+    const auto result = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *_document,
         {App::CollaborationCompatibilityScope::Structural, {}, {}},
         [&] {
             Base::StringIStreambuf buffer(archive);
@@ -664,7 +675,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     fastsignals::scoped_connection importViewConnection =
         _document->signalImportViewObjects.connect(
         [&](const auto&, Base::Reader&, const auto&) { ++importViewSignals; });
-    const auto appResult = _document->collaborationService().commitCompatibilityMutation(
+    const auto appResult = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *_document,
         {App::CollaborationCompatibilityScope::Structural, {}, {}},
         [&] {
             Base::StringIStreambuf buffer(archive);
@@ -698,7 +710,8 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
        sharedPresentationHoldsAppCommitSerialization)
 {
     bool competingThreadAcquiredMutex = false;
-    const auto outcome = _guiDocument->executeCompatibilityMutation(
+    const auto outcome = Gui::Test::executeCompatibilityMutationWithoutBlockingGui(
+        *_guiDocument,
         {Kind::SharedPresentation, {}, {}},
         [&] {
             std::thread competing([&] {

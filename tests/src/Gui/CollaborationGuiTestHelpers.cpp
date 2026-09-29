@@ -162,4 +162,33 @@ SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
     return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
 }
 
+CollaborationCompatibilityMutationOutcome executeCompatibilityMutationWithoutBlockingGui(
+    Document& guiDocument,
+    CollaborationCompatibilityMutationDeclaration declaration,
+    CollaborationCompatibilityMutationCallback callback)
+{
+    App::Document* const appDocument = guiDocument.getDocument();
+    return runOnDocumentOwnerWhilePumpingGui(
+        *appDocument,
+        [&] {
+            return guiDocument.executeCompatibilityMutation(
+                std::move(declaration),
+                std::move(callback));
+        });
+}
+
+App::DocumentCommitResult commitCompatibilityMutationWithoutBlockingGui(
+    App::Document& document,
+    App::CollaborationCompatibilityMutation mutation,
+    std::function<void()> callback)
+{
+    return runOnDocumentOwnerWhilePumpingGui(
+        document,
+        [&] {
+            return document.collaborationService().commitCompatibilityMutation(
+                std::move(mutation),
+                std::move(callback));
+        });
+}
+
 }  // namespace Gui::Test

@@ -117,7 +117,8 @@ TEST_F(CollaborationLinkReplayGuardTest,
             ++recomputeCount;
         });
 
-    const auto result = _document->collaborationService().commitCompatibilityMutation(
+    const auto result = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *_document,
         {App::CollaborationCompatibilityScope::Structural, {}, {}},
         [&] {
             _target->Label.setValue("seat body updated");

@@ -2993,23 +2993,20 @@ bool Document::save()
                 }
 
                 if (doc->executionLane()) {
-                    const auto outcome =
-                        submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
-                    if (outcome.accepted()) {
-                        scheduleSaveCommandCompletion(
-                            doc->getName(),
-                            doc->executionHandle().identity(),
-                            outcome.commandId);
-                        reportDocumentSaveAdmitted(*doc);
+                    // Document::save() return value is observed by canClose / closeAllDocuments.
+                    // Admission alone must not look like a successful write — poll the lane
+                    // while pumping Qt (never BlockingQueuedConnection / never freeze without
+                    // processEvents) so failed saves still surface the keep-unsaved prompt.
+                    std::string saveFailureDiagnostic;
+                    if (!submitDocumentSaveAwaitingCompletion(*doc, &saveFailureDiagnostic)) {
+                        if (!saveFailureDiagnostic.empty()
+                            && askIfSavingFailed(
+                                QString::fromStdString(saveFailureDiagnostic))) {
+                            continue;
+                        }
+                        saveCompleted = false;
                         continue;
                     }
-                    std::string saveFailureDiagnostic = outcome.diagnostic;
-                    reportDocumentCommandSubmitBlocked(*doc, outcome);
-                    if (!saveFailureDiagnostic.empty()
-                        && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
-                        continue;
-                    }
-                    saveCompleted = false;
                     continue;
                 }
 

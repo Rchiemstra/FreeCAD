@@ -34,6 +34,7 @@
 #include "AutoSaver.h"
 #include "Application.h"
 #include "Document.h"
+#include "DocumentExecutionIngress.h"
 #include "MainWindow.h"
 #include "WaitCursor.h"
 
@@ -187,7 +188,10 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
 
     Base::TimeElapsed startTime;
     try {
-        if (!App::writeRecoverySnapshotToTransientDir(*doc, options)) {
+        // AutoSaver runs on the GUI thread. Never call writeRecoverySnapshotToTransientDir
+        // directly here — dispatchToOwner throws DocumentWouldBlock on the GUI thread.
+        // Hop via a worker while pumping Qt so the write still runs on the lane owner.
+        if (!writeRecoverySnapshotAwaitingOwnerThread(*doc, options)) {
             saver.restoreFailedSaveAttempt();
             doc->reportRecoverySaveOutcome(
                 doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");

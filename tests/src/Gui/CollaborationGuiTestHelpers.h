@@ -3,13 +3,18 @@
 #pragma once
 
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
+#include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/SharedPresentationCoordinator.h>
+
+#include <App/DocumentCollaborationService.h>
 
 #include <QApplication>
 
 #include <atomic>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <thread>
 #include <type_traits>
@@ -26,6 +31,22 @@ class Document;
 
 namespace Gui::Test
 {
+
+/**
+ * Run \p fn on the document execution lane owner thread while pumping Qt on
+ * the GUI thread (for blocking MainThreadSignal marshalling during the call).
+ */
+template<typename Fn>
+auto runOnDocumentOwnerWhilePumpingGui(App::Document& document, Fn&& fn)
+    -> std::invoke_result_t<std::decay_t<Fn>>
+{
+    return invokeOnOwnerWorkerWhilePumpingGui([&] {
+        if (auto* lane = document.executionLane()) {
+            return lane->dispatchToOwner(std::forward<Fn>(fn));
+        }
+        return std::forward<Fn>(fn)();
+    });
+}
 
 /**
  * Document-owner collaboration APIs throw DocumentWouldBlock on the GUI thread.
@@ -117,5 +138,16 @@ App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& docu
     Document& guiDocument,
     SharedPresentationCommitRequest request,
     SharedPresentationCommitCallbacks callbacks);
+
+[[nodiscard]] CollaborationCompatibilityMutationOutcome
+executeCompatibilityMutationWithoutBlockingGui(
+    Document& guiDocument,
+    CollaborationCompatibilityMutationDeclaration declaration,
+    CollaborationCompatibilityMutationCallback callback);
+
+[[nodiscard]] App::DocumentCommitResult commitCompatibilityMutationWithoutBlockingGui(
+    App::Document& document,
+    App::CollaborationCompatibilityMutation mutation,
+    std::function<void()> callback);
 
 }  // namespace Gui::Test
