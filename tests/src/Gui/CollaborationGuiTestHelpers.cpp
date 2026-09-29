@@ -24,6 +24,7 @@
 #include <Gui/MDIView.h>
 #include <Gui/MainWindow.h>
 
+#include <QAbstractButton>
 #include <QMessageBox>
 
 #include <algorithm>
