@@ -1543,7 +1543,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 2735,
+      "line": 2734,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1551,7 +1551,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3138,
+      "line": 3137,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1559,7 +1559,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3152,
+      "line": 3151,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1567,7 +1567,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 3266,
+      "line": 3265,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1575,7 +1575,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4372,
+      "line": 4383,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1655,7 +1655,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 464,
+      "line": 472,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1663,7 +1663,15 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 504,
+      "line": 483,
+      "category": "live-app-dereference",
+      "subsystem": "Gui",
+      "disposition": "investigate",
+      "evidence": "if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {"
+    },
+    {
+      "path": "src/Gui/DocumentExecutionIngress.cpp",
+      "line": 529,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1671,7 +1679,7 @@
     },
     {
       "path": "src/Gui/DocumentExecutionIngress.cpp",
-      "line": 536,
+      "line": 561,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2135,7 +2143,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 1967,
+      "line": 1976,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2143,7 +2151,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2066,
+      "line": 2075,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2151,7 +2159,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2069,
+      "line": 2078,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2159,7 +2167,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2123,
+      "line": 2132,
       "category": "thread-waits",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2167,7 +2175,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2203,
+      "line": 2212,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2175,7 +2183,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2484,
+      "line": 2493,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2183,7 +2191,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2613,
+      "line": 2622,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2191,7 +2199,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2679,
+      "line": 2688,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -2199,7 +2207,7 @@
     },
     {
       "path": "src/Gui/MainWindow.cpp",
-      "line": 2684,
+      "line": 2693,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
