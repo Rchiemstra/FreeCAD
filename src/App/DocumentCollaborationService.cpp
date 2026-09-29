@@ -1791,10 +1791,32 @@ DocumentCollaborationService::serializeAtomicCompatibilityCallbackOnDocumentThre
                                            "document already has a native transaction in progress");
     }
     if (_document.mustExecute()) {
-        return rejectedCompatibilityCommit(
-            DocumentCommitStatus::Busy,
-            operationId,
-            "document has pending recompute work outside atomic compatibility");
+        try {
+            bool recomputeError = false;
+            for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+            }
+        }
+        catch (const Base::Exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                operationId,
+                std::string("atomic compatibility could not settle pending recompute work: ")
+                    + exception.what());
+        }
+        catch (const std::exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                operationId,
+                std::string("atomic compatibility could not settle pending recompute work: ")
+                    + exception.what());
+        }
+        if (_document.mustExecute()) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                operationId,
+                "document has pending recompute work outside atomic compatibility");
+        }
     }
 
     try {
