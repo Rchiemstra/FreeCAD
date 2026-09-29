@@ -3112,8 +3112,8 @@ class RepositoryInventoryTests(unittest.TestCase):
             # Decoded executable GUI command wrappers still carry both categories.
             ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "live-app-dereference"),
             ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "direct-recompute"),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 443, "live-app-dereference"),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 443, "direct-recompute"),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 442, "live-app-dereference"),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 442, "direct-recompute"),
         ):
             self._assert_site(path, line, category)
 
@@ -3123,7 +3123,7 @@ class RepositoryInventoryTests(unittest.TestCase):
         # still decode as direct-recompute via known GUI command wrappers.
         for path, lines in (
             ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", (120, 143)),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", (443,)),
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", (442,)),
         ):
             for line in lines:
                 self._assert_site(path, line, "direct-recompute")
