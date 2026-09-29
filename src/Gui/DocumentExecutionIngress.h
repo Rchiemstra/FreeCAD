@@ -17,6 +17,7 @@ namespace App
 {
 class Document;
 class DocumentObject;
+struct RecoverySnapshotSaveOptions;
 }  // namespace App
 
 namespace Gui
@@ -116,6 +117,16 @@ GuiExport bool submitDocumentSave(App::Document& document);
 GuiExport bool submitDocumentSaveAwaitingCompletion(
     App::Document& document,
     std::string* failureDiagnostic = nullptr);
+
+/**
+ * Write a recovery snapshot on the document execution lane owner thread.
+ *
+ * Safe to call from the GUI thread: hops via a worker + Qt pump so the GUI
+ * never calls DocumentExecutionLane::dispatchToOwner (DocumentWouldBlock).
+ */
+GuiExport bool writeRecoverySnapshotAwaitingOwnerThread(
+    App::Document& document,
+    const App::RecoverySnapshotSaveOptions& options);
 
 /** Poll Save command status without waiting; update GUI modified state on terminal. */
 GuiExport void scheduleSaveCommandCompletion(

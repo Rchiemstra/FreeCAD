@@ -13,7 +13,9 @@
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentWouldBlock.h>
 #include <App/Property.h>
+#include <App/RecoverySnapshot.h>
 #include <Base/Console.h>
+#include <Base/Exception.h>
 #include <Base/PyObjectBase.h>
 
 #include <QApplication>
@@ -429,6 +431,47 @@ void scheduleSaveCommandCompletion(
                     3000);
             }
         });
+}
+
+bool writeRecoverySnapshotAwaitingOwnerThread(
+    App::Document& document,
+    const App::RecoverySnapshotSaveOptions& options)
+{
+    std::exception_ptr failure;
+    std::atomic<bool> finished {false};
+    std::optional<bool> result;
+    std::thread worker([&] {
+        try {
+            if (auto* lane = document.executionLane()) {
+                result = lane->dispatchToOwner([&] {
+                    return App::writeRecoverySnapshotToTransientDir(document, options);
+                });
+            }
+            else {
+                result = App::writeRecoverySnapshotToTransientDir(document, options);
+            }
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+        finished.store(true, std::memory_order_release);
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + 120s;
+    while (!finished.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    worker.join();
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!finished.load(std::memory_order_acquire)) {
+        throw Base::RuntimeError(
+            "recovery snapshot write did not finish before timeout");
+    }
+    return result.value_or(false);
 }
 
 bool submitDocumentSaveAwaitingCompletion(
