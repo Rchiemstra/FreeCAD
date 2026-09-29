@@ -153,12 +153,12 @@ DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds 
         while (true) {
             // Pump coordinator work on the owner thread only inside wait().
             static_cast<void>(owner->recomputeCoordinator().poll(_id));
-            auto snapshot = owner->recomputeCoordinator().status(_id);
-            if (!snapshot) {
+            auto coordinatorSnapshot = owner->recomputeCoordinator().status(_id);
+            if (!coordinatorSnapshot) {
                 return closedDocumentSnapshot();
             }
-            finalizeIfTerminal(*owner, *snapshot);
-            snapshot = status();
+            finalizeIfTerminal(*owner, *coordinatorSnapshot);
+            const auto snapshot = status();
             if (snapshot.terminal() || std::chrono::steady_clock::now() >= deadline) {
                 return snapshot;
             }
