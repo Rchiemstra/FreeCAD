@@ -63,6 +63,7 @@
 #include <App/Document.h>
 #include <App/DocumentHandle.h>
 #include <App/DocumentCollaborationService.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/PropertyStandard.h>
@@ -2005,11 +2006,6 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
     allowedGuiWrites.erase(
         std::unique(allowedGuiWrites.begin(), allowedGuiWrites.end()),
         allowedGuiWrites.end());
-    std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
-    allowedAppWrites.reserve(request.presentationWrites.size());
-    for (const auto& write : request.presentationWrites) {
-        allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
-    }
     callbacks.makeAppDurable = [this]() {
         if (Application::Instance
             && Application::Instance->sharedPresentationNotificationAuditViolated()) {
@@ -2028,20 +2024,34 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
                 ? "native App transaction could not commit"
                 : committed.diagnostic};
     };
-    callbacks.serialize = [this,
-                            &atomicBoundaryResult,
-                            allowedAppWrites = std::move(allowedAppWrites)](
-                               SharedPresentationCommitWork&& work,
-                               SharedPresentationCommitCompletion&& complete) mutable {
-        auto serialized = d->_pcDocument->collaborationService()
-                              .serializeAtomicCompatibilityCallback(
-                                        std::move(allowedAppWrites),
-                                        [&]() {
-                                            work();
-                                            complete({true, {}});
-                                        });
-        atomicBoundaryResult.emplace(std::move(serialized));
-    };
+    if (!callbacks.serialize) {
+        std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
+        allowedAppWrites.reserve(request.presentationWrites.size());
+        for (const auto& write : request.presentationWrites) {
+            allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
+        }
+        callbacks.serialize = [this,
+                               &atomicBoundaryResult,
+                               allowedAppWrites = std::move(allowedAppWrites)](
+                                  SharedPresentationCommitWork&& work,
+                                  SharedPresentationCommitCompletion&& complete) mutable {
+            if (App::DocumentWouldBlock::isGuiThread()) {
+                complete({false,
+                          "DocumentWouldBlock on GUI thread; use DocumentHandle::trySubmit() "
+                          "or async document APIs instead of synchronous "
+                          "serializeAtomicCompatibilityCallback"});
+                return;
+            }
+            auto serialized = d->_pcDocument->collaborationService()
+                                  .serializeAtomicCompatibilityCallback(
+                                      std::move(allowedAppWrites),
+                                      [&]() {
+                                          work();
+                                          complete({true, {}});
+                                      });
+            atomicBoundaryResult.emplace(std::move(serialized));
+        };
+    }
 
     struct PublicationSuppression final
     {

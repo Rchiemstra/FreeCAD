@@ -7,15 +7,18 @@
 #include <QApplication>
 
 #include <App/Document.h>
+#include <App/DocumentCollaborationService.h>
 #include <App/DocumentCommand.h>
 #include <App/DocumentCommandHandle.h>
 #include <App/DocumentExecutionLane.h>
 #include <App/DocumentHandle.h>
 #include <Gui/Document.h>
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -118,9 +121,32 @@ SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
     SharedPresentationCommitRequest request,
     SharedPresentationCommitCallbacks callbacks)
 {
-    return invokeOnOwnerWorkerWhilePumpingGui([&] {
-        return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
-    });
+    App::Document* const appDocument = guiDocument.getDocument();
+    auto allowedGuiWrites = request.presentationWrites;
+    std::sort(allowedGuiWrites.begin(), allowedGuiWrites.end());
+    allowedGuiWrites.erase(
+        std::unique(allowedGuiWrites.begin(), allowedGuiWrites.end()),
+        allowedGuiWrites.end());
+    std::vector<App::CollaborationAtomicPresentationWrite> allowedAppWrites;
+    allowedAppWrites.reserve(allowedGuiWrites.size());
+    for (const auto& write : allowedGuiWrites) {
+        allowedAppWrites.push_back({write.stableObjectIdentity, write.propertyName});
+    }
+    callbacks.serialize =
+        [appDocument, allowedAppWrites = std::move(allowedAppWrites)](
+            SharedPresentationCommitWork&& work,
+            SharedPresentationCommitCompletion&& complete) mutable {
+            invokeOnOwnerWorkerWhilePumpingGui([&] {
+                static_cast<void>(appDocument->collaborationService()
+                                      .serializeAtomicCompatibilityCallback(
+                                          allowedAppWrites,
+                                          [&] {
+                                              work();
+                                              complete({true, {}});
+                                          }));
+            });
+        };
+    return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
 }
 
 }  // namespace Gui::Test

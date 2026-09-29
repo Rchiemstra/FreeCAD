@@ -88,7 +88,10 @@ App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& docu
                                                                const char* path,
                                                                bool overwrite = false);
 
-/** commitSharedPresentation from a worker while pumping Qt on the GUI thread. */
+/**
+ * commitSharedPresentation on the GUI thread with App serialization admitted on
+ * the document owner thread (worker hop + Qt pump), not production GUI wait.
+ */
 [[nodiscard]] SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
     Document& guiDocument,
     SharedPresentationCommitRequest request,
