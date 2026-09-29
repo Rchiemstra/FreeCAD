@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <type_traits>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -251,6 +252,52 @@ bool terminal(App::PreparedEditExecutionStatus status)
         || status == App::PreparedEditExecutionStatus::Failed;
 }
 
+/**
+ * Collaboration service entry points hop to the document owner thread and must
+ * not be invoked synchronously from the GUI thread (DocumentWouldBlock). Run
+ * the callable on a worker while pumping Qt so detached preparation and the
+ * lane keep making progress.
+ */
+template<typename Fn>
+auto invokeCollaborationServiceWithoutBlockingGui(Fn&& fn)
+    -> std::invoke_result_t<std::decay_t<Fn>>
+{
+    using Result = std::invoke_result_t<std::decay_t<Fn>>;
+    std::optional<Result> result;
+    std::exception_ptr failure;
+    std::atomic<bool> finished {false};
+    std::thread worker([&] {
+        try {
+            if constexpr (std::is_void_v<Result>) {
+                std::forward<Fn>(fn)();
+            }
+            else {
+                result.emplace(std::forward<Fn>(fn)());
+            }
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+        finished.store(true, std::memory_order_release);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 30s;
+    while (!finished.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(1ms);
+    }
+    worker.join();
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!finished.load(std::memory_order_acquire)) {
+        FAIL() << "collaboration service call did not finish before timeout";
+    }
+    if constexpr (!std::is_void_v<Result>) {
+        return std::move(*result);
+    }
+}
+
 std::optional<App::PreparedEditExecutionSnapshot> waitForTerminal(
     App::DocumentCollaborationService& service,
     App::PreparedEditExecutionId executionId,
@@ -341,11 +388,13 @@ TEST_F(CollaborationResponsivenessTest,
     intent.arguments = {{"scenario", scenario.token},
                         {"source", "Source"},
                         {"target", "Target"}};
-    const auto executionId = _document->collaborationService().prepareEditAsync(
-        _session.sessionId(),
-        "gui-responsive-preparation",
-        intent,
-        "phase-3-gui-responsiveness-acceptance");
+    const auto executionId = invokeCollaborationServiceWithoutBlockingGui([&] {
+        return _document->collaborationService().prepareEditAsync(
+            _session.sessionId(),
+            "gui-responsive-preparation",
+            intent,
+            "phase-3-gui-responsiveness-acceptance");
+    });
     const bool preparationStarted = scenario.gate->waitUntilEntered();
     EXPECT_TRUE(preparationStarted);
 
@@ -372,14 +421,18 @@ TEST_F(CollaborationResponsivenessTest,
 
     scenario.gate->release();
     ASSERT_TRUE(waitForTerminal(_document->collaborationService(), executionId).has_value());
-    auto prepared = _document->collaborationService().takePreparedEdit(
-        _session.sessionId(), executionId);
+    auto prepared = invokeCollaborationServiceWithoutBlockingGui([&] {
+        return _document->collaborationService().takePreparedEdit(
+            _session.sessionId(), executionId);
+    });
     ASSERT_TRUE(prepared.has_value());
     ASSERT_EQ(prepared->status, App::PreparedEditExecutionStatus::Completed);
     ASSERT_NE(prepared->preparedEdit, nullptr);
 
-    const auto commit = _document->collaborationService().commitEdit(
-        _session.sessionId(), *prepared->preparedEdit);
+    const auto commit = invokeCollaborationServiceWithoutBlockingGui([&] {
+        return _document->collaborationService().commitEdit(
+            _session.sessionId(), *prepared->preparedEdit);
+    });
     EXPECT_TRUE(commit.committed());
     EXPECT_EQ(_target->Label.getStrValue(), "Source-before/detached");
     EXPECT_TRUE(Gui::Camera::rotationsMatch(viewer->getCameraOrientation(), targetOrientation));
