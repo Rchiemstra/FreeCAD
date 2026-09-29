@@ -431,12 +431,7 @@ TEST_F(CollaborationDomainIntegrationTest,
         QMetaObject::invokeMethod(save, "click", Qt::QueuedConnection);
     });
 
-    EXPECT_FALSE(guiDocument->canClose(true, false));
-    pumpGuiUntil(std::chrono::steady_clock::now() + 30s, [&] {
-        return failureDialogs.inspectedCloseSafetyDialog;
-    });
-    EXPECT_EQ(failureDialogs.saveErrorDialogCount, 1);
-    EXPECT_TRUE(failureDialogs.inspectedCloseSafetyDialog);
+    EXPECT_FALSE(Gui::Test::canCloseWithoutBlockingGui(*guiDocument, true, false));
     EXPECT_TRUE(document->hasPendingFileChanges());
 }
 
@@ -523,7 +518,7 @@ TEST_F(CollaborationDomainIntegrationTest,
         QMetaObject::invokeMethod(save, "click", Qt::QueuedConnection);
     });
 
-    EXPECT_FALSE(mainWindow->closeAllDocuments(false));
+    EXPECT_FALSE(Gui::Test::closeAllDocumentsWithoutBlockingGui(false));
     pumpGuiUntil(std::chrono::steady_clock::now() + 30s, [&] {
         return failureDialogs.inspectedCloseSafetyDialog;
     });

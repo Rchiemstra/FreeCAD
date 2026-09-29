@@ -150,4 +150,18 @@ executeCompatibilityMutationWithoutBlockingGui(
     App::CollaborationCompatibilityMutation mutation,
     std::function<void()> callback);
 
+/// Runs AutoSaver recovery on the lane owner (worker hop + Qt pump), not production GUI wait.
+void flushAutoSaverWithoutBlockingGui(App::Document& document);
+
+/**
+ * Gui::Document::canClose() with lane saves pumped to completion in tests only
+ * (uses submitDocumentSaveAwaitingCompletion, not production Document::save() wait).
+ */
+bool canCloseWithoutBlockingGui(Gui::Document& guiDocument,
+                                bool checkModify = true,
+                                bool checkLink = true);
+
+/// MainWindow::closeAllDocuments() with lane saves pumped to completion in tests only.
+bool closeAllDocumentsWithoutBlockingGui(bool close);
+
 }  // namespace Gui::Test

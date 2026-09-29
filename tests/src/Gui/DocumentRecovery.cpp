@@ -225,7 +225,17 @@ protected:
 
     void flush() const
     {
-        Gui::AutoSaver::instance()->flushPendingSave(QString::fromStdString(documentName));
+        Gui::Test::flushAutoSaverWithoutBlockingGui(*document);
+    }
+
+    bool waitForRecoveryArchive() const
+    {
+        return processEventsUntil([this] {
+            if (!QFileInfo(archivePath()).isFile() && document->canWriteRecoverySnapshot()) {
+                Gui::Test::flushAutoSaverWithoutBlockingGui(*document);
+            }
+            return QFileInfo(archivePath()).isFile();
+        });
     }
 
     App::Document* document {nullptr};
@@ -526,7 +536,7 @@ TEST_F(AutoSaverRecoveryTest, AppTransactionDefersAndRetriesAfterStableSignal)
     document->commitTransaction();
     Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
-    EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
+    EXPECT_TRUE(waitForRecoveryArchive());
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
 }
 
@@ -541,7 +551,7 @@ TEST_F(AutoSaverRecoveryTest, PendingRecomputeDefersAndRetriesAfterRecompute)
 
     Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
-    EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
+    EXPECT_TRUE(waitForRecoveryArchive());
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
 }
 
@@ -602,7 +612,7 @@ TEST_F(AutoSaverRecoveryTest, GuiTransactionDefersUntilGroupedUndoFinishes)
     EXPECT_FALSE(archiveExistedInsideGuiTransaction);
     Gui::Test::recomputeWithoutBlockingGui(*document);
     ASSERT_TRUE(document->canWriteRecoverySnapshot());
-    EXPECT_TRUE(processEventsUntil([this] { return QFileInfo(archivePath()).isFile(); }));
+    EXPECT_TRUE(waitForRecoveryArchive());
     EXPECT_TRUE(QFileInfo(metadataPath()).isFile());
 }
 

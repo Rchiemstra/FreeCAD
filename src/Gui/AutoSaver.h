@@ -38,6 +38,12 @@ class Document;
 
 namespace Gui
 {
+
+namespace Test
+{
+class AutoSaverRecoveryTestAccess;
+}
+
 /**
  * Per-document autosave scheduling state shared between document change
  * notifications, timer callbacks, and queued stable-state retries.
@@ -105,6 +111,8 @@ private:
 class GuiExport AutoSaver: public QObject
 {
     Q_OBJECT
+
+    friend class Test::AutoSaverRecoveryTestAccess;
 
 private:
     static AutoSaver* self;
