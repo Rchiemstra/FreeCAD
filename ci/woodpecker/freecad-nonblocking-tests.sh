@@ -66,22 +66,35 @@ run_presentation() {
   done
   build/debug/tests/App_tests_run \
     --gtest_filter='DocumentExecutionLane*:RecomputeHandle*:DocumentRecomputeCoordinator*:DocumentCommitCoordinator*'
-  pres_gui_log=/tmp/gtest-presentation-gui.log
+  # Isolate CollaborationResponsiveness in its own xvfb process — sharing a
+  # process with PresentationApplyScheduler Coin work SIGSEGVs mid-suite on
+  # this CI image after Responsiveness teardown.
+  pres_gui_rc=0
   mkdir -p /tmp
-  set +e
-  env QT_QPA_PLATFORM=xcb xvfb-run -a -s "-screen 0 1024x768x24" \
-    build/debug/tests/Gui_tests_run \
-    --gtest_filter='CollaborationResponsiveness*:DocumentExecution*:DocumentPresentationCache*:PresentationApplyScheduler*' \
-    >"$pres_gui_log" 2>&1
-  pres_gui_rc=$?
-  cat "$pres_gui_log"
-  if [ "$pres_gui_rc" -ne 0 ] \
-    && grep -q '\[  PASSED  \]' "$pres_gui_log" \
-    && ! grep -q '\[  FAILED  \]' "$pres_gui_log"; then
-    echo "WARN: accepting TIER=presentation Gui exit $pres_gui_rc after all tests passed (teardown)"
-    pres_gui_rc=0
-  fi
-  set -e
+  for part in \
+    'CollaborationResponsiveness*' \
+    'DocumentExecution*:DocumentPresentationCache*:PresentationApplyScheduler*'
+  do
+    safe=$(echo "$part" | tr -c 'A-Za-z0-9._-' '_')
+    part_log=/tmp/gtest-presentation-$safe.log
+    set +e
+    env QT_QPA_PLATFORM=xcb xvfb-run -a -s "-screen 0 1024x768x24" \
+      build/debug/tests/Gui_tests_run \
+      --gtest_filter="$part" \
+      >"$part_log" 2>&1
+    part_rc=$?
+    cat "$part_log"
+    if [ "$part_rc" -ne 0 ] \
+      && grep -q '\[  PASSED  \]' "$part_log" \
+      && ! grep -q '\[  FAILED  \]' "$part_log"; then
+      echo "WARN: accepting TIER=presentation filter='$part' exit $part_rc after all tests passed (teardown)"
+      part_rc=0
+    fi
+    set -e
+    if [ "$part_rc" -ne 0 ]; then
+      pres_gui_rc=$part_rc
+    fi
+  done
   return "$pres_gui_rc"
 }
 
