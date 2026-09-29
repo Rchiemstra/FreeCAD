@@ -433,6 +433,54 @@ void scheduleSaveCommandCompletion(
         });
 }
 
+namespace
+{
+
+bool writeRecoverySnapshotOnLaneOwnerThread(
+    App::Document& document,
+    const App::RecoverySnapshotSaveOptions& options)
+{
+    if (auto* lane = document.executionLane()) {
+        return lane->dispatchToOwner([&] {
+            return App::writeRecoverySnapshotToTransientDir(document, options);
+        });
+    }
+    return App::writeRecoverySnapshotToTransientDir(document, options);
+}
+
+}  // namespace
+
+void scheduleRecoverySnapshotWrite(
+    App::Document& document,
+    const App::RecoverySnapshotSaveOptions& options,
+    std::function<void(bool written, std::exception_ptr failure)> onFinished)
+{
+    const std::string documentName = document.getName();
+    const App::RecoverySnapshotSaveOptions optionsCopy = options;
+    std::thread([documentName, optionsCopy, onFinished = std::move(onFinished)]() mutable {
+        std::optional<bool> result;
+        std::exception_ptr failure;
+        try {
+            if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
+                result = writeRecoverySnapshotOnLaneOwnerThread(*doc, optionsCopy);
+            }
+            else {
+                result = false;
+            }
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+        const bool written = result.value_or(false);
+        QTimer::singleShot(
+            0,
+            qApp,
+            [onFinished = std::move(onFinished), written, failure]() mutable {
+                onFinished(written, failure);
+            });
+    }).detach();
+}
+
 bool writeRecoverySnapshotAwaitingOwnerThread(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options)
@@ -442,14 +490,7 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
     std::optional<bool> result;
     std::thread worker([&] {
         try {
-            if (auto* lane = document.executionLane()) {
-                result = lane->dispatchToOwner([&] {
-                    return App::writeRecoverySnapshotToTransientDir(document, options);
-                });
-            }
-            else {
-                result = App::writeRecoverySnapshotToTransientDir(document, options);
-            }
+            result = writeRecoverySnapshotOnLaneOwnerThread(document, options);
         }
         catch (...) {
             failure = std::current_exception();

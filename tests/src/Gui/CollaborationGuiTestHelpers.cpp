@@ -189,8 +189,7 @@ public:
         options.saveThumbnail = false;
 
         try {
-            // Prefer the production GUI hop helper so tests exercise the same
-            // owner-thread path AutoSaver uses (worker + pump, never GUI dispatchToOwner).
+            // Synchronous test pump; production AutoSaver uses scheduleRecoverySnapshotWrite().
             const bool written = writeRecoverySnapshotAwaitingOwnerThread(document, options);
             if (!written) {
                 property.restoreFailedSaveAttempt();

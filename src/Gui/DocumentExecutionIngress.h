@@ -7,6 +7,7 @@
 #include <FCGlobal.h>
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -119,10 +120,19 @@ GuiExport bool submitDocumentSaveAwaitingCompletion(
     std::string* failureDiagnostic = nullptr);
 
 /**
- * Write a recovery snapshot on the document execution lane owner thread.
+ * Write a recovery snapshot on the lane owner thread without blocking the GUI.
  *
- * Safe to call from the GUI thread: hops via a worker + Qt pump so the GUI
- * never calls DocumentExecutionLane::dispatchToOwner (DocumentWouldBlock).
+ * Runs dispatchToOwner on a worker thread and delivers onFinished on the Qt GUI
+ * thread (queued). Never pumps QApplication::processEvents on the GUI thread.
+ */
+GuiExport void scheduleRecoverySnapshotWrite(
+    App::Document& document,
+    const App::RecoverySnapshotSaveOptions& options,
+    std::function<void(bool written, std::exception_ptr failure)> onFinished);
+
+/**
+ * Test-only: worker hop + GUI event-loop pump until the write finishes.
+ * Production AutoSaver uses scheduleRecoverySnapshotWrite() instead.
  */
 GuiExport bool writeRecoverySnapshotAwaitingOwnerThread(
     App::Document& document,

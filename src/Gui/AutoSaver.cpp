@@ -36,7 +36,6 @@
 #include "Document.h"
 #include "DocumentExecutionIngress.h"
 #include "MainWindow.h"
-#include "WaitCursor.h"
 
 FC_LOG_LEVEL_INIT("App", true, true)
 
@@ -182,31 +181,85 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     options.saveBinaryBrep = !this->compressed || hGrp->GetBool("SaveBinaryBrep", true);
     options.saveThumbnail = false;
 
-    Gui::WaitCursor wc;
-    getMainWindow()->showMessage(tr("Wait until the auto-recovery file has been saved…"), 5000);
-    // qApp->processEvents();
+    if (auto* window = getMainWindow()) {
+        window->showMessage(tr("Saving auto-recovery file…"), 5000);
+    }
 
-    Base::TimeElapsed startTime;
-    try {
-        // AutoSaver runs on the GUI / AutoSaver QObject thread. Never call
-        // writeRecoverySnapshotToTransientDir directly — lane dispatchToOwner
-        // throws DocumentWouldBlock on the GUI thread. Hop via worker + pump.
-        if (!writeRecoverySnapshotAwaitingOwnerThread(*doc, options)) {
+    const Base::TimeElapsed startTime;
+    const auto identity = doc->collaborationIdentity();
+    // AutoSaver runs on the GUI thread. Never call dispatchToOwner here — finish
+    // on this thread via a queued callback when the worker completes.
+    scheduleRecoverySnapshotWrite(
+        *doc,
+        options,
+        [this,
+         name,
+         documentInstanceId = identity.instanceId,
+         lifecycleEpoch = identity.lifecycleEpoch,
+         startTime](const bool written, const std::exception_ptr failure) {
+            completeRecoverySnapshotSave(
+                name,
+                documentInstanceId,
+                lifecycleEpoch,
+                startTime,
+                written,
+                failure);
+        });
+}
+
+void AutoSaver::completeRecoverySnapshotSave(
+    const std::string& name,
+    const std::uint64_t documentInstanceId,
+    const std::uint64_t lifecycleEpoch,
+    const Base::TimeElapsed startTime,
+    const bool written,
+    const std::exception_ptr failure)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+
+    const auto saverIt = saverMap.find(name);
+    if (saverIt == saverMap.end()) {
+        return;
+    }
+    AutoSaveProperty& saver = *saverIt->second;
+
+    App::Document* doc = App::GetApplication().getDocument(name.c_str());
+    if (!doc) {
+        saver.restoreFailedSaveAttempt();
+        return;
+    }
+
+    const auto identity = doc->collaborationIdentity();
+    if (identity.instanceId != documentInstanceId
+        || identity.lifecycleEpoch != lifecycleEpoch) {
+        saver.restoreFailedSaveAttempt();
+        return;
+    }
+
+    if (failure) {
+        try {
+            std::rethrow_exception(failure);
+        }
+        catch (...) {
             saver.restoreFailedSaveAttempt();
             doc->reportRecoverySaveOutcome(
-                doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
-            Base::Console().warning(
-                "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
-                name.c_str()
-            );
+                doc->TransientDir.getStrValue(),
+                false,
+                "Recovery snapshot write threw an exception");
+            Base::Console().error("Failed to auto-save document '%s'\n", name.c_str());
             return;
         }
     }
-    catch (...) {
+
+    if (!written) {
         saver.restoreFailedSaveAttempt();
         doc->reportRecoverySaveOutcome(
-            doc->TransientDir.getStrValue(), false, "Recovery snapshot write threw an exception");
-        throw;
+            doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
+        Base::Console().warning(
+            "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
+            name.c_str()
+        );
+        return;
     }
 
     saver.finishSuccessfulSaveAttempt();

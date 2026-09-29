@@ -150,7 +150,7 @@ executeCompatibilityMutationWithoutBlockingGui(
     App::CollaborationCompatibilityMutation mutation,
     std::function<void()> callback);
 
-/// Runs AutoSaver recovery on the lane owner (worker hop + Qt pump), not production GUI wait.
+/// Runs AutoSaver recovery synchronously on the lane owner (test pump helper).
 void flushAutoSaverWithoutBlockingGui(App::Document& document);
 
 /**
