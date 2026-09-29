@@ -457,7 +457,15 @@ void scheduleRecoverySnapshotWrite(
 {
     const std::string documentName = document.getName();
     const App::RecoverySnapshotSaveOptions optionsCopy = options;
-    std::thread([documentName, optionsCopy, onFinished = std::move(onFinished)]() mutable {
+    App::DocumentExecutionLane* lane = document.executionLane();
+    if (lane) {
+        lane->beginRecoverySnapshotOwnerWork();
+    }
+    const bool trackRecoveryOwnerWork = lane != nullptr;
+    std::thread([documentName,
+                 optionsCopy,
+                 onFinished = std::move(onFinished),
+                 trackRecoveryOwnerWork]() mutable {
         std::optional<bool> result;
         std::exception_ptr failure;
         try {
@@ -470,6 +478,13 @@ void scheduleRecoverySnapshotWrite(
         }
         catch (...) {
             failure = std::current_exception();
+        }
+        if (trackRecoveryOwnerWork) {
+            if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
+                if (auto* activeLane = doc->executionLane()) {
+                    activeLane->endRecoverySnapshotOwnerWork();
+                }
+            }
         }
         const bool written = result.value_or(false);
         QTimer::singleShot(
@@ -485,6 +500,15 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
     App::Document& document,
     const App::RecoverySnapshotSaveOptions& options)
 {
+    App::DocumentExecutionLane* lane = document.executionLane();
+    if (lane) {
+        lane->beginRecoverySnapshotOwnerWork();
+    }
+    const auto endRecoveryOwnerWork = [&] {
+        if (lane) {
+            lane->endRecoverySnapshotOwnerWork();
+        }
+    };
     std::exception_ptr failure;
     std::atomic<bool> finished {false};
     std::optional<bool> result;
@@ -495,6 +519,7 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
         catch (...) {
             failure = std::current_exception();
         }
+        endRecoveryOwnerWork();
         finished.store(true, std::memory_order_release);
     });
 

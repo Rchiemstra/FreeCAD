@@ -125,6 +125,12 @@ public:
     [[nodiscard]] std::thread::id ownerThreadId() const noexcept;
     [[nodiscard]] bool isOwnerThread() const noexcept;
     [[nodiscard]] bool isIdle() const noexcept;
+    /**
+     * Marks non-command owner-thread work (recovery snapshot IO) that must
+     * reject conflicting trySubmit admissions while in flight.
+     */
+    void beginRecoverySnapshotOwnerWork() noexcept;
+    void endRecoverySnapshotOwnerWork() noexcept;
     /** True when idle or the owner thread is executing an admitted Close command. */
     [[nodiscard]] bool permitsApplicationClose() const noexcept;
     [[nodiscard]] bool shutdownRequested() const noexcept;
@@ -322,6 +328,8 @@ private:
     DocumentCommandId _nextCommandId {1};
 
     std::vector<std::function<void()>> _dispatchQueue;
+
+    std::atomic<bool> _recoverySnapshotOwnerWorkInFlight {false};
 
     std::shared_ptr<DocumentExecutionTelemetryCollector> _telemetry;
 };

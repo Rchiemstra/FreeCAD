@@ -1184,8 +1184,17 @@ bool MainWindow::closeAllDocuments(bool close)
             }
         }
 
-        if (save && !gdoc->save()) {
-            failedSaves++;
+        if (save) {
+            bool saved = false;
+            if (doc->executionLane()) {
+                saved = submitDocumentSaveAwaitingCompletion(*doc);
+            }
+            else {
+                saved = gdoc->save();
+            }
+            if (!saved) {
+                failedSaves++;
+            }
         }
     }
 

@@ -236,8 +236,22 @@ void DocumentExecutionLane::notifyCloseAdmissionReleased() const noexcept
 
 bool DocumentExecutionLane::isIdle() const noexcept
 {
+    if (_recoverySnapshotOwnerWorkInFlight.load(std::memory_order_acquire)) {
+        return false;
+    }
     std::lock_guard lock(_mutex);
     return !_active;
+}
+
+void DocumentExecutionLane::beginRecoverySnapshotOwnerWork() noexcept
+{
+    _recoverySnapshotOwnerWorkInFlight.store(true, std::memory_order_release);
+}
+
+void DocumentExecutionLane::endRecoverySnapshotOwnerWork() noexcept
+{
+    _recoverySnapshotOwnerWorkInFlight.store(false, std::memory_order_release);
+    _workAvailable.notify_all();
 }
 
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept
@@ -290,6 +304,22 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
         return outcome;
     }
 
+    const auto rejectBusyCommandKinds = [&](DocumentCommandKind kind) -> bool {
+        if (kind == DocumentCommandKind::Recompute || commandRequiresBusyWhileActive(kind)) {
+            recordBusyRejection(kind);
+            outcome.result = DocumentCommandSubmitResult::Busy;
+            outcome.diagnostic = "document execution lane is busy";
+            return true;
+        }
+        return false;
+    };
+
+    if (_recoverySnapshotOwnerWorkInFlight.load(std::memory_order_acquire)) {
+        if (rejectBusyCommandKinds(command.kind)) {
+            return outcome;
+        }
+    }
+
     if (_active) {
         if (command.kind == DocumentCommandKind::Recompute
             && _active->command.kind == DocumentCommandKind::Recompute
@@ -300,11 +330,7 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
             return outcome;
         }
 
-        if (command.kind == DocumentCommandKind::Recompute
-            || commandRequiresBusyWhileActive(command.kind)) {
-            recordBusyRejection(command.kind);
-            outcome.result = DocumentCommandSubmitResult::Busy;
-            outcome.diagnostic = "document execution lane is busy";
+        if (rejectBusyCommandKinds(command.kind)) {
             return outcome;
         }
     }

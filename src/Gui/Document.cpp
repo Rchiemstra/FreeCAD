@@ -2036,11 +2036,10 @@ SharedPresentationCommitResult Document::commitSharedPresentation(
                                   SharedPresentationCommitWork&& work,
                                   SharedPresentationCommitCompletion&& complete) mutable {
             if (App::DocumentWouldBlock::isGuiThread()) {
-                complete({false,
-                          "DocumentWouldBlock on GUI thread; use DocumentHandle::trySubmit() "
-                          "or async document APIs instead of synchronous "
-                          "serializeAtomicCompatibilityCallback"});
-                return;
+                throw App::DocumentWouldBlock(
+                    "DocumentWouldBlock on GUI thread; use DocumentHandle::trySubmit() "
+                    "or async document APIs instead of synchronous "
+                    "serializeAtomicCompatibilityCallback");
             }
             auto serialized = d->_pcDocument->collaborationService()
                                   .serializeAtomicCompatibilityCallback(
@@ -4003,7 +4002,19 @@ bool Document::canClose(bool checkModify, bool checkLink)
                 break;
             case MainWindow::ConfirmSaveResult::SaveAll:
             case MainWindow::ConfirmSaveResult::Save:
-                ok = save();
+                if (getDocument()->executionLane()) {
+                    std::string saveFailureDiagnostic;
+                    ok = submitDocumentSaveAwaitingCompletion(
+                        *getDocument(),
+                        &saveFailureDiagnostic);
+                    if (!ok && !saveFailureDiagnostic.empty()
+                        && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
+                        ok = true;
+                    }
+                }
+                else {
+                    ok = save();
+                }
                 if (!ok) {
                     const QString docName = QString::fromStdString(getDocument()->Label.getStrValue());
                     const QString text

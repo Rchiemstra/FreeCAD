@@ -114,6 +114,11 @@ GuiExport bool submitDocumentSave(App::Document& document);
  * Admit save on the execution lane and poll the GUI event loop until the Save
  * command reaches a terminal state. Returns true only on Completed. Does not
  * schedule the passive completion timer used by submitDocumentSave().
+ *
+ * Close/test-only: pumps QApplication::processEvents while waiting. Use from
+ * Document::canClose(), MainWindow::closeAllDocuments(), and automated tests —
+ * never from File→Save or other interactive save menus (use submitDocumentSave()
+ * for admit-only nonblocking save).
  */
 GuiExport bool submitDocumentSaveAwaitingCompletion(
     App::Document& document,
