@@ -188,7 +188,10 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
 
     Base::TimeElapsed startTime;
     try {
-        if (!App::writeRecoverySnapshotToTransientDir(*doc, options)) {
+        // AutoSaver runs on the GUI / AutoSaver QObject thread. Never call
+        // writeRecoverySnapshotToTransientDir directly — lane dispatchToOwner
+        // throws DocumentWouldBlock on the GUI thread. Hop via worker + pump.
+        if (!writeRecoverySnapshotAwaitingOwnerThread(*doc, options)) {
             saver.restoreFailedSaveAttempt();
             doc->reportRecoverySaveOutcome(
                 doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");

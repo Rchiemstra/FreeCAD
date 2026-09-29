@@ -214,7 +214,9 @@ bool canCloseWithoutBlockingGui(Gui::Document& guiDocument,
         return true;
     }
 
-    waitForExecutionLaneIdle(*document);
+    // Do not pump the event loop before confirmSave(). Tests arm a single-shot
+    // timer that must fire only after the modal confirmation is already up;
+    // pumping here steals that timer and leaves confirmSave() hung forever.
 
     if (!document->isClosable()) {
         QMessageBox::warning(
@@ -241,6 +243,7 @@ bool canCloseWithoutBlockingGui(Gui::Document& guiDocument,
                 break;
             case MainWindow::ConfirmSaveResult::SaveAll:
             case MainWindow::ConfirmSaveResult::Save:
+                waitForExecutionLaneIdle(*document);
                 ok = saveModifiedDocumentForCloseWithoutBlockingGui(guiDocument);
                 if (!ok) {
                     const QString docName =
