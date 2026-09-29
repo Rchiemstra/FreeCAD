@@ -188,15 +188,27 @@ public:
         options.saveBinaryBrep = !saver->compressed || hGrp->GetBool("SaveBinaryBrep", true);
         options.saveThumbnail = false;
 
-        const bool written = invokeOnOwnerWorkerWhilePumpingGui([&] {
-            return App::writeRecoverySnapshotToTransientDir(document, options);
-        });
-        if (!written) {
+        try {
+            // Prefer the production GUI hop helper so tests exercise the same
+            // owner-thread path AutoSaver uses (worker + pump, never GUI dispatchToOwner).
+            const bool written = writeRecoverySnapshotAwaitingOwnerThread(document, options);
+            if (!written) {
+                property.restoreFailedSaveAttempt();
+                document.reportRecoverySaveOutcome(
+                    document.TransientDir.getStrValue(),
+                    false,
+                    "Recovery snapshot was not stable");
+                return;
+            }
+        }
+        catch (...) {
+            // Match AutoSaver::flushPendingSaveForIdentity / timerEvent: retain dirty
+            // work for retry and do not let the exception escape the flush helper.
             property.restoreFailedSaveAttempt();
             document.reportRecoverySaveOutcome(
                 document.TransientDir.getStrValue(),
                 false,
-                "Recovery snapshot was not stable");
+                "Recovery snapshot write threw an exception");
             return;
         }
 
