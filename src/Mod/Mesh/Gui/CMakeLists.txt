@@ -107,6 +107,7 @@ SOURCE_GROUP("resource" FILES ${resource_SRCS})
 SET(ViewProvider_SRCS
     ViewProviderPresentationAdapter.cpp
     ViewProviderPresentationAdapter.h
+    DocumentPresentationCapture.cpp
     ViewProvider.cpp
     ViewProvider.h
     ViewProviderPython.cpp
