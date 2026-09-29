@@ -291,7 +291,8 @@ auto invokeCollaborationServiceWithoutBlockingGui(Fn&& fn)
         std::rethrow_exception(failure);
     }
     if (!finished.load(std::memory_order_acquire)) {
-        FAIL() << "collaboration service call did not finish before timeout";
+        throw std::runtime_error(
+            "collaboration service call did not finish before timeout");
     }
     if constexpr (!std::is_void_v<Result>) {
         return std::move(*result);
