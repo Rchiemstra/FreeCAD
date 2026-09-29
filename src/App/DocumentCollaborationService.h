@@ -141,10 +141,9 @@ public:
 
     /**
      * Run \p fn on the document execution-lane owner thread when a lane exists.
-     * From the GUI, short collaboration hops may wait on the owner while pumping
-     * Qt events; they throw DocumentWouldBlock only when a busy command blocks
-     * owner dispatch. When already on the owner thread, or no lane is present,
-     * runs \p fn inline.
+     * From the GUI thread, throws DocumentWouldBlock; use DocumentHandle::trySubmit
+     * or async document APIs instead. When already on the owner thread, or no lane
+     * is present, runs \p fn inline.
      */
     [[nodiscard]] bool runOnOwnerThread(const std::function<bool()>& fn);
     [[nodiscard]] EditSession beginEditSession(std::string actorId);

@@ -96,28 +96,20 @@ void saveAsWithoutBlockingGui(App::Document& document, const char* path)
     submitAndWait(document, std::move(command));
 }
 
-template<typename Fn>
-App::DocumentSaveOutcome runSaveOnOwnerThread(App::Document& document, Fn&& saveFn)
-{
-    auto* lane = document.executionLane();
-    if (!lane) {
-        return saveFn();
-    }
-    waitForExecutionLaneIdle(document);
-    return lane->dispatchToOwner(std::forward<Fn>(saveFn));
-}
-
 App::DocumentSaveOutcome saveWithOutcomeWithoutBlockingGui(App::Document& document)
 {
-    return runSaveOnOwnerThread(document, [&] { return document.saveWithOutcome(); });
+    waitForExecutionLaneIdle(document);
+    return invokeOnOwnerWorkerWhilePumpingGui(
+        [&] { return document.saveWithOutcome(); });
 }
 
 App::DocumentSaveOutcome saveAsWithOutcomeWithoutBlockingGui(App::Document& document,
                                                              const char* path,
                                                              const bool overwrite)
 {
-    return runSaveOnOwnerThread(
-        document, [&] { return document.saveAsWithOutcome(path, overwrite); });
+    waitForExecutionLaneIdle(document);
+    return invokeOnOwnerWorkerWhilePumpingGui(
+        [&] { return document.saveAsWithOutcome(path, overwrite); });
 }
 
 }  // namespace Gui::Test

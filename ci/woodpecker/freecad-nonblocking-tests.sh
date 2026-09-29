@@ -48,13 +48,16 @@ run_lane() {
   cat "$lane_gui_log"
   # Coin/Qt teardown SIGSEGV after all gtests passed is infra noise on this image.
   if [ "$lane_gui_rc" -ne 0 ] \
-    && grep -q '\[  PASSED  \]' "$lane_gui_log" \
-    && ! grep -q '\[  FAILED  \]' "$lane_gui_log"; then
+    && grep -a -q '\[  PASSED  \]' "$lane_gui_log" \
+    && ! grep -a -q '\[  FAILED  \]' "$lane_gui_log"; then
     echo "WARN: accepting TIER=lane Gui exit $lane_gui_rc after all tests passed (teardown)"
     lane_gui_rc=0
   fi
   set -e
-  return "$lane_gui_rc"
+  if [ "$lane_gui_rc" -ne 0 ]; then
+    return "$lane_gui_rc"
+  fi
+  return 0
 }
 
 run_presentation() {
@@ -88,9 +91,10 @@ run_presentation() {
       >"$part_log" 2>&1
     part_rc=$?
     cat "$part_log"
+    # Match PASSED even if the log grows binary noise after a teardown SIGSEGV.
     if [ "$part_rc" -ne 0 ] \
-      && grep -q '\[  PASSED  \]' "$part_log" \
-      && ! grep -q '\[  FAILED  \]' "$part_log"; then
+      && grep -a -q '\[  PASSED  \]' "$part_log" \
+      && ! grep -a -q '\[  FAILED  \]' "$part_log"; then
       echo "WARN: accepting TIER=presentation filter='$part' exit $part_rc after all tests passed (teardown)"
       part_rc=0
     fi
@@ -99,7 +103,12 @@ run_presentation() {
       pres_gui_rc=$part_rc
     fi
   done
-  return "$pres_gui_rc"
+  # Teardown SIGSEGV can still surface as the script's exit if a child
+  # dumps after the waived part_rc is recorded; force clean when green.
+  if [ "$pres_gui_rc" -ne 0 ]; then
+    return "$pres_gui_rc"
+  fi
+  return 0
 }
 
 run_unit() {

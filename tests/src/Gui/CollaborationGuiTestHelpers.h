@@ -4,6 +4,15 @@
 
 #include <App/Document.h>
 
+#include <QApplication>
+
+#include <atomic>
+#include <chrono>
+#include <exception>
+#include <optional>
+#include <thread>
+#include <type_traits>
+
 namespace App
 {
 class Document;
@@ -11,6 +20,52 @@ class Document;
 
 namespace Gui::Test
 {
+
+/**
+ * Document-owner collaboration APIs throw DocumentWouldBlock on the GUI thread.
+ * Run \p fn on a worker while pumping Qt so detached preparation and the lane
+ * keep making progress.
+ */
+template<typename Fn>
+auto invokeOnOwnerWorkerWhilePumpingGui(Fn&& fn)
+    -> std::invoke_result_t<std::decay_t<Fn>>
+{
+    using Result = std::invoke_result_t<std::decay_t<Fn>>;
+    std::optional<Result> result;
+    std::exception_ptr failure;
+    std::atomic<bool> finished {false};
+    std::thread worker([&] {
+        try {
+            if constexpr (std::is_void_v<Result>) {
+                std::forward<Fn>(fn)();
+            }
+            else {
+                result.emplace(std::forward<Fn>(fn)());
+            }
+        }
+        catch (...) {
+            failure = std::current_exception();
+        }
+        finished.store(true, std::memory_order_release);
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!finished.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    worker.join();
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    if (!finished.load(std::memory_order_acquire)) {
+        throw std::runtime_error(
+            "owner-thread collaboration call did not finish before timeout");
+    }
+    if constexpr (!std::is_void_v<Result>) {
+        return std::move(*result);
+    }
+}
 
 /// Submits a recompute through the document execution handle and pumps the GUI
 /// event loop until it completes, avoiding synchronous recompute() on the GUI thread.
