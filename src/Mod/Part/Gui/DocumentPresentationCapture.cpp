@@ -109,7 +109,7 @@ bool capturePartFeaturePresentationRenderBuffer(const App::DocumentObject& objec
 }
 
 const Gui::DocumentPresentationCaptureRegistrar partPresentationCaptureRegistrar {
-    Part::Feature::getClassTypeId(),
+    "Part::Feature",
     capturePartFeaturePresentationRenderBuffer,
 };
 

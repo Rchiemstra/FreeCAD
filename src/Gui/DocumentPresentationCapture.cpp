@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "PresentationCaptureRegistry.h"
 #include "Tree.h"
+#include "ViewProviderPresentationCapability.h"
 
 #include <App/Document.h>
 #include <App/DocumentObject.h>
@@ -27,9 +28,6 @@ bool Gui::captureDocumentObjectPresentationRenderBuffer(
     const std::string& stableObjectIdentity,
     PresentationRenderBuffer& buffer)
 {
-    if (!PresentationCaptureRegistry::hasCapture(object)) {
-        return false;
-    }
     const auto featureAdmission = GuiPythonGate::verifyFeaturePythonExecution(object);
     if (!featureAdmission.executed()) {
         return false;
@@ -96,7 +94,17 @@ PresentationDelta Gui::buildPresentationDeltaOnDocumentThread(const App::Documen
                 stableIdentity,
                 buffer)) {
             delta.renderBuffers.push_back(std::move(buffer));
+            continue;
         }
+
+        PresentationPropertyValue captureStatus;
+        captureStatus.stableObjectIdentity = stableIdentity;
+        captureStatus.propertyName = "PresentationCapture";
+        captureStatus.displayValue = viewProviderPresentationClassificationName(
+            ViewProviderPresentationClassification::Unsupported);
+        captureStatus.statusAnnotation =
+            "document-thread presentation capture missing or failed";
+        delta.properties.push_back(std::move(captureStatus));
     }
 
     return delta;

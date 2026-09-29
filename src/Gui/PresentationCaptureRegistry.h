@@ -23,6 +23,8 @@ using DocumentObjectPresentationCaptureFn = bool (*)(const App::DocumentObject& 
 class GuiExport PresentationCaptureRegistry
 {
 public:
+    static void registerCapture(const char* objectTypeName, DocumentObjectPresentationCaptureFn capture);
+
     static void registerCapture(Base::Type objectType, DocumentObjectPresentationCaptureFn capture);
 
     [[nodiscard]] static bool hasCapture(const App::DocumentObject& object);
@@ -35,7 +37,8 @@ public:
 /** Static registration helper for module Gui libraries. */
 struct GuiExport DocumentPresentationCaptureRegistrar
 {
-    DocumentPresentationCaptureRegistrar(Base::Type objectType, DocumentObjectPresentationCaptureFn capture);
+    DocumentPresentationCaptureRegistrar(const char* objectTypeName,
+                                         DocumentObjectPresentationCaptureFn capture);
 };
 
 }  // namespace Gui

@@ -34,7 +34,7 @@ bool capturePointsFeaturePresentationRenderBuffer(const App::DocumentObject& obj
 }
 
 const Gui::DocumentPresentationCaptureRegistrar pointsPresentationCaptureRegistrar {
-    Points::Feature::getClassTypeId(),
+    "Points::Feature",
     capturePointsFeaturePresentationRenderBuffer,
 };
 

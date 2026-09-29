@@ -73,7 +73,7 @@ bool captureMeshFeaturePresentationRenderBuffer(const App::DocumentObject& objec
 }
 
 const Gui::DocumentPresentationCaptureRegistrar meshPresentationCaptureRegistrar {
-    Mesh::Feature::getClassTypeId(),
+    "Mesh::Feature",
     captureMeshFeaturePresentationRenderBuffer,
 };
 
