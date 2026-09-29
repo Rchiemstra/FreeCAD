@@ -237,7 +237,7 @@ std::optional<std::string> copyPropertyValueFromPythonRhs(
         code += pythonRhs;
         Base::Interpreter().runString(code.c_str());
         Py::Module mainModule(PyImport_AddModule("__main__"));
-        Py::Dict mainDict(mainModule.dict());
+        Py::Dict mainDict(mainModule.getDict());
         Py::Object rhs = mainDict.getItem("__freecad_property_editor_rhs");
         staged->setPyObject(rhs.ptr());
     }
