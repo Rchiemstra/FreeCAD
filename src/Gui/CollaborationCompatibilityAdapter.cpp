@@ -2,6 +2,7 @@
 
 #include "CollaborationCompatibilityAdapter.h"
 
+#include <thread>
 #include <utility>
 
 namespace Gui
