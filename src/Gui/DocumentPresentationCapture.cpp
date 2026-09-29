@@ -28,6 +28,7 @@ bool Gui::captureDocumentObjectPresentationRenderBuffer(
     const std::string& stableObjectIdentity,
     PresentationRenderBuffer& buffer)
 {
+    (void)document;
     const auto featureAdmission = GuiPythonGate::verifyFeaturePythonExecution(object);
     if (!featureAdmission.executed()) {
         return false;
