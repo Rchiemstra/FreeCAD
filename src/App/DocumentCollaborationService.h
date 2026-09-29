@@ -23,6 +23,10 @@
 namespace Gui
 {
 class Document;
+namespace Test
+{
+class SharedPresentationSerializeTestAccess;
+}
 }
 
 namespace App
@@ -215,6 +219,8 @@ private:
     friend class Application;
     friend class Document;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+    // Gui integration tests supply a serialize hook without a production GUI wait.
+    friend class Gui::Test::SharedPresentationSerializeTestAccess;
     friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& doc,
         const RecoverySnapshotSaveOptions& options);

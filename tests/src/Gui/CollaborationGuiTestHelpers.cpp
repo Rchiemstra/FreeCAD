@@ -25,6 +25,19 @@ using namespace std::chrono_literals;
 namespace Gui::Test
 {
 
+class SharedPresentationSerializeTestAccess
+{
+public:
+    static App::DocumentCommitResult serializeAtomic(
+        App::DocumentCollaborationService& service,
+        std::vector<App::CollaborationAtomicPresentationWrite> allowedWrites,
+        App::CollaborationAtomicCompatibilityCallback callback)
+    {
+        return service.serializeAtomicCompatibilityCallback(
+            std::move(allowedWrites), std::move(callback));
+    }
+};
+
 namespace
 {
 
@@ -137,13 +150,13 @@ SharedPresentationCommitResult commitSharedPresentationWithoutBlockingGui(
             SharedPresentationCommitWork&& work,
             SharedPresentationCommitCompletion&& complete) mutable {
             invokeOnOwnerWorkerWhilePumpingGui([&] {
-                static_cast<void>(appDocument->collaborationService()
-                                      .serializeAtomicCompatibilityCallback(
-                                          allowedAppWrites,
-                                          [&] {
-                                              work();
-                                              complete({true, {}});
-                                          }));
+                static_cast<void>(SharedPresentationSerializeTestAccess::serializeAtomic(
+                    appDocument->collaborationService(),
+                    allowedAppWrites,
+                    [&] {
+                        work();
+                        complete({true, {}});
+                    }));
             });
         };
     return guiDocument.commitSharedPresentation(std::move(request), std::move(callbacks));
