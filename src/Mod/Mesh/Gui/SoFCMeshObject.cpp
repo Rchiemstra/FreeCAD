@@ -1081,6 +1081,24 @@ void SoFCMeshObjectShape::renderSelectionGeometry(const Mesh::MeshObject* mesh)
 void SoFCMeshObjectShape::rayPick(SoRayPickAction* action)
 {
     inherited::rayPick(action);
+    // SoShape skips generatePrimitives when a valid bbox cache misses the ray.
+    // That cache is a point at the origin if it was filled before the mesh
+    // element was in state, so a ray that hits the facets returns nothing
+    // while primitive count still sees the triangles. Test the live bounds.
+    if (action->getPickedPoint() || !this->shouldRayPick(action)) {
+        return;
+    }
+    const Mesh::MeshObject* meshObject = SoFCMeshObjectElement::get(action->getState());
+    if (!meshObject || meshObject->countFacets() == 0) {
+        return;
+    }
+    SbBox3f box;
+    SbVec3f center;
+    this->computeBBox(action, box, center);
+    if (box.isEmpty() || !action->intersect(box, FALSE)) {
+        return;
+    }
+    this->generatePrimitives(action);
 }
 
 /** Sets the point indices, the geometric points and the normal for each triangle.
