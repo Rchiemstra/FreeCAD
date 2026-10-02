@@ -40,6 +40,8 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Document.h"
+
+#include <App/DocumentWouldBlock.h>
 #include "PythonWrapper.h"
 #include "View3DInventorViewer.h"
 #include "ViewProviderDocumentObjectPy.h"
@@ -674,9 +676,29 @@ void ViewProviderFeaturePythonImp::attach(App::DocumentObject* pcObject)
     }
 }
 
+namespace
+{
+bool deferViewProviderPython(ViewProviderDocumentObject* viewProvider)
+{
+    if (!viewProvider) {
+        return !App::MainThreadSignalConfig::isMainThread();
+    }
+    if (auto* guiDocument = viewProvider->getDocument()) {
+        return guiDocument->deferLivePresentationUpdates();
+    }
+    return !App::MainThreadSignalConfig::isMainThread();
+}
+}  // namespace
+
 void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)
 {
     if (py_updateData.isNone()) {
+        return;
+    }
+    if (deferViewProviderPython(object)) {
+        if (auto* guiDocument = object ? object->getDocument() : nullptr) {
+            guiDocument->scheduleLivePresentationCatchUp();
+        }
         return;
     }
 
@@ -710,6 +732,18 @@ void ViewProviderFeaturePythonImp::updateData(const App::Property* prop)
 void ViewProviderFeaturePythonImp::onChanged(const App::Property* prop)
 {
     if (py_onChanged.isNone()) {
+        return;
+    }
+    // Arch/Draft visibility hooks call FreeCADGui.getMainWindow() and edit
+    // Coin (SoGroup::removeChild of Separator nodes). Neither is legal off the
+    // GUI thread or while collaboration replay still holds the document lock.
+    if (deferViewProviderPython(object)) {
+        if (auto* guiDocument = object ? object->getDocument() : nullptr) {
+            if (prop == &object->Visibility) {
+                guiDocument->noteDeferredVisibilityChange(object);
+            }
+            guiDocument->scheduleLivePresentationCatchUp();
+        }
         return;
     }
 

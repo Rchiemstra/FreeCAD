@@ -400,6 +400,17 @@ void recomputeWithoutBlockingGui(App::Document& document, const char* coalescing
     submitAndWait(document, std::move(command));
 }
 
+void settlePendingRecomputeWithoutBlockingGui(App::Document& document)
+{
+    invokeOnOwnerWorkerWhilePumpingGui([&] {
+        bool recomputeError = false;
+        for (int pass = 0; pass < 2 && document.mustExecute(); ++pass) {
+            static_cast<void>(document.recompute({}, pass > 0, &recomputeError));
+        }
+    });
+    waitForExecutionLaneIdle(document);
+}
+
 void saveAsWithoutBlockingGui(App::Document& document, const char* path)
 {
     App::DocumentCommand command;

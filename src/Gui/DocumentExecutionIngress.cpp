@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "Document.h"
 #include "MainWindow.h"
+#include "Utilities.h"
 
 #include <App/Application.h>
 #include <App/DocumentCommandHandle.h>
@@ -77,7 +78,7 @@ void scheduleDocumentCommandStatusRefresh(
     App::DocumentCommandId commandId)
 {
     auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
-    QTimer::singleShot(50, qApp, [documentIdentity, commandId, commandHandle = std::move(commandHandle)] {
+    scheduleGuiSingleShot(50, [documentIdentity, commandId, commandHandle = std::move(commandHandle)] {
         const auto snapshot = commandHandle->status();
         if (!snapshot.terminal()) {
             scheduleDocumentCommandStatusRefresh(documentIdentity, commandId);
@@ -269,7 +270,7 @@ void schedulePropertyEditCommandCompletion(
     App::DocumentCommandId commandId)
 {
     auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
-    QTimer::singleShot(50, qApp, [documentIdentity, commandId, commandHandle = std::move(commandHandle)] {
+    scheduleGuiSingleShot(50, [documentIdentity, commandId, commandHandle = std::move(commandHandle)] {
         const auto snapshot = commandHandle->status();
         if (!snapshot.terminal()) {
             schedulePropertyEditCommandCompletion(documentIdentity, commandId);
@@ -343,9 +344,8 @@ void scheduleUndoRedoCommandCompletion(
 {
     auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
     const std::string documentName = appDocumentName ? appDocumentName : std::string {};
-    QTimer::singleShot(
+    scheduleGuiSingleShot(
         50,
-        qApp,
         [documentName,
          documentIdentity,
          commandId,
@@ -392,9 +392,8 @@ void scheduleSaveCommandCompletion(
 {
     auto commandHandle = std::make_shared<App::DocumentCommandHandle>(commandId, documentIdentity);
     const std::string documentName = appDocumentName ? appDocumentName : std::string {};
-    QTimer::singleShot(
+    scheduleGuiSingleShot(
         50,
-        qApp,
         [documentName, documentIdentity, commandId, commandHandle = std::move(commandHandle)]() mutable {
             const auto snapshot = commandHandle->status();
             if (!snapshot.terminal()) {
@@ -487,12 +486,9 @@ void scheduleRecoverySnapshotWrite(
             }
         }
         const bool written = result.value_or(false);
-        QTimer::singleShot(
-            0,
-            qApp,
-            [onFinished = std::move(onFinished), written, failure]() mutable {
-                onFinished(written, failure);
-            });
+        scheduleGuiSingleShot(0, [onFinished = std::move(onFinished), written, failure]() mutable {
+            onFinished(written, failure);
+        });
     }).detach();
 }
 

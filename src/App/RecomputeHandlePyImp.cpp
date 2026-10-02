@@ -141,12 +141,14 @@ PyObject* RecomputeHandlePy::wait(PyObject* args)
     const auto milliseconds = static_cast<long long>(timeoutSeconds * 1000.0);
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "RecomputeHandle.wait()",
-            "Document.recomputeAsync() and RecomputeHandle.status()");
-        Base::PyGILStateRelease gilRelease;
-        return snapshotToPython(
-            getRecomputeHandlePtr()->wait(std::chrono::milliseconds(milliseconds)));
+        // RecomputeHandle::wait() refuses the GUI thread only without an
+        // execution lane; with one it waits without running the Qt event loop.
+        DocumentRecomputeSnapshot snapshot;
+        {
+            Base::PyGILStateRelease gilRelease;
+            snapshot = getRecomputeHandlePtr()->wait(std::chrono::milliseconds(milliseconds));
+        }
+        return snapshotToPython(snapshot);
     }
     PY_CATCH;
 }

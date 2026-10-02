@@ -182,6 +182,9 @@ class ObjectOp(object):
     implementation - otherwise the base functionality might be broken.
     """
 
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def addBaseProperty(self, obj):
         obj.addProperty(
             "App::PropertyLinkSubListGlobal",

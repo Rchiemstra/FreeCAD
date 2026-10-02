@@ -167,6 +167,9 @@ public:
      */
     bool closeDocument(const char* name);
 
+    /** Emit @c signalDeleteDocument on the GUI thread when marshalling hooks exist. */
+    void notifyDocumentPreDelete(const Document& doc);
+
     /** Return the process-local registry for live collaboration identities. */
     const CollaborationRegistry& collaborationRegistry() const;
 

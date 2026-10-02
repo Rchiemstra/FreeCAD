@@ -2,6 +2,7 @@
 # SPDX-FileNotice: Part of the FreeCAD project.
 
 import FreeCAD as App
+from Test.GuiRecompute import recompute_document, close_document
 import FreeCADGui
 import Arch
 import Draft
@@ -31,10 +32,10 @@ class TestArchBuildingPartGui(TestArchBaseGui):
         sk.addConstraint(Sketcher.Constraint("Coincident", 1, 2, 2, 1))
         sk.addConstraint(Sketcher.Constraint("Coincident", 2, 2, 3, 1))
         sk.addConstraint(Sketcher.Constraint("Coincident", 3, 2, 0, 1))
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         win = Arch.makeWindow(sk)
         Arch.removeComponents(win, host=wall)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         bp = Arch.makeBuildingPart()
 
         # Wall visibility works when standalone
@@ -42,19 +43,19 @@ class TestArchBuildingPartGui(TestArchBaseGui):
         FreeCADGui.Selection.addSelection(self.doc_name, wall.Name)
         assert wall.Visibility
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         assert not wall.Visibility
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
         assert wall.Visibility
 
         bp.Group = [wall]
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         # Fails with OCC 7.5
         # self.assertTrue(len(bp.Shape.Faces) == 16, "'{}' failed".format(operation))
 
         # Wall visibility works when inside a BuildingPart
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         assert not wall.Visibility
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
         assert wall.Visibility
@@ -72,11 +73,11 @@ class TestArchBuildingPartGui(TestArchBaseGui):
         grp.Label = "Group"
         grp.Group = [wall]
         bp.Group = [grp]
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         assert wall.Visibility
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         assert not wall.Visibility
         FreeCADGui.runCommand("Std_ToggleVisibility", 0)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         assert wall.Visibility

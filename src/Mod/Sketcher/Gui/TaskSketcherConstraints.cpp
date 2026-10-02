@@ -26,6 +26,7 @@
 #include <QMenu>
 #include <QPainter>
 #include <QPixmapCache>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QRegularExpressionMatch>
 #include <QString>
@@ -43,6 +44,7 @@
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/Expression.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
@@ -52,6 +54,7 @@
 #include <Gui/Notifications.h>
 #include <Gui/Selection/Selection.h>
 #include <Gui/Selection/SelectionObject.h>
+#include <Gui/Utilities.h>
 #include <Gui/ViewProvider.h>
 #include <Mod/Sketcher/App/SketchObject.h>
 
@@ -1646,7 +1649,16 @@ void TaskSketcherConstraints::onSelectionChanged(const Gui::SelectionChanges& ms
 
             if (!selectionUpdateTimerPending) {
                 selectionUpdateTimerPending = true;
-                QTimer::singleShot(0, this, &TaskSketcherConstraints::processSelectionBuffer);
+                if (App::DocumentWouldBlock::isGuiThread()) {
+                    QTimer::singleShot(0, this, &TaskSketcherConstraints::processSelectionBuffer);
+                }
+                else {
+                    Gui::scheduleGuiSingleShot(0, [guard = QPointer<TaskSketcherConstraints>(this)]() {
+                        if (guard) {
+                            guard->processSelectionBuffer();
+                        }
+                    });
+                }
             }
         }
     }
@@ -1664,7 +1676,16 @@ void TaskSketcherConstraints::onSelectionChanged(const Gui::SelectionChanges& ms
             // outweigh a full rebuild of the filter.
             if (!updateListPending) {
                 updateListPending = true;
-                QTimer::singleShot(0, this, &TaskSketcherConstraints::deferredUpdateList);
+                if (App::DocumentWouldBlock::isGuiThread()) {
+                    QTimer::singleShot(0, this, &TaskSketcherConstraints::deferredUpdateList);
+                }
+                else {
+                    Gui::scheduleGuiSingleShot(0, [guard = QPointer<TaskSketcherConstraints>(this)]() {
+                        if (guard) {
+                            guard->deferredUpdateList();
+                        }
+                    });
+                }
             }
         }
     }

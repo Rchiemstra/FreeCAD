@@ -1904,10 +1904,15 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     if (ownerThreadExecution && target->canRecomputeOnWorker()) {
         // Same decision tree as the detached venue -- the opt-out and
         // bookkeeping branches above already ran -- only the venue differs.
-        // During the coordinator's derived pass inside a structural commit,
-        // still prove the closure is worker-reproducible before running live
-        // on the owner thread; unserializable runtime types must fail here
-        // instead of executing object code.
+        // During the coordinator's derived pass, an opted-in target whose
+        // dependency has not opted in cannot be reproduced in the worker.
+        // That is a venue choice, not a commit failure: run the target on
+        // the document owner. Cross-document links and unserializable
+        // runtime types still fail closed inside collectClosure().
+        if (derivedCoordinatorRecompute
+            && !closureOptsIntoWorkerExecution(document, *target)) {
+            return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
+        }
         if (derivedCoordinatorRecompute) {
             static_cast<void>(collectClosure(document, *target));
         }
@@ -1915,24 +1920,19 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     }
 
     if (!closureOptsIntoWorkerExecution(document, *target)) {
-        // The target itself opted in -- the branch at the top of this
-        // function already ruled out the opposite -- but something in its
-        // dependency closure did not, and collectClosure() below would
-        // refuse the whole job for that reason alone. Refusing here would
-        // turn an opted-in group holding one un-opted scripted feature (a
-        // JointGroup holding a Python joint, an Origin holding nothing but
-        // still walked, ...) into a permanently failed node instead of the
-        // owner-thread fallback that exists for exactly this shape. Cross-
-        // document links and unserializable runtime types are not handled
-        // here and still fail closed inside collectClosure() when the
+        // Either the target itself has not opted into worker execution, or it
+        // has and something in its dependency closure has not. collectClosure()
+        // would refuse the whole job for that reason alone. Refusing here
+        // would turn an ordinary FeaturePython (no supportsAsyncRecompute())
+        // and an opted-in group holding one un-opted scripted feature into a
+        // permanently failed node instead of the owner-thread fallback.
+        // Cross-document links and unserializable runtime types are not
+        // handled here and still fail closed inside collectClosure() when the
         // worker venue is chosen.
         //
-        // A target that has not opted into worker execution during the
-        // coordinator's derived pass is not a closure-shape fallback: it must
-        // be refused before execute() runs live.
-        if (derivedCoordinatorRecompute && !target->canRecomputeOnWorker()) {
-            static_cast<void>(collectClosure(document, *target));
-        }
+        // A derived-pass target that never claimed worker recompute is the
+        // same case: execute it on the document owner. Absence of
+        // supportsAsyncRecompute() is not a recompute failure.
         return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
     }
 

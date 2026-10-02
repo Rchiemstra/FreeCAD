@@ -29,7 +29,10 @@ import math
 import os
 import re
 import tempfile
+import time
 import xml.etree.ElementTree as ET
+
+from PySide import QtCore
 
 import Draft
 import DraftVecUtils
@@ -38,6 +41,12 @@ import FreeCADGui as Gui
 from FreeCAD import Vector
 
 from drafttests import test_base
+from Test.GuiRecompute import (
+    close_document,
+    recompute_off_gui_thread,
+    refresh_document,
+    save_document_as,
+)
 
 
 class DraftGuiDimension(test_base.DraftTestCaseDoc):
@@ -57,7 +66,22 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
     def tearDown(self):
         """Close the temporary document even if save/reopen invalidated the Python wrapper."""
         if self.doc_name in App.listDocuments():
-            App.closeDocument(self.doc_name)
+            close_document(App.getDocument(self.doc_name))
+
+    def _pump_draft_view(self, timeout_seconds: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            Gui.updateGui()
+            QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+            time.sleep(0.01)
+
+    def _wait_for_draftview_symbol_overshoots(self, draft_view, expected_count, timeout_seconds=30.0):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if len(self.extractOvershootLines(draft_view.Symbol)) == expected_count:
+                return
+            self._pump_draft_view(timeout_seconds=0.2)
+        self.assertEqual(len(self.extractOvershootLines(draft_view.Symbol)), expected_count)
 
     def getAngularOvershootState(self, dimension):
         """Return the angular overshoot scenegraph state used by the regression checks."""
@@ -312,7 +336,7 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
         vobj.DimOvershoot = 1
         vobj.ExtOvershoot = 2
 
-        self.doc.recompute()
+        recompute_off_gui_thread(self.doc)
         self.assertAngularOvershoots(dimension)
         expected_state = self.getAngularOvershootState(dimension)
 
@@ -320,20 +344,21 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
         temp_file.close()
         reopened = None
         try:
-            self.doc.saveAs(temp_file.name)
+            save_document_as(self.doc, temp_file.name)
             self.doc = App.getDocument(original_name)
             reopened = App.openDocument(temp_file.name)
+            App.setActiveDocument(reopened.Name)
             Gui.updateGui()
 
             restored = reopened.getObject(dimension.Name)
             self.assertIsNotNone(restored)
             self.assertAngularOvershoots(restored, expected_state)
 
-            reopened.recompute()
+            recompute_off_gui_thread(reopened)
             self.assertAngularOvershoots(restored, expected_state)
         finally:
             if reopened is not None:
-                App.closeDocument(reopened.Name)
+                close_document(reopened)
             if original_name in App.listDocuments():
                 self.doc = App.getDocument(original_name)
             os.unlink(temp_file.name)
@@ -346,12 +371,13 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
 
         vobj.DimOvershoot = 0
         vobj.ExtOvershoot = 0
-        self.doc.recompute()
+        recompute_off_gui_thread(self.doc)
         self.assertEqual(self.extractOvershootLines(self.getAngularSvg(dimension)), [])
 
         vobj.DimOvershoot = 1
         vobj.ExtOvershoot = 2
-        self.doc.recompute()
+        recompute_off_gui_thread(self.doc)
+        self._pump_draft_view()
         expected_lines = self.getExpectedAngularSvgOvershoots(dimension)
         self.assertAngularSvgOvershoots(dimension, expected_lines)
 
@@ -359,25 +385,30 @@ class DraftGuiDimension(test_base.DraftTestCaseDoc):
         temp_file.close()
         reopened = None
         try:
-            self.doc.saveAs(temp_file.name)
+            save_document_as(self.doc, temp_file.name)
             self.doc = App.getDocument(original_name)
             reopened = App.openDocument(temp_file.name)
+            App.setActiveDocument(reopened.Name)
             Gui.updateGui()
 
             restored = reopened.getObject(dimension.Name)
             self.assertIsNotNone(restored)
             self.assertAngularSvgOvershoots(restored, expected_lines)
 
-            reopened.recompute()
+            recompute_off_gui_thread(reopened)
             self.assertAngularSvgOvershoots(restored, expected_lines)
 
             view = self.createTechDrawDraftView(reopened, restored)
-            reopened.recompute()
-            Gui.updateGui()
+            recompute_off_gui_thread(reopened)
+            try:
+                refresh_document(reopened, timeout_seconds=30.0)
+            except RuntimeError:
+                self._pump_draft_view(timeout_seconds=5.0)
+            self._wait_for_draftview_symbol_overshoots(view, len(expected_lines), timeout_seconds=60.0)
             self.assertAngularSvgOvershoots(restored, expected_lines, view.Symbol)
         finally:
             if reopened is not None:
-                App.closeDocument(reopened.Name)
+                close_document(reopened)
             if original_name in App.listDocuments():
                 self.doc = App.getDocument(original_name)
             os.unlink(temp_file.name)

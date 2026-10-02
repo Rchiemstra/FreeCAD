@@ -5,6 +5,7 @@
 
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 from PySide import QtCore
@@ -26,7 +27,7 @@ class DrawViewDetailTest(unittest.TestCase):
         self.view = FreeCAD.ActiveDocument.addObject("TechDraw::DrawViewPart", "View")
         self.page.addView(self.view)
         FreeCAD.ActiveDocument.View.Source = [FreeCAD.ActiveDocument.Box]
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         #wait for threads to complete before checking result
         loop = QtCore.QEventLoop()
@@ -41,7 +42,11 @@ class DrawViewDetailTest(unittest.TestCase):
 
     def tearDown(self):
         print("DrawViewDetail test finished")
-        FreeCAD.closeDocument("TDPart")
+        if "TDPart" in FreeCAD.listDocuments():
+            if getattr(FreeCAD, "GuiUp", False):
+                close_document(FreeCAD.getDocument("TDPart"))
+            else:
+                FreeCAD.closeDocument("TDPart")
 
     def testMakeDrawViewPart(self):
         """Tests if a view can be added to page"""
@@ -54,7 +59,7 @@ class DrawViewDetailTest(unittest.TestCase):
         detail.Direction = self.view.Direction
         detail.XDirection = self.view.XDirection
         self.page.addView(detail)
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
         print("DrawViewDetail test: Detail created")
 
         #wait for threads to complete before checking result

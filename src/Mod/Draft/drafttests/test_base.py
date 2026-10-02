@@ -47,6 +47,12 @@ class DraftTestCaseDoc(unittest.TestCase):
 
     def tearDown(self):
         """Close the document after each test."""
+        if getattr(App, "GuiUp", False):
+            from Test.GuiRecompute import close_document
+
+            if self.doc.Name in App.listDocuments():
+                close_document(self.doc)
+            return
         App.closeDocument(self.doc.Name)
 
 

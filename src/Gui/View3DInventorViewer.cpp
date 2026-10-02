@@ -1669,12 +1669,19 @@ void View3DInventorViewer::removeViewProvider(ViewProvider* pcProvider)
         _ViewProviderMap.erase(root);
     }
 
+    // Front/back roots are Separators. removeChild(SoNode*) logs
+    // "tried to remove non-existent child (Separator)" and can corrupt the
+    // scene if the node was never inserted or was already claimed by a group.
     if (SoSeparator* fore = pcProvider->getFrontRoot()) {
-        foregroundroot->removeChild(fore);
+        if (foregroundroot && foregroundroot->findChild(fore) >= 0) {
+            foregroundroot->removeChild(fore);
+        }
     }
 
     if (SoSeparator* back = pcProvider->getBackRoot()) {
-        backgroundroot->removeChild(back);
+        if (backgroundroot && backgroundroot->findChild(back) >= 0) {
+            backgroundroot->removeChild(back);
+        }
     }
 
     _ViewProviderSet.erase(pcProvider);

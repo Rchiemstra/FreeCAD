@@ -28,6 +28,7 @@
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <fastsignals/signal.h>
+#include <chrono>
 #include <functional>
 #include <exception>
 #include <memory>
@@ -60,8 +61,12 @@ class AppExport MainThreadSignalConfig
 public:
     using IsMainThreadFn = bool (*)();  // true iff currently on GUI/main thread
     using InvokeFn = void (*)(std::function<void()>&& fn, bool blocking);
+    //! Runs the functors marshalled to the main thread so far; waits up to
+    //! \a maxWait for one when none is pending. Main thread only.
+    using ServiceFn = void (*)(std::chrono::milliseconds maxWait);
 
     static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke);
+    static void setServiceHook(ServiceFn service);
 
     //! With no hooks installed, the current thread is treated as "main".
     static bool isMainThread();
@@ -70,6 +75,27 @@ public:
 
     //! With no hooks installed, runs \a fn inline.
     static void invoke(std::function<void()>&& fn, bool blocking);
+
+    /**
+     * Wait on the main thread without running its event loop: execute only
+     * functors other threads marshalled through invoke() (they may be blocked
+     * on them), so no input, timer or other queued event is re-entered. Returns
+     * false, after sleeping \a maxWait, when no service hook is installed.
+     */
+    static bool serviceMarshalledTasks(std::chrono::milliseconds maxWait);
+
+    //! True while this thread runs a functor whose sender is blocked on it.
+    [[nodiscard]] static bool insideBlockingInvoke() noexcept;
+
+    //! Marks the execution of a blocking invoke() functor on this thread.
+    class AppExport BlockingInvokeScope final
+    {
+    public:
+        BlockingInvokeScope() noexcept;
+        ~BlockingInvokeScope();
+        BlockingInvokeScope(const BlockingInvokeScope&) = delete;
+        BlockingInvokeScope& operator=(const BlockingInvokeScope&) = delete;
+    };
 };
 
 namespace detail

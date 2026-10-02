@@ -80,10 +80,36 @@ def PrintAll():
     return suite
 
 
+def _drain_gui_after_tests() -> None:
+    if not getattr(FreeCAD, "GuiUp", False):
+        return
+    import time
+
+    from PySide import QtCore
+    from Test.GuiRecompute import close_document
+
+    for name in list(FreeCAD.listDocuments()):
+        if name not in FreeCAD.listDocuments():
+            continue
+        try:
+            document = FreeCAD.getDocument(name)
+        except Exception:
+            continue
+        close_document(document)
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        if not FreeCAD.listDocuments():
+            break
+        time.sleep(0.01)
+
+
 def TestText(s):
     s = unittest.defaultTestLoader.loadTestsFromName(s)
     r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
     retval = r.run(s)
+    _drain_gui_after_tests()
     # Flushing to make sure the stream is written to the console
     # before the wrapping process stops executing. Without this line
     # executing the tests from command line did not show stats
@@ -100,8 +126,10 @@ def RunConfiguredTextTest():
     for tc in test_cases:
         suite.addTest(tryLoadingTest(tc))
     r = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    result = r.run(suite)
+    _drain_gui_after_tests()
     sys.stdout.flush()
-    return r.run(suite)
+    return result
 
 
 def Test(s):

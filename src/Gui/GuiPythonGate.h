@@ -73,10 +73,12 @@ using GuiPythonObserverValueEventHandler =
 /**
  * Central gate for GUI-thread Python entry.
  *
- * Checks document and GIL availability before acquisition. Non-model callbacks
- * may be queued when the GIL is held by document Python; model-touching and
- * undeclared observer work is rejected immediately. The native GUI event loop
- * never blocks waiting for the GIL.
+ * Checks document and GIL availability before acquisition. Observer delivery
+ * and non-model callbacks that wrap GUI Python objects are queued when called
+ * off the GUI thread (or when the GIL is held by document Python).
+ * Model-touching work on the GUI thread is rejected immediately when the
+ * document lane or GIL is busy. The native GUI event loop never blocks waiting
+ * for the GIL.
  */
 class GuiExport GuiPythonGate
 {

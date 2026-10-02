@@ -7,6 +7,7 @@
 
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import os
 
 
@@ -41,7 +42,7 @@ p, li { white-space: pre-wrap; }
     rc = page.addView(view1)
     view1.X = 148
     view1.Y = 105
-    FreeCAD.ActiveDocument.recompute()
+    recompute_document(FreeCAD.ActiveDocument)
 
     # make leader
     print("making leader")
@@ -72,7 +73,7 @@ p, li { white-space: pre-wrap; }
     blockObj.Y = 5
     blockObj.AnnoText = myHTMLText
 
-    FreeCAD.ActiveDocument.recompute()
+    recompute_document(FreeCAD.ActiveDocument)
 
     rc = False
     if ("Up-to-date" in leaderObj.State) and ("Up-to-date" in blockObj.State):

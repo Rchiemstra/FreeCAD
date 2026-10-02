@@ -8,6 +8,7 @@
 #include "DocumentRecomputeCoordinator.h"
 #include "DocumentRevisionIndex.h"
 #include "DocumentWouldBlock.h"
+#include "MainThreadSignal.h"
 
 #include <Base/Interpreter.h>
 
@@ -150,9 +151,14 @@ public:
     /**
      * Run \p fn on the lane owner thread and wait for the result.
      *
-     * Must not be called from the GUI thread when \p fn would block on model
-     * work. When \p releaseGilWhileWaiting is true, releases the GIL for the
-     * wait if this thread holds it (see PyGILState_Check()).
+     * Off the GUI thread this refuses while model work runs unless
+     * \p allowWhileCommandActive. On the GUI thread it is the synchronous
+     * compatibility path: it waits for running model work to finish and then
+     * for \p fn, executing meanwhile only the functors the owner marshals to the
+     * GUI thread (MainThreadSignalConfig::serviceMarshalledTasks()), never the
+     * Qt event loop. When \p releaseGilWhileWaiting is true, releases the GIL
+     * for the wait if this thread holds it (see PyGILState_Check()); the GUI
+     * thread always releases it so owner-thread Python can run.
      */
     template<typename Fn>
     auto dispatchToOwner(Fn&& fn,
@@ -171,68 +177,73 @@ public:
             }
         }
 
-        // Sync App APIs must call DocumentWouldBlock::throwIfGuiThread before
-        // reaching here. Collaboration prepare/commit entry points may hop from
-        // the GUI onto the owner for a short admission; refuse only while a
-        // command is already executing unless the caller opts in.
-        {
+        const bool onGui = DocumentWouldBlock::isGuiThread();
+        if (onGui && MainThreadSignalConfig::insideBlockingInvoke()) {
+            // The owner may be the sender that is blocked on this very functor.
+            throw DocumentWouldBlock(
+                "a synchronous document call cannot wait for the document owner from "
+                "inside a notification the owner is blocked on; use the asynchronous API");
+        }
+        if (!onGui) {
             std::lock_guard lock(_mutex);
-            if (_active && !allowWhileCommandActive
-                && documentCommandKindBlocksOwnerDispatch(_active->command.kind)) {
+            if (commandBlocksDispatchLocked(allowWhileCommandActive)) {
                 throw DocumentWouldBlock(
                     "document execution lane is busy executing model work; use "
                     "DocumentHandle::trySubmit() instead");
             }
         }
 
-        DocumentWouldBlock::throwIfGuiThread(
-            "DocumentExecutionLane::dispatchToOwner()",
-            "DocumentHandle::trySubmit()");
-
         std::optional<Base::PyGILStateRelease> release;
-        if (releaseGilWhileWaiting && Py_IsInitialized() && PyGILState_Check()) {
+        if ((releaseGilWhileWaiting || onGui) && Py_IsInitialized() && PyGILState_Check()) {
             release.emplace();
         }
 
         // std::function requires a copyable target; share the promise and
         // callable so the queued lambda is copy-constructible.
         auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
-        if constexpr (std::is_void_v<Result>) {
-            auto promise = std::make_shared<std::promise<void>>();
-            auto future = promise->get_future();
-            {
-                std::lock_guard lock(_mutex);
-                _dispatchQueue.push_back([promise, sharedFn]() {
-                    try {
-                        (*sharedFn)();
-                        promise->set_value();
-                    }
-                    catch (...) {
-                        promise->set_exception(std::current_exception());
-                    }
-                });
-                _workAvailable.notify_one();
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        std::function<void()> task = [promise, sharedFn]() {
+            try {
+                if constexpr (std::is_void_v<Result>) {
+                    (*sharedFn)();
+                    promise->set_value();
+                }
+                else {
+                    promise->set_value((*sharedFn)());
+                }
             }
-            future.get();
-            return;
-        }
-        else {
-            auto promise = std::make_shared<std::promise<Result>>();
-            auto future = promise->get_future();
+            catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        };
+
+        if (!onGui) {
             {
                 std::lock_guard lock(_mutex);
-                _dispatchQueue.push_back([promise, sharedFn]() {
-                    try {
-                        promise->set_value((*sharedFn)());
-                    }
-                    catch (...) {
-                        promise->set_exception(std::current_exception());
-                    }
-                });
+                _dispatchQueue.push_back(std::move(task));
                 _workAvailable.notify_one();
             }
             return future.get();
         }
+
+        DocumentExecutionLaneGuiDispatchPumpScope pumping;
+        constexpr auto serviceSlice = std::chrono::milliseconds(2);
+        while (true) {
+            {
+                std::lock_guard lock(_mutex);
+                if (!commandBlocksDispatchLocked(allowWhileCommandActive)) {
+                    _dispatchQueue.push_back(std::move(task));
+                    _workAvailable.notify_one();
+                    break;
+                }
+            }
+            MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+        }
+        while (future.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
+            MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+        }
+        return future.get();
     }
 
     void joinThread();
@@ -246,6 +257,13 @@ public:
 
 private:
     friend struct DocumentHandle::State;
+
+    /** True when the active command must finish before a dispatch may run. Holds _mutex. */
+    [[nodiscard]] bool commandBlocksDispatchLocked(const bool allowWhileCommandActive) const
+    {
+        return _active && !allowWhileCommandActive
+            && documentCommandKindBlocksOwnerDispatch(_active->command.kind);
+    }
 
     /** In-flight command; complete before use in std::optional. */
     struct ActiveCommand
@@ -304,7 +322,7 @@ private:
     void publishActiveSnapshot(const DocumentCommandSnapshot& snapshot);
     void publishActiveSnapshotLocked(const DocumentCommandSnapshot& snapshot);
     void touchWatchdogProgress(ActiveCommand& command);
-    void updateWatchdogState(ActiveCommand& command);
+    void updateWatchdogState(DocumentCommandSnapshot& snapshot);
     [[nodiscard]] DocumentCommandRecomputeObservation makeRecomputeObservation(
         const DocumentRecomputeSnapshot& recompute) const;
     [[nodiscard]] DocumentExecutionBusyRejectionKind busyKind(

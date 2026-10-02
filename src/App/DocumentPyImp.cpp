@@ -208,6 +208,19 @@ PyObject* submitSimpleCommand(Document& document, const DocumentCommandKind kind
     return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
 }
 
+// The synchronous Python API stays usable on the GUI thread: with an execution
+// lane the C++ call hops to the document owner and waits without running the
+// Qt event loop (DocumentExecutionLane::dispatchToOwner()). Without a lane it
+// would block the GUI thread, so it is refused there as before.
+void throwIfGuiThreadWithoutLane(const Document& document,
+                                 const char* syncApi,
+                                 const char* asyncApi)
+{
+    if (!document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(syncApi, asyncApi);
+    }
+}
+
 PyObject* submitRecomputeCommand(Document& document,
                                  const std::vector<DocumentObject*>& objects,
                                  const bool force,
@@ -770,7 +783,7 @@ PyObject* DocumentPy::save(PyObject* args)
 
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("Document.save()", "Document.saveAsync()");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(), "Document.save()", "Document.saveAsync()");
         if (!getDocumentPtr()->save()) {
             if (*(getDocumentPtr()->FileName.getValue()) == '\0') {
                 PyErr_SetString(PyExc_ValueError, "Object attribute 'FileName' is not set");
@@ -795,15 +808,36 @@ PyObject* DocumentPy::save(PyObject* args)
 
 PyObject* DocumentPy::saveAsync(PyObject* args)
 {
-    if (!PyArg_ParseTuple(args, "")) {
+    char* fn = nullptr;
+    PyObject* overwriteObject = Py_True;
+    if (!PyArg_ParseTuple(args, "|etO!", "utf-8", &fn, &PyBool_Type, &overwriteObject)) {
         return nullptr;
     }
+
+    std::string utf8Name;
+    if (fn) {
+        utf8Name = fn;
+        PyMem_Free(fn);
+    }
+
     PY_TRY
     {
-        if (!getDocumentPtr()->executionLane()) {
+        Document& document = *getDocumentPtr();
+        if (!document.executionLane()) {
             DocumentWouldBlock::throwIfGuiThread("Document.save()", "Document.saveAsync()");
         }
-        return submitSimpleCommand(*getDocumentPtr(), DocumentCommandKind::Save);
+
+        DocumentCommand command;
+        command.kind = DocumentCommandKind::Save;
+        command.document = document.executionHandle().identity();
+        if (!utf8Name.empty()) {
+            command.save = DocumentCommandSavePayload {};
+            command.save->targetPath = std::move(utf8Name);
+            command.save->saveAs = true;
+            command.save->overwrite = Base::asBoolean(overwriteObject);
+        }
+
+        return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
     }
     PY_CATCH;
 }
@@ -815,8 +849,8 @@ PyObject* DocumentPy::saveWithOutcome(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document.saveWithOutcome()", "Document.saveAsync()");
+        throwIfGuiThreadWithoutLane(
+            *getDocumentPtr(), "Document.saveWithOutcome()", "Document.saveAsync()");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveWithOutcome()));
     }
     PY_CATCH
@@ -829,7 +863,8 @@ PyObject* DocumentPy::forceSave(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("Document.forceSave()", "Document.saveAsync()");
+        throwIfGuiThreadWithoutLane(
+            *getDocumentPtr(), "Document.forceSave()", "Document.saveAsync()");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->forceSave()));
     }
     PY_CATCH
@@ -847,8 +882,9 @@ PyObject* DocumentPy::saveAs(PyObject* args)
 
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document.saveAs()", "Document.saveAsync() / DocumentCommandKind::Save");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(),
+                                    "Document.saveAs()",
+                                    "Document.saveAsync() / DocumentCommandKind::Save");
         // Preserve the legacy Python contract: saveAs() returns None when the
         // C++ bool result is false. Callers that need an unambiguous failure
         // result use saveAsWithOutcome().
@@ -871,9 +907,9 @@ PyObject* DocumentPy::saveAsWithPolicy(PyObject* args)
 
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document.saveAsWithPolicy()",
-            "Document.saveAsync() / DocumentCommandKind::Save");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(),
+                                    "Document.saveAsWithPolicy()",
+                                    "Document.saveAsync() / DocumentCommandKind::Save");
         const auto status = getDocumentPtr()->saveAsWithPolicy(
             utf8Name.c_str(), Base::asBoolean(overwriteObject));
         Py::Dict result;
@@ -919,9 +955,9 @@ PyObject* DocumentPy::saveAsWithOutcome(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document.saveAsWithOutcome()",
-            "Document.saveAsync() / DocumentCommandKind::Save");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(),
+                                    "Document.saveAsWithOutcome()",
+                                    "Document.saveAsync() / DocumentCommandKind::Save");
         return Py::new_reference_to(saveOutcomeToPy(getDocumentPtr()->saveAsWithOutcome(
             utf8Name.c_str(), Base::asBoolean(overwriteObject), expectedHash)));
     }
@@ -1994,7 +2030,7 @@ PyObject* DocumentPy::undo(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("Document.undo()", "Document.undoAsync()");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(), "Document.undo()", "Document.undoAsync()");
         if (getDocumentPtr()->getAvailableUndos()) {
             getDocumentPtr()->undo();
         }
@@ -2010,7 +2046,7 @@ PyObject* DocumentPy::redo(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("Document.redo()", "Document.redoAsync()");
+        throwIfGuiThreadWithoutLane(*getDocumentPtr(), "Document.redo()", "Document.redoAsync()");
         if (getDocumentPtr()->getAvailableRedos()) {
             getDocumentPtr()->redo();
         }
@@ -2139,7 +2175,8 @@ PyObject* DocumentPy::recompute(PyObject* args)
 
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread("Document.recompute()", "Document.recomputeAsync()");
+        throwIfGuiThreadWithoutLane(
+            *getDocumentPtr(), "Document.recompute()", "Document.recomputeAsync()");
         std::vector<App::DocumentObject*> objs;
         if (pyobjs != Py_None) {
             if (!PySequence_Check(pyobjs)) {

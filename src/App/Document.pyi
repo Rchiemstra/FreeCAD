@@ -97,8 +97,8 @@ class Document(PropertyContainer):
         """
         ...
 
-    def saveAsync(self) -> DocumentCommandHandle:
-        """Submit save without waiting and return a non-blocking command handle."""
+    def saveAsync(self, path: str = "", overwrite: bool = True, /) -> DocumentCommandHandle:
+        """Submit save or save-as without waiting and return a non-blocking command handle."""
         ...
 
     def saveWithOutcome(self) -> dict[str, object]:

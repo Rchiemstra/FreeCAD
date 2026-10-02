@@ -259,6 +259,18 @@ bool App::atomicPresentationMutationAdmissionHeldByOtherThread(
     }
 }
 
+bool App::atomicPresentationMutationAdmissionActive() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target != nullptr;
+    }
+    catch (...) {
+        return true;
+    }
+}
+
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
 {
     auto& admission = atomicPresentationMutationAdmission();

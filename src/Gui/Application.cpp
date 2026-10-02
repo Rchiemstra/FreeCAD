@@ -44,7 +44,10 @@
 #include <QTextStream>
 #include <QTimer>
 
+#include <condition_variable>
+#include <deque>
 #include <future>
+#include <mutex>
 #include <QThread>
 #include <QWindow>
 #include <QStyleFactory>
@@ -56,6 +59,8 @@
 #include <ranges>
 
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
+#include "Utilities.h"
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectPy.h>
 #include <App/MainThreadSignal.h>
@@ -198,6 +203,10 @@ void requireMainThread(const char* api)
     }
 
     Base::Console().error("GUI API '%s' may only be used from the main thread.\n", api);
+    // The Python frame that called in is still valid here. After this throw
+    // unwinds through it, PyFrame_GetCode SIGSEGVs. Callers that convert the
+    // error must skip frame inspection while the flag is set.
+    Base::setPythonFrameInspectionUnsafe(true);
     throw Base::RuntimeError(
         std::string("GUI API '") + api + "' may only be used from the main thread"
     );
@@ -459,6 +468,89 @@ bool qtIsMainThread()
     return !qApp || (QThread::currentThread() == qApp->thread());
 }
 
+// Functors marshalled to the GUI thread, in submission order. The queued Qt
+// call drains this queue, and so does serviceMarshalledTasks() while the GUI
+// thread waits synchronously on a document owner thread; whoever pops a task
+// runs it, so each one runs exactly once and in order.
+struct MarshalledTask
+{
+    std::function<void()> fn;
+    std::shared_ptr<std::promise<void>> blockingResult;  // set when the sender waits
+};
+
+class MarshalledTaskQueue
+{
+public:
+    void push(MarshalledTask task)
+    {
+        {
+            std::lock_guard lock(_mutex);
+            _tasks.push_back(std::move(task));
+        }
+        _changed.notify_all();
+    }
+
+    std::deque<MarshalledTask> take(const std::chrono::milliseconds maxWait)
+    {
+        std::unique_lock lock(_mutex);
+        if (_tasks.empty() && maxWait.count() > 0) {
+            _changed.wait_for(lock, maxWait, [this] { return !_tasks.empty(); });
+        }
+        return std::exchange(_tasks, {});
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    std::deque<MarshalledTask> _tasks;
+};
+
+MarshalledTaskQueue& marshalledTasks()
+{
+    static auto* queue = new MarshalledTaskQueue;
+    return *queue;
+}
+
+void runMarshalledTask(MarshalledTask& task)
+{
+    if (task.blockingResult) {
+        App::MainThreadSignalConfig::BlockingInvokeScope blocking;
+        try {
+            task.fn();
+            task.blockingResult->set_value();
+        }
+        catch (...) {
+            task.blockingResult->set_exception(std::current_exception());
+        }
+        return;
+    }
+    try {
+        task.fn();
+    }
+    catch (const Base::Exception& e) {
+        e.reportException();
+    }
+    catch (const std::exception& e) {
+        Base::Console().error("Unhandled exception in GUI-thread notification: %s\n", e.what());
+    }
+}
+
+void drainMarshalledTasks(const std::chrono::milliseconds maxWait)
+{
+    auto tasks = marshalledTasks().take(maxWait);
+    while (!tasks.empty()) {
+        auto task = std::move(tasks.front());
+        tasks.pop_front();
+        runMarshalledTask(task);
+    }
+}
+
+// Hook: wait on the GUI thread running only marshalled functors.
+void qtServiceMarshalledTasks(const std::chrono::milliseconds maxWait)
+{
+    drainMarshalledTasks(maxWait);
+}
+
 // Hook: invoke a functor on the GUI thread. Blocking waits use queued delivery
 // plus a future, never Qt::BlockingQueuedConnection.
 void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
@@ -468,30 +560,20 @@ void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
         return;
     }
 
-    if (!blocking) {
-        QMetaObject::invokeMethod(
-            MainThreadInvoker::instance(),
-            [f = std::move(fn)]() mutable { f(); },
-            Qt::QueuedConnection);
-        return;
+    MarshalledTask task {std::move(fn), nullptr};
+    std::future<void> result;
+    if (blocking) {
+        task.blockingResult = std::make_shared<std::promise<void>>();
+        result = task.blockingResult->get_future();
     }
-
-    auto sharedFn = std::make_shared<std::decay_t<decltype(fn)>>(std::move(fn));
-    auto promise = std::make_shared<std::promise<void>>();
-    auto future = promise->get_future();
+    marshalledTasks().push(std::move(task));
     QMetaObject::invokeMethod(
         MainThreadInvoker::instance(),
-        [sharedFn, promise]() mutable {
-            try {
-                (*sharedFn)();
-                promise->set_value();
-            }
-            catch (...) {
-                promise->set_exception(std::current_exception());
-            }
-        },
+        [] { drainMarshalledTasks(std::chrono::milliseconds::zero()); },
         Qt::QueuedConnection);
-    future.get();
+    if (blocking) {
+        result.get();
+    }
 }
 
 }  // namespace Gui
@@ -581,6 +663,7 @@ Application::Application(bool GUIenabled)
     // App::GetApplication().Attach(this);
     if (GUIenabled) {
         App::MainThreadSignalConfig::setHooks(&qtIsMainThread, &qtInvokeOnMain);
+        App::MainThreadSignalConfig::setServiceHook(&qtServiceMarshalledTasks);
         installDocumentPresentationBoundaryHook();
 
         // NOLINTBEGIN
@@ -2235,6 +2318,15 @@ void Application::updateActive()
 
 void Application::updateActions(bool delay)
 {
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        const bool delayActions = delay;
+        Gui::scheduleGuiSingleShot(0, [delayActions]() {
+            if (Application::Instance) {
+                Application::Instance->updateActions(delayActions);
+            }
+        });
+        return;
+    }
     if (auto* mainWindow = getMainWindow()) {
         mainWindow->updateActions(delay);
     }

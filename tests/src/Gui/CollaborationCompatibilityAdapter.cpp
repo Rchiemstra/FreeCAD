@@ -3,22 +3,31 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 #include <QApplication>
 #include <QScopeGuard>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include <App/Application.h>
 #include <App/Document.h>
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/DocumentWouldBlock.h>
+#include <App/MainThreadSignal.h>
 #include <App/MergeDocuments.h>
+#include <App/MutationClassification.h>
+#include <Base/Console.h>
 #include <Base/Interpreter.h>
 #include <Base/Parameter.h>
 #include <Base/Stream.h>
+#include <Base/Tools.h>
 #include <Gui/Application.h>
 #include <Gui/CollaborationCompatibilityAdapter.h>
 #include <Gui/Command.h>
@@ -729,4 +738,256 @@ TEST_F(CollaborationCompatibilityIntegrationTest,
     ASSERT_TRUE(outcome.completed()) << outcome.diagnostic;
     EXPECT_FALSE(competingThreadAcquiredMutex)
         << "shared presentation callback ran without App commit serialization";
+}
+
+namespace
+{
+
+class ConsoleErrorCapture final: public Base::ILogger
+{
+public:
+    ConsoleErrorCapture()
+    {
+        Base::Console().attachObserver(this);
+    }
+
+    ~ConsoleErrorCapture() override
+    {
+        Base::Console().detachObserver(this);
+    }
+
+    ConsoleErrorCapture(const ConsoleErrorCapture&) = delete;
+    ConsoleErrorCapture& operator=(const ConsoleErrorCapture&) = delete;
+
+    void sendLog(
+        const std::string& /*notifiername*/,
+        const std::string& msg,
+        Base::LogStyle level,
+        Base::IntendedRecipient /*recipient*/,
+        Base::ContentType /*content*/
+    ) override
+    {
+        if (level == Base::LogStyle::Error) {
+            std::lock_guard lock(_mutex);
+            _errors += msg;
+        }
+    }
+
+    const char* name() override
+    {
+        return "ConsoleErrorCapture";
+    }
+
+    std::string errors() const
+    {
+        std::lock_guard lock(_mutex);
+        return _errors;
+    }
+
+private:
+    mutable std::mutex _mutex;
+    std::string _errors;
+};
+
+}  // namespace
+
+// Regression: the idle live-presentation catch-up refreshed view providers
+// while another document held atomic presentation admission. The mutation
+// guard then threw from the ObjectStatusLocker destructor in
+// ViewProviderDocumentObject::updateView() and std::terminate aborted the run.
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       idleLivePresentationCatchUpWaitsForForeignAtomicPresentationAdmission)
+{
+    // App::Placement's view provider has a display mode, so isShow() can turn
+    // true again (App::FeatureTest's provider never shows anything).
+    auto* placement = _document->addObject("App::Placement", "CatchUpPlacement");
+    ASSERT_NE(placement, nullptr);
+    Gui::Test::recomputeWithoutBlockingGui(*_document);
+    auto* viewProvider = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(placement));
+    ASSERT_NE(viewProvider, nullptr);
+    ASSERT_TRUE(viewProvider->Visibility.getValue());
+    ASSERT_TRUE(viewProvider->isShow());
+    // Hide only the Coin switch and record it as a deferred show(), so the
+    // catch-up has a visibility resync to do.
+    viewProvider->Gui::ViewProvider::hide();
+    ASSERT_FALSE(viewProvider->isShow());
+    _guiDocument->noteDeferredVisibilityChange(viewProvider);
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName =
+        App::GetApplication().getUniqueDocumentName("catchUpAdmissionOther");
+    auto* other = App::GetApplication().newDocument(
+        otherName.c_str(), "catch-up admission other", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] {
+        App::GetApplication().closeDocument(otherName.c_str());
+        QApplication::processEvents();
+    });
+
+    ConsoleErrorCapture capture;
+    App::beginAtomicPresentationMutationTarget(*other);
+    {
+        const auto endAdmission =
+            qScopeGuard([&] { App::endAtomicPresentationMutationTarget(*other); });
+        _guiDocument->catchUpIdleLivePresentation();
+        QApplication::processEvents();
+        EXPECT_FALSE(viewProvider->isShow())
+            << "catch-up refreshed view providers during a foreign admission";
+    }
+    EXPECT_EQ(capture.errors(), "");
+
+    // The deferred catch-up stays queued and runs once admission has ended.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!viewProvider->isShow() && std::chrono::steady_clock::now() < deadline) {
+        QApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(viewProvider->isShow());
+    EXPECT_EQ(capture.errors(), "");
+}
+
+// Synchronous compatibility: legacy callers (macros, workbench commands)
+// recompute on the GUI thread. The recompute runs on the document owner while
+// the GUI thread runs only marshalled owner work, never its Qt event loop.
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       synchronousRecomputeOnGuiThreadWaitsWithoutEventLoop)
+{
+    _object->touch();
+    ASSERT_TRUE(_object->isTouched());
+    bool queuedEventRan = false;
+    QTimer::singleShot(0, qApp, [&queuedEventRan] { queuedEventRan = true; });
+
+    int recomputed = 0;
+    ASSERT_NO_THROW(recomputed = _document->recompute());
+
+    EXPECT_GE(recomputed, 1);
+    EXPECT_FALSE(_object->isTouched());
+    EXPECT_FALSE(queuedEventRan) << "the synchronous wait ran the Qt event loop";
+    QApplication::processEvents();
+    EXPECT_TRUE(queuedEventRan);
+}
+
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       synchronousPythonDocumentApisWorkOnGuiThread)
+{
+    const auto run = [](const std::string& code) {
+        Base::PyGILStateLocker lock;
+        Base::Interpreter().runString(code.c_str());
+    };
+    const std::string document = "App.getDocument('" + _documentName + "')";
+
+    ASSERT_NO_THROW(run(document + ".getObject('Target').touch()"));
+    EXPECT_TRUE(_object->isTouched());
+    ASSERT_NO_THROW(run(document + ".recompute()"));
+    EXPECT_FALSE(_object->isTouched());
+
+    ASSERT_NO_THROW(run("App.closeDocument('" + _documentName + "')"));
+    EXPECT_EQ(App::GetApplication().getDocument(_documentName.c_str()), nullptr)
+        << "closeDocument() returned before the document was closed";
+    _document = nullptr;
+}
+
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       synchronousCallInsideBlockingNotificationFailsInsteadOfDeadlocking)
+{
+    _object->touch();
+    // While the GUI thread runs a functor the owner is blocked on, waiting for
+    // that owner could never finish.
+    App::MainThreadSignalConfig::BlockingInvokeScope blockingNotification;
+    EXPECT_THROW(_document->recompute(), App::DocumentWouldBlock);
+}
+
+// Regression: the live catch-up re-synced every provider whose scene state
+// differed from Visibility and so hid scene-only temporary visibility, such as
+// a PartDesign boolean exposing its active tool body
+// (TestActiveObject.testBooleanActiveBodyVisibilityWhenBooleanBecomesNonTip).
+TEST_F(CollaborationCompatibilityIntegrationTest, liveCatchUpKeepsSceneOnlyVisibility)
+{
+    auto* placement = _document->addObject("App::Placement", "SceneOnlyPlacement");
+    ASSERT_NE(placement, nullptr);
+    Gui::Test::recomputeWithoutBlockingGui(*_document);
+    auto* viewProvider = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(placement));
+    ASSERT_NE(viewProvider, nullptr);
+
+    viewProvider->hide();
+    ASSERT_FALSE(viewProvider->Visibility.getValue());
+    // Scene-only exposure: shown in Coin while Visibility stays false.
+    viewProvider->Gui::ViewProvider::show();
+    ASSERT_TRUE(viewProvider->isShow());
+
+    _guiDocument->catchUpIdleLivePresentation();
+    EXPECT_TRUE(viewProvider->isShow());
+    EXPECT_FALSE(viewProvider->Visibility.getValue());
+}
+
+// Regression: a committed presentation revision applied after the live
+// catch-up had already run left the non-pickable committed Coin root installed
+// (prefersCommittedPresentation() stayed true) until the next model change, so
+// nothing in the 3D view could be picked or preselected.
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       committedPresentationRevisionHandsBackToLivePresentationWhenIdle)
+{
+    const auto processEventsFor = [](std::chrono::milliseconds duration) {
+        const auto until = std::chrono::steady_clock::now() + duration;
+        while (std::chrono::steady_clock::now() < until) {
+            QApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    // Let the live catch-up queued by SetUp's recompute run first.
+    processEventsFor(std::chrono::milliseconds(300));
+
+    _guiDocument->publishPresentationRevisionFromModel();
+    Gui::PresentationApplyPumpResult result {};
+    for (int turn = 0; turn < 20 && !result.committedRevision; ++turn) {
+        result = _guiDocument->pumpPresentationApply(50);
+    }
+    ASSERT_TRUE(result.committedRevision);
+
+    // Idle lane and no pending catch-up: the live view providers are current,
+    // so the committed root must not replace them, now or later.
+    EXPECT_FALSE(_guiDocument->prefersCommittedPresentation());
+    processEventsFor(std::chrono::milliseconds(200));
+    EXPECT_FALSE(_guiDocument->prefersCommittedPresentation());
+}
+
+// Regression: ViewProviderDocumentObject::updateView() holds an
+// ObjectStatusLocker on Visibility. When the lane owner took atomic
+// presentation admission while it was alive, restoring User1 threw from the
+// destructor and std::terminate aborted Gui_tests_run.
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       viewProviderRuntimeLockerIgnoresForeignAtomicPresentationAdmission)
+{
+    auto* viewProvider = freecad_cast<Gui::ViewProviderDocumentObject*>(
+        _guiDocument->getViewProvider(_object));
+    ASSERT_NE(viewProvider, nullptr);
+
+    App::DocumentInitFlags flags;
+    flags.createView = false;
+    const auto otherName =
+        App::GetApplication().getUniqueDocumentName("runtimeLockerAdmissionOther");
+    auto* other = App::GetApplication().newDocument(
+        otherName.c_str(), "runtime locker admission other", flags);
+    ASSERT_NE(other, nullptr);
+    const auto closeOther = qScopeGuard([&] {
+        App::GetApplication().closeDocument(otherName.c_str());
+        QApplication::processEvents();
+    });
+
+    using PropertyStatusLocker = Base::ObjectStatusLocker<App::Property::Status, App::Property>;
+    App::beginAtomicPresentationMutationTarget(*other);
+    const auto endAdmission =
+        qScopeGuard([&] { App::endAtomicPresentationMutationTarget(*other); });
+    EXPECT_NO_THROW({
+        PropertyStatusLocker locker(App::Property::User1, &viewProvider->Visibility);
+        EXPECT_TRUE(viewProvider->Visibility.testStatus(App::Property::User1));
+    });
+    EXPECT_FALSE(viewProvider->Visibility.testStatus(App::Property::User1));
+    // Persisted status bits on view provider properties stay guarded.
+    EXPECT_THROW(viewProvider->Visibility.setStatus(App::Property::Hidden, true),
+                 Base::RuntimeError);
+    EXPECT_FALSE(viewProvider->Visibility.testStatus(App::Property::Hidden));
 }

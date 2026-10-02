@@ -806,6 +806,9 @@ void Command::printPyCaller()
     if (!FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
         return;
     }
+    if (Base::isPythonFrameInspectionUnsafe()) {
+        return;
+    }
     PyFrameObject* frame = PyEval_GetFrame();
     if (!frame) {
         return;
@@ -816,9 +819,9 @@ void Command::printPyCaller()
     printCaller(file ? file : "<no file>", line);
 #else
     PyCodeObject* code = PyFrame_GetCode(frame);
-    const char* file = PyUnicode_AsUTF8(code->co_filename);
+    const char* file = code ? PyUnicode_AsUTF8(code->co_filename) : nullptr;
     printCaller(file ? file : "<no file>", line);
-    Py_DECREF(code);
+    Py_XDECREF(code);
 #endif
 }
 

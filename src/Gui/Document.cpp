@@ -21,6 +21,7 @@
  ***************************************************************************/
 
 #include <algorithm>
+#include <functional>
 #include <initializer_list>
 #include <tuple>
 #include <memory>
@@ -30,12 +31,14 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <cctype>
 #include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QBuffer>
 #include <QCheckBox>
 #include <QFileInfo>
@@ -43,6 +46,7 @@
 #include <QOpenGLWidget>
 #include <QTextStream>
 #include <QStatusBar>
+#include <QThread>
 #include <QTimer>
 #include <Inventor/actions/SoSearchAction.h>
 #include <Inventor/SoDB.h>
@@ -69,6 +73,7 @@
 #include <App/PropertyStandard.h>
 #include <App/Transactions.h>
 #include <App/ElementNamingUtils.h>
+#include <App/MutationClassification.h>
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <Base/Matrix.h>
@@ -90,6 +95,7 @@
 #include "Selection.h"
 #include "Thumbnail.h"
 #include "Tree.h"
+#include "Utilities.h"
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
 #include "DocumentPresentationCache.h"
@@ -124,6 +130,9 @@ struct DocumentP
     std::unique_ptr<PresentationApplyScheduler> presentationApplyScheduler;
     /** Keep committed Coin visible after apply until idle live updateData. */
     bool _preferCommittedPresentation {false};
+    bool _livePresentationCatchUpQueued {false};
+    /** Providers whose show()/hide() was deferred; compared, never dereferenced. */
+    std::set<const ViewProviderDocumentObject*> _deferredVisibilitySync;
     PersonalViewContextStore personalViewContexts;
     bool sharedPresentationPublicationSuppressed {false};
     Thumbnail thumb;
@@ -191,6 +200,7 @@ struct DocumentP
     Connection connectUndoDocument;
     Connection connectRedoDocument;
     Connection connectRecomputed;
+    Connection connectBecameStable;
     Connection connectSkipRecompute;
     Connection connectTransactionAppend;
     Connection connectTransactionRemove;
@@ -620,6 +630,9 @@ Document::Document(App::Document* pcDocument, Application* app)
     d->connectRecomputed = pcDocument->signalRecomputed.connect(
         std::bind(&Gui::Document::slotRecomputed, this, sp::_1)
     );
+    d->connectBecameStable = pcDocument->signalBecameStable.connect(
+        std::bind(&Gui::Document::slotBecameStable, this, sp::_1)
+    );
     d->connectSkipRecompute = pcDocument->signalSkipRecompute.connect(
         std::bind(&Gui::Document::slotSkipRecompute, this, sp::_1, sp::_2)
     );
@@ -678,6 +691,7 @@ Document::~Document()
     d->connectUndoDocument.disconnect();
     d->connectRedoDocument.disconnect();
     d->connectRecomputed.disconnect();
+    d->connectBecameStable.disconnect();
     d->connectSkipRecompute.disconnect();
     d->connectTransactionAppend.disconnect();
     d->connectTransactionRemove.disconnect();
@@ -1226,14 +1240,20 @@ void Document::beforeDelete()
 
 void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Property& Prop)
 {
+    // Replay, the stable-signal lock, a busy lane, or a non-GUI caller must
+    // not touch Coin or getMainWindow(). catchUpIdleLivePresentation() runs
+    // after scheduleGuiSingleShot once those are clear.
+    if (deferLivePresentationUpdates()) {
+        if (&Prop == &Obj.Visibility) {
+            noteDeferredVisibilityChange(
+                freecad_cast<ViewProviderDocumentObject*>(getViewProvider(&Obj)));
+        }
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
     ViewProvider* viewProvider = getViewProvider(&Obj);
     if (viewProvider) {
-        // While the lane is busy, do not drive presentation through sync
-        // updateData(Property*). Readers use the committed cache; a full
-        // revision is published at the next stable recompute boundary.
-        if (documentExecutionLaneBusy(*d->_pcDocument)) {
-            return;
-        }
         if (d->_preferCommittedPresentation) {
             d->_preferCommittedPresentation = false;
             syncCommittedPresentationInViewers();
@@ -1274,7 +1294,9 @@ void Document::slotChangedObject(const App::DocumentObject& Obj, const App::Prop
         }
     }
 
-    getMainWindow()->updateActions(true);
+    if (Application::Instance) {
+        Application::Instance->updateActions(true);
+    }
 }
 
 void Document::slotRelabelObject(const App::DocumentObject& Obj)
@@ -1352,26 +1374,9 @@ void Document::slotRecomputed(const App::Document& doc)
     }
     // Presentation capture runs on the document owner thread via the boundary hook.
     // Defer only passive GUI refresh so signal marshalling stays cheap.
-    if (App::hasDocumentPresentationBoundaryCallback()) {
-        const std::string docName = doc.getName();
-        QTimer::singleShot(0, qApp, [docName]() {
-            auto* appDoc = App::GetApplication().getDocument(docName.c_str());
-            if (!appDoc) {
-                return;
-            }
-            auto* guiDoc = Application::Instance->getDocument(appDoc);
-            if (!guiDoc || guiDoc->isAboutToClose()) {
-                return;
-            }
-            if (auto* window = getMainWindow()) {
-                window->updateActions();
-            }
-            TreeWidget::updateStatus();
-        });
-        return;
-    }
     const std::string docName = doc.getName();
-    QTimer::singleShot(0, qApp, [docName]() {
+    const bool presentationBoundaryActive = App::hasDocumentPresentationBoundaryCallback();
+    Gui::schedulePassiveGuiRefresh([docName, presentationBoundaryActive]() {
         auto* appDoc = App::GetApplication().getDocument(docName.c_str());
         if (!appDoc) {
             return;
@@ -1380,12 +1385,137 @@ void Document::slotRecomputed(const App::Document& doc)
         if (!guiDoc || guiDoc->isAboutToClose()) {
             return;
         }
-        guiDoc->publishPresentationRevisionFromModel();
+        if (!presentationBoundaryActive) {
+            guiDoc->publishPresentationRevisionFromModel();
+        }
         if (auto* window = getMainWindow()) {
             window->updateActions();
         }
         TreeWidget::updateStatus();
     });
+}
+
+void Document::slotBecameStable(const App::Document& doc)
+{
+    if (d->_pcDocument != &doc) {
+        return;
+    }
+
+    // Still inside the owner's blocking marshal. Defer past lock release before
+    // touching live Coin (same AutoSaver / DrawViewDraft pattern).
+    scheduleLivePresentationCatchUp();
+}
+
+bool Document::deferLivePresentationUpdates() const
+{
+    if (!d->_pcDocument || !App::MainThreadSignalConfig::isMainThread()) {
+        return true;
+    }
+    return d->_pcDocument->collaborationNotificationsReplaying()
+        || d->_pcDocument->collaborationStableNotificationActive()
+        || documentExecutionLaneBusy(*d->_pcDocument);
+}
+
+void Document::noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider)
+{
+    if (viewProvider) {
+        d->_deferredVisibilitySync.insert(viewProvider);
+    }
+}
+
+void Document::scheduleLivePresentationCatchUp()
+{
+    if (!d->_pcDocument || d->_livePresentationCatchUpQueued) {
+        return;
+    }
+    d->_livePresentationCatchUpQueued = true;
+    const std::string docName = d->_pcDocument->getName();
+    Gui::scheduleGuiSingleShot(0, [docName]() {
+        auto* appDoc = App::GetApplication().getDocument(docName.c_str());
+        if (!appDoc || !Application::Instance) {
+            return;
+        }
+        auto* guiDoc = Application::Instance->getDocument(appDoc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        guiDoc->d->_livePresentationCatchUpQueued = false;
+        guiDoc->catchUpIdleLivePresentation();
+    });
+}
+
+void Document::catchUpIdleLivePresentation()
+{
+    if (isAboutToClose() || !d->_pcDocument) {
+        return;
+    }
+
+    // updateView() restores property status bits from ObjectStatusLocker
+    // destructors. Under an atomic presentation admission (for any document)
+    // the mutation guard throws there, and a throw from a destructor
+    // terminates, so wait for the admission to end.
+    if (deferLivePresentationUpdates()
+        || d->_pcDocument->mustExecute()
+        || d->_pcDocument->testStatus(App::Document::Recomputing)
+        || App::atomicPresentationMutationAdmissionActive()) {
+        scheduleLivePresentationCatchUp();
+        return;
+    }
+
+    // Live Coin was skipped while the lane was busy or notifications were
+    // replaying. Drop committed preference and refresh view providers so
+    // picking / materials / edit overlays match the post-recompute model.
+    d->_preferCommittedPresentation = false;
+    syncCommittedPresentationInViewers();
+
+    // Only re-apply show()/hide() calls that were actually deferred; other
+    // providers may hold intentional scene-only visibility (e.g. a PartDesign
+    // boolean exposing its active tool body) that Visibility does not mirror.
+    const auto deferredVisibility = std::exchange(d->_deferredVisibilitySync, {});
+    for (auto& entry : d->_ViewProviderMap) {
+        ViewProviderDocumentObject* viewProvider = entry.second;
+        if (!viewProvider) {
+            continue;
+        }
+        try {
+            const bool wantVisible = viewProvider->Visibility.getValue();
+            const bool deferred = deferredVisibility.contains(viewProvider);
+            if (deferred && wantVisible != viewProvider->isShow()) {
+                if (wantVisible) {
+                    viewProvider->show();
+                }
+                else {
+                    viewProvider->hide();
+                }
+            }
+            const bool sceneOnlyVisible = !deferred && !wantVisible && viewProvider->isShow();
+            viewProvider->updateView();
+            if (sceneOnlyVisible && !viewProvider->isShow()) {
+                // updateView() re-applies Visibility; keep the scene-only exposure.
+                viewProvider->Gui::ViewProvider::show();
+            }
+            handleChildren3D(viewProvider);
+        }
+        catch (const Base::Exception& exception) {
+            exception.reportException();
+        }
+        catch (const std::exception& exception) {
+            FC_ERR("C++ exception refreshing live presentation: " << exception.what());
+        }
+        catch (...) {
+            FC_ERR("Cannot refresh live presentation for view provider");
+        }
+    }
+
+    for (auto* view : d->baseViews) {
+        auto* inventorView = dynamic_cast<View3DInventor*>(view);
+        if (!inventorView) {
+            continue;
+        }
+        if (auto* viewer = inventorView->getViewer()) {
+            viewer->redraw();
+        }
+    }
 }
 
 // This function is called when some asks to recompute a document that is marked
@@ -1433,7 +1563,12 @@ void Document::slotSkipRecompute(const App::Document& doc, const std::vector<App
 
 void Document::slotTouchedObject(const App::DocumentObject& Obj)
 {
-    getMainWindow()->updateActions(true);
+    if (deferLivePresentationUpdates()) {
+        scheduleLivePresentationCatchUp();
+    }
+    else if (auto* window = getMainWindow()) {
+        window->updateActions(true);
+    }
     FC_LOG(Obj.getFullName() << " touched");
 }
 
@@ -1796,7 +1931,12 @@ PresentationApplyPumpResult Document::pumpPresentationApply(const int budgetMs)
 {
     const auto result = presentationApplyScheduler().pump(budgetMs);
     if (result.committedRevision) {
-        d->_preferCommittedPresentation = true;
+        // The committed root is not pickable and only bridges until the live
+        // view providers catch up (a busy lane prefers it regardless, see
+        // syncCommittedPresentationInViewers()). If the live catch-up already
+        // ran before this revision was applied, nothing would clear the
+        // preference again and picking would stay dead until the next change.
+        d->_preferCommittedPresentation = d->_livePresentationCatchUpQueued;
     }
     syncCommittedPresentationInViewers();
     return result;
@@ -3299,7 +3439,11 @@ void Document::Save(Base::Writer& writer) const
         ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath(
             "User parameter:BaseApp/Preferences/Document"
         );
-        if (hGrp->GetBool("SaveThumbnail", true)) {
+        const bool saveThumbnail = hGrp->GetBool("SaveThumbnail", true);
+        const auto* qAppInstance = qobject_cast<QApplication*>(QCoreApplication::instance());
+        const bool onGuiThread =
+            qAppInstance && QThread::currentThread() == qAppInstance->thread();
+        if (saveThumbnail && onGuiThread) {
             int size = hGrp->GetInt("ThumbnailSize", 256);
             size = Base::clamp<int>(size, 64, 512);
             View3DInventorViewer* view = nullptr;
@@ -3473,12 +3617,31 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
     }
 
     if (!d->_restoredGuiDocument) {
-        for (auto* mdiView : getMDIViews()) {
-            if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
-                view3D->viewAll();
-                break;
+        const auto fitViewsWithoutGuiDocument = [](Gui::Document& guiDocument) {
+            for (auto* mdiView : guiDocument.getMDIViews()) {
+                if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
+                    view3D->viewAll();
+                    return;
+                }
             }
-        }
+        };
+        fitViewsWithoutGuiDocument(*this);
+        const std::string documentName = doc.getName();
+        Gui::schedulePassiveGuiRefresh([documentName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            auto* guiDocument = Gui::Application::Instance->getDocument(documentName.c_str());
+            if (!guiDocument) {
+                return;
+            }
+            for (auto* mdiView : guiDocument->getMDIViews()) {
+                if (auto* view3D = freecad_cast<View3DInventor*>(mdiView)) {
+                    view3D->viewAll();
+                    return;
+                }
+            }
+        });
     }
 
     // Loading establishes the durable presentation baseline for this document
@@ -3495,7 +3658,7 @@ void Document::slotFinishRestoreDocument(const App::Document& doc)
     }
 
     const std::string documentName = doc.getName();
-    QTimer::singleShot(0, [documentName]() {
+    Gui::scheduleGuiSingleShot(0, [documentName]() {
         if (!Gui::Application::Instance || !Gui::getMainWindow()) {
             return;
         }

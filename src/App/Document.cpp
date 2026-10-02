@@ -2423,7 +2423,6 @@ bool Document::checkOnCycle()
 bool Document::undo(const int id)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
-        DocumentWouldBlock::throwIfGuiThread("Document::undo()", "Document.undoAsync()");
         return d->executionLane->dispatchToOwner([this, id] { return undo(id); });
     }
     return collaborationService().undoCompatibilityTransaction(id);
@@ -2491,7 +2490,6 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
 bool Document::redo(const int id)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
-        DocumentWouldBlock::throwIfGuiThread("Document::redo()", "Document.redoAsync()");
         return d->executionLane->dispatchToOwner([this, id] { return redo(id); });
     }
     return collaborationService().redoCompatibilityTransaction(id);
@@ -2852,6 +2850,12 @@ bool Document::transacting() const
 
 void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What, int line)
 {
+    // Visibility sync and other observer echoes during replay must not open a
+    // transaction. ensureCollaborationTransactionControlAllowed() would throw,
+    // and a booked global transaction is how that echo reaches openTransaction().
+    if (d->collaborationReplayingNotifications) {
+        return;
+    }
     // if no transaction open, open one!
     if (isPerformingTransaction() || d->activeUndoTransaction) {
         return;
@@ -3384,7 +3388,7 @@ void Document::clearDocument() // NOLINT
     d->activeObject = nullptr;
 
     if (!d->objectArray.empty()) {
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
         GetApplication().signalNewDocument(*this, false);
@@ -4739,9 +4743,6 @@ void Document::ensureCollaborationSaveAllowed() const
 bool Document::saveAs(const char* _file)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document::saveAs()",
-            "Document.saveAsync() / DocumentCommandKind::Save");
         return d->executionLane->dispatchToOwner([this, _file] { return saveAs(_file); });
     }
     ensureCollaborationSaveAllowed();
@@ -4773,8 +4774,9 @@ bool Document::saveCopy(const char* file) const
 
 DocumentSaveOutcome Document::saveWithOutcome()
 {
-    DocumentWouldBlock::throwIfGuiThread(
-        "Document::saveWithOutcome()", "Document::saveAsync() / DocumentCommandKind::Save");
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return saveWithOutcome(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4797,8 +4799,9 @@ DocumentSaveOutcome Document::saveWithOutcome()
 
 DocumentSaveOutcome Document::forceSave()
 {
-    DocumentWouldBlock::throwIfGuiThread(
-        "Document::forceSave()", "Document::saveAsync() / DocumentCommandKind::Save");
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return forceSave(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4829,9 +4832,6 @@ DocumentSaveOutcome Document::saveAsWithOutcome(
     const bool overwrite,
     const std::string& expectedDestinationSha256)
 {
-    DocumentWouldBlock::throwIfGuiThread(
-        "Document::saveAsWithOutcome()",
-        "Document.saveAsync() / DocumentCommandKind::Save with save payload");
     if (d->executionLane && !isCollaborationOwnerThread()) {
         return d->executionLane->dispatchToOwner([&] {
             return saveAsWithOutcome(file, overwrite, expectedDestinationSha256);
@@ -5118,9 +5118,6 @@ DocumentMutationReadiness Document::getMutationReadiness() const
 bool Document::save()
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document::save()",
-            "Document.saveAsync() / DocumentCommandKind::Save");
         return d->executionLane->dispatchToOwner([this] { return save(); });
     }
     ensureCollaborationSaveAllowed();
@@ -6099,7 +6096,7 @@ void Document::restore(const char* filename,
     Document* activeDoc = GetApplication().getActiveDocument();
     if (!d->objectArray.empty()) {
         signal = true;
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
     }
@@ -7074,8 +7071,6 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const DocumentRecomputeId admissionId)
 {
     if (d->executionLane && !isCollaborationOwnerThread()) {
-        DocumentWouldBlock::throwIfGuiThread(
-            "Document::recomputeAsync()", "Document.recomputeAsync()");
         return d->executionLane->dispatchToOwner([&] {
             return recomputeAsync(objs, force, options, venue, admissionId);
         });
@@ -7397,7 +7392,9 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
-    DocumentWouldBlock::throwIfGuiThread("Document::recompute()", "Document::recomputeAsync()");
+    // On the GUI thread recomputeAsync() and RecomputeHandle::wait() hop to the
+    // document owner and wait without running the Qt event loop (see
+    // DocumentExecutionLane::dispatchToOwner()), so this stays synchronous.
 
     // The legacy loop ran its topologically sorted plan up to twice --
     // "maximum two passes to allow some form of dependency inversion".
@@ -7641,6 +7638,7 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
     FC_LOG("Recomputing " << Feat->getFullName());
 
     if (!DocumentWouldBlock::isGuiThread()
+        && !isCollaborationOwnerThread()
         && Feat->requiresDocumentThreadExecutionDeclaration()
         && !Feat->declaresDocumentThreadExecution()) {
         d->addRecomputeLog(
@@ -7704,6 +7702,13 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 
 bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
+    // The coordinator loop below runs on the calling thread. On the GUI thread
+    // run it on the document owner instead and wait without the Qt event loop
+    // (synchronous compatibility, see DocumentExecutionLane::dispatchToOwner()).
+    if (d->executionLane && !isCollaborationOwnerThread() && DocumentWouldBlock::isGuiThread()) {
+        return d->executionLane->dispatchToOwner(
+            [this, feature, recursive] { return recomputeFeature(feature, recursive); });
+    }
     enforceAtomicPresentationMutationTarget(*this);
 
     // Match Document::recompute(): the coordinator owns the only recompute

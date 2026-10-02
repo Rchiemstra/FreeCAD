@@ -34,6 +34,7 @@
 #include "DepEdgePy.h"
 #include "DocumentObject.h"
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentWouldBlock.h"
 #include "ExpressionParser.h"
 #include "GeoFeature.h"
@@ -203,22 +204,36 @@ PyObject* DocumentObjectPy::touch(PyObject* args)
     }
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "DocumentObject.touch()", "Document.commitCompatibilityMutationAsync()");
-        if (propName) {
-            if (!propName[0]) {
-                getDocumentObjectPtr()->touch(true);
-                Py_Return;
+        auto* object = getDocumentObjectPtr();
+        const bool named = propName != nullptr;
+        const std::string name = named ? propName : "";
+        const auto touchObject = [object, named, name] {
+            if (!named) {
+                object->touch();
+                return;
             }
-            auto prop = getDocumentObjectPtr()->getPropertyByName(propName);
+            if (name.empty()) {
+                object->touch(true);
+                return;
+            }
+            auto prop = object->getPropertyByName(name.c_str());
             if (!prop) {
-                throw Py::RuntimeError("Property not found");
+                throw Base::RuntimeError("Property not found");
             }
             prop->touch();
-            Py_Return;
+        };
+        auto* document = object->getDocument();
+        auto* lane = document ? document->executionLane() : nullptr;
+        if (lane && DocumentWouldBlock::isGuiThread()) {
+            // Touch on the document owner and wait without running the Qt event
+            // loop (synchronous compatibility, see dispatchToOwner()).
+            lane->dispatchToOwner(touchObject);
         }
-
-        getDocumentObjectPtr()->touch();
+        else {
+            DocumentWouldBlock::throwIfGuiThread(
+                "DocumentObject.touch()", "Document.commitCompatibilityMutationAsync()");
+            touchObject();
+        }
         Py_Return;
     }
     PY_CATCH;
@@ -513,8 +528,13 @@ PyObject* DocumentObjectPy::recompute(PyObject* args)
 
     PY_TRY
     {
-        DocumentWouldBlock::throwIfGuiThread(
-            "DocumentObject.recompute()", "Document.recomputeAsync()");
+        // With an execution lane recomputeFeature() hops to the document owner
+        // and waits without running the Qt event loop (synchronous compatibility).
+        auto* document = getDocumentObjectPtr()->getDocument();
+        if (!document || !document->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread(
+                "DocumentObject.recompute()", "Document.recomputeAsync()");
+        }
         const bool ok = getDocumentObjectPtr()->recomputeFeature(Base::asBoolean(recursive));
         return Py_BuildValue("O", (ok ? Py_True : Py_False));
     }

@@ -99,6 +99,8 @@ AppExport void enforceAtomicPresentationMutationTarget(const Document* document)
 /** True when admission targets \p document on a thread other than the caller. */
 [[nodiscard]] AppExport bool atomicPresentationMutationAdmissionHeldByOtherThread(
     const Document& document) noexcept;
+/** True while any document holds admission, i.e. enforcement may throw. */
+[[nodiscard]] AppExport bool atomicPresentationMutationAdmissionActive() noexcept;
 
 /** Nest a read-only validation callback on the current mutation target. */
 AppExport void beginCollaborationReadOnlyMutationTarget(Document& document);

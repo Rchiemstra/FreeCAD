@@ -72,6 +72,13 @@ run_gtest() {
       env QT_QPA_PLATFORM=xcb /usr/bin/xvfb-run -a -s "-screen 0 1024x768x24" \
         "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
       ;;
+    App_tests_run)
+      # Property rename/save tests write relative FCStd paths; on 9p bind mounts
+      # retained writer handles break post-rename verification (see doc handoff).
+      ws="${CI_WORKSPACE:-$(pwd)}"
+      (cd /tmp && "$ws/$t" --gtest_output=json:/tmp/gtest/"$name".json) \
+        >"/tmp/gtest/$name.log" 2>&1
+      ;;
     *)
       "$t" --gtest_output=json:/tmp/gtest/"$name".json >"/tmp/gtest/$name.log" 2>&1
       ;;

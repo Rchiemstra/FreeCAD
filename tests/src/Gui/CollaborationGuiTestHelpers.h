@@ -120,6 +120,9 @@ auto invokeOnOwnerWorkerWhilePumpingGui(Fn&& fn)
 void recomputeWithoutBlockingGui(App::Document& document,
                                  const char* coalescingKey = "gui-test-setup-recompute");
 
+/// Owner-thread recompute passes until mustExecute clears (matches commit coordinator).
+void settlePendingRecomputeWithoutBlockingGui(App::Document& document);
+
 /// Submits save-as through the document execution handle and pumps the GUI event
 /// loop until it completes, avoiding synchronous saveAs() on the GUI thread.
 void saveAsWithoutBlockingGui(App::Document& document, const char* path);

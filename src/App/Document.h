@@ -1214,6 +1214,9 @@ public:
     [[nodiscard]] DocumentExecutionLane* executionLane() noexcept;
     [[nodiscard]] const DocumentExecutionLane* executionLane() const noexcept;
 
+    /** True on the thread that owns serial model execution for this document. */
+    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
+
     /** Bind the per-document execution lane after collaboration identity registration. */
     void startExecutionLane(DocumentRevisionIdentityBinding identity);
 
@@ -2057,7 +2060,6 @@ private:
 
     std::recursive_mutex& collaborationCommitMutex() noexcept;
     void bindCollaborationOwnerThread(std::thread::id threadId) noexcept;
-    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
     [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
     /** As above, but tolerating an undo transaction the caller already holds,

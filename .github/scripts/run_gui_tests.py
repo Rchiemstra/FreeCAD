@@ -147,6 +147,14 @@ def _with_crash_helper(cmd: list[str]) -> list[str]:
     return cmd
 
 
+def _line_buffered(cmd: list[str]) -> list[str]:
+    """Force line-buffered FreeCAD stdout/stderr when piped (Docker CI)."""
+    stdbuf = shutil.which("stdbuf")
+    if stdbuf:
+        return [stdbuf, "-oL", "-eL", *cmd]
+    return cmd
+
+
 def run_and_capture(cmd: list[str]) -> tuple[int, str]:
     """Run `cmd` and return (returncode, combined stdout+stderr string).
 
@@ -335,7 +343,7 @@ def run_gui_modules(
             )
         for unit in units:
             _log(f"\nRunning GUI tests for module: {unit}")
-            cmd = [freecad_exec, "-t", unit]
+            cmd = _line_buffered([freecad_exec, "-t", unit])
             rc, out = run(_with_crash_helper(cmd) if crash_helper else cmd)
             _log(out)
             eval_rc, eval_err = evaluate_unit_result(rc, out, mandatory=unit in expected_suites)

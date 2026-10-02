@@ -256,6 +256,25 @@ public:
     void syncCommittedPresentationInViewers();
     /** True after a successful presentation commit until idle live updateData. */
     [[nodiscard]] bool prefersCommittedPresentation() const noexcept;
+    /**
+     * After the document is stable and the lane is idle, clear committed-Coin
+     * preference and refresh live ViewProvider Coin (skipped while busy).
+     */
+    void catchUpIdleLivePresentation();
+    /**
+     * Live Coin and main-window updates must wait. True off the GUI thread,
+     * while collaboration notifications replay, while the stable signal still
+     * holds the document lock, or while the execution lane is busy.
+     */
+    [[nodiscard]] bool deferLivePresentationUpdates() const;
+    /** Queue catchUpIdleLivePresentation() for after replay and the lock clear. */
+    void scheduleLivePresentationCatchUp();
+    /**
+     * Record that a show()/hide() of \a viewProvider was deferred, so the next
+     * catch-up re-syncs its scene visibility with Visibility. Providers not
+     * recorded keep their scene state (e.g. scene-only temporary visibility).
+     */
+    void noteDeferredVisibilityChange(const ViewProviderDocumentObject* viewProvider);
     /** Invalidate pointer-free presentation keys after a provider schema lifecycle change. */
     void publishSharedPresentationSchemaMutation(
         const Gui::ViewProvider& viewProvider,
@@ -449,6 +468,7 @@ private:
     void resetIfEditing();
     // handles the scene graph nodes to correctly group child and parents
     void handleChildren3D(ViewProvider* viewProvider, bool deleting = false);
+    void slotBecameStable(const App::Document& doc);
 
     /// Check other documents for the same transaction ID
     bool checkTransactionID(bool undo, int iSteps);

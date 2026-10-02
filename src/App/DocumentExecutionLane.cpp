@@ -934,21 +934,22 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
         return;
     }
 
-    command.snapshot.state = mapRecomputeState(recomputeSnapshot->state);
-    command.snapshot.progress = recomputeSnapshot->progress;
-    command.snapshot.diagnostic = recomputeSnapshot->diagnostic;
-    command.snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
+    // commandStatus() copies command.snapshot from other threads under _mutex,
+    // so update a local copy and publish it under the lock.
+    auto snapshot = command.snapshot;
+    snapshot.state = mapRecomputeState(recomputeSnapshot->state);
+    snapshot.progress = recomputeSnapshot->progress;
+    snapshot.diagnostic = recomputeSnapshot->diagnostic;
+    snapshot.recompute = makeRecomputeObservation(*recomputeSnapshot);
 
-    const bool progressChanged = previousProgress != command.snapshot.progress
-        || (command.snapshot.recompute
-            && previousCompleted != command.snapshot.recompute->completedFeatures)
-        || (command.snapshot.recompute
-            && previousRecomputeState != command.snapshot.recompute->state);
+    const bool progressChanged = previousProgress != snapshot.progress
+        || (snapshot.recompute && previousCompleted != snapshot.recompute->completedFeatures)
+        || (snapshot.recompute && previousRecomputeState != snapshot.recompute->state);
     if (progressChanged) {
         touchWatchdogProgress(command);
     }
-    updateWatchdogState(command);
-    publishActiveSnapshot(command.snapshot);
+    updateWatchdogState(snapshot);
+    publishActiveSnapshot(snapshot);
 
     if (_telemetry) {
         DocumentExecutionProgressSnapshot progress;
@@ -1013,7 +1014,7 @@ void DocumentExecutionLane::touchWatchdogProgress(ActiveCommand& command)
     }
 }
 
-void DocumentExecutionLane::updateWatchdogState(ActiveCommand& command)
+void DocumentExecutionLane::updateWatchdogState(DocumentCommandSnapshot& snapshot)
 {
     if (!_telemetry) {
         return;
@@ -1022,9 +1023,9 @@ void DocumentExecutionLane::updateWatchdogState(ActiveCommand& command)
     if (!telemetrySnapshot.watchdog.stalled()) {
         return;
     }
-    if (command.snapshot.state == DocumentCommandState::Running) {
-        command.snapshot.state = DocumentCommandState::Stalled;
-        command.snapshot.diagnostic = telemetrySnapshot.watchdog.diagnostic.empty()
+    if (snapshot.state == DocumentCommandState::Running) {
+        snapshot.state = DocumentCommandState::Stalled;
+        snapshot.diagnostic = telemetrySnapshot.watchdog.diagnostic.empty()
             ? "document execution stalled without progress"
             : telemetrySnapshot.watchdog.diagnostic;
     }

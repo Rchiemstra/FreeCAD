@@ -153,6 +153,7 @@ private:
                                       Base::TimeElapsed startTime,
                                       bool written,
                                       std::exception_ptr failure);
+    void slotDeleteDocumentByName(const std::string& name);
     int timeout; /*!< Timeout in milliseconds */
     bool compressed;
     std::map<std::string, AutoSaveProperty*> saverMap;

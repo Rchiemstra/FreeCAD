@@ -1632,6 +1632,38 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     for (const auto& effect : effects) {
         writeSet.push_back(effect.key);
     }
+    // Capture semantic revisions only after eager compatibility has settled any
+    // preexisting mustExecute work. Otherwise settlement recompute publishes
+    // before reservation and the stale expected set becomes Conflict.
+    if (options.recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
+        && _document.mustExecute()) {
+        try {
+            bool recomputeError = false;
+            for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+            }
+        }
+        catch (const Base::Exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                std::string("compatibility mutation could not settle pending recompute work: ")
+                    + exception.what());
+        }
+        catch (const std::exception& exception) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                std::string("compatibility mutation could not settle pending recompute work: ")
+                    + exception.what());
+        }
+        if (_document.mustExecute()) {
+            return rejectedCompatibilityCommit(
+                DocumentCommitStatus::Busy,
+                rejectedOperationId,
+                "document has pending recompute work outside the prepared operation");
+        }
+    }
     const auto expected = _document.collaborationRevisions().capture(writeSet);
     const std::string operationId = Base::Uuid::createUuid();
     auto operation = std::make_unique<CompatibilityMutationOperation>(

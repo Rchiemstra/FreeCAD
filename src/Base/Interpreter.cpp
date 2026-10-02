@@ -37,6 +37,31 @@
 #include "PyTools.h"
 #include "Stream.h"
 
+namespace
+{
+thread_local int pythonFrameInspectionUnsafe = 0;
+}
+
+extern "C" void PP_SetPythonFrameInspectionUnsafe(int unsafe)
+{
+    pythonFrameInspectionUnsafe = unsafe ? 1 : 0;
+}
+
+extern "C" int PP_PythonFrameInspectionUnsafe(void)
+{
+    return pythonFrameInspectionUnsafe;
+}
+
+void Base::setPythonFrameInspectionUnsafe(bool unsafe)
+{
+    pythonFrameInspectionUnsafe = unsafe ? 1 : 0;
+}
+
+bool Base::isPythonFrameInspectionUnsafe()
+{
+    return pythonFrameInspectionUnsafe != 0;
+}
+
 
 char format2[1024];  // Warning! Can't go over 512 characters!!!
 unsigned int format2_len = 1024;

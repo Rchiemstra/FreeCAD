@@ -44,6 +44,7 @@
 #include "DocumentCommandHandle.h"
 #include "DocumentWouldBlock.h"
 #include "DocumentPy.h"
+#include "MainThreadSignal.h"
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
 #include "RecoverySnapshot.h"
@@ -240,25 +241,61 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
                 doc->getName());
             return nullptr;
         }
-        // GUI must never wait on lane join / collaboration drain. Admit Close
-        // through trySubmit and return immediately.
+        // On the GUI thread close through the document lane and wait until it
+        // is done, so closeDocument() stays synchronous. The wait runs only work
+        // the owner marshals to the GUI thread, never the Qt event loop, and
+        // never joins the lane thread.
         if (DocumentWouldBlock::isGuiThread()) {
             if (!doc->executionLane()) {
                 DocumentWouldBlock::throwIfGuiThread(
                     "FreeCAD.closeDocument()", "Document.closeAsync()");
             }
-            DocumentCommand command;
-            command.kind = DocumentCommandKind::Close;
-            command.document = doc->executionHandle().identity();
-            const auto outcome = doc->executionHandle().trySubmit(std::move(command));
+            const std::string name = doc->getName();
+            // A handle, not doc: another close may finish while this one waits.
+            auto executionHandle = doc->executionHandle();
+            const auto identity = executionHandle.identity();
+            constexpr auto serviceSlice = std::chrono::milliseconds(2);
+            DocumentCommandSubmitOutcome outcome;
+            DocumentCommandSnapshot snapshot;
+            {
+                Base::PyGILStateRelease release;  // owner-thread Python may need the GIL
+                while (true) {
+                    DocumentCommand command;
+                    command.kind = DocumentCommandKind::Close;
+                    command.document = identity;
+                    outcome = executionHandle.trySubmit(std::move(command));
+                    if (outcome.result != DocumentCommandSubmitResult::Busy) {
+                        break;
+                    }
+                    MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+                }
+                if (outcome.accepted()) {
+                    const DocumentCommandHandle handle(outcome.commandId, identity);
+                    snapshot = handle.status();
+                    while (!snapshot.terminal()) {
+                        MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+                        snapshot = handle.status();
+                    }
+                    // Deliver the GUI notifications the close marshalled last.
+                    MainThreadSignalConfig::serviceMarshalledTasks(
+                        std::chrono::milliseconds::zero());
+                }
+            }
             if (!outcome.accepted()) {
                 PyErr_Format(
                     PyExc_RuntimeError,
                     "Closing the document '%s' was not admitted: %s",
-                    doc->getName(),
+                    name.c_str(),
                     outcome.diagnostic.empty()
                         ? documentCommandSubmitResultName(outcome.result)
                         : outcome.diagnostic.c_str());
+                return nullptr;
+            }
+            if (GetApplication().getDocument(name.c_str())) {
+                PyErr_Format(PyExc_RuntimeError,
+                             "Closing the document '%s' failed: %s",
+                             name.c_str(),
+                             snapshot.diagnostic.c_str());
                 return nullptr;
             }
             Py_Return;
@@ -300,7 +337,11 @@ PyObject* ApplicationPy::sSaveDocument(PyObject* /*self*/, PyObject* args)
 
     Document* doc = GetApplication().getDocument(pDoc);
     if (doc) {
-        DocumentWouldBlock::throwIfGuiThread("FreeCAD.saveDocument()", "Document.saveAsync()");
+        // With an execution lane save() hops to the owner and waits without
+        // running the Qt event loop (synchronous compatibility).
+        if (!doc->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("FreeCAD.saveDocument()", "Document.saveAsync()");
+        }
         if (!doc->save()) {
             PyErr_Format(Base::PyExc_FC_GeneralError, "Cannot save document '%s'", pDoc);
             return nullptr;

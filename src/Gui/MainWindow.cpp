@@ -2027,6 +2027,14 @@ void MainWindow::delayedStartup()
             // delayedStartup().
             Base::Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADGuiTest"));
             if (App::Application::Config()["ExitTests"] == "yes") {
+                if (qApp) {
+                    for (int pass = 0; pass < 200; ++pass) {
+                        qApp->processEvents(QEventLoop::AllEvents, 25);
+                        if (App::GetApplication().getDocuments().empty()) {
+                            break;
+                        }
+                    }
+                }
                 Base::Interpreter().runString(
                     "import sys\n"
                     "sys.exit(0 if test_result.wasSuccessful() else 1)\n"

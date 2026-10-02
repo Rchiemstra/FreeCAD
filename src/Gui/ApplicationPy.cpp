@@ -91,13 +91,19 @@ using namespace Gui;
 
 namespace
 {
-void requirePythonMainThread(const char* api)
+bool requirePythonMainThread(const char* api)
 {
     try {
         Gui::requireMainThread(api);
+        return true;
     }
     catch (const Base::Exception& exception) {
-        throw Py::RuntimeError(exception.what());
+        // Do not rethrow. A C++ exception leaving this Python C function
+        // unwinds through the caller frame; PyException then calls
+        // PyFrame_GetCode and SIGSEGVs on the document owner thread.
+        Base::setPythonFrameInspectionUnsafe(false);
+        PyErr_SetString(PyExc_RuntimeError, exception.what());
+        return false;
     }
 }
 
@@ -511,8 +517,9 @@ PyObject* Gui::ApplicationPy::sEditDocument(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.editDocument");
-
+    if (!requirePythonMainThread("FreeCADGui.editDocument")) {
+        return nullptr;
+    }
     Document* pcDoc = Application::Instance->editDocument();
     if (pcDoc) {
         return pcDoc->getPyObject();
@@ -527,8 +534,9 @@ PyObject* Gui::ApplicationPy::sActiveDocument(PyObject* /*self*/, PyObject* args
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.activeDocument");
-
+    if (!requirePythonMainThread("FreeCADGui.activeDocument")) {
+        return nullptr;
+    }
     Document* pcDoc = Application::Instance->activeDocument();
     if (pcDoc) {
         return pcDoc->getPyObject();
@@ -544,8 +552,9 @@ PyObject* Gui::ApplicationPy::sActiveView(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.activeView");
-
+    if (!requirePythonMainThread("FreeCADGui.activeView")) {
+        return nullptr;
+    }
     PY_TRY
     {
         Base::Type type;
@@ -588,8 +597,9 @@ PyObject* Gui::ApplicationPy::sActivateView(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.activateView");
-
+    if (!requirePythonMainThread("FreeCADGui.activateView")) {
+        return nullptr;
+    }
     Base::Type type = Base::Type::fromName(typeStr);
     Application::Instance->activateView(type, Base::asBoolean(create));
 
@@ -631,8 +641,9 @@ PyObject* Gui::ApplicationPy::sSetActiveDocument(PyObject* /*self*/, PyObject* a
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.setActiveDocument");
-
+    if (!requirePythonMainThread("FreeCADGui.setActiveDocument")) {
+        return nullptr;
+    }
     if (Application::Instance->activeDocument() != pcDoc) {
         Gui::MDIView* view = pcDoc->getActiveView();
         getMainWindow()->setActiveWindow(view);
@@ -643,8 +654,9 @@ PyObject* Gui::ApplicationPy::sSetActiveDocument(PyObject* /*self*/, PyObject* a
 
 PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
 {
-    requirePythonMainThread("FreeCADGui.getDocument");
-
+    if (!requirePythonMainThread("FreeCADGui.getDocument")) {
+        return nullptr;
+    }
     if (!Application::Instance) {
         PyErr_SetString(PyExc_ImportError, "FreeCADGui is not initialized");
         return nullptr;
@@ -680,7 +692,9 @@ PyObject* ApplicationPy::sGetDocument(PyObject* /*self*/, PyObject* args)
 
 PyObject* ApplicationPy::sStorePersonalViewContext(PyObject* /*self*/, PyObject* args)
 {
-    requirePythonMainThread("FreeCADGui.storePersonalViewContext");
+    if (!requirePythonMainThread("FreeCADGui.storePersonalViewContext")) {
+        return nullptr;
+    }
     const char* documentName = nullptr;
     const char* actorId = nullptr;
     PyObject* context = nullptr;
@@ -701,7 +715,9 @@ PyObject* ApplicationPy::sStorePersonalViewContext(PyObject* /*self*/, PyObject*
 
 PyObject* ApplicationPy::sGetPersonalViewContext(PyObject* /*self*/, PyObject* args)
 {
-    requirePythonMainThread("FreeCADGui.getPersonalViewContext");
+    if (!requirePythonMainThread("FreeCADGui.getPersonalViewContext")) {
+        return nullptr;
+    }
     const char* documentName = nullptr;
     const char* actorId = nullptr;
     if (!PyArg_ParseTuple(args, "ss", &documentName, &actorId)) {
@@ -720,7 +736,9 @@ PyObject* ApplicationPy::sGetPersonalViewContext(PyObject* /*self*/, PyObject* a
 
 PyObject* ApplicationPy::sRemovePersonalViewContext(PyObject* /*self*/, PyObject* args)
 {
-    requirePythonMainThread("FreeCADGui.removePersonalViewContext");
+    if (!requirePythonMainThread("FreeCADGui.removePersonalViewContext")) {
+        return nullptr;
+    }
     const char* documentName = nullptr;
     const char* actorId = nullptr;
     if (!PyArg_ParseTuple(args, "ss", &documentName, &actorId)) {
@@ -740,7 +758,9 @@ PyObject* ApplicationPy::sRemovePersonalViewContext(PyObject* /*self*/, PyObject
 
 PyObject* ApplicationPy::sRenderPersonalViewContext(PyObject* /*self*/, PyObject* args)
 {
-    requirePythonMainThread("FreeCADGui.renderPersonalViewContext");
+    if (!requirePythonMainThread("FreeCADGui.renderPersonalViewContext")) {
+        return nullptr;
+    }
     const char* documentName = nullptr;
     const char* actorId = nullptr;
     const char* background = "Current";
@@ -783,8 +803,9 @@ PyObject* ApplicationPy::sHide(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.hide");
-
+    if (!requirePythonMainThread("FreeCADGui.hide")) {
+        return nullptr;
+    }
     if (!Base::warnDeprecatedPythonApi(
             "Method",
             "FreeCADGui.hide",
@@ -813,8 +834,9 @@ PyObject* ApplicationPy::sShow(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.show");
-
+    if (!requirePythonMainThread("FreeCADGui.show")) {
+        return nullptr;
+    }
     if (!Base::warnDeprecatedPythonApi(
             "Method",
             "FreeCADGui.show",
@@ -843,8 +865,9 @@ PyObject* ApplicationPy::sHideObject(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.hideObject");
-
+    if (!requirePythonMainThread("FreeCADGui.hideObject")) {
+        return nullptr;
+    }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
     App::DocumentObject* obj = static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr();
     Application::Instance->hideViewProvider(obj);
@@ -859,8 +882,9 @@ PyObject* ApplicationPy::sShowObject(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.showObject");
-
+    if (!requirePythonMainThread("FreeCADGui.showObject")) {
+        return nullptr;
+    }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
     App::DocumentObject* obj = static_cast<App::DocumentObjectPy*>(object)->getDocumentObjectPtr();
     Application::Instance->showViewProvider(obj);
@@ -1027,8 +1051,9 @@ PyObject* ApplicationPy::sSendMsgToActiveView(PyObject* /*self*/, PyObject* args
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.SendMsgToActiveView");
-
+    if (!requirePythonMainThread("FreeCADGui.SendMsgToActiveView")) {
+        return nullptr;
+    }
     if (!Base::warnDeprecatedPythonApi(
             "Method",
             "FreeCADGui.SendMsgToActiveView",
@@ -1059,8 +1084,9 @@ PyObject* ApplicationPy::sSendMsgToFocusView(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.SendMsgToFocusView");
-
+    if (!requirePythonMainThread("FreeCADGui.SendMsgToFocusView")) {
+        return nullptr;
+    }
     if (!Application::Instance->sendMsgToFocusView(psCommandStr)) {
         if (!Base::asBoolean(suppress)) {
             Base::Console().warning("Unknown view command: %s\n", psCommandStr);
@@ -1076,8 +1102,9 @@ PyObject* ApplicationPy::sGetMainWindow(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.getMainWindow");
-
+    if (!requirePythonMainThread("FreeCADGui.getMainWindow")) {
+        return nullptr;
+    }
     try {
         return Py::new_reference_to(MainWindowPy::createWrapper(Gui::getMainWindow()));
     }
@@ -1092,8 +1119,9 @@ PyObject* ApplicationPy::sUpdateGui(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.updateGui");
-
+    if (!requirePythonMainThread("FreeCADGui.updateGui")) {
+        return nullptr;
+    }
     qApp->processEvents();
 
     Py_Return;
@@ -1213,8 +1241,9 @@ PyObject* ApplicationPy::sActivateWorkbench(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.activateWorkbench");
-
+    if (!requirePythonMainThread("FreeCADGui.activateWorkbench")) {
+        return nullptr;
+    }
     // search for workbench handler from the dictionary
     PyObject* pcWorkbench = PyDict_GetItemString(Application::Instance->_pcWorkbenchDictionary, psKey);
     if (!pcWorkbench) {
@@ -1525,8 +1554,9 @@ PyObject* ApplicationPy::sAddCommand(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.addCommand");
-
+    if (!requirePythonMainThread("FreeCADGui.addCommand")) {
+        return nullptr;
+    }
     // get the call stack to find the Python module name
     //
     std::string module;
@@ -1624,8 +1654,9 @@ PyObject* ApplicationPy::sRunCommand(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.runCommand");
-
+    if (!requirePythonMainThread("FreeCADGui.runCommand")) {
+        return nullptr;
+    }
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
@@ -1646,8 +1677,9 @@ PyObject* ApplicationPy::sDoCommand(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.doCommand");
-
+    if (!requirePythonMainThread("FreeCADGui.doCommand")) {
+        return nullptr;
+    }
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
@@ -1665,8 +1697,9 @@ PyObject* ApplicationPy::sDoCommandGui(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.doCommandGui");
-
+    if (!requirePythonMainThread("FreeCADGui.doCommandGui")) {
+        return nullptr;
+    }
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
@@ -1684,8 +1717,9 @@ PyObject* ApplicationPy::sDoCommandEval(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.doCommandEval");
-
+    if (!requirePythonMainThread("FreeCADGui.doCommandEval")) {
+        return nullptr;
+    }
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
@@ -1701,8 +1735,9 @@ PyObject* ApplicationPy::sDoCommandSkip(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.doCommandSkip");
-
+    if (!requirePythonMainThread("FreeCADGui.doCommandSkip")) {
+        return nullptr;
+    }
     Gui::Command::LogDisabler d1;
     Gui::SelectionLogDisabler d2;
 
@@ -1734,8 +1769,9 @@ PyObject* ApplicationPy::sShowDownloads(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.showDownloads");
-
+    if (!requirePythonMainThread("FreeCADGui.showDownloads")) {
+        return nullptr;
+    }
     Gui::Dialog::DownloadManager::getInstance();
 
     Py_Return;
@@ -1749,8 +1785,9 @@ PyObject* ApplicationPy::sShowPreferences(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.showPreferences");
-
+    if (!requirePythonMainThread("FreeCADGui.showPreferences")) {
+        return nullptr;
+    }
     Gui::Dialog::DlgPreferencesImp cDlg(getMainWindow());
     if (pstr) {
         cDlg.activateGroupPage(QString::fromUtf8(pstr), idx);
@@ -1772,8 +1809,9 @@ PyObject* ApplicationPy::sShowPreferencesByName(PyObject* /*self*/, PyObject* ar
         return nullptr;
     }
 
-    requirePythonMainThread("FreeCADGui.showPreferences");
-
+    if (!requirePythonMainThread("FreeCADGui.showPreferences")) {
+        return nullptr;
+    }
     Gui::Dialog::DlgPreferencesImp cDlg(getMainWindow());
     if (pstr && prefType) {
         cDlg.activateGroupPageByPageName(QString::fromUtf8(pstr), QString::fromUtf8(prefType));
@@ -1800,7 +1838,9 @@ PyObject* ApplicationPy::sCreateViewer(PyObject* /*self*/, PyObject* args)
         PyErr_Format(PyExc_ValueError, "views must be > 0");
         return nullptr;
     }
-    requirePythonMainThread("FreeCADGui.createViewer");
+    if (!requirePythonMainThread("FreeCADGui.createViewer")) {
+        return nullptr;
+    }
     if (num_of_views == 1) {
         auto viewer = new View3DInventor(nullptr, nullptr);
         if (title) {
@@ -2012,7 +2052,9 @@ PyObject* ApplicationPy::sApplyElementColorOverride(PyObject* /*self*/, PyObject
 
     PY_TRY
     {
-        requirePythonMainThread("FreeCADGui.applyElementColorOverride");
+        if (!requirePythonMainThread("FreeCADGui.applyElementColorOverride")) {
+            return nullptr;
+        }
         auto target = pythonToCoinActionTarget(targetObj);
         auto colors = pythonToColorOverrideMap(colorsObj);
         applyElementColorOverrideAction(target, std::move(colors));
@@ -2030,7 +2072,9 @@ PyObject* ApplicationPy::sClearElementColorOverride(PyObject* /*self*/, PyObject
 
     PY_TRY
     {
-        requirePythonMainThread("FreeCADGui.clearElementColorOverride");
+        if (!requirePythonMainThread("FreeCADGui.clearElementColorOverride")) {
+            return nullptr;
+        }
         auto target = pythonToCoinActionTarget(targetObj);
         applyElementColorOverrideAction(target, {});
         Py_Return;

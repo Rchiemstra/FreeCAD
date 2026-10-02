@@ -354,7 +354,8 @@ class _Window(ArchComponent.Component):
                     hosts += obj.Hosts if hasattr(obj, "Hosts") else []
                     for host in set(hosts):  # use set to remove duplicates
                         # mark host to recompute so it can detect this object
-                        host.touch()
+                        # (enforceRecompute() == touch(), allowed on the GUI thread)
+                        host.enforceRecompute()
             if prop in ["Width", "Height", "Frame"]:
                 if obj.Base:
                     if hasattr(obj.Base, "Constraints") and (

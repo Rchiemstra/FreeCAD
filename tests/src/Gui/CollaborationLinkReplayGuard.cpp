@@ -85,6 +85,7 @@ protected:
         ensureViewProviders(
             _guiDocument,
             {_target, _linkLeft, _linkRight});
+        Gui::Test::settlePendingRecomputeWithoutBlockingGui(*_document);
         ASSERT_FALSE(_document->mustExecute());
         ASSERT_FALSE(_linkLeft->isTouched());
         ASSERT_FALSE(_linkRight->isTouched());

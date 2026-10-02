@@ -8,6 +8,7 @@
 #include <App/DocumentObject.h>
 #include <App/MutationClassification.h>
 #include <Base/Exception.h>
+#include <Base/Tools.h>
 #include <src/App/InitApplication.h>
 
 #include <atomic>
@@ -112,6 +113,71 @@ TEST_F(CollaborationAuthorityRemovalTest, atomicPresentationGuardAcceptsNullMuta
     beginAtomicPresentationMutationTarget(document());
     EXPECT_NO_THROW(enforceAtomicPresentationMutationTarget(nullptr));
     endAtomicPresentationMutationTarget(document());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, atomicPresentationAdmissionActiveTracksAnyTarget)
+{
+    EXPECT_FALSE(atomicPresentationMutationAdmissionActive());
+
+    beginAtomicPresentationMutationTarget(document());
+    EXPECT_TRUE(atomicPresentationMutationAdmissionActive());
+    // Admission is process-scoped: other threads must see it as well.
+    bool activeOnWorker = false;
+    std::thread worker([&] { activeOnWorker = atomicPresentationMutationAdmissionActive(); });
+    worker.join();
+    EXPECT_TRUE(activeOnWorker);
+
+    beginAtomicPresentationMutationTarget(document());
+    endAtomicPresentationMutationTarget(document());
+    EXPECT_TRUE(atomicPresentationMutationAdmissionActive()) << "nested end released admission";
+
+    endAtomicPresentationMutationTarget(document());
+    EXPECT_FALSE(atomicPresentationMutationAdmissionActive());
+}
+
+// Regression: closing a document on its lane thread marks every object Destroy
+// in ~Document(); while another document held atomic presentation admission the
+// guard threw from that destructor and std::terminate aborted TestArchGui.
+TEST_F(CollaborationAuthorityRemovalTest, destroyStatusIgnoresForeignAtomicPresentation)
+{
+    const auto otherName = GetApplication().getUniqueDocumentName("DestroyStatusOther");
+    auto* other = GetApplication().newDocument(otherName.c_str());
+    ASSERT_NE(other, nullptr);
+    auto* object = other->addObject("App::FeatureTest", "Doomed");
+    ASSERT_NE(object, nullptr);
+
+    beginAtomicPresentationMutationTarget(document());
+    EXPECT_NO_THROW(object->setStatus(ObjectStatus::Destroy, true));
+    // Other status changes on the foreign document stay guarded.
+    EXPECT_THROW(object->setStatus(ObjectStatus::Error, true), Base::RuntimeError);
+    endAtomicPresentationMutationTarget(document());
+
+    object->setStatus(ObjectStatus::Destroy, false);
+    GetApplication().closeDocument(otherName.c_str());
+}
+
+TEST_F(CollaborationAuthorityRemovalTest, runtimeLockerStatusBitsIgnoreForeignAtomicPresentation)
+{
+    auto* object = document().addObject("App::FeatureTest", "LockerTarget");
+    ASSERT_NE(object, nullptr);
+    const auto otherName = GetApplication().getUniqueDocumentName("RuntimeLockerOther");
+    auto* other = GetApplication().newDocument(otherName.c_str());
+    ASSERT_NE(other, nullptr);
+
+    using PropertyStatusLocker = Base::ObjectStatusLocker<Property::Status, Property>;
+    beginAtomicPresentationMutationTarget(*other);
+    // An ObjectStatusLocker destructor that throws terminates the process.
+    EXPECT_NO_THROW({
+        PropertyStatusLocker locker(Property::User1, &object->Label);
+        EXPECT_TRUE(object->Label.testStatus(Property::User1));
+    });
+    EXPECT_FALSE(object->Label.testStatus(Property::User1));
+    // Persisted status bits stay guarded.
+    EXPECT_THROW(object->Label.setStatus(Property::ReadOnly, true), Base::RuntimeError);
+    EXPECT_FALSE(object->Label.testStatus(Property::ReadOnly));
+    endAtomicPresentationMutationTarget(*other);
+
+    GetApplication().closeDocument(otherName.c_str());
 }
 
 TEST_F(CollaborationAuthorityRemovalTest,

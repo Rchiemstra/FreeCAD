@@ -2869,7 +2869,7 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
-       eagerPolicyStillRejectsPreexistingPendingRecomputeByDefault)
+       eagerPolicySettlesPreexistingPendingRecomputeBeforeCompatibilityCommit)
 {
     Base::PyGILStateLocker gil;
     PyObjectRef document(_document->getPyObject());
@@ -2887,9 +2887,9 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     ASSERT_TRUE(pythonObjectAvailable(result.get()));
     PyObject* status = PyDict_GetItemString(result.get(), "status");
     ASSERT_NE(status, nullptr);
-    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Busy");
-    EXPECT_EQ(probe.calls, 0);
-    EXPECT_TRUE(_document->mustExecute());
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+    EXPECT_EQ(probe.calls, 1);
+    EXPECT_FALSE(_document->mustExecute());
 }
 
 TEST_F(DocumentCollaborationPythonCompatibilityTest,

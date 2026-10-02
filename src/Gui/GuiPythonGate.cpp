@@ -9,6 +9,7 @@
 #include <App/DocumentWouldBlock.h>
 #include <Base/Interpreter.h>
 
+#include "Utilities.h"
 #include "ViewProvider.h"
 
 #include <Python.h>
@@ -232,6 +233,14 @@ void deliverObserverEvent(const GuiPythonObserverValueEvent& event)
     }
 }
 
+void scheduleQueuedCallbackPump()
+{
+    // Owner-thread admissions enqueue work that must run on the GUI thread.
+    // Kick a zero-delay pump so delivery is not stranded until an unrelated
+    // MainWindow activity tick.
+    scheduleGuiSingleShot(0, []() { static_cast<void>(GuiPythonGate::pumpQueuedCallbacks(64)); });
+}
+
 }  // namespace
 
 bool GuiPythonGate::gilAvailableForNonBlockingAcquire() noexcept
@@ -289,8 +298,13 @@ GuiPythonGateAdmissionOutcome GuiPythonGate::verifyViewProviderPythonExecution(
 
 void GuiPythonGate::enqueueObserverValueEvent(GuiPythonObserverValueEvent event)
 {
-    std::lock_guard lock(g_queueMutex);
-    g_deferredObserverEvents.push_back(std::move(event));
+    {
+        std::lock_guard lock(g_queueMutex);
+        g_deferredObserverEvents.push_back(std::move(event));
+    }
+    // Always nudge a GUI pump. Off-thread admissions otherwise wait for an
+    // unrelated MainWindow tick; on-thread GIL-busy queues need a later pass.
+    scheduleQueuedCallbackPump();
 }
 
 void GuiPythonGate::setObserverValueEventHandler(GuiPythonObserverValueEventHandler handler)
@@ -309,7 +323,24 @@ GuiPythonGateAdmissionOutcome GuiPythonGate::tryAdmit(
                            "GuiPythonGate callback is empty");
     }
 
+    // Observer / UI Python wraps Gui::Document and ViewProviderDocumentObject
+    // Python objects. Those getPyObject paths require the GUI thread; never
+    // invoke them from the document owner. Queue pointer-free value events
+    // (ObserverDelivery) or the callback itself (NonModel) for later pump.
     if (!App::DocumentWouldBlock::isGuiThread()) {
+        if (kind == GuiPythonGateCallbackKind::ObserverDelivery) {
+            return makeOutcome(
+                GuiPythonGateAdmissionResult::Queued,
+                "observer delivery deferred to the GUI thread");
+        }
+        if (kind == GuiPythonGateCallbackKind::NonModel) {
+            queueCallback(std::move(callback));
+            scheduleQueuedCallbackPump();
+            return makeOutcome(
+                GuiPythonGateAdmissionResult::Queued,
+                "non-model Python callback deferred to the GUI thread");
+        }
+        // ModelTouching on an owner/worker thread may run with the GIL.
         runWithGil(callback);
         return makeOutcome(GuiPythonGateAdmissionResult::Executed);
     }

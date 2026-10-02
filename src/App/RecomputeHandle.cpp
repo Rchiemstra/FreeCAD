@@ -139,14 +139,18 @@ bool RecomputeHandle::cancel(std::string reason)
 
 DocumentRecomputeSnapshot RecomputeHandle::wait(const std::chrono::milliseconds timeout)
 {
-    DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
-
     const auto boundedTimeout = std::max(timeout, 0ms);
     const auto deadline = std::chrono::steady_clock::now() + boundedTimeout;
 
     auto* owner = document();
     if (!owner) {
         return closedDocumentSnapshot();
+    }
+    // With an execution lane a GUI-thread wait hops to the owner and waits
+    // without running the Qt event loop (DocumentExecutionLane::dispatchToOwner());
+    // without one, waitOnOwner() would pump Qt on the GUI thread.
+    if (!owner->executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread("RecomputeHandle::wait()", "RecomputeHandle::poll()");
     }
 
     const auto waitOnOwner = [&]() -> DocumentRecomputeSnapshot {

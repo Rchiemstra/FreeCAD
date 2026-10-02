@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <utility>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <algorithm>
 #include <vector>
@@ -57,6 +58,8 @@
 #include <boost/range.hpp>
 #include <App/ElementNamingUtils.h>
 #include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
+#include <App/MainThreadSignal.h>
 #include <App/SuppressibleExtension.h>
 #include <Base/BoundBoxPy.h>
 #include <Base/MatrixPy.h>
@@ -68,6 +71,8 @@
 #include "ViewProviderLink.h"
 #include "ViewProviderLinkPy.h"
 #include "Application.h"
+#include "Document.h"
+#include "Utilities.h"
 #include "BitmapFactory.h"
 #include "Control.h"
 #include "Inventor/Draggers/SoTransformDragger.h"
@@ -1551,7 +1556,61 @@ void LinkView::onLinkedUpdateData(LinkInfoPtr info, const App::Property* prop)
         // parent objects about the change. But we need to be careful to not
         // touch the object if the property of change is marked as output.
         auto* linkDoc = linkOwner->pcLinked->getObject()->getDocument();
-        if (linkDoc && linkDoc->collaborationNotificationsReplaying()) {
+        const bool signalOnlyLinkTouched =
+            linkDoc
+            && (linkDoc->collaborationNotificationsReplaying()
+                || linkDoc->getMutationReadiness().ready);
+        auto* linkGuiDocument = linkOwner->pcLinked->getDocument();
+        const bool deferLinkSignal = linkGuiDocument
+            ? linkGuiDocument->deferLivePresentationUpdates()
+            : !App::MainThreadSignalConfig::isMainThread();
+        if (signalOnlyLinkTouched && deferLinkSignal) {
+            // Do not emit the GUI signal or touch (which opens a transaction)
+            // on the owner thread or while replay still holds the lock.
+            auto* linkedView = linkOwner->pcLinked;
+            auto* linkedObject = linkedView ? linkedView->getObject() : nullptr;
+            const std::string documentName = linkDoc ? std::string(linkDoc->getName()) : std::string();
+            const char* objectNamePtr = linkedObject ? linkedObject->getNameInDocument() : nullptr;
+            const std::string objectName = objectNamePtr ? objectNamePtr : std::string();
+            if (!documentName.empty() && !objectName.empty()) {
+                auto emitLinkSignal = std::make_shared<std::function<void()>>();
+                std::weak_ptr<std::function<void()>> emitLinkSignalWeak = emitLinkSignal;
+                *emitLinkSignal = [documentName, objectName, emitLinkSignalWeak]() {
+                    auto* document = App::GetApplication().getDocument(documentName.c_str());
+                    if (!document || !Gui::Application::Instance) {
+                        return;
+                    }
+                    auto* guiDocument = Gui::Application::Instance->getDocument(document);
+                    if (!guiDocument) {
+                        return;
+                    }
+                    if (guiDocument->deferLivePresentationUpdates()) {
+                        guiDocument->scheduleLivePresentationCatchUp();
+                        if (auto emitLinkSignalLocked = emitLinkSignalWeak.lock()) {
+                            Gui::scheduleGuiSingleShot(0, [emitLinkSignalLocked]() {
+                                (*emitLinkSignalLocked)();
+                            });
+                        }
+                        return;
+                    }
+                    auto* object = document->getObject(objectName.c_str());
+                    auto* viewProvider = guiDocument && object
+                        ? freecad_cast<ViewProviderDocumentObject*>(
+                              guiDocument->getViewProvider(object))
+                        : nullptr;
+                    if (!viewProvider) {
+                        return;
+                    }
+                    auto* extension = object->getExtensionByType<App::LinkBaseExtension>(true);
+                    if (!extension) {
+                        return;
+                    }
+                    guiDocument->signalChangedObject(*viewProvider, extension->_LinkTouched);
+                };
+                Gui::scheduleGuiSingleShot(0, [emitLinkSignal]() { (*emitLinkSignal)(); });
+            }
+        }
+        else if (signalOnlyLinkTouched) {
             linkOwner->pcLinked->getDocument()->signalChangedObject(
                 *linkOwner->pcLinked,
                 ext->_LinkTouched
@@ -1564,11 +1623,23 @@ void LinkView::onLinkedUpdateData(LinkInfoPtr info, const App::Property* prop)
     else {
         // In case the owner object does not have link extension, here is a
         // trick to link the signalChangedObject from linked object to the
-        // owner
-        linkOwner->pcLinked->getDocument()->signalChangedObject(
-            *linkOwner->pcLinked,
-            linkOwner->pcLinked->getObject()->Label
-        );
+        // owner. Same deferral as the link-touch path: the GUI document
+        // signal is not a main-thread signal.
+        auto* ownerGuiDocument = linkOwner->pcLinked->getDocument();
+        const bool deferOwnerSignal = ownerGuiDocument
+            ? ownerGuiDocument->deferLivePresentationUpdates()
+            : !App::MainThreadSignalConfig::isMainThread();
+        if (deferOwnerSignal) {
+            if (auto* guiDocument = linkOwner->pcLinked->getDocument()) {
+                guiDocument->scheduleLivePresentationCatchUp();
+            }
+        }
+        else if (auto* guiDocument = linkOwner->pcLinked->getDocument()) {
+            guiDocument->signalChangedObject(
+                *linkOwner->pcLinked,
+                linkOwner->pcLinked->getObject()->Label
+            );
+        }
     }
 }
 

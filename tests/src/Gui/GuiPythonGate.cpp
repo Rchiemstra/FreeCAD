@@ -50,26 +50,68 @@ protected:
     App::Document* _document {nullptr};
 };
 
+// Holds the GIL on a worker thread until released. The constructor waits until
+// the worker really owns the GIL; otherwise tryAdmit() could run first, find
+// the GIL free and admit the callback (flaky under CI load).
+class GilHolderThread
+{
+public:
+    GilHolderThread()
+        : _thread([this] {
+            Base::PyGILStateLocker lock;
+            _held.store(true, std::memory_order_release);
+            while (!_release.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(1ms);
+            }
+        })
+    {
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (!holding() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
+        }
+    }
+
+    ~GilHolderThread()
+    {
+        release();
+    }
+
+    GilHolderThread(const GilHolderThread&) = delete;
+    GilHolderThread& operator=(const GilHolderThread&) = delete;
+
+    bool holding() const
+    {
+        return _held.load(std::memory_order_acquire);
+    }
+
+    void release()
+    {
+        _release.store(true, std::memory_order_release);
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+    }
+
+private:
+    std::atomic<bool> _held {false};
+    std::atomic<bool> _release {false};
+    std::thread _thread;  // last: the flags must exist before the worker starts
+};
+
 }  // namespace
 
 TEST_F(GuiPythonGateTest, NonModelCallbackQueuesWhenGilIsHeldElsewhere)
 {
-    std::atomic<bool> holdGil {true};
     std::atomic<bool> ran {false};
-    std::thread holder([&holdGil] {
-        Base::PyGILStateLocker lock;
-        while (holdGil.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(1ms);
-        }
-    });
+    GilHolderThread holder;
+    ASSERT_TRUE(holder.holding());
 
     const auto outcome = Gui::GuiPythonGate::tryAdmit(
         Gui::GuiPythonGateCallbackKind::NonModel,
         [&ran] { ran.store(true, std::memory_order_relaxed); });
     EXPECT_TRUE(outcome.queued());
 
-    holdGil.store(false, std::memory_order_relaxed);
-    holder.join();
+    holder.release();
 
     EXPECT_GE(Gui::GuiPythonGate::pumpQueuedCallbacks(), 1U);
     EXPECT_TRUE(ran.load(std::memory_order_relaxed));
@@ -77,22 +119,14 @@ TEST_F(GuiPythonGateTest, NonModelCallbackQueuesWhenGilIsHeldElsewhere)
 
 TEST_F(GuiPythonGateTest, ModelTouchingRejectsWhenGilIsBusy)
 {
-    std::atomic<bool> holdGil {true};
-    std::thread holder([&holdGil] {
-        Base::PyGILStateLocker lock;
-        while (holdGil.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(1ms);
-        }
-    });
+    GilHolderThread holder;
+    ASSERT_TRUE(holder.holding());
 
     const auto outcome = Gui::GuiPythonGate::tryAdmit(
         Gui::GuiPythonGateCallbackKind::ModelTouching,
         [] {},
         _document);
     EXPECT_EQ(outcome.result, Gui::GuiPythonGateAdmissionResult::RejectedGilBusy);
-
-    holdGil.store(false, std::memory_order_relaxed);
-    holder.join();
 }
 
 TEST_F(GuiPythonGateTest, ClosePolicyNeverTerminatesLaneThread)

@@ -45,6 +45,9 @@
 #include "SelectionObject.h"
 #include "Application.h"
 #include "Document.h"
+#include "Utilities.h"
+
+#include <App/DocumentWouldBlock.h>
 #include "DocumentExecutionIngress.h"
 #include "Macro.h"
 #include "MainWindow.h"
@@ -1821,6 +1824,11 @@ struct SelInfo
 
 void SelectionSingleton::setVisible(VisibleState vis)
 {
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        Gui::scheduleGuiSingleShot(0, [vis]() { Selection().setVisible(vis); });
+        return;
+    }
+
     std::set<std::pair<App::DocumentObject*, App::DocumentObject*>> filter;
     int visible;
     switch (vis) {

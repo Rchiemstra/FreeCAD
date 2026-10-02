@@ -595,7 +595,18 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     // Signal NewDocument rather than ActiveDocument (which is what setActiveDocument would do)
     auto oldActiveDoc = _pActiveDoc;
     setActiveDocumentNoSignal(doc);
-    signalNewDocument(*doc, CreateFlags.createView);
+    // Gui observers create Qt documents/views; marshal onto the GUI thread the
+    // same way notifyDocumentPreDelete does for teardown.
+    if (MainThreadSignalConfig::hasHooks() && !MainThreadSignalConfig::isMainThread()) {
+        MainThreadSignalConfig::invoke(
+            [this, doc, createView = CreateFlags.createView]() {
+                signalNewDocument(*doc, createView);
+            },
+            true);
+    }
+    else {
+        signalNewDocument(*doc, CreateFlags.createView);
+    }
 
     {
         // The application-assigned bootstrap label is part of a new
@@ -610,6 +621,15 @@ Document* Application::newDocument(const char * proposedName, const char * propo
         setActiveDocument(oldActiveDoc);
     }
     return doc;
+}
+
+void Application::notifyDocumentPreDelete(const Document& doc)
+{
+    if (MainThreadSignalConfig::hasHooks() && !MainThreadSignalConfig::isMainThread()) {
+        MainThreadSignalConfig::invoke([this, &doc]() { signalDeleteDocument(doc); }, true);
+        return;
+    }
+    signalDeleteDocument(doc);
 }
 
 bool Application::closeDocument(const Document* doc)
@@ -747,8 +767,9 @@ bool Application::closeDocument(const char* name)
 
     // Trigger observers before removing the document from the internal map.
     // Some observers might rely on this document still being there.
-    runIrrevocableCloseStep(
-        "pre-delete observer notification", [&] { signalDeleteDocument(*pos->second); });
+    runIrrevocableCloseStep("pre-delete observer notification", [&] {
+        notifyDocumentPreDelete(*pos->second);
+    });
 
     // For exception-safety use a smart pointer
     if (_pActiveDoc == pos->second) {

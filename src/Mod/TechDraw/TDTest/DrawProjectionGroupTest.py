@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import unittest
 from .TechDrawTestUtilities import createPageWithSVGTemplate
 
@@ -81,7 +82,7 @@ class DrawProjectionGroupTest(unittest.TestCase):
         print("Item Label: " + label + " Item Name: " + item.Name)
 
         print("recomputing document")
-        FreeCAD.ActiveDocument.recompute()
+        recompute_document(FreeCAD.ActiveDocument)
 
         for v in group.Views:
             print("View: " + v.Label + " " + v.TypeId)
