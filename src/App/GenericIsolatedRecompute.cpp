@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -41,6 +42,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <typeinfo>
 #include <unordered_set>
 #include <utility>
@@ -537,6 +539,39 @@ bool isArchiveTransientDynamicProperty(const App::Property& property)
         && property.testStatus(App::Property::PropNoPersist);
 }
 
+// Part::Feature::getTopoShape() lazily creates this one dynamic property.
+// Its static flags are Prop_NoPersist | Prop_Output | Prop_Hidden, and
+// addDynamicProperty also sets PropDynamic. PropertyContainer::Save drops
+// every PropNoPersist property, so a faithful worker archive does not contain
+// the cache. Leaving it in the manifest makes validateDetachedSchema report
+// "generic recompute changed a property set" before execute() runs.
+//
+// Only this name, this exact type, and these static status bits qualify.
+// Runtime bits such as Touched are ignored. A same-named property of another
+// type, or this type without the built-in nonpersistent/output/hidden flags,
+// stays in the manifest.
+bool isBuiltInPartShapeCache(const App::Property& property)
+{
+    const char* name = property.getName();
+    if (!name || std::strcmp(name, "_Part_ShapeCache") != 0) {
+        return false;
+    }
+    // Compare the registered type name rather than Type identity: App looks the
+    // type up by string to avoid linking FreeCADApp to Part, and some test
+    // binaries can register the same name more than once.
+    if (property.getTypeId().getName() != std::string_view("Part::PropertyShapeCache")) {
+        return false;
+    }
+    return property.testStatus(App::Property::PropDynamic)
+        && property.testStatus(App::Property::PropNoPersist)
+        && property.testStatus(App::Property::PropHidden)
+        && property.testStatus(App::Property::PropOutput)
+        && !property.testStatus(App::Property::PropTransient)
+        && !property.testStatus(App::Property::PropReadOnly)
+        && !property.testStatus(App::Property::PropNoRecompute)
+        && !property.testStatus(App::Property::PropInput);
+}
+
 std::vector<std::pair<std::string, App::Property*>> persistentNamedProperties(
     const App::DocumentObject& object)
 {
@@ -546,6 +581,9 @@ std::vector<std::pair<std::string, App::Property*>> persistentNamedProperties(
             return isArchiveTransientDynamicProperty(*entry.second);
         });
     }
+    std::erase_if(properties, [](const auto& entry) {
+        return isBuiltInPartShapeCache(*entry.second);
+    });
     return properties;
 }
 
