@@ -2430,6 +2430,10 @@ bool Document::undo(const int id)
 
 bool Document::undoCompatibilityTransactionImpl(const int id)
 {
+    // Replay must not throw across Qt.
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2497,6 +2501,9 @@ bool Document::redo(const int id)
 
 bool Document::redoCompatibilityTransactionImpl(const int id)
 {
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2652,6 +2659,9 @@ int Document::openTransaction(TransactionName name, int tid) // NOLINT
 
 int Document::openCompatibilityTransactionImpl(TransactionName name, int tid)
 {
+    if (collaborationNotificationsReplaying()) {
+        return 0;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2685,6 +2695,9 @@ int Document::_openTransaction(
     int id,
     const bool preserveRedoHistory)
 {
+    if (collaborationNotificationsReplaying()) {
+        return 0;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isTransactionLocked() && id != d->bookedTransaction) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -2753,6 +2766,9 @@ int Document::_openTransaction(
 
 void Document::renameTransaction(const std::string& name, const int id) const
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (!name.empty() && d->activeUndoTransaction && d->activeUndoTransaction->getID() == id) {
         if (boost::starts_with(d->activeUndoTransaction->Name, "-> ")) {
@@ -2771,6 +2787,9 @@ int Document::setActiveTransaction(TransactionName name, int tid)
 
 int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int tid)
 {
+    if (collaborationNotificationsReplaying()) {
+        return NullTransaction;
+    }
     ensureCollaborationTransactionControlAllowed();
     // Probably a group transaction situation
     if (tid != NullTransaction) {
@@ -2807,6 +2826,9 @@ int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int ti
 
 void Document::lockTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     lockTransactionInternal();
 }
@@ -2817,6 +2839,9 @@ void Document::lockTransactionInternal()
 }
 void Document::unlockTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     unlockTransactionInternal();
 }
@@ -2909,6 +2934,9 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
 
 void Document::_clearRedos()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear redo while transacting");
@@ -2930,6 +2958,9 @@ void Document::commitTransaction() // NOLINT
 
 void Document::commitCompatibilityTransactionImpl()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2955,6 +2986,9 @@ void Document::commitCompatibilityTransactionImpl()
 
 bool Document::_commitTransaction(const bool notify, const bool retainUndoHistory)
 {
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction()) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -3096,6 +3130,9 @@ void Document::abortTransaction() const
 
 void Document::abortCompatibilityTransactionImpl() const
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -3118,6 +3155,9 @@ void Document::abortCompatibilityTransactionImpl() const
 
 void Document::_abortTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -3421,6 +3461,9 @@ void Document::clearUndos()
 
 void Document::clearCompatibilityTransactionHistoryImpl()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear undos while transacting");
@@ -3514,12 +3557,18 @@ unsigned int Document::getUndoMemSize() const
 
 void Document::setUndoLimit(const unsigned int UndoMemSize) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->UndoMemSize = UndoMemSize;
 }
 
 void Document::setMaxUndoStackSize(const unsigned int UndoMaxStackSize) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->UndoMaxStackSize = UndoMaxStackSize;
 }
@@ -3685,6 +3734,9 @@ void Document::onChangedProperty(const DocumentObject* Who, const Property* What
 
 void Document::setTransactionMode(const int iMode) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->iTransactionMode = iMode;
 }
