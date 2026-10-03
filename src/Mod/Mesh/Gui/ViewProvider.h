@@ -145,6 +145,12 @@ public:
 
     void attach(App::DocumentObject* obj) override;
     void updateData(const App::Property* prop) override;
+
+    [[nodiscard]] Gui::ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const Gui::ViewProviderPresentationCaptureRequest& request,
+        Gui::PresentationRenderBuffer& buffer) const override;
+
     bool useNewSelectionModel() const override
     {
         return false;

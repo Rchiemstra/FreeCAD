@@ -65,6 +65,7 @@
 #include "Mirroring.h"
 
 #include "ui_Mirroring.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -394,7 +395,7 @@ bool Mirroring::accept()
     }
 
     activeDoc->commitTransaction();
-    activeDoc->recompute();
+    PartGui::submitDocumentRecomputeOrReport(*activeDoc);
     Gui::Selection().rmvSelectionGate();
     filterSelection = false;
     return true;
@@ -430,5 +431,4 @@ bool TaskMirroring::reject()
 {
     return widget->reject();
 }
-
 #include "moc_Mirroring.cpp"

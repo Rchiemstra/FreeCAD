@@ -434,10 +434,20 @@ void Property::setStatusValue(unsigned long status)
         |(1<<Busy);
     // clang-format on
 
+    // User1..User3 are runtime re-entrancy lockers (Base::ObjectStatusLocker,
+    // e.g. ViewProviderDocumentObject::updateView); they are never persisted
+    // and are not observable state, so they are neither guarded nor published.
+    // Otherwise another thread's or document's atomic presentation admission,
+    // taken while a locker is alive, throws from the locker's destructor and
+    // terminates. (User4 does not fit in StatusBits.)
+    static constexpr unsigned long runtimeLockerMask =
+        (1UL << User1) | (1UL << User2) | (1UL << User3);
+
     status &= ~mask;
     status |= StatusBits.to_ulong() & mask;
     unsigned long oldStatus = StatusBits.to_ulong();
-    if (status != oldStatus && father) {
+    const bool onlyRuntimeLockerBits = ((status ^ oldStatus) & ~runtimeLockerMask) == 0;
+    if (status != oldStatus && father && !onlyRuntimeLockerBits) {
         if (auto* document = documentFromPropertyContainer(father)) {
             enforceAtomicPresentationMutationTarget(document);
             // User3/Touched and other non-schema flags are temporary lockers
@@ -457,7 +467,7 @@ void Property::setStatusValue(unsigned long status)
     StatusBits = decltype(StatusBits)(status);
 
     if (father) {
-        if (status != oldStatus) {
+        if (status != oldStatus && !onlyRuntimeLockerBits) {
             publishPropertyMutation(*this, true);
         }
         if (status != oldStatus) {

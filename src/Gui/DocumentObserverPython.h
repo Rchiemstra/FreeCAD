@@ -24,6 +24,7 @@
 #pragma once
 
 #include <FCGlobal.h>
+#include <Gui/GuiPythonGate.h>
 #include <fastsignals/signal.h>
 #include <CXX/Objects.hxx>
 #include <string>
@@ -57,8 +58,10 @@ public:
 
     static void addObserver(const Py::Object& obj);
     static void removeObserver(const Py::Object& obj);
+    static void installValueEventHandler();
 
 private:
+    void deliverValueEvent(const GuiPythonObserverValueEvent& event);
     /** Checks if a new document was created */
     void slotCreatedDocument(const Gui::Document& Doc);
     /** Checks if the given document is about to be closed */

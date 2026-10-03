@@ -25,6 +25,7 @@ import unittest
 
 import FreeCAD
 import FreeCADGui
+from Test.GuiRecompute import close_document_by_name, recompute_document, undo_document
 
 """ Test active object list """
 
@@ -47,8 +48,8 @@ class TestActiveObject(unittest.TestCase):
         FreeCADGui.activeView().setActiveObject("pdbody", body)
         self.doc.commitTransaction()
 
-        self.doc.undo()  # undo body creation
-        self.doc.undo()  # undo part creation
+        undo_document(self.doc)  # undo body creation
+        undo_document(self.doc)  # undo part creation
 
         FreeCADGui.updateGui()
 
@@ -75,7 +76,7 @@ class TestActiveObject(unittest.TestCase):
         resultBody.addObject(boolean)
         boolean.Group = tools
         boolean.ViewObject.Display = "Result"
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         for tool in tools:
             tool.ViewObject.hide()
@@ -103,7 +104,7 @@ class TestActiveObject(unittest.TestCase):
             parent.addObject(child)
             parent = child
         parent.addObject(documentObject)
-        self.doc.recompute()
+        recompute_document(self.doc)
         FreeCADGui.updateGui()
         return outerPart
 
@@ -166,7 +167,7 @@ class TestActiveObject(unittest.TestCase):
         outerBoolean.Group = [innerBody]
         outerLaterFeature = self.doc.addObject("PartDesign::AdditiveBox", "OuterLaterFeature")
         outerBody.addObject(outerLaterFeature)
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         innerBody.ViewObject.hide()
         outerBoolean.ViewObject.show()
@@ -224,7 +225,7 @@ class TestActiveObject(unittest.TestCase):
         resultBody = boolean.getParentGeoFeatureGroup()
         laterFeature = self.doc.addObject("PartDesign::AdditiveBox", "LaterFeature")
         resultBody.addObject(laterFeature)
-        self.doc.recompute()
+        recompute_document(self.doc)
         FreeCADGui.updateGui()
 
         self.assertFalse(boolean.ViewObject.Visibility)
@@ -248,7 +249,7 @@ class TestActiveObject(unittest.TestCase):
         resultBody = boolean.getParentGeoFeatureGroup()
         laterFeature = self.doc.addObject("PartDesign::AdditiveBox", "LaterFeature")
         resultBody.addObject(laterFeature)
-        self.doc.recompute()
+        recompute_document(self.doc)
         FreeCADGui.updateGui()
 
         self.assertTrue(tools[0].ViewObject.isVisible())
@@ -282,4 +283,4 @@ class TestActiveObject(unittest.TestCase):
         self.assertEqual(tools[0].ViewObject.SwitchNode.whichChild.getValue(), toolMode)
 
     def tearDown(self):
-        FreeCAD.closeDocument("PartDesignTestSketch")
+        close_document_by_name("PartDesignTestSketch")

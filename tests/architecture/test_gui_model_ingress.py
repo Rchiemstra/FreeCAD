@@ -81,11 +81,17 @@ PUBLIC_OPERATION_PATTERNS = {
     "open": re.compile(r"(?<![A-Za-z0-9_])(?:openTransaction|openCommand|setActiveTransaction)\s*\("),
     "commit": re.compile(r"(?<![A-Za-z0-9_])(?:commitTransaction|commitCommand|closeActiveTransaction)\s*\("),
     "abort": re.compile(r"(?<![A-Za-z0-9_])(?:abortTransaction|abortCommand|closeActiveTransaction)\s*\("),
-    "undo": re.compile(r"(?<![A-Za-z0-9_])undo\s*\("),
-    "redo": re.compile(r"(?<![A-Za-z0-9_])redo\s*\("),
+    "undo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:undo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Undo)"
+    ),
+    "redo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:redo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Redo)"
+    ),
 }
 PUBLIC_RECOMPUTE_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute)\s*\("
+    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recomputeAsync|"
+    r"submitDocumentRecompute(?:OrReport)?|trySubmitDocumentRecompute|"
+    r"requestDocumentRecompute|submitDocumentKindCommand|recompute)\s*\("
 )
 
 
@@ -487,8 +493,6 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
         ("openCommand", "openTransaction("),
         ("commitCommand", "commitTransaction("),
         ("abortCommand", "abortTransaction("),
-        ("undo", "undo("),
-        ("redo", "redo("),
     )
     for method, public_call in gui_routes:
         owner = f"Gui::Document::{method}"
@@ -497,35 +501,36 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
             f"getDocument()->{public_call}",
             owner,
         )
+    # Wave 1: undo/redo admit via trySubmit (submitDocumentKindCommand) instead of
+    # a synchronous getDocument()->undo()/redo() call on the GUI thread.
+    for method, kind in (("undo", "Undo"), ("redo", "Redo")):
+        owner = f"Gui::Document::{method}"
+        body = _body_for(gui_document, f"Document::{method}")
+        compact = "".join(body.split())
+        assert (
+            f"submitDocumentKindCommand" in compact
+            and f"DocumentCommandKind::{kind}" in compact
+        ) or f"getDocument()->{method}(" in compact, (
+            f"{owner}: expected submitDocumentKindCommand(...::{kind}) "
+            f"or getDocument()->{method}("
+        )
 
 
-def test_property_item_interpreter_is_confined_to_compatibility_callback() -> None:
+def test_property_item_submits_lane_edit_from_gui() -> None:
     source = _read_source(REPO_ROOT / PROPERTY_ITEM_SOURCE)
     body = _body_for(
         source, "PropertyItem::setPropertyValue", signature_contains="const std::string&"
     )
     stripped = _suppress_cpp_non_code(body)
-    call_name = "executeCompatibilityMutation"
-    spans: list[tuple[int, int]] = []
-    for match in re.finditer(r"(?<![A-Za-z0-9_])" + call_name + r"\s*\(", stripped):
-        opening = stripped.find("(", match.start())
-        closing = _matching_delimiter(stripped, opening, "(", ")")
-        if closing is not None:
-            spans.append((match.start(), closing + 1))
-    assert spans, "PropertyItem::setPropertyValue: no executeCompatibilityMutation callback"
-
-    interpreter_calls = list(
-        re.finditer(r"Base::Interpreter\s*\(\s*\)\s*\.\s*runString\s*\(", stripped)
+    compact = re.sub(r"\s+", "", stripped)
+    assert "submitDocumentPropertyEdit" in compact, (
+        "PropertyItem::setPropertyValue: expected submitDocumentPropertyEdit for lane ingress"
     )
-    assert interpreter_calls, "PropertyItem::setPropertyValue: missing callback interpreter"
-    outside = [
-        call.start()
-        for call in interpreter_calls
-        if not any(start <= call.start() < end for start, end in spans)
-    ]
-    assert not outside, (
-        "PropertyItem::setPropertyValue: direct interpreter execution outside its "
-        f"executeCompatibilityMutation callback at body offsets {outside}"
+    assert "copyPropertyValueFromPythonRhs" in compact, (
+        "PropertyItem::setPropertyValue: expected copied property payloads before trySubmit"
+    )
+    assert "executeCompatibilityMutation" not in compact, (
+        "PropertyItem::setPropertyValue: must not use compatibility mutation on the GUI thread"
     )
 
 

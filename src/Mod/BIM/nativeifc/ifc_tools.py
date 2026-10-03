@@ -178,8 +178,8 @@ def setup_project(proj, filename, shapemode, silent):
     if "Schema" not in proj.PropertiesList:
         proj.addProperty("App::PropertyEnumeration", "Schema", "Base", locked=True)
     # bug in FreeCAD - to avoid a crash, pre-populate the enum with one value
-    proj.Schema = [ifcfile.wrapped_data.schema_name()]
-    proj.Schema = ifcfile.wrapped_data.schema_name()
+    proj.Schema = [ifcfile.schema]
+    proj.Schema = ifcfile.schema
     proj.Schema = ifcopenshell.ifcopenshell_wrapper.schema_names()
     return ifcfile, project, full
 
@@ -621,7 +621,10 @@ def add_properties(obj, ifcfile=None, ifcentity=None, links=False, shapemode=0, 
             obj.setPropertyStatus("ShapeMode", "Hidden")
     if ifcentity.is_a("IfcProduct"):
         obj.addProperty("App::PropertyLink", "Type", "IFC", locked=True)
-    attr_defs = ifcentity.wrapped_data.declaration().as_entity().all_attributes()
+    declaration = getattr(ifcentity, "declaration", None)
+    if declaration is None:
+        declaration = ifcentity.wrapped_data.declaration().as_entity()
+    attr_defs = declaration.all_attributes()
     try:
         info_ifcentity = ifcentity.get_info()
     except:
@@ -962,7 +965,7 @@ def get_ifc_classes(obj, baseclass):
     if not ifcfile:
         return [baseclass]
     classes = []
-    schema = ifcfile.wrapped_data.schema_name()
+    schema = ifcfile.schema
     schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(schema)
     try:
         declaration = schema.declaration_by_name(baseclass)

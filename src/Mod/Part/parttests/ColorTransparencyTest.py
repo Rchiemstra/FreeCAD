@@ -3,6 +3,7 @@
 import unittest
 
 import FreeCAD as App
+from Test.GuiRecompute import close_document
 
 
 class ColorTransparencyTest(unittest.TestCase):
@@ -14,7 +15,7 @@ class ColorTransparencyTest(unittest.TestCase):
         self._backup_default_shapecolor = self._pg.GetUnsigned("DefaultShapeColor")
 
     def tearDown(self):
-        App.closeDocument(self._doc.Name)
+        close_document(self._doc)
         self._pg.SetInt("DefaultShapeTransparency", self._backup_default_transparency)
         self._pg.SetUnsigned("DefaultShapeColor", self._backup_default_shapecolor)
 

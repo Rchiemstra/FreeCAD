@@ -286,8 +286,23 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
         setActiveMode();
     }
     else if (prop == &Visibility) {
-        // use this bit to check whether show() or hide() must be called
-        if (!Visibility.testStatus(App::Property::User2)) {
+        // Scene edits and Python view-provider hooks touch Coin and may call
+        // getMainWindow(). During replay, while the stable signal still holds
+        // the document lock, or off the GUI thread, only mirror the App
+        // property here. catchUpIdleLivePresentation() applies the scene later.
+        // A provider that is not attached yet (e.g. a constructor setting
+        // Visibility) has no live scene to protect and keeps direct show()/hide().
+        Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+        const bool deferScene =
+            pcObject && (!guiDocument || guiDocument->deferLivePresentationUpdates());
+        if (deferScene) {
+            if (guiDocument) {
+                guiDocument->noteDeferredVisibilityChange(this);
+                guiDocument->scheduleLivePresentationCatchUp();
+            }
+        }
+        else if (!Visibility.testStatus(App::Property::User2)) {
+            // use this bit to check whether show() or hide() must be called
             Visibility.setStatus(App::Property::User2, true);
             Visibility.getValue() ? show() : hide();
             Visibility.setStatus(App::Property::User2, false);
@@ -353,6 +368,18 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
 
 void ViewProviderDocumentObject::hide()
 {
+    Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+    if (guiDocument && guiDocument->deferLivePresentationUpdates()) {
+        if (!Visibility.testStatus(App::Property::User2)) {
+            Visibility.setStatus(App::Property::User2, true);
+            Visibility.setValue(false);
+            Visibility.setStatus(App::Property::User2, false);
+        }
+        guiDocument->noteDeferredVisibilityChange(this);
+        guiDocument->scheduleLivePresentationCatchUp();
+        return;
+    }
+
     ViewProvider::hide();
     // use this bit to check whether 'Visibility' must be adjusted
     if (!Visibility.testStatus(App::Property::User2)) {
@@ -413,6 +440,25 @@ void ViewProviderDocumentObject::setModeSwitch()
 
 void ViewProviderDocumentObject::show()
 {
+    Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+    if (guiDocument && guiDocument->deferLivePresentationUpdates()) {
+        if (!TreeWidget::isObjectShowable(getObject())) {
+            Visibility.setValue(false);
+            if (getObject()) {
+                getObject()->Visibility.setValue(false);
+            }
+            return;
+        }
+        if (!Visibility.testStatus(App::Property::User2)) {
+            Visibility.setStatus(App::Property::User2, true);
+            Visibility.setValue(true);
+            Visibility.setStatus(App::Property::User2, false);
+        }
+        guiDocument->noteDeferredVisibilityChange(this);
+        guiDocument->scheduleLivePresentationCatchUp();
+        return;
+    }
+
     if (TreeWidget::isObjectShowable(getObject())) {
         ViewProvider::show();
     }
@@ -424,8 +470,10 @@ void ViewProviderDocumentObject::show()
         return;
     }
 
-    // use this bit to check whether 'Visibility' must be adjusted
-    if (!Visibility.testStatus(App::Property::User2)) {
+    // use this bit to check whether 'Visibility' must be adjusted.
+    // An unchanged write still notifies and publishes a shared-presentation
+    // revision. Scene catch-up calls show() only to sync Coin.
+    if (!Visibility.testStatus(App::Property::User2) && !Visibility.getValue()) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(true);
         Visibility.setStatus(App::Property::User2, false);

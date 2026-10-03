@@ -45,6 +45,7 @@
 #include <Mod/PartDesign/Gui/ReferenceSelection.h>
 
 #include "TaskDressUpParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 FC_LOG_LEVEL_INIT("PartDesign", true, true)
@@ -204,12 +205,9 @@ void TaskDressUpParameters::updateFeature(
 
     setupTransaction();
     pcDressUp->Base.setValue(pcDressUp->Base.getValue(), refs);
-    pcDressUp->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*pcDressUp);
     if (selectionMode == refSel) {
         DressUpView->highlightReferences(true);
-    }
-    else {
-        hideOnError();
     }
 }
 
@@ -512,7 +510,7 @@ TaskDlgDressUpParameters::TaskDlgDressUpParameters(ViewProviderDressUp* DressUpV
     }
     if (changed) {
         pcDressUp->Base.setValue(base, newSubList);
-        pcDressUp->recomputeFeature(false);
+        PartGui::submitDocumentRecomputeOrReport(*pcDressUp);
     }
 }
 
@@ -540,5 +538,4 @@ bool TaskDlgDressUpParameters::reject()
     getViewObject<ViewProviderDressUp>()->highlightReferences(false);
     return TaskDlgFeatureParameters::reject();
 }
-
 #include "moc_TaskDressUpParameters.cpp"

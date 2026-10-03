@@ -47,6 +47,7 @@
 
 #include "Command.h"
 #include "Action.h"
+#include "DocumentExecutionIngress.h"
 #include "App/Application.h"
 #include "Application.h"
 #include "BitmapFactory.h"
@@ -805,6 +806,9 @@ void Command::printPyCaller()
     if (!FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
         return;
     }
+    if (Base::isPythonFrameInspectionUnsafe()) {
+        return;
+    }
     PyFrameObject* frame = PyEval_GetFrame();
     if (!frame) {
         return;
@@ -815,9 +819,9 @@ void Command::printPyCaller()
     printCaller(file ? file : "<no file>", line);
 #else
     PyCodeObject* code = PyFrame_GetCode(frame);
-    const char* file = PyUnicode_AsUTF8(code->co_filename);
+    const char* file = code ? PyUnicode_AsUTF8(code->co_filename) : nullptr;
     printCaller(file ? file : "<no file>", line);
-    Py_DECREF(code);
+    Py_XDECREF(code);
 #endif
 }
 
@@ -1040,8 +1044,11 @@ const std::string Command::strToPython(const char* Str)
 /// Updates the (active) document (propagate changes)
 void Command::updateActive()
 {
-    WaitCursor wc;
-    doCommand(App, "App.ActiveDocument.recompute()");
+    if (auto* active = Application::Instance->activeDocument()) {
+        if (auto* document = active->getDocument()) {
+            requestDocumentRecompute(*document);
+        }
+    }
 }
 
 bool Command::isActiveObjectValid()
@@ -1388,9 +1395,10 @@ void MacroCommand::activated(int iMsg)
     }
     else {
         Application::Instance->macroManager()->run(MacroManager::File, fi.filePath().toUtf8());
-        // after macro run recalculate the document
-        if (Application::Instance->activeDocument()) {
-            Application::Instance->activeDocument()->getDocument()->recompute();
+        if (auto* active = Application::Instance->activeDocument()) {
+            if (auto* document = active->getDocument()) {
+                requestDocumentRecompute(*document);
+            }
         }
     }
 }

@@ -6,8 +6,9 @@ from Base.Metadata import constmethod
 from PropertyContainer import PropertyContainer
 from DocumentObject import DocumentObject
 from DocumentSettings import DocumentSettings
+from DocumentCommandHandle import DocumentCommandHandle
 from RecomputeHandle import RecomputeHandle
-from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Callable, Final, Literal, Sequence, overload, Union
 
 if TYPE_CHECKING:
     from Part import Feature as _PartFeature
@@ -94,6 +95,10 @@ class Document(PropertyContainer):
         """
         Save the document to disk.
         """
+        ...
+
+    def saveAsync(self, path: str = "", overwrite: bool = True, /) -> DocumentCommandHandle:
+        """Submit save or save-as without waiting and return a non-blocking command handle."""
         ...
 
     def saveWithOutcome(self) -> dict[str, object]:
@@ -335,6 +340,19 @@ class Document(PropertyContainer):
         """Commit a prepared edit and return a structured terminal result."""
         ...
 
+    def commitEditAsync(
+        self,
+        session_id: str,
+        prepared_edit: object,
+        /,
+    ) -> DocumentCommandHandle:
+        """Submit a pointer-free prepared-edit command without waiting.
+
+        Raises when the prepared edit cannot be encoded with non-empty copied
+        property payloads for every affected property.
+        """
+        ...
+
     def commitCompatibilityMutation(
         self,
         callback: Callable[[], object],
@@ -352,6 +370,22 @@ class Document(PropertyContainer):
         ``recompute=False`` preserves pending recompute work for recovery mutations.
         The optional postcondition runs after recompute and before publication;
         a false result rolls back.
+        """
+        ...
+
+    def commitCompatibilityMutationAsync(
+        self,
+        callback: Callable[[], object],
+        /,
+        *,
+        structural: bool = False,
+        recompute: bool = True,
+        postcondition: Callable[[], object] | None = None,
+        object_name: str | None = None,
+    ) -> DocumentCommandHandle:
+        """Submit one compatibility mutation without waiting.
+
+        Raises when the callback cannot be encoded as a pointer-free document command.
         """
         ...
 
@@ -526,10 +560,22 @@ class Document(PropertyContainer):
         """
         ...
 
+    def undoAsync(self) -> DocumentCommandHandle:
+        """Submit undo without waiting and return a non-blocking command handle."""
+        ...
+
     def redo(self) -> None:
         """
         Redo a previously undone transaction
         """
+        ...
+
+    def redoAsync(self) -> DocumentCommandHandle:
+        """Submit redo without waiting and return a non-blocking command handle."""
+        ...
+
+    def closeAsync(self) -> DocumentCommandHandle:
+        """Submit document close without waiting and return a non-blocking command handle."""
         ...
 
     def clearUndos(self) -> None:
@@ -586,12 +632,12 @@ class Document(PropertyContainer):
         force: bool = False,
         check_cycle: bool = False,
         /,
-    ) -> RecomputeHandle:
+    ) -> Union[RecomputeHandle, DocumentCommandHandle]:
         """
         Submit the same isolated recompute used by recompute() and return immediately.
 
-        Poll status(), progress(), or done() on the returned handle to advance
-        dependency-ready work, or call wait() for a responsive compatibility wait.
+        Use RecomputeHandle.status() for observation-only progress on the GUI thread.
+        Call wait() only off the GUI thread when a blocking compatibility wait is required.
         """
         ...
 

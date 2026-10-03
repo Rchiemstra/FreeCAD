@@ -32,10 +32,11 @@
 #include <Base/Tools.h>
 
 #include "AutoSaver.h"
+#include "Utilities.h"
 #include "Application.h"
 #include "Document.h"
+#include "DocumentExecutionIngress.h"
 #include "MainWindow.h"
-#include "WaitCursor.h"
 
 FC_LOG_LEVEL_INIT("App", true, true)
 
@@ -109,6 +110,14 @@ void AutoSaver::flushPendingSave(const QString& documentName)
 
 void AutoSaver::setTimeout(int ms)
 {
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, ms]() { setTimeout(ms); },
+            Qt::QueuedConnection);
+        return;
+    }
+
     timeout = Base::clamp<int>(ms, 0, 3600000);  // between 0 and 60 min
 
     // go through the attached documents and apply the new timeout
@@ -128,16 +137,40 @@ void AutoSaver::setCompressed(bool on)
 
 void AutoSaver::slotCreateDocument(const App::Document& Doc)
 {
-    std::string name = Doc.getName();
+    const std::string name = Doc.getName();
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, name]() {
+                if (App::GetApplication().getDocument(name.c_str())) {
+                    slotCreateDocument(*App::GetApplication().getDocument(name.c_str()));
+                }
+            },
+            Qt::QueuedConnection);
+        return;
+    }
+
     int id = timeout > 0 ? startTimer(timeout) : 0;
-    AutoSaveProperty* as = new AutoSaveProperty(&Doc);
+    AutoSaveProperty* as = new AutoSaveProperty(App::GetApplication().getDocument(name.c_str()));
     as->timerId = id;
     saverMap.insert(std::make_pair(name, as));
 }
 
 void AutoSaver::slotDeleteDocument(const App::Document& Doc)
 {
-    std::string name = Doc.getName();
+    const std::string name = Doc.getName();
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, name]() { slotDeleteDocumentByName(name); },
+            Qt::QueuedConnection);
+        return;
+    }
+    slotDeleteDocumentByName(name);
+}
+
+void AutoSaver::slotDeleteDocumentByName(const std::string& name)
+{
     std::map<std::string, AutoSaveProperty*>::iterator it = saverMap.find(name);
     if (it != saverMap.end()) {
         if (it->second->timerId > 0) {
@@ -179,30 +212,90 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     App::RecoverySnapshotSaveOptions options;
     options.compressed = this->compressed;
     options.saveBinaryBrep = !this->compressed || hGrp->GetBool("SaveBinaryBrep", true);
+    // Recovery snapshots run on the lane owner. Thumbnails require the GUI
+    // thread viewer, so keep them off this async path.
     options.saveThumbnail = false;
 
-    Gui::WaitCursor wc;
-    getMainWindow()->showMessage(tr("Wait until the auto-recovery file has been saved…"), 5000);
-    // qApp->processEvents();
+    if (auto* window = getMainWindow()) {
+        window->showMessage(tr("Saving auto-recovery file…"), 5000);
+    }
 
-    Base::TimeElapsed startTime;
-    try {
-        if (!App::writeRecoverySnapshotToTransientDir(*doc, options)) {
+    const Base::TimeElapsed startTime;
+    const auto identity = doc->collaborationIdentity();
+    // AutoSaver runs on the GUI thread. Never call dispatchToOwner / sync
+    // Document::save here — finish via the async recovery write and a queued
+    // GUI callback when the worker completes.
+    scheduleRecoverySnapshotWrite(
+        *doc,
+        options,
+        [this,
+         name,
+         documentInstanceId = identity.instanceId,
+         lifecycleEpoch = identity.lifecycleEpoch,
+         startTime](const bool written, const std::exception_ptr failure) {
+            completeRecoverySnapshotSave(
+                name,
+                documentInstanceId,
+                lifecycleEpoch,
+                startTime,
+                written,
+                failure);
+        });
+}
+
+void AutoSaver::completeRecoverySnapshotSave(
+    const std::string& name,
+    const std::uint64_t documentInstanceId,
+    const std::uint64_t lifecycleEpoch,
+    const Base::TimeElapsed startTime,
+    const bool written,
+    const std::exception_ptr failure)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+
+    const auto saverIt = saverMap.find(name);
+    if (saverIt == saverMap.end()) {
+        return;
+    }
+    AutoSaveProperty& saver = *saverIt->second;
+
+    App::Document* doc = App::GetApplication().getDocument(name.c_str());
+    if (!doc) {
+        saver.restoreFailedSaveAttempt();
+        return;
+    }
+
+    const auto identity = doc->collaborationIdentity();
+    if (identity.instanceId != documentInstanceId
+        || identity.lifecycleEpoch != lifecycleEpoch) {
+        saver.restoreFailedSaveAttempt();
+        return;
+    }
+
+    if (failure) {
+        try {
+            std::rethrow_exception(failure);
+        }
+        catch (...) {
             saver.restoreFailedSaveAttempt();
             doc->reportRecoverySaveOutcome(
-                doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
-            Base::Console().warning(
-                "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
-                name.c_str()
-            );
+                doc->TransientDir.getStrValue(),
+                false,
+                "Recovery snapshot write threw an exception");
+            Base::Console().error("Failed to auto-save document '%s'\n", name.c_str());
             return;
         }
     }
-    catch (...) {
+
+    if (!written) {
         saver.restoreFailedSaveAttempt();
         doc->reportRecoverySaveOutcome(
-            doc->TransientDir.getStrValue(), false, "Recovery snapshot write threw an exception");
-        throw;
+            doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
+        Base::Console().warning(
+            "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
+            name.c_str()
+        );
+        return;
     }
 
     saver.finishSuccessfulSaveAttempt();
@@ -361,7 +454,7 @@ void AutoSaveProperty::scheduleQueuedRetry(const App::Document& document)
     // Queue a later GUI-thread pass instead of flushing inline from
     // signalBecameStable(). beginSaveAttempt() re-checks dirty state when the
     // queued retry runs.
-    QTimer::singleShot(0, AutoSaver::instance(), [qDocumentName, identity]() {
+    scheduleGuiSingleShot(0, [qDocumentName, identity]() {
         AutoSaver::instance()->flushPendingSaveForIdentity(
             qDocumentName, identity.instanceId, identity.lifecycleEpoch);
     });

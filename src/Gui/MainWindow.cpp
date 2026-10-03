@@ -97,6 +97,8 @@
 #include "BitmapFactory.h"
 #include "ComboView.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
+#include "GuiPythonGate.h"
 #include "DockWindowManager.h"
 #include "DocumentChangesWidget.h"
 #include "DownloadManager.h"
@@ -1182,8 +1184,17 @@ bool MainWindow::closeAllDocuments(bool close)
             }
         }
 
-        if (save && !gdoc->save()) {
-            failedSaves++;
+        if (save) {
+            bool saved = false;
+            if (doc->executionLane()) {
+                saved = submitDocumentSaveAwaitingCompletion(*doc);
+            }
+            else {
+                saved = gdoc->save();
+            }
+            if (!saved) {
+                failedSaves++;
+            }
         }
     }
 
@@ -2016,6 +2027,14 @@ void MainWindow::delayedStartup()
             // delayedStartup().
             Base::Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADGuiTest"));
             if (App::Application::Config()["ExitTests"] == "yes") {
+                if (qApp) {
+                    for (int pass = 0; pass < 200; ++pass) {
+                        qApp->processEvents(QEventLoop::AllEvents, 25);
+                        if (App::GetApplication().getDocuments().empty()) {
+                            break;
+                        }
+                    }
+                }
                 Base::Interpreter().runString(
                     "import sys\n"
                     "sys.exit(0 if test_result.wasSuccessful() else 1)\n"
@@ -2194,10 +2213,41 @@ void MainWindow::updateActions(bool delay)
 
 void MainWindow::_updateActions()
 {
+    bool presentationNeedsPump = false;
+    // Bounded presentation apply (~4 ms) so Coin/tree/property packets cannot
+    // monopolize the GUI event loop while a document lane is publishing.
+    if (Application::Instance) {
+        for (auto* appDocument : App::GetApplication().getDocuments()) {
+            if (auto* guiDocument = Application::Instance->getDocument(appDocument)) {
+                const auto pumpResult = guiDocument->pumpPresentationApply(4);
+                if (guiDocument->presentationApplyScheduler().hasStagingWork()
+                    || (pumpResult.slicesApplied > 0 && !pumpResult.stagingComplete)) {
+                    presentationNeedsPump = true;
+                }
+            }
+        }
+    }
+
+    // Drain deferred GUI Python admissions without blocking for the GIL.
+    if (GuiPythonGate::pumpQueuedCallbacks() > 0) {
+        presentationNeedsPump = true;
+    }
+
     if (isVisible() && d->actionUpdateDelay <= 0) {
         FC_LOG("update actions");
-        d->activityTimer->stop();
-        Application::Instance->commandManager().testActive();
+        // Keep the timer alive while presentation slices remain; stopping it
+        // would leave multi-slice applies stranded until the next user action.
+        if (!presentationNeedsPump) {
+            d->activityTimer->stop();
+        }
+        if (Application::Instance) {
+            Application::Instance->commandManager().testActive();
+        }
+    }
+    else if (presentationNeedsPump) {
+        if (!d->activityTimer->isActive() || d->activityTimer->interval() > 4) {
+            d->activityTimer->start(4);
+        }
     }
 
     d->actionUpdateDelay = 0;
@@ -2602,7 +2652,7 @@ void MainWindow::insertFromMimeData(const QMimeData* mimeData)
                 if (obj) {
                     obj->Label.setValue("PastedImage");
                     static_cast<Image::ImagePlane*>(obj)->ImageFile.setValue(tempPath.c_str());
-                    doc->recompute();
+                    requestDocumentRecompute(*doc);
                 }
             }
             catch (const Base::Exception& e) {

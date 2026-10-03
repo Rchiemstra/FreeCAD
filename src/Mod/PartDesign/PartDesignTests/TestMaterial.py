@@ -24,6 +24,7 @@
 import unittest
 
 import FreeCAD
+from Test.GuiRecompute import close_document_by_name, recompute_document
 
 
 class TestMaterial(unittest.TestCase):
@@ -47,7 +48,7 @@ class TestMaterial(unittest.TestCase):
         self.Box.Length = 10.00
         self.Box.Width = 10.00
         self.Box.Height = 10.00
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         self.Body.ViewObject.DiffuseColor = [
             (1.0, 0.0, 0.0, 0.0),
@@ -57,7 +58,7 @@ class TestMaterial(unittest.TestCase):
             (0.6, 1.0, 0.0, 0.0),
             (0.5, 1.0, 0.0, 0.0),
         ]
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertEqual(len(self.Body.ViewObject.DiffuseColor), 6)
         colors = self.Body.ViewObject.DiffuseColor
         self.compareColors(colors[0], (1.0, 0.0, 0.0, 0.0))
@@ -68,7 +69,7 @@ class TestMaterial(unittest.TestCase):
         self.compareColors(colors[5], (0.5, 1.0, 0.0, 0.0))
 
         self.Body.ViewObject.DiffuseColor = [(1.0, 0.0, 0.0, 0.0)]
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertEqual(len(self.Body.ViewObject.DiffuseColor), 1)
         colors = self.Body.ViewObject.DiffuseColor
         self.compareColors(colors[0], (1.0, 0.0, 0.0, 0.0))
@@ -81,7 +82,7 @@ class TestMaterial(unittest.TestCase):
             (0.6, 1.0, 0.0, 0.0),
             (0.5, 1.0, 0.0, 0.0),
         ]
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertEqual(len(self.Box.ViewObject.DiffuseColor), 6)
         colors = self.Box.ViewObject.DiffuseColor
         self.compareColors(colors[0], (1.0, 0.0, 0.0, 0.0))
@@ -92,12 +93,12 @@ class TestMaterial(unittest.TestCase):
         self.compareColors(colors[5], (0.5, 1.0, 0.0, 0.0))
 
         self.Box.ViewObject.DiffuseColor = [(1.0, 0.0, 0.0, 0.0)]
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         self.assertEqual(len(self.Box.ViewObject.DiffuseColor), 1)
         colors = self.Box.ViewObject.DiffuseColor
         self.compareColors(colors[0], (1.0, 0.0, 0.0, 0.0))
 
     def tearDown(self):
         # closing doc
-        FreeCAD.closeDocument("PartDesignTestMaterial")
+        close_document_by_name("PartDesignTestMaterial")
         # print ("omit closing document for debugging")

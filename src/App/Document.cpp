@@ -83,7 +83,11 @@
 #include <Base/UnitsApi.h>
 
 #include "Document.h"
+#include "DocumentPresentationBoundary.h"
+#include "DocumentExecutionLane.h"
+#include "DocumentHandle.h"
 #include "DocumentRecomputeCoordinator.h"
+#include "DocumentWouldBlock.h"
 #include "private/CollaborationStructuralMutationRecorder.h"
 #include "private/DocumentP.h"
 #include "Application.h"
@@ -632,6 +636,17 @@ DocumentCollaborationService& Document::collaborationService()
     return *d->collaborationService;
 }
 
+bool Document::collaborationCloseAdmissionActive() const noexcept
+{
+    if (atomicPresentationMutationAdmissionHeldFor(*this)) {
+        return true;
+    }
+    if (!d->collaborationService) {
+        return false;
+    }
+    return d->collaborationService->closeAdmissionActive();
+}
+
 DocumentRecomputeCoordinator& Document::recomputeCoordinator()
 {
     return *d->recomputeCoordinator;
@@ -685,7 +700,11 @@ void Document::beginCollaborationAtomicPresentationAuditImpl(
     bool readOnly,
     bool preparedOwner)
 {
-    if (!isCollaborationOwnerThread()) {
+    const bool readOnlyPostconditionAudit = readOnly && !preparedOwner;
+    const bool guiThreadLegacyAudit =
+        !preparedOwner && DocumentWouldBlock::isGuiThread();
+    if (!readOnlyPostconditionAudit && !guiThreadLegacyAudit
+        && !isCollaborationOwnerThread()) {
         throw Base::RuntimeError(
             "atomic presentation mutation audit requires the document owner thread");
     }
@@ -824,6 +843,11 @@ bool Document::collaborationAtomicPresentationAuditViolated() const noexcept
 void Document::endCollaborationAtomicPresentationAudit() noexcept
 {
     if (!isCollaborationOwnerThread()) {
+        if (d->collaborationAtomicPresentationAuditActive
+            && !d->collaborationAtomicPresentationAuditPreparedOwner) {
+            endCollaborationAtomicPresentationAuditImpl(false);
+            return;
+        }
         noteCollaborationReadOnlyMutationAttempt();
         return;
     }
@@ -924,9 +948,66 @@ std::recursive_mutex& Document::collaborationCommitMutex() noexcept
     return d->collaborationCommitMutex;
 }
 
+void Document::bindCollaborationOwnerThread(const std::thread::id threadId) noexcept
+{
+    d->collaborationOwnerThread = threadId;
+}
+
 bool Document::isCollaborationOwnerThread() const noexcept
 {
     return std::this_thread::get_id() == d->collaborationOwnerThread;
+}
+
+DocumentHandle Document::executionHandle() const
+{
+    if (d->executionLane) {
+        return d->executionLane->handle();
+    }
+    if (const auto identity = d->collaborationRevisions.documentIdentity()) {
+        return DocumentHandle(*identity);
+    }
+    return DocumentHandle {};
+}
+
+DocumentExecutionLane* Document::executionLane() noexcept
+{
+    return d->executionLane.get();
+}
+
+const DocumentExecutionLane* Document::executionLane() const noexcept
+{
+    return d->executionLane.get();
+}
+
+void Document::startExecutionLane(DocumentRevisionIdentityBinding identity)
+{
+    if (d->executionLane) {
+        return;
+    }
+    d->executionLane = DocumentExecutionLane::create(*this, identity);
+}
+
+void Document::shutdownExecutionLane()
+{
+    if (!d->executionLane) {
+        return;
+    }
+    d->executionLane->requestShutdown("document closing");
+    if (d->executionLane->isOwnerThread()) {
+        // The lane thread closes the document; it keeps itself alive until
+        // executeActiveCommand returns and must not destroy itself here.
+        return;
+    }
+    // Never join the lane on the GUI thread — that would stall painting.
+    if (DocumentWouldBlock::isGuiThread()) {
+        // Keep the shared_ptr alive via the lane's self-pin until the owner
+        // thread exits; drop the Document-owned reference without joining.
+        d->executionLane->detachThread();
+        d->executionLane.reset();
+        return;
+    }
+    d->executionLane->joinThread();
+    d->executionLane.reset();
 }
 
 bool Document::collaborationNotificationsReplaying() const noexcept
@@ -2341,11 +2422,18 @@ bool Document::checkOnCycle()
 
 bool Document::undo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return undo(id); });
+    }
     return collaborationService().undoCompatibilityTransaction(id);
 }
 
 bool Document::undoCompatibilityTransactionImpl(const int id)
 {
+    // Replay must not throw across Qt.
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2405,11 +2493,17 @@ bool Document::undoCompatibilityTransactionImpl(const int id)
 
 bool Document::redo(const int id)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, id] { return redo(id); });
+    }
     return collaborationService().redoCompatibilityTransaction(id);
 }
 
 bool Document::redoCompatibilityTransactionImpl(const int id)
 {
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2565,6 +2659,9 @@ int Document::openTransaction(TransactionName name, int tid) // NOLINT
 
 int Document::openCompatibilityTransactionImpl(TransactionName name, int tid)
 {
+    if (collaborationNotificationsReplaying()) {
+        return 0;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2598,6 +2695,9 @@ int Document::_openTransaction(
     int id,
     const bool preserveRedoHistory)
 {
+    if (collaborationNotificationsReplaying()) {
+        return 0;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isTransactionLocked() && id != d->bookedTransaction) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -2666,6 +2766,9 @@ int Document::_openTransaction(
 
 void Document::renameTransaction(const std::string& name, const int id) const
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (!name.empty() && d->activeUndoTransaction && d->activeUndoTransaction->getID() == id) {
         if (boost::starts_with(d->activeUndoTransaction->Name, "-> ")) {
@@ -2684,6 +2787,9 @@ int Document::setActiveTransaction(TransactionName name, int tid)
 
 int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int tid)
 {
+    if (collaborationNotificationsReplaying()) {
+        return NullTransaction;
+    }
     ensureCollaborationTransactionControlAllowed();
     // Probably a group transaction situation
     if (tid != NullTransaction) {
@@ -2720,6 +2826,9 @@ int Document::setActiveCompatibilityTransactionImpl(TransactionName name, int ti
 
 void Document::lockTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     lockTransactionInternal();
 }
@@ -2730,6 +2839,9 @@ void Document::lockTransactionInternal()
 }
 void Document::unlockTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     unlockTransactionInternal();
 }
@@ -2763,6 +2875,12 @@ bool Document::transacting() const
 
 void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What, int line)
 {
+    // Visibility sync and other observer echoes during replay must not open a
+    // transaction. ensureCollaborationTransactionControlAllowed() would throw,
+    // and a booked global transaction is how that echo reaches openTransaction().
+    if (d->collaborationReplayingNotifications) {
+        return;
+    }
     // if no transaction open, open one!
     if (isPerformingTransaction() || d->activeUndoTransaction) {
         return;
@@ -2816,6 +2934,9 @@ void Document::_checkTransaction(DocumentObject* pcDelObj, const Property* What,
 
 void Document::_clearRedos()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear redo while transacting");
@@ -2837,6 +2958,9 @@ void Document::commitTransaction() // NOLINT
 
 void Document::commitCompatibilityTransactionImpl()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -2862,6 +2986,9 @@ void Document::commitCompatibilityTransactionImpl()
 
 bool Document::_commitTransaction(const bool notify, const bool retainUndoHistory)
 {
+    if (collaborationNotificationsReplaying()) {
+        return false;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction()) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -3003,6 +3130,9 @@ void Document::abortTransaction() const
 
 void Document::abortCompatibilityTransactionImpl() const
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     enforceAtomicPresentationMutationTarget(*this);
 
@@ -3025,6 +3155,9 @@ void Document::abortCompatibilityTransactionImpl() const
 
 void Document::_abortTransaction()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         if (FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG)) {
@@ -3295,7 +3428,7 @@ void Document::clearDocument() // NOLINT
     d->activeObject = nullptr;
 
     if (!d->objectArray.empty()) {
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
         GetApplication().signalNewDocument(*this, false);
@@ -3328,6 +3461,9 @@ void Document::clearUndos()
 
 void Document::clearCompatibilityTransactionHistoryImpl()
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     if (isPerformingTransaction() || d->committing) {
         FC_ERR("Cannot clear undos while transacting");
@@ -3421,12 +3557,18 @@ unsigned int Document::getUndoMemSize() const
 
 void Document::setUndoLimit(const unsigned int UndoMemSize) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->UndoMemSize = UndoMemSize;
 }
 
 void Document::setMaxUndoStackSize(const unsigned int UndoMaxStackSize) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->UndoMaxStackSize = UndoMaxStackSize;
 }
@@ -3592,6 +3734,9 @@ void Document::onChangedProperty(const DocumentObject* Who, const Property* What
 
 void Document::setTransactionMode(const int iMode) // NOLINT
 {
+    if (collaborationNotificationsReplaying()) {
+        return;
+    }
     ensureCollaborationTransactionControlAllowed();
     d->iTransactionMode = iMode;
 }
@@ -3738,6 +3883,8 @@ Document::~Document()
 #ifdef FC_LOGUPDATECHAIN
     Console().log("-App::Document: %s %p\n", getName(), this);
 #endif
+
+    shutdownExecutionLane();
 
     try {
         clearUndos();
@@ -4647,6 +4794,9 @@ void Document::ensureCollaborationSaveAllowed() const
 
 bool Document::saveAs(const char* _file)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this, _file] { return saveAs(_file); });
+    }
     ensureCollaborationSaveAllowed();
     const std::string file = checkFileName(_file);
     return saveWithOutcomeImpl(
@@ -4676,6 +4826,9 @@ bool Document::saveCopy(const char* file) const
 
 DocumentSaveOutcome Document::saveWithOutcome()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return saveWithOutcome(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4698,6 +4851,9 @@ DocumentSaveOutcome Document::saveWithOutcome()
 
 DocumentSaveOutcome Document::forceSave()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return forceSave(); });
+    }
     ensureCollaborationSaveAllowed();
     try {
         return saveWithOutcomeImpl(
@@ -4728,6 +4884,11 @@ DocumentSaveOutcome Document::saveAsWithOutcome(
     const bool overwrite,
     const std::string& expectedDestinationSha256)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return saveAsWithOutcome(file, overwrite, expectedDestinationSha256);
+        });
+    }
     ensureCollaborationSaveAllowed();
     std::string checked;
     const auto preflightFailure = [this, file](const char* message) {
@@ -5008,6 +5169,9 @@ DocumentMutationReadiness Document::getMutationReadiness() const
 // Save the document under the name it has been opened
 bool Document::save()
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([this] { return save(); });
+    }
     ensureCollaborationSaveAllowed();
 
     if (testStatus(Document::PartialDoc)) {
@@ -5984,7 +6148,7 @@ void Document::restore(const char* filename,
     Document* activeDoc = GetApplication().getActiveDocument();
     if (!d->objectArray.empty()) {
         signal = true;
-        GetApplication().signalDeleteDocument(*this);
+        GetApplication().notifyDocumentPreDelete(*this);
         clearObjectDependenciesForDocumentTeardown();
         d->clearDocument();
     }
@@ -6955,8 +7119,15 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
     const std::vector<DocumentObject*>& objs,
     const bool force,
     const int options,
-    const RecomputeVenue venue)
+    const RecomputeVenue venue,
+    const DocumentRecomputeId admissionId)
 {
+    if (d->executionLane && !isCollaborationOwnerThread()) {
+        return d->executionLane->dispatchToOwner([&] {
+            return recomputeAsync(objs, force, options, venue, admissionId);
+        });
+    }
+
     enforceAtomicPresentationMutationTarget(*this);
 
     const auto submitEmpty = [this] {
@@ -7047,19 +7218,23 @@ std::unique_ptr<RecomputeHandle> Document::recomputeAsync(
         !collaborationDerivedRecomputeGranted(),
         force,
         // The coordinator's own derived pass inside a structural commit is
-        // always isolated: refusing to run unserializable object code live is
-        // exactly what that venue is for. Every other plan takes the venue the
-        // caller asked for, and the default is the owner thread -- one
-        // FreeCADCmd spawn per feature is a cost neither an interactive
-        // session nor the test suite can carry.
+        // still isolated: each node is a prepared edit applied through
+        // commitDerivedRecomputeInActiveTransaction(), not a second legacy
+        // recompute loop. Venue follows the caller; the default owner thread
+        // avoids one FreeCADCmd spawn per feature, which neither an
+        // interactive session nor the test suite can carry.
         //
         // Either way a target that does not opt into worker execution falls
         // back to the owner thread inside GenericIsolatedRecompute.cpp:1714.
-        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread
-            && !collaborationDerivedRecomputeGranted());
+        /*ownerThreadExecution=*/venue == RecomputeVenue::OwnerThread);
+    if (collaborationDerivedRecomputeGranted()) {
+        for (auto& node : request.features) {
+            node.intent.arguments.emplace("derived_coordinator_recompute", "1");
+        }
+    }
     request.coalescingKey += force ? "force;" : "normal;";
     request.coalescingKey += "options=" + std::to_string(options) + ";";
-    const auto id = recomputeCoordinator().submit(std::move(request));
+    const auto id = recomputeCoordinator().submit(std::move(request), admissionId);
     return std::make_unique<RecomputeHandle>(*this, id);
 }
 
@@ -7088,6 +7263,7 @@ void Document::finalizeDetachedRecompute(const DocumentRecomputeSnapshot& snapsh
             : node.diagnostic;
         d->addRecomputeLog(diagnostic.c_str(), object);
     }
+    invokeDocumentPresentationBoundary(*this);
     if (d->collaborationCommitNotificationBarrier) {
         CollaborationDeferredNotification notification {
             CollaborationDeferredNotificationKind::Recomputed};
@@ -7268,6 +7444,10 @@ int Document::recompute(const std::vector<DocumentObject*>& objs,
                         bool* hasError,
                         const int options)
 {
+    // On the GUI thread recomputeAsync() and RecomputeHandle::wait() hop to the
+    // document owner and wait without running the Qt event loop (see
+    // DocumentExecutionLane::dispatchToOwner()), so this stays synchronous.
+
     // The legacy loop ran its topologically sorted plan up to twice --
     // "maximum two passes to allow some form of dependency inversion".
     // Settling an object touches its dependents, and a dependent the single
@@ -7509,6 +7689,16 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 {
     FC_LOG("Recomputing " << Feat->getFullName());
 
+    if (!DocumentWouldBlock::isGuiThread()
+        && !isCollaborationOwnerThread()
+        && Feat->requiresDocumentThreadExecutionDeclaration()
+        && !Feat->declaresDocumentThreadExecution()) {
+        d->addRecomputeLog(
+            "Python feature must declare supportsDocumentThreadExecution() before lane execution",
+            Feat);
+        return 1;
+    }
+
     DocumentObjectExecReturn* returnCode = nullptr;
     try {
         returnCode = Feat->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);
@@ -7564,6 +7754,13 @@ int Document::_recomputeFeature(DocumentObject* Feat) // NOLINT
 
 bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
+    // The coordinator loop below runs on the calling thread. On the GUI thread
+    // run it on the document owner instead and wait without the Qt event loop
+    // (synchronous compatibility, see DocumentExecutionLane::dispatchToOwner()).
+    if (d->executionLane && !isCollaborationOwnerThread() && DocumentWouldBlock::isGuiThread()) {
+        return d->executionLane->dispatchToOwner(
+            [this, feature, recursive] { return recomputeFeature(feature, recursive); });
+    }
     enforceAtomicPresentationMutationTarget(*this);
 
     // Match Document::recompute(): the coordinator owns the only recompute
@@ -7591,7 +7788,7 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         Internal::ensureGenericIsolatedRecomputeRegistered();
         auto request = Internal::makeGenericIsolatedRecomputeRequest(
             *this, *feature, recursive, /*preserveLegacyRevisionSemantics=*/true,
-            /*ownerThreadExecution=*/!collaborationDerivedRecomputeGranted());
+            /*ownerThreadExecution=*/true);
         for (const auto& node : request.features) {
             if (auto* object = getObject(node.featureId.c_str())) {
                 d->clearRecomputeLog(object);

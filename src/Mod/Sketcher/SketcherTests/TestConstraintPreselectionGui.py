@@ -14,6 +14,8 @@ import SketcherGui
 from PySide6 import QtCore, QtGui, QtWidgets
 from pivy import coin
 
+from Test.GuiRecompute import close_document, recompute_document
+
 
 class SketcherGuiTestCases(unittest.TestCase):
     @classmethod
@@ -212,7 +214,7 @@ class SketcherGuiTestCases(unittest.TestCase):
     def setUp(self):
         self.doc = FreeCAD.newDocument("SketchGuiTest")
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         FreeCADGui.getMainWindow().show()
         self.pump_gui_events()
@@ -430,7 +432,8 @@ class SketcherGuiTestCases(unittest.TestCase):
         if self.doc is not None:
             document_name = self.doc.Name
             self.doc = None
-            FreeCAD.closeDocument(document_name)
+            if document_name in FreeCAD.listDocuments():
+                close_document(FreeCAD.getDocument(document_name))
             self.pump_gui_events()
 
     def test_occluded_overlay_does_not_wash_out_datum_labels(self):
@@ -467,7 +470,7 @@ class SketcherGuiTestCases(unittest.TestCase):
             False,
         )
         self.sketch.addConstraint(Sketcher.Constraint("Diameter", g_dia, 20.0))
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
         self.configure_view_state(self.view)
 
@@ -578,7 +581,7 @@ class SketcherGuiTestCases(unittest.TestCase):
     def testPointOnObjectPreselectionMatchesTiltedHitArea(self):
         constraint_id, self.probe_point = self.build_issue_25840_sketch(self.sketch)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         tilt_y = FreeCAD.Rotation(FreeCAD.Vector(0, 1, 0), 2.0)
@@ -634,7 +637,7 @@ class SketcherGuiTestCases(unittest.TestCase):
             False,
         )
         self.sketch.addGeometry(Part.Point(marker_point), False)
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         self.configure_view_state(self.view)
@@ -660,7 +663,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.sketch.setLabelDistance(constraint_id, -12.0 * math.sqrt(2.0))
         self.sketch.setLabelPosition(constraint_id, 0.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         marker_info = SketcherGui.getActiveSketchPreselection(marker_coin)
@@ -693,7 +696,7 @@ class SketcherGuiTestCases(unittest.TestCase):
             Part.LineSegment(start_point, end_point),
             False,
         )
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         self.configure_view_state(self.view)
@@ -726,7 +729,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.sketch.setLabelDistance(constraint_id, 0.0)
         self.sketch.setLabelPosition(constraint_id, 12.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         probe_results = []
@@ -755,7 +758,7 @@ class SketcherGuiTestCases(unittest.TestCase):
             Part.LineSegment(start_point, end_point),
             False,
         )
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         self.configure_view_state(self.view)
@@ -782,7 +785,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         self.sketch.setLabelDistance(constraint_id, 0.0)
         self.sketch.setLabelPosition(constraint_id, 0.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         text_coin = self.wait_for_datum_annotation_at_coin(
@@ -820,7 +823,7 @@ class SketcherGuiTestCases(unittest.TestCase):
             ),
             False,
         )
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         self.configure_view_state(self.view)
@@ -849,7 +852,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         )
         self.sketch.setLabelDistance(constraint_id, 10.0)
         self.expected_constraint_name = f"Constraint{constraint_id + 1}"
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         text_coin = self.wait_for_datum_annotation_at_coin(
@@ -875,7 +878,7 @@ class SketcherGuiTestCases(unittest.TestCase):
         end_point = FreeCAD.Vector(130.0, 100.0, 0.0)
         midpoint = (start_point + end_point) * 0.5
         self.sketch.addGeometry(Part.LineSegment(start_point, end_point), False)
-        self.doc.recompute()
+        recompute_document(self.doc)
         self.pump_gui_events()
 
         camera = self.view.getCameraNode()

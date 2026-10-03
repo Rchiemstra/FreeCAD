@@ -188,6 +188,9 @@ SET(PartGui_SRCS
     ViewProviderDatum.h
     ViewProviderExt.cpp
     ViewProviderExt.h
+    ViewProviderPresentationAdapter.cpp
+    ViewProviderPresentationAdapter.h
+    DocumentPresentationCapture.cpp
     ViewProviderReference.cpp
     ViewProviderReference.h
     ViewProviderBox.cpp

@@ -113,7 +113,7 @@ def makeAxis(num=1, size=1000, name=None):
             angles.append(float(0))
         obj.Distances = dist
         obj.Angles = angles
-    FreeCAD.ActiveDocument.recompute()
+    recompute_active_document()
     return obj
 
 
@@ -143,7 +143,7 @@ def makeAxisSystem(axes, name=None):
     obj.Axes = axes
     if FreeCAD.GuiUp:
         ArchAxisSystem._ViewProviderAxisSystem(obj.ViewObject)
-    FreeCAD.ActiveDocument.recompute()
+    recompute_active_document()
     return obj
 
 
@@ -1565,7 +1565,7 @@ def makeStairs(baseobj=None, length=None, width=None, height=None, steps=None, n
             ArchStairs._ViewProviderStairs(obj.ViewObject)
     if stairs:
         for stair in stairs:
-            stair.recompute()
+            recompute_object_gui_safe(stair)
         makeRailing(stairs)
         # return stairs - all other functions expect one object as return value
         return stairs[0]
@@ -1854,7 +1854,7 @@ def joinWalls(walls, delete=False, deletebase=False):
     if delete:
         for n in deleteList:
             FreeCAD.ActiveDocument.removeObject(n)
-    FreeCAD.ActiveDocument.recompute()
+    recompute_active_document()
     if base.Base and FreeCAD.GuiUp:
         base.ViewObject.show()
     return base

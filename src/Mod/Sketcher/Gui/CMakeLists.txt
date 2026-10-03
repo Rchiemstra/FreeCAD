@@ -132,6 +132,8 @@ SET(SketcherGui_SRCS
     ViewProviderSketchCoinAttorney.h
     ViewProviderSketch.cpp
     ViewProviderSketch.h
+    ViewProviderPresentationAdapter.cpp
+    ViewProviderPresentationAdapter.h
     DrawSketchHandler.cpp
     DrawSketchHandler.h
     DrawSketchDefaultHandler.h

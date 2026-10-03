@@ -10,8 +10,10 @@ export PYTHONUNBUFFERED=1
 # The deps image has no gdb. run_gui_tests.py re-runs a crashing module under
 # gdb for a backtrace; install it when the step has apt (Woodpecker does).
 if ! command -v gdb >/dev/null 2>&1; then
-  apt-get update -qq
-  apt-get install -y -qq --no-install-recommends gdb >/dev/null
+  if [ "$(id -u)" = 0 ]; then
+    apt-get update -qq
+    apt-get install -y -qq --no-install-recommends gdb >/dev/null
+  fi
 fi
 
 env QT_QPA_PLATFORM="$QT_QPA_PLATFORM" \

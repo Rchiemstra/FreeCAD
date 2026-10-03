@@ -5,7 +5,9 @@
 #include "CollaborativeOperation.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
+#include "DocumentWouldBlock.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 #include "PreparedEdit.h"
@@ -531,26 +533,31 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool retainUndoHistory,
     const bool nestInCallerTransaction)
 {
-    if (!MainThreadSignalConfig::hasHooks()) {
-        if (!_document.isCollaborationOwnerThread()) {
-            return makeResult(DocumentCommitStatus::Unsupported,
-                              edit,
-                              "off-owner collaboration commit requires a document-thread dispatcher");
-        }
+    const auto commitOnOwner = [&]() {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
                                                  nestInCallerTransaction);
+    };
+
+    if (_document.isCollaborationOwnerThread()) {
+        return commitOnOwner();
+    }
+    if (DocumentExecutionLane* lane = _document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions()",
+            "Document.commitEditAsync() / DocumentHandle::trySubmit()");
+        return lane->dispatchToOwner(commitOnOwner);
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return makeResult(DocumentCommitStatus::Unsupported,
+                          edit,
+                          "off-owner collaboration commit requires a document-thread dispatcher");
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThreadWithOptions(edit,
-                                                 requireDetachedPreparationSupport,
-                                                 structuralCompatibility,
-                                                 recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+        return commitOnOwner();
     }
 
     std::optional<DocumentCommitResult> result;
@@ -913,9 +920,39 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && preexistingPendingRecompute) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          "document has pending recompute work outside the prepared operation");
+        // Prepared edit sessions (requireDetachedPreparationSupport) must observe
+        // leftover mustExecute and fail closed. Compatibility and typed native
+        // RPC paths settle on the owner thread here so a caller-side recompute
+        // hop from another thread cannot race the lane boundary.
+        if (!requireDetachedPreparationSupport) {
+            try {
+                bool recomputeError = false;
+                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                }
+            }
+            catch (const Base::Exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+            catch (const std::exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+        }
+        if (_document.mustExecute()) {
+            return makeResult(DocumentCommitStatus::Busy,
+                              edit,
+                              "document has pending recompute work outside the prepared operation");
+        }
     }
 
     std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;

@@ -24,6 +24,7 @@
 
 #include <Base/Parameter.h>
 #include <QApplication>
+#include <memory>
 
 namespace Gui
 {
@@ -72,6 +73,8 @@ private:
     ParameterGrp::handle hGrp;
     View3DInventorViewer* _viewer;
     fastsignals::connection connectParameterChanged;
+    // Expires on destruction so queued GUI-thread updates become no-ops.
+    std::shared_ptr<bool> lifetime = std::make_shared<bool>(true);
 };
 
 }  // namespace Gui

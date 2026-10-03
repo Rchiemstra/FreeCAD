@@ -22,6 +22,7 @@
 """GUI tests for the ArchWall module."""
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import FreeCADGui
 import Draft
 import Arch
@@ -215,7 +216,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         rotation = FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), 45)
         placement = FreeCAD.Placement(FreeCAD.Vector(1000, 1000, 0), rotation)
         wall.Placement = placement
-        self.document.recompute()
+        recompute_document(self.document)
 
         # Ensure the view is scaled to the object so selection logic works correctly
         FreeCADGui.ActiveDocument.ActiveView.fitAll()
@@ -465,7 +466,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         self.printTestMessage("Testing baseless wall with AUTOJOIN=True...")
 
         wall1 = Arch.makeWall(length=1000)
-        self.document.recompute()
+        recompute_document(self.document)
         initial_object_count = len(self.document.Objects)
 
         wall2 = self._simulate_interactive_wall_creation(
@@ -482,7 +483,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         self.printTestMessage("Testing baseless wall with AUTOJOIN=False...")
 
         wall1 = Arch.makeWall(length=1000)
-        self.document.recompute()
+        recompute_document(self.document)
 
         self._simulate_interactive_wall_creation(
             FreeCAD.Vector(1000, 0, 0), FreeCAD.Vector(1000, 1000, 0), wall1
@@ -502,7 +503,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
 
         line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
-        self.document.recompute()
+        recompute_document(self.document)
         base1_initial_edges = len(wall1.Base.Shape.Edges)
 
         self._simulate_interactive_wall_creation(
@@ -535,7 +536,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
 
         line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
-        self.document.recompute()
+        recompute_document(self.document)
         initial_object_count = len(self.document.Objects)
 
         wall2 = self._simulate_interactive_wall_creation(
@@ -559,7 +560,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
 
         line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1, width=200)  # Incompatible width
-        self.document.recompute()
+        recompute_document(self.document)
 
         wall2 = self._simulate_interactive_wall_creation(
             FreeCAD.Vector(1000, 0, 0), FreeCAD.Vector(1000, 1000, 0), wall1, wall_width=300
@@ -580,7 +581,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         sketch1 = self.document.addObject("Sketcher::SketchObject", "Sketch1")
         sketch1.addGeometry(Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0)))
         wall1 = Arch.makeWall(sketch1)
-        self.document.recompute()
+        recompute_document(self.document)
         base1_initial_edges = len(wall1.Base.Shape.Edges)
 
         self._simulate_interactive_wall_creation(
@@ -611,7 +612,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         sketch1 = self.document.addObject("Sketcher::SketchObject", "Sketch1")
         sketch1.addGeometry(Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0)))
         wall1 = Arch.makeWall(sketch1)
-        self.document.recompute()
+        recompute_document(self.document)
 
         wall2 = self._simulate_interactive_wall_creation(
             FreeCAD.Vector(1000, 0, 0), FreeCAD.Vector(1000, 1000, 0), wall1
@@ -630,7 +631,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         sketch1 = self.document.addObject("Sketcher::SketchObject", "Sketch1")
         sketch1.addGeometry(Part.LineSegment(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0)))
         wall1 = Arch.makeWall(sketch1, width=200)  # Incompatible width
-        self.document.recompute()
+        recompute_document(self.document)
 
         wall2 = self._simulate_interactive_wall_creation(
             FreeCAD.Vector(1000, 0, 0), FreeCAD.Vector(1000, 1000, 0), wall1, wall_width=300
@@ -649,7 +650,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         # Test with a based wall
         line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
-        self.document.recompute()
+        recompute_document(self.document)
         initial_object_count = len(self.document.Objects)
 
         self._simulate_interactive_wall_creation(

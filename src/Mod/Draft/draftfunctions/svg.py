@@ -207,6 +207,71 @@ def format_point(coords, action="L"):
     return "{action}{x},{y}".format(x=coords.x, y=coords.y, action=action)
 
 
+def _derive_angular_dimension_svg_geometry(obj, vobj):
+    """Build angular arc endpoints from App (+ view) properties without Proxy.
+
+    TechDraw DraftView may call Draft.get_svg after an off-GUI recompute, when
+    ViewObject.Proxy has not yet materialised circle/p1..p4 Coin state. The
+    overshoot SVG only needs Part geometry and view property values.
+    """
+    if DraftVecUtils.isNull(obj.Normal):
+        norm = App.Vector(0, 0, 1)
+    else:
+        norm = obj.Normal
+
+    radius = (obj.Dimline - obj.Center).Length
+    circle = Part.makeCircle(
+        radius, obj.Center, norm, obj.FirstAngle.Value, obj.LastAngle.Value
+    )
+    p2 = circle.Vertexes[0].Point
+    p3 = circle.Vertexes[-1].Point
+    p1 = App.Vector(obj.Center)
+    p4 = App.Vector(obj.Center)
+
+    proj1 = obj.Center - p2
+    proj2 = obj.Center - p3
+    if vobj is not None and hasattr(vobj, "ExtLines") and hasattr(vobj, "ScaleMultiplier"):
+        dmax = vobj.ExtLines.Value * vobj.ScaleMultiplier
+        if dmax and proj1.Length > dmax:
+            if dmax > 0:
+                p1 = p2 + DraftVecUtils.scaleTo(proj1, dmax)
+                p4 = p3 + DraftVecUtils.scaleTo(proj2, dmax)
+            else:
+                rest = proj1.Length + dmax
+                p1 = p2 + DraftVecUtils.scaleTo(proj1, rest)
+                p4 = p3 + DraftVecUtils.scaleTo(proj2, rest)
+
+    if obj.LastAngle.Value > obj.FirstAngle.Value:
+        angle = obj.LastAngle.Value - obj.FirstAngle.Value
+    else:
+        angle = (360 - obj.FirstAngle.Value) + obj.LastAngle.Value
+
+    show_unit = True
+    if vobj is not None and hasattr(vobj, "ShowUnit"):
+        show_unit = vobj.ShowUnit
+    try:
+        from draftutils import units as draft_units
+
+        if vobj is not None and hasattr(vobj, "Decimals"):
+            dim_string = draft_units.display_external(angle, vobj.Decimals, "Angle", show_unit)
+        else:
+            dim_string = draft_units.display_external(angle, None, "Angle", show_unit)
+    except Exception:
+        dim_string = str(round(angle, utils.precision()))
+
+    if vobj is not None and getattr(vobj, "Override", None):
+        dim_string = vobj.Override.replace("$dim", dim_string)
+
+    return {
+        "circle": circle,
+        "p1": p1,
+        "p2": p2,
+        "p3": p3,
+        "p4": p4,
+        "string": dim_string,
+    }
+
+
 def _svg_shape(svg, obj, plane, fillstyle, pathdata, stroke, linewidth, lstyle):
     """Return the SVG representation of a Part.Shape."""
     if "#" in fillstyle:
@@ -640,150 +705,174 @@ def get_svg(
         )
 
     elif utils.get_type(obj) == "AngularDimension":
-        if not App.GuiUp:
+        if not App.GuiUp and vobj is None:
             _wrn("Export of dimensions to SVG is only available in GUI mode")
 
-        if App.GuiUp:
-            if vobj.Proxy:
-                if hasattr(vobj.Proxy, "circle"):
-                    prx = vobj.Proxy
-                    p1 = get_proj(prx.p1, plane)
-                    p2 = get_proj(prx.p2, plane)
-                    p3 = get_proj(prx.p3, plane)
-                    p4 = get_proj(prx.p4, plane)
+        prx = getattr(vobj, "Proxy", None) if vobj is not None else None
+        if prx is not None and hasattr(prx, "circle"):
+            circle = prx.circle
+            raw_p1, raw_p2, raw_p3, raw_p4 = prx.p1, prx.p2, prx.p3, prx.p4
+            dim_string = getattr(prx, "string", "")
+            tbase_raw = getattr(prx, "tbase", None)
+            circle1 = getattr(prx, "circle1", None)
+            circle2 = getattr(prx, "circle2", None)
+        else:
+            # Lane / post-stable TechDraw fills may run before Proxy.circle exists.
+            derived = _derive_angular_dimension_svg_geometry(obj, vobj)
+            circle = derived["circle"]
+            raw_p1, raw_p2, raw_p3, raw_p4 = (
+                derived["p1"],
+                derived["p2"],
+                derived["p3"],
+                derived["p4"],
+            )
+            dim_string = derived["string"]
+            tbase_raw = None
+            circle1 = None
+            circle2 = None
 
-                    # drawing arc
-                    fill = "none"
-                    edges = []
-                    if vobj.DisplayMode == "World":
-                        edges = [prx.circle]
-                    else:
-                        if hasattr(prx, "circle1"):
-                            edges = [prx.circle1, prx.circle2]
-                        else:
-                            edges = [prx.circle]
+        if circle is not None and vobj is not None:
+            p1 = get_proj(raw_p1, plane)
+            p2 = get_proj(raw_p2, plane)
+            p3 = get_proj(raw_p3, plane)
+            p4 = get_proj(raw_p4, plane)
 
-                    svg += get_path(
-                        obj, plane, fill, pathdata, stroke, linewidth, lstyle, edges=edges
+            # drawing arc
+            fill = "none"
+            edges = []
+            if vobj.DisplayMode == "World":
+                edges = [circle]
+            else:
+                if circle1 is not None and circle2 is not None:
+                    edges = [circle1, circle2]
+                else:
+                    edges = [circle]
+
+            svg += get_path(
+                obj, plane, fill, pathdata, stroke, linewidth, lstyle, edges=edges
+            )
+
+            if hasattr(vobj, "DimOvershoot") and vobj.DimOvershoot.Value:
+                shootsize = vobj.DimOvershoot.Value / pointratio
+                tangent1 = get_proj(circle.tangentAt(circle.FirstParameter), plane)
+                tangent2 = get_proj(circle.tangentAt(circle.LastParameter), plane)
+                if not DraftVecUtils.isNull(tangent1):
+                    svg += get_overshoot(
+                        p2, shootsize, stroke, linewidth, -DraftVecUtils.angle(tangent1)
+                    )
+                if not DraftVecUtils.isNull(tangent2):
+                    svg += get_overshoot(
+                        p3,
+                        shootsize,
+                        stroke,
+                        linewidth,
+                        -DraftVecUtils.angle(tangent2) + math.pi,
                     )
 
-                    if hasattr(vobj, "DimOvershoot") and vobj.DimOvershoot.Value:
-                        shootsize = vobj.DimOvershoot.Value / pointratio
-                        tangent1 = get_proj(prx.circle.tangentAt(prx.circle.FirstParameter), plane)
-                        tangent2 = get_proj(prx.circle.tangentAt(prx.circle.LastParameter), plane)
-                        if not DraftVecUtils.isNull(tangent1):
-                            svg += get_overshoot(
-                                p2, shootsize, stroke, linewidth, -DraftVecUtils.angle(tangent1)
-                            )
-                        if not DraftVecUtils.isNull(tangent2):
-                            svg += get_overshoot(
-                                p3,
-                                shootsize,
-                                stroke,
-                                linewidth,
-                                -DraftVecUtils.angle(tangent2) + math.pi,
-                            )
-
-                    if hasattr(vobj, "ExtOvershoot") and vobj.ExtOvershoot.Value:
-                        shootsize = vobj.ExtOvershoot.Value / pointratio
-                        ext1 = p1 - p2
-                        ext2 = p4 - p3
-                        if not DraftVecUtils.isNull(ext1):
-                            svg += get_overshoot(
-                                p2, shootsize, stroke, linewidth, -DraftVecUtils.angle(ext1)
-                            )
-                        if not DraftVecUtils.isNull(ext2):
-                            svg += get_overshoot(
-                                p3, shootsize, stroke, linewidth, -DraftVecUtils.angle(ext2)
-                            )
-
-                    # draw extlines
-                    if hasattr(vobj, "ExtLines") and vobj.ExtLines:
-                        d1 = (
-                            "M " + str(p1.x) + " " + str(p1.y) + " L " + str(p2.x) + " " + str(p2.y)
-                        )
-                        d2 = (
-                            "M " + str(p4.x) + " " + str(p4.y) + " L " + str(p3.x) + " " + str(p3.y)
-                        )
-                        svg += '<path d="' + d1 + '" '
-                        svg += 'fill="none" stroke="' + stroke + '" '
-                        svg += 'stroke-width="' + str(linewidth) + 'px" '
-                        svg += 'style="stroke-width:' + str(linewidth)
-                        svg += (
-                            ";stroke-miterlimit:4;stroke-dasharray:"
-                            + lstyle
-                            + ';stroke-linecap:square" />\n'
-                        )
-                        svg += '<path d="' + d2 + '" '
-                        svg += 'fill="none" stroke="' + stroke + '" '
-                        svg += 'stroke-width="' + str(linewidth) + 'px" '
-                        svg += 'style="stroke-width:' + str(linewidth)
-                        svg += (
-                            ";stroke-miterlimit:4;stroke-dasharray:"
-                            + lstyle
-                            + ';stroke-linecap:square" />\n'
-                        )
-
-                    # drawing arrows
-                    if (
-                        hasattr(vobj, "ArrowTypeStart")
-                        and hasattr(vobj, "ArrowTypeEnd")
-                        and hasattr(vobj, "ArrowSizeStart")
-                        and hasattr(vobj, "ArrowSizeEnd")
-                    ):
-                        arrowsizestart = vobj.ArrowSizeStart.Value / pointratio
-                        halfstartarrowlength = 2 * arrowsizestart
-                        startarrowangle = 2 * math.asin(
-                            halfstartarrowlength / prx.circle.Curve.Radius
-                        )
-                        arrowsizeend = vobj.ArrowSizeEnd.Value / pointratio
-                        halfendarrowlength = 2 * arrowsizeend
-                        endarrowangle = 2 * math.asin(halfendarrowlength / prx.circle.Curve.Radius)
-                        if hasattr(vobj, "FlipArrows") and vobj.FlipArrows:
-                            startarrowangle = -startarrowangle
-                            endarrowangle = -endarrowangle
-
-                        _v1a = prx.circle.valueAt(prx.circle.FirstParameter + startarrowangle)
-                        _v1b = prx.circle.valueAt(prx.circle.FirstParameter)
-
-                        _v2a = prx.circle.valueAt(prx.circle.LastParameter - endarrowangle)
-                        _v2b = prx.circle.valueAt(prx.circle.LastParameter)
-
-                        u1 = get_proj(_v1a - _v1b, plane)
-                        u2 = get_proj(_v2a - _v2b, plane)
-                        angle1 = -DraftVecUtils.angle(u1)
-                        angle2 = -DraftVecUtils.angle(u2)
-
-                        svg += get_arrow(
-                            obj, vobj.ArrowTypeStart, p2, arrowsizestart, stroke, linewidth, angle1
-                        )
-                        svg += get_arrow(
-                            obj, vobj.ArrowTypeEnd, p3, arrowsizeend, stroke, linewidth, angle2
-                        )
-
-                    # drawing text
-                    if vobj.DisplayMode == "World":
-                        _diff = prx.circle.LastParameter - prx.circle.FirstParameter
-                        t = prx.circle.tangentAt(prx.circle.FirstParameter + _diff / 2.0)
-                        t = get_proj(t, plane)
-                        tangle = -DraftVecUtils.angle(t)
-                        if (tangle <= -math.pi / 2) or (tangle > math.pi / 2):
-                            tangle = tangle + math.pi
-
-                        _diff = prx.circle.LastParameter - prx.circle.FirstParameter
-                        _va = prx.circle.valueAt(prx.circle.FirstParameter + _diff / 2.0)
-                        tbase = get_proj(_va, plane)
-
-                        _v = App.Vector(0, 2.0 / scale, 0)
-                        tbase = tbase + DraftVecUtils.rotate(_v, tangle)
-                        # print(tbase)
-                    else:
-                        tangle = 0
-                        tbase = get_proj(prx.tbase, plane)
-
-                    svg += svgtext.get_text(
-                        plane, techdraw, tstroke, fontsize, vobj.FontName, tangle, tbase, prx.string
+            if hasattr(vobj, "ExtOvershoot") and vobj.ExtOvershoot.Value:
+                shootsize = vobj.ExtOvershoot.Value / pointratio
+                ext1 = p1 - p2
+                ext2 = p4 - p3
+                if not DraftVecUtils.isNull(ext1):
+                    svg += get_overshoot(
+                        p2, shootsize, stroke, linewidth, -DraftVecUtils.angle(ext1)
                     )
+                if not DraftVecUtils.isNull(ext2):
+                    svg += get_overshoot(
+                        p3, shootsize, stroke, linewidth, -DraftVecUtils.angle(ext2)
+                    )
+
+            # draw extlines
+            if hasattr(vobj, "ExtLines") and vobj.ExtLines:
+                d1 = (
+                    "M " + str(p1.x) + " " + str(p1.y) + " L " + str(p2.x) + " " + str(p2.y)
+                )
+                d2 = (
+                    "M " + str(p4.x) + " " + str(p4.y) + " L " + str(p3.x) + " " + str(p3.y)
+                )
+                svg += '<path d="' + d1 + '" '
+                svg += 'fill="none" stroke="' + stroke + '" '
+                svg += 'stroke-width="' + str(linewidth) + 'px" '
+                svg += 'style="stroke-width:' + str(linewidth)
+                svg += (
+                    ";stroke-miterlimit:4;stroke-dasharray:"
+                    + lstyle
+                    + ';stroke-linecap:square" />\n'
+                )
+                svg += '<path d="' + d2 + '" '
+                svg += 'fill="none" stroke="' + stroke + '" '
+                svg += 'stroke-width="' + str(linewidth) + 'px" '
+                svg += 'style="stroke-width:' + str(linewidth)
+                svg += (
+                    ";stroke-miterlimit:4;stroke-dasharray:"
+                    + lstyle
+                    + ';stroke-linecap:square" />\n'
+                )
+
+            # drawing arrows
+            if (
+                hasattr(vobj, "ArrowTypeStart")
+                and hasattr(vobj, "ArrowTypeEnd")
+                and hasattr(vobj, "ArrowSizeStart")
+                and hasattr(vobj, "ArrowSizeEnd")
+            ):
+                arrowsizestart = vobj.ArrowSizeStart.Value / pointratio
+                halfstartarrowlength = 2 * arrowsizestart
+                startarrowangle = 2 * math.asin(
+                    halfstartarrowlength / circle.Curve.Radius
+                )
+                arrowsizeend = vobj.ArrowSizeEnd.Value / pointratio
+                halfendarrowlength = 2 * arrowsizeend
+                endarrowangle = 2 * math.asin(halfendarrowlength / circle.Curve.Radius)
+                if hasattr(vobj, "FlipArrows") and vobj.FlipArrows:
+                    startarrowangle = -startarrowangle
+                    endarrowangle = -endarrowangle
+
+                _v1a = circle.valueAt(circle.FirstParameter + startarrowangle)
+                _v1b = circle.valueAt(circle.FirstParameter)
+
+                _v2a = circle.valueAt(circle.LastParameter - endarrowangle)
+                _v2b = circle.valueAt(circle.LastParameter)
+
+                u1 = get_proj(_v1a - _v1b, plane)
+                u2 = get_proj(_v2a - _v2b, plane)
+                angle1 = -DraftVecUtils.angle(u1)
+                angle2 = -DraftVecUtils.angle(u2)
+
+                svg += get_arrow(
+                    obj, vobj.ArrowTypeStart, p2, arrowsizestart, stroke, linewidth, angle1
+                )
+                svg += get_arrow(
+                    obj, vobj.ArrowTypeEnd, p3, arrowsizeend, stroke, linewidth, angle2
+                )
+
+            # drawing text
+            if vobj.DisplayMode == "World":
+                _diff = circle.LastParameter - circle.FirstParameter
+                t = circle.tangentAt(circle.FirstParameter + _diff / 2.0)
+                t = get_proj(t, plane)
+                tangle = -DraftVecUtils.angle(t)
+                if (tangle <= -math.pi / 2) or (tangle > math.pi / 2):
+                    tangle = tangle + math.pi
+
+                _diff = circle.LastParameter - circle.FirstParameter
+                _va = circle.valueAt(circle.FirstParameter + _diff / 2.0)
+                tbase = get_proj(_va, plane)
+
+                _v = App.Vector(0, 2.0 / scale, 0)
+                tbase = tbase + DraftVecUtils.rotate(_v, tangle)
+            elif tbase_raw is not None:
+                tangle = 0
+                tbase = get_proj(tbase_raw, plane)
+            else:
+                tangle = 0
+                tbase = get_proj(circle.valueAt(
+                    (circle.FirstParameter + circle.LastParameter) / 2.0
+                ), plane)
+
+            svg += svgtext.get_text(
+                plane, techdraw, tstroke, fontsize, vobj.FontName, tangle, tbase, dim_string
+            )
 
     elif utils.get_type(obj) == "Label":
 

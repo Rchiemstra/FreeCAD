@@ -466,6 +466,8 @@ SET(Command_CPP_SRCS
     Action.cpp
     ActionFunction.cpp
     Command.cpp
+    DocumentExecutionIngress.cpp
+    GuiPythonGate.cpp
     CommandDoc.cpp
     CommandFeat.cpp
     CommandMacro.cpp
@@ -486,6 +488,8 @@ SET(Command_SRCS
     ActionFunction.h
     Command.h
     CommandT.h
+    DocumentExecutionIngress.h
+    GuiPythonGate.h
     ShortcutManager.h
     CommandCompleter.h
     CommandActionPy.h
@@ -1024,6 +1028,7 @@ SET(Viewprovider_CPP_SRCS
     ViewProviderTextDocument.cpp
     ViewProviderTextureExtension.cpp
     ViewProviderLink.cpp
+    ViewProviderPresentationCapability.cpp
     LinkViewPyImp.cpp
     ViewProviderLinkPyImp.cpp
     ViewProviderVarSet.cpp
@@ -1062,6 +1067,7 @@ SET(Viewprovider_SRCS
     ViewProviderTextDocument.h
     ViewProviderTextureExtension.h
     ViewProviderLink.h
+    ViewProviderPresentationCapability.h
     ViewProviderVarSet.h
     AxisOrigin.h
 )
@@ -1340,6 +1346,11 @@ SET(FreeCADGui_CPP_SRCS
     PersonalViewContext.cpp
     SharedPresentationCoordinator.cpp
     Document.cpp
+    DocumentPresentationState.cpp
+    DocumentPresentationCache.cpp
+    DocumentPresentationCapture.cpp
+    PresentationCaptureRegistry.cpp
+    PresentationApplyScheduler.cpp
     DocumentChangesWidget.cpp
     DocumentModel.cpp
     DocumentPyImp.cpp
@@ -1390,6 +1401,13 @@ SET(FreeCADGui_SRCS
     PersonalViewContext.h
     SharedPresentationCoordinator.h
     Document.h
+    DocumentPresentationState.h
+    DocumentPresentationCache.h
+    DocumentPresentationCapture.h
+    PresentationCaptureRegistry.h
+    PresentationApplyScheduler.h
+    PresentationDelta.h
+    PresentationRevision.h
     DocumentChangesWidget.h
     DocumentModel.h
     DocumentObserver.h

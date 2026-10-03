@@ -78,6 +78,7 @@
 #include <Gui/View3DInventor.h>
 #include <Gui/View3DInventorViewer.h>
 #include <Gui/View3DInventorViewerInternal.h>
+#include <App/DocumentWouldBlock.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/Sketcher/App/ExternalGeometryFacade.h>
 #include <Mod/Sketcher/App/GeoList.h>
@@ -3930,6 +3931,39 @@ void ViewProviderSketch::updateData(const App::Property* prop) {
 void ViewProviderSketch::slotSolverUpdate()
 {
     if (!isInEditMode()) {
+        return;
+    }
+
+    // Solver updates can fire from the document owner lane. Coin / Qt work
+    // must run on the GUI thread after the document lock is released.
+    if (!App::DocumentWouldBlock::isGuiThread()) {
+        App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+        if (!document || !getObject()->isAttachedToDocument()) {
+            return;
+        }
+        const std::string documentName = document->getName();
+        const std::string objectName = getObject()->getNameInDocument();
+        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* sketchView = freecad_cast<ViewProviderSketch*>(guiDoc->getViewProvider(object));
+            if (sketchView) {
+                sketchView->slotSolverUpdate();
+            }
+        });
         return;
     }
 

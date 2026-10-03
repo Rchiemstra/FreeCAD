@@ -44,6 +44,7 @@
 #include <Base/Stream.h>
 #include <Base/Writer.h>
 #include <Gui/Application.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/CommandT.h>
 #include <Gui/MainWindow.h>
 #include <Mod/Spreadsheet/App/Cell.h>
@@ -710,7 +711,9 @@ void SheetTableView::pasteClipboard()
             sheet->getCells()->pasteCells(reader, range);
         }
 
-        GetApplication().getActiveDocument()->recompute();
+        if (App::Document* doc = GetApplication().getActiveDocument()) {
+            Gui::requestDocumentRecompute(*doc);
+        }
     }
     catch (Base::Exception& e) {
         committer.close(App::TransactionCloseMode::Abort);

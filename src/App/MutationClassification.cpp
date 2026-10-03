@@ -3,6 +3,7 @@
 #include "MutationClassification.h"
 
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
 #include "PropertyContainer.h"
 
@@ -114,26 +115,33 @@ void endMutationTarget(const App::Document& document,
                        bool readOnly) noexcept
 {
     try {
-        auto& admission = atomicPresentationMutationAdmission();
-        std::lock_guard lock(admission.mutex);
-        auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
-        auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
-                                       : admission.legacyReadOnlyDepth;
-        if (admission.target != &document
-            || admission.owner != std::this_thread::get_id() || depth == 0
-            || (readOnly && readOnlyDepth == 0)) {
-            return;
+        const App::Document* releasedDocument = nullptr;
+        {
+            auto& admission = atomicPresentationMutationAdmission();
+            std::lock_guard lock(admission.mutex);
+            auto& depth = prepared ? admission.preparedDepth : admission.legacyDepth;
+            auto& readOnlyDepth = prepared ? admission.preparedReadOnlyDepth
+                                           : admission.legacyReadOnlyDepth;
+            if (admission.target != &document
+                || admission.owner != std::this_thread::get_id() || depth == 0
+                || (readOnly && readOnlyDepth == 0)) {
+                return;
+            }
+            if (readOnly) {
+                --readOnlyDepth;
+            }
+            --depth;
+            if (mutationTargetDepth(admission) == 0) {
+                releasedDocument = admission.target;
+                admission.target = nullptr;
+                admission.targetRevisionIndex = nullptr;
+                admission.owner = std::thread::id {};
+                admission.legacyReadOnlyDepth = 0;
+                admission.preparedReadOnlyDepth = 0;
+            }
         }
-        if (readOnly) {
-            --readOnlyDepth;
-        }
-        --depth;
-        if (mutationTargetDepth(admission) == 0) {
-            admission.target = nullptr;
-            admission.targetRevisionIndex = nullptr;
-            admission.owner = std::thread::id {};
-            admission.legacyReadOnlyDepth = 0;
-            admission.preparedReadOnlyDepth = 0;
+        if (releasedDocument) {
+            notifyDocumentExecutionLaneCloseAdmissionReleased(*releasedDocument);
         }
     }
     catch (...) {
@@ -225,6 +233,44 @@ void App::endAtomicPresentationMutationTarget(const Document& document) noexcept
     endMutationTarget(document, false, false);
 }
 
+bool App::atomicPresentationMutationAdmissionHeldFor(const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0;
+    }
+    catch (...) {
+        return true;
+    }
+}
+
+bool App::atomicPresentationMutationAdmissionHeldByOtherThread(
+    const Document& document) noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target == &document && mutationTargetDepth(admission) != 0
+            && admission.owner != std::this_thread::get_id();
+    }
+    catch (...) {
+        return true;
+    }
+}
+
+bool App::atomicPresentationMutationAdmissionActive() noexcept
+{
+    try {
+        auto& admission = atomicPresentationMutationAdmission();
+        std::lock_guard lock(admission.mutex);
+        return admission.target != nullptr;
+    }
+    catch (...) {
+        return true;
+    }
+}
+
 void App::enforceAtomicPresentationMutationTarget(const Document& document)
 {
     auto& admission = atomicPresentationMutationAdmission();
@@ -239,8 +285,14 @@ void App::enforceAtomicPresentationMutationTarget(const Document& document)
             "mutation is unavailable during a collaboration postcondition check");
     }
     if (admission.owner != std::this_thread::get_id()) {
-        throw Base::RuntimeError(
-            "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        // Off-owner callers that hold admission may hop document work onto the
+        // lane owner via dispatchToOwner; allow that owner to mutate the same
+        // target document while the admitting thread waits for the hop.
+        const DocumentExecutionLane* lane = document.executionLane();
+        if (!(lane && lane->isOwnerThread() && admission.target == &document)) {
+            throw Base::RuntimeError(
+                "mutation is unavailable from a non-owner thread during an atomic presentation callback");
+        }
     }
     if (admission.target != &document) {
         throw Base::RuntimeError(

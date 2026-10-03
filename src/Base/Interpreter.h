@@ -413,4 +413,9 @@ inline InterpreterSingleton& Interpreter()
     return InterpreterSingleton::Instance();
 }
 
+/** Mark the current thread so PyFrame_GetCode is not used.
+ *  A C++ exception unwinding through a Python frame leaves that frame unsafe. */
+BaseExport void setPythonFrameInspectionUnsafe(bool unsafe);
+BaseExport bool isPythonFrameInspectionUnsafe();
+
 }  // namespace Base

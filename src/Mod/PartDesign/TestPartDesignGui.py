@@ -39,6 +39,7 @@ from PySide.QtGui import QApplication
 from PartDesignTests.TestMaterial import TestMaterial
 from PartDesignTests.TestActiveObject import TestActiveObject
 from PartDesignTests.TestSuppressed import TestSuppressedStrikethrough
+from Test.GuiRecompute import close_document, close_document_by_name, recompute_document, save_document_as
 
 
 # timer runs this class in order to access modal dialog
@@ -135,7 +136,7 @@ class PartDesignGuiTestCases(unittest.TestCase):
         self.BoxObj.Height = 10.0
         self.BodySource.addObject(self.BoxObj)
 
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
 
         self.Sketch = self.Doc.addObject("Sketcher::SketchObject", "Sketch")
         self.Sketch.AttachmentSupport = (self.BoxObj, ("Face3",))
@@ -171,7 +172,7 @@ class PartDesignGuiTestCases(unittest.TestCase):
 
         self.BodySource.addObject(self.Pad)
 
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         Gui.ActiveDocument.ActiveView.sendMessage("ViewFit")
 
         self.BodyTarget = self.Doc.addObject("PartDesign::Body", "Body")
@@ -239,7 +240,7 @@ class PartDesignGuiTestCases(unittest.TestCase):
         self.Pad.SideType = "One side"
         self.Pad.Offset = 0.000000
 
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         Gui.ActiveDocument.ActiveView.sendMessage("ViewFit")
 
         self.BodyTarget = self.Doc.addObject("PartDesign::Body", "Body")
@@ -249,7 +250,7 @@ class PartDesignGuiTestCases(unittest.TestCase):
         QtCore.QTimer.singleShot(500, cobj)
         Gui.runCommand("PartDesign_MoveFeature")
         # assert dependencies of the Sketch
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         self.assertFalse(
             self.Sketch.AttachmentSupport[0][0] in self.BodySource.Origin.OriginFeatures
@@ -261,7 +262,7 @@ class PartDesignGuiTestCases(unittest.TestCase):
         self.assertEqual(len(self.BodyTarget.Group), 2, "Target body feature count is wrong")
 
     def tearDown(self):
-        FreeCAD.closeDocument("SketchGuiTest")
+        close_document_by_name("SketchGuiTest")
 
 
 class PartDesignTransformed(unittest.TestCase):
@@ -272,19 +273,19 @@ class PartDesignTransformed(unittest.TestCase):
         self.BoxObj.Length = 10.0
         self.BoxObj.Width = 10.0
         self.BoxObj.Height = 10.0
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         # not adding box to the body to imitate undertermined workflow
         tempDir = tempfile.gettempdir()
         self.TempDoc = os.path.join(tempDir, "PartDesignTransformed.FCStd")
         if os.path.exists(self.TempDoc):
             os.remove(self.TempDoc)
-        App.ActiveDocument.saveAs(self.TempDoc)
-        App.closeDocument("PartDesignTransformed")
+        save_document_as(App.ActiveDocument, self.TempDoc)
+        close_document_by_name("PartDesignTransformed")
 
     def tearDown(self):
         # closing doc
         if App.ActiveDocument is not None and App.ActiveDocument.Name == PartDesignTransformed:
-            App.closeDocument("PartDesignTransformed")
+            close_document_by_name("PartDesignTransformed")
         # print ("omit closing document for debugging")
 
     def testMultiTransformCase(self):
@@ -297,7 +298,7 @@ class PartDesignTransformed(unittest.TestCase):
         QtCore.QTimer.singleShot(500, workflowcheck)
         Gui.runCommand("PartDesign_MultiTransform")
 
-        App.closeDocument("PartDesignTransformed")
+        close_document_by_name("PartDesignTransformed")
 
 
 class CreateSketch(unittest.TestCase):
@@ -322,7 +323,7 @@ class CreateSketch(unittest.TestCase):
         self.assertIsNotNone(activeDialog)
         if activeDialog is not None:
             FreeCADGui.Control.closeDialog()
-        App.closeDocument(App.ActiveDocument.Name)
+        close_document(App.ActiveDocument)
         param.SetBool("NewSketchUseAttachmentDialog", useAttachmentSaved)
 
 
@@ -354,7 +355,7 @@ class TestShapeBinder(unittest.TestCase):
         self.Body = self.Doc.addObject("PartDesign::Body", "Body")
         self.Box = self.Doc.addObject("PartDesign::AdditiveBox", "Box")
         self.Body.addObject(self.Box)
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         binder = self.Doc.addObject("PartDesign::ShapeBinder", "ShapeBinder")
         binder.Support = [(self.Box, "Face1")]
 
@@ -371,7 +372,7 @@ class TestShapeBinder(unittest.TestCase):
         self.assertEqual(packed_color, color)
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
 
 class TestSubShapeBinder(unittest.TestCase):
@@ -379,7 +380,7 @@ class TestSubShapeBinder(unittest.TestCase):
         self.Doc = FreeCAD.newDocument("PartDesignTestSubShapeBinder")
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
     def testDefaultColor(self):
         """
@@ -390,7 +391,7 @@ class TestSubShapeBinder(unittest.TestCase):
         box = self.Doc.addObject("PartDesign::AdditiveBox", "Box")
         body.addObject(box)
 
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         binder = body.newObject("PartDesign::SubShapeBinder", "Binder")
         binder.Support = [(box, ("Face1"))]
 
@@ -412,7 +413,7 @@ class TestDatumPlane(unittest.TestCase):
         self.Doc = FreeCAD.newDocument("PartDesignTestDatumPlane")
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.Doc.Name)
+        close_document(self.Doc)
 
     def testDefaultColor(self):
         """
@@ -423,11 +424,11 @@ class TestDatumPlane(unittest.TestCase):
         box = self.Doc.addObject("PartDesign::AdditiveBox", "Box")
         body.addObject(box)
 
-        self.Doc.recompute()
+        recompute_document(self.Doc)
         datum = body.newObject("PartDesign::Plane", "DatumPlane")
         datum.AttachmentSupport = [(box, "Face6")]
         datum.MapMode = "FlatFace"
-        self.Doc.recompute()
+        recompute_document(self.Doc)
 
         grp = App.ParamGet("User parameter:BaseApp/Preferences/Mod/PartDesign")
         packed_color = grp.GetUnsigned("DefaultDatumColor", 0xFFD70099)

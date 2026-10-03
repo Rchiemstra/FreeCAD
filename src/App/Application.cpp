@@ -125,6 +125,7 @@
 #include "TranslationQtBridge.h"
 #include "Services.h"
 #include "Document.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentRevisionIndex.h"
 #include "DocumentObjectFileIncluded.h"
 #include "DocumentObjectGroup.h"
@@ -560,6 +561,8 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     const auto collaborationIdentity = _collaborationRegistry->registerDocument(*doc);
     doc->collaborationRevisions().bindDocumentIdentity(collaborationIdentity.instanceId,
                                                        collaborationIdentity.lifecycleEpoch);
+    doc->startExecutionLane(
+        {collaborationIdentity.instanceId, collaborationIdentity.lifecycleEpoch});
     doc->setCollaborationRevisionPublicationSuppressed(false);
 
     //NOLINTBEGIN
@@ -592,7 +595,18 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     // Signal NewDocument rather than ActiveDocument (which is what setActiveDocument would do)
     auto oldActiveDoc = _pActiveDoc;
     setActiveDocumentNoSignal(doc);
-    signalNewDocument(*doc, CreateFlags.createView);
+    // Gui observers create Qt documents/views; marshal onto the GUI thread the
+    // same way notifyDocumentPreDelete does for teardown.
+    if (MainThreadSignalConfig::hasHooks() && !MainThreadSignalConfig::isMainThread()) {
+        MainThreadSignalConfig::invoke(
+            [this, doc, createView = CreateFlags.createView]() {
+                signalNewDocument(*doc, createView);
+            },
+            true);
+    }
+    else {
+        signalNewDocument(*doc, CreateFlags.createView);
+    }
 
     {
         // The application-assigned bootstrap label is part of a new
@@ -609,6 +623,15 @@ Document* Application::newDocument(const char * proposedName, const char * propo
     return doc;
 }
 
+void Application::notifyDocumentPreDelete(const Document& doc)
+{
+    if (MainThreadSignalConfig::hasHooks() && !MainThreadSignalConfig::isMainThread()) {
+        MainThreadSignalConfig::invoke([this, &doc]() { signalDeleteDocument(doc); }, true);
+        return;
+    }
+    signalDeleteDocument(doc);
+}
+
 bool Application::closeDocument(const Document* doc)
 {
     return closeDocument(doc->getName());
@@ -616,8 +639,6 @@ bool Application::closeDocument(const Document* doc)
 
 bool Application::closeDocument(const char* name)
 {
-    enforceCollaborationLifecycleMutationAllowed();
-
     auto pos = DocMap.find(name);
     if (pos == DocMap.end()) {  // no such document
         return false;
@@ -689,6 +710,16 @@ bool Application::closeDocument(const char* name)
         return false;
     }
 
+    if (const auto* lane = pos->second->executionLane()) {
+        if (!lane->permitsApplicationClose()) {
+            return false;
+        }
+    }
+
+    if (atomicPresentationMutationAdmissionHeldFor(*pos->second)) {
+        return false;
+    }
+
     enforceAtomicPresentationMutationTarget(pos->second);
     const auto preparedClose = _collaborationRegistry->prepareDocumentClose(*pos->second);
     if (!preparedClose) {
@@ -736,8 +767,9 @@ bool Application::closeDocument(const char* name)
 
     // Trigger observers before removing the document from the internal map.
     // Some observers might rely on this document still being there.
-    runIrrevocableCloseStep(
-        "pre-delete observer notification", [&] { signalDeleteDocument(*pos->second); });
+    runIrrevocableCloseStep("pre-delete observer notification", [&] {
+        notifyDocumentPreDelete(*pos->second);
+    });
 
     // For exception-safety use a smart pointer
     if (_pActiveDoc == pos->second) {
@@ -796,14 +828,24 @@ DocumentIdentity Application::advanceDocumentCollaborationEpoch(
     const RecoverySnapshotSaveOptions& recoveryOptions,
     std::string reason)
 {
+    if (!document.isCollaborationOwnerThread()) {
+        if (auto* lane = document.executionLane()) {
+            return lane->dispatchToOwner(
+                [this, &document, &recoveryOptions, &reason]() {
+                    return advanceDocumentCollaborationEpoch(
+                        document, recoveryOptions, reason);
+                },
+                true,
+                true);
+        }
+        throw Base::RuntimeError(
+            "administrative collaboration recovery requires the document owner thread");
+    }
+
     auto lifecycleAccess = document.collaborationService().pinDocumentAccess();
     if (!lifecycleAccess) {
         throw Base::RuntimeError(
             "administrative collaboration recovery cannot start while close is sealed");
-    }
-    if (!document.isCollaborationOwnerThread()) {
-        throw Base::RuntimeError(
-            "administrative collaboration recovery requires the document owner thread");
     }
 
     const auto found = DocMap.find(document.getName());
@@ -869,6 +911,12 @@ DocumentIdentity Application::advanceDocumentCollaborationEpoch(
 void Application::closeAllDocuments()
 {
     Base::FlagToggler<bool> flag(_isClosingAll);
+    for (const auto& entry : DocMap) {
+        if (entry.second && entry.second->executionLane()) {
+            entry.second->executionLane()->requestShutdown(
+                "application closing all documents");
+        }
+    }
     std::map<std::string,Document*>::iterator pos;
     while ((pos = DocMap.begin()) != DocMap.end()) {
         if (!closeDocument(pos->first.c_str())) {
@@ -2142,7 +2190,18 @@ void Application::slotStartSaveDocument(const Document& doc, const std::string& 
 void Application::slotFinishSaveDocument(const Document& doc, const std::string& filename)
 {
     DocFileMap.clear();
-    this->signalFinishSaveDocument(doc, filename);
+    try {
+        this->signalFinishSaveDocument(doc, filename);
+    }
+    catch (const Base::Exception& exception) {
+        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+    }
+    catch (const std::exception& exception) {
+        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+    }
+    catch (...) {
+        Base::Console().error("Legacy finish-save observer failed with an unknown exception\n");
+    }
 }
 
 void Application::slotChangePropertyEditor(const Document& doc, const Property& prop)

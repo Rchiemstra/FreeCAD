@@ -250,6 +250,12 @@ public:
     }
 
     void updateData(const App::Property*) override;
+
+    [[nodiscard]] ViewProviderPresentationClassification presentationClassification() const override;
+    [[nodiscard]] bool capturePresentationRenderBuffer(
+        const ViewProviderPresentationCaptureRequest& request,
+        PresentationRenderBuffer& buffer) const override;
+
     void onChanged(const App::Property* prop) override;
     std::vector<App::DocumentObject*> claimChildren() const override;
     bool getElementPicked(const SoPickedPoint*, std::string&) const override;

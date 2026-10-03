@@ -287,6 +287,13 @@ void PP_Fetch_Error_Text()
         PP_last_error_trace[MAX-1] = '\0';
         free(tempstr);  /* it's a strdup */
     }
+    else if (PP_PythonFrameInspectionUnsafe()) {
+        /* requireMainThread threw through this Python frame. On CPython 3.11+
+         * the frame's f_frame is already gone, and PyFrame_GetCode SIGSEGVs. */
+        PP_SetPythonFrameInspectionUnsafe(0);
+        strncpy(PP_last_error_trace, "<frame unavailable>\n", MAX - 1);
+        PP_last_error_trace[MAX - 1] = '\0';
+    }
     else {
         PyFrameObject* frame = PyEval_GetFrame();
         if(!frame)
@@ -296,15 +303,20 @@ void PP_Fetch_Error_Text()
         const char *file = PyUnicode_AsUTF8(frame->f_code->co_filename);
 #else
         PyCodeObject* code = PyFrame_GetCode(frame);
-        const char *file = PyUnicode_AsUTF8(code->co_filename);
-        Py_DECREF(code);
+        const char *file = code ? PyUnicode_AsUTF8(code->co_filename) : NULL;
+        Py_XDECREF(code);
 #endif
+        if (!file) {
+            snprintf(PP_last_error_trace, sizeof(PP_last_error_trace), "<unknown>(%d)", line);
+        }
+        else {
 #ifdef FC_OS_WIN32
-        const char *_f = strstr(file, "\\src\\");
+            const char *_f = strstr(file, "\\src\\");
 #else
-        const char *_f = strstr(file, "/src/");
+            const char *_f = strstr(file, "/src/");
 #endif
-        snprintf(PP_last_error_trace,sizeof(PP_last_error_trace),"%s(%d)",(_f?_f+5:file),line);
+            snprintf(PP_last_error_trace,sizeof(PP_last_error_trace),"%s(%d)",(_f?_f+5:file),line);
+        }
     }
     Py_XDECREF(pystring);
 

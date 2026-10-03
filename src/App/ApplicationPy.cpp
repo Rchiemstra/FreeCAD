@@ -38,7 +38,13 @@
 
 #include "Application.h"
 #include "ApplicationPy.h"
+#include "Document.h"
+#include "DocumentHandle.h"
+#include "DocumentCommand.h"
+#include "DocumentCommandHandle.h"
+#include "DocumentWouldBlock.h"
 #include "DocumentPy.h"
+#include "MainThreadSignal.h"
 #include "DocumentObserverPython.h"
 #include "DocumentObjectPy.h"
 #include "RecoverySnapshot.h"
@@ -223,6 +229,85 @@ PyObject* ApplicationPy::sSetActiveDocument(PyObject* /*self*/, PyObject* args)
 
 PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
 {
+    auto admitCloseAsync = [](Document* doc) -> PyObject* {
+        if (!doc) {
+            PyErr_Format(PyExc_RuntimeError, "Invalid document");
+            return nullptr;
+        }
+        if (!doc->isClosable()) {
+            PyErr_Format(
+                PyExc_RuntimeError,
+                "The document '%s' is not closable for the moment",
+                doc->getName());
+            return nullptr;
+        }
+        // On the GUI thread close through the document lane and wait until it
+        // is done, so closeDocument() stays synchronous. The wait runs only work
+        // the owner marshals to the GUI thread, never the Qt event loop, and
+        // never joins the lane thread.
+        if (DocumentWouldBlock::isGuiThread()) {
+            if (!doc->executionLane()) {
+                DocumentWouldBlock::throwIfGuiThread(
+                    "FreeCAD.closeDocument()", "Document.closeAsync()");
+            }
+            const std::string name = doc->getName();
+            // A handle, not doc: another close may finish while this one waits.
+            auto executionHandle = doc->executionHandle();
+            const auto identity = executionHandle.identity();
+            constexpr auto serviceSlice = std::chrono::milliseconds(2);
+            DocumentCommandSubmitOutcome outcome;
+            DocumentCommandSnapshot snapshot;
+            {
+                Base::PyGILStateRelease release;  // owner-thread Python may need the GIL
+                while (true) {
+                    DocumentCommand command;
+                    command.kind = DocumentCommandKind::Close;
+                    command.document = identity;
+                    outcome = executionHandle.trySubmit(std::move(command));
+                    if (outcome.result != DocumentCommandSubmitResult::Busy) {
+                        break;
+                    }
+                    MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+                }
+                if (outcome.accepted()) {
+                    const DocumentCommandHandle handle(outcome.commandId, identity);
+                    snapshot = handle.status();
+                    while (!snapshot.terminal()) {
+                        MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
+                        snapshot = handle.status();
+                    }
+                    // Deliver the GUI notifications the close marshalled last.
+                    MainThreadSignalConfig::serviceMarshalledTasks(
+                        std::chrono::milliseconds::zero());
+                }
+            }
+            if (!outcome.accepted()) {
+                PyErr_Format(
+                    PyExc_RuntimeError,
+                    "Closing the document '%s' was not admitted: %s",
+                    name.c_str(),
+                    outcome.diagnostic.empty()
+                        ? documentCommandSubmitResultName(outcome.result)
+                        : outcome.diagnostic.c_str());
+                return nullptr;
+            }
+            if (GetApplication().getDocument(name.c_str())) {
+                PyErr_Format(PyExc_RuntimeError,
+                             "Closing the document '%s' failed: %s",
+                             name.c_str(),
+                             snapshot.diagnostic.c_str());
+                return nullptr;
+            }
+            Py_Return;
+        }
+        if (!GetApplication().closeDocument(doc)) {
+            PyErr_Format(
+                PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
+            return nullptr;
+        }
+        Py_Return;
+    };
+
     char* pstr = nullptr;
     if (PyArg_ParseTuple(args, "s", &pstr)) {
         Document* doc = GetApplication().getDocument(pstr);
@@ -230,39 +315,13 @@ PyObject* ApplicationPy::sCloseDocument(PyObject* /*self*/, PyObject* args)
             PyErr_Format(PyExc_NameError, "Unknown document '%s'", pstr);
             return nullptr;
         }
-        if (!doc->isClosable()) {
-            PyErr_Format(PyExc_RuntimeError, "The document '%s' is not closable for the moment", pstr);
-            return nullptr;
-        }
-
-        if (!GetApplication().closeDocument(pstr)) {
-            PyErr_Format(PyExc_RuntimeError, "Closing the document '%s' failed", pstr);
-            return nullptr;
-        }
-
-        Py_Return;
+        return admitCloseAsync(doc);
     }
 
     PyErr_Clear();
     PyObject* docpy {};
     if (PyArg_ParseTuple(args, "O!", &App::DocumentPy::Type, &docpy)) {
-        Document* doc = static_cast<App::DocumentPy*>(docpy)->getDocumentPtr();
-        if (!doc) {
-            PyErr_Format(PyExc_RuntimeError, "Invalid document");
-            return nullptr;
-        }
-
-        if (!doc->isClosable()) {
-            PyErr_Format(PyExc_RuntimeError, "The document '%s' is not closable for the moment", doc->getName());
-            return nullptr;
-        }
-
-        if (!GetApplication().closeDocument(doc)) {
-            PyErr_Format(PyExc_RuntimeError, "Closing the document '%s' failed", doc->getName());
-            return nullptr;
-        }
-
-        Py_Return;
+        return admitCloseAsync(static_cast<App::DocumentPy*>(docpy)->getDocumentPtr());
     }
 
     PyErr_SetString(PyExc_TypeError, "Expect str or Document");
@@ -278,6 +337,11 @@ PyObject* ApplicationPy::sSaveDocument(PyObject* /*self*/, PyObject* args)
 
     Document* doc = GetApplication().getDocument(pDoc);
     if (doc) {
+        // With an execution lane save() hops to the owner and waits without
+        // running the Qt event loop (synchronous compatibility).
+        if (!doc->executionLane()) {
+            DocumentWouldBlock::throwIfGuiThread("FreeCAD.saveDocument()", "Document.saveAsync()");
+        }
         if (!doc->save()) {
             PyErr_Format(Base::PyExc_FC_GeneralError, "Cannot save document '%s'", pDoc);
             return nullptr;

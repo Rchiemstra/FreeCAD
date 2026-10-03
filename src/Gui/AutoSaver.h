@@ -28,7 +28,10 @@
 
 #include <map>
 #include <cstdint>
+#include <exception>
 #include <string>
+
+#include <Base/TimeInfo.h>
 #include <fastsignals/signal.h>
 
 namespace App
@@ -38,6 +41,12 @@ class Document;
 
 namespace Gui
 {
+
+namespace Test
+{
+class AutoSaverRecoveryTestAccess;
+}
+
 /**
  * Per-document autosave scheduling state shared between document change
  * notifications, timer callbacks, and queued stable-state retries.
@@ -106,6 +115,8 @@ class GuiExport AutoSaver: public QObject
 {
     Q_OBJECT
 
+    friend class Test::AutoSaverRecoveryTestAccess;
+
 private:
     static AutoSaver* self;
     AutoSaver(QObject* parent);
@@ -136,6 +147,13 @@ private:
     void flushPendingSaveForIdentity(const QString& documentName,
                                      std::uint64_t documentInstanceId,
                                      std::uint64_t lifecycleEpoch);
+    void completeRecoverySnapshotSave(const std::string& documentName,
+                                      std::uint64_t documentInstanceId,
+                                      std::uint64_t lifecycleEpoch,
+                                      Base::TimeElapsed startTime,
+                                      bool written,
+                                      std::exception_ptr failure);
+    void slotDeleteDocumentByName(const std::string& name);
     int timeout; /*!< Timeout in milliseconds */
     bool compressed;
     std::map<std::string, AutoSaveProperty*> saverMap;

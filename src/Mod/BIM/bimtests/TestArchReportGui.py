@@ -8,6 +8,7 @@ the whole class when `FreeCAD.GuiUp` is False.
 """
 
 import FreeCAD
+from Test.GuiRecompute import recompute_document, close_document
 import Arch
 import FreeCADGui
 import ArchReport
@@ -48,7 +49,7 @@ class TestArchReportGui(TestArchBaseGui):
 
         # Spreadsheet used by some report features
         self.spreadsheet = self.doc.addObject("Spreadsheet::Sheet", "ReportTarget")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
     def tearDown(self):
         # This method is automatically called after EACH test function.

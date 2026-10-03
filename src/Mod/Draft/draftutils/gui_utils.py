@@ -58,6 +58,22 @@ if App.GuiUp:
     # from PySide import QtSvg  # for load_texture
 
 
+def on_gui_thread():
+    """Return True when the caller is on the Qt GUI thread.
+
+    Document recompute runs on the owner thread. ``FreeCADGui.getMainWindow``
+    and other QWidget APIs are illegal there.
+    """
+    try:
+        from PySide import QtCore
+    except Exception:
+        return False
+    app = QtCore.QCoreApplication.instance()
+    if app is None:
+        return False
+    return QtCore.QThread.currentThread() == app.thread()
+
+
 def get_3d_view():
     """Return the current 3D view.
 
@@ -67,6 +83,10 @@ def get_3d_view():
         The Active 3D View or `None`.
     """
     if not App.GuiUp:
+        return None
+    # Owner-thread recompute (Arch wall rebase via get_normal) must not call
+    # getMainWindow. Callers treat None as "no view direction available".
+    if not on_gui_thread():
         return None
 
     # FIXME The following two imports were added as part of PR4926

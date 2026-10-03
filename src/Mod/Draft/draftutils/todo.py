@@ -39,6 +39,7 @@ to execute the instructions stored in internal lists.
 
 import traceback
 import sys
+import time
 import PySide.QtCore as QtCore
 
 import FreeCAD as App
@@ -52,6 +53,58 @@ __url__ = ["https://www.freecad.org"]
 
 _DEBUG = 0
 _DEBUG_inner = 0
+
+# Commit-list strings that only recompute the active document. They are run
+# after the transaction is committed, without blocking the GUI thread.
+_RECOMPUTE_COMMANDS = frozenset(
+    {
+        "FreeCAD.ActiveDocument.recompute()",
+        "App.ActiveDocument.recompute()",
+        "FreeCAD.activeDocument().recompute()",
+        "App.activeDocument().recompute()",
+    }
+)
+
+
+def _recompute_without_blocking(doc, timeout_seconds=120.0):
+    """Recompute doc; on the GUI thread submit it to the document lane and pump Qt."""
+    if doc is None:
+        return
+    try:
+        doc.recompute()
+        return
+    except RuntimeError as exc:
+        if type(exc).__name__ != "DocumentWouldBlock":
+            raise
+    deadline = time.monotonic() + timeout_seconds
+    handle = None
+    while handle is None:
+        try:
+            handle = doc.recomputeAsync()
+        except RuntimeError as exc:
+            # The lane may still be finishing the commit that queued this task.
+            message = str(exc).lower()
+            if "lane is busy" not in message and "was not admitted" not in message:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+            time.sleep(0.005)
+    def finished():
+        # Done, and out of the post-recompute commit so the next queued task
+        # may mutate the document again.
+        if not handle.done():
+            return False
+        readiness = doc.getMutationReadiness()
+        busy = ("recomputing", "commit_barrier", "notification_replay", "pending_removal")
+        return not any(readiness.get(flag) for flag in busy)
+
+    while not finished() and time.monotonic() < deadline:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+        time.sleep(0.005)
+    if not finished():
+        _wrn("ToDo.doTasks: recompute of {} did not finish\n".format(doc.Name))
+
 
 ## \addtogroup draftutils
 # @{
@@ -162,12 +215,20 @@ class ToDo:
                 try:
                     name = str(name)
                     App.activeDocument().openTransaction(name)
+                    recompute = False
                     if isinstance(func, list):
                         for string in func:
-                            Gui.doCommand(string)
+                            if string.strip() in _RECOMPUTE_COMMANDS:
+                                # Record it for macros; it runs after the commit.
+                                Gui.doCommandSkip(string)
+                                recompute = True
+                            else:
+                                Gui.doCommand(string)
                     else:
                         func()
                     App.activeDocument().commitTransaction()
+                    if recompute:
+                        _recompute_without_blocking(App.activeDocument())
                 except Exception:
                     _log(traceback.format_exc())
                     _err(traceback.format_exc())

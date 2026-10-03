@@ -40,6 +40,7 @@
 #include "TaskElementColors.h"
 #include "Control.h"
 #include "ViewProviderLink.h"
+#include "ViewProviderPresentationCapability.h"
 
 using namespace Gui;
 
@@ -90,6 +91,21 @@ void ViewProviderPart::updateData(const App::Property* prop)
         }
     }
     inherited::updateData(prop);
+}
+
+ViewProviderPresentationClassification ViewProviderPart::presentationClassification() const
+{
+    // Concrete Part tessellation capture lives on PartGui::ViewProviderPartExt.
+    // Do not call capturePartPresentationRenderBuffer here: that free function
+    // dispatches back through this virtual and would recurse forever.
+    return ViewProviderPresentationClassification::Unsupported;
+}
+
+bool ViewProviderPart::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
+{
+    return false;
 }
 
 void ViewProviderPart::setupContextMenu(QMenu* menu, QObject* receiver, const char* member)

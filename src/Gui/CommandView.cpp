@@ -71,6 +71,8 @@
 #include "DemoMode.h"
 #include "Dialogs/DlgSettingsImageImp.h"
 #include "Document.h"
+
+#include <App/DocumentWouldBlock.h>
 #include "FileDialog.h"
 #include "ImageView.h"
 #include "Inventor/SoAxisCrossKit.h"
@@ -980,8 +982,33 @@ StdCmdToggleVisibility::StdCmdToggleVisibility()
 void StdCmdToggleVisibility::activated(int iMsg)
 {
     Q_UNUSED(iMsg);
+    auto* guiDocument = getActiveGuiDocument();
+
+    if (!App::MainThreadSignalConfig::isMainThread()) {
+        Gui::scheduleGuiSingleShot(0, []() {
+            if (!Application::Instance) {
+                return;
+            }
+            if (auto* command = Application::Instance->commandManager().getCommandByName(
+                    "Std_ToggleVisibility")) {
+                command->invoke(0);
+            }
+        });
+        return;
+    }
+
+    // Opening a transaction during replay throws from
+    // ensureCollaborationTransactionControlAllowed(). The property change still
+    // has to land so callers observe Visibility immediately; Coin and
+    // getMainWindow() are queued by the view-provider path.
+    if (guiDocument && guiDocument->deferLivePresentationUpdates()) {
+        Selection().setVisible(SelectionSingleton::VisToggle);
+        guiDocument->scheduleLivePresentationCatchUp();
+        return;
+    }
+
     TransactionView transaction(
-        getActiveGuiDocument(),
+        guiDocument,
         QT_TRANSLATE_NOOP("Command", "Toggle Visibility")
     );
     Selection().setVisible(SelectionSingleton::VisToggle);

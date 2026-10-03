@@ -48,6 +48,7 @@
 #include "TaskShapeBuilder.h"
 #include "ui_TaskShapeBuilder.h"
 #include "BoxSelection.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -200,7 +201,7 @@ void ShapeBuilderWidget::onCreateButtonClicked()
         else if (mode == 5) {
             createSolidFromShell();
         }
-        doc->getDocument()->recompute();
+        PartGui::submitDocumentRecomputeOrReport(*doc->getDocument());
         Gui::Selection().clearSelection();
     }
     catch (const Base::Exception& e) {
@@ -644,5 +645,4 @@ bool TaskShapeBuilder::reject()
 {
     return widget->reject();
 }
-
 #include "moc_TaskShapeBuilder.cpp"

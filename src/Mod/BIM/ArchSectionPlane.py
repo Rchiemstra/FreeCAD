@@ -313,6 +313,21 @@ def isOriented(obj, plane):
     return False
 
 
+def _section_geometry_token(objs):
+    token = []
+    for obj in objs:
+        shape = getattr(obj, "Shape", None)
+        identity = None
+        if shape is not None:
+            try:
+                if not shape.isNull():
+                    identity = shape.hashCode()
+            except Exception:
+                identity = None
+        token.append((getattr(obj, "Name", ""), identity))
+    return tuple(token)
+
+
 def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinArch, allOn, objs):
     """
     Returns None or cached SVG, clears shape cache if required
@@ -321,6 +336,7 @@ def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinA
     if hasattr(source, "Proxy"):
         if hasattr(source.Proxy, "svgcache") and source.Proxy.svgcache:
             # TODO check array bounds
+            token = _section_geometry_token(objs)
             svgcache = source.Proxy.svgcache[0]
             # empty caches if we want to force-recalculate for certain properties
             if (
@@ -339,6 +355,9 @@ def update_svg_cache(source, renderMode, showHidden, showFill, fillSpaces, joinA
                 or source.Proxy.svgcache[6] != allOn
                 or source.Proxy.svgcache[7] != set(objs)
             ):
+                source.Proxy.shapecache = None
+            if len(source.Proxy.svgcache) <= 8 or source.Proxy.svgcache[8] != token:
+                svgcache = None
                 source.Proxy.shapecache = None
     return svgcache
 
@@ -634,6 +653,7 @@ def getSVG(
                 joinArch,
                 allOn,
                 set(objs),
+                _section_geometry_token(objs),
             ]
 
     svgcache = svgcache.replace("SVGLINECOLOR", svgLineColor)

@@ -39,6 +39,7 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Inventor/Draggers/SoTransformDragger.h"
 #include "QuantitySpinBox.h"
 #include "ViewProviderDragger.h"
@@ -1094,7 +1095,7 @@ bool TaskTransformDialog::accept()
     if (auto document = vp->getDocument()) {
         document->commitCommand();
         document->resetEdit();
-        document->getDocument()->recompute();
+        requestDocumentRecompute(*document->getDocument());
     }
 
     return Gui::TaskView::TaskDialog::accept();
@@ -1105,7 +1106,7 @@ bool TaskTransformDialog::reject()
     if (auto document = vp->getDocument()) {
         document->abortCommand();
         document->resetEdit();
-        document->getDocument()->recompute();
+        requestDocumentRecompute(*document->getDocument());
     }
 
     return Gui::TaskView::TaskDialog::reject();

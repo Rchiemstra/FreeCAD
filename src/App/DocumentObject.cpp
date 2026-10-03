@@ -335,7 +335,12 @@ void DocumentObject::setStatus(const ObjectStatus pos, const bool on)
     if (StatusBits.test(static_cast<size_t>(pos)) == on) {
         return;
     }
-    enforceAtomicPresentationMutationTarget(_pDoc);
+    // Destroy only marks an object right before it is deleted (~Document(),
+    // transaction cleanup). Another document's atomic presentation admission
+    // must not refuse that: the throw would escape a destructor and terminate.
+    if (pos != ObjectStatus::Destroy) {
+        enforceAtomicPresentationMutationTarget(_pDoc);
+    }
     StatusBits.set(static_cast<size_t>(pos), on);
 }
 

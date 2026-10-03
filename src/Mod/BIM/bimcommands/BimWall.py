@@ -25,6 +25,8 @@ import FreeCAD
 import FreeCADGui
 from enum import Enum
 
+import ArchCommands
+
 QT_TRANSLATE_NOOP = FreeCAD.Qt.QT_TRANSLATE_NOOP
 translate = FreeCAD.Qt.translate
 
@@ -284,7 +286,8 @@ class Arch_Wall:
             # The created line should not stay selected as this causes an issue in continue mode.
             # Two walls would then be created based on the same line.
             FreeCADGui.Selection.clearSelection()
-            FreeCADGui.doCommand("FreeCAD.ActiveDocument.recompute()")
+            FreeCADGui.addModule("ArchCommands")
+            FreeCADGui.doCommand("ArchCommands.recompute_active_document()")
 
         elif self.baseline_mode == WallBaselineMode.SKETCH:
             import ArchSketchObject
@@ -312,7 +315,8 @@ class Arch_Wall:
             FreeCADGui.doCommand(f"base.Placement = {placement_str}")
             FreeCADGui.doCommand(f"base.addGeometry(trace)")
 
-        FreeCADGui.doCommand("FreeCAD.ActiveDocument.recompute()")
+        FreeCADGui.addModule("ArchCommands")
+        FreeCADGui.doCommand("ArchCommands.recompute_active_document()")
 
         # Get a reference to the newly created object
         baseline_obj = getattr(__main__, "base")
@@ -425,7 +429,7 @@ class Arch_Wall:
 
         # Finalization
         self.doc.commitTransaction()
-        self.doc.recompute()
+        ArchCommands.recompute_document_gui_safe(self.doc)
         self.tracker.finalize()
         if FreeCADGui.draftToolBar.continueMode:
             self.Activated()
@@ -668,7 +672,7 @@ class Arch_Wall:
         if self.MultiMat:
             FreeCADGui.doCommand("wall.Material = FreeCAD.ActiveDocument." + self.MultiMat.Name)
         self.doc.commitTransaction()
-        self.doc.recompute()
+        ArchCommands.recompute_document_gui_safe(self.doc)
         if hasattr(FreeCADGui, "draftToolBar"):
             FreeCADGui.draftToolBar.escape()
 

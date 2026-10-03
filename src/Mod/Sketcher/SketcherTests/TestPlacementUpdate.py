@@ -40,7 +40,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
         self.cylinder.Height = 10.0
         self.cylinder.Radius = 2.0
         self.body.addObject(self.cylinder)
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         # create a sketch and attach it to the bottom face of the cylinder
         self.sketch = self.doc.addObject("Sketcher::SketchObject", "Sketch")
@@ -62,7 +62,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
             Part.LineSegment(Base.Vector(3, -3, 0), Base.Vector(-3, 3, 0)), False
         )
 
-        self.doc.recompute()
+        self.recompute_gui_document()
 
     def test_attachment_offset_updates_in_edit_mode(self):
         """
@@ -83,7 +83,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
         # for attached sketches, this should update the visual position
         new_offset = Base.Placement(Base.Vector(0, 0, 5), Base.Rotation())
         self.sketch.AttachmentOffset = new_offset
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         # get updated editing transform
         updated_transform = FreeCADGui.ActiveDocument.EditingTransform
@@ -110,18 +110,22 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
             self.sketch.AttachmentOffset = Base.Placement(
                 Base.Vector(0, 0, z_offset), Base.Rotation()
             )
-            self.doc.recompute()
+            self.recompute_gui_document()
 
+            def editing_transform_updated() -> bool:
+                if not self.doc.mustExecute():
+                    self.flush_gui(50)
+                current = FreeCADGui.ActiveDocument.EditingTransform
+                if not transforms:
+                    return True
+                return current != transforms[-1]
+
+            self.assertTrue(
+                self.wait_until(editing_transform_updated, timeout_ms=5000, step_ms=50),
+                f"Editing transform did not update after offset change {i}",
+            )
             transform = FreeCADGui.ActiveDocument.EditingTransform
             transforms.append(transform)
-
-            # verify this transform is different from previous
-            if i > 1:
-                self.assertNotEqual(
-                    transforms[-1],
-                    transforms[-2],
-                    f"Transform {i} should differ from transform {i-1}",
-                )
 
     def test_no_update_when_not_editing(self):
         """
@@ -131,7 +135,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
         # change attachment offset while NOT editing
         new_offset = Base.Placement(Base.Vector(0, 0, 8), Base.Rotation())
         self.sketch.AttachmentOffset = new_offset
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         # this should not crash or cause any issues
         # just verify the sketch is still valid and attached
@@ -152,7 +156,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
         import Part
 
         unattached.addGeometry(Part.Circle(Base.Vector(0, 0, 0), Base.Vector(0, 0, 1), 2.0), False)
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         # enter edit mode
         FreeCADGui.ActiveDocument.setEdit(unattached.Name)
@@ -161,7 +165,7 @@ class TestSketchPlacementUpdate(SketcherGuiTestCase):
 
         # for unattached sketches, change Placement (not AttachmentOffset)
         unattached.Placement = Base.Placement(Base.Vector(5, 5, 5), Base.Rotation())
-        self.doc.recompute()
+        self.recompute_gui_document()
 
         updated_transform = FreeCADGui.ActiveDocument.EditingTransform
 

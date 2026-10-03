@@ -14,6 +14,7 @@
 #include <Gui/Application.h>
 #include <Gui/Document.h>
 #include <Gui/ViewProviderDocumentObject.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <src/App/InitApplication.h>
 
 namespace
@@ -78,12 +79,13 @@ protected:
         ASSERT_NE(_linkRight, nullptr);
         _linkLeft->setLink(-1, _target);
         _linkRight->setLink(-1, _target);
-        _document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(*_document);
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
         ensureViewProviders(
             _guiDocument,
             {_target, _linkLeft, _linkRight});
+        Gui::Test::settlePendingRecomputeWithoutBlockingGui(*_document);
         ASSERT_FALSE(_document->mustExecute());
         ASSERT_FALSE(_linkLeft->isTouched());
         ASSERT_FALSE(_linkRight->isTouched());
@@ -116,7 +118,8 @@ TEST_F(CollaborationLinkReplayGuardTest,
             ++recomputeCount;
         });
 
-    const auto result = _document->collaborationService().commitCompatibilityMutation(
+    const auto result = Gui::Test::commitCompatibilityMutationWithoutBlockingGui(
+        *_document,
         {App::CollaborationCompatibilityScope::Structural, {}, {}},
         [&] {
             _target->Label.setValue("seat body updated");

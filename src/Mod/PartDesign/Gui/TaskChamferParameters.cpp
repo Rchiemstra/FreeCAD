@@ -49,6 +49,7 @@
 
 #include "ui_TaskChamferParameters.h"
 #include "TaskChamferParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartDesignGui;
@@ -191,7 +192,7 @@ void TaskChamferParameters::onCheckBoxUseAllEdgesToggled(bool checked)
         ui->buttonRefSel->setEnabled(!checked);
         ui->listWidgetReferences->setEnabled(!checked);
         chamfer->UseAllEdges.setValue(checked);
-        chamfer->recomputeFeature();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
     }
 }
 
@@ -219,9 +220,7 @@ void TaskChamferParameters::onTypeChanged(int index)
         chamfer->ChamferType.setValue(index);
         ui->stackedWidget->setCurrentIndex(index);
         ui->flipDirection->setEnabled(index != 0);  // Enable if type is not "Equal distance"
-        chamfer->recomputeFeature();
-        // hide the chamfer if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
     }
 }
 
@@ -231,9 +230,7 @@ void TaskChamferParameters::onSizeChanged(double len)
         setSelectionMode(none);
         setupTransaction();
         chamfer->Size.setValue(len);
-        chamfer->recomputeFeature();
-        // hide the chamfer if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
     }
 }
 
@@ -243,9 +240,7 @@ void TaskChamferParameters::onSize2Changed(double len)
         setSelectionMode(none);
         setupTransaction();
         chamfer->Size2.setValue(len);
-        chamfer->recomputeFeature();
-        // hide the chamfer if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
     }
 }
 
@@ -255,9 +250,7 @@ void TaskChamferParameters::onAngleChanged(double angle)
         setSelectionMode(none);
         setupTransaction();
         chamfer->Angle.setValue(angle);
-        chamfer->recomputeFeature();
-        // hide the chamfer if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
     }
 }
 
@@ -267,9 +260,7 @@ void TaskChamferParameters::onFlipDirection(bool flip)
         setSelectionMode(none);
         setupTransaction();
         chamfer->FlipDirection.setValue(flip);
-        chamfer->recomputeFeature();
-        // hide the chamfer if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*chamfer);
 
         setGizmoPositions();
     }
@@ -459,5 +450,4 @@ bool TaskDlgChamferParameters::accept()
 
     return TaskDlgDressUpParameters::accept();
 }
-
 #include "moc_TaskChamferParameters.cpp"

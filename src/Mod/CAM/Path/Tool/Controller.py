@@ -135,6 +135,9 @@ def _migrateRampDressups(tc):
 
 
 class ToolController:
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def __init__(self, obj, createTool=True):
         Path.Log.track("tool: ")
 
