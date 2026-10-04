@@ -7566,25 +7566,17 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
 {
     enforceAtomicPresentationMutationTarget(*this);
 
-    // Match Document::recompute(): the coordinator owns the only recompute
-    // that may execute object code for a structural compatibility commit.
-    if (d->collaborationCompatibilityStructuralMutationGranted
-        || d->collaborationDeferredRecomputeBlocked) {
-        return true;
-    }
-
-    // verify that the feature is (active) part of the document
-    if (!feature || !feature->isAttachedToDocument() || feature->getDocument() != this) {
-        return false;
-    }
-
     // A feature that recomputes itself from inside its own execute() (CAM
     // operations do this after updateDepths() so StartDepth/FinalDepth pick up
     // the OpStartDepth/OpFinalDepth values they just wrote) only needs its
     // expressions refreshed. Upstream's nested _recomputeFeature() does exactly
     // that, and the Python feature's recursion guard skips the inner execute().
-    // The feature is already executing, so do not submit it again.
-    if (!recursive && feature->testStatus(ObjectStatus::Recompute)) {
+    // The feature is already executing, so it is not submitted again. This runs
+    // ahead of the compatibility-commit check below: the coordinator executes
+    // the feature inside that commit, which would otherwise turn the nested
+    // call into a no-op.
+    if (!recursive && feature && feature->getDocument() == this
+        && feature->isAttachedToDocument() && feature->testStatus(ObjectStatus::Recompute)) {
         try {
             auto* ret = feature->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);
             if (ret != DocumentObject::StdReturn) {
@@ -7598,6 +7590,18 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
             return false;
         }
         return feature->isValid();
+    }
+
+    // Match Document::recompute(): the coordinator owns the only recompute
+    // that may execute object code for a structural compatibility commit.
+    if (d->collaborationCompatibilityStructuralMutationGranted
+        || d->collaborationDeferredRecomputeBlocked) {
+        return true;
+    }
+
+    // verify that the feature is (active) part of the document
+    if (!feature || !feature->isAttachedToDocument() || feature->getDocument() != this) {
+        return false;
     }
 
     static thread_local std::set<const Document*> activeCompatibilityWaits;
