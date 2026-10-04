@@ -185,11 +185,19 @@ public:
 
     /** @name I/O of the document */
     //@{
+    /** Which close should be re-issued when an in-flight lane Save finishes. */
+    enum class PendingLaneCloseKind
+    {
+        None,
+        Document,
+        Application
+    };
+
     unsigned int getMemSize() const override;
     /// Save the document
     bool save();
     /// Save the document under a new file name
-    bool saveAs();
+    bool saveAs(PendingLaneCloseKind closeAfter = PendingLaneCloseKind::None);
     /// Save a copy of the document under a new file name
     bool saveCopy();
     /// Save all open document
@@ -436,6 +444,27 @@ public:
                                      App::DocumentCommandId commandId);
     /** Refresh modified state after a terminal lane save command. */
     void finishExecutionLaneSave(App::DocumentCommandState state);
+
+    /** Mark this document to close after the in-flight lane Save completes. */
+    void setPendingLaneCloseAfterSave(PendingLaneCloseKind kind) noexcept;
+    /** Return true if a close is waiting on an in-flight lane Save. */
+    bool isPendingLaneClose() const noexcept;
+    /** Return and clear the pending close. None if nothing was pending. */
+    PendingLaneCloseKind consumePendingLaneClose() noexcept;
+    /**
+     * Skip the next save prompt in canClose(). Used when a document close is
+     * re-issued after the save already finished or the user chose discard.
+     */
+    void suppressNextSavePrompt() noexcept;
+    /**
+     * Application close should not prompt for or attempt to save this document
+     * (stalled-lane skip, or "close without saving" after a failed app-close save).
+     */
+    void markSkipSaveOnClose() noexcept;
+    bool skipsSaveOnClose() const noexcept;
+    bool consumeSkipSaveOnClose() noexcept;
+    /** Close this document's views again, without an application quit. */
+    void reissueDocumentClose();
     /** Check if the document is performing undo/redo transaction
      *
      * Unlike App::Document::isPerformingTransaction(), Gui::Document will

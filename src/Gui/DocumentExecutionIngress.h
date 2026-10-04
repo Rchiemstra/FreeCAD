@@ -162,7 +162,7 @@ GuiExport void reportDocumentSaveDeferred(App::Document& document);
 GuiExport void reportDocumentSaveAdmitted(App::Document& document);
 
 /** Admit document close on the GUI thread without blocking on the lane. */
-GuiExport bool submitDocumentClose(App::Document& document);
+GuiExport bool submitDocumentClose(App::Document& document, bool allowApplicationClose = true);
 
 /** True when the document execution lane is running model work. */
 GuiExport bool documentExecutionLaneBusy(const App::Document& document);

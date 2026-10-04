@@ -23,6 +23,7 @@
 
 #include <QActionGroup>
 #include <QApplication>
+#include <QEventLoop>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QClipboard>
@@ -69,11 +70,13 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <vector>
 #include <boost/algorithm/string/predicate.hpp>
 
 #include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentHandle.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/ImagePlane.h>
@@ -1142,6 +1145,8 @@ bool MainWindow::closeAllDocuments(bool close)
     bool checkModify = true;
     bool saveAll = false;
     int failedSaves = 0;
+    // H4: set to true when any new async lane save is submitted this pass.
+    bool anyNewPendingSave = false;
 
     // moves the active document to the front
     MDIView* activeView = this->activeWindow();
@@ -1160,10 +1165,16 @@ bool MainWindow::closeAllDocuments(bool close)
         if (!gdoc) {
             continue;
         }
+        // H4: skip documents whose async lane save is already in flight.
+        // scheduleSaveCommandCompletion will call window->close() when done.
+        if (gdoc->isPendingLaneClose()) {
+            continue;
+        }
         if (!gdoc->canClose(false)) {
             return false;
         }
-        if (!gdoc->isModified() || doc->testStatus(App::Document::PartialDoc)
+        if (gdoc->skipsSaveOnClose() || !gdoc->isModified()
+            || doc->testStatus(App::Document::PartialDoc)
             || doc->testStatus(App::Document::TempDoc)) {
             continue;
         }
@@ -1185,15 +1196,62 @@ bool MainWindow::closeAllDocuments(bool close)
         }
 
         if (save) {
-            bool saved = false;
+            // B3: if the document has no file name, run Save As on the GUI thread
+            // before attempting any lane-level save.
+            if (!doc->isSaved()) {
+                // saveAs() shows a dialog. An admitted lane Save As sets the
+                // application-close pending flag and must not be judged by
+                // FileName, which the lane has not written yet (N9 / B3).
+                gdoc->saveAs(Document::PendingLaneCloseKind::Application);
+                if (gdoc->isPendingLaneClose()) {
+                    anyNewPendingSave = true;
+                    continue;
+                }
+                if (!doc->isSaved()) {
+                    failedSaves++;
+                    continue;
+                }
+                continue;
+            }
             if (doc->executionLane()) {
-                saved = submitDocumentSaveAwaitingCompletion(*doc);
+                // Submit async save. Completion re-issues the application close.
+                const auto outcome =
+                    submitDocumentKindCommand(*doc, App::DocumentCommandKind::Save);
+                if (outcome.accepted()) {
+                    scheduleSaveCommandCompletion(
+                        doc->getName(),
+                        doc->executionHandle().identity(),
+                        outcome.commandId);
+                    gdoc->setPendingLaneCloseAfterSave(
+                        Document::PendingLaneCloseKind::Application);
+                    anyNewPendingSave = true;
+                    reportDocumentSaveAdmitted(*doc);
+                }
+                else {
+                    failedSaves++;
+                }
             }
             else {
-                saved = gdoc->save();
+                if (!gdoc->save()) {
+                    failedSaves++;
+                }
             }
-            if (!saved) {
-                failedSaves++;
+        }
+    }
+
+    // H4: if any async lane save was submitted this pass, defer the close.
+    // scheduleSaveCommandCompletion will call window->close() when each save
+    // completes, which retries closeAllDocuments.  No event-loop pump here.
+    if (anyNewPendingSave) {
+        return false;
+    }
+
+    // Also defer if a doc from a prior pass still has its pending-close flag
+    // (its save completion callback hasn't fired yet).
+    for (auto* doc : docs) {
+        if (auto* gdoc = Application::Instance->getDocument(doc)) {
+            if (gdoc->isPendingLaneClose()) {
+                return false;
             }
         }
     }

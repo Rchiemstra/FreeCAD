@@ -100,6 +100,12 @@ DocumentCommandSnapshot DocumentCommandHandle::status() const
         return lane->commandStatus(_id);
     }
 
+    // M4/M9: check the process-level terminal archive so handles for completed
+    // commands (e.g. Close) stay Completed instead of returning synthetic Failed.
+    if (const auto archived = findTerminalCommandSnapshot(_document.documentInstanceId, _id)) {
+        return *archived;
+    }
+
     snapshot.state = DocumentCommandState::Failed;
     snapshot.diagnostic = "document execution lane is not active";
     return snapshot;

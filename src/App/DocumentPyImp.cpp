@@ -27,7 +27,9 @@
 #include <Base/Stream.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <future>
 #include <map>
 #include <memory>
 #include <optional>
@@ -38,6 +40,7 @@
 #include "Document.h"
 #include "DocumentCollaborationService.h"
 #include "DocumentCommand.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentHandle.h"
 #include "DocumentObject.h"
 #include "DocumentObjectPy.h"
@@ -390,6 +393,26 @@ private:
     PyObject* _type {nullptr};
     PyObject* _value {nullptr};
     PyObject* _traceback {nullptr};
+};
+
+/// Pure C++ outcome of an async compatibility mutation.
+///
+/// Must not contain PyCXX objects. MSVC's std::promise default-constructs the
+/// stored value, and set_value assigns it after the owner thread has released
+/// the GIL; a Py::Dict there aborts in dict_dealloc (N3).
+struct AsyncMutationPayload
+{
+    DocumentCommitResult result;
+    bool callbackFailed {false};
+};
+
+/// State carried by the wait() Python callable returned from
+/// commitCompatibilityMutationAsync. The future carries only C++ data. wait()
+/// converts it to a dict on the waiting thread, under the GIL.
+struct AsyncWaitState
+{
+    std::shared_ptr<std::future<AsyncMutationPayload>> future;
+    std::shared_ptr<PythonCompatibilityCallbackError> callbackError;
 };
 
 const char* documentLifecycleStateName(DocumentLifecycleState state)
@@ -835,6 +858,14 @@ PyObject* DocumentPy::saveAsync(PyObject* args)
             command.save->targetPath = std::move(utf8Name);
             command.save->saveAs = true;
             command.save->overwrite = Base::asBoolean(overwriteObject);
+        }
+        else {
+            // M10: Canonical save with no file name fails with a clear diagnostic.
+            const char* fn = document.FileName.getValue();
+            if (!fn || *fn == '\0') {
+                throw Base::ValueError(
+                    "document has no file name; use Save As");
+            }
         }
 
         return makeAcceptedCommandHandle(document, document.executionHandle().trySubmit(std::move(command)));
@@ -1970,17 +2001,257 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
 
     PY_TRY
     {
-        if (!getDocumentPtr()->executionLane()) {
+        Document& document = *getDocumentPtr();
+        auto* lane = document.executionLane();
+
+        // B4: Fail-fast on GUI thread only for the sync variant. The async
+        // variant is the permitted GUI-thread path.
+        if (!lane) {
+            // No lane: run synchronously the same as commitCompatibilityMutation.
             DocumentWouldBlock::throwIfGuiThread(
                 "Document.commitCompatibilityMutation()",
                 "Document.commitCompatibilityMutationAsync()");
         }
-        static_cast<void>(structural);
-        static_cast<void>(recompute);
-        static_cast<void>(postcondition);
-        static_cast<void>(objectName);
-        raiseUnsupportedSubmit(
-            "compatibility mutation callback cannot be encoded in a document command");
+
+        // Build mutation parameters while holding the GIL (Python args on stack).
+        const auto retainCallable = [](PyObject* callable) {
+            Py_INCREF(callable);
+            return std::shared_ptr<PyObject>(callable, [](PyObject* object) {
+                if (!object || !Py_IsInitialized()) {
+                    return;
+                }
+                Base::PyGILStateLocker gil;
+                Py_DECREF(object);
+            });
+        };
+        auto retainedCallback = retainCallable(callback);
+        std::shared_ptr<PyObject> retainedPostcondition;
+        if (postcondition != Py_None) {
+            retainedPostcondition = retainCallable(postcondition);
+        }
+
+        CollaborationCompatibilityMutation mutation;
+        const bool structuralScope = Base::asBoolean(structural);
+        if (objectName != nullptr && *objectName != '\0') {
+            if (structuralScope) {
+                throw Base::ValueError(
+                    "commitCompatibilityMutation cannot combine structural=True with object_name");
+            }
+            const auto* object = document.getObject(objectName);
+            if (!object) {
+                throw Base::ValueError(
+                    "commitCompatibilityMutation object_name does not name a live document object");
+            }
+            mutation.scope = CollaborationCompatibilityScope::ObjectModel;
+            mutation.objectName = objectName;
+            mutation.stableObjectIdentity = document.collaborationObjectIdentity(*object);
+        }
+        else if (structuralScope) {
+            mutation.scope = CollaborationCompatibilityScope::Structural;
+        }
+        else {
+            mutation.scope = CollaborationCompatibilityScope::UnknownModel;
+        }
+
+        const bool doRecompute = Base::asBoolean(recompute);
+
+        // Build an owner-thread callable that runs the sync body.
+        auto callbackError = std::make_shared<PythonCompatibilityCallbackError>();
+        auto nativeCallbackFn =
+            [retainedCallback = std::move(retainedCallback), callbackError] {
+                Base::PyGILStateLocker gil;
+                PyObject* callbackResult = PyObject_CallNoArgs(retainedCallback.get());
+                if (!callbackResult) {
+                    callbackError->capture();
+                    throw PythonCompatibilityCallbackFailure();
+                }
+                Py_DECREF(callbackResult);
+            };
+        std::optional<CollaborationCompatibilityPostcondition> postconditionFn;
+        if (retainedPostcondition) {
+            postconditionFn =
+                [retainedPostcondition = std::move(retainedPostcondition), callbackError] {
+                    Base::PyGILStateLocker gil;
+                    PyObject* result = PyObject_CallNoArgs(retainedPostcondition.get());
+                    if (!result) {
+                        callbackError->capture();
+                        throw PythonCompatibilityCallbackFailure();
+                    }
+                    const int satisfied = PyObject_IsTrue(result);
+                    if (satisfied < 0) {
+                        callbackError->capture();
+                        Py_DECREF(result);
+                        throw PythonCompatibilityCallbackFailure();
+                    }
+                    Py_DECREF(result);
+                    return satisfied != 0;
+                };
+        }
+
+        CollaborationCompatibilityMutationOptions options;
+        options.recomputePolicy = doRecompute
+            ? CollaborationCompatibilityRecomputePolicy::Eager
+            : CollaborationCompatibilityRecomputePolicy::Deferred;
+        if (postconditionFn) {
+            options.postcondition = std::move(*postconditionFn);
+        }
+
+        if (lane && !document.isCollaborationOwnerThread()) {
+            // B4: Post to owner thread without blocking the GUI thread.
+            // The future is stored in a Python capsule; the caller can wait on it.
+            auto mutCapture = mutation;
+            auto optCapture = std::move(options);
+            auto cbErrCapture = callbackError;
+            auto nativeCbCapture = std::move(nativeCallbackFn);
+            // Capture the raw pointer; safe because the owner thread holds a lane
+            // self-pin that keeps the Document alive for the lambda's lifetime.
+            Document* docPtr = &document;
+
+            auto future = std::make_shared<std::future<AsyncMutationPayload>>(
+                lane->postToOwner([docPtr,
+                                   mutCapture = std::move(mutCapture),
+                                   optCapture = std::move(optCapture),
+                                   cbErrCapture,
+                                   nativeCbCapture = std::move(nativeCbCapture)]()
+                                      mutable -> AsyncMutationPayload {
+                    CollaborationCompatibilityMutation mut = mutCapture;
+                    CollaborationCompatibilityMutationOptions opt = std::move(optCapture);
+                    CollaborationCompatibilityCallback cb = std::move(nativeCbCapture);
+                    AsyncMutationPayload payload;
+                    payload.result =
+                        docPtr->collaborationService().commitCompatibilityMutationWithOptions(
+                            std::move(mut), std::move(cb), std::move(opt));
+                    if (cbErrCapture->captured()
+                        && payload.result.status != DocumentCommitStatus::RollbackFailed) {
+                        // Do NOT restore the Python exception here (owner thread).
+                        // The wait() callable restores callbackError on the waiting
+                        // thread so the error is visible in the right thread's state.
+                        payload.callbackFailed = true;
+                    }
+                    return payload;
+                }));
+
+            // Expose a blocking wait(timeout=-1.0) Python callable.
+            // It releases the GIL while blocking on the owner-thread result,
+            // then returns the commit result dict (same fields as the sync path)
+            // or restores and raises the callback/postcondition exception.
+            static PyMethodDef waitMethodDef {
+                "wait",
+                [](PyObject* self, PyObject* args) -> PyObject* {
+                    double timeoutSecs = -1.0;
+                    if (!PyArg_ParseTuple(args, "|d:wait", &timeoutSecs)) {
+                        return nullptr;
+                    }
+                    auto* state = static_cast<AsyncWaitState*>(
+                        PyCapsule_GetPointer(self, "App.AsyncMutationWait"));
+                    if (!state) {
+                        return nullptr;
+                    }
+                    if (!state->future->valid()) {
+                        PyErr_SetString(PyExc_RuntimeError,
+                                        "wait() result already consumed");
+                        return nullptr;
+                    }
+                    // A GUI-thread wait cannot service marshalled owner tasks and
+                    // would deadlock if the owner blocks on the GUI thread (N3).
+                    if (DocumentWouldBlock::isGuiThread()) {
+                        PY_TRY {
+                            DocumentWouldBlock::throwIfGuiThread(
+                                "Document.commitCompatibilityMutationAsync().wait()",
+                                "await the returned wait() callable off the GUI thread");
+                        }
+                        PY_CATCH
+                    }
+                    // Release the GIL while blocking on the owner-thread work.
+                    if (timeoutSecs < 0.0) {
+                        Py_BEGIN_ALLOW_THREADS
+                        state->future->wait();
+                        Py_END_ALLOW_THREADS
+                    }
+                    else {
+                        std::future_status fst {};
+                        Py_BEGIN_ALLOW_THREADS
+                        fst = state->future->wait_for(
+                            std::chrono::duration<double>(timeoutSecs));
+                        Py_END_ALLOW_THREADS
+                        if (fst == std::future_status::timeout) {
+                            PyErr_Format(
+                                PyExc_TimeoutError,
+                                "async GUI-thread mutation did not complete "
+                                "within %g seconds",
+                                timeoutSecs);
+                            return nullptr;
+                        }
+                    }
+                    // GIL re-held. Retrieve the result (consumes the future;
+                    // call only once — enforced by the valid() check above).
+                    PY_TRY
+                    {
+                        const AsyncMutationPayload payload = state->future->get();
+                        if (payload.callbackFailed) {
+                            // Restore the saved Python exception on *this* thread
+                            // (the RPC/waiter thread), not the owner thread.
+                            state->callbackError->restore();
+                            return nullptr;
+                        }
+                        return Py::new_reference_to(commitResultToPython(payload.result));
+                    }
+                    PY_CATCH
+                },
+                METH_VARARGS,
+                "wait(timeout: float = -1.0) -> dict\n\n"
+                "Block until the async mutation completes. Return the commit\n"
+                "result dict (same fields as commitCompatibilityMutation).\n"
+                "Pass a positive float for a timeout in seconds; raises\n"
+                "TimeoutError on expiry. Raises the callback/postcondition\n"
+                "exception on failure. May only be called once."};
+
+            auto* waitStateCapsule = PyCapsule_New(
+                new AsyncWaitState {std::move(future), cbErrCapture},
+                "App.AsyncMutationWait",
+                [](PyObject* cap) {
+                    delete static_cast<AsyncWaitState*>(
+                        PyCapsule_GetPointer(cap, "App.AsyncMutationWait"));
+                });
+            if (!waitStateCapsule) {
+                return nullptr;
+            }
+            auto* waitCallable =
+                PyCFunction_NewEx(&waitMethodDef, waitStateCapsule, nullptr);
+            Py_DECREF(waitStateCapsule);
+            if (!waitCallable) {
+                return nullptr;
+            }
+            Py::Dict handle;
+            handle["state"] = Py::String("Running");
+            handle["wait"] = Py::Object(waitCallable, true);
+            return Py::new_reference_to(handle);
+        }
+
+        // Non-GUI path or no-lane path: run synchronously on owner thread.
+        DocumentCommitResult result;
+        try {
+            CollaborationCompatibilityCallback cb = std::move(nativeCallbackFn);
+            result = document.collaborationService().commitCompatibilityMutationWithOptions(
+                std::move(mutation), std::move(cb), std::move(options));
+        }
+        catch (const PythonCompatibilityCallbackFailure&) {
+            callbackError->restore();
+            return nullptr;
+        }
+        catch (...) {
+            if (callbackError->captured()) {
+                callbackError->restore();
+                return nullptr;
+            }
+            throw;
+        }
+        if (callbackError->captured()
+            && result.status != DocumentCommitStatus::RollbackFailed) {
+            callbackError->restore();
+            return nullptr;
+        }
+        return Py::new_reference_to(commitResultToPython(result));
     }
     PY_CATCH;
 }

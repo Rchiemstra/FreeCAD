@@ -4,7 +4,7 @@
 
 *This plan replaces FreeCAD's GUI-driven recompute path with one stable execution thread per document and an immutable, versioned presentation cache owned by the GUI. The change prevents document work from becoming a dependency of repainting, navigation, or non-model controls.*
 
-***While the document-owner thread is busy or deliberately stalled, the GUI must continue repainting, navigating the last committed presentation, and handling non-model controls. No GUI interaction may synchronously wait for document execution.***
+***While the document-owner thread is busy or deliberately stalled, the GUI must continue repainting, navigating the last committed presentation, and handling non-model controls. A GUI-thread synchronous document call is not admitted onto a busy or stalled lane: it waits at most GuiSyncAdmissionTimeoutMs (default 500 ms) and then raises DocumentWouldBlock. A call that has already been admitted still waits until that work finishes, servicing only marshalled tasks.***
 
 *The contract applies to every production model-to-GUI path. A provider or Python extension that cannot meet it must fail explicitly as unsupported and must never fall back to synchronous GUI execution.*
 
@@ -16,7 +16,11 @@
   - Edits, undo, redo, save, and close return Busy immediately while work is active.
   - An identical recompute request may share the current handle.
 - **DocumentCommandHandle and RecomputeHandle** expose immutable operation state, progress, results, errors, and cooperative cancellation. Status checks cannot advance work or acquire a model lock.
-- Synchronous document APIs fail fast with WouldBlock when called on the GUI thread and point callers to async APIs. Headless and background wrappers may dispatch to the owner thread and wait, provided they release the Python GIL while blocked.
+- Synchronous document APIs on the GUI thread (`recompute`, `undo`/`redo`, `save`/`saveAs`, `touch`, `closeDocument`) stay as a compatibility layer for macros and third-party add-ons.
+  **Admission is bounded**: if the lane is busy with other work, wait at most `GuiSyncAdmissionTimeoutMs` (default **500 ms**, `User parameter:BaseApp/Preferences/Document`), then raise `DocumentWouldBlock` naming the active command kind and its diagnostic. If `isWatchdogStalled()` is true, raise immediately without waiting.
+  **Once admitted**, wait until completion: service only `MainThreadSignalConfig::serviceMarshalledTasks()` while waiting—do not pump the Qt event loop. Do not time out work that has been admitted.
+  FreeCAD's own GUI (commands, task panels, property editor, AutoSaver, and the pinned MCP addon) must not call those sync APIs on the GUI thread; they use `trySubmit`, `DocumentCommandHandle`, or the `*Async` methods.
+  `commitCompatibilityMutation()` stays fail-fast on the GUI thread. Callers use the real `commitCompatibilityMutationAsync()`.
 - **PresentationRevision** identifies the document instance, lifecycle epoch, sequence, and source model revision.
 - **PresentationDelta** contains pointer-free tree descriptors, display property values, status and error data, selection mappings, and immutable render buffers.
 - **DocumentPresentationState** reports committed, pending, preparing, applying, stalled, or error.

@@ -66,6 +66,9 @@ struct AppExport DocumentCommandRecomputePayload
     std::vector<std::string> featureIds;
     std::string coalescingKey;
     int options {0};
+    /** When true, runs a forced recompute regardless of touched state. L5: use this field;
+     *  do not encode force via coalescingKey. */
+    bool force {false};
     bool refreshRevisionFenceAfterEachCommit {false};
     /** When true, foreign-document out-list dependencies use DeclaredSnapshot. */
     bool declaresCrossDocumentSnapshots {false};

@@ -19,6 +19,7 @@
 #include <Base/Exception.h>
 #include <Base/PyObjectBase.h>
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QMessageBox>
 #include <QTimer>
@@ -385,6 +386,30 @@ void scheduleUndoRedoCommandCompletion(
         });
 }
 
+namespace
+{
+
+void resumePendingClose(Gui::Document* guiDocument,
+                        Gui::Document::PendingLaneCloseKind kind,
+                        bool discardUnsaved)
+{
+    if (!guiDocument || kind == Gui::Document::PendingLaneCloseKind::None) {
+        return;
+    }
+    if (kind == Gui::Document::PendingLaneCloseKind::Document) {
+        guiDocument->reissueDocumentClose();
+        return;
+    }
+    if (discardUnsaved) {
+        guiDocument->markSkipSaveOnClose();
+    }
+    if (auto* window = getMainWindow()) {
+        window->close();
+    }
+}
+
+}  // namespace
+
 void scheduleSaveCommandCompletion(
     const char* appDocumentName,
     App::DocumentRevisionIdentityBinding documentIdentity,
@@ -396,14 +421,20 @@ void scheduleSaveCommandCompletion(
         50,
         [documentName, documentIdentity, commandId, commandHandle = std::move(commandHandle)]() mutable {
             const auto snapshot = commandHandle->status();
-            if (!snapshot.terminal()) {
+            // Stalled is not terminal, but leaving the pending flag set keeps
+            // closeAllDocuments stuck forever (N2). Treat it as a failed close.
+            if (!snapshot.terminal()
+                && snapshot.state != App::DocumentCommandState::Stalled) {
                 scheduleSaveCommandCompletion(
                     documentName.c_str(), documentIdentity, commandId);
                 return;
             }
             auto* guiDocument = findGuiDocumentByName(documentName.c_str());
+            const auto pendingKind = guiDocument ? guiDocument->consumePendingLaneClose()
+                                                 : Gui::Document::PendingLaneCloseKind::None;
             if (snapshot.state == App::DocumentCommandState::Failed
-                || snapshot.state == App::DocumentCommandState::Cancelled) {
+                || snapshot.state == App::DocumentCommandState::Cancelled
+                || snapshot.state == App::DocumentCommandState::Stalled) {
                 FC_ERR("Document Save "
                        << App::documentCommandStateName(snapshot.state) << ": "
                        << (snapshot.diagnostic.empty() ? "no diagnostic was provided"
@@ -416,10 +447,42 @@ void scheduleSaveCommandCompletion(
                             .arg(QString::fromStdString(documentName)),
                         5000);
                 }
+                // Pending close was already cleared. Offer discard of this document
+                // only, or of the application close, matching what was requested.
+                if (pendingKind != Gui::Document::PendingLaneCloseKind::None) {
+                    const QString docName =
+                        QString::fromStdString(documentName);
+                    const QString text = QCoreApplication::translate(
+                        "Gui::DocumentExecutionIngress",
+                        "Failed to save document '%1'. Close without saving?")
+                        .arg(docName);
+                    QMessageBox box(
+                        QMessageBox::Warning,
+                        QCoreApplication::translate(
+                            "Gui::DocumentExecutionIngress",
+                            "Save failed"),
+                        text,
+                        QMessageBox::Discard | QMessageBox::Cancel,
+                        getMainWindow());
+                    box.setDefaultButton(QMessageBox::Cancel);
+                    box.setEscapeButton(QMessageBox::Cancel);
+                    if (auto* discard = box.button(QMessageBox::Discard)) {
+                        discard->setText(QCoreApplication::translate(
+                            "Gui::DocumentExecutionIngress",
+                            "Close Without Saving"));
+                    }
+                    if (box.exec() == QMessageBox::Discard) {
+                        resumePendingClose(guiDocument, pendingKind, /*discardUnsaved=*/true);
+                    }
+                }
                 return;
             }
             if (guiDocument) {
                 guiDocument->finishExecutionLaneSave(snapshot.state);
+                if (pendingKind != Gui::Document::PendingLaneCloseKind::None) {
+                    resumePendingClose(guiDocument, pendingKind, /*discardUnsaved=*/false);
+                    return;
+                }
             }
             if (auto* window = getMainWindow()) {
                 window->showMessage(
@@ -454,36 +517,60 @@ void scheduleRecoverySnapshotWrite(
     const App::RecoverySnapshotSaveOptions& options,
     std::function<void(bool written, std::exception_ptr failure)> onFinished)
 {
-    const std::string documentName = document.getName();
+    // L8: for lane documents, capture the lane shared_ptr at schedule time so the
+    // worker thread never calls getDocument(name). This prevents:
+    //   (a) a data race with document close on the name lookup,
+    //   (b) a reused document name clearing another lane's recovery flag.
+    // endRecoverySnapshotOwnerWork() is always called on the capturing lane, not
+    // on whichever lane happens to own the name at that point later.
+    //
+    // For no-lane documents: the legacy path still looks up the document by name
+    // from the worker (same behaviour as before). No lane recovery flag exists
+    // in this case so there is no flag-identity bug.
     const App::RecoverySnapshotSaveOptions optionsCopy = options;
-    App::DocumentExecutionLane* lane = document.executionLane();
+    App::DocumentExecutionLane* laneRaw = document.executionLane();
+    std::shared_ptr<App::DocumentExecutionLane> lane =
+        laneRaw ? laneRaw->shared_from_this() : nullptr;
+    const std::string documentName = lane ? std::string {} : document.getName();
     if (lane) {
         lane->beginRecoverySnapshotOwnerWork();
     }
-    const bool trackRecoveryOwnerWork = lane != nullptr;
-    std::thread([documentName,
+
+    std::thread([lane = std::move(lane),
+                 documentName,
                  optionsCopy,
-                 onFinished = std::move(onFinished),
-                 trackRecoveryOwnerWork]() mutable {
+                 onFinished = std::move(onFinished)]() mutable {
         std::optional<bool> result;
         std::exception_ptr failure;
         try {
-            if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
-                result = writeRecoverySnapshotOnLaneOwnerThread(*doc, optionsCopy);
+            if (lane) {
+                // L8 fast path: dispatch the actual write to the lane owner thread.
+                // dispatchToOwner holds a reference to the document through the
+                // lane; the document is only closed from the GUI thread so it
+                // remains valid for the duration of the dispatch.
+                result = lane->dispatchToOwner(
+                    [&lane, &optionsCopy]() -> bool {
+                        return App::writeRecoverySnapshotToTransientDir(
+                            lane->document(), optionsCopy);
+                    },
+                    /*releaseGilWhileWaiting=*/true,
+                    /*allowWhileCommandActive=*/false);
             }
             else {
-                result = false;
+                // No-lane legacy path: look up document by name (as before).
+                if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
+                    result = App::writeRecoverySnapshotToTransientDir(*doc, optionsCopy);
+                }
+                else {
+                    result = false;
+                }
             }
         }
         catch (...) {
             failure = std::current_exception();
         }
-        if (trackRecoveryOwnerWork) {
-            if (auto* doc = App::GetApplication().getDocument(documentName.c_str())) {
-                if (auto* activeLane = doc->executionLane()) {
-                    activeLane->endRecoverySnapshotOwnerWork();
-                }
-            }
+        if (lane) {
+            lane->endRecoverySnapshotOwnerWork();
         }
         const bool written = result.value_or(false);
         scheduleGuiSingleShot(0, [onFinished = std::move(onFinished), written, failure]() mutable {
@@ -525,13 +612,18 @@ bool writeRecoverySnapshotAwaitingOwnerThread(
         QApplication::processEvents();
         std::this_thread::sleep_for(1ms);
     }
+    if (!finished.load(std::memory_order_acquire)) {
+        // L8: deadline exceeded — detach rather than block forever on join().
+        // The worker will still call endRecoveryOwnerWork() when it eventually
+        // exits (via dispatchToOwner timeout or lane shutdown), so the lane
+        // recovery-work counter stays consistent.
+        worker.detach();
+        throw Base::RuntimeError(
+            "recovery snapshot write did not finish before timeout");
+    }
     worker.join();
     if (failure) {
         std::rethrow_exception(failure);
-    }
-    if (!finished.load(std::memory_order_acquire)) {
-        throw Base::RuntimeError(
-            "recovery snapshot write did not finish before timeout");
     }
     return result.value_or(false);
 }
@@ -647,7 +739,7 @@ void reportDocumentSaveAdmitted(App::Document& document)
     Base::Console().message("%s\n", message.toUtf8().constData());
 }
 
-bool submitDocumentClose(App::Document& document)
+bool submitDocumentClose(App::Document& document, const bool allowApplicationClose)
 {
     if (!App::DocumentWouldBlock::isGuiThread() || !document.executionLane()) {
         return App::GetApplication().closeDocument(&document);
@@ -660,13 +752,21 @@ bool submitDocumentClose(App::Document& document)
     if (!outcome.accepted()) {
         reportDocumentCommandSubmitBlocked(document, outcome);
         // Never terminate the lane thread. When the watchdog has marked the
-        // lane Stalled, offer whole-process exit as the only forced path.
+        // lane Stalled, the user can skip this document. Automatic orphan
+        // cleanup must not pop a modal or start an application close (H3).
         const auto* lane = document.executionLane();
         const bool stalled = lane && lane->isWatchdogStalled();
         const auto action =
             App::DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(stalled);
         if (action
             == App::DocumentExecutionClosePolicy::UnresponsiveLaneAction::RequestProcessExit) {
+            if (!allowApplicationClose) {
+                Base::Console().warning(
+                    "Document '%s' execution is stalled; automatic cleanup will not "
+                    "close the application.\n",
+                    document.getName());
+                return false;
+            }
             if (auto* window = getMainWindow()) {
                 const auto choice = QMessageBox::question(
                     window,
@@ -675,15 +775,22 @@ bool submitDocumentClose(App::Document& document)
                         "Document execution stalled"),
                     QCoreApplication::translate(
                         "Gui::DocumentExecutionIngress",
-                        "%1\n\nKeep waiting for cooperative shutdown, or exit "
-                        "the whole FreeCAD process? The document owner thread "
-                        "is never terminated inside the process.")
+                        "%1\n\n"
+                        "Unsaved work in this stalled document may be lost if you "
+                        "skip it now. Every other open document will still receive "
+                        "a normal save prompt.\n\n"
+                        "Skip this document and close everything else normally?")
                         .arg(QString::fromUtf8(
                             App::DocumentExecutionClosePolicy::unresponsiveLaneGuidance())),
                     QMessageBox::Yes | QMessageBox::No,
                     QMessageBox::No);
                 if (choice == QMessageBox::Yes) {
-                    QCoreApplication::exit(1);
+                    if (auto* guiDocument = Application::Instance
+                            ? Application::Instance->getDocument(&document)
+                            : nullptr) {
+                        guiDocument->markSkipSaveOnClose();
+                    }
+                    window->close();
                 }
             }
         }

@@ -80,7 +80,7 @@ EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({"_TEMPLATE_"})
 EXCLUDED_WORKBENCHES: frozenset[str] = frozenset({"TemplatePyMod", "Test"})
 
 #: Nested GUI directories that are test infrastructure rather than production GUI.
-EXCLUDED_GUI_DIR_NAMES: frozenset[str] = frozenset({"OpenSCADTest"})
+EXCLUDED_GUI_DIR_NAMES: frozenset[str] = frozenset({"AddonManagerTest", "OpenSCADTest"})
 
 #: Individual test-harness files excluded from the scan. These are compiled into
 #: the GUI library (or importable) but are test infrastructure, not a shipped
@@ -281,6 +281,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/CAM/Path/Post/Utils.py",
     "src/Mod/CAM/Path/Post/UtilsExport.py",
     "src/Mod/CAM/Path/Tool/shape/doc.py",
+    "src/Mod/CAM/Path/Tool/shape/util.py",
     "src/Mod/CAM/PathScripts/PathUtils.py",
     "src/Mod/Draft/draftfunctions/mirror.py",
     "src/Mod/Draft/draftfunctions/cut.py",
@@ -291,6 +292,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Draft/draftfunctions/heal.py",
     "src/Mod/Draft/draftfunctions/offset.py",
     "src/Mod/Draft/draftfunctions/upgrade.py",
+    "src/Mod/Draft/draftfunctions/svg.py",
     "src/Mod/Draft/draftmake/make_clone.py",
     "src/Mod/Draft/draftmake/make_array.py",
     "src/Mod/Draft/draftmake/make_bezcurve.py",
@@ -448,6 +450,22 @@ class Category:
     cpp_pattern: str | None
     py_pattern: str | None
     default_disposition: str
+
+
+def posix_byte_sort_key(value: object) -> bytes:
+    """POSIX ``LC_ALL=C`` byte order for paths and path strings.
+
+    ``pathlib.Path`` comparison on Windows uses case-folded parts, so
+    ``sorted(paths)`` diverges from inventories that must stay stable on
+    Linux CI. Callers sort paths and repository-relative strings with this
+    key instead.
+    """
+    as_posix = getattr(value, "as_posix", None)
+    if callable(as_posix):
+        text = as_posix()
+    else:
+        text = str(value).replace("\\", "/")
+    return text.encode("utf-8")
 
 
 # Keep categories in a stable, documented order.
@@ -619,6 +637,38 @@ CATEGORIES: tuple[Category, ...] = (
         ),
         cpp_pattern=r"\bupdateData[^\S\n]*\([^\S\n]*const[^\S\n]+App::Property",
         py_pattern=None,
+        default_disposition="migrate",
+    ),
+    Category(
+        key="sync-document-api",
+        title="First-party GUI sync document API calls",
+        description=(
+            "Direct calls to the synchronous document APIs from first-party GUI code: "
+            "``->recompute(``, ``->save(``, ``->saveAs(``, ``->undo(``, ``->redo(``, "
+            "``->touch(``, ``->closeDocument(``, or ``commitCompatibilityMutation(`` "
+            "without the ``Async`` suffix. "
+            "These APIs block the GUI thread and must move onto the async ingress "
+            "(``requestDocumentRecompute``, ``submitDocumentKindCommand``, "
+            "``submitDocumentClose``, ``submitDocumentSave``, etc.). "
+            "The scanner drops false positives before they become findings: Coin3D, "
+            "property, and feature ``touch()``; ``QPainter::save`` and image saves; "
+            "feature-level ``obj.recompute()``; calls on ``Gui::Document`` (the async "
+            "ingress surface); and the async ingress implementation itself "
+            "(``Gui::Document::save``/``saveAs``/``undo``/``redo``, "
+            "``executeCompatibilityMutation``, and ``submitDocumentClose``). "
+            "``src/App`` is outside this GUI scan. The companion ratchet allowlist is "
+            "keyed by file plus call evidence, not line numbers, and fails when a new "
+            "site appears even inside an already-listed file."
+        ),
+        cpp_pattern=(
+            r"(?:\.|->)"
+            r"(?:recompute|save|saveAs|undo|redo|touch|closeDocument|commitCompatibilityMutation)"
+            r"[^\S\n]*\("
+        ),
+        py_pattern=(
+            r"\.(?:recompute|save|saveAs|undo|redo|touch|closeDocument|commitCompatibilityMutation)"
+            r"[^\S\n]*\("
+        ),
         default_disposition="migrate",
     ),
 )

@@ -619,7 +619,10 @@ def test_recompute_commit_routing_uses_the_derived_grant_only_for_the_eager_stag
     assert "recomputeLegacy(" not in eager_stage
     assert "trustedStructural" not in eager_stage
     assert commit.count("openCollaborationDerivedRecomputeGrant()") == 1
-    assert commit.count("_document.recompute(") == 1
+    # 2 intentional calls: one settling pending recompute before apply (line ~931),
+    # one in the eager post-apply stage (line ~1225). The eager-stage count below
+    # remains 1 (only the post-apply call lives in that block).
+    assert commit.count("_document.recompute(") == 2
     assert "openCollaborationStructuralRecomputeGrant(" not in commit
     assert "recomputeLegacy(" not in commit
     assert "trustedStructural" not in commit

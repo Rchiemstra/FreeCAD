@@ -84,7 +84,7 @@ def is_typable(obj):
     if not element or not ifcfile:
         return False
     type_class = element.is_a() + "Type"
-    schema = ifcfile.wrapped_data.schema_name()
+    schema = ifc_tools.ifc_schema_name(ifcfile)
     schema = ifc_tools.ifcopenshell.ifcopenshell_wrapper.schema_by_name(schema)
     try:
         declaration = schema.declaration_by_name(type_class)

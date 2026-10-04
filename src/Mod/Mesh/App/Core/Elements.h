@@ -24,9 +24,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <Base/BoundBox.h>
@@ -734,6 +736,35 @@ public:
     MeshPointArray& operator=(const MeshPointArray& rclPAry);
     MeshPointArray& operator=(MeshPointArray&& rclPAry);
     void Transform(const Base::Matrix4D&);
+
+    /** Bumps when point coordinates change, including in-place edits. */
+    void noteContentEdit() noexcept
+    {
+        ++_contentGeneration;
+    }
+    [[nodiscard]] std::uint64_t contentGeneration() const noexcept
+    {
+        return _contentGeneration;
+    }
+    MeshPoint& operator[](size_type index)
+    {
+        noteContentEdit();
+        return TMeshPointArray::operator[](index);
+    }
+    const MeshPoint& operator[](size_type index) const
+    {
+        return TMeshPointArray::operator[](index);
+    }
+    void push_back(const MeshPoint& point)
+    {
+        noteContentEdit();
+        TMeshPointArray::push_back(point);
+    }
+    void push_back(MeshPoint&& point)
+    {
+        noteContentEdit();
+        TMeshPointArray::push_back(std::move(point));
+    }
     /**
      * Searches for the first point index  Two points are equal if the distance is less
      * than EPSILON. If no such points is found POINT_INDEX_MAX is returned.
@@ -745,6 +776,9 @@ public:
      * and its index is returned.
      */
     PointIndex GetOrAddIndex(const MeshPoint& rclPoint);
+
+private:
+    std::uint64_t _contentGeneration {0};
 };
 
 using TMeshFacetArray = std::vector<MeshFacet>;
@@ -818,7 +852,10 @@ public:
     explicit MeshPointModifier(MeshPointArray& points)
         : rPoints(points)
     {}
-    ~MeshPointModifier() = default;
+    ~MeshPointModifier()
+    {
+        rPoints.noteContentEdit();
+    }
 
     MeshPointArray& GetPoints() const
     {

@@ -1315,7 +1315,9 @@ void Application::slotDeleteDocument(const App::Document& Doc)
                 // 5. Close if truly orphan
                 if (!isStillReferenced) {
                     if (auto* orphan = App::GetApplication().getDocument(cand.name.c_str())) {
-                        submitDocumentClose(*orphan);
+                        // H3: orphan cleanup must not pop a stalled-lane dialog or
+                        // start an application close.
+                        submitDocumentClose(*orphan, /*allowApplicationClose=*/false);
                     }
                 }
             }

@@ -4,6 +4,7 @@
 
 #include "Application.h"
 #include "Document.h"
+
 #include "DocumentCrossDocumentSnapshot.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <sstream>
 #include <utility>
@@ -45,11 +47,112 @@ DocumentExecutionLaneGuiDispatchPumpScope::~DocumentExecutionLaneGuiDispatchPump
     DocumentExecutionLaneDetail::g_guiDispatchPumpActive = false;
 }
 
+// ---------------------------------------------------------------------------
+// M4/M9: Process-level terminal-snapshot archive (LRU, ~64 per document instance)
+// ---------------------------------------------------------------------------
+namespace
+{
+
+struct TerminalArchive
+{
+    static constexpr std::size_t kLruCap = 64;
+    static constexpr std::size_t kClosedDocumentCap = 32;
+
+    struct Entry
+    {
+        DocumentCommandId commandId {0};
+        DocumentCommandSnapshot snapshot;
+    };
+
+    mutable std::mutex mutex;
+    std::unordered_map<DocumentInstanceId, std::deque<Entry>> perInstance;
+    std::deque<DocumentInstanceId> closedOrder;
+
+    void add(DocumentInstanceId instanceId,
+             DocumentCommandId commandId,
+             const DocumentCommandSnapshot& snapshot)
+    {
+        std::lock_guard lock(mutex);
+        auto& bucket = perInstance[instanceId];
+        // Evict oldest entries when over the cap.
+        while (bucket.size() >= kLruCap) {
+            bucket.pop_front();
+        }
+        bucket.push_back({commandId, snapshot});
+    }
+
+    /** Remember a closed document and drop the oldest closed buckets past the cap. */
+    void noteDocumentClosed(DocumentInstanceId instanceId)
+    {
+        std::lock_guard lock(mutex);
+        closedOrder.erase(
+            std::remove(closedOrder.begin(), closedOrder.end(), instanceId),
+            closedOrder.end());
+        closedOrder.push_back(instanceId);
+        while (closedOrder.size() > kClosedDocumentCap) {
+            const auto oldest = closedOrder.front();
+            closedOrder.pop_front();
+            perInstance.erase(oldest);
+        }
+    }
+
+    std::optional<DocumentCommandSnapshot> find(DocumentInstanceId instanceId,
+                                                 DocumentCommandId commandId) const
+    {
+        std::lock_guard lock(mutex);
+        const auto it = perInstance.find(instanceId);
+        if (it == perInstance.end()) {
+            return std::nullopt;
+        }
+        for (const auto& entry : it->second) {
+            if (entry.commandId == commandId) {
+                return entry.snapshot;
+            }
+        }
+        return std::nullopt;
+    }
+};
+
+TerminalArchive& getTerminalArchive()
+{
+    static TerminalArchive instance;
+    return instance;
+}
+
+}  // namespace
+
+std::optional<DocumentCommandSnapshot>
+findTerminalCommandSnapshot(DocumentInstanceId instanceId,
+                            DocumentCommandId commandId) noexcept
+{
+    try {
+        return getTerminalArchive().find(instanceId, commandId);
+    }
+    catch (...) {
+        return std::nullopt;
+    }
+}
+
 DocumentExecutionClosePolicy::UnresponsiveLaneAction
 DocumentExecutionClosePolicy::recommendedActionWhileLaneBusy(const bool stalled) noexcept
 {
     return stalled ? UnresponsiveLaneAction::RequestProcessExit
                    : UnresponsiveLaneAction::KeepWaiting;
+}
+
+std::chrono::milliseconds DocumentExecutionLane::guiSyncAdmissionTimeout() const noexcept
+{
+    constexpr long kDefaultMs = 500;
+    try {
+        const long ms = static_cast<long>(
+            GetApplication()
+                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+                ->GetInt("GuiSyncAdmissionTimeoutMs", kDefaultMs));
+        return std::chrono::milliseconds(ms < 0 ? 0 : ms);
+    }
+    catch (...) {
+        return std::chrono::milliseconds(kDefaultMs);
+    }
 }
 
 namespace
@@ -185,9 +288,14 @@ void DocumentExecutionLane::startOwnerThread()
 
 DocumentExecutionLane::~DocumentExecutionLane()
 {
+    {
+        std::lock_guard lock(_mutex);
+        _ownerDocumentAlive = false;
+    }
     requestShutdown("document execution lane destroyed");
     joinThread();
     unregisterLane(_identity.documentInstanceId);
+    getTerminalArchive().noteDocumentClosed(_identity.documentInstanceId);
     DocumentExecutionTelemetry::instance().removeDocument(_identity.documentInstanceId);
 }
 
@@ -256,18 +364,33 @@ void DocumentExecutionLane::endRecoverySnapshotOwnerWork() noexcept
 
 bool DocumentExecutionLane::permitsApplicationClose() const noexcept
 {
-    {
-        std::lock_guard lock(_mutex);
-        if (_active) {
-            if (!isOwnerThread()) {
-                return false;
-            }
-            return _active->command.kind == DocumentCommandKind::Close;
+    std::lock_guard lock(_mutex);
+    if (_active) {
+        if (_active->command.kind == DocumentCommandKind::Close
+            && (isOwnerThread() || std::this_thread::get_id() == _marshalledCloseThread)) {
+            // Headless close runs inline on the owner thread. GUI close is
+            // marshalled by the active Close command; admit only that caller.
+            return true;
         }
+        return false;
     }
     // Application::closeDocument publishes Closing and drains outstanding
     // collaboration admissions; do not reject here while they are still held.
     return true;
+}
+
+void DocumentExecutionLane::beginMarshalledCloseAdmission() noexcept
+{
+    std::lock_guard lock(_mutex);
+    _marshalledCloseThread = std::this_thread::get_id();
+}
+
+void DocumentExecutionLane::endMarshalledCloseAdmission() noexcept
+{
+    std::lock_guard lock(_mutex);
+    if (_marshalledCloseThread == std::this_thread::get_id()) {
+        _marshalledCloseThread = {};
+    }
 }
 
 bool DocumentExecutionLane::shutdownRequested() const noexcept
@@ -393,6 +516,8 @@ DocumentCommandSubmitOutcome DocumentExecutionLane::trySubmit(DocumentCommand co
         _active->snapshot.recompute->state = DocumentCommandRecomputeState::Running;
         _active->snapshot.recompute->diagnostic =
             "admitted; awaiting owner-thread coordinator submit";
+        // M3: set recomputeId under the mutex so recomputeStatus can find it immediately.
+        _active->recomputeId = static_cast<DocumentRecomputeId>(admissionId);
     }
     publishActiveSnapshotLocked(_active->snapshot);
     if (_telemetry) {
@@ -440,7 +565,14 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
 {
     {
         std::lock_guard lock(_mutex);
+        // Check by recomputeId (set at trySubmit under mutex, updated after submission).
         if (_active && _active->recomputeId == id && _active->snapshot.recompute) {
+            return recomputeSnapshotFromObservation(*_active->snapshot.recompute);
+        }
+        // H5: also match by the admission id stored in the snapshot (covers the window
+        // between trySubmit and coordinator submission; with M3 they are always equal).
+        if (_active && _active->snapshot.recompute
+            && static_cast<DocumentRecomputeId>(_active->snapshot.recompute->id) == id) {
             return recomputeSnapshotFromObservation(*_active->snapshot.recompute);
         }
         for (const auto& [commandId, snapshot] : _terminalSnapshots) {
@@ -455,7 +587,7 @@ std::optional<DocumentRecomputeSnapshot> DocumentExecutionLane::recomputeStatus(
 
 bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reason)
 {
-    static_cast<void>(reason);
+    std::optional<DocumentRecomputeId> recomputeId;
     {
         std::lock_guard lock(_mutex);
         if (!_active || _active->id != id) {
@@ -463,7 +595,18 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
         }
         _active->cancelRequested.store(true, std::memory_order_release);
         _active->snapshot.state = DocumentCommandState::Cancelling;
+        if (!reason.empty()) {
+            _active->snapshot.diagnostic = reason;
+        }
+        recomputeId = _active->recomputeId;
         publishActiveSnapshotLocked(_active->snapshot);
+    }
+    // L6: forward the reason. cancel() must not take the coordinator operation
+    // lock off the owner thread (N7); the coordinator records the flag under
+    // its state lock and the owner applies prepared-edit cancellation.
+    if (recomputeId) {
+        static_cast<void>(_document.recomputeCoordinator().cancel(
+            *recomputeId, reason.empty() ? "command cancelled" : reason));
     }
     _workAvailable.notify_one();
     return true;
@@ -544,14 +687,24 @@ void DocumentExecutionLane::threadMain()
             break;
         }
     }
+    // M5: drain any remaining queued dispatches so waiting threads are not
+    // stranded with broken_promise or forever-blocked future::get().
+    drainDispatchQueue();
 }
 
 void DocumentExecutionLane::drainDispatchQueue()
 {
     std::vector<std::function<void()>> queue;
+    bool runTasks = false;
     {
         std::lock_guard lock(_mutex);
         queue.swap(_dispatchQueue);
+        runTasks = _ownerDocumentAlive;
+    }
+    if (!runTasks) {
+        // The document is already gone. Drop the tasks so their promises break
+        // instead of running against a deleted Document (M5 / N3).
+        return;
     }
     for (auto& task : queue) {
         task();
@@ -574,27 +727,66 @@ void DocumentExecutionLane::executeActiveCommand()
 
         if (_active->command.kind == DocumentCommandKind::Close) {
             const std::string documentName = _document.getName();
+            // Run anything already queued while the document is still alive.
+            // postToOwner rejects new work for the rest of this Close.
+            drainDispatchQueue();
             DocumentCommandState finalState = DocumentCommandState::Failed;
             std::string finalDiagnostic = "close failed";
-            try {
-                const bool closed = GetApplication().closeDocument(documentName.c_str());
-                finalState = closed ? DocumentCommandState::Completed
-                                    : DocumentCommandState::Failed;
-                finalDiagnostic = closed ? "close completed" : "close failed";
+            // H2: Marshal Application::closeDocument to the GUI thread via
+            // MainThreadSignalConfig::invoke so DocMap/_pActiveDoc stay on the GUI thread.
+            // N1: admit that marshalled call, and shut the lane down only if it succeeds.
+            bool closedResult = false;
+            bool closeCallDone = false;
+            std::string closeException;
+            MainThreadSignalConfig::invoke(
+                [this, &documentName, &closedResult, &closeCallDone, &closeException]() {
+                    struct Admission
+                    {
+                        DocumentExecutionLane& lane;
+                        explicit Admission(DocumentExecutionLane& lane)
+                            : lane(lane)
+                        {
+                            lane.beginMarshalledCloseAdmission();
+                        }
+                        ~Admission()
+                        {
+                            lane.endMarshalledCloseAdmission();
+                        }
+                    } admission {*this};
+                    try {
+                        closedResult = GetApplication().closeDocument(documentName.c_str());
+                    }
+                    catch (const Base::Exception& ex) {
+                        closeException = ex.what();
+                    }
+                    catch (const std::exception& ex) {
+                        closeException = ex.what();
+                    }
+                    catch (...) {
+                        closeException = "close failed with an unknown exception";
+                    }
+                    closeCallDone = true;
+                },
+                /*blocking=*/true);
+            if (!closeException.empty()) {
+                finalDiagnostic = closeException;
             }
-            catch (const Base::Exception& exception) {
-                finalDiagnostic = commandExceptionDiagnostic(exception);
+            else {
+                finalState = closedResult ? DocumentCommandState::Completed
+                                          : DocumentCommandState::Failed;
+                finalDiagnostic = closedResult ? "close completed" : "close failed";
             }
-            catch (const std::exception& exception) {
-                finalDiagnostic = commandExceptionDiagnostic(exception);
-            }
-            catch (...) {
-                finalDiagnostic = "close failed with an unknown exception";
+            const bool closedOk = closeException.empty() && closedResult;
+            if (closedOk) {
+                std::lock_guard lock(_mutex);
+                _ownerDocumentAlive = false;
             }
             // Finish the admitted Close command before the lane thread exits; do
             // not touch _document after closeDocument() returns.
             completeActiveCommand(finalState, finalDiagnostic);
-            requestShutdown("document closed");
+            if (closedOk) {
+                requestShutdown("document closed");
+            }
             return;
         }
 
@@ -634,15 +826,20 @@ void DocumentExecutionLane::executeActiveRecompute()
             }
         }
 
-        if (!_active->recomputeId) {
+        if (!_active->recomputeSubmitted) {
             const auto& coalescingKey = _active->command.recompute
                 ? _active->command.recompute->coalescingKey
                 : std::string {};
             try {
                 if (coalescingKey.starts_with(laneTestBlockingCoalescingPrefix)) {
-                    _active->recomputeId = submitLaneTestBlockingRecompute(
+                    const auto submittedId = submitLaneTestBlockingRecompute(
                         _document,
                         coalescingKey.substr(laneTestBlockingCoalescingPrefix.size()));
+                    std::lock_guard lock(_mutex);
+                    if (_active) {
+                        _active->recomputeId = submittedId;
+                        _active->recomputeSubmitted = true;
+                    }
                 }
                 else {
                     std::vector<DocumentObject*> objects;
@@ -715,15 +912,17 @@ void DocumentExecutionLane::executeActiveRecompute()
                             }
                             if (reservation.result
                                 == DocumentCrossDocumentReservationResult::Reserved) {
-                                _active->crossDocumentReservations =
-                                    reservation.reservedInOrder;
+                                std::lock_guard lock(_mutex);
+                                if (_active) {
+                                    _active->crossDocumentReservations =
+                                        reservation.reservedInOrder;
+                                }
                             }
                         }
                     }
 
                     const bool force = _active->command.recompute
-                        && _active->command.recompute->coalescingKey.find("force;")
-                            != std::string::npos;
+                        && _active->command.recompute->force;
                     const int options = _active->command.recompute
                         ? _active->command.recompute->options
                         : 0;
@@ -734,7 +933,12 @@ void DocumentExecutionLane::executeActiveRecompute()
                     }
                     auto handle = _document.recomputeAsync(
                         objects, force, options, RecomputeVenue::OwnerThread, admissionId);
-                    _active->recomputeId = handle->id();
+                    const auto submittedId = handle->id();
+                    std::lock_guard lock(_mutex);
+                    if (_active) {
+                        _active->recomputeId = submittedId;
+                        _active->recomputeSubmitted = true;
+                    }
                 }
                 touchWatchdogProgress(*_active);
             }
@@ -774,7 +978,7 @@ void DocumentExecutionLane::executeActiveRecompute()
             return;
         }
 
-        if (!_active || !_active->recomputeId) {
+        if (!_active || !_active->recomputeId || !_active->recomputeSubmitted) {
             return;
         }
 
@@ -859,6 +1063,14 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                                        command.command.save->expectedDestinationSha256)
                     .succeeded();
             }
+            // M10: Canonical save with no file name fails with a clear diagnostic.
+            if (!command.command.save || !command.command.save->saveAs) {
+                const char* fn = _document.FileName.getValue();
+                if (!fn || *fn == '\0') {
+                    throw Base::ValueError(
+                        "document has no file name; use Save As");
+                }
+            }
             return _document.save();
         case DocumentCommandKind::Close:
             return false;
@@ -866,24 +1078,56 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
             if (!command.command.edit) {
                 return false;
             }
+
+            // M2: Resolve stable object identities once before opening a transaction.
+            std::unordered_map<std::string, DocumentObject*> resolvedObjects;
+            for (const auto& propertyValue : command.command.edit->propertyValues) {
+                if (!propertyValue.stableObjectIdentity.empty()
+                    && resolvedObjects.count(propertyValue.stableObjectIdentity) == 0) {
+                    DocumentObject* object = nullptr;
+                    for (auto* candidate : _document.getObjects()) {
+                        // Do not swallow lookup exceptions (M2).
+                        if (_document.collaborationObjectIdentity(*candidate)
+                            == propertyValue.stableObjectIdentity) {
+                            object = candidate;
+                            break;
+                        }
+                    }
+                    resolvedObjects[propertyValue.stableObjectIdentity] = object;
+                }
+            }
+
+            // Open a real undo transaction (not only a booking) so property-editor
+            // edits show up in UndoNames. Name it "Edit"; operationId is an internal
+            // token and must not be the Undo menu label (M2).
+            const int transactionId = _document._openTransaction("Edit");
+            if (transactionId == 0) {
+                return false;
+            }
+            bool transactionCommitted = false;
+            struct TxGuard
+            {
+                Document& doc;
+                bool& committed;
+                ~TxGuard()
+                {
+                    if (!committed) {
+                        try {
+                            doc._abortTransaction();
+                        }
+                        catch (...) {
+                        }
+                    }
+                }
+            } txGuard {_document, transactionCommitted};
+
             for (const auto& propertyValue : command.command.edit->propertyValues) {
                 App::Property* property = nullptr;
                 if (propertyValue.stableObjectIdentity.empty()) {
                     property = _document.getPropertyByName(propertyValue.propertyName.c_str());
                 }
                 else {
-                    DocumentObject* object = nullptr;
-                    for (auto* candidate : _document.getObjects()) {
-                        try {
-                            if (_document.collaborationObjectIdentity(*candidate)
-                                == propertyValue.stableObjectIdentity) {
-                                object = candidate;
-                                break;
-                            }
-                        }
-                        catch (...) {
-                        }
-                    }
+                    auto* object = resolvedObjects[propertyValue.stableObjectIdentity];
                     if (!object) {
                         return false;
                     }
@@ -901,6 +1145,10 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                 copied->restoreFromStream(stream);
                 property->Paste(*copied);
             }
+            if (!_document._commitTransaction(false, true)) {
+                return false;
+            }
+            transactionCommitted = true;
             return true;
         }
         default:
@@ -910,7 +1158,7 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
 
 void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
 {
-    if (!command.recomputeId) {
+    if (!command.recomputeSubmitted || !command.recomputeId) {
         return;
     }
 
@@ -965,27 +1213,38 @@ void DocumentExecutionLane::pumpActiveRecompute(ActiveCommand& command)
 void DocumentExecutionLane::completeActiveCommand(DocumentCommandState state,
                                                     std::string diagnostic)
 {
-    std::lock_guard lock(_mutex);
-    if (!_active) {
-        return;
-    }
+    DocumentCommandSnapshot completedSnapshot;
+    DocumentCommandId completedCommandId = 0;
+    DocumentInstanceId instanceId = _identity.documentInstanceId;
+    {
+        std::lock_guard lock(_mutex);
+        if (!_active) {
+            return;
+        }
 
-    if (!_active->crossDocumentReservations.empty()) {
-        releaseCrossDocumentReservations(_active->crossDocumentReservations);
-        _active->crossDocumentReservations.clear();
-    }
+        if (!_active->crossDocumentReservations.empty()) {
+            releaseCrossDocumentReservations(_active->crossDocumentReservations);
+            _active->crossDocumentReservations.clear();
+        }
 
-    _active->snapshot.state = state;
-    if (!diagnostic.empty()) {
-        _active->snapshot.diagnostic = std::move(diagnostic);
+        _active->snapshot.state = state;
+        if (!diagnostic.empty()) {
+            _active->snapshot.diagnostic = std::move(diagnostic);
+        }
+        if (_telemetry) {
+            _telemetry->endWatchdog();
+            _telemetry->clearProgress();
+        }
+        completedSnapshot = _active->snapshot;
+        completedCommandId = _active->id;
+        rememberTerminalSnapshotLocked(_active->id, _active->snapshot);
+        _active.reset();
+        _workAvailable.notify_all();
     }
-    if (_telemetry) {
-        _telemetry->endWatchdog();
-        _telemetry->clearProgress();
-    }
-    _terminalSnapshots.emplace(_active->id, _active->snapshot);
-    _active.reset();
-    _workAvailable.notify_all();
+    // M4/M9: publish to the process-level terminal archive so
+    // DocumentCommandHandle::status() can report the real outcome even after
+    // the lane is torn down (e.g. successful Close stays Completed/Close/"close completed").
+    getTerminalArchive().add(instanceId, completedCommandId, completedSnapshot);
 }
 
 void DocumentExecutionLane::publishActiveSnapshotLocked(
@@ -1005,12 +1264,35 @@ void DocumentExecutionLane::publishActiveSnapshot(const DocumentCommandSnapshot&
 
 void DocumentExecutionLane::touchWatchdogProgress(ActiveCommand& command)
 {
-    command.lastProgressEpochMilliseconds = static_cast<std::uint64_t>(
+    const auto epoch = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+    {
+        std::lock_guard lock(_mutex);
+        command.lastProgressEpochMilliseconds = epoch;
+    }
     if (_telemetry) {
         _telemetry->touchWatchdogProgress();
+    }
+}
+
+void DocumentExecutionLane::rememberTerminalSnapshotLocked(
+    DocumentCommandId id,
+    const DocumentCommandSnapshot& snapshot)
+{
+    constexpr std::size_t kCap = 64;
+    const auto existing = _terminalSnapshots.find(id);
+    if (existing != _terminalSnapshots.end()) {
+        existing->second = snapshot;
+        return;
+    }
+    _terminalOrder.push_back(id);
+    _terminalSnapshots.emplace(id, snapshot);
+    while (_terminalOrder.size() > kCap) {
+        const auto oldest = _terminalOrder.front();
+        _terminalOrder.pop_front();
+        _terminalSnapshots.erase(oldest);
     }
 }
 

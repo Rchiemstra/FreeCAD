@@ -26,6 +26,7 @@
 #include <xercesc/util/XMLException.hpp>
 #include <xercesc/util/XMLString.hpp>
 #include <sstream>
+#include <string_view>
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
@@ -543,6 +544,21 @@ void Command::_invoke(int id, bool disablelog)
     }
     catch (Base::AbortException&) {
     }
+    catch (const Base::RuntimeError& e) {
+        // M1: absorb transaction-control failures only while notifications are
+        // replaying. A prepared-commit error is not replay and must stay visible.
+        const auto* active = App::GetApplication().getActiveDocument();
+        if (active && active->collaborationNotificationsReplaying()) {
+            FC_WARN("Command '" << sName
+                                << "' attempted transaction control during notification replay: "
+                                << e.what());
+        }
+        else {
+            e.reportException();
+            QMessageBox::critical(
+                Gui::getMainWindow(), QObject::tr("Exception"), QLatin1String(e.what()));
+        }
+    }
     catch (Base::Exception& e) {
         e.reportException();
         // Pop-up a dialog for FreeCAD-specific exceptions
@@ -723,6 +739,10 @@ int Command::openCommand(std::string name)
 int Command::openActiveDocumentCommand(App::TransactionName name, int tid)
 {
     if (Gui::Document* guidoc = getGuiApplication()->activeDocument()) {
+        if (guidoc->getDocument()->collaborationNotificationsReplaying()) {
+            FC_WARN("Ignoring openCommand while collaboration notifications replay");
+            return 0;
+        }
         return guidoc->getDocument()->setActiveTransaction(name, tid);
     }
     return 0;
@@ -746,9 +766,15 @@ void Command::commitCommand()
 }
 void Command::commitCommand(int tid)
 {
-    if (tid != App::NullTransaction) {
-        App::GetApplication().commitTransaction(tid);
+    if (tid == App::NullTransaction) {
+        return;
     }
+    if (auto* doc = App::GetApplication().getActiveDocument();
+        doc && doc->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring commitCommand while collaboration notifications replay");
+        return;
+    }
+    App::GetApplication().commitTransaction(tid);
 }
 void Command::abortCommand()
 {
@@ -757,9 +783,15 @@ void Command::abortCommand()
 }
 void Command::abortCommand(int tid)
 {
-    if (tid != App::NullTransaction) {
-        App::GetApplication().abortTransaction(tid);
+    if (tid == App::NullTransaction) {
+        return;
     }
+    if (auto* doc = App::GetApplication().getActiveDocument();
+        doc && doc->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring abortCommand while collaboration notifications replay");
+        return;
+    }
+    App::GetApplication().abortTransaction(tid);
 }
 int Command::transactionID() const
 {

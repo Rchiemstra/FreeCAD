@@ -94,12 +94,27 @@ void MeshPointArray::ResetInvalid() const
     }
 }
 
-MeshPointArray& MeshPointArray::operator=(const MeshPointArray& rclPAry) = default;
+MeshPointArray& MeshPointArray::operator=(const MeshPointArray& rclPAry)
+{
+    if (this != &rclPAry) {
+        TMeshPointArray::operator=(rclPAry);
+        _contentGeneration = rclPAry._contentGeneration + 1;
+    }
+    return *this;
+}
 
-MeshPointArray& MeshPointArray::operator=(MeshPointArray&& rclPAry) = default;
+MeshPointArray& MeshPointArray::operator=(MeshPointArray&& rclPAry)
+{
+    if (this != &rclPAry) {
+        TMeshPointArray::operator=(std::move(rclPAry));
+        _contentGeneration = rclPAry._contentGeneration + 1;
+    }
+    return *this;
+}
 
 void MeshPointArray::Transform(const Base::Matrix4D& mat)
 {
+    noteContentEdit();
     for (auto& pP : *this) {
         mat.multVec(pP, pP);
     }

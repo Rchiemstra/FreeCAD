@@ -92,7 +92,10 @@ def _collect_rows() -> list[tuple[str, str, int]]:
         text = path.read_text(encoding="utf-8", errors="surrogateescape")
         rows.extend(_collect_cpp_providers(path, text))
         rows.extend(_collect_python_providers(path, text))
-    return sorted({(file, symbol, line) for file, symbol, line in rows})
+    return sorted(
+        {(file, symbol, line) for file, symbol, line in rows},
+        key=lambda row: (row[0].encode("utf-8"), row[1].encode("utf-8"), row[2]),
+    )
 
 
 def _render(rows: list[tuple[str, str, int]]) -> str:

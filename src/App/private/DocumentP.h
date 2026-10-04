@@ -247,7 +247,7 @@ struct DocumentP
     bool collaborationDeferredRecomputeBlocked {false};
     bool collaborationRecomputeStableNotificationDeferred {false};
     bool collaborationImportDeferralActive {false};
-    bool collaborationReplayingNotifications {false};
+    std::atomic<bool> collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
     bool collaborationAtomicPresentationAuditActive {false};
     std::atomic_bool collaborationAtomicPresentationAuditViolated {false};

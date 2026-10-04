@@ -2328,7 +2328,7 @@ def _production_init_gui_files(repository_root: Path) -> list[Path]:
         return []
     return [
         path
-        for path in sorted(mod_root.glob("*/InitGui.py"))
+        for path in sorted(mod_root.glob("*/InitGui.py"), key=rules.posix_byte_sort_key)
         if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
     ]
 
@@ -2341,7 +2341,9 @@ def iter_source_files(repository_root: Path) -> list[Path]:
         files.extend(gui_root.rglob("*"))
 
     mod_root = repository_root / "src" / "Mod"
-    mod_gui_roots = sorted(mod_root.rglob("Gui")) if mod_root.is_dir() else []
+    mod_gui_roots = (
+        sorted(mod_root.rglob("Gui"), key=rules.posix_byte_sort_key) if mod_root.is_dir() else []
+    )
     for gui_dir in mod_gui_roots:
         relative_parts = gui_dir.relative_to(mod_root).parts
         if relative_parts[0] in rules.EXCLUDED_WORKBENCHES:
@@ -2374,7 +2376,9 @@ def iter_source_files(repository_root: Path) -> list[Path]:
             continue
         relative = path.relative_to(repository_root).as_posix()
         unique[relative] = path
-    return [unique[relative] for relative in sorted(unique)]
+    return [
+        unique[relative] for relative in sorted(unique, key=rules.posix_byte_sort_key)
+    ]
 
 
 def evidence_for(source: str, source_lines: list[str], start: int, end: int) -> str:
@@ -2383,6 +2387,206 @@ def evidence_for(source: str, source_lines: list[str], start: int, end: int) -> 
     end_line = source.count("\n", 0, max(start, end - 1))
     parts = [source_lines[line].strip() for line in range(start_line, end_line + 1)]
     return " ".join(parts)
+
+
+_SYNC_METHOD_RE = re.compile(
+    r"(saveAs|recompute|save|undo|redo|touch|closeDocument|commitCompatibilityMutation)"
+)
+_INGRESS_IMPLEMENTATION_FUNCTIONS = frozenset(
+    {
+        "Document::save",
+        "Document::saveAs",
+        "Document::saveAll",
+        "Document::undo",
+        "Document::redo",
+        "Document::executeCompatibilityMutation",
+        "submitDocumentClose",
+    }
+)
+_INGRESS_IMPLEMENTATION_FILES = frozenset(
+    {
+        "src/Gui/Document.cpp",
+        "src/Gui/DocumentExecutionIngress.cpp",
+    }
+)
+_GUI_DOCUMENT_RECEIVER = re.compile(
+    r"(?:"
+    r"getGuiDocument\([^)]*\)$|"
+    r"getDocumentPtr\(\)$|"
+    r"(?:Gui|FreeCADGui|gui)\.ActiveDocument$|"
+    r"(?:Gui|FreeCADGui)\.getDocument\([^)]*\)$|"
+    r"Application::Instance->getDocument\([^)]*\)$|"
+    r"(?:ViewObject|viewObject)\.Document$|"
+    r"(?:^|->|\.)(?:gdoc|guiDoc|guiDocument)$"
+    r")"
+)
+_APP_DOCUMENT_RECEIVER = re.compile(
+    r"(?:"
+    r"(?:FreeCAD|App)\.ActiveDocument$|"
+    r"(?:^|->|\.)ActiveDocument$|"
+    r"(?:FreeCAD|App)\.getActiveDocument\(\)$|"
+    r"(?:FreeCAD|App)\.getDocument(?:OrActive|ByPath)?\([^)]*\)$|"
+    r"GetApplication\(\)\.getActiveDocument\(\)$|"
+    r"GetApplication\(\)\.getDocument(?:OrActive|ByPath)?\([^)]*\)$|"
+    r"(?:^|->|\.)getActiveDocument\(\)$|"
+    r"(?:^|->|\.)getDocument(?:OrActive|ByPath)?\([^)]*\)$|"
+    r"(?:^|->|\.)Document$|"
+    r"(?:^|[^A-Za-z0-9_])(?:doc|document|pDoc|appDoc|appDocument|activeDoc|actDoc|theDoc)$"
+    r")"
+)
+_CLOSE_DOCUMENT_RECEIVER = re.compile(
+    r"(?:^|(?:^|->|\.))(?:FreeCAD|App)$|GetApplication\(\)$|(?:FreeCAD|App)\.getApplication\(\)$"
+)
+_IMAGE_OR_PAINTER_RECEIVER = re.compile(
+    r"(?i)(?:^|->|\.)(?:painter|pixmap|qpixmap|qimage|image|img|qimg|px|icon|_pixmap|im)$"
+)
+_QTEXT_DOCUMENT_RECEIVER = re.compile(r"(?:^|->|\.)document\(\)$")
+_CONTROL_FUNCTION_NAMES = frozenset({"if", "for", "while", "switch", "catch", "else"})
+
+
+def _sync_call_receiver(text: str, method_start: int) -> str:
+    """Return the whitespace-free receiver expression before a ``.`` or ``->`` call."""
+    end = method_start
+    index = end - 1
+    while index >= 0 and text[index] in " \t\r":
+        index -= 1
+
+    def _consume_call(cursor: int) -> int:
+        if cursor < 0 or text[cursor] != ")":
+            return cursor
+        depth = 0
+        while cursor >= 0:
+            if text[cursor] == ")":
+                depth += 1
+            elif text[cursor] == "(":
+                depth -= 1
+                if depth == 0:
+                    return cursor - 1
+            cursor -= 1
+        return cursor
+
+    index = _consume_call(index)
+    while index >= 0 and text[index] in " \t\r":
+        index -= 1
+    while index >= 0:
+        character = text[index]
+        if character.isalnum() or character in "_:.":
+            index -= 1
+            continue
+        if character == ">" and index > 0 and text[index - 1] == "-":
+            index -= 2
+            continue
+        if character == ")":
+            index = _consume_call(index)
+            continue
+        break
+    return re.sub(r"\s+", "", text[index + 1 : end])
+
+
+def _enclosing_function_name(masked: str, offset: int) -> str | None:
+    """Return the function whose body contains ``offset``.
+
+    Lambda, ``if``, and other non-function braces are transparent so a sync
+    call inside ``Document::save``'s helper lambda is still attributed to
+    ``Document::save``.
+    """
+    depth = 0
+    index = offset - 1
+    while index >= 0:
+        character = masked[index]
+        if character == "}":
+            depth += 1
+        elif character == "{":
+            if depth == 0:
+                head = masked[max(0, index - 1200) : index]
+                match = re.search(
+                    r"((?:\w+::)*~?\w+)\s*\([^;{}]*\)\s*"
+                    r"(?:const\s*)?(?:override\s*)?(?:noexcept\s*)?\s*$",
+                    head,
+                )
+                if match and match.group(1) not in _CONTROL_FUNCTION_NAMES:
+                    # ``adapter.execute(args, [this](...) {`` is a call, not the
+                    # function that owns the brace. A definition is not preceded
+                    # by ``.`` or ``->``.
+                    before = head[: match.start()].rstrip()
+                    if not before.endswith(".") and not before.endswith("->"):
+                        return match.group(1)
+                index -= 1
+                continue
+            depth -= 1
+        index -= 1
+    return None
+
+
+def _plain_receiver_name(receiver: str) -> str | None:
+    if re.fullmatch(r"[A-Za-z_]\w*", receiver):
+        return receiver
+    return None
+
+
+def _receiver_bound_to_gui_document(masked: str, offset: int, name: str) -> bool:
+    """True when ``name`` was last declared as a GUI document before ``offset``."""
+    prefix = masked[:offset]
+    kind: str | None = None
+    escaped = re.escape(name)
+    for match in re.finditer(rf"\b(Gui|App)::Document\s*(?:\*|&)\s*{escaped}\b", prefix):
+        kind = "gui" if match.group(1) == "Gui" else "app"
+    for _match in re.finditer(
+        rf"\b{escaped}\s*=\s*[^;\n]*Application::Instance\s*->\s*getDocument\s*\(",
+        prefix,
+    ):
+        kind = "gui"
+    for _match in re.finditer(
+        rf"\b{escaped}\s*=\s*[^;\n]*(?:getGuiDocument\s*\(|(?:Gui|FreeCADGui)\s*\.)",
+        prefix,
+    ):
+        kind = "gui"
+    for _match in re.finditer(
+        rf"\b{escaped}\s*=\s*[^;\n]*(?:FreeCAD|App)\s*\.\s*(?:ActiveDocument|getDocument\s*\()",
+        prefix,
+    ):
+        if kind != "gui":
+            kind = "app"
+    return kind == "gui"
+
+
+def _sync_document_api_in_scope(masked: str, match_start: int, relative_path: str) -> bool:
+    """Keep real document sync calls and drop the known false-positive shapes.
+
+    Coin3D/property/feature ``touch()``, ``QPainter::save``, image saves, and
+    feature-level ``obj.recompute()`` are not ``App::Document`` APIs.
+    ``Gui::Document`` save/undo/redo is the async ingress surface. The bodies
+    that implement that ingress are not callers.
+    """
+    method_match = _SYNC_METHOD_RE.search(masked, match_start, match_start + 48)
+    if method_match is None:
+        return False
+    method = method_match.group(1)
+    # commitCompatibilityMutationAsync shares the prefix; the call operator is
+    # not adjacent, so the category regex does not match it. Guard anyway.
+    if masked.startswith(method + "Async", method_match.start()):
+        return False
+    receiver = _sync_call_receiver(masked, match_start)
+    if relative_path in _INGRESS_IMPLEMENTATION_FILES:
+        function = _enclosing_function_name(masked, match_start)
+        if function in _INGRESS_IMPLEMENTATION_FUNCTIONS:
+            return False
+    if _GUI_DOCUMENT_RECEIVER.search(receiver):
+        return False
+    plain_name = _plain_receiver_name(receiver)
+    if plain_name and _receiver_bound_to_gui_document(masked, match_start, plain_name):
+        return False
+    if method == "commitCompatibilityMutation":
+        return True
+    if method == "closeDocument":
+        return _CLOSE_DOCUMENT_RECEIVER.search(receiver) is not None
+    if _IMAGE_OR_PAINTER_RECEIVER.search(receiver) and method in {"save", "saveAs"}:
+        return False
+    if _QTEXT_DOCUMENT_RECEIVER.search(receiver) and method in {"undo", "redo"}:
+        return False
+    if method in {"touch", "recompute", "save", "saveAs", "undo", "redo"}:
+        return _APP_DOCUMENT_RECEIVER.search(receiver) is not None
+    return False
 
 
 def evidence_for_line_map(
@@ -2440,6 +2644,10 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
         if compiled is None:
             continue
         for match in compiled.finditer(masked):
+            if category.key == "sync-document-api" and not _sync_document_api_in_scope(
+                masked, match.start(), relative_path
+            ):
+                continue
             line = source.count("\n", 0, match.start()) + 1
             evidence = evidence_for(source, source_lines, match.start(), match.end())
             findings.append(
@@ -2459,6 +2667,14 @@ def scan_source(source: str, suffix: str, relative_path: str) -> list[Finding]:
             decoded_literals = decoded_command_literals
             decoded_compiled = _COMPILED[(category.key, "py")]
         if decoded_compiled is None:
+            continue
+        # sync-document-api is never a true positive inside a decoded command
+        # payload: the payload is already routed through a command bridge
+        # (doCommand, cmdAppDocument, FCMD_OBJ_CMD, etc.), which is the correct
+        # async migration route.  Applying the sync-document-api pattern to the
+        # decoded literal would produce false positives for every
+        # App.ActiveDocument.recompute() passed through a bridge.
+        if category.key == "sync-document-api":
             continue
         for decoded, line_map in decoded_literals:
             decoded_masked = mask_py_non_code(decoded)
@@ -2492,7 +2708,13 @@ def scan(repository_root: Path) -> list[Finding]:
         relative_path = source_path.relative_to(repository_root).as_posix()
         source = source_path.read_text(encoding="utf-8", errors="surrogateescape")
         findings.extend(scan_source(source, source_path.suffix, relative_path))
-    findings.sort(key=lambda finding: finding.key())
+    findings.sort(
+        key=lambda finding: (
+            rules.posix_byte_sort_key(finding.path),
+            finding.line,
+            rules.posix_byte_sort_key(finding.category),
+        )
+    )
     # Collapse multiple regex matches on the same line for the same category
     # into a single finding: a finding is identified by (path, line, category).
     unique: list[Finding] = []
@@ -2538,7 +2760,7 @@ def scope_entries(repository_root: Path) -> list[str]:
     if mod_root.is_dir():
         entries.extend(
             f"src/Mod/{path.relative_to(mod_root).as_posix()}"
-            for path in sorted(mod_root.rglob("Gui"))
+            for path in sorted(mod_root.rglob("Gui"), key=rules.posix_byte_sort_key)
             if path.relative_to(mod_root).parts[0] not in rules.EXCLUDED_WORKBENCHES
             and not any(
                 part in rules.EXCLUDED_GUI_DIR_NAMES
@@ -2574,6 +2796,76 @@ def build_payload(repository_root: Path) -> dict[str, object]:
     }
 
 
+def _subsystem_sentence(counts: dict[str, int]) -> str:
+    ordered = sorted(
+        counts.items(),
+        key=lambda item: (-item[1], rules.posix_byte_sort_key(item[0])),
+    )
+    parts = [f"`{name}` ({count})" for name, count in ordered]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + ",\nand " + parts[-1]
+
+
+def refresh_report_counts(report_text: str, payload: dict[str, object]) -> str:
+    """Rewrite the machine-checked counts in ``REPORT.md`` from ``payload``."""
+    findings = list(payload["findings"])  # type: ignore[arg-type]
+    categories = [str(key) for key in payload["categories"]]  # type: ignore[union-attr]
+    category_counts = {key: 0 for key in categories}
+    subsystem_counts: dict[str, int] = {}
+    language_counts = {"C++": 0, "Python": 0}
+    for finding in findings:
+        category = str(finding["category"])
+        category_counts[category] = category_counts.get(category, 0) + 1
+        subsystem = str(finding["subsystem"])
+        subsystem_counts[subsystem] = subsystem_counts.get(subsystem, 0) + 1
+        language_counts["Python" if str(finding["path"]).endswith(".py") else "C++"] += 1
+
+    def replace_glance(section: re.Match[str]) -> str:
+        def replace_row(row: re.Match[str]) -> str:
+            key = row.group(1)
+            if key not in category_counts:
+                return row.group(0)
+            return f"| `{key}` | {category_counts[key]} |"
+
+        return re.sub(r"\| `([^`]+)` \| [\d,]+ \|", replace_row, section.group(0))
+
+    updated = re.sub(
+        r"## Inventory at a glance.*?(?=\n## )",
+        replace_glance,
+        report_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    total = len(findings)
+    updated = re.sub(
+        r"\(\d[\d,]*\s+findings across (?:seven|eight|nine) categories",
+        f"({total:,} findings across nine categories",
+        updated,
+        count=1,
+    )
+    updated = re.sub(
+        r"spans \d[\d,]* C\+\+ and \d[\d,]* Python findings",
+        (
+            f"spans {language_counts['C++']:,} C++ and "
+            f"{language_counts['Python']:,} Python findings"
+        ),
+        updated,
+        count=1,
+    )
+    sentence = _subsystem_sentence(subsystem_counts)
+    updated = re.sub(
+        r"Owning subsystems:\n.*?(?=\n\n)",
+        "Owning subsystems:\n" + sentence + ".",
+        updated,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return updated
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Reproducibly scan GUI source for blocking and live-model ingress."
@@ -2598,8 +2890,15 @@ def main(argv: list[str] | None = None) -> int:
 
     text = json.dumps(payload, indent=2, sort_keys=False) + "\n"
     if args.write:
-        target = Path(__file__).resolve().parent / "inventory.json"
+        package_dir = Path(__file__).resolve().parent
+        target = package_dir / "inventory.json"
         target.write_text(text, encoding="utf-8")
+        report_path = package_dir / "REPORT.md"
+        if report_path.is_file():
+            report_path.write_text(
+                refresh_report_counts(report_path.read_text(encoding="utf-8"), payload),
+                encoding="utf-8",
+            )
         print(
             f"wrote {len(curated)} findings ({len(findings)} scanned, "
             f"{len(exclusions)} excluded) to {target}"

@@ -188,7 +188,8 @@ def _production_gui_sources() -> list[Path]:
             if path.suffix.lower() in {".cpp", ".h", ".hpp", ".py"}
             and "_TEMPLATE_" not in path.parts
             and path.relative_to(REPO_ROOT).as_posix() not in EXCLUDED_FILES
-        }
+        },
+        key=lambda path: path.relative_to(REPO_ROOT).as_posix().encode("utf-8"),
     )
 
 
@@ -877,9 +878,12 @@ def _assert_inventoried(
     inventoried = _inventory_keys(category)
     excluded = {(path, line) for path, line, cat in _excluded_keys() if cat == category}
     missing = sorted(
-        (path, line, evidence)
-        for path, line, evidence in discovered
-        if (path, line) not in inventoried and (path, line) not in excluded
+        (
+            (path, line, evidence)
+            for path, line, evidence in discovered
+            if (path, line) not in inventoried and (path, line) not in excluded
+        ),
+        key=lambda item: (item[0].encode("utf-8"), item[1], item[2].encode("utf-8")),
     )
     assert not missing, (
         f"uninventoried {label}:\n"
@@ -923,9 +927,12 @@ def test_live_reference_payload_signals_are_inventoried() -> None:
         if category == "live-reference-payload"
     }
     missing = sorted(
-        (path, line, evidence)
-        for path, line, evidence in _scan_pattern(LIVE_REFERENCE_PAYLOAD)
-        if (path, line) not in inventoried and (path, line) not in excluded
+        (
+            (path, line, evidence)
+            for path, line, evidence in _scan_pattern(LIVE_REFERENCE_PAYLOAD)
+            if (path, line) not in inventoried and (path, line) not in excluded
+        ),
+        key=lambda item: (item[0].encode("utf-8"), item[1], item[2].encode("utf-8")),
     )
     assert not missing, "uninventoried live-reference payload signals:\n" + "\n".join(
         f"{path}:{line}: {evidence}" for path, line, evidence in missing

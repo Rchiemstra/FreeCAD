@@ -23,6 +23,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <future>
 #include <functional>
 #include <memory>
@@ -74,7 +75,7 @@ enum class UnresponsiveLaneAction
  * watchdog has marked the lane Stalled, offer whole-process exit instead of
  * in-process thread termination.
  */
-[[nodiscard]] UnresponsiveLaneAction recommendedActionWhileLaneBusy(
+[[nodiscard]] AppExport UnresponsiveLaneAction recommendedActionWhileLaneBusy(
     bool stalled = false) noexcept;
 
 }  // namespace DocumentExecutionClosePolicy
@@ -85,6 +86,17 @@ AppExport void notifyDocumentExecutionLaneCloseAdmissionReleased(
 
 /** True while the GUI thread pumps Qt inside dispatchToOwner's wait loop. */
 [[nodiscard]] AppExport bool documentExecutionLaneGuiDispatchPumpActive() noexcept;
+
+/**
+ * Look up a terminal snapshot in the process-level archive.
+ *
+ * Returns the snapshot if (instanceId, commandId) was recorded after the lane
+ * completed (M4/M9: closed-document handle lookups stay Completed/Close instead
+ * of synthesising Failed/"lane not active").
+ */
+[[nodiscard]] AppExport std::optional<DocumentCommandSnapshot>
+findTerminalCommandSnapshot(DocumentInstanceId instanceId,
+                            DocumentCommandId commandId) noexcept;
 
 /** RAII marker for GUI dispatch wait-loop pumping (GilTryLock deadlock avoidance). */
 class AppExport DocumentExecutionLaneGuiDispatchPumpScope final
@@ -132,13 +144,58 @@ public:
      */
     void beginRecoverySnapshotOwnerWork() noexcept;
     void endRecoverySnapshotOwnerWork() noexcept;
-    /** True when idle or the owner thread is executing an admitted Close command. */
+    /** True when idle, or the owner thread is executing Close, or this thread
+     *  is the one the active Close command marshalled Application::closeDocument onto. */
     [[nodiscard]] bool permitsApplicationClose() const noexcept;
+    /** Mark this thread as the marshalled Application::closeDocument caller. */
+    void beginMarshalledCloseAdmission() noexcept;
+    void endMarshalledCloseAdmission() noexcept;
     [[nodiscard]] bool shutdownRequested() const noexcept;
     /** Diagnostic-only: true when the watchdog has marked active work Stalled. */
     [[nodiscard]] bool isWatchdogStalled() const noexcept;
 
     [[nodiscard]] DocumentCommandSubmitOutcome trySubmit(DocumentCommand command);
+
+    /**
+     * Post a callable to the owner thread without blocking the caller.
+     *
+     * Returns a future that carries the result (or captured exception). The
+     * owner thread runs the callable as soon as it is free. Throws
+     * DocumentWouldBlock if the lane is shutting down.
+     */
+    template<typename Fn>
+    [[nodiscard]] auto postToOwner(Fn&& fn)
+        -> std::future<std::invoke_result_t<Fn>>
+    {
+        using Result = std::invoke_result_t<Fn>;
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        auto promise = std::make_shared<std::promise<Result>>();
+        auto future = promise->get_future();
+        std::function<void()> task = [promise, sharedFn]() {
+            try {
+                if constexpr (std::is_void_v<Result>) {
+                    (*sharedFn)();
+                    promise->set_value();
+                }
+                else {
+                    promise->set_value((*sharedFn)());
+                }
+            }
+            catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        };
+        {
+            std::lock_guard lock(_mutex);
+            if (ownerDispatchRejectedLocked()) {
+                throw DocumentWouldBlock(
+                    "document execution lane is closing or shutting down");
+            }
+            _dispatchQueue.push_back(std::move(task));
+            _workAvailable.notify_one();
+        }
+        return future;
+    }
 
     [[nodiscard]] DocumentCommandSnapshot commandStatus(DocumentCommandId id) const;
     [[nodiscard]] std::optional<DocumentRecomputeSnapshot> recomputeStatus(
@@ -153,10 +210,13 @@ public:
      *
      * Off the GUI thread this refuses while model work runs unless
      * \p allowWhileCommandActive. On the GUI thread it is the synchronous
-     * compatibility path: it waits for running model work to finish and then
-     * for \p fn, executing meanwhile only the functors the owner marshals to the
-     * GUI thread (MainThreadSignalConfig::serviceMarshalledTasks()), never the
-     * Qt event loop. When \p releaseGilWhileWaiting is true, releases the GIL
+     * compatibility path: it waits at most \c GuiSyncAdmissionTimeoutMs (default
+     * 500 ms, read from User parameter:BaseApp/Preferences/Document) for the lane
+     * to become free; if the lane is stalled or the timeout elapses it raises
+     * DocumentWouldBlock naming the active command kind. Once admitted, waits
+     * until completion by servicing only MainThreadSignalConfig::serviceMarshalledTasks()
+     * (no Qt event loop, no additional timeout).
+     * When \p releaseGilWhileWaiting is true, releases the GIL
      * for the wait if this thread holds it (see PyGILState_Check()); the GUI
      * thread always releases it so owner-thread Python can run.
      */
@@ -186,6 +246,10 @@ public:
         }
         if (!onGui) {
             std::lock_guard lock(_mutex);
+            if (ownerDispatchRejectedLocked()) {
+                throw DocumentWouldBlock(
+                    "document execution lane is closing or shutting down");
+            }
             if (commandBlocksDispatchLocked(allowWhileCommandActive)) {
                 throw DocumentWouldBlock(
                     "document execution lane is busy executing model work; use "
@@ -227,15 +291,60 @@ public:
             return future.get();
         }
 
+        // --- GUI-thread bounded admission ---
+        // Check for stall immediately (no wait).
+        if (isWatchdogStalled()) {
+            std::string msg = "document execution lane is stalled";
+            {
+                std::lock_guard lock(_mutex);
+                if (_active) {
+                    msg += ": active command is ";
+                    msg += documentCommandKindName(_active->command.kind);
+                    if (!_active->snapshot.diagnostic.empty()) {
+                        msg += " (";
+                        msg += _active->snapshot.diagnostic;
+                        msg += ")";
+                    }
+                }
+            }
+            throw DocumentWouldBlock(msg.c_str());
+        }
+
+        // Read admission timeout from preferences (default 500 ms).
+        const auto admissionTimeout = guiSyncAdmissionTimeout();
+        const auto admissionDeadline = std::chrono::steady_clock::now() + admissionTimeout;
+
         DocumentExecutionLaneGuiDispatchPumpScope pumping;
         constexpr auto serviceSlice = std::chrono::milliseconds(2);
         while (true) {
             {
                 std::lock_guard lock(_mutex);
+                if (ownerDispatchRejectedLocked()) {
+                    throw DocumentWouldBlock(
+                        "document execution lane is closing or shutting down");
+                }
                 if (!commandBlocksDispatchLocked(allowWhileCommandActive)) {
                     _dispatchQueue.push_back(std::move(task));
                     _workAvailable.notify_one();
                     break;
+                }
+                // Check stall or timeout under the lock so the diagnostic is fresh.
+                const bool stalledNow = isWatchdogStalled();
+                const bool timedOut = std::chrono::steady_clock::now() >= admissionDeadline;
+                if (stalledNow || timedOut) {
+                    std::string msg = stalledNow
+                        ? "document execution lane is stalled"
+                        : "GUI admission timeout: document execution lane is busy";
+                    if (_active) {
+                        msg += "; active command: ";
+                        msg += documentCommandKindName(_active->command.kind);
+                        if (!_active->snapshot.diagnostic.empty()) {
+                            msg += " (";
+                            msg += _active->snapshot.diagnostic;
+                            msg += ")";
+                        }
+                    }
+                    throw DocumentWouldBlock(msg.c_str());
                 }
             }
             MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice);
@@ -265,6 +374,13 @@ private:
             && documentCommandKindBlocksOwnerDispatch(_active->command.kind);
     }
 
+    /** Holds _mutex. Reject posts during Close, after the document is gone, and after shutdown. */
+    [[nodiscard]] bool ownerDispatchRejectedLocked() const
+    {
+        return _shutdownRequested || !_ownerDocumentAlive
+            || (_active && _active->command.kind == DocumentCommandKind::Close);
+    }
+
     /** In-flight command; complete before use in std::optional. */
     struct ActiveCommand
     {
@@ -272,6 +388,8 @@ private:
         DocumentCommand command;
         DocumentCommandSnapshot snapshot;
         std::optional<DocumentRecomputeId> recomputeId;
+        /** True once recomputeAsync/submitLaneTestBlockingRecompute has been called. */
+        bool recomputeSubmitted {false};
         std::vector<DocumentRevisionIdentityBinding> crossDocumentReservations;
         std::atomic<bool> cancelRequested {false};
         std::uint64_t lastProgressEpochMilliseconds {0};
@@ -284,6 +402,7 @@ private:
             , command(std::move(other.command))
             , snapshot(std::move(other.snapshot))
             , recomputeId(std::move(other.recomputeId))
+            , recomputeSubmitted(other.recomputeSubmitted)
             , crossDocumentReservations(std::move(other.crossDocumentReservations))
             , cancelRequested(other.cancelRequested.load(std::memory_order_relaxed))
             , lastProgressEpochMilliseconds(other.lastProgressEpochMilliseconds)
@@ -295,6 +414,7 @@ private:
                 command = std::move(other.command);
                 snapshot = std::move(other.snapshot);
                 recomputeId = std::move(other.recomputeId);
+                recomputeSubmitted = other.recomputeSubmitted;
                 crossDocumentReservations = std::move(other.crossDocumentReservations);
                 cancelRequested.store(
                     other.cancelRequested.load(std::memory_order_relaxed),
@@ -319,6 +439,9 @@ private:
     [[nodiscard]] DocumentRecomputeSnapshot recomputeSnapshotFromObservation(
         const DocumentCommandRecomputeObservation& observation) const;
     void completeActiveCommand(DocumentCommandState state, std::string diagnostic = {});
+    /** Holds _mutex. Caps per-lane terminal snapshots (M4). */
+    void rememberTerminalSnapshotLocked(DocumentCommandId id,
+                                        const DocumentCommandSnapshot& snapshot);
     void publishActiveSnapshot(const DocumentCommandSnapshot& snapshot);
     void publishActiveSnapshotLocked(const DocumentCommandSnapshot& snapshot);
     void touchWatchdogProgress(ActiveCommand& command);
@@ -328,6 +451,9 @@ private:
     [[nodiscard]] DocumentExecutionBusyRejectionKind busyKind(
         DocumentCommandKind kind) const noexcept;
     void recordBusyRejection(DocumentCommandKind kind);
+
+    /** Read GuiSyncAdmissionTimeoutMs from preferences; default 500 ms. */
+    [[nodiscard]] std::chrono::milliseconds guiSyncAdmissionTimeout() const noexcept;
 
     Document& _document;
     const DocumentRevisionIdentityBinding _identity;
@@ -340,9 +466,15 @@ private:
     bool _threadReady {false};
     bool _shutdownRequested {false};
     std::string _shutdownReason;
+    /** False once Application::closeDocument has destroyed the document. */
+    bool _ownerDocumentAlive {true};
+    /** Thread currently inside the Close command's marshalled closeDocument(). */
+    std::thread::id _marshalledCloseThread {};
 
     std::optional<ActiveCommand> _active;
     std::unordered_map<DocumentCommandId, DocumentCommandSnapshot> _terminalSnapshots;
+    /** Insertion order for _terminalSnapshots so the map can be capped. */
+    std::deque<DocumentCommandId> _terminalOrder;
     DocumentCommandId _nextCommandId {1};
 
     std::vector<std::function<void()>> _dispatchQueue;

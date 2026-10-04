@@ -22,7 +22,7 @@ class DocumentExecutionTelemetry;
 namespace Internal
 {
 /** Test-only access for resetting the process-wide telemetry singleton. */
-class DocumentExecutionTelemetryTestAccess
+class AppExport DocumentExecutionTelemetryTestAccess
 {
 public:
     static void reset(DocumentExecutionTelemetry& telemetry);

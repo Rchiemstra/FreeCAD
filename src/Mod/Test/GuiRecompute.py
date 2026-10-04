@@ -263,6 +263,23 @@ def _retry_while_lane_busy(
     raise RuntimeError("document execution lane stayed busy")
 
 
+def _check_completed(handle: Any, operation: str) -> None:
+    """Raise with the command diagnostic when the handle did not complete."""
+    status = handle.status()
+    state = None
+    if isinstance(status, dict):
+        state = status.get("state")
+    if state == "Completed":
+        return
+    diagnostic = ""
+    if isinstance(status, dict):
+        diagnostic = status.get("diagnostic", "") or ""
+    raise RuntimeError(
+        f"document {operation} did not complete: state={state!r}"
+        + (f", diagnostic={diagnostic!r}" if diagnostic else "")
+    )
+
+
 def save_document(document, timeout_seconds: float = 120.0) -> None:
     """Save the canonical document path from GUI tests without blocking the GUI thread."""
     if not getattr(FreeCAD, "GuiUp", False):
@@ -271,6 +288,8 @@ def save_document(document, timeout_seconds: float = 120.0) -> None:
 
     handle = _retry_while_lane_busy(document.saveAsync, timeout_seconds)
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
+    # M7: require Completed, not just done.
+    _check_completed(handle, "save")
 
 
 def save_document_as(
@@ -290,6 +309,8 @@ def save_document_as(
 
     handle = _retry_while_lane_busy(submit_save_async, timeout_seconds)
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
+    # M7: require Completed, not just done.
+    _check_completed(handle, "save_as")
 
 
 def undo_document(document, timeout_seconds: float = 120.0) -> None:
@@ -299,6 +320,8 @@ def undo_document(document, timeout_seconds: float = 120.0) -> None:
 
     handle = _retry_while_lane_busy(document.undoAsync, timeout_seconds)
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
+    # M7: require Completed, not just done.
+    _check_completed(handle, "undo")
 
 
 def redo_document(document, timeout_seconds: float = 120.0) -> None:
@@ -308,6 +331,8 @@ def redo_document(document, timeout_seconds: float = 120.0) -> None:
 
     handle = _retry_while_lane_busy(document.redoAsync, timeout_seconds)
     _pump_gui_until(lambda: handle.done(), timeout_seconds)
+    # M7: require Completed, not just done.
+    _check_completed(handle, "redo")
 
 
 def touch_on_owner_thread(document, obj, timeout_seconds: float = 120.0) -> None:

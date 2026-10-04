@@ -47,59 +47,150 @@ bool anyDocumentExecutionLaneBusy() noexcept
     return false;
 }
 
-#if PY_VERSION_HEX >= 0x030c0000
-struct OrphanGilProbe
+/**
+ * M6: Single long-lived GIL probe thread.
+ *
+ * Replaces the per-attempt OrphanGilProbe approach. Only one probe is in
+ * flight at a time: concurrent callers receive false immediately instead of
+ * piling up blocked threads.
+ *
+ * Handshake: the probe calls PyGILState_Ensure(), then immediately releases
+ * and signals the GUI thread. The GUI calls PyGILState_Ensure() right after
+ * waking, minimising the check-then-act window without needing CPython
+ * internals.
+ */
+class GilProbeService
 {
-    std::thread thread;
-    std::shared_ptr<std::atomic<bool>> done;
-};
+public:
+    GilProbeService() : _thread([this] { threadMain(); }) {}
 
-std::mutex g_orphanGilProbeMutex;
-std::vector<OrphanGilProbe> g_orphanGilProbes;
-
-void reapFinishedOrphanGilProbes() noexcept
-{
-    std::lock_guard lock(g_orphanGilProbeMutex);
-    for (auto it = g_orphanGilProbes.begin(); it != g_orphanGilProbes.end();) {
-        if (it->done && it->done->load(std::memory_order_acquire) && it->thread.joinable()) {
-            it->thread.join();
-            it = g_orphanGilProbes.erase(it);
+    ~GilProbeService()
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _shutdown = true;
         }
-        else {
-            ++it;
+        _cv.notify_one();
+        if (_thread.joinable()) {
+            _thread.join();
         }
     }
+
+    /**
+     * Probe whether the GIL is available within @p timeout. On success the
+     * GIL is now held by the calling thread (*outState from PyGILState_Ensure).
+     * Returns false if the probe timed out, the probe is busy, or Python is
+     * not initialised.
+     */
+    bool tryAcquire(PyGILState_STATE* outState,
+                    const std::chrono::milliseconds timeout) noexcept
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_busy || _shutdown) {
+                return false;
+            }
+            _busy = true;
+            _probeReady = false;
+            _probeResult = false;
+        }
+        _cv.notify_one();
+
+        // Hold the handoff across the probe and the GUI Ensure so another
+        // PyGILStateLocker cannot take the GIL in the gap (M6).
+        Base::GilGuiHandoff::reserve();
+        struct ReleaseHandoff
+        {
+            ~ReleaseHandoff()
+            {
+                Base::GilGuiHandoff::release();
+            }
+        } releaseHandoff;
+
+        bool signalled = false;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            signalled = _cv.wait_for(lock, timeout, [this] { return _probeReady; });
+        }
+        if (!signalled || !_probeResult) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _busy = false;
+            _cv.notify_one();
+            return false;
+        }
+
+        // Probe has acquired and released the GIL; call Ensure now on our thread.
+        *outState = PyGILState_Ensure();
+
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _busy = false;
+        }
+        _cv.notify_one();
+        return true;
+    }
+
+private:
+    void threadMain()
+    {
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _cv.wait(lock, [this] { return _busy || _shutdown; });
+                if (_shutdown) {
+                    break;
+                }
+            }
+
+            if (!Py_IsInitialized()) {
+                // Python already finalized; cannot acquire GIL.
+                std::lock_guard<std::mutex> lock(_mutex);
+                _probeResult = false;
+                _probeReady = true;
+                _busy = false;
+                _cv.notify_one();
+                continue;
+            }
+
+            PyGILState_STATE probeState = PyGILState_Ensure();
+            PyGILState_Release(probeState);
+
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                _probeResult = true;
+                _probeReady = true;
+            }
+            _cv.notify_one();
+
+            // Wait briefly for the caller to acquire before accepting a new request.
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _cv.wait_for(lock, std::chrono::milliseconds(50),
+                             [this] { return !_busy || _shutdown; });
+            }
+        }
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    std::thread _thread;
+    bool _busy {false};
+    bool _shutdown {false};
+    bool _probeReady {false};
+    bool _probeResult {false};
+};
+
+GilProbeService& gilProbeService()
+{
+    static GilProbeService instance;
+    return instance;
 }
 
 bool tryAcquireGilWithoutBlocking(PyGILState_STATE* state) noexcept
 {
-    // Never detach a thread blocked in PyGILState_Ensure: when the foreign GIL
-    // holder later releases, the orphan races with a second Ensure and can crash.
-    // Do not signal via a stack-local promise either — on timeout that object is
-    // destroyed while the orphan may still be inside Ensure.
-    reapFinishedOrphanGilProbes();
-
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    std::thread probe([done] {
-        PyGILState_STATE probeState = PyGILState_Ensure();
-        PyGILState_Release(probeState);
-        done->store(true, std::memory_order_release);
-    });
     using namespace std::chrono_literals;
-    const auto deadline = std::chrono::steady_clock::now() + 2ms;
-    while (!done->load(std::memory_order_acquire)) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            std::lock_guard lock(g_orphanGilProbeMutex);
-            g_orphanGilProbes.push_back(OrphanGilProbe {std::move(probe), std::move(done)});
-            return false;
-        }
-        std::this_thread::sleep_for(100us);
-    }
-    probe.join();
-    *state = PyGILState_Ensure();
-    return true;
+    return gilProbeService().tryAcquire(state, 2ms);
 }
-#endif
 
 /**
  * Non-blocking GIL ownership for GUI admission.
@@ -134,19 +225,11 @@ public:
             if (anyDocumentExecutionLaneBusy()) {
                 return;
             }
-#if PY_VERSION_HEX < 0x030c0000
-            if (!PyEval_TryAcquireLock()) {
-                return;
-            }
-            _owns = true;
-            _usedDeprecatedGilLock = true;
-#else
             if (!tryAcquireGilWithoutBlocking(&_state)) {
                 return;
             }
             _owns = true;
             _usedEnsure = true;
-#endif
             return;
         }
         if (anyDocumentExecutionLaneBusy()) {
@@ -160,12 +243,6 @@ public:
     ~GilTryLock()
     {
         if (!_owns) {
-            return;
-        }
-        if (_usedDeprecatedGilLock) {
-#if PY_VERSION_HEX < 0x030c0000
-            PyEval_ReleaseLock();
-#endif
             return;
         }
         if (_usedEnsure) {
@@ -185,7 +262,6 @@ private:
     PyGILState_STATE _state {};
     bool _owns {false};
     bool _usedEnsure {false};
-    bool _usedDeprecatedGilLock {false};
 };
 
 GuiPythonGateAdmissionOutcome makeOutcome(

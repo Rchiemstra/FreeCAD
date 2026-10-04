@@ -483,7 +483,8 @@ def test_documentobject_python_and_gui_delegate_to_the_isolated_document_facade(
     assert "_recomputeFeature" not in python_body
 
     gui_body = _compact(_body(_read(GUI_SOURCE), "Document::slotSkipRecompute"))
-    assert "obj->recomputeFeature(true)" in gui_body
+    # slotSkipRecompute now uses the async ingress instead of the direct call.
+    assert "requestDocumentRecompute(" in gui_body
     assert "_recomputeFeature" not in gui_body
 
 

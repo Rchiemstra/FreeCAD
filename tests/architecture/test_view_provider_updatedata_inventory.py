@@ -196,8 +196,11 @@ def test_every_production_provider_is_inventoried() -> None:
     rows = _parse_inventory(INVENTORY_PATH.read_text(encoding="utf-8"))
     inventoried = {row.key() for row in rows}
     discovered = _discover_providers()
-    missing = sorted(discovered - inventoried)
-    stale = sorted(inventoried - discovered)
+    def _row_key(row: tuple[str, str, int]) -> tuple[bytes, bytes, int]:
+        return (row[0].encode("utf-8"), row[1].encode("utf-8"), row[2])
+
+    missing = sorted(discovered - inventoried, key=_row_key)
+    stale = sorted(inventoried - discovered, key=_row_key)
     failures: list[str] = []
     for file, symbol, line in missing:
         failures.append(f"missing inventory row for {file}:{line} {symbol}")
@@ -260,7 +263,7 @@ def test_presentation_classification_matches_cpp_expectations() -> None:
                 f"{relative} presentationClassification expected {expected}, found {actual}"
             )
 
-    for relative, actual in sorted(discovered.items()):
+    for relative, actual in sorted(discovered.items(), key=lambda item: item[0].encode("utf-8")):
         if relative not in CRITICAL_PRESENTATION_SOURCE_EXPECTATIONS:
             failures.append(
                 f"untracked presentationClassification() in {relative} returns {actual}; "

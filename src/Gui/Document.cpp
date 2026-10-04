@@ -38,6 +38,8 @@
 #include <mutex>
 #include <stdexcept>
 #include <QApplication>
+#include <QMdiSubWindow>
+#include <QPointer>
 #include <QCoreApplication>
 #include <QBuffer>
 #include <QCheckBox>
@@ -141,6 +143,12 @@ struct DocumentP
     bool _isClosing;
     bool _isModified;
     bool _isTransacting;
+    /** Which close to re-issue when the in-flight lane Save reaches a terminal state. */
+    Document::PendingLaneCloseKind _pendingLaneClose {Document::PendingLaneCloseKind::None};
+    /** canClose() skips the save prompt once. */
+    bool _suppressSavePrompt {false};
+    /** closeAllDocuments() skips the save prompt for this document. */
+    bool _skipSaveOnClose {false};
     std::shared_ptr<UndoRedoCompletionAnchor> undoRedoCompletionAnchor;
     bool _isActive;
     bool _restoredGuiDocument;
@@ -1558,7 +1566,10 @@ void Document::slotSkipRecompute(const App::Document& doc, const std::vector<App
     if (!obj || !obj->isAttachedToDocument() || (!objs.empty() && objs.front() != obj)) {
         return;
     }
-    obj->recomputeFeature(true);
+    // Section 3: do not call recomputeFeature directly on the GUI thread.
+    // Submit via the async ingress so the lane serialises it correctly.
+    requestDocumentRecompute(
+        *d->_pcDocument, {obj}, /*force=*/true, /*options=*/0, /*quiet=*/true);
 }
 
 void Document::slotTouchedObject(const App::DocumentObject& Obj)
@@ -3183,7 +3194,7 @@ bool Document::save()
 }
 
 /// Save the document under a new file name
-bool Document::saveAs()
+bool Document::saveAs(const PendingLaneCloseKind closeAfter)
 {
     getMainWindow()->showMessage(QObject::tr("Save document under new filename…"));
 
@@ -3235,7 +3246,12 @@ bool Document::saveAs()
                     appDocument->executionHandle().identity(),
                     outcome.commandId);
                 reportDocumentSaveAdmitted(*appDocument);
-                // Admission is not completion — recent files update when the lane save finishes.
+                // Admission is not completion. Record the close to re-issue only
+                // after the lane Save As reaches a terminal state (B3 / N2).
+                // Do not read FileName here; the lane writes it when the save finishes (N9).
+                if (closeAfter != PendingLaneCloseKind::None) {
+                    setPendingLaneCloseAfterSave(closeAfter);
+                }
                 return false;
             }
             const auto saveOutcome =
@@ -4156,6 +4172,11 @@ bool Document::canClose(bool checkModify, bool checkLink)
         return true;
     }
 
+    if (d->_suppressSavePrompt) {
+        d->_suppressSavePrompt = false;
+        checkModify = false;
+    }
+
     bool ok = true;
     if (checkModify && isModified() && !getDocument()->testStatus(App::Document::PartialDoc)) {
         int res = getMainWindow()->confirmSave(getDocument(), getActiveView());
@@ -4165,42 +4186,69 @@ bool Document::canClose(bool checkModify, bool checkLink)
                 break;
             case MainWindow::ConfirmSaveResult::SaveAll:
             case MainWindow::ConfirmSaveResult::Save:
+                // B3: if the document has no file name yet, run Save As on the GUI
+                // thread before attempting any lane-level save.
+                if (!getDocument()->isSaved()) {
+                    // B3: Save As is itself the lane write for an unnamed document.
+                    // A pending flag means the close continues when that Save As finishes.
+                    saveAs(PendingLaneCloseKind::Document);
+                    if (isPendingLaneClose()) {
+                        ok = false;
+                        break;
+                    }
+                    if (!getDocument()->isSaved()) {
+                        ok = false;  // User cancelled Save As, or the lane rejected it
+                        break;
+                    }
+                    break;
+                }
                 if (getDocument()->executionLane()) {
-                    std::string saveFailureDiagnostic;
-                    ok = submitDocumentSaveAwaitingCompletion(
-                        *getDocument(),
-                        &saveFailureDiagnostic);
-                    if (!ok && !saveFailureDiagnostic.empty()
-                        && askIfSavingFailed(QString::fromStdString(saveFailureDiagnostic))) {
-                        ok = true;
+                    // Submit save asynchronously. Completion re-issues this document
+                    // close, not an application quit (N2).
+                    const auto outcome = submitDocumentKindCommand(
+                        *getDocument(), App::DocumentCommandKind::Save);
+                    if (outcome.accepted()) {
+                        scheduleSaveCommandCompletion(
+                            getDocument()->getName(),
+                            getDocument()->executionHandle().identity(),
+                            outcome.commandId);
+                        setPendingLaneCloseAfterSave(PendingLaneCloseKind::Document);
+                        ok = false;  // Close deferred; completion will retry this document
+                    }
+                    else {
+                        reportDocumentCommandSubmitBlocked(*getDocument(), outcome);
+                        ok = false;  // Lane rejected; cannot close yet
                     }
                 }
                 else {
                     ok = save();
-                }
-                if (!ok) {
-                    const QString docName = QString::fromStdString(getDocument()->Label.getStrValue());
-                    const QString text
-                        = (!docName.isEmpty()
-                               ? QObject::tr("Failed to save document '%1'. Would you like to cancel the closure?")
-                                     .arg(docName)
-                               : QObject::tr(
-                                     "Document saving failed. Would you like to cancel the closure?"
-                                 ));
-                    QMessageBox box(
-                        QMessageBox::Warning,
-                        QObject::tr("Unable to save document"),
-                        text,
-                        QMessageBox::Discard | QMessageBox::Cancel,
-                        getActiveView());
-                    box.setDefaultButton(QMessageBox::Cancel);
-                    box.setEscapeButton(QMessageBox::Cancel);
-                    if (auto* discard = box.button(QMessageBox::Discard)) {
-                        discard->setText(QObject::tr("Close Without Saving"));
-                    }
-                    const int ret = box.exec();
-                    if (ret == QMessageBox::Discard) {
-                        ok = true;
+                    if (!ok) {
+                        const QString docName =
+                            QString::fromStdString(getDocument()->Label.getStrValue());
+                        const QString text =
+                            (!docName.isEmpty()
+                                 ? QObject::tr(
+                                       "Failed to save document '%1'. Would you like to "
+                                       "cancel the closure?")
+                                       .arg(docName)
+                                 : QObject::tr(
+                                       "Document saving failed. Would you like to cancel "
+                                       "the closure?"));
+                        QMessageBox box(
+                            QMessageBox::Warning,
+                            QObject::tr("Unable to save document"),
+                            text,
+                            QMessageBox::Discard | QMessageBox::Cancel,
+                            getActiveView());
+                        box.setDefaultButton(QMessageBox::Cancel);
+                        box.setEscapeButton(QMessageBox::Cancel);
+                        if (auto* discard = box.button(QMessageBox::Discard)) {
+                            discard->setText(QObject::tr("Close Without Saving"));
+                        }
+                        const int ret = box.exec();
+                        if (ret == QMessageBox::Discard) {
+                            ok = true;
+                        }
                     }
                 }
                 break;
@@ -4497,16 +4545,30 @@ Gui::MDIView* Document::getEditingViewOfViewProvider(Gui::ViewProvider* vp) cons
  */
 int Document::openCommand(const char* sName)
 {
+    // M1: replay must not throw through Qt slots. The App check stays fail-loud
+    // for every other caller; only the GUI transaction boundary absorbs replay.
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring openCommand while collaboration notifications replay");
+        return 0;
+    }
     return getDocument()->openTransaction(App::TransactionName {.name = sName, .temporary = false});
 }
 
 void Document::commitCommand()
 {
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring commitCommand while collaboration notifications replay");
+        return;
+    }
     getDocument()->commitTransaction();
 }
 
 void Document::abortCommand()
 {
+    if (getDocument()->collaborationNotificationsReplaying()) {
+        FC_WARN("Ignoring abortCommand while collaboration notifications replay");
+        return;
+    }
     getDocument()->abortTransaction();
 }
 
@@ -4730,6 +4792,81 @@ void Document::onExecutionLaneRedoCompleted()
         handleChildren3D(it);
     }
     d->_redoViewProviders.clear();
+}
+
+void Document::setPendingLaneCloseAfterSave(const PendingLaneCloseKind kind) noexcept
+{
+    d->_pendingLaneClose = kind;
+}
+
+bool Document::isPendingLaneClose() const noexcept
+{
+    return d->_pendingLaneClose != PendingLaneCloseKind::None;
+}
+
+Document::PendingLaneCloseKind Document::consumePendingLaneClose() noexcept
+{
+    const auto kind = d->_pendingLaneClose;
+    d->_pendingLaneClose = PendingLaneCloseKind::None;
+    return kind;
+}
+
+void Document::suppressNextSavePrompt() noexcept
+{
+    d->_suppressSavePrompt = true;
+}
+
+void Document::markSkipSaveOnClose() noexcept
+{
+    d->_skipSaveOnClose = true;
+}
+
+bool Document::skipsSaveOnClose() const noexcept
+{
+    return d->_skipSaveOnClose;
+}
+
+bool Document::consumeSkipSaveOnClose() noexcept
+{
+    const bool skip = d->_skipSaveOnClose;
+    d->_skipSaveOnClose = false;
+    return skip;
+}
+
+void Document::reissueDocumentClose()
+{
+    d->_suppressSavePrompt = true;
+    if (!d->_pcDocument) {
+        return;
+    }
+    const auto views = getMDIViews();
+    if (views.empty()) {
+        Command::doCommand(
+            Command::Doc,
+            "App.getDocument(\"%s\").closeAsync()",
+            d->_pcDocument->getName());
+        return;
+    }
+    QList<QPointer<QMdiSubWindow>> subWindows;
+    QList<QPointer<MDIView>> looseViews;
+    for (auto* view : views) {
+        if (auto* sub = qobject_cast<QMdiSubWindow*>(view->parentWidget())) {
+            subWindows.append(sub);
+        }
+        else {
+            looseViews.append(view);
+        }
+    }
+    for (const auto& sub : subWindows) {
+        if (sub) {
+            sub->close();
+        }
+    }
+    for (const auto& view : looseViews) {
+        if (view) {
+            view->close();
+        }
+    }
 }
 
 PyObject* Document::getPyObject()

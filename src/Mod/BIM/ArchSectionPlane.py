@@ -314,6 +314,13 @@ def isOriented(obj, plane):
 
 
 def _section_geometry_token(objs):
+    """Return a hashable token that reflects stable geometry content.
+
+    Vertex coordinates catch an opening that slides along a wall. Volume and
+    element counts stay the same in that case, and Volume is not scanned.
+    shape.hashCode() is address-based and changes between sessions, so it is
+    not used.
+    """
     token = []
     for obj in objs:
         shape = getattr(obj, "Shape", None)
@@ -321,7 +328,29 @@ def _section_geometry_token(objs):
         if shape is not None:
             try:
                 if not shape.isNull():
-                    identity = shape.hashCode()
+                    bb = shape.BoundBox
+                    placement = getattr(obj, "Placement", None)
+                    origin = (0.0, 0.0, 0.0)
+                    if placement is not None:
+                        base = placement.Base
+                        origin = (round(base.x, 6), round(base.y, 6), round(base.z, 6))
+                    vertices = tuple(
+                        (round(vertex.Point.x, 6), round(vertex.Point.y, 6), round(vertex.Point.z, 6))
+                        for vertex in shape.Vertexes
+                    )
+                    identity = (
+                        len(shape.Faces),
+                        len(shape.Edges),
+                        len(shape.Vertexes),
+                        origin,
+                        round(bb.XMin, 6),
+                        round(bb.YMin, 6),
+                        round(bb.ZMin, 6),
+                        round(bb.XMax, 6),
+                        round(bb.YMax, 6),
+                        round(bb.ZMax, 6),
+                        vertices,
+                    )
             except Exception:
                 identity = None
         token.append((getattr(obj, "Name", ""), identity))

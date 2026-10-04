@@ -326,7 +326,7 @@ def dynamic_import_manifest_violations(
             ):
                 problems.append(f"unsafe dynamic target pattern: {source}: {pattern!r}")
                 continue
-            matches = sorted(repository_root.glob(pattern))
+            matches = sorted(repository_root.glob(pattern), key=rules.posix_byte_sort_key)
             if not matches or any(not match.is_file() for match in matches):
                 problems.append(f"dynamic target pattern has no files: {source}: {pattern}")
     return problems
@@ -387,7 +387,7 @@ def report_count_violations(report_text: str, payload: dict) -> list[str]:
         problems.append(f"category counts {rows} != {category_counts}")
 
     total_match = re.search(
-        r"\(([\d,]+)\s+findings across (?:seven|eight)\s+categories", report_text
+        r"\(([\d,]+)\s+findings across (?:seven|eight|nine)\s+categories", report_text
     )
     if not total_match or int(total_match.group(1).replace(",", "")) != len(findings):
         problems.append("REPORT total finding count does not match inventory")
@@ -2873,6 +2873,13 @@ class InventoryEntryValidationTests(unittest.TestCase):
             "evidence": "qApp->processEvents();",
         }
 
+    def test_posix_byte_order_is_case_sensitive(self) -> None:
+        paths = ["src/Mod/Fem/femtest/Gui", "src/Mod/Fem/Gui"]
+        self.assertEqual(
+            sorted(paths, key=rules.posix_byte_sort_key),
+            ["src/Mod/Fem/Gui", "src/Mod/Fem/femtest/Gui"],
+        )
+
     def test_rejects_duplicate_entries(self) -> None:
         entry = self._valid_entry()
         violations = duplicate_violations([entry, dict(entry)])
@@ -3109,22 +3116,21 @@ class RepositoryInventoryTests(unittest.TestCase):
         for path, line, category in (
             ("src/Gui/CommandDoc.cpp", 1018, "live-app-dereference"),
             ("src/Mod/CAM/Gui/Command.cpp", 123, "live-app-dereference"),
+            # Alias edit. The recompute on the next line is requestDocumentRecompute.
+            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 441, "live-app-dereference"),
             # Decoded executable GUI command wrappers still carry both categories.
-            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "live-app-dereference"),
-            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", 120, "direct-recompute"),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 442, "live-app-dereference"),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", 442, "direct-recompute"),
+            ("src/Mod/TechDraw/Gui/Command.cpp", 538, "live-app-dereference"),
+            ("src/Mod/TechDraw/Gui/Command.cpp", 538, "direct-recompute"),
+            ("src/Mod/TechDraw/Gui/Command.cpp", 1177, "live-app-dereference"),
+            ("src/Mod/TechDraw/Gui/Command.cpp", 1177, "direct-recompute"),
         ):
             self._assert_site(path, line, category)
 
     def test_cpp_gui_command_wrapper_sites_found(self) -> None:
-        # FileHandler / PartDesign TaskFeatureParameters recomputes were routed
-        # through requestDocumentRecompute / preview helpers; keep anchors that
-        # still decode as direct-recompute via known GUI command wrappers.
-        for path, lines in (
-            ("src/Mod/Fem/Gui/TaskDlgMeshShapeNetgen.cpp", (120, 143)),
-            ("src/Mod/Spreadsheet/Gui/SpreadsheetView.cpp", (442,)),
-        ):
+        # Netgen, Spreadsheet, FileHandler, and PartDesign task recomputes go
+        # through requestDocumentRecompute. These wrappers still decode as
+        # direct-recompute.
+        for path, lines in (("src/Mod/TechDraw/Gui/Command.cpp", (538, 1177)),):
             for line in lines:
                 self._assert_site(path, line, "direct-recompute")
 
@@ -3143,7 +3149,9 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Mod/CAM/Path/Base/Gui/GetPoint.py", 136, "live-app-dereference")
 
     def test_python_recompute_found(self) -> None:
-        self._assert_site("src/Mod/CAM/Path/Base/Gui/PropertyBag.py", 296, "direct-recompute")
+        self._assert_site(
+            "src/Mod/CAM/Path/Base/Gui/PropertyBag.py", 296, "live-app-dereference"
+        )
 
     def test_python_process_events_found(self) -> None:
         self._assert_site(
@@ -3168,8 +3176,9 @@ class RepositoryInventoryTests(unittest.TestCase):
     def test_draft_gui_scope_sites_found(self) -> None:
         self._assert_site("src/Mod/Draft/draftguitools/gui_base.py", 87, "live-app-dereference")
         self._assert_site("src/Mod/Draft/draftguitools/gui_base.py", 95, "live-app-dereference")
-        self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 187, "direct-recompute")
-        self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 197, "direct-recompute")
+        # Layer add uses self.doc.recomputeAsync(), which is not a live-App
+        # finding. The remaining inventoried recompute is the doCommand form.
+        self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 94, "live-app-dereference")
 
     def test_do_command_command_string_sites_found(self) -> None:
         self._assert_site("src/Mod/CAM/Path/Dressup/Gui/AxisMap.py", 283, "live-app-dereference")
@@ -3272,9 +3281,10 @@ class RepositoryInventoryTests(unittest.TestCase):
                         and relative not in rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS
                     ):
                         missing.append(relative)
+        ordered_missing = sorted(set(missing), key=rules.posix_byte_sort_key)
         self.assertFalse(
-            sorted(set(missing)),
-            "unreviewed local InitGui imports: " + ", ".join(sorted(set(missing))),
+            ordered_missing,
+            "unreviewed local InitGui imports: " + ", ".join(ordered_missing),
         )
         self.assertTrue(rules.REVIEWED_INITGUI_IMPORT_EXCLUSIONS)
 
@@ -3340,7 +3350,9 @@ class RepositoryInventoryTests(unittest.TestCase):
                         )
             relative = path.relative_to(REPOSITORY_ROOT).as_posix()
             for pattern in rules.REVIEWED_DYNAMIC_IMPORT_TARGETS.get(relative, ()):
-                targets.extend(sorted(REPOSITORY_ROOT.glob(pattern)))
+                targets.extend(
+                    sorted(REPOSITORY_ROOT.glob(pattern), key=rules.posix_byte_sort_key)
+                )
             return targets
 
         def is_qualifying_gui_module(path: Path) -> bool:
@@ -3434,9 +3446,10 @@ class RepositoryInventoryTests(unittest.TestCase):
                 if target not in seen:
                     seen.add(target)
                     queue.append(target)
+        ordered_missing = sorted(missing, key=rules.posix_byte_sort_key)
         self.assertFalse(
-            sorted(missing),
-            "unreviewed transitive GUI imports: " + ", ".join(sorted(missing)),
+            ordered_missing,
+            "unreviewed transitive GUI imports: " + ", ".join(ordered_missing),
         )
         reachable_dynamic = {
             target.relative_to(REPOSITORY_ROOT).as_posix()
@@ -3449,7 +3462,9 @@ class RepositoryInventoryTests(unittest.TestCase):
         self.assertFalse(
             reachable_dynamic - dynamic_policy,
             "unreviewed reachable dynamic imports: "
-            + ", ".join(sorted(reachable_dynamic - dynamic_policy)),
+            + ", ".join(
+                sorted(reachable_dynamic - dynamic_policy, key=rules.posix_byte_sort_key)
+            ),
         )
         # Mutation guard: removing the Processor policy must expose the exact
         # reachable loader rather than silently passing because it has no GUI
@@ -3695,7 +3710,7 @@ importlib.import_module(name)
             ("src/Mod/CAM/Path/Post/UtilsExport.py", "live-app-dereference"),
             ("src/Mod/Draft/draftmake/make_array.py", "live-app-dereference"),
             ("src/Mod/Draft/draftmake/make_shapestring.py", "direct-recompute"),
-            ("src/Mod/Fem/femresult/resulttools.py", "direct-recompute"),
+            ("src/Mod/Fem/femresult/resulttools.py", "live-app-dereference"),
             ("src/Mod/OpenSCAD/OpenSCAD2Dgeom.py", "live-app-dereference"),
         ):
             self.assertTrue(
@@ -3767,17 +3782,17 @@ importlib.import_module(name)
             ("src/Mod/Draft/draftviewproviders/view_base.py", 191),
             ("src/Mod/Fem/femviewprovider/view_mesh_shape.py", 57),
             ("src/Mod/BIM/nativeifc/ifc_viewproviders.py", 66),
-            ("src/Mod/BIM/ArchBuildingPart.py", 917),
+            ("src/Mod/BIM/ArchBuildingPart.py", 995),
             ("src/Mod/BIM/ArchStructure.py", 1505),
         ):
             self._assert_site(path, line, "update-data-provider")
 
     def test_transitive_gui_representative_sites_are_inventoried(self) -> None:
         for path, category in (
-            ("src/Mod/CAM/Path/Tool/library/ui/dock.py", "direct-recompute"),
-            ("src/Mod/BIM/ArchBuildingPart.py", "direct-recompute"),
-            ("src/Mod/BIM/ArchStructure.py", "direct-recompute"),
-            ("src/Mod/BIM/ArchWindowPresets.py", "direct-recompute"),
+            ("src/Mod/CAM/Path/Tool/library/ui/dock.py", "live-app-dereference"),
+            ("src/Mod/BIM/ArchBuildingPart.py", "live-app-dereference"),
+            ("src/Mod/BIM/ArchStructure.py", "live-app-dereference"),
+            ("src/Mod/BIM/ArchWindowPresets.py", "live-app-dereference"),
         ):
             self.assertTrue(
                 any(

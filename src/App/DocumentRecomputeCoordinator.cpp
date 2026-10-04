@@ -774,8 +774,12 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
     if (reason.empty()) {
         reason = "recompute cancelled by caller";
     }
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
+    // N7: never take _operationMutex from a non-owner thread. poll() holds that
+    // lock on the owner while a Python feature waits to reacquire the GIL, so
+    // a caller that still holds the GIL would deadlock. Record the flag under
+    // _stateMutex (released around feature execute) and let the owner forward it.
+    const bool onOwner =
+        DocumentCollaborationService::collaborationOwnerThread(_service.document());
     std::vector<PreparedEditExecutionId> executions;
     {
         std::lock_guard stateLock(_stateMutex);
@@ -793,12 +797,18 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
                 node.state = DocumentRecomputeFeatureState::Cancelled;
                 node.diagnostic = reason;
             }
-            else if (node.state == DocumentRecomputeFeatureState::Preparing && node.executionId) {
+            else if (onOwner && node.state == DocumentRecomputeFeatureState::Preparing
+                     && node.executionId) {
                 node.state = DocumentRecomputeFeatureState::Cancelling;
                 executions.push_back(*node.executionId);
             }
         }
     }
+    if (!onOwner) {
+        return true;
+    }
+    std::lock_guard operationLock(_operationMutex);
+    OperationAdmission operationAdmission(_operationActive);
     for (const auto executionId : executions) {
         try {
             static_cast<void>(_service.cancelPreparedEdit(executionId));

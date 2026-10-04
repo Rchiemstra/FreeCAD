@@ -11,6 +11,13 @@ import tokenize
 from typing import Mapping, Sequence
 
 
+def _posix_byte_sort_key(value: object) -> bytes:
+    """POSIX byte order. ``Path`` comparison on Windows is case-folded."""
+    as_posix = getattr(value, "as_posix", None)
+    text = as_posix() if callable(as_posix) else str(value).replace("\\", "/")
+    return text.encode("utf-8")
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "doc" / "document-collaboration-ingress-inventory.md"
 
@@ -220,7 +227,10 @@ def _typed_adapter_violations(rows: Sequence[InventoryRow]) -> list[str]:
         key = _typed_adapter_key(row)
         if key not in EXPECTED_TYPED_ADAPTERS:
             violations.append(row.diagnostic(f"unexpected sixth typed-adapter row {key!r}"))
-    for missing in sorted(EXPECTED_TYPED_ADAPTERS - actual):
+    for missing in sorted(
+        EXPECTED_TYPED_ADAPTERS - actual,
+        key=lambda item: tuple(part.encode("utf-8") for part in item),
+    ):
         violations.append(f"<inventory>: row missing {missing[1]}: missing typed-adapter row {missing!r}")
     if len(typed) != len(EXPECTED_TYPED_ADAPTERS):
         violations.append(
@@ -394,7 +404,7 @@ def _private_bypass_violations(
     for row in rows:
         rows_by_file.setdefault(row.source_path, []).append(row)
     violations: list[str] = []
-    for path, source in sorted(sources.items()):
+    for path, source in sorted(sources.items(), key=lambda item: _posix_byte_sort_key(item[0])):
         stripped = _suppress_non_code(path, source)
         for match in PRIVATE_CONTROL_RE.finditer(stripped):
             line = stripped.count("\n", 0, match.start(1)) + 1
@@ -414,7 +424,7 @@ def _private_bypass_violations(
 def _sources_for_rows(rows: Sequence[InventoryRow]) -> dict[str, str]:
     return {
         path: _read_source(REPO_ROOT / path)
-        for path in sorted({row.source_path for row in rows})
+        for path in sorted({row.source_path for row in rows}, key=_posix_byte_sort_key)
     }
 
 
@@ -453,7 +463,7 @@ def test_cc_wp04_inventory_shape_and_files() -> None:
     violations = _inventory_row_violations(rows, REPO_ROOT)
     existing_sources = {
         path: _read_source(REPO_ROOT / path)
-        for path in sorted({row.source_path for row in rows})
+        for path in sorted({row.source_path for row in rows}, key=_posix_byte_sort_key)
         if (REPO_ROOT / path).is_file()
     }
     violations.extend(_symbol_anchor_violations(rows, existing_sources))
