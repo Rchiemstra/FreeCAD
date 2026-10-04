@@ -1743,6 +1743,9 @@ void EditModeCoinManager::createEditModeInventorNodes()
     pEditModeGeometryCoinManager->createEditModeInventorNodes();
 
     // stuff for the RootCross lines +++++++++++++++++++++++++++++++++++++++
+    // The axes stay degenerate at the origin until updateAxesLength() stretches them to the view
+    const SbVec3f unstretchedAxis[2] = {SbVec3f(0.0f, 0.0f, 0.0f), SbVec3f(0.0f, 0.0f, 0.0f)};
+
     // Viewport-sized axes must not feed viewAll/fitAll. Visible axes were
     // already a SkipBoundingGroup; the default mode is INCLUDE_BBOX, so an
     // action that does not set EXCLUDE still frames them. Occluded copies
@@ -1777,7 +1780,7 @@ void EditModeCoinManager::createEditModeInventorNodes()
 
     editModeScenegraphNodes.RootCrossHCoordinate = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossHCoordinate->setName("RootCrossHCoordinate");
-    editModeScenegraphNodes.RootCrossHCoordinate->point.setNum(2);
+    editModeScenegraphNodes.RootCrossHCoordinate->point.setValues(0, 2, unstretchedAxis);
     visibleAxes->addChild(editModeScenegraphNodes.RootCrossHCoordinate);
 
     editModeScenegraphNodes.RootCrossHSet = new SoLineSet;
@@ -1795,7 +1798,7 @@ void EditModeCoinManager::createEditModeInventorNodes()
 
     editModeScenegraphNodes.RootCrossVCoordinate = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossVCoordinate->setName("RootCrossVCoordinate");
-    editModeScenegraphNodes.RootCrossVCoordinate->point.setNum(2);
+    editModeScenegraphNodes.RootCrossVCoordinate->point.setValues(0, 2, unstretchedAxis);
     visibleAxes->addChild(editModeScenegraphNodes.RootCrossVCoordinate);
 
     editModeScenegraphNodes.RootCrossVSet = new SoLineSet;
@@ -1867,7 +1870,7 @@ void EditModeCoinManager::createEditModeInventorNodes()
     // Occluded horizontal axis
     editModeScenegraphNodes.RootCrossHCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossHCoordinateOccluded->setName("RootCrossHCoordinateOccluded");
-    editModeScenegraphNodes.RootCrossHCoordinateOccluded->point.setNum(2);
+    editModeScenegraphNodes.RootCrossHCoordinateOccluded->point.setValues(0, 2, unstretchedAxis);
     occludedOverlay->addChild(editModeScenegraphNodes.RootCrossHCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedH = new SoMaterial;
@@ -1888,7 +1891,7 @@ void EditModeCoinManager::createEditModeInventorNodes()
     // Occluded vertical axis
     editModeScenegraphNodes.RootCrossVCoordinateOccluded = new SoCoordinate3;
     editModeScenegraphNodes.RootCrossVCoordinateOccluded->setName("RootCrossVCoordinateOccluded");
-    editModeScenegraphNodes.RootCrossVCoordinateOccluded->point.setNum(2);
+    editModeScenegraphNodes.RootCrossVCoordinateOccluded->point.setValues(0, 2, unstretchedAxis);
     occludedOverlay->addChild(editModeScenegraphNodes.RootCrossVCoordinateOccluded);
 
     editModeScenegraphNodes.RootCrossMaterialsOccludedV = new SoMaterial;

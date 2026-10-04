@@ -637,13 +637,13 @@ void ReviewNote::onChanged(const App::Property* prop)
             }
             catch (const Base::Exception& e) {
                 Base::Console().error(
-                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: %s\n",
+                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: {}\n",
                     e.what()
                 );
             }
             catch (const std::exception& e) {
                 Base::Console().error(
-                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: %s\n",
+                    "Assembly::ReviewNote: signalSyncLeaderVisual failed: {}\n",
                     e.what()
                 );
             }

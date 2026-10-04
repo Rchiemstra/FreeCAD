@@ -501,7 +501,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         )
         self.printTestMessage("Testing line-based wall with JOIN_SKETCHES=True...")
 
-        line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
+        line1 = Draft.make_line(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
         recompute_document(self.document)
         base1_initial_edges = len(wall1.Base.Shape.Edges)
@@ -534,7 +534,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         )
         self.printTestMessage("Testing line-based wall with JOIN_SKETCHES=False, AUTOJOIN=True...")
 
-        line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
+        line1 = Draft.make_line(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
         recompute_document(self.document)
         initial_object_count = len(self.document.Objects)
@@ -558,7 +558,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         )
         self.printTestMessage("Testing line-based wall fallback to AUTOJOIN...")
 
-        line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
+        line1 = Draft.make_line(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1, width=200)  # Incompatible width
         recompute_document(self.document)
 
@@ -648,7 +648,7 @@ class TestArchWallGui(TestArchBaseGui.TestArchBaseGui):
         self.printTestMessage("Testing no join action when preferences are off...")
 
         # Test with a based wall
-        line1 = Draft.makeLine(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
+        line1 = Draft.make_line(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1000, 0, 0))
         wall1 = Arch.makeWall(line1)
         recompute_document(self.document)
         initial_object_count = len(self.document.Objects)

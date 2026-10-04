@@ -265,7 +265,7 @@ bool TaskDlgFeatureParameters::accept()
                 );
             }
         }
-        Base::Console().error("%s\n", errorText.toUtf8().constData());
+        Base::Console().error("{}\n", errorText.toStdString());
         return false;
     }
     return true;

@@ -205,7 +205,7 @@ void ShapeBuilderWidget::onCreateButtonClicked()
         Gui::Selection().clearSelection();
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
     }
 }
 

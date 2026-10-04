@@ -329,7 +329,7 @@ PyObject* Gui::ApplicationPy::sShowMainWindow(PyObject* /*self*/, PyObject* args
         }
         else {
             // In order to get Jupiter notebook integration working we must create a direct instance
-            // of QApplication. Not even a sub-class can be used because otherwise PySide2 wraps it
+            // of QApplication. Not even a sub-class can be used because otherwise PySide wraps it
             // with a QtCore.QCoreApplication which will raise an exception in ipykernel
 #if defined(Q_OS_WIN)
             static int argc = 0;
@@ -908,7 +908,7 @@ PyObject* ApplicationPy::sOpen(PyObject* /*self*/, PyObject* args)
         FileHandler handler(fileName);
         if (!handler.openFile()) {
             QString ext = handler.extension();
-            Base::Console().error("File type '%s' not supported\n", ext.toLatin1().constData());
+            Base::Console().error("File type '{}' not supported\n", ext.toStdString());
         }
     }
     PY_CATCH;
@@ -933,7 +933,7 @@ PyObject* ApplicationPy::sInsert(PyObject* /*self*/, PyObject* args)
         FileHandler handler(fileName);
         if (!handler.importFile(std::string(DocName ? DocName : ""))) {
             QString ext = handler.extension();
-            Base::Console().error("File type '%s' not supported\n", ext.toLatin1().constData());
+            Base::Console().error("File type '{}' not supported\n", ext.toStdString());
         }
     }
     PY_CATCH;
@@ -1034,7 +1034,7 @@ PyObject* ApplicationPy::sExport(PyObject* /*self*/, PyObject* args)
             }
         }
         else {
-            Base::Console().error("File type '%s' not supported\n", ext.toLatin1().constData());
+            Base::Console().error("File type '{}' not supported\n", ext.toStdString());
         }
     }
     PY_CATCH;
@@ -1068,7 +1068,7 @@ PyObject* ApplicationPy::sSendMsgToActiveView(PyObject* /*self*/, PyObject* args
 
     if (!Application::Instance->sendMsgToActiveView(psCommandStr)) {
         if (!Base::asBoolean(suppress)) {
-            Base::Console().warning("Unknown view command: %s\n", psCommandStr);
+            Base::Console().warning("Unknown view command: {}\n", psCommandStr);
         }
     }
 
@@ -1089,7 +1089,7 @@ PyObject* ApplicationPy::sSendMsgToFocusView(PyObject* /*self*/, PyObject* args)
     }
     if (!Application::Instance->sendMsgToFocusView(psCommandStr)) {
         if (!Base::asBoolean(suppress)) {
-            Base::Console().warning("Unknown view command: %s\n", psCommandStr);
+            Base::Console().warning("Unknown view command: {}\n", psCommandStr);
         }
     }
 

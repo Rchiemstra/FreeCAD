@@ -1027,7 +1027,7 @@ void TaskInterferenceCheck::onClearanceSheetChanged(int index)
             errorMessage
         )) {
         Base::Console().warning(
-            "Interference clearance sheet: %s\n",
+            "Interference clearance sheet: {}\n",
             errorMessage.toUtf8().constData()
         );
         refreshClearanceSheetUi();

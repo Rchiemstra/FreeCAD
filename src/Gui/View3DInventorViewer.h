@@ -778,7 +778,7 @@ private:
     SoNodeSensor* cameraActivitySensor = nullptr;
     SoCamera* sensedCamera = nullptr;
 
-    ViewerEventFilter* viewerEventFilter;
+    ViewerEventFilter* viewerEventFilter {nullptr};
 
     PyObject* _viewerPy;
 

@@ -104,7 +104,7 @@ void AutoSaver::flushPendingSave(const QString& documentName)
         saveDocument(it->first, *it->second);
     }
     catch (...) {
-        Base::Console().error("Failed to auto-save document '%s'\n", it->first.c_str());
+        Base::Console().error("Failed to auto-save document '{}'\n", it->first);
     }
 }
 
@@ -282,7 +282,7 @@ void AutoSaver::completeRecoverySnapshotSave(
                 doc->TransientDir.getStrValue(),
                 false,
                 "Recovery snapshot write threw an exception");
-            Base::Console().error("Failed to auto-save document '%s'\n", name.c_str());
+            Base::Console().error("Failed to auto-save document '{}'\n", name.c_str());
             return;
         }
     }
@@ -302,7 +302,7 @@ void AutoSaver::completeRecoverySnapshotSave(
     doc->reportRecoverySaveOutcome(doc->TransientDir.getStrValue(), true);
 
     Base::Console().log(
-        "Save auto-recovery file in %fs\n",
+        "Save auto-recovery file in {:f}s\n",
         Base::TimeElapsed::diffTimeF(startTime, Base::TimeElapsed())
     );
 }
@@ -331,7 +331,7 @@ void AutoSaver::flushPendingSaveForIdentity(const QString& documentName,
         saveDocument(saver->first, *saver->second);
     }
     catch (...) {
-        Base::Console().error("Failed to auto-save document '%s'\n", saver->first.c_str());
+        Base::Console().error("Failed to auto-save document '{}'\n", saver->first.c_str());
     }
 }
 
@@ -345,7 +345,7 @@ void AutoSaver::timerEvent(QTimerEvent* event)
                 break;
             }
             catch (...) {
-                Base::Console().error("Failed to auto-save document '%s'\n", it.first.c_str());
+                Base::Console().error("Failed to auto-save document '{}'\n", it.first);
             }
         }
     }

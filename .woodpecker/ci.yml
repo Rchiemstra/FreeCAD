@@ -217,7 +217,7 @@ steps:
   # This runs independently of the apt-based build so invalid developer setup
   # fails before the expensive configure/build/test chain starts.
   - name: pixi-lock-check
-    image: ghcr.io/prefix-dev/pixi:0.68.1
+    image: ghcr.io/prefix-dev/pixi:0.81.0
     depends_on: []
     commands:
       - pixi lock --check

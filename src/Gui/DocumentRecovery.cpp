@@ -653,14 +653,14 @@ static void logValidationFailure(
 {
     if (result == Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult::OpenFailed) {
         Base::Console().warning(
-            "Cannot open project file during recovery %s (file may be locked or too many "
-            "files are open): %s\n",
+            "Cannot open project file during recovery {} (file may be locked or too many "
+            "files are open): {}\n",
             stage,
             projectFile.toUtf8().constData());
     }
     else if (result
              == Gui::Dialog::DocumentRecoveryInternal::ProjectValidationResult::InvalidContent) {
-        Base::Console().warning("Project file appears malformed during recovery %s: %s\n",
+        Base::Console().warning("Project file appears malformed during recovery {}: {}\n",
                                 stage,
                                 projectFile.toUtf8().constData());
     }
@@ -686,7 +686,7 @@ bool DocumentRecoveryPrivate::isValidProject(const QFileInfo& fi) const
     App::ProjectFile project(projectFile.toStdString());
     if (!project.loadDocument()) {
         Base::Console().warning(
-            "Project file Document.xml failed to parse during recovery validation: %s\n",
+            "Project file Document.xml failed to parse during recovery validation: {}\n",
             projectFile.toUtf8().constData());
         return false;
     }
@@ -957,7 +957,7 @@ void DocumentRecoveryHandler::checkForPreviousCrashes(
                 callableFunc(tmp, dirs, it.fileName());
             }
             else {
-                Base::Console().log("Failed to lock file %s\n", fn.toUtf8().constData());
+                Base::Console().log("Failed to lock file {}\n", fn.toStdString());
             }
         }
     }

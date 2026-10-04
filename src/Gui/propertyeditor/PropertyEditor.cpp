@@ -86,12 +86,8 @@ PropertyEditor::PropertyEditor(QWidget* parent)
     setRootIsDecorated(false);
     setExpandsOnDoubleClick(false);
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    QStyleOptionViewItem opt = PropertyEditor::viewOptions();
-#else
     QStyleOptionViewItem opt;
     initViewItemOption(&opt);
-#endif
     this->background = opt.palette.dark();
     this->groupColor = opt.palette.color(QPalette::BrightText);
 
@@ -183,20 +179,11 @@ void PropertyEditor::setItemBackground(const QBrush& c)
     this->_itemBackground = c;
 }
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-QStyleOptionViewItem PropertyEditor::viewOptions() const
-{
-    QStyleOptionViewItem option = QTreeView::viewOptions();
-    option.showDecorationSelected = true;
-    return option;
-}
-#else
 void PropertyEditor::initViewItemOption(QStyleOptionViewItem* option) const
 {
     QTreeView::initViewItemOption(option);
     option->showDecorationSelected = true;
 }
-#endif
 
 bool PropertyEditor::event(QEvent* event)
 {
@@ -330,7 +317,8 @@ void PropertyEditor::closeEditor()
         // Brute-force workaround for https://github.com/FreeCAD/FreeCAD/issues/14350
         int currentIndex = 0;
         QTabBar* tabBar = nullptr;
-        if (auto mdiArea = Gui::MainWindow::getInstance()->findChild<QMdiArea*>()) {
+        auto mainWindow = Gui::MainWindow::getInstance();
+        if (auto mdiArea = mainWindow ? mainWindow->findChild<QMdiArea*>() : nullptr) {
             tabBar = mdiArea->findChild<QTabBar*>();
             if (tabBar) {
                 currentIndex = tabBar->currentIndex();
@@ -431,7 +419,7 @@ void PropertyEditor::recomputeDocument(App::Document* doc)
     catch (const std::exception& e) {
         Base::Console().error(
             "Unhandled std::exception caught in PropertyEditor::recomputeDocument.\n"
-            "The error message is: %s\n",
+            "The error message is: {}\n",
             e.what()
         );
     }
@@ -474,12 +462,12 @@ void PropertyEditor::closeEditor(QWidget* editor, QAbstractItemDelegate::EndEdit
         return;
     }
 
-    closeTransaction();
-
     // If we are not removing rows, then QTreeView::closeEditor() does nothing
     // because we are using persistent editor, so we have to call our own
     // version of closeEditor()
     this->closeEditor();
+
+    closeTransaction();
 
     QModelIndex indexSaved = currentIndex();
 
@@ -1532,11 +1520,7 @@ bool PropertyEditor::eventFilter(QObject* object, QEvent* event)
             ) {
                 if (indexResizable(mouse_event->pos()).isValid()) {
                     dragInProgress = true;
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-                    dragPreviousPos = mouse_event->x();
-#else
                     dragPreviousPos = mouse_event->position().toPoint().x();
-#endif
                     dragSection = indexResizable(mouse_event->pos()).column();
                     return true;
                 }

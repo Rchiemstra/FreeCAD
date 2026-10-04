@@ -54,7 +54,7 @@ using namespace Gui;
 /* TRANSLATOR PartDesignGui::TaskDraftParameters */
 
 TaskDraftParameters::TaskDraftParameters(ViewProviderDressUp* DressUpView, QWidget* parent)
-    : TaskDressUpParameters(DressUpView, false, true, parent)
+    : TaskDressUpParameters(DressUpView, false, true, false, true, parent)
     , ui(new Ui_TaskDraftParameters)
 {
     // we need a separate container widget to add all controls to
@@ -294,7 +294,7 @@ void TaskDraftParameters::apply()
 {
     // Alert user if he created an empty feature
     if (ui->listWidgetReferences->count() == 0) {
-        Base::Console().warning(tr("Empty draft created!\n").toStdString().c_str());
+        Base::Console().warning("{}", tr("Empty draft created!\n").toStdString());
     }
 
     TaskDressUpParameters::apply();

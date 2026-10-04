@@ -3587,7 +3587,7 @@ void Document::RestoreDocFile(Base::Reader& reader)
                 }
             }
             catch (const Base::Exception& e) {
-                Base::Console().error("%s\n", e.what());
+                Base::Console().error("{}\n", e.what());
             }
         }
     }
@@ -4913,7 +4913,7 @@ void Document::handleChildren3D(ViewProvider* viewProvider, bool deleting)
                             if (childRootNode == childGroup) {
                                 Base::Console().warning(
                                     "Document::handleChildren3D: Do not add "
-                                    "group of '%s' to itself\n",
+                                    "group of '{}' to itself\n",
                                     it->getNameInDocument()
                                 );
                             }
@@ -4926,7 +4926,7 @@ void Document::handleChildren3D(ViewProvider* viewProvider, bool deleting)
                             if (childFrontNode == frontGroup) {
                                 Base::Console().warning(
                                     "Document::handleChildren3D: Do not add "
-                                    "foreground group of '%s' to itself\n",
+                                    "foreground group of '{}' to itself\n",
                                     it->getNameInDocument()
                                 );
                             }
@@ -4939,7 +4939,7 @@ void Document::handleChildren3D(ViewProvider* viewProvider, bool deleting)
                             if (childBackNode == backGroup) {
                                 Base::Console().warning(
                                     "Document::handleChildren3D: Do not add "
-                                    "background group of '%s' to itself\n",
+                                    "background group of '{}' to itself\n",
                                     it->getNameInDocument()
                                 );
                             }
