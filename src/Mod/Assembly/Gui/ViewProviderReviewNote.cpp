@@ -427,7 +427,7 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
                     ++ReviewNoteTestHarness::applyExceptionsCaught;
 #endif
                     Base::Console().error(
-                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
+                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: {}\n",
                         e.what()
                     );
                     visualFrameDirty = true;
@@ -438,7 +438,7 @@ void ViewProviderReviewNote::attach(App::DocumentObject* obj)
                     ++ReviewNoteTestHarness::applyExceptionsCaught;
 #endif
                     Base::Console().error(
-                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: %s\n",
+                        "AssemblyGui::ViewProviderReviewNote: leader sync failed: {}\n",
                         e.what()
                     );
                     visualFrameDirty = true;

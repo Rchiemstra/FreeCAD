@@ -27,6 +27,8 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 
+#include <Mod/Assembly/App/Groups.h>
+
 #include "ViewProviderGroups.h"
 
 using namespace AssemblyGui;
@@ -81,3 +83,11 @@ bool ViewProviderReviewNoteGroup::onDelete(const std::vector<std::string>& subNa
     }
     return ViewProviderGroupBase::onDelete(subNames);
 }
+
+bool ViewProviderJointGroup::onDelete(const std::vector<std::string>&)
+{
+    auto* group = getObject<Assembly::JointGroup>();
+
+    // if empty or orphaned ok to delete.
+    return group && (group->Group.getValues().empty() || group->getParents().empty());
+};

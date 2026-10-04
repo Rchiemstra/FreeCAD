@@ -475,7 +475,7 @@ bool pathsAlias(const std::string& source, const std::string& target)
 void appendPostReplacementWarning(BackupPolicy::PostReplacementResult& result,
                                   std::string warning)
 {
-    Base::Console().warning("%s\n", warning.c_str());
+    Base::Console().warning("{}\n", warning.c_str());
     result.warnings.push_back(std::move(warning));
 }
 
@@ -1144,14 +1144,14 @@ void BackupPolicy::applyTimeStamp(const std::string& sourcename, const std::stri
                             try {
                                 if (!it.deleteFile()) {
                                     backupManagementError = true;
-                                    Base::Console().warning("Cannot remove backup file : %s\n",
-                                                            it.fileName().c_str());
+                                    Base::Console().warning("Cannot remove backup file : {}\n",
+                                                            it.fileName());
                                 }
                             }
                             catch (...) {
                                 backupManagementError = true;
-                                Base::Console().warning("Cannot remove backup file : %s\n",
-                                                        it.fileName().c_str());
+                                Base::Console().warning("Cannot remove backup file : {}\n",
+                                                        it.fileName());
                             }
                         }
                     }
@@ -1181,7 +1181,7 @@ void BackupPolicy::applyTimeStamp(const std::string& sourcename, const std::stri
                         // An error here is typically that we over-ran the maximum buffer length (
                         // which should be a *very* unusual condition).
                         Base::Console().error("Failed to create valid backup file name from format string:\n");
-                        Base::Console().error(saveBackupDateFormat.c_str());
+                        Base::Console().error("{}", saveBackupDateFormat);
                         const auto knownGoodFormat {"%Y-%m-%d_%H-%M-%S"};
                         std::strftime(buffer.data(), bufferLength, knownGoodFormat, &local_tm);
                     }
@@ -1263,8 +1263,8 @@ void BackupPolicy::applyTimeStamp(const std::string& sourcename, const std::stri
                 fi.deleteFile();
             }
             catch (...) {
-                Base::Console().warning("Cannot remove backup file: %s\n",
-                                        fi.fileName().c_str());
+                Base::Console().warning("Cannot remove backup file: {}\n",
+                                        fi.fileName());
                 backupManagementError = true;
             }
         }

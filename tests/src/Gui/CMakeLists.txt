@@ -39,7 +39,11 @@ add_executable(Gui_tests_run
         SoDatumLabel.cpp
         WindowLayout.cpp
         ViewProviderDoubleClick.cpp
+        NativeGesturePinchTest.cpp
+        NavigationStylePinchTest.cpp
+        NavigationStyleWheelTest.cpp
         SelectionTest.cpp
+        SoMouseWheelEventTest.cpp
 )
 
 # Qt tests
@@ -65,6 +69,10 @@ if(NOT WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:FreeCADMainCmd>"
             "$<TARGET_FILE_DIR:Gui_tests_run>/$<TARGET_FILE_NAME:FreeCADMainCmd>")
+endif()
+
+if(WIN32)
+    target_compile_definitions(Gui_tests_run PRIVATE QUARTER_DLL)
 endif()
 
 # Kept in its own process because it deliberately destroys the one supported

@@ -160,7 +160,7 @@ private:
     static void reportFailure(const char* message) noexcept
     {
         try {
-            Base::Console().error("Resilient lifecycle observer failed: %s\n", message);
+            Base::Console().error("Resilient lifecycle observer failed: {}\n", message);
         }
         catch (...) {
             // Logging is best-effort at an irrevocable lifecycle boundary.
@@ -401,7 +401,7 @@ private:
     static void reportFailure(const char* message) noexcept
     {
         try {
-            Base::Console().error("Resilient document observer failed: %s\n", message);
+            Base::Console().error("Resilient document observer failed: {}\n", message);
         }
         catch (...) {
             // Logging is best-effort for an authoritative state notification.
@@ -417,11 +417,11 @@ private:
             }
             catch (const Base::Exception& exception) {
                 Base::Console().error(
-                    "Resilient document observer failed: %s\n", exception.what());
+                    "Resilient document observer failed: {}\n", exception.what());
             }
             catch (const std::exception& exception) {
                 Base::Console().error(
-                    "Resilient document observer failed: %s\n", exception.what());
+                    "Resilient document observer failed: {}\n", exception.what());
             }
             catch (...) {
                 Base::Console().error(
