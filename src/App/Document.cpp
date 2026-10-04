@@ -7578,6 +7578,28 @@ bool Document::recomputeFeature(DocumentObject* feature, bool recursive)
         return false;
     }
 
+    // A feature that recomputes itself from inside its own execute() (CAM
+    // operations do this after updateDepths() so StartDepth/FinalDepth pick up
+    // the OpStartDepth/OpFinalDepth values they just wrote) only needs its
+    // expressions refreshed. Upstream's nested _recomputeFeature() does exactly
+    // that, and the Python feature's recursion guard skips the inner execute().
+    // The feature is already executing, so do not submit it again.
+    if (!recursive && feature->testStatus(ObjectStatus::Recompute)) {
+        try {
+            auto* ret = feature->ExpressionEngine.execute(PropertyExpressionEngine::ExecuteNonOutput);
+            if (ret != DocumentObject::StdReturn) {
+                ret->Which = feature;
+                d->addRecomputeLog(ret);
+                return false;
+            }
+        }
+        catch (const Base::Exception& e) {
+            d->addRecomputeLog(e.what(), feature);
+            return false;
+        }
+        return feature->isValid();
+    }
+
     static thread_local std::set<const Document*> activeCompatibilityWaits;
     if (!activeCompatibilityWaits.insert(this).second) {
         d->addRecomputeLog("reentrant isolated feature recompute is not supported", feature);

@@ -780,16 +780,17 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         The rotated Op* values are derived during execution, after the normal
         depth expressions have been evaluated.  The first-run fix must use
         those values only for their direct defaults; user expressions remain
-        the requested machining range.
+        the requested machining range.  The explicit StartDepth stays below
+        the default SafeHeight, which is measured in the work plane's frame.
         """
         job = self._createRotatedJob(Part.makeSphere(15, FreeCAD.Vector(25, 0, 15)))
         op = self._createRotatedOp(job, "ZLevelHybrid")
         op.BoundBox = "Stock"
-        op.setExpression("StartDepth", "20 mm")
+        op.setExpression("StartDepth", "15 mm")
         op.setExpression("FinalDepth", "-5 mm")
         self.doc.recompute()
 
-        self.assertAlmostEqual(op.StartDepth.Value, 20.0, places=3)
+        self.assertAlmostEqual(op.StartDepth.Value, 15.0, places=3)
         self.assertAlmostEqual(op.FinalDepth.Value, -5.0, places=3)
         self.assertAlmostEqual(op.OpStartDepth.Value, 16.0, places=3)
         self.assertAlmostEqual(op.OpFinalDepth.Value, -15.0, places=3)
