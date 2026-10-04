@@ -219,7 +219,7 @@ std::vector<int> SketchObject::chooseFilletsEdges(const std::vector<int>& GeoIdL
 int SketchObject::fillet(int GeoId, PointPos PosId, double radius, bool trim, bool createCorner, bool chamfer)
 {
     if (GeoId < 0 || GeoId > getHighestCurveIndex()) {
-        Base::Console().error("Invalid GeoId: %d\n", GeoId);
+        Base::Console().error("Invalid GeoId: {}\n", GeoId);
         return -1;
     }
 
@@ -232,7 +232,7 @@ int SketchObject::fillet(int GeoId, PointPos PosId, double radius, bool trim, bo
 
     // only coincident points between two (non-external) edges can be filleted
     if (GeoIdList.size() != 2 || GeoIdList[0] < 0 || GeoIdList[1] < 0) {
-        Base::Console().error("Invalid number of edges connected to GeoId: %d\n", GeoId);
+        Base::Console().error("Invalid number of edges connected to GeoId: {}\n", GeoId);
         return -1;
     }
 
@@ -2841,7 +2841,7 @@ bool SketchObject::convertToNURBS(int GeoId)
         }
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
         // revert to original values
         return false;
     }
@@ -2923,7 +2923,7 @@ bool SketchObject::increaseBSplineDegree(int GeoId, int degreeincrement /*= 1*/)
         bspline->increaseDegree(cdegree + degreeincrement);
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
         return false;
     }
 
@@ -2969,7 +2969,7 @@ bool SketchObject::decreaseBSplineDegree(int GeoId, int degreedecrement /*= 1*/)
         bspline->approximate(Precision::Confusion(), 20, maxdegree, GeomAbs_C0);
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
         return false;
     }
 
@@ -3084,7 +3084,7 @@ bool SketchObject::modifyBSplineKnotMultiplicity(int GeoId, int knotIndex, int m
         }
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
         return false;
     }
 
@@ -3232,7 +3232,7 @@ bool SketchObject::insertBSplineKnot(int GeoId, double param, int multiplicity)
         bspline->insertKnot(param, multiplicity);
     }
     catch (const Base::Exception& e) {
-        Base::Console().error("%s\n", e.what());
+        Base::Console().error("{}\n", e.what());
         return false;
     }
 

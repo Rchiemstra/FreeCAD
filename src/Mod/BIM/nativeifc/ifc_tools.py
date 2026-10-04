@@ -178,8 +178,8 @@ def setup_project(proj, filename, shapemode, silent):
     if "Schema" not in proj.PropertiesList:
         proj.addProperty("App::PropertyEnumeration", "Schema", "Base", locked=True)
     # bug in FreeCAD - to avoid a crash, pre-populate the enum with one value
-    proj.Schema = [ifcfile.wrapped_data.schema_name()]
-    proj.Schema = ifcfile.wrapped_data.schema_name()
+    proj.Schema = [ifcfile.schema]
+    proj.Schema = ifcfile.schema
     proj.Schema = ifcopenshell.ifcopenshell_wrapper.schema_names()
     return ifcfile, project, full
 
@@ -621,7 +621,10 @@ def add_properties(obj, ifcfile=None, ifcentity=None, links=False, shapemode=0, 
             obj.setPropertyStatus("ShapeMode", "Hidden")
     if ifcentity.is_a("IfcProduct"):
         obj.addProperty("App::PropertyLink", "Type", "IFC", locked=True)
-    attr_defs = ifcentity.wrapped_data.declaration().as_entity().all_attributes()
+    declaration = getattr(ifcentity, "declaration", None)
+    if declaration is None:
+        declaration = ifcentity.wrapped_data.declaration().as_entity()
+    attr_defs = declaration.all_attributes()
     try:
         info_ifcentity = ifcentity.get_info()
     except:
@@ -825,7 +828,7 @@ def add_properties(obj, ifcfile=None, ifcentity=None, links=False, shapemode=0, 
     elif ifcentity.is_a("IfcControl"):
         ifc_psets.show_psets(obj)
 
-    restore_spatial_data(obj, ifcentity, ifcfile)
+    restore_storey_data(obj, ifcentity, ifcfile)
 
     # link Label2 and Description
     if "Description" in obj.PropertiesList and hasattr(obj, "setExpression"):
@@ -841,7 +844,7 @@ def get_quantity_value(ifcentity, quantity_name):
         pset = rel.RelatingPropertyDefinition
         if not pset or not pset.is_a("IfcElementQuantity"):
             continue
-        for quantity in getattr(pset, "Quantities", []) or []:
+        for quantity in getattr(pset, "Quantities", []):
             if quantity.Name != quantity_name:
                 continue
             for attr in (
@@ -866,7 +869,7 @@ def restore_freecad_property(obj, ifcentity, property_name, ifcfile, pset=None, 
         pset = ifc_psets.get_pset("FreeCADPropertySet", ifcentity)
     if not pset:
         return False
-    for prop in getattr(pset, "HasProperties", []) or []:
+    for prop in getattr(pset, "HasProperties", []):
         if prop.Name != f"FreeCAD_{property_name}" or not getattr(prop, "NominalValue", None):
             continue
         value = prop.NominalValue.wrappedValue
@@ -882,32 +885,31 @@ def restore_freecad_property(obj, ifcentity, property_name, ifcfile, pset=None, 
     return False
 
 
-def restore_spatial_data(obj, ifcentity, ifcfile):
-    """Restores placement and level metadata not covered by geometry import."""
+def restore_storey_data(obj, ifcentity, ifcfile):
+    """Restores storey level metadata not covered by geometry import."""
 
-    if ifcentity.is_a("IfcAnnotation"):
+    if not ifcentity.is_a("IfcBuildingStorey"):
         return
-    placement = getattr(ifcentity, "ObjectPlacement", None)
-    if placement and ("Placement" in obj.PropertiesList):
-        obj.Placement = ifc_export.get_placement(placement, ifcfile)
-    if ifcentity.is_a("IfcBuildingStorey"):
-        elevation = getattr(ifcentity, "Elevation", None)
-        if (not placement) and ("Placement" in obj.PropertiesList) and (elevation is not None):
-            restored = FreeCAD.Placement(obj.Placement)
-            restored.Base.z = elevation * (1 / get_scale(ifcfile))
-            obj.Placement = restored
-        if "LevelOffset" in obj.PropertiesList:
-            restore_freecad_property(obj, ifcentity, "LevelOffset", ifcfile)
-        if ("Height" in obj.PropertiesList) and not restore_freecad_property(
-            obj, ifcentity, "Height", ifcfile
-        ):
-            quantity = get_quantity_value(ifcentity, "Height")
-            if quantity is not None:
-                obj.Height = quantity * (1 / get_scale(ifcfile))
-        if ("Elevation" in obj.PropertiesList) and ("Placement" in obj.PropertiesList):
-            obj.setExpression("Elevation", "Placement.Base.z")
-        if ("RefElevation" in obj.PropertiesList) and ("Elevation" in obj.PropertiesList):
-            obj.setExpression("RefElevation", "Elevation.Value")
+
+    elevation = getattr(ifcentity, "Elevation", None)
+    if elevation is not None and "Placement" in obj.PropertiesList:
+        obj.Placement.Base.z = elevation * (1 / get_scale(ifcfile))
+
+    if "LevelOffset" in obj.PropertiesList:
+        restore_freecad_property(obj, ifcentity, "LevelOffset", ifcfile)
+
+    if ("Height" in obj.PropertiesList) and not restore_freecad_property(
+        obj, ifcentity, "Height", ifcfile
+    ):
+        quantity = get_quantity_value(ifcentity, "Height")
+        if quantity is not None:
+            obj.Height = quantity * (1 / get_scale(ifcfile))
+
+    if ("Elevation" in obj.PropertiesList) and ("Placement" in obj.PropertiesList):
+        obj.setExpression("Elevation", "Placement.Base.z")
+
+    if ("RefElevation" in obj.PropertiesList) and ("Elevation" in obj.PropertiesList):
+        obj.setExpression("RefElevation", "Elevation.Value")
 
 
 def remove_unused_properties(obj):
@@ -962,7 +964,7 @@ def get_ifc_classes(obj, baseclass):
     if not ifcfile:
         return [baseclass]
     classes = []
-    schema = ifcfile.wrapped_data.schema_name()
+    schema = ifcfile.schema
     schema = ifcopenshell.ifcopenshell_wrapper.schema_by_name(schema)
     try:
         declaration = schema.declaration_by_name(baseclass)

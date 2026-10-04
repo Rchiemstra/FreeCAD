@@ -23,6 +23,7 @@
 
 
 #include <algorithm>
+#include <format>
 #include <iomanip>
 #include <limits>
 #include <QApplication>
@@ -605,7 +606,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
             [command] { Base::Interpreter().runString(command.c_str()); });
         if (!outcome.completed()) {
             Base::Console().error(
-                "PropertyItem::setPropertyValue compatibility mutation failed: %s\n",
+                "PropertyItem::setPropertyValue compatibility mutation failed: {}\n",
                 outcome.diagnostic.c_str());
         }
     };
@@ -687,7 +688,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
     }
     catch (Base::PyException& e) {
         e.reportException();
-        Base::Console().error("Stack Trace: %s\n", e.getStackTrace().c_str());
+        Base::Console().error("Stack Trace: {}\n", e.getStackTrace());
     }
     catch (Base::Exception& e) {
         e.reportException();
@@ -972,11 +973,7 @@ QWidget* PropertyFontItem::createEditor(
 void PropertyFontItem::setEditorData(QWidget* editor, const QVariant& data) const
 {
     auto cb = qobject_cast<QComboBox*>(editor);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    QStringList familyNames = QFontDatabase().families(QFontDatabase::Any);
-#else
     QStringList familyNames = QFontDatabase::families(QFontDatabase::Any);
-#endif
     cb->addItems(familyNames);
     int index = familyNames.indexOf(data.toString());
     cb->setCurrentIndex(index);
@@ -1247,7 +1244,7 @@ QString PropertyUnitItem::toString(const QVariant& prop) const
     const Base::Quantity& unit = prop.value<Base::Quantity>();
     std::string str = unit.getUserString();
     if (hasExpression()) {
-        str += fmt::format("  ( {} )", getExpressionString());
+        str += std::format("  ( {} )", getExpressionString());
     }
 
     return QString::fromStdString(str);
@@ -1870,14 +1867,14 @@ PropertyVectorDistanceItem::PropertyVectorDistanceItem()
 QString PropertyVectorDistanceItem::toString(const QVariant& prop) const
 {
     const Base::Vector3d& value = prop.value<Base::Vector3d>();
-    std::string str = fmt::format(
+    std::string str = std::format(
         "[{} {} {}]",
         Base::Quantity(value.x, Base::Unit::Length).getUserString(),
         Base::Quantity(value.y, Base::Unit::Length).getUserString(),
         Base::Quantity(value.z, Base::Unit::Length).getUserString()
     );
     if (hasExpression()) {
-        str += fmt::format("  ( {} )", getExpressionString());
+        str += std::format("  ( {} )", getExpressionString());
     }
     return QString::fromStdString(str);
 }
@@ -1897,7 +1894,7 @@ void PropertyVectorDistanceItem::setValue(const QVariant& variant)
         return;
     }
     const Base::Vector3d& value = variant.value<Base::Vector3d>();
-    std::string val = fmt::format(
+    std::string val = std::format(
         "({:.{}g}, {:.{}g}, {:.{}g})",
         value.x,
         highPrec,
@@ -2653,7 +2650,7 @@ void PropertyRotationItem::setValue(const QVariant& value)
     Base::Vector3d axis;
     double angle {};
     h.getValue(axis, angle);
-    std::string val = fmt::format(
+    std::string val = std::format(
         "App.Rotation(App.Vector({:.{}g},{:.{}g},{:.{}g}),{:.{}g})",
         axis.x,
         highPrec,
@@ -2988,7 +2985,7 @@ void PropertyPlacementItem::setValue(const QVariant& value)
     Base::Vector3d axis;
     double angle {};
     h.getValue(axis, angle);
-    std::string str = fmt::format(
+    std::string str = std::format(
         "App.Placement("
         "App.Vector({:.{}g},{:.{}g},{:.{}g}),"
         "App.Rotation(App.Vector({:.{}g},{:.{}g},{:.{}g}),{:.{}g}))",

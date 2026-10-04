@@ -103,7 +103,7 @@ void AutoSaver::flushPendingSave(const QString& documentName)
         saveDocument(it->first, *it->second);
     }
     catch (...) {
-        Base::Console().error("Failed to auto-save document '%s'\n", it->first.c_str());
+        Base::Console().error("Failed to auto-save document '{}'\n", it->first);
     }
 }
 
@@ -192,7 +192,7 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
             doc->reportRecoverySaveOutcome(
                 doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
             Base::Console().warning(
-                "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
+                "Auto-recovery write for document '{}' did not produce a stable snapshot\n",
                 name.c_str()
             );
             return;
@@ -209,7 +209,7 @@ void AutoSaver::saveDocument(const std::string& name, AutoSaveProperty& saver)
     doc->reportRecoverySaveOutcome(doc->TransientDir.getStrValue(), true);
 
     Base::Console().log(
-        "Save auto-recovery file in %fs\n",
+        "Save auto-recovery file in {:f}s\n",
         Base::TimeElapsed::diffTimeF(startTime, Base::TimeElapsed())
     );
 }
@@ -238,7 +238,7 @@ void AutoSaver::flushPendingSaveForIdentity(const QString& documentName,
         saveDocument(saver->first, *saver->second);
     }
     catch (...) {
-        Base::Console().error("Failed to auto-save document '%s'\n", saver->first.c_str());
+        Base::Console().error("Failed to auto-save document '{}'\n", saver->first.c_str());
     }
 }
 
@@ -252,7 +252,7 @@ void AutoSaver::timerEvent(QTimerEvent* event)
                 break;
             }
             catch (...) {
-                Base::Console().error("Failed to auto-save document '%s'\n", it.first.c_str());
+                Base::Console().error("Failed to auto-save document '{}'\n", it.first);
             }
         }
     }

@@ -25,6 +25,7 @@ import FreeCAD
 import Part
 import Path
 import unittest
+import Path.Main.Workplane as PathWorkplane
 import Path.Main.Job as PathJob
 from CAMTests.PathTestUtils import PathTestWithAssets
 
@@ -677,13 +678,24 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         proxy.initOperation(op)
         op.Strategy = strategy
         op.Base = job.Model.Group
-        op.Workplane = FreeCAD.Vector(0, -1, 0)
+        # Workplane links a named plane on the Job; the test names it by tool axis.
+        op.Workplane = PathWorkplane.createWorkplaneFromToolAxis(job, FreeCAD.Vector(0, -1, 0))
         job.Operations.addObject(op)
         return op
 
     @staticmethod
     def _rotaryMoves(op):
-        return [c for c in op.Path.Commands if c.Name == "G0" and "A" in c.Parameters]
+        """The rotary positioning the post would command for the op. The
+        op's own path carries no rotary words - it is generated in its work
+        plane's frame - so this solves, as the post does, from its Placement
+        on the Job's machine."""
+        import Path.Base.Generator.rotation as rotation
+        import PathScripts.PathUtils as PathUtils
+
+        machine = PathUtils.findParentJob(op).Proxy.getMachine()
+        axis = op.Placement.Rotation.multVec(FreeCAD.Vector(0, 0, 1))
+        result = rotation.solve_orientation(machine, axis)
+        return [Path.Command("G0", dict(result.angles))] if result.success else []
 
     @staticmethod
     def _cutValues(op, axis):
@@ -768,16 +780,17 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         The rotated Op* values are derived during execution, after the normal
         depth expressions have been evaluated.  The first-run fix must use
         those values only for their direct defaults; user expressions remain
-        the requested machining range.
+        the requested machining range.  The explicit StartDepth stays below
+        the default SafeHeight, which is measured in the work plane's frame.
         """
         job = self._createRotatedJob(Part.makeSphere(15, FreeCAD.Vector(25, 0, 15)))
         op = self._createRotatedOp(job, "ZLevelHybrid")
         op.BoundBox = "Stock"
-        op.setExpression("StartDepth", "20 mm")
+        op.setExpression("StartDepth", "15 mm")
         op.setExpression("FinalDepth", "-5 mm")
         self.doc.recompute()
 
-        self.assertAlmostEqual(op.StartDepth.Value, 20.0, places=3)
+        self.assertAlmostEqual(op.StartDepth.Value, 15.0, places=3)
         self.assertAlmostEqual(op.FinalDepth.Value, -5.0, places=3)
         self.assertAlmostEqual(op.OpStartDepth.Value, 16.0, places=3)
         self.assertAlmostEqual(op.OpFinalDepth.Value, -15.0, places=3)

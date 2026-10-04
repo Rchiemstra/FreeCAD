@@ -72,6 +72,10 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
         for ch in text:
             self.key_click(widget, self.KEYS[ch], ch)
 
+    def cancel_drawing_tool(self, viewport):
+        viewport.setFocus()
+        self.key_click(viewport, QtCore.Qt.Key_Escape)
+
     def active_spinbox(self):
         widget = QtGui.QApplication.focusWidget()
         if isinstance(widget, QtGui.QAbstractSpinBox):
@@ -746,7 +750,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
         )
 
         before_cancel = self.save_origin_trace(
-            "before_first_right_click",
+            "before_first_cancel",
             extra={
                 "drawing_point": [int(drawing_point.x()), int(drawing_point.y())],
                 "origin_point": [int(origin_point.x()), int(origin_point.y())],
@@ -754,15 +758,9 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
             viewport=viewport,
             qt_point=drawing_point,
         )
-        self.move(viewport, drawing_point)
+        self.cancel_drawing_tool(viewport)
         self.save_origin_trace(
-            "after_move_before_first_right_click",
-            viewport=viewport,
-            qt_point=drawing_point,
-        )
-        self.right_click(viewport, drawing_point)
-        self.save_origin_trace(
-            "after_first_right_click",
+            "after_first_cancel",
             extra={"before_cancel_decision": (before_cancel or {}).get("decision")},
             viewport=viewport,
             qt_point=drawing_point,
@@ -772,7 +770,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
             timeout_ms=3000,
         )
         self.save_origin_trace(
-            "after_wait_filled_following_first_right_click",
+            "after_wait_filled_following_first_cancel",
             extra={
                 "wait_restored_filled": restored_filled,
                 "timeout_ms": 3000,
@@ -806,8 +804,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
             0,
             "Expected geometry away from the origin before cancelling the tool",
         )
-        self.move(viewport, second_point)
-        self.right_click(viewport, second_point)
+        self.cancel_drawing_tool(viewport)
         self.assertTrue(
             self.wait_until(
                 lambda: self.origin_marker_is("CIRCLE_FILLED"),
@@ -828,8 +825,7 @@ class TestOnViewParameterGui(SketcherGuiTestCase):
                 ),
                 f"Expected {command} to activate the hollow origin marker",
             )
-            self.move(viewport, drawing_point)
-            self.right_click(viewport, drawing_point)
+            self.cancel_drawing_tool(viewport)
             self.assertTrue(
                 self.wait_until(
                     lambda: self.origin_marker_is("CIRCLE_FILLED"),
