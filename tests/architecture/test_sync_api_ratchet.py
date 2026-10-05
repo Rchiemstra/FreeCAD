@@ -520,6 +520,10 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "obj.Document.recompute() required for clone shape creation; result read immediately after",
     ),
+    "src/Mod/CAM/Path/Main/Workplane.py||doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/CAM/Path/Op/Base.py||obj.Document.recompute()": (
         1,
         "obj.Document.recompute() after replacing a CAM base-link property; the restored operation reads the recomputed shape",
