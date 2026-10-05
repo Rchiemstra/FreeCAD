@@ -604,6 +604,21 @@ void Command::testActive()
         }
     }
 
+    // isActive() runs from the action-update timer, so an exception from it
+    // would propagate through Qt. Treat the command as inactive this round.
+    const auto safeIsActive = [](Command& cmd) {
+        try {
+            return cmd.isActive();
+        }
+        catch (const Base::Exception& e) {
+            FC_LOG("Command " << cmd.getName() << " isActive() failed: " << e.what());
+        }
+        catch (const std::exception& e) {
+            FC_LOG("Command " << cmd.getName() << " isActive() failed: " << e.what());
+        }
+        return false;
+    };
+
     auto pcAction = qobject_cast<Gui::ActionGroup*>(_pcAction);
     if (pcAction) {
         Gui::CommandManager& rcCmdMgr = Gui::Application::Instance->commandManager();
@@ -615,12 +630,12 @@ void Command::testActive()
             }
             Command* cmd = rcCmdMgr.getCommandByName(name);
             if (cmd) {
-                action->setEnabled(cmd->isActive());
+                action->setEnabled(safeIsActive(*cmd));
             }
         }
     }
 
-    bool bActive = isActive();
+    bool bActive = safeIsActive(*this);
     _pcAction->setEnabled(bActive);
 }
 
