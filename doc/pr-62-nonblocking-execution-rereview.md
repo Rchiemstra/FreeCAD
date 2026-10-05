@@ -438,3 +438,100 @@ caveats:
    ratchet test to git, and split the fix pass into reviewable commits.
 7. Add tests that would have caught these regressions: a GUI-hosted close, close-with-Save, and
    an async-mutation `wait()` round trip on Windows.
+
+## Follow-up: state after the 2026-10-05 pass
+
+The committed fix pass (`55e13f0e83`) already differed from the working tree reviewed above.
+This section records each finding against the branch after `FreeCAD-start` was merged in
+again (PR #63, main as of 2026-10-04) and the fixes below.
+
+### Findings resolved in `55e13f0e83`
+
+| ID | Resolution |
+|----|------------|
+| N1 | The `Close` command admits only the thread it marshalled `closeDocument()` onto (`beginMarshalledCloseAdmission()`), and shuts the lane down only after a successful close. Gtest `GuiMarshalledCloseRemovesDocument`. |
+| N2 | `PendingLaneCloseKind` records whether a document close or an application close is pending. Save completion re-issues that close, and every terminal state, including `Stalled`, clears the flag. |
+| N3 | The future carries the pure C++ `AsyncMutationPayload`. `postToOwner()` rejects work during `Close` and after the document is gone, and `wait()` refuses the GUI thread. Gtests `AsyncMutationWaitReturnsCommitDict` and `AsyncMutationWaitRefusesGuiThread`. |
+| N4, N5 | The blanket `recomputeAsync()` rewrite and the `getDocument()` compile errors are not in the commit. |
+| N9 | `MainWindow::closeAllDocuments()` judges a pending Save As by the pending flag, not by `FileName`. |
+| M2 | The lane `Edit` opens a transaction named `Edit`. Gtest `EditCommandRollsBackOnUnknownObject` changes one property, fails on the next, checks the rollback, then checks `UndoNames` and `undo()`. |
+| M3, M4 | Owner-thread writes to `ActiveCommand` take `_mutex`. Terminal snapshots are capped at 64 per lane, and the process archive drops the oldest closed documents past 32. |
+| H3 | Automatic orphan cleanup no longer opens a modal or starts an application close. *Skip* marks the document `skipsSaveOnClose`. |
+| L3, L4 | The section token includes vertex coordinates and no longer computes `Volume`. Header line endings are restored. |
+
+### Fixed in this pass
+
+- **Build.** The new gtests did not compile with GCC: a static data member in a local class,
+  and a `std::string` passed to `runString()`. `GuiCloseDispatcher` moved to namespace scope.
+- **Transaction ownership.** The lane `Edit` called `_openTransaction()`, `_commitTransaction()`
+  and `_abortTransaction()` directly, which `test_document_transaction_ownership.py` forbids.
+  It now goes through the collaboration service (`openMutationTransaction()`,
+  `commitApplicationTransaction()`, `abortApplicationTransaction()`), the same per-document
+  terminals the commit coordinator owns.
+- **N3 error path.** A callback failure propagated through the future reached `wait()` as a
+  generic runtime error. `wait()` now restores the original Python exception.
+- **N7.** Cancelling from a non-owner thread only recorded the request; preparations that were
+  already running were cancelled only after they finished. `poll()` now forwards the cancel
+  to them on the owner thread.
+  The rework also recorded the flag before its re-entrancy check, so a commit observer's
+  rejected `cancel()` still cancelled the outer recompute
+  (`commitObserverRejectsReentrantMutationsWithoutBlockingOuterCommit`). An owner-thread
+  re-entrant cancel is now rejected before it changes anything.
+- **Transaction control during replay (M1).** GUI-thread transaction control raced the lane
+  owner replaying a commit's notifications and was refused. Leaving sketch edit opens an
+  `AutoTransaction`, so main's new `test_origin_marker_tracks_drawing_tool_state` failed in
+  teardown. Only re-entrant calls are refused now: calls on the replaying owner thread, and
+  calls inside a blocking notification marshalled to the GUI thread. Other threads wait up
+  to 10 s for the replay to finish, servicing marshalled tasks and releasing the GIL.
+- **Draft angular dimensions.** The shared SVG geometry helper (L7) dropped `radius` and
+  `angle`, which `updateData` still uses: main's arrow chords read `radius`, and the
+  `Angle` update reads `angle`. The helper now returns both (`NameError` in
+  `TestDraftGui`).
+- **Tree status during a lane recompute.** `TreeWidget::onUpdateStatus()` read live object
+  state while the lane owner recomputed a sketch: the overlay icon reads `ExternalGeo`. It
+  crashed on freed geometry, and `TestSketcherGui` segfaulted in 3 of 5 runs. The update now
+  uses the committed presentation or retries once the lane is idle, as it already did during
+  undo and redo (0 of 5).
+- **Merge with `FreeCAD-start`.** Seven conflicts were resolved. The branch's log calls were
+  converted to the `std::format` placeholders that main now uses: 13 printf-style calls would
+  have printed a literal `%s`.
+- **N8.** Unchanged lines in 16 files had been rewritten from mixed line endings to CRLF.
+  They are restored, and the PR diff is now the same with and without `--ignore-cr-at-eol`.
+- **Architecture tier.** The tier was red on the branch. The sync-API ratchet still described
+  the reverted `recomputeAsync()` rewrite. The AB-21, view-provider and CC-WP05 inventories
+  had drifted with main's line numbers, and main removed the AxisMap task-panel transaction
+  rows. The inventories were regenerated with their own generators, and the hard-coded
+  sites in the tests were remapped by line diff.
+
+### Local pipeline run (Docker)
+
+Every step of `.woodpecker/ci.yml` was run on the final tree in the CI images
+(`freecad-ci-deps:24.04`, `freecad-ci-mcp:24.04`, `python:3.12`, `pixi:0.81.0`), with
+freecad-mcp at the pinned `1608657`:
+
+| Step | Result |
+|------|--------|
+| all-submodules-check, mcp-pin-on-main, pixi-lock-check | pass |
+| freecad-lint | pass (0 misspellings in 324 changed files) |
+| freecad-arch-tests | 329 passed |
+| freecad-configure-debug, freecad-debug-build | pass (GCC, `-Wall -Wextra`) |
+| freecad-unit-tests | every gtest binary passes (App 1110) |
+| freecad-integration-tests | `FreeCADCmd -t 0` passes |
+| freecad-e2e | every GUI module passes |
+| freecad-mcp-lint, freecad-mcp-unit-tests, freecad-mcp-sidecar-integration | pass (12076 unit) |
+| freecad-mcp-load-preflight | `PREFLIGHT_OK` |
+| freecad-mcp-core-{collab,sketch,part,rest} | 59 / 256 / 335 / 106 passed |
+| freecad-mcp-e2e | 128 passed |
+
+### Not fixed here
+
+- **B4 / N6 (MCP mutations in GUI FreeCAD).** The addon commits `2be76ee`..`8069f11` make
+  every typed handler return a pending waiter on the GUI thread. They fail MCP's own gates:
+  mypy reports 278 errors, and 59 unit tests fail. They were never on freecad-mcp `main`,
+  which the `mcp-pin-on-main` gate requires. PR #62 therefore pins freecad-mcp `main`
+  (`1608657`) again, and that work continues on the freecad-mcp branch
+  `feature/nonblocking-document-execution`.
+  A GUI-thread mutation still raises `DocumentWouldBlock`. That is an explicit refusal, not
+  a crash or a wrong result.
+- **M1** is still only checked statically. **L2** (pick after an in-place mesh edit) and
+  **L7** (duplicated Draft SVG geometry) are unchanged.
