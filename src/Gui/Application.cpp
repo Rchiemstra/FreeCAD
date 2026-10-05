@@ -531,7 +531,7 @@ void runMarshalledTask(MarshalledTask& task)
         e.reportException();
     }
     catch (const std::exception& e) {
-        Base::Console().error("Unhandled exception in GUI-thread notification: %s\n", e.what());
+        Base::Console().error("Unhandled exception in GUI-thread notification: {}\n", e.what());
     }
 }
 

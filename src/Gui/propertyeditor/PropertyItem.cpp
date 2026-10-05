@@ -634,7 +634,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
                 const auto copiedValue = copyPropertyValueFromPythonRhs(*prop, value);
                 if (!copiedValue) {
                     Base::Console().error(
-                        "PropertyItem::setPropertyValue: failed to copy document property '%s'\n",
+                        "PropertyItem::setPropertyValue: failed to copy document property '{}'\n",
                         propertyName);
                     continue;
                 }
@@ -681,7 +681,7 @@ void PropertyItem::setPropertyValue(const std::string& value)
             const auto copiedValue = copyPropertyValueFromPythonRhs(*prop, value);
             if (!copiedValue) {
                 Base::Console().error(
-                    "PropertyItem::setPropertyValue: failed to copy property '%s' on '%s'\n",
+                    "PropertyItem::setPropertyValue: failed to copy property '{}' on '{}'\n",
                     propertyName,
                     objectName);
                 continue;

@@ -708,10 +708,10 @@ void reportDocumentCommandSubmitBlocked(
         window->showMessage(message, 5000);
     }
     if (quiet) {
-        Base::Console().warning("%s\n", message.toUtf8().constData());
+        Base::Console().warning("{}\n", message.toUtf8().constData());
     }
     else {
-        Base::Console().message("%s\n", message.toUtf8().constData());
+        Base::Console().message("{}\n", message.toUtf8().constData());
     }
 }
 
@@ -724,7 +724,7 @@ void reportDocumentSaveDeferred(App::Document& document)
     if (auto* window = getMainWindow()) {
         window->showMessage(message, 5000);
     }
-    Base::Console().message("%s\n", message.toUtf8().constData());
+    Base::Console().message("{}\n", message.toUtf8().constData());
 }
 
 void reportDocumentSaveAdmitted(App::Document& document)
@@ -736,7 +736,7 @@ void reportDocumentSaveAdmitted(App::Document& document)
     if (auto* window = getMainWindow()) {
         window->showMessage(message, 5000);
     }
-    Base::Console().message("%s\n", message.toUtf8().constData());
+    Base::Console().message("{}\n", message.toUtf8().constData());
 }
 
 bool submitDocumentClose(App::Document& document, const bool allowApplicationClose)
@@ -762,7 +762,7 @@ bool submitDocumentClose(App::Document& document, const bool allowApplicationClo
             == App::DocumentExecutionClosePolicy::UnresponsiveLaneAction::RequestProcessExit) {
             if (!allowApplicationClose) {
                 Base::Console().warning(
-                    "Document '%s' execution is stalled; automatic cleanup will not "
+                    "Document '{}' execution is stalled; automatic cleanup will not "
                     "close the application.\n",
                     document.getName());
                 return false;

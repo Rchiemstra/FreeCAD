@@ -107,7 +107,7 @@ void DrawViewDraft::updateSymbolFromDraft()
     if (App::MainThreadSignalConfig::hasHooks()
         && !App::MainThreadSignalConfig::isMainThread()) {
         Base::Console().warning(
-            "DrawViewDraft::updateSymbolFromDraft() skipped off the main thread for %s\n",
+            "DrawViewDraft::updateSymbolFromDraft() skipped off the main thread for {}\n",
             getNameInDocument() ? getNameInDocument() : "?");
         return;
     }

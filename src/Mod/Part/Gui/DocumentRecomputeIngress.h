@@ -50,7 +50,7 @@ inline bool reportDocumentRecomputeSubmitOutcome(
         message += QLatin1Char('\n') + QString::fromStdString(outcome.diagnostic);
     }
 
-    Base::Console().warning("%s\n", message.toUtf8().constData());
+    Base::Console().warning("{}\n", message.toUtf8().constData());
     if (parent) {
         QMessageBox::warning(parent, QObject::tr("Recompute"), message);
     }

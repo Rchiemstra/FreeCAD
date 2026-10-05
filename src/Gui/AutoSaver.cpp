@@ -292,7 +292,7 @@ void AutoSaver::completeRecoverySnapshotSave(
         doc->reportRecoverySaveOutcome(
             doc->TransientDir.getStrValue(), false, "Recovery snapshot was not stable");
         Base::Console().warning(
-            "Auto-recovery write for document '%s' did not produce a stable snapshot\n",
+            "Auto-recovery write for document '{}' did not produce a stable snapshot\n",
             name.c_str()
         );
         return;

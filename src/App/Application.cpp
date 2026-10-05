@@ -2187,10 +2187,10 @@ void Application::slotFinishSaveDocument(const Document& doc, const std::string&
         this->signalFinishSaveDocument(doc, filename);
     }
     catch (const Base::Exception& exception) {
-        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+        Base::Console().error("Legacy finish-save observer failed: {}\n", exception.what());
     }
     catch (const std::exception& exception) {
-        Base::Console().error("Legacy finish-save observer failed: %s\n", exception.what());
+        Base::Console().error("Legacy finish-save observer failed: {}\n", exception.what());
     }
     catch (...) {
         Base::Console().error("Legacy finish-save observer failed with an unknown exception\n");
