@@ -911,6 +911,8 @@ class ViewProviderAngularDimension(ViewProviderDimensionBase):
 
         geometry = _derive_angular_dimension_svg_geometry(obj, vobj)
         self.circle = geometry["circle"]
+        radius = geometry["radius"]
+        angle = geometry["angle"]
         self.p1 = geometry["p1"]
         self.p2 = geometry["p2"]
         self.p3 = geometry["p3"]

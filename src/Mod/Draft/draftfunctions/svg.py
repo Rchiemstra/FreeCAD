@@ -264,6 +264,8 @@ def _derive_angular_dimension_svg_geometry(obj, vobj):
 
     return {
         "circle": circle,
+        "radius": radius,
+        "angle": angle,
         "p1": p1,
         "p2": p2,
         "p3": p3,
