@@ -1391,3 +1391,37 @@ class PartFaceMakerBuildFaceTests(unittest.TestCase):
             2,
             f"Expected >=2 faces in InternalShape, got {len(sk.InternalShape.Faces)}",
         )
+
+
+class PartShapeCacheRestrictedCases(unittest.TestCase):
+    """Part.getShape() while the document refuses new properties.
+
+    The shape cache is a hidden dynamic property added on first use. Inside a
+    collaboration stable boundary the document refuses it, and getShape()
+    raised instead of not caching. On CI the GUI action timer asked
+    Part_CheckGeometry whether it is active during a commit, the exception
+    escaped through Qt and the tree crashed later (TestArchGui).
+    """
+
+    def setUp(self):
+        self.doc = FreeCAD.newDocument("PartShapeCacheRestricted")
+        box = self.doc.addObject("Part::Box", "Box")
+        self.group = self.doc.addObject("App::DocumentObjectGroup", "Group")
+        self.group.Group = [box]
+        self.doc.recompute()
+
+    def tearDown(self):
+        FreeCAD.closeDocument(self.doc.Name)
+
+    def testGroupShapeOutsideCommit(self):
+        self.assertEqual(len(Part.getShape(self.group).Solids), 1)
+
+    def testGroupShapeInsideRestrictedCommit(self):
+        shapes = []
+
+        def read_shape():
+            shapes.append(Part.getShape(self.group))
+
+        result = self.doc.commitCompatibilityMutation(read_shape)
+        self.assertTrue(result["committed"], result)
+        self.assertEqual(len(shapes[0].Solids), 1)
