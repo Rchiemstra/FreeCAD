@@ -2187,7 +2187,16 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                     // call only once — enforced by the valid() check above).
                     PY_TRY
                     {
-                        const AsyncMutationPayload payload = state->future->get();
+                        AsyncMutationPayload payload;
+                        try {
+                            payload = state->future->get();
+                        }
+                        catch (const PythonCompatibilityCallbackFailure&) {
+                            // The callback or postcondition raised and the commit
+                            // propagated it: re-raise the original Python error.
+                            state->callbackError->restore();
+                            return nullptr;
+                        }
                         if (payload.callbackFailed) {
                             // Restore the saved Python exception on *this* thread
                             // (the RPC/waiter thread), not the owner thread.
