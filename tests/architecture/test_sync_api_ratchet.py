@@ -48,9 +48,49 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "intentional sync close in crash-recovery code; no document-lock or completion callback available",
     ),
+    "src/Mod/Assembly/CommandCreateJoint.py||Gui.doCommand(\"UtilsAssembly.activeAssembly().Document.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Assembly/CommandCreateJoint.py||assembly.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/Assembly/CommandInsertNewPart.py||doc.recompute()": (
         1,
         "doc.recompute() after linking a new part into the assembly; the assembly reads the result immediately",
+    ),
+    "src/Mod/BIM/Arch.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/Arch.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/Arch.py||rebar.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchAxis.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchAxisSystem.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchBuilding.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchBuildingPart.py||FreeCAD.ActiveDocument.recompute()": (
+        4,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchCommands.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/BIM/ArchCommands.py||document.recompute()": (
         1,
@@ -60,9 +100,145 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "document.recompute() in BIM utility helpers; another agent owns all BIM source",
     ),
+    "src/Mod/BIM/ArchComponent.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchFloor.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchGrid.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchMaterial.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchNesting.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchPipe.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchProfile.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchReference.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchReport.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchRoof.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchSchedule.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/BIM/ArchSectionPlane.py||FreeCAD.ActiveDocument.recompute()": (
         2,
         "FreeCAD.ActiveDocument.recompute() in ArchSectionPlane; protected file (another agent owns)",
+    ),
+    "src/Mod/BIM/ArchStructure.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchStructure.py||self.doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchWall.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/ArchWindow.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/BimSelect.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimArchUtils.py||FreeCAD.ActiveDocument.recompute()": (
+        7,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimBox.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimBuildingPart.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimClassification.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimConvert.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimCurtainwall.py||self.doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimCutPlane.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimDrawingView.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimEquipment.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimFence.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimFrame.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimIfcElements.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimIfcExplorer.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimIfcProperties.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimIfcQuantities.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimImagePlane.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimLayers.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimLibrary.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/BIM/bimcommands/BimLibrary.py||FreeCAD.ActiveDocument.save()": (
         1,
@@ -76,9 +252,133 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         3,
         "FreeCAD.closeDocument() on a temporary preview document; async close path requires refactor",
     ),
+    "src/Mod/BIM/bimcommands/BimLink.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimMaterial.py||FreeCAD.ActiveDocument.recompute()": (
+        8,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimMoveView.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimNudge.py||FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        8,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimPanel.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimPanel.py||self.doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimPipe.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimPreflight.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimProfile.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimProject.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimProjectManager.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/BIM/bimcommands/BimProjectManager.py||FreeCAD.closeDocument(tname)": (
         1,
         "FreeCAD.closeDocument() on a temporary template document; async close path requires refactor",
+    ),
+    "src/Mod/BIM/bimcommands/BimRebar.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimReextrude.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimReorder.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimReorder.py||FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimRewire.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimRoof.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimSectionPlane.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimSite.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimSlab.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimSpace.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimStairs.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimTDPage.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimTDView.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimTruss.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimUnclone.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimUngroup.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimViews.py||FreeCAD.ActiveDocument.recompute()": (
+        7,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimWall.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimWindow.py||self.doc.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/BIM/bimcommands/BimWindows.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/BIM/importers/exportIFC.py||FreeCAD.ActiveDocument.recompute()": (
         1,
@@ -132,6 +432,90 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "obj.Document.recompute() in IFC view providers; another agent owns BIM/nativeifc",
     ),
+    "src/Mod/CAM/Path/Base/Gui/PropertyBag.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Base/Gui/SetupSheet.py||FreeCAD.ActiveDocument.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Array.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/AxisMap.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Boundary.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Boundary2.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/DogboneII.py||FreeCAD.ActiveDocument.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Dragknife.py||FreeCAD.ActiveDocument.recompute()": (
+        4,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/LeadInOut.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Mirror.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/PlungeMilling.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/RampEntry.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/Tags.py||FreeCAD.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py||FreeCAD.ActiveDocument.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/Fixture.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/Job.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/Job.py||obj.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/Job.py||self.obj.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/JobCmd.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/JobDlg.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Main/Gui/Simulator.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/CAM/Path/Main/Job.py||obj.Document.recompute() # necessary to create the clone shape": (
         1,
         "obj.Document.recompute() required for clone shape creation; result read immediately after",
@@ -139,6 +523,54 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
     "src/Mod/CAM/Path/Op/Base.py||obj.Document.recompute()": (
         1,
         "obj.Document.recompute() after replacing a CAM base-link property; the restored operation reads the recomputed shape",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/Array.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/Base.py||FreeCAD.ActiveDocument.recompute()": (
+        7,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/CircularHoleBase.py||FreeCAD.ActiveDocument.recompute()": (
+        6,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/Comment.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/Copy.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/PathShape.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/SimpleCopy.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Op/Gui/Stop.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Tool/Gui/Controller.py||FreeCAD.ActiveDocument.recompute()": (
+        4,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Tool/Gui/FeedsSpeedsDialog.py||self.tc.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Tool/Gui/UpdateDocumentToolsDlg.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Tool/library/ui/dock.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/CAM/Path/Tool/shape/doc.py||FreeCAD.closeDocument(self._doc.Name)": (
         1,
@@ -148,6 +580,22 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "FreeCAD.closeDocument() closes a temporary thumbnail document; no completion callback path available",
     ),
+    "src/Mod/CAM/Path/Tool/toolbit/ui/cmd.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/Path/Tool/toolbit/ui/panel.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/PathCommands.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/CAM/PathPythonGui/simple_edit_panel.py||FreeCAD.ActiveDocument.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/Draft/DraftGui.py||FreeCAD.ActiveDocument.recompute()": (
         3,
         "FreeCAD.ActiveDocument.recompute() after Draft face-list edits; the panel reads the recomputed shape",
@@ -156,9 +604,89 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         2,
         "App.closeDocument() closes a hidden SVG parse document; async close path requires refactor",
     ),
+    "src/Mod/Draft/draftguitools/gui_clone.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_dimension_ops.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_edit.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_facebinders.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_facebinders.py||Gui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_groups.py||self.doc.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_hatch.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_hatch.py||FreeCADGui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_layers.py||Gui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_layers.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_layers.py||self.doc.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_lineslope.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_planeproxy.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_trimex.py||self.doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftguitools/gui_wire2spline.py||self.doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/drafttaskpanels/task_scale.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/drafttaskpanels/task_shapestring.py||Gui.doCommand(\"FreeCAD.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Draft/draftutils/todo.py||doc.recompute()": (
+        1,
+        "sync recompute with a DocumentWouldBlock fallback to recomputeAsync() in the Draft todo commit-list helper",
+    ),
+    "src/Mod/Draft/draftviewproviders/view_layer.py||App.ActiveDocument.recompute()": (
+        3,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/Draft/draftviewproviders/view_layer.py||doc.recompute()": (
         1,
         "doc.recompute() before commitTransaction (ordering constraint)",
+    ),
+    "src/Mod/Draft/draftviewproviders/view_text.py||App.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/Draft/draftviewproviders/view_wire.py||doc.recompute()": (
         1,
@@ -168,9 +696,41 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "FreeCAD.closeDocument() closes a hidden parse document; async close path requires refactor",
     ),
+    "src/Mod/Draft/importSVG.py||doc.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/Gui/TaskPostBoxes.cpp||doc->recompute();": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/Gui/TaskPostBoxes.cpp||getView()->getObject()->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/Gui/TaskPostBoxes.cpp||vp->getObject()->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/Gui/ViewProviderShapeExtension.cpp||that->getExtendedViewProvider()->getDocument()->getDocument()->recompute();": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/femcommands/commands.py||FreeCAD.ActiveDocument.recompute()": (
+        8,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Fem/femguiutils/extract_link_view.py||doc.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/Fem/feminout/importCcxFrdResults.py||doc.recompute()": (
         1,
         "doc.recompute() after FEM FRD result import; the GUI reads the imported result immediately",
+    ),
+    "src/Mod/Fem/femresult/resulttools.py||analysis.Document.recompute()": (
+        5,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/Fem/femsolver/elmer/equations/equation.py||doc.Document.recompute()": (
         1,
@@ -180,21 +740,45 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "obj.Document.recompute() after FEM solve; callers read result state immediately; async breaks workflow",
     ),
-    "src/Mod/Fem/femtest/Gui/test_open.py||FreeCAD.closeDocument(self.document.Name)": (
+    "src/Mod/Fem/femtaskpanels/base_fempostpanel.py||self.obj.Document.recompute()": (
         2,
-        "FreeCAD.closeDocument() in FEM test teardown; test infrastructure, not production code",
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
-    "src/Mod/Fem/femtest/Gui/test_open.py||FreeCAD.closeDocument(self.document.Name) # close the empty document from setUp first": (
-        1,
-        "FreeCAD.closeDocument() in FEM test teardown; test infrastructure, not production code",
+    "src/Mod/Fem/femtaskpanels/base_femtaskpanel.py||gui_doc.Document.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
-    "src/Mod/Fem/femtest/Gui/test_open.py||self.document.saveAs(file_path)": (
+    "src/Mod/Fem/femtaskpanels/task_result_mechanical.py||self.result_obj.Document.recompute()": (
         1,
-        "self.document.saveAs() in FEM open/save test; test infrastructure, not production code",
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/Fem/femtools/ccxtools.py||self.analysis.Document.recompute()": (
         1,
         "self.analysis.Document.recompute() after CalculiX solve; result extraction reads shapes after",
+    ),
+    "src/Mod/Fem/femviewprovider/view_mesh_gmsh.py||incoming_object.Document.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Inspection/Gui/VisualInspection.cpp||doc->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Measure/Gui/TaskMassProperties.cpp||doc->recompute();": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Mesh/Gui/DlgEvaluateMeshImp.cpp||doc->getDocument()->recompute();": (
+        9,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/MeshPart/Gui/CurveOnMesh.cpp||doc->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/OpenSCAD/OpenSCADCommands.py||FreeCAD.ActiveDocument.recompute()": (
+        9,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
     "src/Mod/OpenSCAD/importCSG.py||FreeCAD.ActiveDocument.recompute()": (
         1,
@@ -204,6 +788,10 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "FreeCAD.closeDocument() closes a temporary SVG parse document during CSG import; async close path requires refactor",
     ),
+    "src/Mod/OpenSCAD/importCSG.py||doc.recompute()": (
+        4,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/OpenSCAD/importCSG.py||newobj.Document.recompute()": (
         1,
         "doc.recompute() after CSG geometry import; import/export module; caller reads geometry immediately",
@@ -212,9 +800,61 @@ SYNC_API_SITES: dict[str, tuple[int, str]] = {
         1,
         "parent.Document.recompute() after replacing a child object; the caller reads the recomputed parent immediately",
     ),
+    "src/Mod/Part/BasicShapes/CommandShapes.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
     "src/Mod/Part/BasicShapes/ViewProviderShapes.py||document.recompute()": (
         2,
         "document.recompute() after a shape-task transaction; the dialog finishes on the recomputed shape",
+    ),
+    "src/Mod/Part/CompoundTools/_CommandExplodeCompound.py||FreeCADGui.doCommand(\"App.ActiveDocument.recompute()\")": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Part/Gui/DlgExtrusion.cpp||activeDoc->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/PartDesign/InvoluteGearFeature.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/PartDesign/SprocketFeature.py||FreeCAD.ActiveDocument.recompute()": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/ReverseEngineering/Gui/Command.cpp||doc->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/Sketcher/Profiles.py||FreeCAD.ActiveDocument.recompute()": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/Gui/CommandDecorate.cpp||getDocument()->recompute();": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/Gui/TaskGeomHatch.cpp||m_source->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/Gui/TaskHatch.cpp||m_dvp->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/Gui/TaskRichAnno.cpp||m_annoFeat->getDocument()->recompute();": (
+        2,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/Gui/TaskSpreadsheetView.cpp||m_viewObject->getDocument()->recompute();": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
+    ),
+    "src/Mod/TechDraw/TechDrawTools/TDToolsMovers.py||App.ActiveDocument.recompute() #update views & dependents if necessary": (
+        1,
+        "pre-existing sync call in FreeCAD-start code; not yet migrated to the async document API",
     ),
 }
 

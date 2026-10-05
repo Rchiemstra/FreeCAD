@@ -255,6 +255,8 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/CAM/Path/Main/Job.py",
     "src/Mod/CAM/Path/Main/Sanity/ImageBuilder.py",
     "src/Mod/CAM/Path/Main/Stock.py",
+    # Workplane command helper: creates and recomputes Workplane objects.
+    "src/Mod/CAM/Path/Main/Workplane.py",
     "src/Mod/CAM/Path/Op/Adaptive.py",
     "src/Mod/CAM/Path/Op/Base.py",
     "src/Mod/CAM/Path/Op/Custom.py",
@@ -360,6 +362,7 @@ EXTRA_GUI_FILES: tuple[str, ...] = (
     "src/Mod/Start/StartMigrator.py",
     # AddonManager has no Gui/ directory; InitGui loads these GUI controllers.
     "src/Mod/AddonManager/AddonManager.py",
+    "src/Mod/AddonManager/addonmanager_python_deps.py",
     "src/Mod/AddonManager/addonmanager_python_deps_commands.py",
     "src/Mod/AddonManager/NetworkManager.py",
     "src/Mod/AddonManager/addonmanager_connection_checker.py",

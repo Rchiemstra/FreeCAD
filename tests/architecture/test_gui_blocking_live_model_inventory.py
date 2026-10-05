@@ -3080,13 +3080,13 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Gui/Quarter/SensorManager.cpp", 82, "thread-waits")
 
     def test_thread_wait_started_found(self) -> None:
-        self._assert_site("src/Gui/Assistant.cpp", 169, "thread-waits")
+        self._assert_site("src/Gui/Assistant.cpp", 165, "thread-waits")
 
     def test_thread_wait_bytes_written_found(self) -> None:
-        self._assert_site("src/Gui/GuiApplication.cpp", 328, "thread-waits")
+        self._assert_site("src/Gui/GuiApplication.cpp", 317, "thread-waits")
 
     def test_thread_wait_connected_found(self) -> None:
-        for line in (238, 301):
+        for line in (235, 298):
             self._assert_site("src/Gui/GuiApplication.cpp", line, "thread-waits")
 
     def test_thread_wait_condition_wait_found(self) -> None:
@@ -3107,7 +3107,7 @@ class RepositoryInventoryTests(unittest.TestCase):
             self.assertNotIn("FreeCADGuiTest.py", finding.path, finding.path)
 
     def test_multiline_live_dereference_found(self) -> None:
-        self._assert_site("src/Mod/PartDesign/Gui/TaskFeaturePick.cpp", 288, "live-app-dereference")
+        self._assert_site("src/Mod/PartDesign/Gui/TaskFeaturePick.cpp", 287, "live-app-dereference")
 
     def test_getDocuments_live_dereference_found(self) -> None:
         self._assert_site("src/Gui/CommandDoc.cpp", 2182, "live-app-dereference")
@@ -3165,11 +3165,11 @@ class RepositoryInventoryTests(unittest.TestCase):
 
     def test_python_active_document_method_sites_found(self) -> None:
         for path, line in (
-            ("src/Mod/CAM/Path/Op/Gui/Custom.py", 126),
+            ("src/Mod/CAM/Path/Op/Gui/Custom.py", 132),
             ("src/Mod/CAM/Path/Dressup/Gui/ZCorrect.py", 327),
             ("src/Mod/CAM/Path/Post/Gui/DlgPostProcess.py", 1337),
             ("src/Mod/CAM/Path/Main/Gui/Camotics.py", 86),
-            ("src/Mod/CAM/Path/Main/Gui/Job.py", 1217),
+            ("src/Mod/CAM/Path/Main/Gui/Job.py", 1219),
         ):
             self._assert_site(path, line, "live-app-dereference")
 
@@ -3181,9 +3181,9 @@ class RepositoryInventoryTests(unittest.TestCase):
         self._assert_site("src/Mod/Draft/draftguitools/gui_layers.py", 94, "live-app-dereference")
 
     def test_do_command_command_string_sites_found(self) -> None:
-        self._assert_site("src/Mod/CAM/Path/Dressup/Gui/AxisMap.py", 283, "live-app-dereference")
+        self._assert_site("src/Mod/CAM/Path/Dressup/Gui/AxisMap.py", 305, "live-app-dereference")
         self._assert_site("src/Mod/CAM/Path/Dressup/Gui/DogboneII.py", 252, "live-app-dereference")
-        self._assert_site("src/Mod/CAM/Path/Main/Gui/Inspect.py", 335, "live-app-dereference")
+        self._assert_site("src/Mod/CAM/Path/Main/Gui/Inspect.py", 398, "live-app-dereference")
 
     def test_draft_bim_scope_entries_present(self) -> None:
         scope = scanner.scope_entries(REPOSITORY_ROOT)
@@ -3783,7 +3783,7 @@ importlib.import_module(name)
             ("src/Mod/Fem/femviewprovider/view_mesh_shape.py", 57),
             ("src/Mod/BIM/nativeifc/ifc_viewproviders.py", 66),
             ("src/Mod/BIM/ArchBuildingPart.py", 995),
-            ("src/Mod/BIM/ArchStructure.py", 1505),
+            ("src/Mod/BIM/ArchStructure.py", 1491),
         ):
             self._assert_site(path, line, "update-data-provider")
 
