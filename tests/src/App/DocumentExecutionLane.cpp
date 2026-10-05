@@ -881,84 +881,86 @@ TEST_F(DocumentExecutionLaneTest, CancelCommandStoresReason)
     _blocking->release();
 }
 
+// Runs MainThreadSignal invokes on the test thread, standing in for the GUI
+// thread that a Close command marshals Application::closeDocument onto.
+class GuiCloseDispatcher
+{
+public:
+    GuiCloseDispatcher()
+    {
+        Active = this;
+        App::MainThreadSignalConfig::setHooks(&isMain, &invoke);
+    }
+    ~GuiCloseDispatcher()
+    {
+        App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
+        Active = nullptr;
+    }
+    bool runOne(const std::chrono::milliseconds timeout)
+    {
+        std::shared_ptr<Task> task;
+        {
+            std::unique_lock lock(_mutex);
+            if (!_changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); })) {
+                return false;
+            }
+            task = std::move(_tasks.front());
+            _tasks.pop_front();
+        }
+        {
+            App::MainThreadSignalConfig::BlockingInvokeScope scope;
+            task->callback();
+        }
+        {
+            std::lock_guard lock(task->mutex);
+            task->done = true;
+        }
+        task->changed.notify_all();
+        return true;
+    }
+
+private:
+    struct Task
+    {
+        std::function<void()> callback;
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool done {false};
+    };
+    static bool isMain()
+    {
+        return Active && std::this_thread::get_id() == Active->_main;
+    }
+    static void invoke(std::function<void()>&& callback, const bool blocking)
+    {
+        if (!Active || isMain()) {
+            callback();
+            return;
+        }
+        auto task = std::make_shared<Task>();
+        task->callback = std::move(callback);
+        {
+            std::lock_guard lock(Active->_mutex);
+            Active->_tasks.push_back(task);
+        }
+        Active->_changed.notify_one();
+        if (!blocking) {
+            return;
+        }
+        std::unique_lock lock(task->mutex);
+        task->changed.wait(lock, [&] { return task->done; });
+    }
+    static inline GuiCloseDispatcher* Active {nullptr};
+    const std::thread::id _main {std::this_thread::get_id()};
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    std::deque<std::shared_ptr<Task>> _tasks;
+};
+
 // N1: a close marshalled onto a thread that is not the lane owner must succeed
 // and must not leave the document behind with a dead lane.
 TEST_F(DocumentExecutionLaneTest, GuiMarshalledCloseRemovesDocument)
 {
-    class GuiCloseDispatcher
-    {
-    public:
-        GuiCloseDispatcher()
-        {
-            Active = this;
-            App::MainThreadSignalConfig::setHooks(&isMain, &invoke);
-        }
-        ~GuiCloseDispatcher()
-        {
-            App::MainThreadSignalConfig::setHooks(nullptr, nullptr);
-            Active = nullptr;
-        }
-        bool runOne(const std::chrono::milliseconds timeout)
-        {
-            std::shared_ptr<Task> task;
-            {
-                std::unique_lock lock(_mutex);
-                if (!_changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); })) {
-                    return false;
-                }
-                task = std::move(_tasks.front());
-                _tasks.pop_front();
-            }
-            {
-                App::MainThreadSignalConfig::BlockingInvokeScope scope;
-                task->callback();
-            }
-            {
-                std::lock_guard lock(task->mutex);
-                task->done = true;
-            }
-            task->changed.notify_all();
-            return true;
-        }
-
-    private:
-        struct Task
-        {
-            std::function<void()> callback;
-            std::mutex mutex;
-            std::condition_variable changed;
-            bool done {false};
-        };
-        static bool isMain()
-        {
-            return Active && std::this_thread::get_id() == Active->_main;
-        }
-        static void invoke(std::function<void()>&& callback, const bool blocking)
-        {
-            if (!Active || isMain()) {
-                callback();
-                return;
-            }
-            auto task = std::make_shared<Task>();
-            task->callback = std::move(callback);
-            {
-                std::lock_guard lock(Active->_mutex);
-                Active->_tasks.push_back(task);
-            }
-            Active->_changed.notify_one();
-            if (!blocking) {
-                return;
-            }
-            std::unique_lock lock(task->mutex);
-            task->changed.wait(lock, [&] { return task->done; });
-        }
-        static inline GuiCloseDispatcher* Active {nullptr};
-        const std::thread::id _main {std::this_thread::get_id()};
-        std::mutex _mutex;
-        std::condition_variable _changed;
-        std::deque<std::shared_ptr<Task>> _tasks;
-    };
-
     const std::string name = doc()->getName();
     auto handle = doc()->executionHandle();
     GuiCloseDispatcher dispatcher;
@@ -1038,7 +1040,7 @@ result = handle["wait"](10.0)
 if not isinstance(result, dict):
     raise RuntimeError("wait() did not return a dict after the GUI refusal")
 )PY";
-    EXPECT_NO_THROW(Base::Interpreter().runString(finish));
+    EXPECT_NO_THROW(Base::Interpreter().runString(finish.c_str()));
 }
 
 // N7: cancel while a Python feature holds the GIL must return. The old
@@ -1070,7 +1072,7 @@ obj.touch()
             std::this_thread::sleep_for(5ms);
         }
         if (commandHandle) {
-            commandHandle->cancel("n7-cancel");
+            static_cast<void>(commandHandle->cancel("n7-cancel"));
         }
         cancelDone.store(true);
     });
