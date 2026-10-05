@@ -228,13 +228,15 @@ protected:
         Gui::Test::flushAutoSaverWithoutBlockingGui(*document);
     }
 
+    // The lane owner thread publishes the archive first and its metadata last,
+    // so wait for both rather than racing the metadata write.
     bool waitForRecoveryArchive() const
     {
         return processEventsUntil([this] {
             if (!QFileInfo(archivePath()).isFile() && document->canWriteRecoverySnapshot()) {
                 Gui::Test::flushAutoSaverWithoutBlockingGui(*document);
             }
-            return QFileInfo(archivePath()).isFile();
+            return QFileInfo(archivePath()).isFile() && QFileInfo(metadataPath()).isFile();
         });
     }
 
