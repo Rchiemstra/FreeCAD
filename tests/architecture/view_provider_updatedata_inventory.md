@@ -10,7 +10,7 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Gui/ViewProviderDragger.cpp` | `ViewProviderDragger` | 78 | unsupported |
 | `src/Gui/ViewProviderFeaturePython.cpp` | `ViewProviderFeaturePythonImp` | 693 | unsupported |
 | `src/Gui/ViewProviderGeometryObject.cpp` | `ViewProviderGeometryObject` | 171 | unsupported |
-| `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | 353 | unsupported |
+| `src/Gui/ViewProviderImagePlane.cpp` | `ViewProviderImagePlane` | 360 | unsupported |
 | `src/Gui/ViewProviderInventorObject.cpp` | `ViewProviderInventorObject` | 90 | unsupported |
 | `src/Gui/ViewProviderLink.cpp` | `LinkInfo` | 537 | unsupported |
 | `src/Gui/ViewProviderLink.cpp` | `ViewProviderLink` | 2275 | unsupported |

@@ -3332,7 +3332,7 @@
     },
     {
       "path": "src/Gui/ViewProviderImagePlane.cpp",
-      "line": 353,
+      "line": 360,
       "category": "update-data-provider",
       "subsystem": "Gui",
       "disposition": "migrate",

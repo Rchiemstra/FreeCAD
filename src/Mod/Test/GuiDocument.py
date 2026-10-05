@@ -469,3 +469,46 @@ class TestGuiDocument(unittest.TestCase):
             # Std_Save must reach the focused macro editor, not the active document,
             # the macro is written and the document is left untouched
             self.assertEqual(doc_mtime_after, doc_mtime_before)
+
+
+class TestImagePlaneLoading(unittest.TestCase):
+    """Image::ImagePlane canvases loaded in the GUI (live MCP report, 2026-10-05).
+
+    After image planes were created, get_mutation_readiness stayed at
+    pending_recompute. ViewProviderImagePlane::setPlaneSize writes XSize/YSize
+    (and the pixel densities) on every image load, touching the model even when
+    the values are unchanged, and the live presentation catch-up after each
+    recompute reloads the image.
+    """
+
+    def setUp(self):
+        self.doc = FreeCAD.newDocument("ImagePlaneLoading")
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.png = os.path.join(self.tempdir.name, "canvas.png")
+        from PySide6 import QtGui
+
+        image = QtGui.QImage(64, 32, QtGui.QImage.Format_RGB32)
+        image.fill(0x336699)
+        self.assertTrue(image.save(self.png))
+        self.plane = self.doc.addObject("Image::ImagePlane", "Canvas")
+        self.plane.ImageFile = self.png
+
+    def tearDown(self):
+        close_document(self.doc)
+        self.tempdir.cleanup()
+
+    def pump(self, seconds=1.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            FreeCADGui.updateGui()
+            time.sleep(0.02)
+
+    def testPlaneTakesImageAspect(self):
+        self.pump()
+        self.assertGreater(self.plane.YSize.Value, 0)
+        self.assertAlmostEqual(self.plane.XSize.Value / self.plane.YSize.Value, 2.0, places=6)
+
+    def testRecomputeLeavesNothingPending(self):
+        recompute_document(self.doc, timeout_seconds=20.0)
+        self.pump()
+        self.assertFalse(self.doc.mustExecute(), self.doc.getMutationReadiness())
