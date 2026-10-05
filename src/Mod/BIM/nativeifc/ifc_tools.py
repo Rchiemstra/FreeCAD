@@ -99,15 +99,17 @@ def ifc_entity_declaration(entity):
     """Return the schema entity declaration for an IFC entity instance.
 
     The returned object exposes ``name()``, ``all_attributes()``, and related
-    schema-query methods.  Uses ``entity.declaration()`` (ifcopenshell >= 0.9)
-    and falls back to ``entity.wrapped_data.declaration().as_entity()``
-    for older versions.  Do not use ``getattr(entity, 'declaration', None)``
-    as the version switch.
+    schema-query methods.  Newer ifcopenshell exposes ``entity.declaration``
+    as a property that returns it; a release that exposes a method is called.
+    ifcopenshell 0.8 has neither and falls back to
+    ``entity.wrapped_data.declaration().as_entity()``.
     """
-    try:
-        return entity.declaration()
-    except AttributeError:
+    declaration = getattr(entity, "declaration", None)
+    if declaration is None:
         return entity.wrapped_data.declaration().as_entity()
+    if callable(declaration) and not hasattr(declaration, "all_attributes"):
+        declaration = declaration()
+    return declaration
 
 
 def create_document(document, filename=None, shapemode=0, strategy=0, silent=False):
