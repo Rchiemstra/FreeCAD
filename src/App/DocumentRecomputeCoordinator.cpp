@@ -531,18 +531,34 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, PreparedEditExecutionId>> active;
+    std::vector<PreparedEditExecutionId> forwardedCancels;
     {
         std::lock_guard stateLock(_stateMutex);
         const auto foundJob = _jobs.find(id);
         if (foundJob == _jobs.end() || jobTerminal(foundJob->second->state)) {
             return false;
         }
-        for (const auto& [featureId, node] : foundJob->second->nodes) {
+        const bool cancelRequested = foundJob->second->cancelRequested;
+        for (auto& [featureId, node] : foundJob->second->nodes) {
+            // N7: cancel() off the owner thread only records the request.
+            // Forward it to running preparations here, on the owner thread.
+            if (cancelRequested && node.executionId
+                && node.state == DocumentRecomputeFeatureState::Preparing) {
+                node.state = DocumentRecomputeFeatureState::Cancelling;
+                forwardedCancels.push_back(*node.executionId);
+            }
             if (node.executionId
                 && (node.state == DocumentRecomputeFeatureState::Preparing
                     || node.state == DocumentRecomputeFeatureState::Cancelling)) {
                 active.emplace_back(featureId, *node.executionId);
             }
+        }
+    }
+    for (const auto executionId : forwardedCancels) {
+        try {
+            static_cast<void>(_service.cancelPreparedEdit(executionId));
+        }
+        catch (...) {
         }
     }
 
