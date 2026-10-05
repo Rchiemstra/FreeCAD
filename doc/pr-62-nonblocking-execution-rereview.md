@@ -492,6 +492,11 @@ again (PR #63, main as of 2026-10-04) and the fixes below.
   crashed on freed geometry, and `TestSketcherGui` segfaulted in 3 of 5 runs. The update now
   uses the committed presentation or retries once the lane is idle, as it already did during
   undo and redo (0 of 5).
+- **Found on Woodpecker only.** CI's ifcopenshell exposes `entity.declaration` as a
+  property, so the branch's L1 helper raised "'entity' object is not callable" in
+  `TestArchBuildingPart`. It now accepts the property form, as main does. The L2 mesh pick
+  dropped the live-bounds fallback, and on CI `MeshTestsGui.testRayPick` picked nothing from
+  a stale bounding-box cache, so the fallback is back alongside the touch-on-change.
 - **Merge with `FreeCAD-start`.** Seven conflicts were resolved. The branch's log calls were
   converted to the `std::format` placeholders that main now uses: 13 printf-style calls would
   have printed a literal `%s`.
