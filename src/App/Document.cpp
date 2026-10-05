@@ -1536,6 +1536,37 @@ Document::takeCollaborationObservedStructuralEffects()
     return effects;
 }
 
+namespace
+{
+
+/// Wait (bounded) for another thread's collaboration notification replay to end.
+bool waitForNotificationReplay(const std::atomic<bool>& replaying)
+{
+    constexpr auto replayWaitLimit = std::chrono::seconds(10);
+    constexpr auto serviceSlice = std::chrono::milliseconds(2);
+    const bool onMainThread = MainThreadSignalConfig::isMainThread();
+    // Replayed observers may need the GIL on the owner thread.
+    std::optional<Base::PyGILStateRelease> release;
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        release.emplace();
+    }
+    const auto deadline = std::chrono::steady_clock::now() + replayWaitLimit;
+    while (replaying.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        if (onMainThread) {
+            static_cast<void>(MainThreadSignalConfig::serviceMarshalledTasks(serviceSlice));
+        }
+        else {
+            std::this_thread::sleep_for(serviceSlice);
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
 void Document::ensureCollaborationTransactionControlAllowed() const
 {
     if (d->collaborationCommitNotificationBarrier
@@ -1548,8 +1579,16 @@ void Document::ensureCollaborationTransactionControlAllowed() const
             "transaction, undo, and redo control is unavailable during a prepared commit");
     }
     if (d->collaborationReplayingNotifications.load(std::memory_order_acquire)) {
-        throw Base::RuntimeError(
-            "transaction, undo, and redo control is unavailable while collaboration notifications replay");
+        // A slot running inside the replay (on the replaying owner thread, or in
+        // a blocking notification marshalled to the GUI thread) must not control
+        // transactions. Any other thread only raced the owner's replay: wait for
+        // it to finish, servicing marshalled notifications on the GUI thread.
+        const bool reentrant = isCollaborationOwnerThread()
+            || MainThreadSignalConfig::insideBlockingInvoke();
+        if (reentrant || !waitForNotificationReplay(d->collaborationReplayingNotifications)) {
+            throw Base::RuntimeError(
+                "transaction, undo, and redo control is unavailable while collaboration notifications replay");
+        }
     }
 }
 
