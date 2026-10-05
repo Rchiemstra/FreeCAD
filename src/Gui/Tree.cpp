@@ -3594,6 +3594,14 @@ void TreeWidget::onUpdateStatus()
     }
 
     for (auto& v : DocumentMap) {
+        // The document owner thread may be executing features. Reading live
+        // object state (e.g. a sketch's ExternalGeo for the overlay icon) now
+        // races it; read the committed presentation or retry once it is idle.
+        auto* appDocument = v.first->getDocument();
+        if (appDocument && documentExecutionLaneBusy(*appDocument)) {
+            _updateStatus();
+            return;
+        }
         if (v.first->isPerformingTransaction()) {
             // We have to delay item creation until undo/redo is done, because the
             // object re-creation while in transaction may break tree view item
