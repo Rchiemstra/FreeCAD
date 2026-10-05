@@ -796,6 +796,11 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
     // _stateMutex (released around feature execute) and let the owner forward it.
     const bool onOwner =
         DocumentCollaborationService::collaborationOwnerThread(_service.document());
+    if (onOwner && _operationActive) {
+        // A commit observer re-entering cancel() is rejected before it records
+        // anything; otherwise the rejected call would still cancel the job.
+        throw std::runtime_error("reentrant document recompute mutation is not supported");
+    }
     std::vector<PreparedEditExecutionId> executions;
     {
         std::lock_guard stateLock(_stateMutex);
