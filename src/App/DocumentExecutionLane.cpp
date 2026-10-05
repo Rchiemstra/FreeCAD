@@ -5,6 +5,7 @@
 #include "Application.h"
 #include "Document.h"
 
+#include "DocumentCollaborationService.h"
 #include "DocumentCrossDocumentSnapshot.h"
 #include "DocumentExecutionTelemetry.h"
 #include "DocumentObject.h"
@@ -1099,27 +1100,30 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
 
             // Open a real undo transaction (not only a booking) so property-editor
             // edits show up in UndoNames. Name it "Edit"; operationId is an internal
-            // token and must not be the Undo menu label (M2).
-            const int transactionId = _document._openTransaction("Edit");
+            // token and must not be the Undo menu label (M2). Transaction control
+            // goes through the commit coordinator, the sole owner of the private
+            // native controls.
+            auto& collaboration = _document.collaborationService();
+            const int transactionId = collaboration.openMutationTransaction("Edit", 0);
             if (transactionId == 0) {
                 return false;
             }
             bool transactionCommitted = false;
             struct TxGuard
             {
-                Document& doc;
+                DocumentCollaborationService& collaboration;
                 bool& committed;
                 ~TxGuard()
                 {
                     if (!committed) {
                         try {
-                            doc._abortTransaction();
+                            collaboration.abortApplicationTransaction();
                         }
                         catch (...) {
                         }
                     }
                 }
-            } txGuard {_document, transactionCommitted};
+            } txGuard {collaboration, transactionCommitted};
 
             for (const auto& propertyValue : command.command.edit->propertyValues) {
                 App::Property* property = nullptr;
@@ -1145,7 +1149,7 @@ bool DocumentExecutionLane::executeInstantCommand(ActiveCommand& command)
                 copied->restoreFromStream(stream);
                 property->Paste(*copied);
             }
-            if (!_document._commitTransaction(false, true)) {
+            if (!collaboration.commitApplicationTransaction()) {
                 return false;
             }
             transactionCommitted = true;
