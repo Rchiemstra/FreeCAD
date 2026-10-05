@@ -12764,7 +12764,7 @@
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
-      "line": 1435,
+      "line": 1437,
       "category": "live-app-dereference",
       "subsystem": "BIM",
       "disposition": "investigate",
@@ -12772,7 +12772,7 @@
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
-      "line": 1516,
+      "line": 1518,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -12780,7 +12780,7 @@
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
-      "line": 1854,
+      "line": 1856,
       "category": "direct-recompute",
       "subsystem": "BIM",
       "disposition": "migrate",
@@ -12788,7 +12788,7 @@
     },
     {
       "path": "src/Mod/BIM/nativeifc/ifc_tools.py",
-      "line": 1854,
+      "line": 1856,
       "category": "sync-document-api",
       "subsystem": "BIM",
       "disposition": "migrate",
