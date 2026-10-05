@@ -1101,6 +1101,21 @@ void SoFCMeshObjectShape::rayPick(SoRayPickAction* action)
         this->touch();
     }
     inherited::rayPick(action);
+    // The bbox cache can still be a point at the origin if a traversal filled
+    // it before the mesh element was in state, and then SoShape skips
+    // generatePrimitives although the ray hits the facets (MeshTestsGui
+    // testRayPick on CI). Test the live bounds once before giving up.
+    if (action->getPickedPoint() || !this->shouldRayPick(action) || !mesh
+        || mesh->countFacets() == 0) {
+        return;
+    }
+    SbBox3f box;
+    SbVec3f center;
+    this->computeBBox(action, box, center);
+    if (box.isEmpty() || !action->intersect(box, FALSE)) {
+        return;
+    }
+    this->generatePrimitives(action);
 }
 
 /** Sets the point indices, the geometric points and the normal for each triangle.
