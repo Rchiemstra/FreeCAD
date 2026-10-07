@@ -181,6 +181,7 @@ SET(PartGui_SRCS
     ViewProviderAttachExtension.h
     ViewProviderAttachExtension.cpp
     ViewProviderPreviewExtension.h
+    ViewProviderPreviewExtensionInternal.h
     ViewProviderPreviewExtension.cpp
     ViewProviderPreviewExtension.pyi
     ViewProviderPreviewExtensionPyImp.cpp

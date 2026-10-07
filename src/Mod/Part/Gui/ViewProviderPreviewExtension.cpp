@@ -29,6 +29,7 @@
 #include <Inventor/nodes/SoTransform.h>
 
 #include "ViewProviderPreviewExtension.h"
+#include "ViewProviderPreviewExtensionInternal.h"
 #include "ViewProviderExt.h"
 #include "ViewProviderPreviewExtensionPy.h"
 
@@ -199,16 +200,18 @@ void ViewProviderPreviewExtension::showPreview(bool enable)
 
     _isPreviewEnabled = enable;
 
-    auto annotationRoot = getExtendedViewProvider()->getOrCreateAnnotation();
     if (enable) {
         previewExtension->updatePreview();
-
-        if (annotationRoot->findChild(pcPreviewRoot) < 0) {
-            annotationRoot->addChild(pcPreviewRoot);
-        }
+        PreviewExtensionInternal::attachPreviewRoot(
+            getExtendedViewProvider()->getOrCreateAnnotation(),
+            pcPreviewRoot
+        );
     }
     else {
-        annotationRoot->removeChild(pcPreviewRoot);
+        PreviewExtensionInternal::detachPreviewRoot(
+            getExtendedViewProvider()->getAnnotation(),
+            pcPreviewRoot
+        );
     }
 }
 
