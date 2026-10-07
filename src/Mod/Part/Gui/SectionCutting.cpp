@@ -2137,7 +2137,7 @@ void SectionCut::onFlipXclicked()
             // at least Z
             CutObject = findOrCreateObject(CutZName);
         }
-        if (auto cut = dynamic_cast<Part::Cut*>(CutObject)) {
+        if (dynamic_cast<Part::Cut*>(CutObject)) {
             // only do this when there is no other box to save recomputes
             submitDocumentRecomputeOnce();
         }
@@ -2154,7 +2154,7 @@ void SectionCut::onFlipYclicked()
         if (hasBoxZ) {
             CutObject = findObject(CutZName);
         }
-        if (auto cut = dynamic_cast<Part::Cut*>(CutObject)) {
+        if (dynamic_cast<Part::Cut*>(CutObject)) {
             submitDocumentRecomputeOnce();
         }
     }
@@ -2164,7 +2164,7 @@ void SectionCut::onFlipZclicked()
 {
     FlipClickedHelper(BoxZName);
 
-    if (auto CutObject = findOrCreateObject(CutZName)) {
+    if (findOrCreateObject(CutZName)) {
         submitDocumentRecomputeOnce();
     }
 }
