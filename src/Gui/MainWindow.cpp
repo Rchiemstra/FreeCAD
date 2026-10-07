@@ -2895,16 +2895,14 @@ void MainWindow::changeEvent(QEvent* e)
         App::GetApplication().retranslateExportTypes();
     }
     else if (e->type() == QEvent::ActivationChange) {
-        static SbTime savedRealTimeInterval = SoDB::getRealTimeInterval();
+        static MainWindowInternal::RealTimeSensorPause realTimeSensor;
         if (isActiveWindow()) {
             QMdiSubWindow* mdi = d->mdiArea->currentSubWindow();
             setActiveSubWindow(mdi);
-            SoDB::enableRealTimeSensor(true);
-            SoDB::setRealTimeInterval(savedRealTimeInterval);
+            realTimeSensor.windowActivated();
         }
         else {
-            savedRealTimeInterval = SoDB::getRealTimeInterval();
-            SoDB::enableRealTimeSensor(false);
+            realTimeSensor.windowDeactivated();
         }
     }
     else {
