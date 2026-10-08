@@ -2197,6 +2197,25 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                             state->callbackError->restore();
                             return nullptr;
                         }
+                        catch (const Base::Exception&) {
+                            throw;
+                        }
+                        catch (const std::exception&) {
+                            throw;
+                        }
+                        catch (const Py::Exception&) {
+                            throw;
+                        }
+                        catch (...) {
+                            // The owner thread already finished or rolled back the
+                            // commit; rethrowing a foreign C++ exception (e.g. from
+                            // OpenCASCADE) here would terminate debug builds, whose
+                            // PY_CATCH has no catch-all.
+                            PyErr_SetString(Base::PyExc_FC_GeneralError,
+                                            "async mutation failed with a non-standard C++ "
+                                            "exception");
+                            return nullptr;
+                        }
                         if (payload.callbackFailed) {
                             // Restore the saved Python exception on *this* thread
                             // (the RPC/waiter thread), not the owner thread.
