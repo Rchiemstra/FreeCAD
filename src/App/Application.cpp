@@ -1465,9 +1465,16 @@ void Application::setActiveDocument(Document* pDoc)
     enforceCollaborationLifecycleMutationAllowed();
     setActiveDocumentNoSignal(pDoc);
 
-    if (pDoc) {
-        signalActiveDocument(*pDoc);
+    if (!pDoc) {
+        return;
     }
+    // GUI observers (tree, views) must run on the GUI thread, also when a
+    // document is opened or restored from a worker.
+    if (MainThreadSignalConfig::hasHooks() && !MainThreadSignalConfig::isMainThread()) {
+        MainThreadSignalConfig::invoke([this, pDoc]() { signalActiveDocument(*pDoc); }, true);
+        return;
+    }
+    signalActiveDocument(*pDoc);
 }
 
 void Application::setActiveDocumentNoSignal(Document* pDoc)

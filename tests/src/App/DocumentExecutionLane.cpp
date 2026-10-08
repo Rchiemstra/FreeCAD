@@ -981,6 +981,24 @@ TEST_F(DocumentExecutionLaneTest, GuiMarshalledCloseRemovesDocument)
     _doc = nullptr;
 }
 
+// Opening or restoring a document from an RPC worker activates it there.
+// signalActiveDocument then ran GUI observers (the tree widget) off the GUI
+// thread: "QBasicTimer::start: Timers cannot be started from another thread".
+TEST_F(DocumentExecutionLaneTest, ActiveDocumentSignalRunsOnTheMainThread)
+{
+    GuiCloseDispatcher dispatcher;
+    std::thread::id observed;
+    fastsignals::scoped_connection connection =
+        App::GetApplication().signalActiveDocument.connect(
+            [&observed](const App::Document&) { observed = std::this_thread::get_id(); });
+
+    std::jthread worker([this] { App::GetApplication().setActiveDocument(doc()); });
+
+    ASSERT_TRUE(dispatcher.runOne(5s)) << "signalActiveDocument was not marshalled";
+    worker.join();
+    EXPECT_EQ(observed, std::this_thread::get_id());
+}
+
 // N3: wait() round-trips a C++ commit result. A Py::Dict stored in the promise
 // aborts on MSVC when the owner assigns it without the GIL.
 TEST_F(DocumentExecutionLaneTest, AsyncMutationWaitReturnsCommitDict)
