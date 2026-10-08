@@ -1266,14 +1266,17 @@ Document::CollaborationSpreadsheetRecomputeSchemaScope::
     auto& state = *document->d;
     const bool authoritativeCommitRecompute = state.activeUndoTransaction
         && state.suppressCollaborationRevisionPublication;
+    // After a failed commit is rolled back, the coordinator re-executes the
+    // restored sheet to prove it is clean; that runs outside the transaction.
+    const bool rollbackVerification = state.collaborationRollbackVerification;
     if (!document->isCollaborationOwnerThread()
-        || !document->testStatus(Document::Recomputing)
+        || (!document->testStatus(Document::Recomputing) && !rollbackVerification)
         || state.collaborationCompatibilityStructuralMutationGranted
         || state.collaborationReplayingNotifications
         || state.collaborationCommitPoisoned
         || object.getDocument() != document
         || !document->containsObject(&object)
-        || !authoritativeCommitRecompute) {
+        || !(authoritativeCommitRecompute || rollbackVerification)) {
         throw Base::RuntimeError(
             "spreadsheet transient schema requires the authoritative collaboration recompute");
     }

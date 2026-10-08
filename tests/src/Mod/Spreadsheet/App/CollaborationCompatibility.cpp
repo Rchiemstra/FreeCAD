@@ -330,6 +330,24 @@ TEST_F(SpreadsheetCollaborationCompatibilityTest,
     EXPECT_EQ(poll.latestSequence, _cursor.afterSequence);
 }
 
+// A user typo such as a self-referencing formula makes the sheet itself fail
+// the commit recompute. Rollback verification then re-executes the restored
+// sheet outside the commit transaction; that must not poison the document.
+TEST_F(SpreadsheetCollaborationCompatibilityTest,
+       cyclicFormulaRollsBackWithoutBlockingLaterCommits)
+{
+    const auto cyclic = commitCell("B1", "=B1 + 1");
+
+    EXPECT_EQ(cyclic.status, App::DocumentCommitStatus::RecomputeFailed) << cyclic.message;
+    const auto* cell = _sheet->getCell(App::CellAddress("B1"));
+    EXPECT_TRUE(cell == nullptr || !cell->isUsed());
+    const auto poll = _document->collaborationRevisions().pollPublications(_cursor);
+    EXPECT_TRUE(poll.events.empty());
+
+    const auto next = commitCell("A1", "=1+2");
+    EXPECT_EQ(next.status, App::DocumentCommitStatus::Committed) << next.message;
+}
+
 TEST_F(SpreadsheetCollaborationCompatibilityTest,
        callbackFailureRestoresCellWithoutPublication)
 {

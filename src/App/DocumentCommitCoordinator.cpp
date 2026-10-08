@@ -11,6 +11,7 @@
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 #include "PreparedEdit.h"
+#include "private/DocumentP.h"
 
 #include <Base/Exception.h>
 
@@ -1130,29 +1131,41 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
 
         bool persistent = false;
-        for (auto* object : liveFailureTargets) {
-            if (!object || object->getDocument() != &_document
-                || !object->isAttachedToDocument()) {
-                persistent = true;
-                break;
-            }
-            const bool restoredClean =
-                object->isValid() && !object->isTouched() && !object->mustRecompute();
-            // Restored C++ document state does not need a live re-execute.
-            // FeaturePython Proxy state is not in the undo stack, so a clean
-            // restore can still fail when the probe stays armed.
-            if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
-                continue;
-            }
-            try {
-                if (_document._recomputeFeature(object) != 0) {
+        {
+            // Sheets re-execute their transient cell schema; let them do so
+            // while proving the rolled-back state, outside the transaction.
+            bool& verification = _document.d->collaborationRollbackVerification;
+            verification = true;
+            const auto endVerification = [](bool* active) noexcept {
+                *active = false;
+            };
+            std::unique_ptr<bool, decltype(endVerification)> verificationGuard(
+                &verification,
+                endVerification);
+            for (auto* object : liveFailureTargets) {
+                if (!object || object->getDocument() != &_document
+                    || !object->isAttachedToDocument()) {
                     persistent = true;
                     break;
                 }
-            }
-            catch (...) {
-                persistent = true;
-                break;
+                const bool restoredClean =
+                    object->isValid() && !object->isTouched() && !object->mustRecompute();
+                // Restored C++ document state does not need a live re-execute.
+                // FeaturePython Proxy state is not in the undo stack, so a clean
+                // restore can still fail when the probe stays armed.
+                if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
+                    continue;
+                }
+                try {
+                    if (_document._recomputeFeature(object) != 0) {
+                        persistent = true;
+                        break;
+                    }
+                }
+                catch (...) {
+                    persistent = true;
+                    break;
+                }
             }
         }
 

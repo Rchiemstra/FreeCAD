@@ -249,6 +249,7 @@ struct DocumentP
     bool collaborationImportDeferralActive {false};
     std::atomic<bool> collaborationReplayingNotifications {false};
     bool collaborationCommitPoisoned {false};
+    bool collaborationRollbackVerification {false};
     bool collaborationAtomicPresentationAuditActive {false};
     std::atomic_bool collaborationAtomicPresentationAuditViolated {false};
     bool collaborationAtomicPresentationAuditReadOnly {false};
