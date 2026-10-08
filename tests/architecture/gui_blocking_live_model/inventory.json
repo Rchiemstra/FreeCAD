@@ -300,7 +300,7 @@
   "findings": [
     {
       "path": "src/Gui/Application.cpp",
-      "line": 918,
+      "line": 925,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -308,7 +308,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 923,
+      "line": 930,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -316,7 +316,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 925,
+      "line": 932,
       "category": "process-events-polling",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -324,7 +324,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1012,
+      "line": 1019,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -332,7 +332,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1115,
+      "line": 1122,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -340,7 +340,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1209,
+      "line": 1216,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -348,7 +348,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1210,
+      "line": 1217,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -356,7 +356,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1211,
+      "line": 1218,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -364,7 +364,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1289,
+      "line": 1296,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -372,7 +372,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1296,
+      "line": 1303,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -380,7 +380,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1317,
+      "line": 1324,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -388,7 +388,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1362,
+      "line": 1369,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -396,7 +396,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1503,
+      "line": 1510,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -404,7 +404,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1505,
+      "line": 1512,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -412,7 +412,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1509,
+      "line": 1516,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -420,7 +420,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1604,
+      "line": 1611,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -428,7 +428,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1619,
+      "line": 1626,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -436,7 +436,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1814,
+      "line": 1821,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -444,7 +444,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1823,
+      "line": 1830,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -452,7 +452,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1826,
+      "line": 1833,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -460,7 +460,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1866,
+      "line": 1873,
       "category": "live-reference-callback",
       "subsystem": "Gui",
       "disposition": "migrate",
@@ -468,7 +468,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 1937,
+      "line": 1944,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -476,7 +476,7 @@
     },
     {
       "path": "src/Gui/Application.cpp",
-      "line": 2215,
+      "line": 2222,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1628,7 +1628,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4608,
+      "line": 4610,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -1636,7 +1636,7 @@
     },
     {
       "path": "src/Gui/Document.cpp",
-      "line": 4846,
+      "line": 4848,
       "category": "live-app-dereference",
       "subsystem": "Gui",
       "disposition": "investigate",
@@ -4316,7 +4316,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 883,
+      "line": 902,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4324,7 +4324,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1232,
+      "line": 1251,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4332,7 +4332,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1373,
+      "line": 1392,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4340,7 +4340,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1392,
+      "line": 1411,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4348,7 +4348,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1750,
+      "line": 1769,
       "category": "update-data-provider",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4356,7 +4356,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 1976,
+      "line": 1995,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4364,7 +4364,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2005,
+      "line": 2024,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4372,7 +4372,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2013,
+      "line": 2032,
       "category": "direct-recompute",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4380,7 +4380,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2023,
+      "line": 2042,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4388,7 +4388,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2025,
+      "line": 2044,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4396,7 +4396,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2037,
+      "line": 2056,
       "category": "live-reference-callback",
       "subsystem": "Assembly",
       "disposition": "migrate",
@@ -4404,7 +4404,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2518,
+      "line": 2537,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4412,7 +4412,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2567,
+      "line": 2586,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",
@@ -4420,7 +4420,7 @@
     },
     {
       "path": "src/Mod/Assembly/JointObject.py",
-      "line": 2591,
+      "line": 2610,
       "category": "live-app-dereference",
       "subsystem": "Assembly",
       "disposition": "investigate",

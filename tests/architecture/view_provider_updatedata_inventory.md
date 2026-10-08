@@ -23,8 +23,8 @@ Production presentation providers discovered under `src/Gui`, every `src/Mod/*/G
 | `src/Mod/Assembly/CommandCreateView.py` | `ViewProviderExplodedViewStep` | 663 | unsupported |
 | `src/Mod/Assembly/Gui/ViewProviderAssembly.cpp` | `ViewProviderAssembly` | 246 | unsupported |
 | `src/Mod/Assembly/Gui/ViewProviderReviewNote.cpp` | `ViewProviderReviewNote` | 488 | unsupported |
-| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1750 | unsupported |
-| `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | 1232 | unsupported |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderGroundedJoint` | 1769 | unsupported |
+| `src/Mod/Assembly/JointObject.py` | `ViewProviderJoint` | 1251 | unsupported |
 | `src/Mod/BIM/ArchAxis.py` | `_ViewProviderAxis` | 566 | unsupported |
 | `src/Mod/BIM/ArchAxisSystem.py` | `_ViewProviderAxisSystem` | 190 | unsupported |
 | `src/Mod/BIM/ArchBuildingPart.py` | `ViewProviderBuildingPart` | 995 | unsupported |
