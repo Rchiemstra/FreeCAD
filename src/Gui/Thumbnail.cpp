@@ -21,11 +21,14 @@
  ***************************************************************************/
 
 
+#include <memory>
+
 #include <QApplication>
 #include <QBuffer>
 #include <QByteArray>
 #include <QDateTime>
 #include <QImage>
+#include <QPixmap>
 #include <QThread>
 
 
@@ -89,114 +92,111 @@ void Thumbnail::Restore(Base::XMLReader& reader)
     // reader.addFile("Thumbnail.png",this);
 }
 
-void Thumbnail::SaveDocFile(Base::Writer& writer) const
+namespace
 {
-    QImage img;
-    bool created = false;
+QByteArray encodePng(const QPixmap& pixmap)
+{
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return bytes;
+}
+}  // namespace
 
-    // 1. Try to create the thumbnail from the viewer
-    if (this->viewer) {
-        if (this->viewer->thread() != QThread::currentThread()) {
-            qWarning("Cannot create a thumbnail from non-GUI thread");
-        }
-        else {
-            // An empty document frames nothing, so it yields a blank thumbnail rather than a
-            // stale one of geometry that has since been deleted.
-            SbBox3f box;
-            this->viewer->getSceneBoundBox(box);
-
-            CoinPtr<SoOrthographicCamera> camera(new SoOrthographicCamera);
-            camera->orientation.setValue(Camera::defaultOrientation());
-            Camera::fitToBox(*camera, box, 1.0F);
-
-            const View3DInventorViewer::RenderImageOptions options {
-                .width = this->size,
-                .height = this->size,
-                .samples = 4,
-                .background = QColor(0, 0, 0, 0),
-                .alphaMode = View3DInventorViewer::AlphaMode::PerPixel,
-                .intent = View3DInventorViewer::RenderIntent::RasterCapture,
-                .includeViewerLighting = true,
-                .camera = camera.get(),
-            };
-            img = this->viewer->renderToImage(options);
-            created = !img.isNull();
-        }
-    }
-
-    // 2. If creation failed (e.g. no viewer or background thread), try to restore from the existing file
-    if (!created) {
-        QString filename = this->uri.toLocalFile();
-        Base::FileInfo fi(filename.toUtf8().constData());
-        if (fi.exists()) {
-            try {
-                zipios::ZipFile zf(fi.filePath());
-                // getEntry uses default MatchPath=MATCH.
-                zipios::ConstEntryPointer entry = zf.getEntry("thumbnails/Thumbnail.png");
-                if (entry && entry->isValid()) {
-                    // getInputStream returns a pointer that must be deleted
-                    std::istream* is = zf.getInputStream(entry);
-                    if (is) {
-                        if (is->good()) {
-                            writer.Stream() << is->rdbuf();
-                            delete is;
-                            return;
-                        }
-                        delete is;
-                    }
-                }
-            }
-            catch (const std::exception&) {
-                // If the file isn't a zip or is locked, we ignore it and proceed to fallback
-            }
-            catch (...) {
-                // Ignore unknown exceptions
-            }
-        }
-    }
-
-    // If we still have no image and no viewer to generate one, we can do nothing more
-    if (!this->viewer) {
+void Thumbnail::capture()
+{
+    rendered.clear();
+    fallback.clear();
+    if (!this->viewer || this->viewer->thread() != QThread::currentThread()) {
         return;
     }
 
-    // Get app icon and resize to half size to insert in topbottom position over the current view
-    // snapshot
+    // An empty document frames nothing, so it yields a blank thumbnail rather than a
+    // stale one of geometry that has since been deleted.
+    SbBox3f box;
+    this->viewer->getSceneBoundBox(box);
+
+    CoinPtr<SoOrthographicCamera> camera(new SoOrthographicCamera);
+    camera->orientation.setValue(Camera::defaultOrientation());
+    Camera::fitToBox(*camera, box, 1.0F);
+
+    const View3DInventorViewer::RenderImageOptions options {
+        .width = this->size,
+        .height = this->size,
+        .samples = 4,
+        .background = QColor(0, 0, 0, 0),
+        .alphaMode = View3DInventorViewer::AlphaMode::PerPixel,
+        .intent = View3DInventorViewer::RenderIntent::RasterCapture,
+        .includeViewerLighting = true,
+        .camera = camera.get(),
+    };
+    QImage img = this->viewer->renderToImage(options);
+
     QPixmap appIcon = Gui::BitmapFactory().pixmap(App::Application::Config()["AppIcon"].c_str());
-    QPixmap px = appIcon;
-    if (!img.isNull()) {
-        // Create a small "Fc" Application icon in the bottom right of the thumbnail
-        if (App::GetApplication()
-                .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
-                ->GetBool("AddThumbnailLogo", false)) {
-            // only scale app icon if an offscreen image could be created
-            appIcon = appIcon.scaled(
-                this->size / 4,
-                this->size / 4,
-                Qt::KeepAspectRatio,
-                Qt::SmoothTransformation
-            );
-            px = BitmapFactory().merge(QPixmap::fromImage(img), appIcon, BitmapFactoryInst::BottomRight);
+    if (img.isNull()) {
+        fallback = encodePng(appIcon);
+        return;
+    }
+
+    // according to specification add some meta-information to the image
+    qint64 mt = QDateTime::currentDateTimeUtc().toSecsSinceEpoch();
+    img.setText(QLatin1String("Software"), qApp->applicationName());
+    img.setText(QLatin1String("Thumb::Mimetype"), QLatin1String("application/x-extension-fcstd"));
+    img.setText(QLatin1String("Thumb::MTime"), QStringLiteral("%1").arg(mt));
+    img.setText(QLatin1String("Thumb::URI"), this->uri.toString());
+
+    QPixmap px = QPixmap::fromImage(img);
+    // Create a small "Fc" Application icon in the bottom right of the thumbnail
+    if (App::GetApplication()
+            .GetParameterGroupByPath("User parameter:BaseApp/Preferences/Document")
+            ->GetBool("AddThumbnailLogo", false)) {
+        appIcon = appIcon.scaled(
+            this->size / 4,
+            this->size / 4,
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation
+        );
+        px = BitmapFactory().merge(px, appIcon, BitmapFactoryInst::BottomRight);
+    }
+    rendered = encodePng(px);
+}
+
+void Thumbnail::SaveDocFile(Base::Writer& writer) const
+{
+    // Runs wherever the document is serialized, possibly off the GUI thread, so
+    // it only writes what capture() rendered on the GUI thread.
+    if (!rendered.isEmpty()) {
+        writer.Stream().write(rendered.constData(), rendered.size());
+        return;
+    }
+
+    // Without a fresh rendering keep the thumbnail the file already has.
+    QString filename = this->uri.toLocalFile();
+    Base::FileInfo fi(filename.toUtf8().constData());
+    if (fi.exists()) {
+        try {
+            zipios::ZipFile zf(fi.filePath());
+            // getEntry uses default MatchPath=MATCH.
+            zipios::ConstEntryPointer entry = zf.getEntry("thumbnails/Thumbnail.png");
+            if (entry && entry->isValid()) {
+                std::unique_ptr<std::istream> is(zf.getInputStream(entry));
+                if (is && is->good()) {
+                    writer.Stream() << is->rdbuf();
+                    return;
+                }
+            }
         }
-        else {
-            px = QPixmap::fromImage(img);
+        catch (const std::exception&) {
+            // If the file isn't a zip or is locked, we ignore it and proceed to fallback
+        }
+        catch (...) {
+            // Ignore unknown exceptions
         }
     }
 
-    if (!px.isNull()) {
-        // according to specification add some meta-information to the image
-        qint64 mt = QDateTime::currentDateTimeUtc().toSecsSinceEpoch();
-        QString mtime = QStringLiteral("%1").arg(mt);
-        img.setText(QLatin1String("Software"), qApp->applicationName());
-        img.setText(QLatin1String("Thumb::Mimetype"), QLatin1String("application/x-extension-fcstd"));
-        img.setText(QLatin1String("Thumb::MTime"), mtime);
-        img.setText(QLatin1String("Thumb::URI"), this->uri.toString());
-
-        QByteArray ba;
-        QBuffer buffer(&ba);
-        buffer.open(QIODevice::WriteOnly);
-        px.save(&buffer, "PNG");
-        writer.Stream().write(ba.constData(), ba.length());
+    if (!fallback.isEmpty()) {
+        writer.Stream().write(fallback.constData(), fallback.size());
     }
 }
 

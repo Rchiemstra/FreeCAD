@@ -3478,6 +3478,8 @@ void Document::Save(Base::Writer& writer) const
             d->thumb.setFileName(d->_pcDocument->FileName.getValue());
             d->thumb.setSize(size);
             d->thumb.setViewer(view);
+            // Serialization may finish on a worker thread; render now.
+            d->thumb.capture();
             d->thumb.Save(writer);
         }
     }
