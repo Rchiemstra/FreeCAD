@@ -383,6 +383,16 @@ steps:
     commands:
       - sh ci/woodpecker/freecad-mcp-load-preflight.sh
 
+  # Live GUI stress scenarios: this branch's debug FreeCAD GUI under Xvfb,
+  # driven through the real MCP server. Fails on MCP errors and on any new
+  # FreeCAD warning/error output (scripts/run_live_gui_tests.sh).
+  - name: freecad-mcp-live-gui
+    image: *freecad_ci_mcp_image
+    pull: true
+    depends_on: [freecad-debug-build, freecad-mcp-unit-tests]
+    commands:
+      - sh ci/woodpecker/freecad-mcp-live-gui.sh
+
   # core: four sequential shards (collab → sketch → part → rest). One ~2.5 h
   # MARKER=core step used to stay red until every native test finished. Later
   # shards depend_on earlier ones, so the first failing group goes red and
