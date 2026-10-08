@@ -203,8 +203,10 @@ SketchSolveStatus SketchObject::setDatum(int ConstrId, double Datum)
     if ((type == Radius || type == Diameter || type == Weight) && Datum <= 0)
         return (Datum == 0) ? SketchSolveStatus::MalformedConstraints : SketchSolveStatus::Overconstrained;
 
-    if (type == Distance && Datum == 0)
-            return SketchSolveStatus::MalformedConstraints;
+    // Distances are unsigned: a negative value can never be solved, and trying
+    // collapses the geometry (e.g. "Both points are equal") before rolling back.
+    if (type == Distance && Datum <= 0)
+        return (Datum == 0) ? SketchSolveStatus::MalformedConstraints : SketchSolveStatus::Overconstrained;
 
     // copy the list
     std::vector<Constraint*> newVals(vals);
