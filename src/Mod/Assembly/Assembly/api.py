@@ -248,7 +248,7 @@ def _attach_joint_view_provider(joint, grounded):
 
     import JointObject
 
-    view_object = getattr(joint, "ViewObject", None)
+    view_object = JointObject.guiViewObject(joint)
     if view_object is None:
         JointObject.scheduleJointViewProvider(joint, grounded)
         return

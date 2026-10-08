@@ -39,6 +39,24 @@ _deferred_joint_view_providers = {}
 _deferred_joint_view_provider_observer = None
 
 
+def _on_gui_thread():
+    app = QtCore.QCoreApplication.instance()
+    # Like FreeCAD's main-thread guard: without a Qt application every thread
+    # may use the (headless) GUI objects.
+    return app is None or QtCore.QThread.currentThread() == app.thread()
+
+
+def guiViewObject(obj):
+    """Return obj.ViewObject when usable from this thread, else None.
+
+    Typed mutations run off the GUI thread, where reading ViewObject raises; the
+    ViewObject is then created later by native GUI replay.
+    """
+    if not App.GuiUp or not _on_gui_thread():
+        return None
+    return getattr(obj, "ViewObject", None)
+
+
 def _deferred_joint_key(joint):
     document = getattr(joint, "Document", None)
     name = getattr(joint, "Name", None)
@@ -97,11 +115,12 @@ def scheduleJointViewProvider(joint, grounded=False):
     if not App.GuiUp or "Gui" not in globals():
         return
 
-    if getattr(joint, "ViewObject", None) is not None:
+    view_object = guiViewObject(joint)
+    if view_object is not None:
         if grounded:
-            ViewProviderGroundedJoint(joint.ViewObject)
+            ViewProviderGroundedJoint(view_object)
         else:
-            ViewProviderJoint(joint.ViewObject)
+            ViewProviderJoint(view_object)
         return
 
     key = _deferred_joint_key(joint)
@@ -705,8 +724,8 @@ class Joint:
         if not joint.hasExtension("App::SuppressibleExtensionPython"):
             joint.addExtension("App::SuppressibleExtensionPython")
 
-        view_object = getattr(joint, "ViewObject", None)
-        if App.GuiUp and view_object is not None:
+        view_object = guiViewObject(joint)
+        if view_object is not None:
             if not view_object.hasExtension("Gui::ViewProviderSuppressibleExtensionPython"):
                 view_object.addExtension("Gui::ViewProviderSuppressibleExtensionPython")
 
@@ -936,10 +955,7 @@ class Joint:
 
     def ensureViewProvider(self, joint):
         """Attach the joint view provider once a deferred GUI object is available."""
-        if not App.GuiUp:
-            return
-
-        view_object = getattr(joint, "ViewObject", None)
+        view_object = guiViewObject(joint)
         if view_object is None:
             return
 
@@ -992,8 +1008,10 @@ class Joint:
         self.redrawJointPlacements(joint)
 
     def redrawJointPlacements(self, joint):
-        if joint.ViewObject:
-            proxy = joint.ViewObject.Proxy
+        # Presentation only: off the GUI thread the provider redraws on attach.
+        view_object = guiViewObject(joint)
+        if view_object:
+            proxy = view_object.Proxy
             if proxy:
                 proxy.redrawJointPlacements(joint)
 
@@ -1100,8 +1118,9 @@ class Joint:
                     part.Placement = plc
             self.partsMovedByPresolved = {}
 
-            if joint.ViewObject:
-                joint.ViewObject.Proxy.redrawJointPlacements(joint)
+            view_object = guiViewObject(joint)
+            if view_object and view_object.Proxy:
+                view_object.Proxy.redrawJointPlacements(joint)
 
     def preventParallel(self, joint):
         # Angle and perpendicular joints in the solver cannot handle the situation where both JCS are Parallel
