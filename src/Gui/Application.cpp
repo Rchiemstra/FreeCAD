@@ -48,6 +48,7 @@
 #include <deque>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <QThread>
 #include <QWindow>
 #include <QStyleFactory>
@@ -572,6 +573,12 @@ void qtInvokeOnMain(std::function<void()>&& fn, bool blocking)
         [] { drainMarshalledTasks(std::chrono::milliseconds::zero()); },
         Qt::QueuedConnection);
     if (blocking) {
+        // The functor may need the GIL on the GUI thread (Python observers of
+        // document signals); waiting for it while holding the GIL deadlocks.
+        std::optional<Base::PyGILStateRelease> unlocked;
+        if (Py_IsInitialized() != 0 && PyGILState_Check() != 0) {
+            unlocked.emplace();
+        }
         result.get();
     }
 }
