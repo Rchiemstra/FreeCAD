@@ -398,11 +398,11 @@ endif(FREECAD_USE_3DCONNEXION_NAVLIB AND (MSVC OR APPLE))
 set_property(SOURCE GraphvizView.h GraphvizView.cpp PROPERTY SKIP_AUTOMOC ON)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView-internal.cpp
     COMMAND ${QtCore_MOC_EXECUTABLE} -o ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView-internal.cpp ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.cpp
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.cpp)
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.cpp ${FREECAD_QT_MOC_VERSION_STAMP} ${QtCore_MOC_EXECUTABLE})
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView.cpp
     COMMAND ${QtCore_MOC_EXECUTABLE} -o ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView.cpp ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.h)
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/GraphvizView.h ${FREECAD_QT_MOC_VERSION_STAMP} ${QtCore_MOC_EXECUTABLE})
 
 set_property(SOURCE GraphvizView.cpp APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView-internal.cpp)
 set_property(SOURCE GraphvizView.h APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/moc_GraphvizView.cpp)
@@ -855,7 +855,11 @@ set(qsint_MOC_HDRS
     QSint/actionpanel/taskheader_p.h
 )
 
-qt_wrap_cpp(qsint_MOC_SRCS ${qsint_MOC_HDRS})
+qt_wrap_cpp(
+    qsint_MOC_SRCS
+    ${qsint_MOC_HDRS}
+    DEPENDS "${FREECAD_QT_MOC_VERSION_STAMP}" Qt${QT_VERSION_MAJOR}::moc
+)
 SOURCE_GROUP("Widget\\QSintActionPanel\\Mocs" FILES ${qsint_MOC_SRCS})
 
 # The 3d view
@@ -945,7 +949,11 @@ SET(Quarter_MOC_HDR
     Quarter/QuarterWidget.h
 )
 
-qt_wrap_cpp(Quarter_MOC_SRCS ${Quarter_MOC_HDR})
+qt_wrap_cpp(
+    Quarter_MOC_SRCS
+    ${Quarter_MOC_HDR}
+    DEPENDS "${FREECAD_QT_MOC_VERSION_STAMP}" Qt${QT_VERSION_MAJOR}::moc
+)
 
 SET(Quarter_SRCS
     ${Quarter_CPP_SRC}

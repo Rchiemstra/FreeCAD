@@ -51,6 +51,17 @@ set(CMAKE_AUTOMOC TRUE)
 set(CMAKE_AUTOUIC TRUE)
 set(QtCore_MOC_EXECUTABLE ${Qt${FREECAD_QT_MAJOR_VERSION}Core_MOC_EXECUTABLE})
 
+# Manual moc commands do not otherwise notice an in-place Qt upgrade. Use a
+# version-specific dependency because package managers may preserve the moc
+# executable's timestamp while replacing it.
+set(FREECAD_QT_MOC_VERSION_STAMP
+    "${CMAKE_BINARY_DIR}/qt-moc-${Qt${FREECAD_QT_MAJOR_VERSION}Core_VERSION}.stamp"
+)
+if(NOT EXISTS "${FREECAD_QT_MOC_VERSION_STAMP}")
+    file(WRITE "${FREECAD_QT_MOC_VERSION_STAMP}"
+        "${Qt${FREECAD_QT_MAJOR_VERSION}Core_VERSION}\n")
+endif()
+
 # These if statements can be removed when the policy CMP0126 is set to NEW.
 if(NOT DEFINED FREECAD_RCC_COMPRESSION_ALGO)
     # zstd was added as default to rcc in qtbase#2c9ac4fc3fe0b8f39e7f7a93894b56e49fd3d887,
