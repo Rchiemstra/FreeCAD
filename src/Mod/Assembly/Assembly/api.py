@@ -109,7 +109,7 @@ def createGroundedJoint(assembly, component, *, label=None, recompute=True):
     import UtilsAssembly
 
     assembly = _require_assembly(assembly)
-    component = _require_component(component, assembly)
+    component = _require_member(_require_component(component, assembly), assembly, "component")
 
     joint_group = UtilsAssembly.getJointGroup(assembly)
     joint = joint_group.newObject("App::FeaturePython", "GroundedJoint")
@@ -166,6 +166,16 @@ def _require_component(component, assembly=None):
     return component
 
 
+def _require_member(component, assembly, field):
+    # The solver only moves the assembly's own components; a joint on any other
+    # object is silently ignored.
+    if not assembly.hasObject(component, True):
+        raise JointCreationError(
+            f"{field} '{component.Name}' is not part of assembly '{assembly.Name}'"
+        )
+    return component
+
+
 def _normalize_subname(subname, field):
     if subname is None:
         subname = ""
@@ -183,7 +193,7 @@ def _normalize_reference(ref, assembly, field):
     if not isinstance(ref, (list, tuple)) or len(ref) != 2:
         raise JointCreationError(f"{field} must be [component, [element, vertex]]")
 
-    component = _require_component(ref[0], assembly)
+    component = _require_member(_require_component(ref[0], assembly), assembly, field)
     subnames = ref[1]
     if not isinstance(subnames, (list, tuple)) or len(subnames) != 2:
         raise JointCreationError(f"{field} must contain exactly two subelement names")
