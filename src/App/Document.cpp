@@ -3332,6 +3332,29 @@ CollaborationRollbackResult Document::rollbackCollaborationTransaction() noexcep
         appendDiagnostic("abort notification failed with an unknown exception");
     }
 
+    if (transactionRestoreSucceeded) {
+        // Like undo(): objects that rebuild derived state after a transaction
+        // (a sketch re-solves) were only marked while it was applied. Without
+        // this a sketch kept the failed attempt's malformed/conflicting
+        // constraint report although its constraints were restored. The status
+        // restore below resets the touch state this may leave behind.
+        for (auto* object : d->objectArray) {
+            if (!object || !object->testStatus(ObjectStatus::PendingTransactionUpdate)) {
+                continue;
+            }
+            object->setStatus(ObjectStatus::PendingTransactionUpdate, false);
+            try {
+                object->onUndoRedoFinished();
+            }
+            catch (const std::exception& exception) {
+                appendDiagnostic("post-rollback object update failed: ", exception.what());
+            }
+            catch (...) {
+                appendDiagnostic("post-rollback object update failed with an unknown exception");
+            }
+        }
+    }
+
     if (boundaryStateRestored) {
         // Swap the fully preallocated boundary snapshot back, then restore
         // the exact scheduler/status provenance for both eager and deferred

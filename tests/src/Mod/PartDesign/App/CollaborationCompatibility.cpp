@@ -67,6 +67,39 @@ protected:
     App::Document* _document {nullptr};
 };
 
+// A rolled-back mutation must not leave the solver state of the failed attempt
+// behind: pad readiness reads it, and refused a valid rectangle afterwards.
+TEST_F(PartDesignCollaborationCompatibilityTest, rollbackResolvesSketchSolverState)
+{
+    Sketcher::SketchObject* sketch = nullptr;
+    const auto sketchResult = commitStructural([&] {
+        sketch = _document->addObject<Sketcher::SketchObject>("Sketch");
+        Part::GeomLineSegment line;
+        line.setPoints(Base::Vector3d(0, 0, 0), Base::Vector3d(30, 0, 0));
+        sketch->addGeometry(&line, false);
+    });
+    ASSERT_EQ(sketchResult.status, App::DocumentCommitStatus::Committed) << sketchResult.message;
+    ASSERT_FALSE(sketch->getLastHasMalformedConstraints());
+
+    const auto failed = commitStructural([&] {
+        // A radius on a line is malformed; the solve inside addConstraint records it.
+        auto radius = std::make_unique<Sketcher::Constraint>();
+        radius->Type = Sketcher::ConstraintType::Radius;
+        radius->First = 0;
+        radius->setValue(5.0);
+        sketch->addConstraint(std::move(radius));
+        sketch->solve();
+        if (sketch->getLastHasMalformedConstraints()) {
+            throw std::runtime_error("malformed constraint");
+        }
+    });
+
+    EXPECT_NE(failed.status, App::DocumentCommitStatus::Committed);
+    EXPECT_TRUE(sketch->Constraints.getValues().empty());
+    EXPECT_FALSE(sketch->getLastHasMalformedConstraints());
+    EXPECT_TRUE(sketch->getLastMalformedConstraints().empty());
+}
+
 TEST_F(
     PartDesignCollaborationCompatibilityTest,
     bodyThenExpressionConstrainedSketchAndPadReachValidSolidBoundary
