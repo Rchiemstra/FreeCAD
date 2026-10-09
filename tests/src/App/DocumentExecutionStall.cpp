@@ -113,7 +113,7 @@ TEST_F(DocumentExecutionStallTest, RunOnNonOwnerThreadRecordsThatThread)
     std::optional<App::DocumentExecutionStall::Result> workerResult;
     std::stop_source stopSource;
 
-    std::jthread worker([&](const std::stop_token stopToken) {
+    std::jthread worker([&] {
         EXPECT_NE(std::this_thread::get_id(), ownerThread);
         EXPECT_FALSE(App::Internal::DocumentExecutionLaneTestAccess::isCollaborationOwnerThread(
             *doc()));
