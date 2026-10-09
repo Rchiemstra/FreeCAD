@@ -363,6 +363,7 @@ class Document(PropertyContainer):
         recompute: bool = True,
         postcondition: Callable[[], object] | None = None,
         object_name: str | None = None,
+        label: str | None = None,
     ) -> dict[str, object]:
         """Commit one synchronous compatibility mutation.
 
@@ -371,6 +372,8 @@ class Document(PropertyContainer):
         ``recompute=False`` preserves pending recompute work for recovery mutations.
         The optional postcondition runs after recompute and before publication;
         a false result rolls back.
+        ``label`` names the undo transaction; by default it is named after the
+        operation id.
         """
         ...
 
@@ -383,10 +386,12 @@ class Document(PropertyContainer):
         recompute: bool = True,
         postcondition: Callable[[], object] | None = None,
         object_name: str | None = None,
+        label: str | None = None,
     ) -> DocumentCommandHandle:
         """Submit one compatibility mutation without waiting.
 
         Raises when the callback cannot be encoded as a pointer-free document command.
+        ``label`` names the undo transaction, as for commitCompatibilityMutation.
         """
         ...
 

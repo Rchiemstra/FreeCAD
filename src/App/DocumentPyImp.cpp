@@ -1827,15 +1827,17 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
     PyObject* recompute = Py_True;
     PyObject* postcondition = Py_None;
     const char* objectName = nullptr;
-    static const std::array<const char*, 6> kwlist {"",
+    const char* label = nullptr;
+    static const std::array<const char*, 7> kwlist {"",
                                                     "structural",
                                                     "recompute",
                                                     "postcondition",
                                                     "object_name",
+                                                    "label",
                                                     nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!O!Oz:commitCompatibilityMutation",
+                                             "O|$O!O!Ozz:commitCompatibilityMutation",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
@@ -1843,7 +1845,8 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                                              &PyBool_Type,
                                              &recompute,
                                              &postcondition,
-                                             &objectName)) {
+                                             &objectName,
+                                             &label)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
@@ -1936,6 +1939,7 @@ PyObject* DocumentPy::commitCompatibilityMutation(PyObject* args, PyObject* kwd)
                 ? CollaborationCompatibilityRecomputePolicy::Eager
                 : CollaborationCompatibilityRecomputePolicy::Deferred;
             options.postcondition = std::move(nativePostcondition);
+            options.transactionLabel = label ? label : "";
             const auto result = getDocumentPtr()
                                     ->collaborationService()
                                     .commitCompatibilityMutationWithOptions(
@@ -1971,15 +1975,17 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
     PyObject* recompute = Py_True;
     PyObject* postcondition = Py_None;
     const char* objectName = nullptr;
-    static const std::array<const char*, 6> kwlist {"",
+    const char* label = nullptr;
+    static const std::array<const char*, 7> kwlist {"",
                                                     "structural",
                                                     "recompute",
                                                     "postcondition",
                                                     "object_name",
+                                                    "label",
                                                     nullptr};
     if (!Base::Wrapped_ParseTupleAndKeywords(args,
                                              kwd,
-                                             "O|$O!O!Oz:commitCompatibilityMutationAsync",
+                                             "O|$O!O!Ozz:commitCompatibilityMutationAsync",
                                              kwlist,
                                              &callback,
                                              &PyBool_Type,
@@ -1987,7 +1993,8 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
                                              &PyBool_Type,
                                              &recompute,
                                              &postcondition,
-                                             &objectName)) {
+                                             &objectName,
+                                             &label)) {
         return nullptr;
     }
     if (!PyCallable_Check(callback)) {
@@ -2095,6 +2102,7 @@ PyObject* DocumentPy::commitCompatibilityMutationAsync(PyObject* args, PyObject*
         if (postconditionFn) {
             options.postcondition = std::move(*postconditionFn);
         }
+        options.transactionLabel = label ? label : "";
 
         if (lane && !document.isCollaborationOwnerThread()) {
             // B4: Post to owner thread without blocking the GUI thread.

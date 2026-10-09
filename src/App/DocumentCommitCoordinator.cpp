@@ -1064,7 +1064,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     };
 
     try {
-        const std::string transactionName = "Collaborative operation " + edit.operationId();
+        const auto label = edit.operation().transactionLabel();
+        const std::string transactionName = label.empty()
+            ? "Collaborative operation " + edit.operationId()
+            : std::string(label);
         if (openNativeCommitTransaction(transactionName, retainUndoHistory) == 0) {
             restoreSuppression();
             discardNotifications();

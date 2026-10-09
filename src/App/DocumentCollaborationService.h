@@ -106,6 +106,8 @@ struct AppExport CollaborationCompatibilityMutationOptions
     CollaborationCompatibilityRecomputePolicy recomputePolicy {
         CollaborationCompatibilityRecomputePolicy::Eager};
     CollaborationCompatibilityPostcondition postcondition;
+    /** Undo-history name; empty names the transaction after the operation id. */
+    std::string transactionLabel;
 };
 
 /** Result of the service-owned native transaction commit point. */

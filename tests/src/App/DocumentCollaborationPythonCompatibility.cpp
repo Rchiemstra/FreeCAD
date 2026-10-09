@@ -1814,6 +1814,40 @@ TEST_F(DocumentCollaborationPythonCompatibilityTest,
     EXPECT_FALSE(std::filesystem::exists(attempted.path));
 }
 
+// The undo history shows a caller-supplied label instead of the operation UUID.
+TEST_F(DocumentCollaborationPythonCompatibilityTest, labelNamesTheUndoTransaction)
+{
+    Base::PyGILStateLocker gil;
+    PyObjectRef document(_document->getPyObject());
+    ASSERT_NE(document.get(), nullptr);
+    CallbackProbe probe;
+    probe.target = _target;
+    probe.document = document.get();
+    PyObjectRef callback(makeCompatibilityCallback(probe));
+    ASSERT_NE(callback.get(), nullptr);
+    PyObjectRef method(PyObject_GetAttrString(document.get(), "commitCompatibilityMutation"));
+    ASSERT_NE(method.get(), nullptr);
+    PyObjectRef positional(PyTuple_Pack(1, callback.get()));
+    PyObjectRef keywords(Py_BuildValue("{s:s}", "label", "MCP: set_label"));
+    ASSERT_NE(keywords.get(), nullptr);
+
+    PyObjectRef labelled(PyObject_Call(method.get(), positional.get(), keywords.get()));
+    ASSERT_NE(labelled.get(), nullptr);
+    PyObject* status = PyDict_GetItemString(labelled.get(), "status");
+    ASSERT_NE(status, nullptr);
+    EXPECT_STREQ(PyUnicode_AsUTF8(status), "Committed");
+    auto undoNames = _document->getAvailableUndoNames();
+    ASSERT_FALSE(undoNames.empty());
+    EXPECT_EQ(undoNames.front(), "MCP: set_label");
+
+    PyObjectRef unlabelled(PyObject_CallMethod(
+        document.get(), "commitCompatibilityMutation", "O", callback.get()));
+    ASSERT_NE(unlabelled.get(), nullptr);
+    undoNames = _document->getAvailableUndoNames();
+    ASSERT_FALSE(undoNames.empty());
+    EXPECT_EQ(undoNames.front().rfind("Collaborative operation ", 0), 0U);
+}
+
 TEST_F(DocumentCollaborationPythonCompatibilityTest,
        surfaceCommitsExactCallbackAndPublishesOnlyUnknownModel)
 {

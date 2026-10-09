@@ -61,6 +61,12 @@ public:
         return {};
     }
 
+    /** Undo-history name of the transaction; empty names it after the operation id. */
+    [[nodiscard]] virtual std::string_view transactionLabel() const noexcept
+    {
+        return {};
+    }
+
 protected:
     CollaborativeOperation() = default;
     CollaborativeOperation(const CollaborativeOperation&) = delete;

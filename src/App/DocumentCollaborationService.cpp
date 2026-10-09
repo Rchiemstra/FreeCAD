@@ -113,9 +113,11 @@ class CompatibilityMutationOperation final : public App::CollaborativeOperation
 public:
     CompatibilityMutationOperation(
         App::CollaborationCompatibilityCallback callback,
-        App::CollaborationCompatibilityPostcondition postcondition)
+        App::CollaborationCompatibilityPostcondition postcondition,
+        std::string transactionLabel = {})
         : _callback(std::move(callback))
         , _postcondition(std::move(postcondition))
+        , _transactionLabel(std::move(transactionLabel))
     {}
 
     [[nodiscard]] std::string_view typeId() const noexcept override
@@ -137,9 +139,15 @@ public:
         return {_postcondition(), "compatibility mutation postcondition was not satisfied"};
     }
 
+    [[nodiscard]] std::string_view transactionLabel() const noexcept override
+    {
+        return _transactionLabel;
+    }
+
 private:
     App::CollaborationCompatibilityCallback _callback;
     App::CollaborationCompatibilityPostcondition _postcondition;
+    std::string _transactionLabel;
 };
 
 }  // namespace
@@ -1667,7 +1675,9 @@ DocumentCollaborationService::commitCompatibilityMutationWithOptionsOnDocumentTh
     const auto expected = _document.collaborationRevisions().capture(writeSet);
     const std::string operationId = Base::Uuid::createUuid();
     auto operation = std::make_unique<CompatibilityMutationOperation>(
-        std::move(callback), std::move(options.postcondition));
+        std::move(callback),
+        std::move(options.postcondition),
+        std::move(options.transactionLabel));
     const std::string operationType(operation->typeId());
     PreparedEdit edit(PreparedEdit::ConstructionKey {},
                       1,
