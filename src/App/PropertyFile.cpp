@@ -508,8 +508,25 @@ void PropertyFileIncluded::RestoreDocFile(Base::Reader& reader)
 {
     Base::FileInfo fi(_cValue.c_str());
     if (fi.exists() && !fi.isWritable()) {
-        // This happens when an object is being restored and tries to reference the
-        // same file of another object (e.g. for copy&paste of objects inside the same document).
+        // Same-document copy/paste restores onto a basename another property
+        // already owns as a read-only file. Alias that path and the copy's
+        // destructor deletes the original. Give this property its own file.
+        // Clear _cValue first: aboutToSetValue() renames the current file into
+        // the undo snapshot, which would steal the other owner's bytes.
+        const std::string owned = getUniqueFileName(fi.dirPath(), fi.fileName());
+        if (!fi.copyTo(owned.c_str())) {
+            std::stringstream str;
+            str << "PropertyFileIncluded::RestoreDocFile(): "
+                << "Cannot copy existing file '" << fi.filePath() << "' to '" << owned << "'.";
+            throw Base::FileSystemError(str.str());
+        }
+        Base::FileInfo dst(owned);
+        dst.setPermissions(Base::FileInfo::ReadOnly);
+        _cValue.clear();
+        aboutToSetValue();
+        _cValue = owned;
+        _BaseFileName = dst.fileName();
+        hasSetValue();
         return;
     }
     Base::ofstream to(fi, std::ios::out | std::ios::binary);
