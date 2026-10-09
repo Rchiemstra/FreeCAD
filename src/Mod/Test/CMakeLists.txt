@@ -17,6 +17,7 @@ SET(Test_SRCS
     Recompute.py
     GuiRecompute.py
     TestApp.py
+    TestLinkArrayTransactions.py
     TestLinkSuppression.py
     TestIntPairList.py
     TestGui.py
