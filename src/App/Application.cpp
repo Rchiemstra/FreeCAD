@@ -1809,7 +1809,11 @@ std::vector<std::string> Application::getImportModules(const std::string& extens
         const std::vector<std::string>& types = it.types;
         for (const auto & jt : types) {
             if (boost::iequals(extension, jt)) {
-                modules.push_back(it.module);
+                // "*.abc *.ABC" matches once per pattern. List the module once.
+                if (std::find(modules.begin(), modules.end(), it.module) == modules.end()) {
+                    modules.push_back(it.module);
+                }
+                break;
             }
         }
     }
@@ -2012,7 +2016,11 @@ std::vector<std::string> Application::getExportModules(const std::string& extens
         const std::vector<std::string>& types = it.types;
         for (const auto & jt : types) {
             if (boost::iequals(extension, jt)) {
-                modules.push_back(it.module);
+                // "*.abc *.ABC" matches once per pattern. List the module once.
+                if (std::find(modules.begin(), modules.end(), it.module) == modules.end()) {
+                    modules.push_back(it.module);
+                }
+                break;
             }
         }
     }
