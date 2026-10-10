@@ -2677,6 +2677,21 @@ std::vector<std::string> Document::getAvailableUndoNames() const
     return vList;
 }
 
+bool Document::undoStackRecordsProperty(const TransactionalObject* object,
+                                        const char* propertyName) const
+{
+    if (d->activeUndoTransaction
+        && d->activeUndoTransaction->recordsProperty(object, propertyName)) {
+        return true;
+    }
+    for (const Transaction* transaction : mUndoTransactions) {
+        if (transaction && transaction->recordsProperty(object, propertyName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string> Document::getAvailableRedoNames() const
 {
     std::vector<std::string> vList;

@@ -1037,6 +1037,32 @@ App::DocumentCommitResult commitOnPlacement(App::Document& document, std::functi
         std::move(body));
 }
 
+bool undoOnOwner(App::Document& document)
+{
+    return Gui::Test::runOnDocumentOwnerWhilePumpingGui(document, [&document] {
+        return document.undo();
+    });
+}
+
+bool redoOnOwner(App::Document& document)
+{
+    return Gui::Test::runOnDocumentOwnerWhilePumpingGui(document, [&document] {
+        return document.redo();
+    });
+}
+
+std::string undoNamesOf(const App::Document& document)
+{
+    std::string joined;
+    for (const auto& name : document.getAvailableUndoNames()) {
+        if (!joined.empty()) {
+            joined += "; ";
+        }
+        joined += name;
+    }
+    return joined;
+}
+
 }  // namespace
 
 // A direct App Visibility write on the GUI thread is applied by
@@ -1125,6 +1151,94 @@ TEST_F(CollaborationCompatibilityIntegrationTest, committedVisibilityChangeIsPre
     EXPECT_TRUE(restored->Visibility.getValue());
     EXPECT_TRUE(restoredView->Visibility.getValue());
     EXPECT_TRUE(restoredView->isShow());
+}
+
+// The idle catch-up mirrors App Visibility onto the view provider. That echo
+// must not join whatever transaction is open (a later set-color transaction in
+// the live GUI suite). Undo applies off the Qt main thread, and pasting
+// ViewObject.Visibility calls getViewProvider there.
+TEST_F(CollaborationCompatibilityIntegrationTest,
+       committedVisibilityUndoRedoPresentsWithoutViewProviderEcho)
+{
+    if (!Gui::MainWindow::getInstance()) {
+        new Gui::MainWindow();
+    }
+
+    auto* placement = addShownPlacement(*_document, "UndoVisibility");
+    ASSERT_NE(placement, nullptr);
+    auto* view = placementView(*_guiDocument, *placement);
+    ASSERT_NE(view, nullptr);
+    ASSERT_TRUE(view->Visibility.getValue());
+    ASSERT_TRUE(view->isShow());
+    const std::string originalLabel = placement->Label.getValue();
+
+    const auto hidden = commitOnPlacement(*_document, [&] {
+        placement->Visibility.setValue(false);
+    });
+    ASSERT_TRUE(hidden.committed()) << hidden.message;
+    pumpGuiUntil([&] { return !view->Visibility.getValue() && !view->isShow(); });
+    ASSERT_FALSE(placement->Visibility.getValue());
+    ASSERT_FALSE(view->Visibility.getValue());
+    ASSERT_FALSE(view->isShow());
+
+    // Put the view back out of sync and mark it deferred, without an open
+    // transaction, so the next catch-up is the echo under test.
+    {
+        Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+            App::Property::User1,
+            &view->Visibility);
+        view->Visibility.setValue(true);
+    }
+    ASSERT_TRUE(view->Visibility.getValue());
+    ASSERT_FALSE(placement->Visibility.getValue());
+    ASSERT_TRUE(view->isShow());
+    _guiDocument->noteDeferredVisibilityChange(view);
+
+    // A booked GUI transaction, like set_color, is open while catch-up runs.
+    _document->openTransaction("VisibilityEchoProbe");
+    placement->Label.setValue("during-catch-up");
+    ASSERT_TRUE(_document->hasPendingTransaction());
+
+    ConsoleErrorCapture capture;
+    _guiDocument->catchUpIdleLivePresentation();
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_FALSE(view->isShow());
+    EXPECT_FALSE(placement->Visibility.getValue());
+
+    _document->commitTransaction();
+    ASSERT_FALSE(_document->hasPendingTransaction());
+
+    EXPECT_TRUE(_document->undoStackRecordsProperty(placement, "Visibility"))
+        << undoNamesOf(*_document);
+    EXPECT_FALSE(_document->undoStackRecordsProperty(view, "Visibility"))
+        << undoNamesOf(*_document);
+
+    ASSERT_TRUE(undoOnOwner(*_document));
+    QApplication::processEvents();
+    EXPECT_EQ(std::string(placement->Label.getValue()), originalLabel);
+    EXPECT_FALSE(placement->Visibility.getValue());
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_FALSE(view->isShow());
+
+    ASSERT_TRUE(undoOnOwner(*_document));
+    pumpGuiUntil([&] {
+        return placement->Visibility.getValue() && view->Visibility.getValue() && view->isShow();
+    });
+    EXPECT_TRUE(placement->Visibility.getValue());
+    EXPECT_TRUE(view->Visibility.getValue());
+    EXPECT_TRUE(view->isShow());
+
+    ASSERT_TRUE(redoOnOwner(*_document));
+    pumpGuiUntil([&] {
+        return !placement->Visibility.getValue() && !view->Visibility.getValue() && !view->isShow();
+    });
+    EXPECT_FALSE(placement->Visibility.getValue());
+    EXPECT_FALSE(view->Visibility.getValue());
+    EXPECT_FALSE(view->isShow());
+
+    const auto errors = capture.errors();
+    EXPECT_EQ(errors.find("main thread"), std::string::npos) << errors;
+    EXPECT_EQ(errors.find("exception while restoring"), std::string::npos) << errors;
 }
 
 int countOccurrences(const std::string& haystack, const std::string& needle)

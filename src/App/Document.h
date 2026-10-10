@@ -1403,6 +1403,10 @@ public:
     /// Get a list of the undo names.
     std::vector<std::string> getAvailableUndoNames() const;
 
+    /// True when an undo entry snapshots \a propertyName on \a object.
+    bool undoStackRecordsProperty(const TransactionalObject* object,
+                                  const char* propertyName) const;
+
     /**
      * @brief Undo one or multiple steps.
      *

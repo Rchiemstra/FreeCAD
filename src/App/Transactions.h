@@ -121,6 +121,9 @@ public:
      */
     bool hasObject(const TransactionalObject* Obj) const;
 
+    /// True when this transaction snapshots \a propertyName on \a object.
+    bool recordsProperty(const TransactionalObject* object, const char* propertyName) const;
+
     /**
      * @brief Check whether the live object was introduced by this transaction.
      *

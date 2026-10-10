@@ -278,7 +278,14 @@ void ViewProviderDocumentObject::onBeforeChange(const App::Property* prop)
         // admission, and the presentation catch logs the refusal. The view
         // value still updates; only the document notification is skipped.
         if (doc && !App::atomicPresentationMutationAdmissionHeldByOtherThread(*doc)) {
-            onBeforeChangeProperty(doc, prop);
+            // User1 mirrors App::DocumentObject::Visibility. Enforce admission,
+            // but do not record an undo entry. Undo pastes it off the GUI thread.
+            if (prop == &Visibility && Visibility.testStatus(App::Property::User1)) {
+                App::enforceAtomicPresentationMutationTarget(*doc);
+            }
+            else {
+                onBeforeChangeProperty(doc, prop);
+            }
         }
     }
 
@@ -346,7 +353,9 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
             // ViewProvider is therefore the sole Appearance authority for a
             // user-visible show/hide change. markFileChange() refuses a GUI
             // caller while another thread holds atomic presentation admission.
-            if (!App::atomicPresentationMutationAdmissionHeldByOtherThread(
+            // User1 is only the App Visibility mirror; that change is already marked.
+            if (!Visibility.testStatus(App::Property::User1)
+                && !App::atomicPresentationMutationAdmissionHeldByOtherThread(
                     *getObject()->getDocument())) {
                 getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
             }
@@ -584,6 +593,12 @@ void ViewProviderDocumentObject::update(const App::Property* prop)
     // document object
     if (prop == &getObject()->Visibility) {
         if (!isRestoring() && Visibility.getValue() != getObject()->Visibility.getValue()) {
+            // App Visibility is already the undo record. User1 marks this mirror
+            // so onBeforeChange does not record a second ViewObject.Visibility.
+            Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+                App::Property::User1,
+                &Visibility
+            );
             Visibility.setValue(!Visibility.getValue());
         }
     }

@@ -276,6 +276,34 @@ bool Transaction::hasObject(const TransactionalObject* Obj) const
 #endif
 }
 
+bool Transaction::recordsProperty(const TransactionalObject* object,
+                                  const char* propertyName) const
+{
+    if (!object || !propertyName || propertyName[0] == '\0') {
+        return false;
+    }
+    const auto& index = _Objects.get<1>();
+    const auto pos = index.find(object);
+    if (pos == index.end() || !pos->second) {
+        return false;
+    }
+    const std::string wanted(propertyName);
+    for (const auto& entry : pos->second->_PropChangeMap) {
+        const auto& data = entry.second;
+        if (data.propertyOrig && data.propertyOrig->getName()
+            && wanted == data.propertyOrig->getName()) {
+            return true;
+        }
+        if (!data.name.empty() && data.name == wanted) {
+            return true;
+        }
+        if (data.pName && wanted == data.pName) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Transaction::isObjectNew(const TransactionalObject* Obj) const
 {
     const auto& index = _Objects.get<1>();
