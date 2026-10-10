@@ -809,9 +809,15 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
             return false;
         }
         auto& job = *foundJob->second;
+        // The caller's reason is recorded once. The owner pump repeats cancel()
+        // with a generic reason to forward prepared-edit cancellation; that
+        // follow-up must not erase the reason status() already published.
+        const bool alreadyRequested = job.cancelRequested;
         job.cancelRequested = true;
         job.state = DocumentRecomputeState::Cancelling;
-        job.diagnostic = reason;
+        if (!alreadyRequested || job.diagnostic.empty()) {
+            job.diagnostic = reason;
+        }
         for (auto& [featureId, node] : job.nodes) {
             static_cast<void>(featureId);
             if (node.state == DocumentRecomputeFeatureState::Waiting) {

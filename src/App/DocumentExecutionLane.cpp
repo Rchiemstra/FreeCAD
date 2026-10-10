@@ -594,20 +594,26 @@ bool DocumentExecutionLane::cancelCommand(DocumentCommandId id, std::string reas
         if (!_active || _active->id != id) {
             return false;
         }
+        recomputeId = _active->recomputeId;
+    }
+    // Record the caller's reason before the lane flag is visible. The owner
+    // pump also calls cancel() once it sees that flag, and a generic follow-up
+    // must not win the race and become the stored diagnostic.
+    if (recomputeId) {
+        static_cast<void>(_document.recomputeCoordinator().cancel(
+            *recomputeId, reason.empty() ? "command cancelled" : reason));
+    }
+    {
+        std::lock_guard lock(_mutex);
+        if (!_active || _active->id != id) {
+            return false;
+        }
         _active->cancelRequested.store(true, std::memory_order_release);
         _active->snapshot.state = DocumentCommandState::Cancelling;
         if (!reason.empty()) {
             _active->snapshot.diagnostic = reason;
         }
-        recomputeId = _active->recomputeId;
         publishActiveSnapshotLocked(_active->snapshot);
-    }
-    // L6: forward the reason. cancel() must not take the coordinator operation
-    // lock off the owner thread (N7); the coordinator records the flag under
-    // its state lock and the owner applies prepared-edit cancellation.
-    if (recomputeId) {
-        static_cast<void>(_document.recomputeCoordinator().cancel(
-            *recomputeId, reason.empty() ? "command cancelled" : reason));
     }
     _workAvailable.notify_one();
     return true;
@@ -1263,7 +1269,26 @@ void DocumentExecutionLane::publishActiveSnapshotLocked(
 void DocumentExecutionLane::publishActiveSnapshot(const DocumentCommandSnapshot& snapshot)
 {
     std::lock_guard lock(_mutex);
-    publishActiveSnapshotLocked(snapshot);
+    if (!_active || _active->id != snapshot.id) {
+        return;
+    }
+    auto merged = snapshot;
+    // pumpActiveRecompute can publish an observation captured before cancel
+    // recorded its reason. Do not let that empty diagnostic or a regression
+    // back to Running erase the cancellation the caller already observed.
+    if (_active->cancelRequested.load(std::memory_order_relaxed)) {
+        const bool incomingTerminal = merged.state == DocumentCommandState::Completed
+            || merged.state == DocumentCommandState::Failed
+            || merged.state == DocumentCommandState::Cancelled;
+        if (!incomingTerminal
+            && _active->snapshot.state == DocumentCommandState::Cancelling) {
+            merged.state = DocumentCommandState::Cancelling;
+        }
+        if (merged.diagnostic.empty() && !_active->snapshot.diagnostic.empty()) {
+            merged.diagnostic = _active->snapshot.diagnostic;
+        }
+    }
+    publishActiveSnapshotLocked(merged);
 }
 
 void DocumentExecutionLane::touchWatchdogProgress(ActiveCommand& command)

@@ -336,9 +336,9 @@ protected:
         return command;
     }
 
-    App::DocumentCommand makeLaneBlockingRecomputeCommand() const
+    App::DocumentCommand makeLaneBlockingRecomputeCommand(int options = 0) const
     {
-        return makeRecomputeCommand(std::string("lane-stall:") + _blockingToken);
+        return makeRecomputeCommand(std::string("lane-stall:") + _blockingToken, options);
     }
 
     App::DocumentCommand makeKindCommand(App::DocumentCommandKind kind) const
@@ -406,61 +406,65 @@ TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsRecompute)
 
 TEST_F(DocumentExecutionLaneTest, IdenticalRecomputeSharesHandle)
 {
+    // An empty document can finish the first recompute before the second
+    // trySubmit. Hold that command until this admission has been checked.
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto first = handle.trySubmit(makeRecomputeCommand("shared-recompute"));
+    const auto first = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(first.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
-    const auto second = handle.trySubmit(makeRecomputeCommand("shared-recompute"));
+    const auto second = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Accepted);
     EXPECT_EQ(second.commandId, first.commandId);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, RecomputeWithSameKeyAndOptionsCoalesces)
 {
+    _blocking->reset();
     auto handle = doc()->executionHandle();
     const auto first = handle.trySubmit(
-        makeRecomputeCommand("shared-options-recompute", App::Document::DepNoCycle));
+        makeLaneBlockingRecomputeCommand(App::Document::DepNoCycle));
     ASSERT_EQ(first.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     const auto second = handle.trySubmit(
-        makeRecomputeCommand("shared-options-recompute", App::Document::DepNoCycle));
+        makeLaneBlockingRecomputeCommand(App::Document::DepNoCycle));
     EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Accepted);
     EXPECT_EQ(second.commandId, first.commandId);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, RecomputeWithSameKeyButDifferentOptionsReturnsBusy)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "OptionsCoalesceBusy"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto first = handle.trySubmit(makeRecomputeCommand("shared-key-options"));
+    const auto first = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(first.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     const auto second = handle.trySubmit(
-        makeRecomputeCommand("shared-key-options", App::Document::DepNoCycle));
+        makeLaneBlockingRecomputeCommand(App::Document::DepNoCycle));
     EXPECT_EQ(second.result, App::DocumentCommandSubmitResult::Busy);
     EXPECT_NE(second.commandId, first.commandId);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, EditReturnsBusyWhileRecomputeActive)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "LaneBusy"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto accepted = handle.trySubmit(makeRecomputeCommand("busy-edit-test"));
+    const auto accepted = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(accepted.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     App::DocumentCommand edit;
     edit.kind = App::DocumentCommandKind::Edit;
     edit.document = handle.identity();
     const auto busy = handle.trySubmit(std::move(edit));
     EXPECT_EQ(busy.result, App::DocumentCommandSubmitResult::Busy);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, StatusObservationReturnsStableIdentity)
@@ -479,17 +483,17 @@ TEST_F(DocumentExecutionLaneTest, StatusObservationReturnsStableIdentity)
 
 TEST_F(DocumentExecutionLaneTest, CancelRemainsCallableWhileActive)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "LaneCancel"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto outcome = handle.trySubmit(makeRecomputeCommand("cancel-test"));
+    const auto outcome = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     EXPECT_TRUE(commandHandle.cancel("test cancellation"));
+    // The stall ignores the operation stop token; release it so cancellation
+    // can reach a terminal state.
+    _blocking->release();
     ASSERT_TRUE(waitForTerminal(commandHandle));
     const auto snapshot = commandHandle.status();
     EXPECT_TRUE(snapshot.state == App::DocumentCommandState::Cancelling
@@ -541,32 +545,28 @@ TEST_F(DocumentExecutionLaneTest, TrySubmitAcceptsSaveWhenIdle)
 
 TEST_F(DocumentExecutionLaneTest, UndoReturnsBusyWhileRecomputeActive)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "LaneUndoBusy"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto accepted = handle.trySubmit(makeRecomputeCommand("busy-undo-test"));
+    const auto accepted = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(accepted.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     const auto busy = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Undo));
     EXPECT_EQ(busy.result, App::DocumentCommandSubmitResult::Busy);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, SaveReturnsBusyWhileRecomputeActive)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "LaneSaveBusy"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto accepted = handle.trySubmit(makeRecomputeCommand("busy-save-test"));
+    const auto accepted = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(accepted.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     const auto busy = handle.trySubmit(makeKindCommand(App::DocumentCommandKind::Save));
     EXPECT_EQ(busy.result, App::DocumentCommandSubmitResult::Busy);
+    _blocking->release();
 }
 
 TEST_F(DocumentExecutionLaneTest, RecomputeHandleStatusDoesNotBlockNonOwner)
@@ -686,19 +686,17 @@ TEST_F(DocumentExecutionLaneTest, RecomputePassesOptionsToAsync)
 
 TEST_F(DocumentExecutionLaneTest, CloseDocumentReturnsFalseWhileBusy)
 {
-    auto* feature = dynamic_cast<App::FeatureTest*>(
-        doc()->addObject("App::FeatureTest", "LaneCloseBusy"));
-    ASSERT_NE(feature, nullptr);
-    feature->touch();
-
+    _blocking->reset();
     auto handle = doc()->executionHandle();
-    const auto outcome = handle.trySubmit(makeRecomputeCommand("close-busy"));
+    const auto outcome = handle.trySubmit(makeLaneBlockingRecomputeCommand());
     ASSERT_EQ(outcome.result, App::DocumentCommandSubmitResult::Accepted);
+    ASSERT_TRUE(_blocking->waitUntilStarted());
 
     EXPECT_FALSE(App::GetApplication().closeDocument(_docName.c_str()));
 
     App::DocumentCommandHandle commandHandle(outcome.commandId, handle.identity());
     EXPECT_TRUE(commandHandle.cancel("allow teardown"));
+    _blocking->release();
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (!doc()->executionLane()->isIdle()
            && std::chrono::steady_clock::now() < deadline) {
