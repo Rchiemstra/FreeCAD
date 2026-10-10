@@ -6145,6 +6145,25 @@ void PropertyXLinkContainer::aboutToSetChildValue(App::Property& prop)
             _onBreakLink(xlink->getValue());
             onRemoveDep(obj);
         }
+        // Close detaches this link while the source object is still alive and
+        // then destroys it. Object-level deps are dropped above, but the
+        // fine-grained property edges are left in place because the expression
+        // engine skips rebuildDependencies() while it is marked LinkDetached.
+        // The next dependency walk would call into the freed object.
+        if (obj) {
+            auto* owner = freecad_cast<DocumentObject*>(getContainer());
+            for (auto it = _PropDeps.begin(); it != _PropDeps.end();) {
+                if (it->first.second != obj) {
+                    ++it;
+                    continue;
+                }
+                if (!it->second && owner && owner->isAttachedToDocument()
+                    && obj->isAttachedToDocument()) {
+                    obj->_removeBackLinkProp(getName(), owner, it->first.first.c_str());
+                }
+                it = _PropDeps.erase(it);
+            }
+        }
     }
 }
 
