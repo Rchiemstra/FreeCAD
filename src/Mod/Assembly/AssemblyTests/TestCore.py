@@ -796,3 +796,236 @@ class TestCore(AssemblyTestBase):
                 operation, slider.State, rackPinion.State, content[-2500:]
             ),
         )
+
+    def test_api_distance_joint_moves_component(self):
+        """A distance joint through the API moves the free component."""
+        base = self.assembly.newObject("Part::Box", "DistBase")
+        base.Length = 30
+        base.Width = 20
+        base.Height = 10
+        lid = self.assembly.newObject("Part::Box", "DistLid")
+        lid.Length = 20
+        lid.Width = 12
+        lid.Height = 8
+        lid.Placement = App.Placement(App.Vector(40, 5, 30), App.Rotation(App.Vector(0, 1, 0), 15))
+        self.doc.recompute()
+        initial = App.Placement(lid.Placement)
+
+        Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+        Assembly.createJoint(
+            self.assembly,
+            "Distance",
+            Assembly.makeJointReference(base, "Face6"),
+            Assembly.makeJointReference(lid, "Face6"),
+            Distance=5,
+            solve=True,
+        )
+
+        self.assertFalse(
+            lid.Placement.isSame(initial, 1e-6),
+            "distance joint left the lid unmoved at {}".format(lid.Placement),
+        )
+
+    def test_api_revolute_on_circular_edges_is_coaxial(self):
+        """A revolute on two circular edges makes those edges coaxial.
+
+        makeJointReference stores [element, element]. That is the workbench
+        reference: the element plus the vertex or element used for the
+        placement. Edge2 of a Part::Cylinder is the bottom rim, and its local
+        center is the component origin, so the joint placement is the identity.
+        """
+        base = self.assembly.newObject("Part::Box", "Base")
+        base.Length = 30
+        base.Width = 20
+        base.Height = 10
+        lid = self.assembly.newObject("Part::Box", "Lid")
+        lid.Length = 20
+        lid.Width = 12
+        lid.Height = 8
+        lid.Placement = App.Placement(App.Vector(40, 5, 30), App.Rotation())
+        pin = self.assembly.newObject("Part::Cylinder", "Pin")
+        pin.Radius = 3
+        pin.Height = 18
+        pin.Placement = App.Placement(App.Vector(10, -15, 0), App.Rotation())
+        pin2 = self.assembly.newObject("Part::Cylinder", "Pin2")
+        pin2.Radius = 3
+        pin2.Height = 16
+        pin2.Placement = App.Placement(
+            App.Vector(-10, 10, 5), App.Rotation(App.Vector(1, 0, 0), 25)
+        )
+        self.doc.recompute()
+
+        ref1 = Assembly.makeJointReference(pin, "Edge2")
+        ref2 = Assembly.makeJointReference(pin2, "Edge2")
+        self.assertEqual(list(ref1[1]), ["Edge2", "Edge2"])
+        self.assertEqual(list(ref2[1]), ["Edge2", "Edge2"])
+
+        Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+        Assembly.createJoint(
+            self.assembly,
+            "Distance",
+            Assembly.makeJointReference(base, "Face6"),
+            Assembly.makeJointReference(lid, "Face6"),
+            Distance=5,
+            solve=True,
+            recompute=False,
+        )
+        joint = Assembly.createJoint(
+            self.assembly, "Revolute", ref1, ref2, solve=True, recompute=False
+        )
+
+        expected1 = UtilsAssembly.findPlacement(ref1, False)
+        expected2 = UtilsAssembly.findPlacement(ref2, False)
+        self.assertTrue(
+            joint.Placement1.isSame(expected1, 1e-6),
+            "Placement1 {} != edge placement {}".format(joint.Placement1, expected1),
+        )
+        self.assertTrue(
+            joint.Placement2.isSame(expected2, 1e-6),
+            "Placement2 {} != edge placement {}".format(joint.Placement2, expected2),
+        )
+        center1, axis1 = _shape_circle(pin, "Edge2")
+        center2, axis2 = _shape_circle(pin2, "Edge2")
+        self.assertTrue(
+            _axes_coaxial(center1, axis1, center2, axis2),
+            "pins are not coaxial: {} axis {} vs {} axis {}".format(center1, axis1, center2, axis2),
+        )
+
+    def test_api_revolute_on_offset_rim_stores_circle_center(self):
+        """A circular edge whose center is not the origin is not stored at the origin."""
+        pin = self.assembly.newObject("Part::Cylinder", "TopPin")
+        pin.Radius = 3
+        pin.Height = 18
+        pin.Placement = App.Placement(App.Vector(10, -15, 0), App.Rotation())
+        pin2 = self.assembly.newObject("Part::Cylinder", "TopPin2")
+        pin2.Radius = 3
+        pin2.Height = 16
+        pin2.Placement = App.Placement(
+            App.Vector(-10, 10, 5), App.Rotation(App.Vector(1, 0, 0), 25)
+        )
+        anchor = self.assembly.newObject("Part::Box", "TopAnchor")
+        self.doc.recompute()
+
+        ref1 = Assembly.makeJointReference(pin, "Edge3")
+        ref2 = Assembly.makeJointReference(pin2, "Edge3")
+        Assembly.createGroundedJoint(self.assembly, anchor, recompute=False)
+        joint = Assembly.createJoint(
+            self.assembly, "Revolute", ref1, ref2, solve=True, recompute=False
+        )
+
+        self.assertGreater(joint.Placement1.Base.z, 1.0, joint.Placement1)
+        self.assertGreater(joint.Placement2.Base.z, 1.0, joint.Placement2)
+        center1, axis1 = _shape_circle(pin, "Edge3")
+        center2, axis2 = _shape_circle(pin2, "Edge3")
+        self.assertTrue(
+            _axes_coaxial(center1, axis1, center2, axis2),
+            "top rims are not coaxial: {} axis {} vs {} axis {}".format(
+                center1, axis1, center2, axis2
+            ),
+        )
+
+    def test_api_parallel_and_perpendicular_joints_hold(self):
+        """A single parallel or perpendicular joint solves and the relation holds."""
+        for joint_type, rotation, limit in (
+            ("Parallel", 40, 1.0 - 1e-4),
+            ("Perpendicular", 80, 1e-4),
+        ):
+            with self.subTest(joint_type=joint_type):
+                base = self.assembly.newObject("Part::Box", joint_type + "Base")
+                base.Length = 30
+                base.Width = 20
+                base.Height = 10
+                lid = self.assembly.newObject("Part::Box", joint_type + "Lid")
+                lid.Length = 20
+                lid.Width = 12
+                lid.Height = 8
+                lid.Placement = App.Placement(
+                    App.Vector(40, 5, 30), App.Rotation(App.Vector(0, 1, 0), rotation)
+                )
+                self.doc.recompute()
+                Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+                Assembly.createJoint(
+                    self.assembly,
+                    joint_type,
+                    Assembly.makeJointReference(base, "Face6"),
+                    Assembly.makeJointReference(lid, "Face6"),
+                    solve=True,
+                    recompute=False,
+                )
+                status = self.assembly.solve(False)
+                alignment = abs(
+                    _plane_normal(base, "Face6").dot(_plane_normal(lid, "Face6"))
+                )
+                self.assertEqual(status, 0, joint_type)
+                if joint_type == "Parallel":
+                    self.assertGreater(alignment, limit, alignment)
+                else:
+                    self.assertLess(alignment, limit, alignment)
+
+    def test_api_contradictory_parallel_and_perpendicular_fails(self):
+        """Parallel and perpendicular on the same faces must not solve as success."""
+        base = self.assembly.newObject("Part::Box", "ClashBase")
+        base.Length = 30
+        base.Width = 20
+        base.Height = 10
+        lid = self.assembly.newObject("Part::Box", "ClashLid")
+        lid.Length = 20
+        lid.Width = 12
+        lid.Height = 8
+        lid.Placement = App.Placement(App.Vector(40, 5, 30), App.Rotation())
+        self.doc.recompute()
+
+        Assembly.createGroundedJoint(self.assembly, base, recompute=False)
+        Assembly.createJoint(
+            self.assembly,
+            "Parallel",
+            Assembly.makeJointReference(base, "Face6"),
+            Assembly.makeJointReference(lid, "Face6"),
+            solve=True,
+        )
+        Assembly.createJoint(
+            self.assembly,
+            "Perpendicular",
+            Assembly.makeJointReference(base, "Face6"),
+            Assembly.makeJointReference(lid, "Face6"),
+            solve=True,
+        )
+
+        violated = UtilsAssembly.violatedJointLabels(self.assembly)
+        status = self.assembly.solve(False)
+        normal_base = _plane_normal(base, "Face6")
+        normal_lid = _plane_normal(lid, "Face6")
+        alignment = abs(normal_base.dot(normal_lid))
+        self.assertEqual(
+            status,
+            -3,
+            "contradictory Parallel and Perpendicular reported status {}; "
+            "violated {}; face alignment {} (1 = parallel, 0 = perpendicular)".format(
+                status, violated, alignment
+            ),
+        )
+        self.assertIn("Perpendicular", violated)
+        self.assertNotIn("Parallel", violated)
+
+
+def _shape_circle(obj, element):
+    """Circle center and axis in the shape frame, which already includes Placement."""
+    curve = obj.Shape.getElement(element).Curve
+    return curve.Location, curve.Axis
+
+
+def _axes_coaxial(center1, axis1, center2, axis2, tolerance=1e-5):
+    direction1 = App.Vector(axis1)
+    direction2 = App.Vector(axis2)
+    if direction1.Length < 1e-12 or direction2.Length < 1e-12:
+        return False
+    direction1.normalize()
+    direction2.normalize()
+    if direction1.cross(direction2).Length > 1e-4:
+        return False
+    return (center2 - center1).cross(direction1).Length <= tolerance
+
+
+def _plane_normal(obj, element):
+    """Face normal in the shape frame, which already includes Placement."""
+    return obj.Shape.getElement(element).normalAt(0, 0)

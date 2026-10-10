@@ -1449,6 +1449,62 @@ def getParentPlacementIfNeeded(part):
     return Base.Placement()
 
 
+def _joint_axis_alignment(joint):
+    """Absolute cosine of the angle between the two joint Z axes, or None."""
+    if not isRefValid(joint.Reference1, 1) or not isRefValid(joint.Reference2, 1):
+        return None
+
+    plc1 = getJcsGlobalPlc(joint.Placement1, joint.Reference1)
+    plc2 = getJcsGlobalPlc(joint.Placement2, joint.Reference2)
+    z1 = plc1.Rotation.multVec(App.Vector(0, 0, 1))
+    z2 = plc2.Rotation.multVec(App.Vector(0, 0, 1))
+    if z1.Length < 1e-12 or z2.Length < 1e-12:
+        return None
+
+    z1.normalize()
+    z2.normalize()
+    return abs(z1.dot(z2))
+
+
+def jointRelationError(joint, tolerance=1e-4):
+    """Reason a solved orientation joint does not hold, or None.
+
+    Only Parallel and Perpendicular are checked. Other joint types stay on the
+    solver status so a redundant-but-satisfied constraint is not reported.
+    """
+    jtype = getattr(joint, "JointType", "")
+    alignment = _joint_axis_alignment(joint)
+    if alignment is None:
+        return None
+    if jtype == "Parallel" and alignment < 1.0 - tolerance:
+        return "not parallel (alignment {:.6f})".format(alignment)
+    if jtype == "Perpendicular" and alignment > tolerance:
+        return "not perpendicular (alignment {:.6f})".format(alignment)
+    return None
+
+
+def violatedJointLabels(assembly):
+    """Labels of joints whose relation does not hold after a solve.
+
+    MbD can drop a conflicting orientation constraint as redundant and still
+    report success. solve() then returns the conflicting-constraints code and
+    names these joints.
+    """
+    labels = []
+    for joint in assembly.Joints:
+        if getattr(joint, "Suppressed", False):
+            continue
+        reason = jointRelationError(joint)
+        if not reason:
+            continue
+        label = joint.Label or joint.Name
+        App.Console.PrintWarning(
+            "Assembly solve: joint '{}' does not hold ({})\n".format(label, reason)
+        )
+        labels.append(label)
+    return labels
+
+
 def generatePropertySettings(documentObject):
     commands = []
     if hasattr(documentObject, "Name"):
