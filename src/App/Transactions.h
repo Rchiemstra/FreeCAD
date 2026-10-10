@@ -121,6 +121,9 @@ public:
      */
     bool hasObject(const TransactionalObject* Obj) const;
 
+    /// True when this transaction snapshots \a propertyName on \a object.
+    bool recordsProperty(const TransactionalObject* object, const char* propertyName) const;
+
     /**
      * @brief Check whether the live object was introduced by this transaction.
      *
@@ -188,6 +191,7 @@ public:
      * @param[in] Prop The property that is changed.
      */
     void addObjectChange(const TransactionalObject* Obj, const Property* Prop);
+    void noteSerializedStatus(const TransactionalObject* Obj, const Property* Prop);
 
     /**
      * @brief Fold this transaction's records into an enclosing one.
@@ -275,6 +279,7 @@ public:
      * @param[in] prop The property that is affected by the transaction.
      */
     void setProperty(const Property* prop);
+    void noteSerializedStatus(const Property* prop);
 
     /**
      * @brief Rename a property.
@@ -327,6 +332,9 @@ protected:
         Property* propertyTarget = nullptr;
         TransactionalObject* target = nullptr;
         PropertyContainer* source = nullptr;
+        // Set when this transaction changed persisted status bits. Undo/redo
+        // restores those bits. A value-only snapshot keeps them untouched.
+        bool restoreSerializedStatus = false;
     };
 
     /// A map to maintain the properties of the object.

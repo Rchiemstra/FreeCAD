@@ -9,6 +9,7 @@
 #include "App/Document.h"
 #include "App/DocumentCollaborationService.h"
 #include "App/DocumentCommitCoordinator.h"
+#include "App/DocumentExecutionLane.h"
 #include "App/DocumentObject.h"
 #include "App/DocumentObjectGroup.h"
 #include "App/FeatureTest.h"
@@ -130,7 +131,8 @@ public:
         return document.commitCollaborationCommitTransaction(true);
     }
 
-    static std::string grantDiagnostic(Document& document)
+    /** Probe grant on the calling thread (no lane hop). */
+    static std::string grantDiagnosticOnCallingThread(Document& document)
     {
         try {
             auto grant = document.openCollaborationStructuralMutationGrant();
@@ -141,66 +143,94 @@ public:
         }
     }
 
+    /** Probe grant on the document owner thread (lane when present). */
+    static std::string grantDiagnostic(Document& document)
+    {
+        return onOwner(document, [&] { return grantDiagnosticOnCallingThread(document); });
+    }
+
     static std::string withoutTransaction(Document& document)
     {
-        document.beginCollaborationCommitNotificationBarrier();
-        document.setCollaborationRevisionPublicationSuppressed(true);
-        const auto diagnostic = grantDiagnostic(document);
-        document.setCollaborationRevisionPublicationSuppressed(false);
-        document.finishCollaborationCommitNotificationBarrier(false);
-        return diagnostic;
+        return onOwner(document, [&] {
+            document.beginCollaborationCommitNotificationBarrier();
+            document.setCollaborationRevisionPublicationSuppressed(true);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.setCollaborationRevisionPublicationSuppressed(false);
+            document.finishCollaborationCommitNotificationBarrier(false);
+            return diagnostic;
+        });
     }
 
     static std::string withoutRevisionSuppression(Document& document)
     {
-        beginBoundary(document, false);
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, false);
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string withForeignStableRead(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationStableReadCapture();
-        const auto diagnostic = grantDiagnostic(document);
-        document.finishCollaborationStableReadCapture();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationStableReadCapture();
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.finishCollaborationStableReadCapture();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string duringAtomicPresentationAudit(Document& document)
     {
-        beginBoundary(document, true);
-        document.beginCollaborationAtomicPresentationAudit({});
-        const auto diagnostic = grantDiagnostic(document);
-        document.endCollaborationAtomicPresentationAudit();
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.beginCollaborationAtomicPresentationAudit({});
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            document.endCollaborationAtomicPresentationAudit();
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string onPoisonedDocument(Document& document)
     {
-        beginBoundary(document, true);
-        document.poisonCollaborationCommit("test poison");
-        const auto diagnostic = grantDiagnostic(document);
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            document.poisonCollaborationCommit("test poison");
+            const auto diagnostic = grantDiagnosticOnCallingThread(document);
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
     static std::string reentrant(Document& document)
     {
-        beginBoundary(document, true);
-        std::string diagnostic;
-        {
-            auto grant = document.openCollaborationStructuralMutationGrant();
-            diagnostic = grantDiagnostic(document);
-        }
-        endBoundary(document);
-        return diagnostic;
+        return onOwner(document, [&] {
+            beginBoundary(document, true);
+            std::string diagnostic;
+            {
+                auto grant = document.openCollaborationStructuralMutationGrant();
+                diagnostic = grantDiagnosticOnCallingThread(document);
+            }
+            endBoundary(document);
+            return diagnostic;
+        });
     }
 
 private:
+    template<typename Fn>
+    static auto onOwner(Document& document, Fn&& fn) -> decltype(fn())
+    {
+        if (DocumentExecutionLane* lane = document.executionLane();
+            lane && !lane->isOwnerThread()) {
+            return lane->dispatchToOwner(std::forward<Fn>(fn));
+        }
+        return std::forward<Fn>(fn)();
+    }
+
     static void beginBoundary(Document& document, bool suppressRevisions)
     {
         document.beginCollaborationCommitNotificationBarrier();
@@ -426,6 +456,13 @@ public:
         _changed.notify_all();
     }
 
+    void reset()
+    {
+        std::lock_guard lock(_mutex);
+        _entered = false;
+        _released = false;
+    }
+
 private:
     static inline HookBarrier* Active {nullptr};
     std::mutex _mutex;
@@ -619,10 +656,11 @@ public:
         task->changed.notify_all();
     }
 
-    void waitUntilQueued()
+    [[nodiscard]] bool waitUntilQueued(
+        std::chrono::milliseconds timeout = std::chrono::seconds(5))
     {
         std::unique_lock lock(_mutex);
-        _changed.wait(lock, [&] { return !_tasks.empty(); });
+        return _changed.wait_for(lock, timeout, [&] { return !_tasks.empty(); });
     }
 
 private:
@@ -924,7 +962,6 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
         &HookBarrier::invoke);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(
         &HookBarrier::releaseActive);
-    BlockingTestDispatcher dispatcher;
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -932,22 +969,24 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
+        return;
+    }
 
-    bool hookEntered = false;
     bool closeResult = true;
     std::thread closeThread([&] {
-        hookEntered = barrier.waitUntilEntered();
-        if (hookEntered) {
-            closeResult = App::GetApplication().closeDocument(_documentName.c_str());
-        }
+        closeResult = App::GetApplication().closeDocument(_documentName.c_str());
     });
-    dispatcher.runOne();
     closeThread.join();
     Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     Internal::DocumentCollaborationServiceTestAccess::setPostMarkClosingHook(nullptr);
 
-    EXPECT_TRUE(hookEntered);
     EXPECT_TRUE(closeResult);
     static_cast<void>(preparationFuture.get());
     if (closeResult) {
@@ -957,7 +996,14 @@ TEST_F(DocumentCollaborationServiceTest, closeDrainsPostSubmitRegistrationGap)
 
 TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCallback)
 {
-    BlockingTestDispatcher dispatcher;
+    // Install MainThreadSignal hooks so the test thread is treated as the GUI
+    // owner: close must reject while a collaboration admission is held.
+    // prepareEditAsync hops through the document execution lane; use the
+    // post-submit hook as the pin barrier instead of waiting for a
+    // MainThreadSignal queue that the lane path never fills.
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(
+        &HookBarrier::invoke);
     auto preparationFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEditAsync(
             _session.sessionId(),
@@ -965,11 +1011,22 @@ TEST_F(DocumentCollaborationServiceTest, queuedDispatchPinsDocumentBeforeOwnerCa
             detachedIntent("After"),
             "native-detached-test");
     });
-    dispatcher.waitUntilQueued();
+    const bool hookEntered = barrier.waitUntilEntered();
+    EXPECT_TRUE(hookEntered);
+    if (!hookEntered) {
+        barrier.release();
+        static_cast<void>(preparationFuture.get());
+        Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
+        return;
+    }
 
-    EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    {
+        BlockingTestDispatcher dispatcher;
+        EXPECT_FALSE(App::GetApplication().closeDocument(_documentName.c_str()));
+    }
 
-    dispatcher.runOne();
+    barrier.release();
+    Internal::DocumentCollaborationServiceTestAccess::setPostSubmitHook(nullptr);
     const auto executionId = preparationFuture.get();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     std::optional<PreparedEditExecutionSnapshot> status;
@@ -1584,13 +1641,19 @@ TEST_F(DocumentCollaborationServiceTest, cancellationRejectsPreparedCommit)
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmission)
 {
     auto prepared = prepare("queued-cancellation", "Must Not Apply");
-    BlockingTestDispatcher dispatcher;
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    // cancelEdit also constructs LifecyclePin; clear the blocking hook first or the
+    // test thread re-enters HookBarrier::invoke while the owner is already waiting
+    // for release (deadlock). Cancel still wins: session is marked before release.
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(_session.sessionId(), "queued"));
-    dispatcher.runOne();
+    barrier.release();
 
     const auto result = future.get();
     EXPECT_EQ(result.status, DocumentCommitStatus::Cancelled);
@@ -1599,31 +1662,40 @@ TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeCommitAdmis
 
 TEST_F(DocumentCollaborationServiceTest, queuedCancellationWinsBeforeStableReadAdmission)
 {
-    BlockingTestDispatcher dispatcher;
-
+    // beginEditSession also pins; open sessions before installing the blocking hook or
+    // the test thread deadlocks inside beginEditSession waiting for its own release.
     const auto snapshotSession =
         _document->collaborationService().beginEditSession("queued snapshot");
+    const auto prepareSession =
+        _document->collaborationService().beginEditSession("queued preparation");
+    const auto preparedIntent = intent("Must Not Prepare");
+
+    HookBarrier barrier;
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             snapshotSession.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(snapshotSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
     EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
 
-    const auto prepareSession =
-        _document->collaborationService().beginEditSession("queued preparation");
-    const auto preparedIntent = intent("Must Not Prepare");
+    barrier.reset();
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(
+        &HookBarrier::invoke);
     auto prepareFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().prepareEdit(prepareSession.sessionId(),
                                                              "queued-preparation",
                                                              preparedIntent,
                                                              "native-test");
     });
-    dispatcher.waitUntilQueued();
+    ASSERT_TRUE(barrier.waitUntilEntered());
+    Internal::DocumentCollaborationServiceTestAccess::setPostLifecycleAdmissionHook(nullptr);
     ASSERT_TRUE(_document->collaborationService().cancelEdit(prepareSession.sessionId()));
-    dispatcher.runOne();
+    barrier.release();
     EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
 }
 
@@ -1739,7 +1811,7 @@ TEST_F(DocumentCollaborationServiceTest, structuralGrantPreconditionsHaveDistinc
               std::string::npos);
 
     auto ownerDiagnostic = std::async(std::launch::async, [&] {
-        return Access::grantDiagnostic(*_document);
+        return Access::grantDiagnosticOnCallingThread(*_document);
     });
     EXPECT_NE(ownerDiagnostic.get().find("owner thread"), std::string::npos);
 }
@@ -1859,25 +1931,29 @@ TEST_F(DocumentCollaborationServiceTest, reentrantObserverCommitReturnsBusy)
     EXPECT_EQ(_target->Label.getStrValue(), "Outer");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerCommitIsRejectedOffOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, offOwnerCommitSucceedsViaExecutionLane)
 {
+    // Documents own a DocumentExecutionLane; off-owner commitEdit hops to the
+    // owner instead of returning Unsupported (pre-lane MainThreadSignal-only path).
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto prepared = prepare("off-owner", "Worker");
     auto future = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), prepared);
     });
 
     const auto result = future.get();
-    EXPECT_EQ(result.status, DocumentCommitStatus::Unsupported);
-    EXPECT_EQ(_target->Label.getStrValue(), "Before");
+    EXPECT_TRUE(result.committed()) << result.message;
+    EXPECT_EQ(_target->Label.getStrValue(), "Worker");
 }
 
-TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRejected)
+TEST_F(DocumentCollaborationServiceTest, offOwnerSnapshotAndPreparationSucceedViaExecutionLane)
 {
+    ASSERT_NE(_document->executionLane(), nullptr);
     auto snapshotFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().snapshotForEdit(
             _session.sessionId(), {DocumentRevisionKey::objectModel("Target")});
     });
-    EXPECT_THROW(static_cast<void>(snapshotFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(snapshotFuture.get()));
 
     const auto preparedIntent = intent("Worker");
     auto prepareFuture = std::async(std::launch::async, [&] {
@@ -1886,12 +1962,19 @@ TEST_F(DocumentCollaborationServiceTest, noHookWorkerSnapshotAndPreparationAreRe
                                                              preparedIntent,
                                                              "native-test");
     });
-    EXPECT_THROW(static_cast<void>(prepareFuture.get()), Base::RuntimeError);
+    EXPECT_NO_THROW(static_cast<void>(prepareFuture.get()));
     EXPECT_EQ(_target->Label.getStrValue(), "Before");
 }
 
-TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwnerThread)
+TEST_F(DocumentCollaborationServiceTest, laneSerializesConcurrentAdmissionsOnOwnerThread)
 {
+    // invokeCollaborationOnDocumentThread prefers the execution lane over
+    // MainThreadSignal hooks, so BlockingTestDispatcher::runOne would deadlock
+    // waiting for a queue that never fills.
+    auto* lane = _document->executionLane();
+    ASSERT_NE(lane, nullptr);
+    const auto ownerId = lane->ownerThreadId();
+
     auto* other = _document->addObject<FeatureTest>("Other");
     other->Label.setValue("BeforeOther");
     _document->recompute();
@@ -1902,26 +1985,23 @@ TEST_F(DocumentCollaborationServiceTest, dispatcherRunsConcurrentAdmissionsOnOwn
         ApplyThreads.clear();
     }
 
-    BlockingTestDispatcher dispatcher;
     auto firstFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), first);
     });
     auto secondFuture = std::async(std::launch::async, [&] {
         return _document->collaborationService().commitEdit(_session.sessionId(), second);
     });
-    dispatcher.runOne();
-    dispatcher.runOne();
 
     const auto firstResult = firstFuture.get();
     const auto secondResult = secondFuture.get();
-    EXPECT_TRUE(firstResult.committed());
-    EXPECT_TRUE(secondResult.committed());
+    EXPECT_TRUE(firstResult.committed()) << firstResult.message;
+    EXPECT_TRUE(secondResult.committed()) << secondResult.message;
     EXPECT_EQ(_target->Label.getStrValue(), "First");
     EXPECT_EQ(other->Label.getStrValue(), "Second");
     std::lock_guard lock(InstrumentationMutex);
     ASSERT_EQ(ApplyThreads.size(), 2U);
-    EXPECT_EQ(ApplyThreads[0], std::this_thread::get_id());
-    EXPECT_EQ(ApplyThreads[1], std::this_thread::get_id());
+    EXPECT_EQ(ApplyThreads[0], ownerId);
+    EXPECT_EQ(ApplyThreads[1], ownerId);
 }
 
 TEST_F(DocumentCollaborationServiceTest,

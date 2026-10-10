@@ -35,13 +35,18 @@
 #include <fastsignals/signal.h>
 #include <fastsignals/connection.h>
 
+#include <App/Application.h>
 #include <App/Document.h>
+#include <App/DocumentExecutionLane.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentWouldBlock.h>
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/CommandT.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/MainWindow.h>
+#include <Gui/Utilities.h>
 #include <Gui/ViewProviderDocumentObject.h>
 #include <Mod/TechDraw/App/DrawHatch.h>
 #include <Mod/TechDraw/App/DrawGeomHatch.h>
@@ -112,6 +117,7 @@ ViewProviderPage::ViewProviderPage()
 
 ViewProviderPage::~ViewProviderPage()
 {
+    connectBecameStable.disconnect();
     removeMDIView();//if the MDIViewPage is still in MainWindow, remove it.
     m_graphicsScene->deleteLater();
 }
@@ -519,11 +525,140 @@ void ViewProviderPage::dropObject(App::DocumentObject* docObj)
 //! Redo the whole visual page
 void ViewProviderPage::onGuiRepaint(const TechDraw::DrawPage* dp)
 {
-    if (dp == getDrawPage()) {
-        //this signal is for us
-        if (!getDrawPage()->isUnsetting()) {
-            m_graphicsScene->fixOrphans();
+    if (dp != getDrawPage()) {
+        return;
+    }
+    scheduleDeferredGuiPaint();
+}
+
+void ViewProviderPage::scheduleDeferredGuiPaint()
+{
+    App::Document* document = getObject() ? getObject()->getDocument() : nullptr;
+    if (!document) {
+        return;
+    }
+
+    m_guiPaintPending = true;
+
+    if (!connectBecameStable.connected()) {
+        connectBecameStable = document->signalBecameStable.connect(
+            [this](const App::Document& changed) {
+                onDocumentBecameStable(changed);
+            });
+    }
+
+    if (App::DocumentWouldBlock::isGuiThread()
+        && !Gui::documentExecutionLaneBusy(*document)
+        && !document->mustExecute()
+        && !document->testStatus(App::Document::Recomputing)) {
+        const std::string documentName = document->getName();
+        const std::string objectName = m_pageName;
+        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* vp = freecad_cast<ViewProviderPage*>(guiDoc->getViewProvider(object));
+            if (vp) {
+                vp->runDeferredGuiPaint();
+            }
+        });
+    }
+}
+
+void ViewProviderPage::onDocumentBecameStable(const App::Document& document)
+{
+    if (!getObject() || getObject()->getDocument() != &document || !m_guiPaintPending) {
+        return;
+    }
+
+    const std::string documentName = document.getName();
+    const std::string objectName = m_pageName;
+    Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+        if (!Gui::Application::Instance) {
+            return;
         }
+        App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+        if (!doc) {
+            return;
+        }
+        Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+        if (!guiDoc || guiDoc->isAboutToClose()) {
+            return;
+        }
+        App::DocumentObject* object = doc->getObject(objectName.c_str());
+        if (!object) {
+            return;
+        }
+        auto* vp = freecad_cast<ViewProviderPage*>(guiDoc->getViewProvider(object));
+        if (vp) {
+            vp->runDeferredGuiPaint();
+        }
+    });
+}
+
+void ViewProviderPage::runDeferredGuiPaint()
+{
+    if (!m_guiPaintPending) {
+        return;
+    }
+
+    TechDraw::DrawPage* page = getDrawPage();
+    App::Document* document = page ? page->getDocument() : nullptr;
+    if (!document) {
+        m_guiPaintPending = false;
+        return;
+    }
+
+    if (!App::DocumentWouldBlock::isGuiThread()) {
+        scheduleDeferredGuiPaint();
+        return;
+    }
+
+    const bool documentBusy = document->mustExecute()
+        || document->testStatus(App::Document::Recomputing)
+        || Gui::documentExecutionLaneBusy(*document);
+    if (documentBusy) {
+        const std::string documentName = document->getName();
+        const std::string objectName = m_pageName;
+        Gui::scheduleGuiSingleShot(0, [documentName, objectName]() {
+            if (!Gui::Application::Instance) {
+                return;
+            }
+            App::Document* doc = App::GetApplication().getDocument(documentName.c_str());
+            if (!doc) {
+                return;
+            }
+            Gui::Document* guiDoc = Gui::Application::Instance->getDocument(doc);
+            if (!guiDoc || guiDoc->isAboutToClose()) {
+                return;
+            }
+            App::DocumentObject* object = doc->getObject(objectName.c_str());
+            if (!object) {
+                return;
+            }
+            auto* vp = freecad_cast<ViewProviderPage*>(guiDoc->getViewProvider(object));
+            if (vp) {
+                vp->runDeferredGuiPaint();
+            }
+        });
+        return;
+    }
+
+    m_guiPaintPending = false;
+    if (!page->isUnsetting()) {
+        m_graphicsScene->fixOrphans();
     }
 }
 

@@ -11,6 +11,13 @@ import tokenize
 from typing import Mapping, Sequence
 
 
+def _posix_byte_sort_key(value: object) -> bytes:
+    """POSIX byte order. ``Path`` comparison on Windows is case-folded."""
+    as_posix = getattr(value, "as_posix", None)
+    text = as_posix() if callable(as_posix) else str(value).replace("\\", "/")
+    return text.encode("utf-8")
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "doc" / "document-collaboration-ingress-inventory.md"
 
@@ -25,7 +32,7 @@ INVENTORY_HEADER = (
     "migration WP",
     "exception rationale",
 )
-EXPECTED_ROW_COUNT = 908
+EXPECTED_ROW_COUNT = 904
 EXPECTED_PATH_COUNT = 372
 CANDIDATE_DRIFT_LINES = 50
 
@@ -90,16 +97,35 @@ PUBLIC_OPERATION_PATTERNS = {
         r"(?<![A-Za-z0-9_])setActiveTransaction\s*\("
     ),
     "undo/history control": re.compile(
-        r"(?<![A-Za-z0-9_])(?:undo|clearUndo|clearUndos)\s*\("
+        r"(?<![A-Za-z0-9_])(?:undo|clearUndo|clearUndos|"
+        r"submitDocumentKindCommand)\s*\("
     ),
-    "redo/history control": re.compile(r"(?<![A-Za-z0-9_])redo\s*\("),
-    "full recompute": re.compile(r"(?<![A-Za-z0-9_])recompute\s*\("),
+    "redo/history control": re.compile(
+        r"(?<![A-Za-z0-9_])(?:redo|submitDocumentKindCommand)\s*\("
+    ),
+    "full recompute": re.compile(
+        r"(?<![A-Za-z0-9_])(?:recompute|recomputeAsync|"
+        r"submitDocumentRecompute(?:OrReport|Once)?|"
+        r"submitActiveDocumentRecomputeOrReport|trySubmitDocumentRecompute|"
+        r"requestDocumentRecompute|"
+        # BIM-domain public GUI-safe wrappers that call the above internally:
+        r"recompute_active_document|recompute_document_gui_safe|"
+        r"recompute_object_gui_safe|recompute_objects_gui_safe)\s*\("
+    ),
     "feature recompute": re.compile(
-        r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute)\s*\("
+        r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute|recomputeAsync|"
+        r"submitDocumentRecompute(?:OrReport|Once)?|"
+        r"submitActiveDocumentRecomputeOrReport|trySubmitDocumentRecompute|"
+        r"requestDocumentRecompute)\s*\("
     ),
     "command/macro bridge": re.compile(
         r"(?<![A-Za-z0-9_])(?:doCommand|doCommandT|runCommand|runPythonCommand|"
-        r"FCMD_OBJ_CMD|FCMD_DOC_CMD)\s*\("
+        r"FCMD_OBJ_CMD|FCMD_DOC_CMD|submitDocumentKindCommand|"
+        r"submitDocumentRecompute(?:OrReport)?|"
+        r"submitActiveDocumentRecomputeOrReport|"
+        # Typed C++ command bridge helpers (modern replacements for FCMD_OBJ_CMD etc.):
+        r"cmdAppObjectArgs|cmdGuiObjectArgs|cmdApp(?:Object|Document)\b|"
+        r"cmdGui(?:Object|Document)\b)\s*\("
     ),
 }
 
@@ -392,7 +418,7 @@ def _private_ingress_violations(
 ) -> list[str]:
     violations: list[str] = []
     by_source = _rows_by_source(rows)
-    for path, source in sorted(sources.items()):
+    for path, source in sorted(sources.items(), key=lambda item: _posix_byte_sort_key(item[0])):
         code = _suppress_non_code(path, source)
         for match in PRIVATE_CALL_RE.finditer(code):
             line = code.count("\n", 0, match.start(1)) + 1
@@ -414,7 +440,7 @@ def _untyped_global_violations(
 ) -> list[str]:
     violations: list[str] = []
     by_source = _rows_by_source(rows)
-    for path, source in sorted(sources.items()):
+    for path, source in sorted(sources.items(), key=lambda item: _posix_byte_sort_key(item[0])):
         code = _suppress_non_code(path, source)
         for label, pattern in UNTYPED_GLOBAL_PATTERNS:
             for match in pattern.finditer(code):
@@ -429,7 +455,7 @@ def _untyped_global_violations(
 def _sources_for_rows(rows: Sequence[InventoryRow], root: Path = REPO_ROOT) -> dict[str, str]:
     return {
         path: _read_source(root / path)
-        for path in sorted({row.source_path for row in rows})
+        for path in sorted({row.source_path for row in rows}, key=_posix_byte_sort_key)
         if (root / path).is_file()
     }
 

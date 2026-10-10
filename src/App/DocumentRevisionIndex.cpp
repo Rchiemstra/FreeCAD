@@ -145,8 +145,14 @@ std::vector<App::DocumentRevisionPublicationRequest> distinctPublicationRequests
         }
         auto& canonical = result[request->second];
         if (canonical.stableObjectIdentity != change.stableObjectIdentity) {
+            // Object-scoped keys are named after the object. Name it so the
+            // caller can tell which replacement made the operation ambiguous.
             throw std::invalid_argument(
-                "duplicate revision keys cannot carry inconsistent object identities");
+                "duplicate revision keys cannot carry inconsistent object identities: object '"
+                + change.key.subject
+                + "' was removed and replaced by a new object with the same name in one "
+                  "operation; update it in place, give the replacement a new name, or "
+                  "commit the removal separately");
         }
         canonical.revisionDelta = std::max(canonical.revisionDelta,
                                            change.revisionDelta);

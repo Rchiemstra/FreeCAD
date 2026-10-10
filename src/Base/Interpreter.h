@@ -201,6 +201,19 @@ private:
     long _exitCode;
 };
 
+/**
+ * M6: while a GUI thread is about to take the GIL, other PyGILStateLocker
+ * callers yield instead of winning the race after a probe releases it.
+ * The reserving thread itself does not yield.
+ */
+class BaseExport GilGuiHandoff
+{
+public:
+    static void reserve() noexcept;
+    static void release() noexcept;
+    [[nodiscard]] static bool yieldRequired() noexcept;
+};
+
 /** If the application starts we release immediately the global interpreter lock
  * (GIL) once the Python interpreter is initialized, i.e. no thread -- including
  * the main thread doesn't hold the GIL. Thus, every thread must instantiate an
@@ -211,10 +224,7 @@ private:
 class BaseExport PyGILStateLocker
 {
 public:
-    PyGILStateLocker()
-    {
-        gstate = PyGILState_Ensure();  // NOLINT
-    }
+    PyGILStateLocker();
     ~PyGILStateLocker()
     {
         PyGILState_Release(gstate);
@@ -412,5 +422,10 @@ inline InterpreterSingleton& Interpreter()
 {
     return InterpreterSingleton::Instance();
 }
+
+/** Mark the current thread so PyFrame_GetCode is not used.
+ *  A C++ exception unwinding through a Python frame leaves that frame unsafe. */
+BaseExport void setPythonFrameInspectionUnsafe(bool unsafe);
+BaseExport bool isPythonFrameInspectionUnsafe();
 
 }  // namespace Base

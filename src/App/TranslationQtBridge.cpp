@@ -7,11 +7,14 @@
 #include <QThread>
 #include <QTranslator>
 
+#include <future>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include <App/MainThreadSignal.h>
 #include <Base/ServiceProvider.h>
 #include <Base/Translation.h>
 
@@ -62,13 +65,33 @@ public:
             return installTranslatorImpl(file);
         }
 
-        bool ok = false;
+        if (App::MainThreadSignalConfig::hasHooks()) {
+            // Through the GUI marshal queue, so a GUI thread that waits
+            // synchronously on this document owner still runs it.
+            bool installed = false;
+            App::MainThreadSignalConfig::invoke(
+                [&installed, &file] { installed = installTranslatorImpl(file); },
+                /*blocking=*/true);
+            return installed;
+        }
+        // Never use Qt::BlockingQueuedConnection: a document-owner caller would
+        // stall while the GUI thread is waiting on the lane. Queue + future keeps
+        // the wait on the caller without a blocking queued cross-thread invoke.
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
         QMetaObject::invokeMethod(
             app,
-            [&ok, file]() { ok = installTranslatorImpl(file); },
-            Qt::BlockingQueuedConnection
+            [promise, file]() {
+                try {
+                    promise->set_value(installTranslatorImpl(file));
+                }
+                catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            },
+            Qt::QueuedConnection
         );
-        return ok;
+        return future.get();
     }
 
     bool removeTranslators(const std::vector<std::string>& filenames) const override
@@ -78,13 +101,28 @@ public:
             return removeTranslatorsImpl(filenames);
         }
 
-        bool ok = false;
+        if (App::MainThreadSignalConfig::hasHooks()) {
+            bool removed = false;
+            App::MainThreadSignalConfig::invoke(
+                [&removed, &filenames] { removed = removeTranslatorsImpl(filenames); },
+                /*blocking=*/true);
+            return removed;
+        }
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
         QMetaObject::invokeMethod(
             app,
-            [&ok, filenames]() { ok = removeTranslatorsImpl(filenames); },
-            Qt::BlockingQueuedConnection
+            [promise, filenames]() {
+                try {
+                    promise->set_value(removeTranslatorsImpl(filenames));
+                }
+                catch (...) {
+                    promise->set_exception(std::current_exception());
+                }
+            },
+            Qt::QueuedConnection
         );
-        return ok;
+        return future.get();
     }
 };
 

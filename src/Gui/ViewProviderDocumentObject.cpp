@@ -37,6 +37,7 @@
 #include <App/GeoFeatureGroupExtension.h>
 #include <App/GroupExtension.h>
 #include <App/Link.h>
+#include <App/MutationClassification.h>
 #include <App/Origin.h>
 #include <Base/Tools.h>
 
@@ -272,8 +273,19 @@ void ViewProviderDocumentObject::onBeforeChange(const App::Property* prop)
     if (isAttachedToDocument()) {
         App::DocumentObject* obj = getObject();
         App::Document* doc = obj ? obj->getDocument() : nullptr;
-        if (doc) {
-            onBeforeChangeProperty(doc, prop);
+        // A GUI view-property write notifies the App document here. That hook
+        // refuses the call while another thread holds atomic presentation
+        // admission, and the presentation catch logs the refusal. The view
+        // value still updates; only the document notification is skipped.
+        if (doc && !App::atomicPresentationMutationAdmissionHeldByOtherThread(*doc)) {
+            // User1 mirrors App::DocumentObject::Visibility. Enforce admission,
+            // but do not record an undo entry. Undo pastes it off the GUI thread.
+            if (prop == &Visibility && Visibility.testStatus(App::Property::User1)) {
+                App::enforceAtomicPresentationMutationTarget(*doc);
+            }
+            else {
+                onBeforeChangeProperty(doc, prop);
+            }
         }
     }
 
@@ -286,8 +298,23 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
         setActiveMode();
     }
     else if (prop == &Visibility) {
-        // use this bit to check whether show() or hide() must be called
-        if (!Visibility.testStatus(App::Property::User2)) {
+        // Scene edits and Python view-provider hooks touch Coin and may call
+        // getMainWindow(). During replay, while the stable signal still holds
+        // the document lock, or off the GUI thread, only mirror the App
+        // property here. catchUpIdleLivePresentation() applies the scene later.
+        // A provider that is not attached yet (e.g. a constructor setting
+        // Visibility) has no live scene to protect and keeps direct show()/hide().
+        Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+        const bool deferScene =
+            pcObject && (!guiDocument || guiDocument->deferLivePresentationUpdates());
+        if (deferScene) {
+            if (guiDocument) {
+                guiDocument->noteDeferredVisibilityChange(this);
+                guiDocument->scheduleLivePresentationCatchUp();
+            }
+        }
+        else if (!Visibility.testStatus(App::Property::User2)) {
+            // use this bit to check whether show() or hide() must be called
             Visibility.setStatus(App::Property::User2, true);
             Visibility.getValue() ? show() : hide();
             Visibility.setStatus(App::Property::User2, false);
@@ -324,8 +351,14 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
             // The mirrored App::DocumentObject::Visibility property is
             // intentionally NoModify to prevent double accounting.  The
             // ViewProvider is therefore the sole Appearance authority for a
-            // user-visible show/hide change.
-            getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+            // user-visible show/hide change. markFileChange() refuses a GUI
+            // caller while another thread holds atomic presentation admission.
+            // User1 is only the App Visibility mirror; that change is already marked.
+            if (!Visibility.testStatus(App::Property::User1)
+                && !App::atomicPresentationMutationAdmissionHeldByOtherThread(
+                    *getObject()->getDocument())) {
+                getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+            }
         }
     }
     else if (prop == &SelectionStyle) {
@@ -345,7 +378,12 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
         if (prop) {
             FC_LOG(prop->getFullName() << " changed");
         }
-        getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+        // markFileChange() enforces atomic presentation admission. A refresh
+        // that landed while another thread still holds it must not log that refusal.
+        if (!App::atomicPresentationMutationAdmissionHeldByOtherThread(
+                *getObject()->getDocument())) {
+            getObject()->getDocument()->markFileChange(App::DocumentFileChange::Appearance);
+        }
     }
 
     ViewProvider::onChanged(prop);
@@ -353,6 +391,18 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
 
 void ViewProviderDocumentObject::hide()
 {
+    Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+    if (guiDocument && guiDocument->deferLivePresentationUpdates()) {
+        if (!Visibility.testStatus(App::Property::User2)) {
+            Visibility.setStatus(App::Property::User2, true);
+            Visibility.setValue(false);
+            Visibility.setStatus(App::Property::User2, false);
+        }
+        guiDocument->noteDeferredVisibilityChange(this);
+        guiDocument->scheduleLivePresentationCatchUp();
+        return;
+    }
+
     ViewProvider::hide();
     // use this bit to check whether 'Visibility' must be adjusted
     if (!Visibility.testStatus(App::Property::User2)) {
@@ -413,6 +463,25 @@ void ViewProviderDocumentObject::setModeSwitch()
 
 void ViewProviderDocumentObject::show()
 {
+    Gui::Document* guiDocument = pcObject ? getDocument() : nullptr;
+    if (guiDocument && guiDocument->deferLivePresentationUpdates()) {
+        if (!TreeWidget::isObjectShowable(getObject())) {
+            Visibility.setValue(false);
+            if (getObject()) {
+                getObject()->Visibility.setValue(false);
+            }
+            return;
+        }
+        if (!Visibility.testStatus(App::Property::User2)) {
+            Visibility.setStatus(App::Property::User2, true);
+            Visibility.setValue(true);
+            Visibility.setStatus(App::Property::User2, false);
+        }
+        guiDocument->noteDeferredVisibilityChange(this);
+        guiDocument->scheduleLivePresentationCatchUp();
+        return;
+    }
+
     if (TreeWidget::isObjectShowable(getObject())) {
         ViewProvider::show();
     }
@@ -424,8 +493,10 @@ void ViewProviderDocumentObject::show()
         return;
     }
 
-    // use this bit to check whether 'Visibility' must be adjusted
-    if (!Visibility.testStatus(App::Property::User2)) {
+    // use this bit to check whether 'Visibility' must be adjusted.
+    // An unchanged write still notifies and publishes a shared-presentation
+    // revision. Scene catch-up calls show() only to sync Coin.
+    if (!Visibility.testStatus(App::Property::User2) && !Visibility.getValue()) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(true);
         Visibility.setStatus(App::Property::User2, false);
@@ -522,6 +593,12 @@ void ViewProviderDocumentObject::update(const App::Property* prop)
     // document object
     if (prop == &getObject()->Visibility) {
         if (!isRestoring() && Visibility.getValue() != getObject()->Visibility.getValue()) {
+            // App Visibility is already the undo record. User1 marks this mirror
+            // so onBeforeChange does not record a second ViewObject.Visibility.
+            Base::ObjectStatusLocker<App::Property::Status, App::Property> guard(
+                App::Property::User1,
+                &Visibility
+            );
             Visibility.setValue(!Visibility.getValue());
         }
     }

@@ -1334,6 +1334,24 @@ public:
     }
 
     /**
+     * Python FeaturePythonT specializations must opt in before the document
+     * execution lane runs their execute() path. Native C++ objects return false.
+     */
+    virtual bool requiresDocumentThreadExecutionDeclaration() const
+    {
+        return false;
+    }
+
+    /**
+     * True when a Python feature has declared
+     * supportsDocumentThreadExecution(). Native objects always return true.
+     */
+    virtual bool declaresDocumentThreadExecution() const
+    {
+        return true;
+    }
+
+    /**
      * @brief Called when an element reference is updated.
      *
      * @param[in] prop The property that was updated.

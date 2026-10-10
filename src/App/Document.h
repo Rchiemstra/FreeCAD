@@ -50,6 +50,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace Base
 {
@@ -202,12 +203,15 @@ class Transaction;
 class DocumentCommitCoordinator;
 class DocumentCollaborationService;
 class DocumentRecomputeCoordinator;
+class DocumentExecutionLane;
+class DocumentHandle;
 class RecomputeHandle;
 class StringHasher;
 class DocumentRevisionIndex;
 struct CollaborationAtomicPresentationWrite;
 struct DocumentRevisionPublicationRequest;
 struct DocumentIdentity;
+struct DocumentRevisionIdentityBinding;
 struct DocumentRecomputeSnapshot;
 struct RecoverySnapshotSaveOptions;
 namespace Internal
@@ -217,6 +221,7 @@ class DocumentStructuralCompatibilityTestAccess;
 class CollaborationStructuralMutationRecorder;
 class GenericIsolatedRecomputeAccess;
 class NestedCommitBookingTestAccess;
+class DocumentExecutionLaneTestAccess;
 struct DocumentFileReplacementResult;
 #if defined(FREECAD_DOCUMENTFILEWRITER_TEST_API)
 enum class DocumentPostDurableSaveCheckpoint
@@ -271,6 +276,8 @@ enum class RecomputeVenue : std::uint8_t
     OwnerThread,
     Isolated,
 };
+
+using DocumentRecomputeId = std::uint64_t;
 
 /**
  * @brief A class that represents a FreeCAD document.
@@ -473,7 +480,8 @@ public:
     /// Signal after recomputing the document but before the document is fully
     /// stable again. Observers that require a fully stable post-recompute
     /// state should wait for signalBecameStable().
-    App::MainThreadSignal<void(const Document&, const std::vector<DocumentObject*>&)> signalRecomputed;
+    App::MainThreadSignal<void(const Document&, const std::vector<DocumentObject*>&)>
+        signalRecomputed;
     /// Signal after recomputing an object.
     App::MainThreadSignal<void(const DocumentObject&)> signalRecomputedObject;
     /// Signal on a new opened transaction.
@@ -736,6 +744,7 @@ public:
     DocumentRevisionIndex& collaborationRevisions();
     const DocumentRevisionIndex& collaborationRevisions() const;
     DocumentCollaborationService& collaborationService();
+    [[nodiscard]] bool collaborationCloseAdmissionActive() const noexcept;
     DocumentRecomputeCoordinator& recomputeCoordinator();
     const DocumentRecomputeCoordinator& recomputeCoordinator() const;
     bool collaborationRevisionPublicationSuppressed() const;
@@ -1196,7 +1205,23 @@ public:
         const std::vector<DocumentObject*>& objs = {},
         bool force = false,
         int options = 0,
-        RecomputeVenue venue = RecomputeVenue::OwnerThread);
+        RecomputeVenue venue = RecomputeVenue::OwnerThread,
+        DocumentRecomputeId admissionId = 0);
+
+    /** Thread-safe GUI-facing document reference for non-blocking command admission. */
+    [[nodiscard]] DocumentHandle executionHandle() const;
+
+    [[nodiscard]] DocumentExecutionLane* executionLane() noexcept;
+    [[nodiscard]] const DocumentExecutionLane* executionLane() const noexcept;
+
+    /** True on the thread that owns serial model execution for this document. */
+    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
+
+    /** Bind the per-document execution lane after collaboration identity registration. */
+    void startExecutionLane(DocumentRevisionIdentityBinding identity);
+
+    /** Request cooperative lane shutdown before document destruction. */
+    void shutdownExecutionLane();
 
     /**
      * @brief Recompute a single object.
@@ -1303,6 +1328,14 @@ public:
     /// Abort the currently running transaction.
     void abortTransaction() const;
 
+    /// Record a property in the open transaction. A booked id is opened first.
+    /// No change signal is emitted.
+    void captureActiveTransactionProperty(const TransactionalObject* who, const Property* what);
+    /// Snapshot a live property into the inverse undo/redo transaction before it is applied.
+    void captureInverseTransactionProperty(const TransactionalObject* who,
+                                          const Property* what,
+                                          bool restoreSerializedStatus);
+
     /// Check whether a transaction is open.
     bool hasPendingTransaction() const;
 
@@ -1369,6 +1402,10 @@ public:
 
     /// Get a list of the undo names.
     std::vector<std::string> getAvailableUndoNames() const;
+
+    /// True when an undo entry snapshots \a propertyName on \a object.
+    bool undoStackRecordsProperty(const TransactionalObject* object,
+                                  const char* propertyName) const;
 
     /**
      * @brief Undo one or multiple steps.
@@ -1695,6 +1732,7 @@ public:
     friend class MergeDocuments;
     friend class DocumentCommitCoordinator;
     friend class DocumentCollaborationService;
+    friend class DocumentExecutionLane;
     friend class RecomputeHandle;
     friend class Gui::Document;
     friend class Gui::MergeDocuments;
@@ -1704,6 +1742,7 @@ public:
     friend class Internal::CollaborationStructuralMutationRecorder;
     friend class Internal::GenericIsolatedRecomputeAccess;
     friend class Internal::NestedCommitBookingTestAccess;
+    friend class Internal::DocumentExecutionLaneTestAccess;
     friend class ::Spreadsheet::Sheet;
 
     ~Document() override;
@@ -2032,7 +2071,7 @@ private:
     };
 
     std::recursive_mutex& collaborationCommitMutex() noexcept;
-    [[nodiscard]] bool isCollaborationOwnerThread() const noexcept;
+    void bindCollaborationOwnerThread(std::thread::id threadId) noexcept;
     [[nodiscard]] bool collaborationStableReadBlocked() const noexcept;
     [[nodiscard]] bool collaborationRecomputeCaptureBlocked() const noexcept;
     /** As above, but tolerating an undo transaction the caller already holds,

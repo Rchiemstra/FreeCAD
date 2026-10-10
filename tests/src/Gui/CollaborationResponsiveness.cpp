@@ -11,6 +11,10 @@
 #include <App/DocumentCollaborationService.h>
 #include <App/DocumentObject.h>
 #include <App/DocumentRevisionIndex.h>
+#include <App/MainThreadSignal.h>
+#include <App/MutationClassification.h>
+#include <Gui/DocumentExecutionIngress.h>
+#include "CollaborationGuiTestHelpers.h"
 #include <App/private/CollaborativeOperationRegistryInternal.h>
 #include <Gui/Application.h>
 #include <Gui/Camera.h>
@@ -291,7 +295,8 @@ protected:
         ASSERT_NE(_target, nullptr);
         _source->Label.setValue("Source-before");
         _target->Label.setValue("Target-before");
-        _document->recompute();
+        Gui::Test::recomputeWithoutBlockingGui(
+            *_document, "gui-responsiveness-setup-recompute");
         _guiDocument = Gui::Application::Instance->getDocument(_document);
         ASSERT_NE(_guiDocument, nullptr);
         _session = _document->collaborationService().beginEditSession("gui-actor");
@@ -339,11 +344,13 @@ TEST_F(CollaborationResponsivenessTest,
     intent.arguments = {{"scenario", scenario.token},
                         {"source", "Source"},
                         {"target", "Target"}};
-    const auto executionId = _document->collaborationService().prepareEditAsync(
-        _session.sessionId(),
-        "gui-responsive-preparation",
-        intent,
-        "phase-3-gui-responsiveness-acceptance");
+    const auto executionId = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().prepareEditAsync(
+            _session.sessionId(),
+            "gui-responsive-preparation",
+            intent,
+            "phase-3-gui-responsiveness-acceptance");
+    });
     const bool preparationStarted = scenario.gate->waitUntilEntered();
     EXPECT_TRUE(preparationStarted);
 
@@ -370,15 +377,32 @@ TEST_F(CollaborationResponsivenessTest,
 
     scenario.gate->release();
     ASSERT_TRUE(waitForTerminal(_document->collaborationService(), executionId).has_value());
-    auto prepared = _document->collaborationService().takePreparedEdit(
-        _session.sessionId(), executionId);
+    auto prepared = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().takePreparedEdit(
+            _session.sessionId(), executionId);
+    });
     ASSERT_TRUE(prepared.has_value());
     ASSERT_EQ(prepared->status, App::PreparedEditExecutionStatus::Completed);
     ASSERT_NE(prepared->preparedEdit, nullptr);
 
-    const auto commit = _document->collaborationService().commitEdit(
-        _session.sessionId(), *prepared->preparedEdit);
+    const auto commit = Gui::Test::invokeOnOwnerWorkerWhilePumpingGui([&] {
+        return _document->collaborationService().commitEdit(
+            _session.sessionId(), *prepared->preparedEdit);
+    });
     EXPECT_TRUE(commit.committed());
     EXPECT_EQ(_target->Label.getStrValue(), "Source-before/detached");
     EXPECT_TRUE(Gui::Camera::rotationsMatch(viewer->getCameraOrientation(), targetOrientation));
+}
+
+TEST_F(CollaborationResponsivenessTest, admissionDefersLivePresentationUpdates)
+{
+    QApplication::processEvents();
+    ASSERT_TRUE(App::MainThreadSignalConfig::isMainThread());
+    ASSERT_FALSE(Gui::documentExecutionLaneBusy(*_document));
+    ASSERT_FALSE(_guiDocument->deferLivePresentationUpdates());
+
+    App::beginAtomicPresentationMutationTarget(*_document);
+    EXPECT_TRUE(_guiDocument->deferLivePresentationUpdates());
+    App::endAtomicPresentationMutationTarget(*_document);
+    EXPECT_FALSE(_guiDocument->deferLivePresentationUpdates());
 }

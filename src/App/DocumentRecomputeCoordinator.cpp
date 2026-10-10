@@ -270,72 +270,104 @@ DocumentRecomputeCoordinator::~DocumentRecomputeCoordinator()
     }
 }
 
-DocumentRecomputeId DocumentRecomputeCoordinator::submit(DocumentRecomputeRequest request)
+DocumentRecomputeId DocumentRecomputeCoordinator::reserveAdmissionId()
 {
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
-    const std::string signature = canonicalizeAndSign(request);
-
-    {
-        std::lock_guard stateLock(_stateMutex);
-        if (!request.coalescingKey.empty()) {
-            for (const auto& [id, job] : _jobs) {
-                if (job->coalescingKey != request.coalescingKey || jobTerminal(job->state)) {
-                    continue;
-                }
-                if (job->signature != signature) {
-                    throw std::invalid_argument(
-                        "active recompute coalescing key names a different plan");
-                }
-                return id;
-            }
-        }
-
-        while (_jobs.size() >= MaxRetainedJobs) {
-            const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
-                return jobTerminal(entry.second->state);
-            });
-            if (terminal == _jobs.end()) {
-                throw std::runtime_error("too many active document recompute plans");
-            }
-            _jobs.erase(terminal);
-        }
-    }
-
+    std::lock_guard stateLock(_stateMutex);
     if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
         throw std::overflow_error("document recompute id space exhausted");
     }
-    const auto id = _nextId++;
+    return _nextId++;
+}
 
-    std::string sessionId;
-    if (!request.features.empty()) {
-        sessionId = _service.beginEditSession("document-recompute").sessionId();
-    }
-
-    auto job = std::make_unique<Job>();
-    job->id = id;
-    job->coalescingKey = std::move(request.coalescingKey);
-    job->signature = signature;
-    job->sessionId = std::move(sessionId);
-    job->refreshRevisionFenceAfterEachCommit =
-        request.refreshRevisionFenceAfterEachCommit;
-    for (auto& feature : request.features) {
-        const std::string featureId = feature.featureId;
-        job->nodes.emplace(featureId,
-                           Job::Node {.request = std::move(feature),
-                                      .executionId = std::nullopt,
-                                      .diagnostic = {}});
-    }
-    if (job->nodes.empty()) {
-        job->state = DocumentRecomputeState::Completed;
-    }
+DocumentRecomputeId DocumentRecomputeCoordinator::submit(
+    DocumentRecomputeRequest request,
+    const DocumentRecomputeId admissionId)
+{
+    DocumentRecomputeId admittedId {0};
+    bool scheduleAfterRelease = false;
     {
-        std::lock_guard stateLock(_stateMutex);
-        _jobs.emplace(id, std::move(job));
+        std::lock_guard operationLock(_operationMutex);
+        OperationAdmission operationAdmission(_operationActive);
+        const std::string signature = canonicalizeAndSign(request);
+
+        {
+            std::lock_guard stateLock(_stateMutex);
+            if (!request.coalescingKey.empty()) {
+                for (const auto& [id, job] : _jobs) {
+                    if (job->coalescingKey != request.coalescingKey || jobTerminal(job->state)) {
+                        continue;
+                    }
+                    if (job->signature != signature) {
+                        throw std::invalid_argument(
+                            "active recompute coalescing key names a different plan");
+                    }
+                    return id;
+                }
+            }
+
+            while (_jobs.size() >= MaxRetainedJobs) {
+                const auto terminal = std::ranges::find_if(_jobs, [](const auto& entry) {
+                    return jobTerminal(entry.second->state);
+                });
+                if (terminal == _jobs.end()) {
+                    throw std::runtime_error("too many active document recompute plans");
+                }
+                _jobs.erase(terminal);
+            }
+        }
+
+        if (admissionId != 0) {
+            std::lock_guard stateLock(_stateMutex);
+            if (_jobs.contains(admissionId)) {
+                throw std::invalid_argument("admission recompute id is already in use");
+            }
+            admittedId = admissionId;
+            if (admittedId >= _nextId) {
+                _nextId = admittedId + 1;
+            }
+        }
+        else {
+            if (_nextId == 0 || _nextId == std::numeric_limits<DocumentRecomputeId>::max()) {
+                throw std::overflow_error("document recompute id space exhausted");
+            }
+            admittedId = _nextId++;
+        }
+
+        std::string sessionId;
+        if (!request.features.empty()) {
+            sessionId = _service.beginEditSession("document-recompute").sessionId();
+        }
+
+        auto job = std::make_unique<Job>();
+        job->id = admittedId;
+        job->coalescingKey = std::move(request.coalescingKey);
+        job->signature = signature;
+        job->sessionId = std::move(sessionId);
+        job->refreshRevisionFenceAfterEachCommit =
+            request.refreshRevisionFenceAfterEachCommit;
+        for (auto& feature : request.features) {
+            const std::string featureId = feature.featureId;
+            job->nodes.emplace(featureId,
+                               Job::Node {.request = std::move(feature),
+                                          .executionId = std::nullopt,
+                                          .diagnostic = {}});
+        }
+        if (job->nodes.empty()) {
+            job->state = DocumentRecomputeState::Completed;
+        }
+        else {
+            scheduleAfterRelease = true;
+        }
+        {
+            std::lock_guard stateLock(_stateMutex);
+            _jobs.emplace(admittedId, std::move(job));
+        }
     }
 
-    scheduleReady(id);
-    return id;
+    if (scheduleAfterRelease) {
+        scheduleReady(admittedId);
+    }
+    return admittedId;
 }
 
 void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
@@ -493,21 +525,40 @@ void DocumentRecomputeCoordinator::scheduleReady(const DocumentRecomputeId id)
 
 bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
 {
+    // Owner-thread hop goes through DocumentCollaborationService so this
+    // translation unit never includes Document.h / DocumentExecutionLane.h.
+    return _service.runOnOwnerThread([this, id] {
     std::lock_guard operationLock(_operationMutex);
     OperationAdmission operationAdmission(_operationActive);
     std::vector<std::pair<std::string, PreparedEditExecutionId>> active;
+    std::vector<PreparedEditExecutionId> forwardedCancels;
     {
         std::lock_guard stateLock(_stateMutex);
         const auto foundJob = _jobs.find(id);
         if (foundJob == _jobs.end() || jobTerminal(foundJob->second->state)) {
             return false;
         }
-        for (const auto& [featureId, node] : foundJob->second->nodes) {
+        const bool cancelRequested = foundJob->second->cancelRequested;
+        for (auto& [featureId, node] : foundJob->second->nodes) {
+            // N7: cancel() off the owner thread only records the request.
+            // Forward it to running preparations here, on the owner thread.
+            if (cancelRequested && node.executionId
+                && node.state == DocumentRecomputeFeatureState::Preparing) {
+                node.state = DocumentRecomputeFeatureState::Cancelling;
+                forwardedCancels.push_back(*node.executionId);
+            }
             if (node.executionId
                 && (node.state == DocumentRecomputeFeatureState::Preparing
                     || node.state == DocumentRecomputeFeatureState::Cancelling)) {
                 active.emplace_back(featureId, *node.executionId);
             }
+        }
+    }
+    for (const auto executionId : forwardedCancels) {
+        try {
+            static_cast<void>(_service.cancelPreparedEdit(executionId));
+        }
+        catch (...) {
         }
     }
 
@@ -731,6 +782,7 @@ bool DocumentRecomputeCoordinator::poll(const DocumentRecomputeId id)
     scheduleReady(id);
     finalizeIfTerminal(id);
     return changed;
+    });
 }
 
 bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::string reason)
@@ -738,8 +790,17 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
     if (reason.empty()) {
         reason = "recompute cancelled by caller";
     }
-    std::lock_guard operationLock(_operationMutex);
-    OperationAdmission operationAdmission(_operationActive);
+    // N7: never take _operationMutex from a non-owner thread. poll() holds that
+    // lock on the owner while a Python feature waits to reacquire the GIL, so
+    // a caller that still holds the GIL would deadlock. Record the flag under
+    // _stateMutex (released around feature execute) and let the owner forward it.
+    const bool onOwner =
+        DocumentCollaborationService::collaborationOwnerThread(_service.document());
+    if (onOwner && _operationActive) {
+        // A commit observer re-entering cancel() is rejected before it records
+        // anything; otherwise the rejected call would still cancel the job.
+        throw std::runtime_error("reentrant document recompute mutation is not supported");
+    }
     std::vector<PreparedEditExecutionId> executions;
     {
         std::lock_guard stateLock(_stateMutex);
@@ -748,21 +809,33 @@ bool DocumentRecomputeCoordinator::cancel(const DocumentRecomputeId id, std::str
             return false;
         }
         auto& job = *foundJob->second;
+        // The caller's reason is recorded once. The owner pump repeats cancel()
+        // with a generic reason to forward prepared-edit cancellation; that
+        // follow-up must not erase the reason status() already published.
+        const bool alreadyRequested = job.cancelRequested;
         job.cancelRequested = true;
         job.state = DocumentRecomputeState::Cancelling;
-        job.diagnostic = reason;
+        if (!alreadyRequested || job.diagnostic.empty()) {
+            job.diagnostic = reason;
+        }
         for (auto& [featureId, node] : job.nodes) {
             static_cast<void>(featureId);
             if (node.state == DocumentRecomputeFeatureState::Waiting) {
                 node.state = DocumentRecomputeFeatureState::Cancelled;
                 node.diagnostic = reason;
             }
-            else if (node.state == DocumentRecomputeFeatureState::Preparing && node.executionId) {
+            else if (onOwner && node.state == DocumentRecomputeFeatureState::Preparing
+                     && node.executionId) {
                 node.state = DocumentRecomputeFeatureState::Cancelling;
                 executions.push_back(*node.executionId);
             }
         }
     }
+    if (!onOwner) {
+        return true;
+    }
+    std::lock_guard operationLock(_operationMutex);
+    OperationAdmission operationAdmission(_operationActive);
     for (const auto executionId : executions) {
         try {
             static_cast<void>(_service.cancelPreparedEdit(executionId));

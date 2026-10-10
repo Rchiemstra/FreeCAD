@@ -23,8 +23,11 @@
  *                                                                         *
  ***************************************************************************/
 
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <sstream>
+#include <thread>
 #include <boost/regex.hpp>
 
 #include <FCConfig.h>
@@ -36,6 +39,80 @@
 #include "PyObjectBase.h"
 #include "PyTools.h"
 #include "Stream.h"
+
+namespace
+{
+
+std::atomic<bool> g_gilGuiHandoffReserved {false};
+std::atomic<std::thread::id> g_gilGuiHandoffThread {};
+
+}  // namespace
+
+namespace Base
+{
+
+void GilGuiHandoff::reserve() noexcept
+{
+    g_gilGuiHandoffThread.store(std::this_thread::get_id(), std::memory_order_release);
+    g_gilGuiHandoffReserved.store(true, std::memory_order_release);
+}
+
+void GilGuiHandoff::release() noexcept
+{
+    g_gilGuiHandoffReserved.store(false, std::memory_order_release);
+    g_gilGuiHandoffThread.store(std::thread::id {}, std::memory_order_release);
+}
+
+bool GilGuiHandoff::yieldRequired() noexcept
+{
+    if (!g_gilGuiHandoffReserved.load(std::memory_order_acquire)) {
+        return false;
+    }
+    return std::this_thread::get_id()
+        != g_gilGuiHandoffThread.load(std::memory_order_acquire);
+}
+
+PyGILStateLocker::PyGILStateLocker()
+{
+    using namespace std::chrono_literals;
+    for (;;) {
+        while (GilGuiHandoff::yieldRequired()) {
+            std::this_thread::sleep_for(50us);
+        }
+        gstate = PyGILState_Ensure();
+        if (!GilGuiHandoff::yieldRequired()) {
+            break;
+        }
+        PyGILState_Release(gstate);
+    }
+}
+
+}  // namespace Base
+
+namespace
+{
+thread_local int pythonFrameInspectionUnsafe = 0;
+}
+
+extern "C" void PP_SetPythonFrameInspectionUnsafe(int unsafe)
+{
+    pythonFrameInspectionUnsafe = unsafe ? 1 : 0;
+}
+
+extern "C" int PP_PythonFrameInspectionUnsafe(void)
+{
+    return pythonFrameInspectionUnsafe;
+}
+
+void Base::setPythonFrameInspectionUnsafe(bool unsafe)
+{
+    pythonFrameInspectionUnsafe = unsafe ? 1 : 0;
+}
+
+bool Base::isPythonFrameInspectionUnsafe()
+{
+    return pythonFrameInspectionUnsafe != 0;
+}
 
 
 char format2[1024];  // Warning! Can't go over 512 characters!!!

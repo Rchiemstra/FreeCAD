@@ -11,6 +11,13 @@ import tokenize
 from typing import Mapping, Sequence
 
 
+def _posix_byte_sort_key(value: object) -> bytes:
+    """POSIX byte order. ``Path`` comparison on Windows is case-folded."""
+    as_posix = getattr(value, "as_posix", None)
+    text = as_posix() if callable(as_posix) else str(value).replace("\\", "/")
+    return text.encode("utf-8")
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "doc" / "document-collaboration-ingress-inventory.md"
 
@@ -81,11 +88,17 @@ PUBLIC_OPERATION_PATTERNS = {
     "open": re.compile(r"(?<![A-Za-z0-9_])(?:openTransaction|openCommand|setActiveTransaction)\s*\("),
     "commit": re.compile(r"(?<![A-Za-z0-9_])(?:commitTransaction|commitCommand|closeActiveTransaction)\s*\("),
     "abort": re.compile(r"(?<![A-Za-z0-9_])(?:abortTransaction|abortCommand|closeActiveTransaction)\s*\("),
-    "undo": re.compile(r"(?<![A-Za-z0-9_])undo\s*\("),
-    "redo": re.compile(r"(?<![A-Za-z0-9_])redo\s*\("),
+    "undo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:undo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Undo)"
+    ),
+    "redo": re.compile(
+        r"(?<![A-Za-z0-9_])(?:redo\s*\(|submitDocumentKindCommand\s*\([^;]*DocumentCommandKind::Redo)"
+    ),
 }
 PUBLIC_RECOMPUTE_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recompute)\s*\("
+    r"(?<![A-Za-z0-9_])(?:recomputeFeature|recomputeAsync|"
+    r"submitDocumentRecompute(?:OrReport)?|trySubmitDocumentRecompute|"
+    r"requestDocumentRecompute|submitDocumentKindCommand|recompute)\s*\("
 )
 
 
@@ -214,7 +227,10 @@ def _typed_adapter_violations(rows: Sequence[InventoryRow]) -> list[str]:
         key = _typed_adapter_key(row)
         if key not in EXPECTED_TYPED_ADAPTERS:
             violations.append(row.diagnostic(f"unexpected sixth typed-adapter row {key!r}"))
-    for missing in sorted(EXPECTED_TYPED_ADAPTERS - actual):
+    for missing in sorted(
+        EXPECTED_TYPED_ADAPTERS - actual,
+        key=lambda item: tuple(part.encode("utf-8") for part in item),
+    ):
         violations.append(f"<inventory>: row missing {missing[1]}: missing typed-adapter row {missing!r}")
     if len(typed) != len(EXPECTED_TYPED_ADAPTERS):
         violations.append(
@@ -388,7 +404,7 @@ def _private_bypass_violations(
     for row in rows:
         rows_by_file.setdefault(row.source_path, []).append(row)
     violations: list[str] = []
-    for path, source in sorted(sources.items()):
+    for path, source in sorted(sources.items(), key=lambda item: _posix_byte_sort_key(item[0])):
         stripped = _suppress_non_code(path, source)
         for match in PRIVATE_CONTROL_RE.finditer(stripped):
             line = stripped.count("\n", 0, match.start(1)) + 1
@@ -408,7 +424,7 @@ def _private_bypass_violations(
 def _sources_for_rows(rows: Sequence[InventoryRow]) -> dict[str, str]:
     return {
         path: _read_source(REPO_ROOT / path)
-        for path in sorted({row.source_path for row in rows})
+        for path in sorted({row.source_path for row in rows}, key=_posix_byte_sort_key)
     }
 
 
@@ -447,7 +463,7 @@ def test_cc_wp04_inventory_shape_and_files() -> None:
     violations = _inventory_row_violations(rows, REPO_ROOT)
     existing_sources = {
         path: _read_source(REPO_ROOT / path)
-        for path in sorted({row.source_path for row in rows})
+        for path in sorted({row.source_path for row in rows}, key=_posix_byte_sort_key)
         if (REPO_ROOT / path).is_file()
     }
     violations.extend(_symbol_anchor_violations(rows, existing_sources))
@@ -487,8 +503,6 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
         ("openCommand", "openTransaction("),
         ("commitCommand", "commitTransaction("),
         ("abortCommand", "abortTransaction("),
-        ("undo", "undo("),
-        ("redo", "redo("),
     )
     for method, public_call in gui_routes:
         owner = f"Gui::Document::{method}"
@@ -497,35 +511,36 @@ def test_central_gui_transaction_routes_use_public_app_facades() -> None:
             f"getDocument()->{public_call}",
             owner,
         )
+    # Wave 1: undo/redo admit via trySubmit (submitDocumentKindCommand) instead of
+    # a synchronous getDocument()->undo()/redo() call on the GUI thread.
+    for method, kind in (("undo", "Undo"), ("redo", "Redo")):
+        owner = f"Gui::Document::{method}"
+        body = _body_for(gui_document, f"Document::{method}")
+        compact = "".join(body.split())
+        assert (
+            f"submitDocumentKindCommand" in compact
+            and f"DocumentCommandKind::{kind}" in compact
+        ) or f"getDocument()->{method}(" in compact, (
+            f"{owner}: expected submitDocumentKindCommand(...::{kind}) "
+            f"or getDocument()->{method}("
+        )
 
 
-def test_property_item_interpreter_is_confined_to_compatibility_callback() -> None:
+def test_property_item_submits_lane_edit_from_gui() -> None:
     source = _read_source(REPO_ROOT / PROPERTY_ITEM_SOURCE)
     body = _body_for(
         source, "PropertyItem::setPropertyValue", signature_contains="const std::string&"
     )
     stripped = _suppress_cpp_non_code(body)
-    call_name = "executeCompatibilityMutation"
-    spans: list[tuple[int, int]] = []
-    for match in re.finditer(r"(?<![A-Za-z0-9_])" + call_name + r"\s*\(", stripped):
-        opening = stripped.find("(", match.start())
-        closing = _matching_delimiter(stripped, opening, "(", ")")
-        if closing is not None:
-            spans.append((match.start(), closing + 1))
-    assert spans, "PropertyItem::setPropertyValue: no executeCompatibilityMutation callback"
-
-    interpreter_calls = list(
-        re.finditer(r"Base::Interpreter\s*\(\s*\)\s*\.\s*runString\s*\(", stripped)
+    compact = re.sub(r"\s+", "", stripped)
+    assert "submitDocumentPropertyEdit" in compact, (
+        "PropertyItem::setPropertyValue: expected submitDocumentPropertyEdit for lane ingress"
     )
-    assert interpreter_calls, "PropertyItem::setPropertyValue: missing callback interpreter"
-    outside = [
-        call.start()
-        for call in interpreter_calls
-        if not any(start <= call.start() < end for start, end in spans)
-    ]
-    assert not outside, (
-        "PropertyItem::setPropertyValue: direct interpreter execution outside its "
-        f"executeCompatibilityMutation callback at body offsets {outside}"
+    assert "copyPropertyValueFromPythonRhs" in compact, (
+        "PropertyItem::setPropertyValue: expected copied property payloads before trySubmit"
+    )
+    assert "executeCompatibilityMutation" not in compact, (
+        "PropertyItem::setPropertyValue: must not use compatibility mutation on the GUI thread"
     )
 
 

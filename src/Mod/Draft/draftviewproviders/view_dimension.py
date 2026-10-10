@@ -905,61 +905,25 @@ class ViewProviderAngularDimension(ViewProviderDimensionBase):
 
         arcsegs = 24
 
-        # for ext lines
-        self.p1 = obj.Center
-        self.p4 = obj.Center
-
         vobj = obj.ViewObject
+        # L7: geometry and the dimension string come from the shared SVG helper.
+        from draftfunctions.svg import _derive_angular_dimension_svg_geometry
 
-        # Determine the orientation of the text by using a normal direction.
-        # Also calculate the arc data.
+        geometry = _derive_angular_dimension_svg_geometry(obj, vobj)
+        self.circle = geometry["circle"]
+        radius = geometry["radius"]
+        angle = geometry["angle"]
+        self.p1 = geometry["p1"]
+        self.p2 = geometry["p2"]
+        self.p3 = geometry["p3"]
+        self.p4 = geometry["p4"]
+        self.string = geometry["string"]
         if DraftVecUtils.isNull(obj.Normal):
             norm = App.Vector(0, 0, 1)
         else:
             norm = obj.Normal
-
-        radius = (obj.Dimline - obj.Center).Length
-        self.circle = Part.makeCircle(
-            radius, obj.Center, norm, obj.FirstAngle.Value, obj.LastAngle.Value
-        )
-        self.p2 = self.circle.Vertexes[0].Point
-        self.p3 = self.circle.Vertexes[-1].Point
         midp = geo_edges.findMidpoint(self.circle)
         ray = midp - obj.Center
-
-        proj1 = obj.Center - self.p2
-        proj2 = obj.Center - self.p3
-        if hasattr(vobj, "ExtLines") and hasattr(vobj, "ScaleMultiplier"):
-            # The scale multiplier also affects the value
-            # of the extension line; this makes sure a maximum length
-            # is used if the calculated value is larger than it.
-            dmax = vobj.ExtLines.Value * vobj.ScaleMultiplier
-            if dmax and proj1.Length > dmax:
-                if dmax > 0:
-                    self.p1 = self.p2 + DraftVecUtils.scaleTo(proj1, dmax)
-                    self.p4 = self.p3 + DraftVecUtils.scaleTo(proj2, dmax)
-                else:
-                    rest = proj1.Length + dmax
-                    self.p1 = self.p2 + DraftVecUtils.scaleTo(proj1, rest)
-                    self.p4 = self.p3 + DraftVecUtils.scaleTo(proj2, rest)
-
-        # Set text value
-        if obj.LastAngle.Value > obj.FirstAngle.Value:
-            angle = obj.LastAngle.Value - obj.FirstAngle.Value
-        else:
-            angle = (360 - obj.FirstAngle.Value) + obj.LastAngle.Value
-
-        show_unit = True
-        if hasattr(vobj, "ShowUnit"):
-            show_unit = vobj.ShowUnit
-
-        if hasattr(vobj, "Decimals"):
-            self.string = units.display_external(angle, vobj.Decimals, "Angle", show_unit)
-        else:
-            self.string = units.display_external(angle, None, "Angle", show_unit)
-
-        if vobj.Override:
-            self.string = vobj.Override.replace("$dim", self.string)
 
         self.text_wld.string = utils.string_encode_coin(self.string)
         self.text_scr.string = utils.string_encode_coin(self.string)

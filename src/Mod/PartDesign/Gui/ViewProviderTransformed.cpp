@@ -46,7 +46,7 @@
 
 #include <BRep_Builder.hxx>
 #include <Inventor/nodes/SoTransform.h>
-
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 using namespace PartDesignGui;
 
 PROPERTY_SOURCE(PartDesignGui::ViewProviderTransformed, PartDesignGui::ViewProvider)
@@ -189,12 +189,10 @@ void ViewProviderTransformed::recomputeFeature(bool recompute)
     auto* pcTransformed = getObject<PartDesign::Transformed>();
 
     if (recompute || pcTransformed->isError() || pcTransformed->mustExecute()) {
-        pcTransformed->recomputeFeature(true);
+        PartGui::submitDocumentRecomputeOrReport(*pcTransformed);
     }
 
     updatePreview();
-
-    handleTransformedResult(pcTransformed);
 }
 
 

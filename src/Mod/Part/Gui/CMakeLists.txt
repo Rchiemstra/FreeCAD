@@ -181,6 +181,7 @@ SET(PartGui_SRCS
     ViewProviderAttachExtension.h
     ViewProviderAttachExtension.cpp
     ViewProviderPreviewExtension.h
+    ViewProviderPreviewExtensionInternal.h
     ViewProviderPreviewExtension.cpp
     ViewProviderPreviewExtension.pyi
     ViewProviderPreviewExtensionPyImp.cpp
@@ -188,6 +189,9 @@ SET(PartGui_SRCS
     ViewProviderDatum.h
     ViewProviderExt.cpp
     ViewProviderExt.h
+    ViewProviderPresentationAdapter.cpp
+    ViewProviderPresentationAdapter.h
+    DocumentPresentationCapture.cpp
     ViewProviderReference.cpp
     ViewProviderReference.h
     ViewProviderBox.cpp

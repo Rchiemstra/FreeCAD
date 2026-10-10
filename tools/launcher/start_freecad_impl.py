@@ -10,6 +10,7 @@ This script adds those directories to PATH before launching FreeCAD.
 Examples:
 
   python start_freecad.py
+  python start_freecad.py --build
   python start_freecad.py model.FCStd
   python start_freecad.py --freecad FreeCAD/build/release/bin/FreeCAD.exe
   python start_freecad.py --no-wait-for-mcp
@@ -740,10 +741,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--freecad",
-        default=_default_freecad(),
         help=(
             "Path to the FreeCAD executable "
             "(default: pixi install, build/*/bin/FreeCAD, or PATH)"
+        ),
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help=(
+            "Update Pixi and its environment, then build FreeCAD with "
+            "build_freecad.py before launching"
         ),
     )
     parser.add_argument(
@@ -783,6 +791,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _build_freecad() -> int:
+    build_script = _repo_root() / "build_freecad.py"
+    if not build_script.is_file():
+        print(f"ERROR: build script not found: {build_script}", file=sys.stderr)
+        return 1
+
+    print("Updating Pixi and its environment, then building FreeCAD before launch.")
+    return subprocess.run([sys.executable, str(build_script)]).returncode
+
+
 def _start_freecad(
     freecad: Path,
     freecad_args: list[str],
@@ -815,6 +833,13 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+
+    if args.build:
+        build_result = _build_freecad()
+        if build_result:
+            return build_result
+
+    if args.authenticated_isolated:
         scripts = _freecad_mcp_dir() / "scripts"
         setup = scripts / "setup_isolated_profile.py"
         isolated_launcher = scripts / "start_freecad_isolated.py"
@@ -829,7 +854,11 @@ def main(argv: list[str] | None = None) -> int:
             [sys.executable, str(isolated_launcher), *args.args], env=environment
         ).returncode
 
-    if not args.freecad:
+    # Resolve the default after the optional build so a newly created binary
+    # can be selected and launched in the same invocation.
+    freecad_arg = args.freecad or _default_freecad()
+
+    if not freecad_arg:
         print(
             "ERROR: could not find FreeCAD; pass --freecad "
             "FreeCAD/build/<preset>/bin/FreeCAD.exe (or set $FREECAD)",
@@ -837,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    freecad = Path(args.freecad)
+    freecad = Path(freecad_arg)
     if not freecad.is_file():
         print(f"ERROR: FreeCAD executable not found: {freecad}", file=sys.stderr)
         return 1

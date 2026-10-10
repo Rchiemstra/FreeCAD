@@ -33,8 +33,9 @@
 
 using namespace Base;
 
-FileLock::FileLock(std::string path)
+FileLock::FileLock(std::string path, bool removeOnUnlock)
     : _path(std::move(path))
+    , _removeOnUnlock(removeOnUnlock)
 {}
 
 FileLock::~FileLock() = default;
@@ -72,8 +73,9 @@ namespace
 constexpr std::chrono::milliseconds pollInterval {10};
 }  // namespace
 
-FileLock::FileLock(std::string path)
+FileLock::FileLock(std::string path, bool removeOnUnlock)
     : _path(std::move(path))
+    , _removeOnUnlock(removeOnUnlock)
 {
     _handle = INVALID_HANDLE_VALUE;
 }
@@ -207,10 +209,29 @@ bool tryLockFd(int fd)
 
     return ::fcntl(fd, F_SETLK, &fl) == 0;
 }
+
+void unlockFd(int fd)
+{
+    struct flock fl {};
+    fl.l_type = F_UNLCK;
+    fl.l_whence = SEEK_SET;
+    fl.l_start = 0;
+    fl.l_len = 0;  // whole file
+    (void)::fcntl(fd, F_SETLK, &fl);
+}
+
+bool lockedFileIsAtPath(int fd, const std::string& path)
+{
+    struct stat locked {};
+    struct stat current {};
+    return ::fstat(fd, &locked) == 0 && ::stat(path.c_str(), &current) == 0
+        && locked.st_dev == current.st_dev && locked.st_ino == current.st_ino;
+}
 }  // namespace
 
-FileLock::FileLock(std::string path)
+FileLock::FileLock(std::string path, bool removeOnUnlock)
     : _path(std::move(path))
+    , _removeOnUnlock(removeOnUnlock)
 {}
 
 FileLock::~FileLock()
@@ -238,8 +259,19 @@ bool FileLock::tryLock(int timeoutMs)
 
     for (;;) {
         if (tryLockFd(_fd)) {
-            _locked = true;
-            return true;
+            if (!_removeOnUnlock || lockedFileIsAtPath(_fd, _path)) {
+                _locked = true;
+                return true;
+            }
+            // The holder before us unlinked this file on unlock; lock the file
+            // that is at the path now instead.
+            unlockFd(_fd);
+            ::close(_fd);
+            _fd = ::open(_path.c_str(), O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+            if (_fd < 0) {
+                return false;
+            }
+            continue;
         }
 
         if (errno != EACCES && errno != EAGAIN) {
@@ -286,12 +318,11 @@ void FileLock::unlock()
         return;
     }
 
-    struct flock fl {};
-    fl.l_type = F_UNLCK;
-    fl.l_whence = SEEK_SET;
-    fl.l_start = 0;
-    fl.l_len = 0;  // whole file
-    (void)::fcntl(_fd, F_SETLK, &fl);
+    if (_removeOnUnlock) {
+        // Unlink while still locked: waiters holding the old file retry.
+        (void)::unlink(_path.c_str());
+    }
+    unlockFd(_fd);
 
     ::close(_fd);
     _fd = -1;

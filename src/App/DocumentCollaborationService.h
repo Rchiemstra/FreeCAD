@@ -23,6 +23,10 @@
 namespace Gui
 {
 class Document;
+namespace Test
+{
+class SharedPresentationSerializeTestAccess;
+}
 }
 
 namespace App
@@ -102,6 +106,8 @@ struct AppExport CollaborationCompatibilityMutationOptions
     CollaborationCompatibilityRecomputePolicy recomputePolicy {
         CollaborationCompatibilityRecomputePolicy::Eager};
     CollaborationCompatibilityPostcondition postcondition;
+    /** Undo-history name; empty names the transaction after the operation id. */
+    std::string transactionLabel;
 };
 
 /** Result of the service-owned native transaction commit point. */
@@ -138,6 +144,14 @@ public:
     // Document lifetime guarantee and must not retain the reference across
     // closeDocument(); operational facade methods below are internally pinned.
     [[nodiscard]] Document& document() const noexcept;
+
+    /**
+     * Run \p fn on the document execution-lane owner thread when a lane exists.
+     * From the GUI thread, throws DocumentWouldBlock; use DocumentHandle::trySubmit
+     * or async document APIs instead. When already on the owner thread, or no lane
+     * is present, runs \p fn inline.
+     */
+    [[nodiscard]] bool runOnOwnerThread(const std::function<bool()>& fn);
     [[nodiscard]] EditSession beginEditSession(std::string actorId);
     [[nodiscard]] std::optional<EditSession> sessionStatus(
         const std::string& sessionId) const;
@@ -190,12 +204,28 @@ public:
     [[nodiscard]] DocumentCommitResult serializeCompatibilityCallback(
         CollaborationCompatibilityCallback callback);
 
+    /** True while a lifecycle pin or atomic-presentation admission blocks close. */
+    [[nodiscard]] bool closeAdmissionActive() const noexcept;
+
 private:
+    [[nodiscard]] static bool collaborationOwnerThread(const Document& document) noexcept;
+
+    template<typename Result, typename Callable>
+    static Result invokeOnDocumentThread(Callable&& callable);
+
+    template<typename Result, typename Callable>
+    static Result invokeCollaborationOnDocumentThread(Document& document, Callable&& callable);
+
     friend class DocumentRecomputeCoordinator;
     friend class Gui::Document;
     friend class Application;
     friend class Document;
+    // The lane's Edit command opens and closes its undo transaction here, so
+    // the private native controls stay behind the coordinator.
+    friend class DocumentExecutionLane;
     friend class Internal::DocumentCollaborationServiceTestAccess;
+    // Gui integration tests supply a serialize hook without a production GUI wait.
+    friend class Gui::Test::SharedPresentationSerializeTestAccess;
     friend AppExport bool writeRecoverySnapshotToTransientDir(
         const Document& doc,
         const RecoverySnapshotSaveOptions& options);
@@ -213,6 +243,7 @@ private:
 
     private:
         std::shared_ptr<Internal::CollaborationServiceLifetimeGate> _gate;
+        const Document* _document {nullptr};
         bool _pinned {false};
     };
 

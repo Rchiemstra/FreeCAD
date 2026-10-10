@@ -1908,7 +1908,11 @@ void LinkBaseExtension::update(App::DocumentObject* parent, const Property* prop
         }
     }
     else if (prop == _getShowElementProperty()) {
-        if (_getShowElementValue()) {
+        if (parent->getDocument() && parent->getDocument()->isPerformingTransaction()) {
+            // Undo/rollback restores the element list and the element objects
+            // itself; re-creating or removing them here left orphan elements.
+        }
+        else if (_getShowElementValue()) {
             update(parent, _getElementCountProperty());
         }
         else {
@@ -1955,7 +1959,9 @@ void LinkBaseExtension::update(App::DocumentObject* parent, const Property* prop
             }
         }
     }
-    else if (prop == _getElementCountProperty()) {
+    else if (prop == _getElementCountProperty()
+             && !(parent->getDocument() && parent->getDocument()->isPerformingTransaction())) {
+        // Skipped during undo/rollback for the same reason as ShowElement.
         size_t elementCount = getElementCountValue() < 0 ? 0 : (size_t)getElementCountValue();
 
         auto propVis = getVisibilityListProperty();
@@ -2127,7 +2133,10 @@ void LinkBaseExtension::update(App::DocumentObject* parent, const Property* prop
             }
         }
         syncElementList();
-        if (_getShowElementValue() && _getElementCountProperty() && getElementListProperty()
+        // During undo/redo the transaction restores ElementCount itself, possibly
+        // after the list; syncing here reset a redone count to the stale size.
+        if (!parent->getDocument()->isPerformingTransaction() && _getShowElementValue()
+            && _getElementCountProperty() && getElementListProperty()
             && getElementCountValue() != getElementListProperty()->getSize()) {
             getElementCountProperty()->setValue(getElementListProperty()->getSize());
         }

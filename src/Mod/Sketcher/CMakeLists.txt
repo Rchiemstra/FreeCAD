@@ -24,6 +24,7 @@ set(Sketcher_TestScripts
     SketcherTests/TestSketchCarbonCopyReverseMapping.py
     SketcherTests/TestSketchCarbonCopyReverseMapping.FCStd
     SketcherTests/TestSketchInternalFaces.py
+    SketcherTests/TestSketchEditFailures.py
     SketcherTests/TestSketchMalformedConstraints.py
     SketcherTests/TestSketcherEllipse.py
 )

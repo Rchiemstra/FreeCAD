@@ -46,6 +46,7 @@
 
 #include "ui_TaskDraftParameters.h"
 #include "TaskDraftParameters.h"
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 using namespace PartDesignGui;
 using namespace Gui;
@@ -147,11 +148,9 @@ void TaskDraftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             pcDraft->NeutralPlane.setValue(selObj, planes);
             ui->linePlane->setText(getRefStr(selObj, planes));
 
-            pcDraft->getDocument()->recomputeFeature(pcDraft);
+            PartGui::submitDocumentRecomputeOrReport(*pcDraft);
             // highlight existing references for possible further selections
             getDressUpView()->highlightReferences(true);
-            // hide the draft if there was a computation error
-            hideOnError();
             setGizmoPositions();
         }
         else if (selectionMode == line) {
@@ -166,11 +165,9 @@ void TaskDraftParameters::onSelectionChanged(const Gui::SelectionChanges& msg)
             pcDraft->PullDirection.setValue(selObj, edges);
             ui->lineLine->setText(getRefStr(selObj, edges));
 
-            pcDraft->getDocument()->recomputeFeature(pcDraft);
+            PartGui::submitDocumentRecomputeOrReport(*pcDraft);
             // highlight existing references for possible further selections
             getDressUpView()->highlightReferences(true);
-            // hide the draft if there was a computation error
-            hideOnError();
             setGizmoPositions();
         }
     }
@@ -247,9 +244,7 @@ void TaskDraftParameters::onAngleChanged(double angle)
         setButtons(none);
         setupTransaction();
         draft->Angle.setValue(angle);
-        draft->recomputeFeature();
-        // hide the draft if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*draft);
     }
 }
 
@@ -264,9 +259,7 @@ void TaskDraftParameters::onReversedChanged(const bool reversed)
         setButtons(none);
         setupTransaction();
         draft->Reversed.setValue(reversed);
-        draft->recomputeFeature();
-        // hide the draft if there was a computation error
-        hideOnError();
+        PartGui::submitDocumentRecomputeOrReport(*draft);
 
         setGizmoPositions();
     }
@@ -426,5 +419,4 @@ bool TaskDlgDraftParameters::accept()
 
     return TaskDlgDressUpParameters::accept();
 }
-
 #include "moc_TaskDraftParameters.cpp"

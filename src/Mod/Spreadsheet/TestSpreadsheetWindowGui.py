@@ -9,6 +9,12 @@ import unittest
 import FreeCAD
 import FreeCADGui
 from PySide import QtCore, QtGui, QtWidgets
+from Test.GuiRecompute import (
+    close_document,
+    recompute_document,
+    save_document,
+    save_document_as,
+)
 
 
 class SpreadsheetWindowTestBase(unittest.TestCase):
@@ -17,18 +23,24 @@ class SpreadsheetWindowTestBase(unittest.TestCase):
         self.file_name = os.path.join(self._temporary_directory.name, "window-layout.FCStd")
         self.doc = FreeCAD.newDocument("SpreadsheetWindowTest")
         self.sheet = self.doc.addObject("Spreadsheet::Sheet", "Spreadsheet")
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         view_preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/View")
         self._old_save_layout = view_preferences.GetBool("SaveWindowLayoutPerDocument", True)
         view_preferences.SetBool("SaveWindowLayoutPerDocument", True)
-        self.doc.saveAs(self.file_name)
+        document_preferences = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document")
+        self._old_save_thumbnail = document_preferences.GetBool("SaveThumbnail", True)
+        document_preferences.SetBool("SaveThumbnail", False)
+        save_document_as(self.doc, self.file_name)
 
     def tearDown(self):
         if self.doc.Name in FreeCAD.listDocuments():
-            FreeCAD.closeDocument(self.doc.Name)
+            close_document(self.doc)
         FreeCAD.ParamGet("User parameter:BaseApp/Preferences/View").SetBool(
             "SaveWindowLayoutPerDocument", self._old_save_layout
+        )
+        FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Document").SetBool(
+            "SaveThumbnail", self._old_save_thumbnail
         )
         self._temporary_directory.cleanup()
         self._process_events()
@@ -128,7 +140,7 @@ class SpreadsheetWindowIntegration(SpreadsheetWindowTestBase):
         window.setGeometry(80, 90, 640, 420)
         self._process_events()
 
-        self.doc.save()
+        save_document(self.doc)
 
         record = self._layout_group().GetString("View0", "")
         fields = record.split()
@@ -142,7 +154,9 @@ class SpreadsheetWindowIntegration(SpreadsheetWindowTestBase):
 class SpreadsheetWindowEndToEnd(SpreadsheetWindowTestBase):
     def test_dragging_tab_outside_tab_bar_detaches_view(self):
         self.sheet.ViewObject.showSheetMdi()
+        self._process_events()
         self._drag_current_tab_outside()
+        self._process_events()
 
         self.assertTrue(self._wait_until(lambda: len(self._spreadsheet_windows()) == 1))
 
@@ -167,10 +181,10 @@ class SpreadsheetWindowEndToEnd(SpreadsheetWindowTestBase):
         window.showNormal()
         window.setGeometry(expected)
         self._process_events()
-        self.doc.save()
+        save_document(self.doc)
 
         document_name = self.doc.Name
-        FreeCAD.closeDocument(document_name)
+        close_document(self.doc)
         self.assertTrue(self._wait_until(lambda: not self._spreadsheet_windows()))
 
         self.doc = FreeCAD.openDocument(self.file_name)

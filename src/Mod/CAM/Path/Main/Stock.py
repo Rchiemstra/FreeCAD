@@ -92,6 +92,9 @@ def shapeBoundBox(obj):
 
 
 class Stock(object):
+    def supportsDocumentThreadExecution(self, obj):
+        return True
+
     def onDocumentRestored(self, obj):
         if hasattr(obj, "StockType"):
             obj.setEditorMode("StockType", 2)  # hide

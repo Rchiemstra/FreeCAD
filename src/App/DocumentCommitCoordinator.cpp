@@ -5,10 +5,13 @@
 #include "CollaborativeOperation.h"
 #include "Document.h"
 #include "DocumentCollaborationService.h"
+#include "DocumentExecutionLane.h"
 #include "DocumentObject.h"
+#include "DocumentWouldBlock.h"
 #include "MainThreadSignal.h"
 #include "MutationClassification.h"
 #include "PreparedEdit.h"
+#include "private/DocumentP.h"
 
 #include <Base/Exception.h>
 
@@ -531,26 +534,31 @@ DocumentCommitResult DocumentCommitCoordinator::commitWithPreparationPolicyAndOp
     const bool retainUndoHistory,
     const bool nestInCallerTransaction)
 {
-    if (!MainThreadSignalConfig::hasHooks()) {
-        if (!_document.isCollaborationOwnerThread()) {
-            return makeResult(DocumentCommitStatus::Unsupported,
-                              edit,
-                              "off-owner collaboration commit requires a document-thread dispatcher");
-        }
+    const auto commitOnOwner = [&]() {
         return commitOnDocumentThreadWithOptions(edit,
                                                  requireDetachedPreparationSupport,
                                                  structuralCompatibility,
                                                  recomputePolicy,
                                                  retainUndoHistory,
                                                  nestInCallerTransaction);
+    };
+
+    if (_document.isCollaborationOwnerThread()) {
+        return commitOnOwner();
+    }
+    if (DocumentExecutionLane* lane = _document.executionLane()) {
+        DocumentWouldBlock::throwIfGuiThread(
+            "DocumentCommitCoordinator::commitWithPreparationPolicyAndOptions()",
+            "Document.commitEditAsync() / DocumentHandle::trySubmit()");
+        return lane->dispatchToOwner(commitOnOwner);
+    }
+    if (!MainThreadSignalConfig::hasHooks() && !_document.isCollaborationOwnerThread()) {
+        return makeResult(DocumentCommitStatus::Unsupported,
+                          edit,
+                          "off-owner collaboration commit requires a document-thread dispatcher");
     }
     if (MainThreadSignalConfig::isMainThread()) {
-        return commitOnDocumentThreadWithOptions(edit,
-                                                 requireDetachedPreparationSupport,
-                                                 structuralCompatibility,
-                                                 recomputePolicy,
-                                                 retainUndoHistory,
-                                                 nestInCallerTransaction);
+        return commitOnOwner();
     }
 
     std::optional<DocumentCommitResult> result;
@@ -913,9 +921,39 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     }
     if (recomputePolicy == CollaborationCompatibilityRecomputePolicy::Eager
         && preexistingPendingRecompute) {
-        return makeResult(DocumentCommitStatus::Busy,
-                          edit,
-                          "document has pending recompute work outside the prepared operation");
+        // Prepared edit sessions (requireDetachedPreparationSupport) must observe
+        // leftover mustExecute and fail closed. Compatibility and typed native
+        // RPC paths settle on the owner thread here so a caller-side recompute
+        // hop from another thread cannot race the lane boundary.
+        if (!requireDetachedPreparationSupport) {
+            try {
+                bool recomputeError = false;
+                for (int pass = 0; pass < 2 && _document.mustExecute(); ++pass) {
+                    static_cast<void>(_document.recompute({}, pass > 0, &recomputeError));
+                }
+            }
+            catch (const Base::Exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+            catch (const std::exception& exception) {
+                return makeResult(
+                    DocumentCommitStatus::Busy,
+                    edit,
+                    stageFailure(
+                        "compatibility mutation could not settle pending recompute work",
+                        exception.what()));
+            }
+        }
+        if (_document.mustExecute()) {
+            return makeResult(DocumentCommitStatus::Busy,
+                              edit,
+                              "document has pending recompute work outside the prepared operation");
+        }
     }
 
     std::unique_ptr<CollaborationPreparedMutationTargetScope> mutationTarget;
@@ -1026,7 +1064,10 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
     };
 
     try {
-        const std::string transactionName = "Collaborative operation " + edit.operationId();
+        const auto label = edit.operation().transactionLabel();
+        const std::string transactionName = label.empty()
+            ? "Collaborative operation " + edit.operationId()
+            : std::string(label);
         if (openNativeCommitTransaction(transactionName, retainUndoHistory) == 0) {
             restoreSuppression();
             discardNotifications();
@@ -1093,29 +1134,41 @@ DocumentCommitResult DocumentCommitCoordinator::commitOnDocumentThreadWithOption
         }
 
         bool persistent = false;
-        for (auto* object : liveFailureTargets) {
-            if (!object || object->getDocument() != &_document
-                || !object->isAttachedToDocument()) {
-                persistent = true;
-                break;
-            }
-            const bool restoredClean =
-                object->isValid() && !object->isTouched() && !object->mustRecompute();
-            // Restored C++ document state does not need a live re-execute.
-            // FeaturePython Proxy state is not in the undo stack, so a clean
-            // restore can still fail when the probe stays armed.
-            if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
-                continue;
-            }
-            try {
-                if (_document._recomputeFeature(object) != 0) {
+        {
+            // Sheets re-execute their transient cell schema; let them do so
+            // while proving the rolled-back state, outside the transaction.
+            bool& verification = _document.d->collaborationRollbackVerification;
+            verification = true;
+            const auto endVerification = [](bool* active) noexcept {
+                *active = false;
+            };
+            std::unique_ptr<bool, decltype(endVerification)> verificationGuard(
+                &verification,
+                endVerification);
+            for (auto* object : liveFailureTargets) {
+                if (!object || object->getDocument() != &_document
+                    || !object->isAttachedToDocument()) {
                     persistent = true;
                     break;
                 }
-            }
-            catch (...) {
-                persistent = true;
-                break;
+                const bool restoredClean =
+                    object->isValid() && !object->isTouched() && !object->mustRecompute();
+                // Restored C++ document state does not need a live re-execute.
+                // FeaturePython Proxy state is not in the undo stack, so a clean
+                // restore can still fail when the probe stays armed.
+                if (restoredClean && object->getPropertyByName("Proxy") == nullptr) {
+                    continue;
+                }
+                try {
+                    if (_document._recomputeFeature(object) != 0) {
+                        persistent = true;
+                        break;
+                    }
+                }
+                catch (...) {
+                    persistent = true;
+                    break;
+                }
             }
         }
 

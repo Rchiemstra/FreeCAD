@@ -449,3 +449,17 @@ void ViewProviderGeometryObject::handleChangedPropertyName(
         ViewProviderDragger::handleChangedPropertyName(reader, TypeName, PropName);
     }
 }
+
+ViewProviderPresentationClassification ViewProviderGeometryObject::presentationClassification() const
+{
+    // Identity-only stubs are not pointer-free geometry adapters. Subclasses
+    // must override with a real buffer capture or stay Unsupported.
+    return ViewProviderPresentationClassification::Unsupported;
+}
+
+bool ViewProviderGeometryObject::capturePresentationRenderBuffer(
+    const ViewProviderPresentationCaptureRequest&,
+    PresentationRenderBuffer&) const
+{
+    return false;
+}

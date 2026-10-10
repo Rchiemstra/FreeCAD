@@ -1705,13 +1705,16 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
     const auto legacyMode = intent.arguments.find("legacy_revision_semantics");
     const auto forceMode = intent.arguments.find("force_execution");
     const auto ownerThreadMode = intent.arguments.find("owner_thread_execution");
-    if (intent.arguments.empty() || intent.arguments.size() > 4
+    const auto derivedCoordinatorMode =
+        intent.arguments.find("derived_coordinator_recompute");
+    if (intent.arguments.empty() || intent.arguments.size() > 5
         || !intent.arguments.contains("feature")
         || std::ranges::any_of(intent.arguments, [](const auto& argument) {
                return argument.first != "feature"
                    && argument.first != "legacy_revision_semantics"
                    && argument.first != "force_execution"
-                   && argument.first != "owner_thread_execution";
+                   && argument.first != "owner_thread_execution"
+                   && argument.first != "derived_coordinator_recompute";
            })) {
         throw std::invalid_argument(
             "generic recompute requires a feature and optional revision/force/venue modes");
@@ -1847,7 +1850,13 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                                                        App::PreparationPolicy::DetachedInProcess};
     };
 
-    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract) {
+    const bool derivedCoordinatorRecompute =
+        derivedCoordinatorMode != intent.arguments.end();
+    if (derivedCoordinatorRecompute && derivedCoordinatorMode->second != "1") {
+        throw std::invalid_argument("generic recompute derived pass mode is invalid");
+    }
+    if (!target->canRecomputeOnWorker() && !provenInertBookkeepingContract
+        && !derivedCoordinatorRecompute) {
         return prepareOwnerThreadExecution();
     }
 
@@ -1892,24 +1901,52 @@ App::CollaborativeOperationPreparation prepareGenericRecompute(
                 App::PreparationPolicy::DetachedInProcess};
     }
 
-    if (ownerThreadExecution) {
+    if (ownerThreadExecution && target->canRecomputeOnWorker()) {
         // Same decision tree as the detached venue -- the opt-out and
         // bookkeeping branches above already ran -- only the venue differs.
+        // During the coordinator's derived pass, an opted-in target whose
+        // dependency has not opted in cannot be reproduced in the worker.
+        // That is a venue choice, not a commit failure: run the target on
+        // the document owner. Cross-document links and unserializable
+        // runtime types still fail closed inside collectClosure().
+        if (derivedCoordinatorRecompute
+            && !closureOptsIntoWorkerExecution(document, *target)) {
+            return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
+        }
+        if (derivedCoordinatorRecompute) {
+            // Cross-document links stay a refusal. The document owner can
+            // recompute them directly; this derived pass cannot.
+            try {
+                static_cast<void>(collectClosure(document, *target));
+            }
+            catch (const std::invalid_argument& error) {
+                const std::string_view text(error.what());
+                if (text.find("unresolved cross-document dependency")
+                    != std::string_view::npos) {
+                    throw std::invalid_argument(
+                        "generic recompute has an unresolved cross-document dependency; "
+                        "recompute the document directly, outside this collaborative commit");
+                }
+                throw;
+            }
+        }
         return prepareOwnerThreadExecution();
     }
 
     if (!closureOptsIntoWorkerExecution(document, *target)) {
-        // The target itself opted in -- the branch at the top of this
-        // function already ruled out the opposite -- but something in its
-        // dependency closure did not, and collectClosure() below would
-        // refuse the whole job for that reason alone. Refusing here would
-        // turn an opted-in group holding one un-opted scripted feature (a
-        // JointGroup holding a Python joint, an Origin holding nothing but
-        // still walked, ...) into a permanently failed node instead of the
-        // owner-thread fallback that exists for exactly this shape. Cross-
-        // document links and unserializable runtime types are not handled
-        // here and still fail closed inside collectClosure() when the
+        // Either the target itself has not opted into worker execution, or it
+        // has and something in its dependency closure has not. collectClosure()
+        // would refuse the whole job for that reason alone. Refusing here
+        // would turn an ordinary FeaturePython (no supportsAsyncRecompute())
+        // and an opted-in group holding one un-opted scripted feature into a
+        // permanently failed node instead of the owner-thread fallback.
+        // Cross-document links and unserializable runtime types are not
+        // handled here and still fail closed inside collectClosure() when the
         // worker venue is chosen.
+        //
+        // A derived-pass target that never claimed worker recompute is the
+        // same case: execute it on the document owner. Absence of
+        // supportsAsyncRecompute() is not a recompute failure.
         return prepareOwnerThreadExecution(/*venueForcedByClosure=*/true);
     }
 

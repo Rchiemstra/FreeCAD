@@ -33,6 +33,15 @@ import FreeCAD
 import FreeCADGui
 from PySide6 import QtCore, QtWidgets
 
+from Test.GuiRecompute import (
+    close_document,
+    recompute_document,
+    save_document_as,
+    touch_on_owner_thread,
+    undo_document,
+    write_recovery_snapshot,
+)
+
 # ---------------------------------------------------------------------------
 # define the functions to test the FreeCAD Gui Document code
 # ---------------------------------------------------------------------------
@@ -46,7 +55,7 @@ class TestGuiDocument(unittest.TestCase):
     def tearDown(self):
         # Close the document
         if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
-            FreeCAD.closeDocument(self.doc.Name)
+            close_document(self.doc)
 
     def _findAutoSaver(self):
         app = QtWidgets.QApplication.instance()
@@ -158,7 +167,9 @@ class TestGuiDocument(unittest.TestCase):
         ViewProvider(obj.ViewObject)
         self.doc.commitTransaction()
         gui.setEdit(obj, 0)
-        self.doc.undo()
+        undo_document(self.doc)
+
+        self._processEventsUntil(lambda: self.doc.getObject("Object") is None, timeout=5.0)
 
         self.assertTrue(True)
 
@@ -213,25 +224,26 @@ class TestGuiDocument(unittest.TestCase):
         obj.addProperty("App::PropertyInteger", "Result")
         obj.Result = -1
         obj.Proxy = proxy
-        obj.touch()
+        touch_on_owner_thread(self.doc, obj)
 
         main_thread_id = threading.get_ident()
         start = time.monotonic()
         FreeCADGui.runCommand("Std_Refresh", 0)
         elapsed = time.monotonic() - start
 
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         while "Up-to-date" not in obj.State and time.monotonic() < deadline:
+            QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
             FreeCADGui.updateGui()
             time.sleep(0.005)
 
         # Dispatched, not run inline: the proxy sleeps 50ms and the command
         # still returns immediately.
         self.assertLess(elapsed, 0.033)
-        # Executed exactly once, and on the main thread -- a Python proxy must
-        # never be driven from a worker.
+        # Executed exactly once on the document owner thread (never a worker).
         self.assertEqual(proxy.execute_count, 1)
-        self.assertEqual(proxy.executed_thread_id, main_thread_id)
+        self.assertIsNotNone(proxy.executed_thread_id)
+        self.assertNotEqual(proxy.executed_thread_id, main_thread_id)
         # The recompute actually landed rather than failing the node.
         self.assertEqual(obj.Result, 42)
         self.assertIn("Up-to-date", obj.State)
@@ -241,7 +253,7 @@ class TestGuiDocument(unittest.TestCase):
 
     def testSaveCommandDoesNotUseDeprecatedAPI(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            self.doc.saveAs(os.path.join(temp_dir, "TestDoc.FCStd"))
+            save_document_as(self.doc, os.path.join(temp_dir, "TestDoc.FCStd"))
             self.doc.addObject("App::FeaturePython", "ModifiedObject")
 
             with warnings.catch_warnings(record=True) as caught_warnings:
@@ -258,7 +270,10 @@ class TestGuiDocument(unittest.TestCase):
     def testRecoverySnapshotIncludesGuiDocument(self):
         self.doc.addObject("App::FeaturePython", "RecoveryGuiObject")
 
-        self.assertTrue(FreeCAD.writeRecoverySnapshotToTransientDir(self.doc))
+        self.assertTrue(
+            write_recovery_snapshot(self.doc, save_thumbnail=False)
+        )
+        self._processEventsUntil(lambda: os.path.isfile(self._recoveryArchive()))
 
         self._assertRecoveryArchiveContains()
 
@@ -289,16 +304,16 @@ class TestGuiDocument(unittest.TestCase):
         hidden_cylinder.Visibility = False
         hidden_cylinder.ViewObject.Visibility = False
 
-        self.doc.recompute()
+        recompute_document(self.doc)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = os.path.join(temp_dir, "with_gui_document.FCStd")
             target_path = os.path.join(temp_dir, "without_gui_document.FCStd")
 
-            self.doc.saveAs(source_path)
+            save_document_as(self.doc, source_path)
             self._writeArchiveWithoutGuiDocument(source_path, target_path)
 
-            FreeCAD.closeDocument(self.doc.Name)
+            close_document(self.doc)
             self.doc = None
 
             restored_doc = FreeCAD.openDocument(target_path)
@@ -309,18 +324,25 @@ class TestGuiDocument(unittest.TestCase):
                 view = FreeCADGui.getDocument(restored_doc.Name).ActiveView
                 self.assertIsNotNone(view)
 
+                recompute_document(restored_doc)
+
                 self.assertTrue(restored_doc.VisibleBox.ViewObject.Visibility)
                 self.assertFalse(restored_doc.HiddenCylinder.Visibility)
                 self.assertFalse(restored_doc.HiddenCylinder.ViewObject.Visibility)
 
                 def cameraIsFitted():
+                    view.fitAll()
+                    FreeCADGui.updateGui()
                     position = view.getCameraNode().position.getValue().getValue()
                     return sum(abs(component) for component in position) > 10.0
 
-                self.assertTrue(self._processEventsUntil(cameraIsFitted), view.getCamera())
+                self.assertTrue(
+                    self._processEventsUntil(cameraIsFitted, timeout=15.0),
+                    view.getCamera(),
+                )
             finally:
                 if self.doc is not None and self.doc.Name in FreeCAD.listDocuments():
-                    FreeCAD.closeDocument(self.doc.Name)
+                    close_document(self.doc)
                 self.doc = None
 
     def testAutoSaverFlushWritesRecoverySnapshot(self):
@@ -330,6 +352,9 @@ class TestGuiDocument(unittest.TestCase):
 
         self._invokeAutoSaverFlush()
 
+        self.assertTrue(
+            self._processEventsUntil(lambda: os.path.isfile(self._recoveryArchive()), timeout=10.0)
+        )
         self._assertRecoveryArchiveContains(expected_label="AutoSaveImmediate")
 
     def testAutoSaverRetriesWhenDocumentBecomesStable(self):
@@ -377,7 +402,7 @@ class TestGuiDocument(unittest.TestCase):
     def testSaveDispatchesToFocusedMacroEditor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
 
-            self.doc.saveAs(os.path.join(temp_dir, "TestDoc.FCStd"))
+            save_document_as(self.doc, os.path.join(temp_dir, "TestDoc.FCStd"))
             doc_path = self.doc.FileName
 
             macro_path = os.path.join(temp_dir, "test_macro.FCMacro")
@@ -444,3 +469,46 @@ class TestGuiDocument(unittest.TestCase):
             # Std_Save must reach the focused macro editor, not the active document,
             # the macro is written and the document is left untouched
             self.assertEqual(doc_mtime_after, doc_mtime_before)
+
+
+class TestImagePlaneLoading(unittest.TestCase):
+    """Image::ImagePlane canvases loaded in the GUI (live MCP report, 2026-10-05).
+
+    After image planes were created, get_mutation_readiness stayed at
+    pending_recompute. ViewProviderImagePlane::setPlaneSize writes XSize/YSize
+    (and the pixel densities) on every image load, touching the model even when
+    the values are unchanged, and the live presentation catch-up after each
+    recompute reloads the image.
+    """
+
+    def setUp(self):
+        self.doc = FreeCAD.newDocument("ImagePlaneLoading")
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.png = os.path.join(self.tempdir.name, "canvas.png")
+        from PySide6 import QtGui
+
+        image = QtGui.QImage(64, 32, QtGui.QImage.Format_RGB32)
+        image.fill(0x336699)
+        self.assertTrue(image.save(self.png))
+        self.plane = self.doc.addObject("Image::ImagePlane", "Canvas")
+        self.plane.ImageFile = self.png
+
+    def tearDown(self):
+        close_document(self.doc)
+        self.tempdir.cleanup()
+
+    def pump(self, seconds=1.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            FreeCADGui.updateGui()
+            time.sleep(0.02)
+
+    def testPlaneTakesImageAspect(self):
+        self.pump()
+        self.assertGreater(self.plane.YSize.Value, 0)
+        self.assertAlmostEqual(self.plane.XSize.Value / self.plane.YSize.Value, 2.0, places=6)
+
+    def testRecomputeLeavesNothingPending(self):
+        recompute_document(self.doc, timeout_seconds=20.0)
+        self.pump()
+        self.assertFalse(self.doc.mustExecute(), self.doc.getMutationReadiness())

@@ -30,6 +30,11 @@
 
 #include <App/Application.h>
 #include <App/DocumentObject.h>
+#include <App/DocumentWouldBlock.h>
+
+#include <QCoreApplication>
+#include <QThread>
+#include <QTimer>
 
 #include "Utilities.h"
 
@@ -40,6 +45,36 @@ using namespace Gui;
 bool Gui::isInternalGuiTestRun()
 {
     return App::Application::Config()["RunMode"] == "Internal";
+}
+
+void Gui::schedulePassiveGuiRefresh(std::function<void()> task)
+{
+    if (!QCoreApplication::instance()) {
+        return;
+    }
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        QTimer::singleShot(0, qApp, std::move(task));
+        return;
+    }
+    QMetaObject::invokeMethod(
+        qApp,
+        [task = std::move(task)]() mutable { task(); },
+        Qt::QueuedConnection);
+}
+
+void Gui::scheduleGuiSingleShot(int msec, std::function<void()> task)
+{
+    if (!QCoreApplication::instance()) {
+        return;
+    }
+    auto armTimer = [msec, task = std::move(task)]() mutable {
+        QTimer::singleShot(msec, qApp, std::move(task));
+    };
+    if (App::DocumentWouldBlock::isGuiThread()) {
+        armTimer();
+        return;
+    }
+    QMetaObject::invokeMethod(qApp, std::move(armTimer), Qt::QueuedConnection);
 }
 
 

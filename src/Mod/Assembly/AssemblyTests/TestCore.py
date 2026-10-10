@@ -417,6 +417,41 @@ class TestCore(AssemblyTestBase):
         with self.assertRaises(Assembly.JointCreationError):
             Assembly.makeJointReference(box1, "Face6?")
 
+    def test_api_rejects_components_outside_the_assembly(self):
+        """A joint on an object outside the assembly is ignored by the solver.
+
+        The joint was created and the solve reported success while the
+        component never moved, so the API must refuse it.
+        """
+        member = self.assembly.newObject("Part::Box", "ApiMemberBox")
+        outsider = self.doc.addObject("Part::Box", "ApiOutsideBox")
+        self.doc.recompute()
+
+        with self.assertRaisesRegex(Assembly.JointCreationError, "ApiOutsideBox"):
+            Assembly.createGroundedJoint(self.assembly, outsider, recompute=False)
+        with self.assertRaisesRegex(Assembly.JointCreationError, "ApiOutsideBox"):
+            Assembly.createJoint(
+                self.assembly,
+                "Fixed",
+                Assembly.makeJointReference(member, "Face6", "Vertex7"),
+                Assembly.makeJointReference(outsider, "Face6", "Vertex7"),
+                solve=False,
+                presolve=False,
+                recompute=False,
+            )
+        self.assertIsNone(self.doc.getObject("GroundedJoint"))
+        self.assertIsNone(self.doc.getObject("Joint"))
+
+    def test_api_accepts_components_nested_in_the_assembly(self):
+        """Components inside a Part within the assembly are members too."""
+        part = self.assembly.newObject("App::Part", "ApiNestedPart")
+        nested = part.newObject("Part::Box", "ApiNestedBox")
+        self.doc.recompute()
+
+        joint = Assembly.createGroundedJoint(self.assembly, nested, recompute=False)
+
+        self.assertEqual(joint.ObjectToGround, nested)
+
     def test_api_removes_joint_after_constructor_failure(self):
         """A failed joint constructor must not leave an invalid group member."""
         box1 = self.assembly.newObject("Part::Box", "ApiConstructorFailureBox1")

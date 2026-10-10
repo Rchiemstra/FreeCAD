@@ -28,6 +28,7 @@
 #include <Base/Console.h>
 #include <Base/Exception.h>
 #include <fastsignals/signal.h>
+#include <chrono>
 #include <functional>
 #include <exception>
 #include <memory>
@@ -60,8 +61,12 @@ class AppExport MainThreadSignalConfig
 public:
     using IsMainThreadFn = bool (*)();  // true iff currently on GUI/main thread
     using InvokeFn = void (*)(std::function<void()>&& fn, bool blocking);
+    //! Runs the functors marshalled to the main thread so far; waits up to
+    //! \a maxWait for one when none is pending. Main thread only.
+    using ServiceFn = void (*)(std::chrono::milliseconds maxWait);
 
     static void setHooks(IsMainThreadFn isMainThread, InvokeFn invoke);
+    static void setServiceHook(ServiceFn service);
 
     //! With no hooks installed, the current thread is treated as "main".
     static bool isMainThread();
@@ -70,6 +75,27 @@ public:
 
     //! With no hooks installed, runs \a fn inline.
     static void invoke(std::function<void()>&& fn, bool blocking);
+
+    /**
+     * Wait on the main thread without running its event loop: execute only
+     * functors other threads marshalled through invoke() (they may be blocked
+     * on them), so no input, timer or other queued event is re-entered. Returns
+     * false, after sleeping \a maxWait, when no service hook is installed.
+     */
+    static bool serviceMarshalledTasks(std::chrono::milliseconds maxWait);
+
+    //! True while this thread runs a functor whose sender is blocked on it.
+    [[nodiscard]] static bool insideBlockingInvoke() noexcept;
+
+    //! Marks the execution of a blocking invoke() functor on this thread.
+    class AppExport BlockingInvokeScope final
+    {
+    public:
+        BlockingInvokeScope() noexcept;
+        ~BlockingInvokeScope();
+        BlockingInvokeScope(const BlockingInvokeScope&) = delete;
+        BlockingInvokeScope& operator=(const BlockingInvokeScope&) = delete;
+    };
 };
 
 namespace detail
@@ -175,11 +201,16 @@ static_assert(alignof(ResilientSignal<void()>)
               == alignof(::fastsignals::signal<void()>));
 
 // Wrapper that mirrors fastsignals::signal but executes slots on GUI thread.
-template<class Signature, template<class T> class Combiner = ::fastsignals::optional_last_value>
+template<class Signature,
+         bool BlockingMarshalling = true,
+         template<class T> class Combiner = ::fastsignals::optional_last_value>
 class MainThreadSignal;
 
-template<class Return, class... Arguments, template<class T> class Combiner>
-class MainThreadSignal<Return(Arguments...), Combiner>
+template<class Return,
+         class... Arguments,
+         bool BlockingMarshalling,
+         template<class T> class Combiner>
+class MainThreadSignal<Return(Arguments...), BlockingMarshalling, Combiner>
 {
     using base_sig = ::fastsignals::signal<Return(Arguments...), Combiner>;
 
@@ -272,7 +303,11 @@ private:
             return self->sig_(std::forward<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
         }
 
-        Base::PyGILStateRelease release;
+        // PyGILStateRelease requires the GIL; many owner-thread emitters do not hold it.
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
 
         auto caps = std::make_tuple(
             detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...
@@ -283,8 +318,7 @@ private:
                 [self, caps = std::move(caps)]() mutable {
                     std::apply([self](auto&... c) { self->sig_(c.get()...); }, caps);
                 },
-                /*blocking=*/true
-            );
+                BlockingMarshalling);
         }
         else {
             std::optional<detail::non_void_t<result_type>> result;
@@ -294,8 +328,7 @@ private:
                         std::apply([self](auto&... c) { return self->sig_(c.get()...); }, caps)
                     );
                 },
-                /*blocking=*/true
-            );
+                BlockingMarshalling);
             return std::move(*result);
         }
     }
@@ -370,7 +403,10 @@ private:
             return;
         }
 
-        Base::PyGILStateRelease release;
+        std::optional<Base::PyGILStateRelease> release;
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            release.emplace();
+        }
         auto caps = std::make_tuple(
             detail::captureSignalArg<typename ::fastsignals::signal_arg_t<Arguments>>(args)...);
         MainThreadSignalConfig::invoke(

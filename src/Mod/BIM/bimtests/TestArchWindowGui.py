@@ -21,6 +21,7 @@
 ################################################################################
 
 import FreeCAD as App
+from Test.GuiRecompute import recompute_document, close_document
 import Arch
 import ArchSectionPlane
 import Draft
@@ -54,25 +55,25 @@ class TestArchWindowGui(TestArchBaseGui.TestArchBaseGui):
         level = Arch.makeFloor()
         level.addObject(wall)
         section = Arch.makeSectionPlane(level)
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
 
         # Change opening from 0 to 50 (= 45 degrees):
         svg = ArchSectionPlane.getSVG(section)
         win.Opening = 50
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         svg_new = ArchSectionPlane.getSVG(section)
         self.assertNotEqual(svg, svg_new)
 
         # Invert opening:
         svg = svg_new
         win.ViewObject.Proxy.invertOpening()
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         svg_new = ArchSectionPlane.getSVG(section)
         self.assertNotEqual(svg, svg_new)
 
         # Invert hinge:
         svg = svg_new
         win.ViewObject.Proxy.invertHinge()
-        App.ActiveDocument.recompute()
+        recompute_document(App.ActiveDocument)
         svg_new = ArchSectionPlane.getSVG(section)
         self.assertNotEqual(svg, svg_new)

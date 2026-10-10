@@ -23,8 +23,10 @@
 # ***************************************************************************
 
 import unittest
+
 import FreeCAD
 import Materials
+from materialtests.recompute_helper import close_document, recompute_document
 
 
 class DocumentTestCases(unittest.TestCase):
@@ -36,7 +38,7 @@ class DocumentTestCases(unittest.TestCase):
         self.doc = FreeCAD.newDocument()
 
     def tearDown(self):
-        FreeCAD.closeDocument(self.doc.Name)
+        close_document(self.doc)
 
     def testApplyDiffuseColorCheckShapeAppearance(self):
         """ Test that applying a DiffuseColor with transparency results in a correct ShapeAppearance """
@@ -91,7 +93,7 @@ class DocumentTestCases(unittest.TestCase):
         wood_uuid = "b588224e-e8d6-47ad-ba1f-a058333fd1c6"
 
         obj = self.doc.addObject("Part::Box")
-        self.doc.recompute()
+        recompute_document(self.doc)
         vobj = obj.ViewObject
 
         default_color = vobj.ShapeAppearance[0].DiffuseColor

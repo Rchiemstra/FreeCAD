@@ -103,6 +103,7 @@ generate_from_py(DepEdge)
 generate_from_py(Document)
 generate_from_py(DocumentSettings)
 generate_from_py(RecomputeHandle)
+generate_from_py(DocumentCommandHandle)
 generate_from_py(DocumentObject)
 generate_from_py(Extension)
 generate_from_py(ExtensionContainer)
@@ -144,6 +145,7 @@ SET(FreeCADApp_Pyi_SRCS
     DocumentObject.pyi
     DocumentSettings.pyi
     RecomputeHandle.pyi
+    DocumentCommandHandle.pyi
     GeoFeature.pyi
     GeoFeatureGroupExtension.pyi
     OriginGroupExtension.pyi
@@ -170,9 +172,16 @@ SET(Document_CPP_SRCS
     CollaborativeOperationRegistry.cpp
     CollaborativeSetPropertyOperation.cpp
     Document.cpp
+    DocumentPresentationBoundary.cpp
     DocumentFileWriter.cpp
     DocumentCollaborationService.cpp
     DocumentCommitCoordinator.cpp
+    DocumentExecutionLane.cpp
+    DocumentCrossDocumentSnapshot.cpp
+    DocumentExecutionStall.cpp
+    DocumentExecutionTelemetry.cpp
+    DocumentHandle.cpp
+    DocumentWouldBlock.cpp
     DocumentRecomputeCoordinator.cpp
     DocumentRevisionIndex.cpp
     EditSession.cpp
@@ -201,6 +210,7 @@ SET(Document_CPP_SRCS
     DocumentSettingsPyImp.cpp
     RecomputeHandle.cpp
     RecomputeHandlePyImp.cpp
+    DocumentCommandHandlePyImp.cpp
     Expression.cpp
     QuantityInput.cpp
     ExpressionTokenizer.cpp
@@ -254,7 +264,16 @@ SET(Document_HPP_SRCS
     Document.h
     DocumentFileWriter.h
     DocumentCollaborationService.h
+    DocumentCommand.h
+    DocumentCommandHandle.h
     DocumentCommitCoordinator.h
+    DocumentExecutionLane.h
+    DocumentCrossDocumentSnapshot.h
+    DocumentExecutionStall.h
+    DocumentExecutionTelemetry.h
+    DocumentHandle.h
+    DocumentPresentationBoundary.h
+    DocumentWouldBlock.h
     DocumentRecomputeCoordinator.h
     DocumentRevisionIndex.h
     EditSession.h

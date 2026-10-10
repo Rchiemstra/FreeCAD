@@ -3039,3 +3039,61 @@ class MultiDocumentUndo(unittest.TestCase):
         # closing doc
         FreeCAD.closeDocument("Doc1")
         FreeCAD.closeDocument("Doc2")
+
+
+class DocumentCompatibilityReplacementCases(unittest.TestCase):
+    """Structural compatibility mutations that replace an object.
+
+    Live MCP report: an import that deleted objects and recreated them under
+    the same names in one mutation failed with PublicationFailed ("duplicate
+    revision keys cannot carry inconsistent object identities"). The removed
+    and the new object publish different stable identities under the same
+    name-keyed revision keys, which is ambiguous, so the commit is refused and
+    rolled back. The refusal did not say which object caused it.
+    """
+
+    def setUp(self):
+        self.doc = FreeCAD.newDocument("CompatibilityReplacement")
+        self.original = self.doc.addObject("App::FeatureTest", "RouterCase")
+        self.doc.recompute()
+        self.originalInteger = self.original.Integer
+
+    def tearDown(self):
+        FreeCAD.closeDocument(self.doc.Name)
+
+    def commit(self, callback):
+        return self.doc.commitCompatibilityMutation(callback, structural=True)
+
+    def testInPlaceUpdateCommits(self):
+        def update():
+            self.original.Integer = self.originalInteger + 3
+
+        result = self.commit(update)
+        self.assertTrue(result["committed"], result)
+        self.assertIs(self.doc.getObject("RouterCase"), self.original)
+        self.assertEqual(self.original.Integer, self.originalInteger + 3)
+
+    def testReplacementUnderNewNameCommits(self):
+        def replace():
+            self.doc.removeObject("RouterCase")
+            self.doc.addObject("App::FeatureTest", "RouterCaseNew")
+
+        result = self.commit(replace)
+        self.assertTrue(result["committed"], result)
+        self.assertIsNone(self.doc.getObject("RouterCase"))
+        self.assertIsNotNone(self.doc.getObject("RouterCaseNew"))
+
+    def testReplacementUnderSameNameIsRefusedNamingTheObject(self):
+        def replace():
+            self.doc.removeObject("RouterCase")
+            replacement = self.doc.addObject("App::FeatureTest", "RouterCase")
+            replacement.Integer = self.originalInteger + 3
+
+        result = self.commit(replace)
+        self.assertFalse(result["committed"], result)
+        self.assertEqual(result["status"], "PublicationFailed", result)
+        # Rolled back: the original object holds the name with its old value.
+        self.assertIs(self.doc.getObject("RouterCase"), self.original)
+        self.assertEqual(self.original.Integer, self.originalInteger)
+        # The refusal names the object so the caller can fix the operation.
+        self.assertIn("'RouterCase'", result["message"])

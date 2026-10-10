@@ -58,6 +58,7 @@
 #include "Tree.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Document.h"
 #include "ExpressionCompleter.h"
 #include "Macro.h"
@@ -1171,6 +1172,20 @@ void TreeWidget::_updateStatus(bool delay)
         return;
     }
 
+    bool readingCommittedPresentation = false;
+    for (const auto& entry : DocumentMap) {
+        auto* guiDocument = entry.first;
+        auto* appDocument = guiDocument ? guiDocument->getDocument() : nullptr;
+        if (appDocument && shouldReadCommittedPresentation(*appDocument)) {
+            readingCommittedPresentation = true;
+            break;
+        }
+    }
+    if (readingCommittedPresentation) {
+        applyCommittedPresentationTreeReading();
+        return;
+    }
+
     if (!delay) {
         if (!ChangedObjects.empty() || !NewObjects.empty()) {
             onUpdateStatus();
@@ -1485,7 +1500,7 @@ void TreeWidget::onFinishEditing()
         Gui::Document* doc = Gui::Application::Instance->getDocument(obj->getDocument());
         doc->commitCommand();
         doc->resetEdit();
-        doc->getDocument()->recompute();
+        requestDocumentRecompute(*doc->getDocument());
     }
 }
 
@@ -3228,7 +3243,7 @@ void TreeWidget::dropEvent(QDropEvent* event)
     }
 
     if (touched && TreeParams::getRecomputeOnDrop()) {
-        targetInfo.targetDoc->recompute();
+        requestDocumentRecompute(*targetInfo.targetDoc);
     }
     if (touched && TreeParams::getSyncView()) {
         auto gdoc = Application::Instance->getDocument(targetInfo.targetDoc);
@@ -3378,7 +3393,10 @@ void TreeWidget::onCloseDoc()
         Gui::Document* gui = docitem->document();
         App::Document* doc = gui->getDocument();
         if (gui->canClose(true, true)) {
-            Command::doCommand(Command::Doc, "App.closeDocument(\"%s\")", doc->getName());
+            Command::doCommand(
+                Command::Doc,
+                "App.getDocument(\"%s\").closeAsync()",
+                doc->getName());
         }
     }
     catch (const Base::Exception& e) {
@@ -3526,6 +3544,48 @@ struct UpdateDisabler
     }
 };
 
+void TreeWidget::applyCommittedPresentationTreeReading()
+{
+    for (const auto& entry : DocumentMap) {
+        auto* guiDocument = entry.first;
+        auto* appDocument = guiDocument ? guiDocument->getDocument() : nullptr;
+        if (!appDocument || !shouldReadCommittedPresentation(*appDocument)) {
+            continue;
+        }
+        const auto presentation = guiDocument->presentationCache().current();
+        if (!presentation) {
+            continue;
+        }
+        for (const auto& node : presentation->tree) {
+            App::DocumentObject* object = nullptr;
+            for (auto* candidate : appDocument->getObjects()) {
+                if (appDocument->collaborationObjectIdentity(*candidate)
+                    == node.stableObjectIdentity) {
+                    object = candidate;
+                    break;
+                }
+            }
+            if (!object) {
+                continue;
+            }
+            auto itEntry = ObjectTable.find(object);
+            if (itEntry == ObjectTable.end() || itEntry->second.empty()) {
+                continue;
+            }
+            const auto displayName = QString::fromUtf8(node.label.c_str());
+            for (const auto& data : itEntry->second) {
+                if (data->label != node.label) {
+                    data->label = node.label;
+                }
+                for (auto* item : data->items) {
+                    item->setText(0, displayName);
+                    item->setHidden(!node.visible);
+                }
+            }
+        }
+    }
+}
+
 void TreeWidget::onUpdateStatus()
 {
     if (this->state() == DraggingState || App::GetApplication().isRestoring()) {
@@ -3534,6 +3594,14 @@ void TreeWidget::onUpdateStatus()
     }
 
     for (auto& v : DocumentMap) {
+        // The document owner thread may be executing features. Reading live
+        // object state (e.g. a sketch's ExternalGeo for the overlay icon) now
+        // races it; read the committed presentation or retry once it is idle.
+        auto* appDocument = v.first->getDocument();
+        if (appDocument && documentExecutionLaneBusy(*appDocument)) {
+            _updateStatus();
+            return;
+        }
         if (v.first->isPerformingTransaction()) {
             // We have to delay item creation until undo/redo is done, because the
             // object re-creation while in transaction may break tree view item

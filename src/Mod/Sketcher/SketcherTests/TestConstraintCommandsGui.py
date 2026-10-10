@@ -23,7 +23,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         self.sketch.addGeometry(
             Part.LineSegment(App.Vector(50, 45, 0), App.Vector(10, 15, 0)), False
         )
-        self.doc.recompute()
+        self.recompute_gui_document()
         self.flush_gui(80)
         Gui.activeDocument().setEdit(self.sketch.Name)
         self.flush_gui(50)
@@ -54,12 +54,12 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         self.assertEqual(self.sketch.getDriving(0), driving)
         self.assertEqual(self.sketch.solve(), 0)
         self.assertEqual(Gui.Selection.getSelectionEx(), [])
-        self.doc.undo()
+        self.undo_gui_document()
         self.assertEqual(self.sketch.ConstraintCount, 0)
-        self.doc.redo()
+        self.redo_gui_document()
         self.assertEqual(self.sketch.ConstraintCount, 1)
         self.assertEqual(self.sketch.getDriving(0), driving)
-        self.doc.undo()
+        self.undo_gui_document()
 
     def click_world(self, point, intended_subelements=None):
         coin = self.view.getPointOnScreen(point)
@@ -145,7 +145,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                 self.assertAlmostEqual(self.sketch.Constraints[1].Value, value)
                 self.assertFalse(self.sketch.getDriving(1))
                 self.assertEqual(self.sketch.solve(), 0)
-                self.doc.undo()
+                self.undo_gui_document()
                 self.assertEqual(self.sketch.ConstraintCount, 1)
 
     def test_coordinate_distances_to_axes(self):
@@ -159,9 +159,9 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
     def test_external_vertex_coordinates(self):
         source = self.doc.addObject("Part::Feature", "ExternalLine")
         source.Shape = Part.makeLine(App.Vector(-20, -25, 0), App.Vector(-10, -15, 0))
-        self.doc.recompute()
+        self.recompute_gui_document()
         self.sketch.addExternal(source.Name, "Edge1")
-        self.doc.recompute()
+        self.recompute_gui_document()
         self.assertEqual(self.sketch.getGeoVertexIndex(2)[0], -3)
         for axis, value in (("X", -20), ("Y", -25)):
             with self.subTest(axis=axis):
@@ -178,7 +178,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         circle = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 10)
         self.sketch.addGeometry(circle, False)
         self.sketch.addGeometry(Part.ArcOfCircle(circle, 0.2, 2.0), False)
-        self.doc.recompute()
+        self.recompute_gui_document()
         for command in ("Radius", "Diameter", "Radiam"):
             for edge, kind, value in (
                 (
@@ -204,18 +204,18 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                             self.assertAlmostEqual(self.sketch.Constraints[0].Value, value)
                             self.assertEqual(self.sketch.getDriving(0), not reference)
                             self.assertEqual(self.sketch.solve(), 0)
-                            self.doc.undo()
+                            self.undo_gui_document()
                             self.assertEqual(self.sketch.ConstraintCount, 0)
-                            self.doc.redo()
+                            self.redo_gui_document()
                             self.assertEqual(self.sketch.Constraints[0].Type, kind)
-                            self.doc.undo()
+                            self.undo_gui_document()
                         finally:
                             if reference:
                                 Gui.runCommand("Sketcher_ToggleDrivingConstraint")
 
     def test_radial_dimensions_from_continuous_picking(self):
         self.sketch.addGeometry(Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 10), False)
-        self.doc.recompute()
+        self.recompute_gui_document()
         self.view.fitAll()
         self.flush_gui(150)
         for command in ("Radius", "Diameter", "Radiam"):
@@ -235,14 +235,14 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                 )
                 self.assertTrue(self.sketch.getDriving(0))
                 self.assertEqual(self.sketch.solve(), 0)
-                self.doc.undo()
+                self.undo_gui_document()
                 self.assertEqual(self.sketch.ConstraintCount, 0)
 
     def test_multiple_radial_dimensions(self):
         circle = Part.Circle(App.Vector(0, 0, 0), App.Vector(0, 0, 1), 10)
         self.sketch.addGeometry(circle, False)
         self.sketch.addGeometry(Part.ArcOfCircle(circle, 0.2, 2.0), False)
-        self.doc.recompute()
+        self.recompute_gui_document()
         for command in ("Radius", "Diameter", "Radiam"):
             for edges in (("Edge2", "Edge3"), ("Edge3", "Edge2")):
                 for reference in (False, True):
@@ -267,7 +267,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                             self.assertEqual(self.sketch.solve(), 0)
                             for index in (range(2) if reference else (1,)):
                                 self.assertEqual(self.sketch.getDriving(index), not reference)
-                            self.doc.undo()
+                            self.undo_gui_document()
                             self.assertEqual(self.sketch.ConstraintCount, 0)
                         finally:
                             if reference:
@@ -279,9 +279,9 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         self.sketch.addConstraint(Sketcher.Constraint("Block", 1))
         source = self.doc.addObject("Part::Feature", "ExternalCircle")
         source.Shape = circle.toShape()
-        self.doc.recompute()
+        self.recompute_gui_document()
         self.sketch.addExternal(source.Name, "Edge1")
-        self.doc.recompute()
+        self.recompute_gui_document()
         for command in ("Radius", "Diameter", "Radiam"):
             for edge in ("Edge2", "ExternalEdge1"):
                 with self.subTest(command=command, edge=edge):
@@ -292,7 +292,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                     self.assertEqual(self.sketch.Constraints[1].Type, expected)
                     self.assertFalse(self.sketch.getDriving(1))
                     self.assertEqual(self.sketch.solve(), 0)
-                    self.doc.undo()
+                    self.undo_gui_document()
                     self.assertEqual(self.sketch.ConstraintCount, 1)
 
     def test_radial_dimensions_on_bspline_weights(self):
@@ -300,7 +300,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
         spline.interpolate([App.Vector(0, 0, 0), App.Vector(10, 20, 0), App.Vector(30, 0, 0)])
         self.sketch.addGeometry(spline, False)
         self.sketch.exposeInternalGeometry(1)
-        self.doc.recompute()
+        self.recompute_gui_document()
         pole = next(
             index for index, geo in enumerate(self.sketch.Geometry) if isinstance(geo, Part.Circle)
         )
@@ -320,7 +320,7 @@ class TestConstraintCommandsGui(SketcherGuiTestCase):
                 self.assertEqual(self.sketch.Constraints[-1].Type, "Weight")
                 self.assertTrue(self.sketch.getDriving(count))
                 self.assertEqual(self.sketch.solve(), 0)
-                self.doc.undo()
+                self.undo_gui_document()
                 self.assertEqual(self.sketch.ConstraintCount, count)
 
     def test_disabled_continuous_mode_releases_previous_handler(self):

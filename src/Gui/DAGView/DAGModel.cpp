@@ -43,6 +43,7 @@
 #include <Gui/Application.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/Document.h>
+#include <Gui/DocumentExecutionIngress.h>
 #include <Gui/MainWindow.h>
 #include <Gui/MenuManager.h>
 #include <Gui/Selection/Selection.h>
@@ -1155,7 +1156,7 @@ void Model::editingFinishedSlot()
     Gui::Document* doc = Gui::Application::Instance->getDocument(record.DObject->getDocument());
     doc->commitCommand();
     doc->resetEdit();
-    doc->getDocument()->recompute();
+    requestDocumentRecompute(*doc->getDocument());
 }
 
 void Model::visiblyIsolate(Gui::DAG::Vertex sourceIn)

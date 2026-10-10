@@ -58,6 +58,7 @@
 #include <Mod/Part/App/AttachExtension.h>
 #include <Mod/Part/App/DatumFeature.h>
 #include <Mod/Part/Gui/AttacherTexts.h>
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 #include <Mod/Part/Gui/TaskAttacher.h>
 
 #include "TaskAttacher.h"
@@ -67,6 +68,7 @@
 #include "ui_TaskAttacher.h"
 
 #include <Gui/ViewParams.h>
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace PartGui;
@@ -783,7 +785,7 @@ void TaskAttacher::onCheckFlip(bool on)
     Part::AttachExtension* pcAttach
         = ViewProvider->getObject()->getExtensionByType<Part::AttachExtension>();
     pcAttach->MapReversed.setValue(on);
-    ViewProvider->getObject()->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*ViewProvider->getObject());
 
     Q_EMIT placementUpdated();
 }
@@ -1634,10 +1636,9 @@ bool TaskDlgAttacher::accept()
             "MapMode = '%s'",
             AttachEngine::getModeName(eMapMode(pcAttach->MapMode.getValue())).c_str()
         );
-        Gui::cmdAppObject(obj, "recompute()");
 
-        if (!obj->isValid()) {
-            throw Base::RuntimeError(obj->getStatusString());
+        if (!PartGui::submitDocumentRecomputeOrReport(*obj, parameter)) {
+            return false;
         }
 
         document->commitCommand();
@@ -1667,12 +1668,13 @@ bool TaskDlgAttacher::reject()
     if (document) {
         // roll back the done things
         document->abortCommand();
-        Gui::Command::doCommand(Gui::Command::Doc, "%s.recompute()", doc.getAppDocumentPython().c_str());
+        if (auto* appDoc = document->getDocument()) {
+            PartGui::submitDocumentRecomputeOrReport(*appDoc);
+        }
     }
 
     accepted = false;
 
     return true;
 }
-
 #include "moc_TaskAttacher.cpp"

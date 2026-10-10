@@ -1229,7 +1229,24 @@ DocumentObjectExecReturn* Sheet::execute()
         return DocumentObject::StdReturn;
     }
     else {
-        return new DocumentObjectExecReturn("One or more cells failed contains errors.", this);
+        // Name the failing cells: a bare "cells contain errors" left callers
+        // guessing which formula to fix.
+        std::string message = "Cells with errors:";
+        std::size_t listed = 0;
+        for (const auto& address : cellErrors) {
+            if (listed == 5) {
+                message += "; ...";
+                break;
+            }
+            message += listed == 0 ? " " : "; ";
+            message += address.toString();
+            const Cell* cell = cells.getValue(address);
+            if (cell && cell->hasException()) {
+                message += " (" + cell->getException() + ")";
+            }
+            ++listed;
+        }
+        return new DocumentObjectExecReturn(message, this);
     }
 }
 

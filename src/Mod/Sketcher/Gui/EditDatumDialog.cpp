@@ -52,6 +52,7 @@
 #include <Precision.hxx>
 #include <cmath>
 #include <numeric>
+#include <Mod/Part/Gui/DocumentRecomputeIngress.h>
 
 
 using namespace SketcherGui;
@@ -351,7 +352,7 @@ void EditDatumDialog::accepted()
 void EditDatumDialog::rejected()
 {
     Gui::Command::abortCommand(transactionID);
-    sketch->recomputeFeature();
+    PartGui::submitDocumentRecomputeOrReport(*sketch);
 }
 
 bool EditDatumDialog::isSuccess()
@@ -509,5 +510,4 @@ void EditDatumDialog::performAutoScale(double newDatum)
         }
     }
 }
-
 #include "moc_EditDatumDialog.cpp"

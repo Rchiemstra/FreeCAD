@@ -34,6 +34,7 @@
 #include "Application.h"
 #include "BitmapFactory.h"
 #include "Command.h"
+#include "DocumentExecutionIngress.h"
 #include "Control.h"
 #include "Document.h"
 #include "FileDialog.h"
@@ -222,7 +223,7 @@ public:
         if (touched && ui->recompute->isChecked()) {
             auto obj = vp->getObject();
             obj->touch();
-            obj->getDocument()->recompute(obj->getInListRecursive());
+            requestDocumentRecompute(*obj->getDocument(), obj->getInListRecursive());
             touched = false;
         }
 

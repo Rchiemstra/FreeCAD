@@ -25,6 +25,8 @@
 
 #pragma once
 
+#include <App/Document.h>
+#include <App/DocumentWouldBlock.h>
 #include <App/GeoFeature.h>
 #include <App/PropertyPythonObject.h>
 
@@ -85,6 +87,8 @@ public:
 
     ValueT supportsAsyncRecompute() const;
 
+    ValueT supportsDocumentThreadExecution() const;
+
     /// return true to activate tree view group object handling
     ValueT hasChildElement() const;
     /// Get sub-element visibility
@@ -120,6 +124,7 @@ private:
     FC_PY_ELEMENT(redirectSubName)                                                                 \
     FC_PY_ELEMENT(canLoadPartial)                                                                  \
     FC_PY_ELEMENT(supportsAsyncRecompute)                                                          \
+    FC_PY_ELEMENT(supportsDocumentThreadExecution)                                                 \
     FC_PY_ELEMENT(hasChildElement)                                                                 \
     FC_PY_ELEMENT(isElementVisible)                                                                \
     FC_PY_ELEMENT(setElementVisible)                                                               \
@@ -211,6 +216,16 @@ public:
     /// recalculate the Feature
     DocumentObjectExecReturn* execute() override
     {
+        // Off-owner threads need an explicit Python opt-in. The document owner
+        // thread is where GenericIsolatedRecompute runs undeclared proxies
+        // (Draft, Path, Arch, ...) inside the coordinator commit boundary.
+        const App::Document* document = static_cast<App::DocumentObject*>(this)->getDocument();
+        if (!declaresDocumentThreadExecution()
+            && !(document && document->isCollaborationOwnerThread())) {
+            return new App::DocumentObjectExecReturn(
+                "Python feature must declare supportsDocumentThreadExecution() "
+                "before execution");
+        }
         try {
             bool handled = imp->execute();
             if (!handled) {
@@ -353,6 +368,16 @@ public:
         }
 
         return imp->supportsAsyncRecompute() == FeaturePythonImp::Accepted;
+    }
+
+    [[nodiscard]] bool requiresDocumentThreadExecutionDeclaration() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] bool declaresDocumentThreadExecution() const override
+    {
+        return imp->supportsDocumentThreadExecution() == FeaturePythonImp::Accepted;
     }
 
     /**

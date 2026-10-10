@@ -15,11 +15,11 @@ set(SpreadsheetGui_LIBS
 set_property(SOURCE qtcolorpicker.h qtcolorpicker.cpp PROPERTY SKIP_AUTOMOC ON)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/moc_qtcolorpicker-internal.cpp
     COMMAND ${QtCore_MOC_EXECUTABLE} -o ${CMAKE_CURRENT_BINARY_DIR}/moc_qtcolorpicker-internal.cpp ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.cpp
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.cpp)
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.cpp ${FREECAD_QT_MOC_VERSION_STAMP} ${QtCore_MOC_EXECUTABLE})
 
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/moc_qtcolorpicker.cpp
     COMMAND ${QtCore_MOC_EXECUTABLE} -o ${CMAKE_CURRENT_BINARY_DIR}/moc_qtcolorpicker.cpp ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.h)
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/qtcolorpicker.h ${FREECAD_QT_MOC_VERSION_STAMP} ${QtCore_MOC_EXECUTABLE})
 
 
 set_property(SOURCE qtcolorpicker.cpp APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/moc_qtcolorpicker-internal.cpp)

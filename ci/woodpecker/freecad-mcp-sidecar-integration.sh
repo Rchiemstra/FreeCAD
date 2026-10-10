@@ -15,11 +15,10 @@ if [ ! -f "$fixture" ]; then
     exit 1
 fi
 
-python -m pip install --upgrade pip
-pip install -e tools/freecad_git
+python -m pip install --break-system-packages -e tools/freecad_git
 
 cd tools/mcp/freecad-mcp
-pip install -e ".[dev]" "mcp[cli]>=1.12.2,<2"
+python -m pip install --break-system-packages -e ".[dev]" "mcp[cli]>=1.12.2,<2"
 pytest -m integration -ra --tb=short --junitxml=results_integration.xml
 
 # Pytest exits successfully when a selected test is skipped.  This lane is

@@ -125,6 +125,10 @@ class DraftObject(object):
         if state:
             self.Type = state
 
+    def supportsDocumentThreadExecution(self, obj):
+        """Allow recompute on the document execution lane owner thread."""
+        return True
+
     def execute(self, obj):
         """Run this method when the object is created or recomputed.
 

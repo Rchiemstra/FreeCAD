@@ -13,6 +13,7 @@
 #include <Base/Vector3D.h>
 #include <Mod/Part/App/Geometry.h>
 #include <Mod/PartDesign/App/Body.h>
+#include <Mod/PartDesign/App/FeatureHole.h>
 #include <Mod/PartDesign/App/FeaturePad.h>
 #include <Mod/PartDesign/App/FeaturePrimitive.h>
 #include <Mod/Sketcher/App/Constraint.h>
@@ -63,9 +64,56 @@ protected:
         );
     }
 
+    App::DocumentCommitResult commitStructuralDeferred(
+        App::CollaborationCompatibilityCallback callback)
+    {
+        App::CollaborationCompatibilityMutation mutation;
+        mutation.scope = App::CollaborationCompatibilityScope::Structural;
+        App::CollaborationCompatibilityMutationOptions options;
+        options.recomputePolicy = App::CollaborationCompatibilityRecomputePolicy::Deferred;
+        return _document->collaborationService().commitCompatibilityMutationWithOptions(
+            std::move(mutation),
+            std::move(callback),
+            std::move(options)
+        );
+    }
+
     std::string _documentName;
     App::Document* _document {nullptr};
 };
+
+// A rolled-back mutation must not leave the solver state of the failed attempt
+// behind: pad readiness reads it, and refused a valid rectangle afterwards.
+TEST_F(PartDesignCollaborationCompatibilityTest, rollbackResolvesSketchSolverState)
+{
+    Sketcher::SketchObject* sketch = nullptr;
+    const auto sketchResult = commitStructural([&] {
+        sketch = _document->addObject<Sketcher::SketchObject>("Sketch");
+        Part::GeomLineSegment line;
+        line.setPoints(Base::Vector3d(0, 0, 0), Base::Vector3d(30, 0, 0));
+        sketch->addGeometry(&line, false);
+    });
+    ASSERT_EQ(sketchResult.status, App::DocumentCommitStatus::Committed) << sketchResult.message;
+    ASSERT_FALSE(sketch->getLastHasMalformedConstraints());
+
+    const auto failed = commitStructural([&] {
+        // A radius on a line is malformed; the solve inside addConstraint records it.
+        auto radius = std::make_unique<Sketcher::Constraint>();
+        radius->Type = Sketcher::ConstraintType::Radius;
+        radius->First = 0;
+        radius->setValue(5.0);
+        sketch->addConstraint(std::move(radius));
+        sketch->solve();
+        if (sketch->getLastHasMalformedConstraints()) {
+            throw std::runtime_error("malformed constraint");
+        }
+    });
+
+    EXPECT_NE(failed.status, App::DocumentCommitStatus::Committed);
+    EXPECT_TRUE(sketch->Constraints.getValues().empty());
+    EXPECT_FALSE(sketch->getLastHasMalformedConstraints());
+    EXPECT_TRUE(sketch->getLastMalformedConstraints().empty());
+}
 
 TEST_F(
     PartDesignCollaborationCompatibilityTest,
@@ -386,6 +434,62 @@ TEST_F(
         EXPECT_FALSE(pads[index]->Shape.getShape().isNull());
     }
     EXPECT_FALSE(_document->mustExecute());
+}
+
+// An existing hole's ModelThread handler clears ReadOnly on
+// UseCustomThreadClearance. That flag is presentation state on a static
+// property, so a structural commit must accept it.
+TEST_F(
+    PartDesignCollaborationCompatibilityTest,
+    existingHoleModelThreadEnablesInsideACollaborativeCommit
+)
+{
+    auto* hole = _document->addObject<PartDesign::Hole>("Tapped");
+    ASSERT_NE(hole, nullptr);
+    hole->Threaded.setValue(true);
+    hole->ThreadType.setValue("ISOMetricProfile");
+    ASSERT_TRUE(hole->UseCustomThreadClearance.isReadOnly());
+    ASSERT_FALSE(hole->ModelThread.getValue());
+
+    const auto result = commitStructuralDeferred([&] {
+        hole->ModelThread.setValue(true);
+    });
+
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::Committed) << result.message;
+    EXPECT_TRUE(hole->ModelThread.getValue());
+    EXPECT_FALSE(hole->UseCustomThreadClearance.isReadOnly());
+    ASSERT_TRUE(_document->undo());
+    EXPECT_FALSE(hole->ModelThread.getValue());
+    EXPECT_TRUE(hole->UseCustomThreadClearance.isReadOnly());
+    ASSERT_TRUE(_document->redo());
+    EXPECT_TRUE(hole->ModelThread.getValue());
+    EXPECT_FALSE(hole->UseCustomThreadClearance.isReadOnly());
+}
+
+TEST_F(
+    PartDesignCollaborationCompatibilityTest,
+    abortedHoleModelThreadCommitRestoresClearanceStatus
+)
+{
+    auto* hole = _document->addObject<PartDesign::Hole>("Tapped");
+    ASSERT_NE(hole, nullptr);
+    hole->Threaded.setValue(true);
+    hole->ThreadType.setValue("ISOMetricProfile");
+    ASSERT_TRUE(hole->UseCustomThreadClearance.isReadOnly());
+
+    bool changed = false;
+    const auto result = commitStructuralDeferred([&] {
+        hole->ModelThread.setValue(true);
+        changed = hole->ModelThread.getValue()
+            && !hole->UseCustomThreadClearance.isReadOnly();
+        throw std::runtime_error("abort after status");
+    });
+
+    EXPECT_EQ(result.status, App::DocumentCommitStatus::ApplyFailed) << result.message;
+    EXPECT_NE(result.message.find("abort after status"), std::string::npos) << result.message;
+    EXPECT_TRUE(changed) << result.message;
+    EXPECT_FALSE(hole->ModelThread.getValue());
+    EXPECT_TRUE(hole->UseCustomThreadClearance.isReadOnly());
 }
 
 }  // namespace
